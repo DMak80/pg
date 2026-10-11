@@ -30,14 +30,28 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     private readonly ConcurrentDictionary<string, long> _skippedByName = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _conflictByName = new(StringComparer.Ordinal);
 
-    private readonly Counter<long> _notified;
-    private readonly Counter<long> _retries;
-    private readonly Counter<long> _fetched;
-    private readonly Counter<long> _applied;
-    private readonly Counter<long> _conflictsCounter;
+    private readonly Counter<long>? _notified;
+    private readonly Counter<long>? _retries;
+    private readonly Counter<long>? _fetched;
+    private readonly Counter<long>? _applied;
+    private readonly Counter<long>? _conflictsCounter;
 
-    public ReplicationMetrics(Meter meter)
+    // Делегаты outbox-серий (журнал известен точке сборки — Program; null — серии нет).
+    private readonly Func<long>? _outboxBytes;
+    private readonly Func<long>? _outboxBudgetExceeded;
+
+    // enabled=false (соседей нет, Existing-регресс): инструменты НЕ создаются —
+    // ни одной ownS3_replication_-серии в экспорте; инкременты — no-op.
+    private readonly bool _enabled;
+
+    public ReplicationMetrics(Meter meter, bool enabled = true, Func<long>? outboxBytes = null,
+        Func<long>? outboxBudgetExceeded = null)
     {
+        _enabled = enabled;
+        _outboxBytes = outboxBytes;
+        _outboxBudgetExceeded = outboxBudgetExceeded;
+        if (!enabled)
+            return;
         _notified = meter.CreateCounter<long>("ownS3.replication.notified.total", unit: "{event}",
             description: "Исходы рассылки уведомлений соседям (accepted/backoff/retry)");
         _retries = meter.CreateCounter<long>("ownS3.replication.retries.total", unit: "{retry}",
@@ -69,20 +83,38 @@ public sealed class ReplicationMetrics : IOutcomeCounters
         meter.CreateObservableGauge<long>("ownS3.replication.reconcile.position",
             () => _reconcilePosition.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
             description: "Прогресс reconcile (обработано ключей)");
+        if (_enabled && _outboxBytes is not null)
+            meter.CreateObservableGauge<long>("ownS3.replication.outbox.bytes",
+                () => new Measurement<long>(_outboxBytes()),
+                unit: "By", description: "Текущий размер журнала доставки");
+        if (_enabled && _outboxBudgetExceeded is not null)
+            meter.CreateObservableGauge<long>("ownS3.replication.outbox.budget.exceeded",
+                () => new Measurement<long>(_outboxBudgetExceeded()),
+                description: "1 — бюджет журнала превышен (алерт-состояние)");
     }
 
-    public void SetLinkOnline(string target, bool online) =>
+    public void SetLinkOnline(string target, bool online)
+    {
+        if (!_enabled) return;
         _linkOnline[target] = online ? 1 : 0;
+    }
 
-    public void SetQueueDepth(string target, long depth) =>
+    public void SetQueueDepth(string target, long depth)
+    {
+        if (!_enabled) return;
         _queueDepth[target] = depth;
+    }
 
-    public void SetDeliveryLagSeconds(string target, double seconds) =>
+    public void SetDeliveryLagSeconds(string target, double seconds)
+    {
+        if (!_enabled) return;
         _deliveryLagSeconds[target] = seconds;
+    }
 
     public void Notified(string target, string result)
     {
-        _notified.Add(1, new KeyValuePair<string, object?>("target", target),
+        if (!_enabled) return;
+        _notified?.Add(1, new KeyValuePair<string, object?>("target", target),
             new KeyValuePair<string, object?>("result", result));
         var bucket = result switch
         {
@@ -95,25 +127,42 @@ public sealed class ReplicationMetrics : IOutcomeCounters
             bucket.AddOrUpdate(target, 1, (_, v) => v + 1);
     }
 
-    public void Retried(string target) => _retries.Add(1, new KeyValuePair<string, object?>("target", target));
+    public void Retried(string target)
+    {
+        if (!_enabled) return;
+        _retries?.Add(1, new KeyValuePair<string, object?>("target", target));
+    }
 
     // ── приёмные серии + IOutcomeCounters (точки инкремента — inbox и фетчер) ──
 
-    public void SetFetchQueueDepth(string source, long depth) =>
+    public void SetFetchQueueDepth(string source, long depth)
+    {
+        if (!_enabled) return;
         _fetchQueueDepth[source] = depth;
+    }
 
-    public void SetFetchLagSeconds(string source, double seconds) =>
+    public void SetFetchLagSeconds(string source, double seconds)
+    {
+        if (!_enabled) return;
         _fetchLagSeconds[source] = seconds;
+    }
 
-    public void SetFetchPaused(string source, bool paused) =>
+    public void SetFetchPaused(string source, bool paused)
+    {
+        if (!_enabled) return;
         _fetchPaused[source] = paused ? 1 : 0;
+    }
 
-    public void SetReconcilePosition(string source, long processed) =>
+    public void SetReconcilePosition(string source, long processed)
+    {
+        if (!_enabled) return;
         _reconcilePosition[source] = processed;
+    }
 
     public void Fetched(string source)
     {
-        _fetched.Add(1, new KeyValuePair<string, object?>("source", source));
+        if (!_enabled) return;
+        _fetched?.Add(1, new KeyValuePair<string, object?>("source", source));
         _fetchedByName.AddOrUpdate(source, 1, (_, v) => v + 1);
     }
 
@@ -123,17 +172,19 @@ public sealed class ReplicationMetrics : IOutcomeCounters
 
     public void Conflict(string source)
     {
+        if (!_enabled) return;
         // Конфликт — исход применения (applied_total{source,conflict}) И общий
         // счётчик конфликтов (глава 07 §10); событие ConflictDetected аплайера —
         // только лог (без инкремента — нет sourceName, мульти-счёт)
         ApplyOutcome(source, "conflict");
         Interlocked.Increment(ref _conflictsTotal);
-        _conflictsCounter.Add(1);
+        _conflictsCounter?.Add(1);
     }
 
     private void ApplyOutcome(string source, string result)
     {
-        _applied.Add(1, new KeyValuePair<string, object?>("source", source),
+        if (!_enabled) return;
+        _applied?.Add(1, new KeyValuePair<string, object?>("source", source),
             new KeyValuePair<string, object?>("result", result));
         var bucket = result switch
         {

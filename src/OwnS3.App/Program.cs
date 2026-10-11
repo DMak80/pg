@@ -182,8 +182,21 @@ builder.Services.AddSingleton<OwnS3.Replication.Lww.ReplicaApplier>();
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.FetchQueueRegistry>();
 // Счётчики исходов приёма (задача 12): боевой ReplicationMetrics — реализация
 // IOutcomeCounters (точки инкремента — inbox и фетчер, каждый со своим sourceName)
-builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationMetrics(
-    sp.GetService<Meter>() ?? new Meter("ownS3")));
+builder.Services.AddSingleton(sp =>
+{
+    // Экспорт серий — при активной репликации (глава 07 §12: без соседей серий нет).
+    // Outbox-серии — делегаты журнала (глава 07 §10: outbox_bytes/budget_exceeded);
+    // журнал ещё не сконструирован — ленивый захват после резолва.
+    var active = sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>().Active;
+    OwnS3.Replication.Outbox.OutboxJournal? journal = null;
+    var metrics = new OwnS3.Replication.ReplicationMetrics(
+        sp.GetService<Meter>() ?? new Meter("ownS3"),
+        enabled: active,
+        outboxBytes: () => journal?.TotalBytes ?? 0,
+        outboxBudgetExceeded: () => journal is { BudgetExceeded: true } ? 1 : 0);
+    journal = sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>();
+    return metrics;
+});
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.IOutcomeCounters>(
     sp => sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>());
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.NotificationInbox>();
