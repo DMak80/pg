@@ -278,16 +278,118 @@ public sealed partial class ErasureXlDrive : IXlDrive
     public void CreateBucket(string bucket) => throw new NotImplementedException();
     public void DeleteBucket(string bucket) => throw new NotImplementedException();
     public IReadOnlyList<BucketEntry> ListBuckets() => throw new NotImplementedException();
-    public XlMetaRecord? TryReadMeta(string bucket, string key) => throw new NotImplementedException();
+    public XlMetaRecord? TryReadMeta(string bucket, string key)
+    {
+        var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
+        var online = set.Where(d => d.Online).ToList();
+        // порог консенсуса — k дефолтной parity (per-object parity неизвестна до
+        // чтения; больший порог консервативно-безопасен, канон 06 §7)
+        var threshold = _pool.Topology.SetSize - _defaultParity;
+        if (online.Count < threshold)
+            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+
+        // консенсус: мажоритарный versionId (порог ≥ k); битые записи не считаются
+        var records = new List<XlMetaRecord>();
+        foreach (var disk in online)
+        {
+            try
+            {
+                records.Add(XlMetaFile.Read(ObjectDirOnDisk(disk, bucket, key), out _));
+            }
+            catch (FileNotFoundException)
+            {
+                // записи на этом диске нет
+            }
+            catch (XlIntegrityException ex)
+            {
+                _logger.LogWarning(ex, "EC: битый xl.meta {Bucket}/{Key} на диске {Position} — запись не в консенсусе",
+                    bucket, key, disk.Position);
+            }
+        }
+
+        if (records.Count == 0)
+            return null; // объекта нет при кворумном онлайне
+
+        var majority = records.GroupBy(r => r.VersionId)
+            .OrderByDescending(g => g.Count())
+            .First();
+        if (majority.Count() < threshold)
+            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+        return majority.First();
+    }
     public void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta) =>
         throw new NotImplementedException();
-    public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length) =>
-        throw new NotImplementedException();
-    public void VerifyFullChecksum(string bucket, string key, XlMetaRecord meta) =>
-        throw new NotImplementedException();
+    public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
+    {
+        ArgumentNullException.ThrowIfNull(meta.Ec, nameof(meta));
+
+        var ec = meta.Ec;
+        var codec = CodecFor(ec.EcN - ec.EcM);
+        var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
+        var windows = new List<ErasureBlockReader>();
+        var windowStart = offset;
+        var windowEnd = offset + length;
+        var partStart = 0L;
+        for (var i = 0; i < ec.Parts.Count && partStart < windowEnd; i++)
+        {
+            var part = ec.Parts[i];
+            var partEnd = partStart + part.SourceSize;
+            if (partEnd > windowStart)
+            {
+                var localOffset = Math.Max(0, windowStart - partStart);
+                var localEnd = Math.Min(partEnd, windowEnd);
+                var result = new ErasurePartResult(string.Empty, string.Empty, part.SourceSize,
+                    part.BlockHashes.Length > 0 ? part.BlockHashes[0].Length : 0, part.BlockHashes);
+                var readers = OpenShardStreams(set, bucket, key, meta, i + 1, ec);
+                windows.Add(new ErasureBlockReader(codec, readers, result, localOffset, localEnd - partStart - localOffset));
+            }
+
+            partStart = partEnd;
+        }
+
+        return new ErasureObjectStream(windows);
+    }
+
+    // Шард-потоки части N по позициям EcDist записи: поток j — с диска
+    // distribution[j] (null — диск офлайн / файла нет).
+    private static Stream?[] OpenShardStreams(IReadOnlyList<ErasureDisk> set, string bucket, string key,
+        XlMetaRecord meta, int partNumber, XlMetaEcInfo ec)
+    {
+        var readers = new Stream?[ec.EcN];
+        for (var j = 0; j < ec.EcN; j++)
+        {
+            var disk = set.FirstOrDefault(d => d.Online && d.PositionInSet == ec.EcDist[j]);
+            if (disk is null)
+                continue;
+            var path = Path.Combine(ObjectDirOnDisk(disk, bucket, key), meta.DataDirName, $"part.{partNumber}");
+            if (File.Exists(path))
+                readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        }
+
+        return readers;
+    }
+    public void VerifyFullChecksum(string bucket, string key, XlMetaRecord meta)
+    {
+        string actual;
+        using (var sha = System.Security.Cryptography.IncrementalHash
+                   .CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
+        {
+            using var body = OpenData(bucket, key, meta, 0, meta.Size);
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = body.Read(buffer, 0, buffer.Length)) > 0)
+                sha.AppendData(buffer, 0, read);
+            actual = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+        }
+
+        if (actual != meta.ContentSha256)
+            throw new XlIntegrityException(
+                $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual} (реконструкция)");
+    }
     public void Delete(string bucket, string key, XlMetaRecord meta) => throw new NotImplementedException();
     public IReadOnlyList<(int Number, long Size)> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
-        throw new NotImplementedException();
+        meta.Ec?.Parts.Select((part, index) => (index + 1, part.SourceSize)).ToList()
+        ?? throw new XlIntegrityException($"запись {bucket}/{key} без EC-полей в EC-томе");
     public IXlObjectCursor EnumerateObjects(string bucket) => throw new NotImplementedException();
     public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key) =>
         throw new NotImplementedException();
