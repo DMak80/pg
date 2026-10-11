@@ -21,6 +21,14 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     private readonly ConcurrentDictionary<string, double> _fetchLagSeconds = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _fetchPaused = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _reconcilePosition = new(StringComparer.Ordinal);
+    // Внутренние long-счётчики per-name (снапшот статуса, глава 07 §10 / Task 14)
+    private readonly ConcurrentDictionary<string, long> _notifiedAccepted = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _notifiedBackoff = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _notifiedRetry = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _fetchedByName = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _appliedByName = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _skippedByName = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _conflictByName = new(StringComparer.Ordinal);
 
     private readonly Counter<long> _notified;
     private readonly Counter<long> _retries;
@@ -72,9 +80,20 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     public void SetDeliveryLagSeconds(string target, double seconds) =>
         _deliveryLagSeconds[target] = seconds;
 
-    public void Notified(string target, string result) =>
+    public void Notified(string target, string result)
+    {
         _notified.Add(1, new KeyValuePair<string, object?>("target", target),
             new KeyValuePair<string, object?>("result", result));
+        var bucket = result switch
+        {
+            "accepted" => _notifiedAccepted,
+            "backoff" => _notifiedBackoff,
+            "retry" => _notifiedRetry,
+            _ => null,
+        };
+        if (bucket is not null)
+            bucket.AddOrUpdate(target, 1, (_, v) => v + 1);
+    }
 
     public void Retried(string target) => _retries.Add(1, new KeyValuePair<string, object?>("target", target));
 
@@ -92,8 +111,11 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     public void SetReconcilePosition(string source, long processed) =>
         _reconcilePosition[source] = processed;
 
-    public void Fetched(string source) =>
+    public void Fetched(string source)
+    {
         _fetched.Add(1, new KeyValuePair<string, object?>("source", source));
+        _fetchedByName.AddOrUpdate(source, 1, (_, v) => v + 1);
+    }
 
     public void Applied(string source) => ApplyOutcome(source, "applied");
 
@@ -109,21 +131,47 @@ public sealed class ReplicationMetrics : IOutcomeCounters
         _conflictsCounter.Add(1);
     }
 
-    private void ApplyOutcome(string source, string result) =>
+    private void ApplyOutcome(string source, string result)
+    {
         _applied.Add(1, new KeyValuePair<string, object?>("source", source),
             new KeyValuePair<string, object?>("result", result));
+        var bucket = result switch
+        {
+            "applied" => _appliedByName,
+            "skipped" => _skippedByName,
+            "conflict" => _conflictByName,
+            _ => null,
+        };
+        if (bucket is not null)
+            bucket.AddOrUpdate(source, 1, (_, v) => v + 1);
+    }
+
+    // Снапшот счётчиков исходов соседа (имя фигурирует и как {target}, и как {source}).
+    public SourceCounters SnapshotCounters(string neighborName) => new(
+        _notifiedAccepted.GetValueOrDefault(neighborName),
+        _notifiedBackoff.GetValueOrDefault(neighborName),
+        _notifiedRetry.GetValueOrDefault(neighborName),
+        _fetchedByName.GetValueOrDefault(neighborName),
+        _appliedByName.GetValueOrDefault(neighborName),
+        _skippedByName.GetValueOrDefault(neighborName),
+        _conflictByName.GetValueOrDefault(neighborName));
 
     private long _conflictsTotal;
 
     // Конфликтов всего (снапшот статуса Task 14).
     public long ConflictsTotal => Interlocked.Read(ref _conflictsTotal);
 
-    // Внутренние значения (снапшот статуса Task 14/юнит-ассерты).
-    internal long LinkOnlineOf(string target) => _linkOnline.TryGetValue(target, out var v) ? v : 0;
-    internal long QueueDepthOf(string target) => _queueDepth.TryGetValue(target, out var v) ? v : 0;
-    internal double DeliveryLagOf(string target) => _deliveryLagSeconds.TryGetValue(target, out var v) ? v : 0;
-    internal long FetchQueueDepthOf(string source) => _fetchQueueDepth.TryGetValue(source, out var v) ? v : 0;
-    internal double FetchLagOf(string source) => _fetchLagSeconds.TryGetValue(source, out var v) ? v : 0;
-    internal long FetchPausedOf(string source) => _fetchPaused.TryGetValue(source, out var v) ? v : 0;
-    internal long ReconcilePositionOf(string source) => _reconcilePosition.TryGetValue(source, out var v) ? v : 0;
+    // Текущие значения (снапшот статуса главы 07 §10 — админ-грань; юнит-ассерты).
+    public long LinkOnlineOf(string target) => _linkOnline.TryGetValue(target, out var v) ? v : 0;
+    public long QueueDepthOf(string target) => _queueDepth.TryGetValue(target, out var v) ? v : 0;
+    public double DeliveryLagOf(string target) => _deliveryLagSeconds.TryGetValue(target, out var v) ? v : 0;
+    public long FetchQueueDepthOf(string source) => _fetchQueueDepth.TryGetValue(source, out var v) ? v : 0;
+    public double FetchLagOf(string source) => _fetchLagSeconds.TryGetValue(source, out var v) ? v : 0;
+    public long FetchPausedOf(string source) => _fetchPaused.TryGetValue(source, out var v) ? v : 0;
+    public long ReconcilePositionOf(string source) => _reconcilePosition.TryGetValue(source, out var v) ? v : 0;
 }
+
+// Снапшот счётчиков исходов соседа (статус /admin/replication/status — глава 07 §10;
+// имя фигурирует и как {target}, и как {source}).
+public sealed record SourceCounters(long NotifiedAccepted, long NotifiedBackoff, long NotifiedRetry,
+    long Fetched, long Applied, long Skipped, long Conflict);

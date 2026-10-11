@@ -210,6 +210,17 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
 
+// Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report
+builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandlers(
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
+    sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>(),
+    sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>(),
+    sp.GetRequiredService<OwnS3.Replication.Inbound.FetchQueueRegistry>(),
+    sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
+    sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
+
 // Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
 // обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —
 // по первому диску (single — корень тома; EC — min по дискам, глава 07 §11).

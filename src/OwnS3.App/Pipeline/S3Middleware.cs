@@ -25,6 +25,7 @@ public sealed class S3Middleware(
     IOptions<OwnS3Options> options,
     ILogger<S3Middleware> logger,
     Handlers.ReplicationHandlers replicationHandlers,
+    Handlers.ReplicationAdminHandlers replicationAdminHandlers,
     IEnumerable<Handlers.IOperationHandler> handlers)
 {
     // Словарь диспетчеризации: операция → хендлер (21 хендлер протокольного контура).
@@ -63,6 +64,55 @@ public sealed class S3Middleware(
                 // те же шаги подписи SigV4, права admin/root (прочим 403 AccessDenied).
                 if (context.Request.Path.StartsWithSegments("/admin"))
                 {
+                    // Mesh-репликация (t35, глава 07 §2/§10): те же права admin/root;
+                    // replication-ключ на админ-грани → 403 (A13-зеркало)
+                    if (context.Request.Path.StartsWithSegments("/admin/replication"))
+                    {
+                        var replAdminPath = context.Request.Path.Value;
+                        var isAdminRepl = replAdminPath is "/admin/replication/targets"
+                            or "/admin/replication/status"
+                            or "/admin/replication/reconcile"
+                            or "/admin/replication/sync-report";
+                        if (!isAdminRepl)
+                        {
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                                Resource: context.Request.Path, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: "Unknown admin resource"));
+                            return;
+                        }
+                        operationLabel = "admin-replication";
+                        var replAdminModel = S3ModelFactory.Create(context);
+                        var replAdminAuth = new S3Authenticator(
+                            new SigV4HeaderVerifier(timeProvider), new PresignedRequestVerifier(timeProvider), registry);
+                        var replAdminOutcome = replAdminAuth.Authenticate(context, replAdminModel, S3Operation.None);
+                        if (replAdminOutcome.Error is not null)
+                        {
+                            await WriteErrorAsync(context, new S3Error(replAdminOutcome.Error.Code,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: replAdminOutcome.Error.Message));
+                            return;
+                        }
+                        if (replAdminOutcome.Identity!.Policy != Access.AccessPolicy.Admin)
+                        {
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        if (HttpMethods.IsPut(method) && replAdminPath == "/admin/replication/targets")
+                            await replicationAdminHandlers.HandlePutTargetsAsync(context);
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/status")
+                            await replicationAdminHandlers.HandleStatusAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/reconcile")
+                            await replicationAdminHandlers.HandleReconcileAsync(context);
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/sync-report")
+                            await replicationAdminHandlers.HandleSyncReportAsync(context);
+                        else
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: "Method not allowed for admin resource"));
+                        return;
+                    }
+
                     var isAdminPath = context.Request.Path.Value is "/admin/storage" or "/admin/heal";
                     if (!isAdminPath)
                     {
