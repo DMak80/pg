@@ -58,17 +58,19 @@ dotnet publish "$ROOT/src/OwnS3.App/OwnS3.App.csproj" \
   || { echo "❌ publish OwnS3 не удался"; exit 1; }
 echo ">>> [PHASE] publish OwnS3 готов ($(date +%H:%M:%S))"
 
-# 1b-ранний) PgWorker deploy-контур — ДО стендового компоуза (t15, arch/18 §5.4):
-#     стендовый Prometheus аттачит сеть pgw-metrics как external — она обязана
-#     существовать к `compose up` (иначе «network declared as external, but
-#     could not be found»); владельца сети поднимаем первым. Секреты
-#     per-install — deploy/.env (нет файла → dev-шаблон .env.example;
-#     deploy/.env в .gitignore). force-recreate + --build: контейнер
-#     deploy-проекта поднимался бы из УСТАРЕВШЕГО образа pgworker:dev
-#     (например, сид сеял бы старые аномалии), а его etcd-клиент держит кеш
-#     DNS/коннектов умершего etcd — свежий процесс из свежего образа надёжнее.
-#     healthz/api-ключи проверяются ниже в §1b (после etcd-кворума стендового
-#     компоуза — живой etcd нужен и воркерам, и проверкам).
+# WAL-агент (t41): publish НА ХОСТЕ → образ publish-COPY (канон E2E-образов;
+# сборка не «тихая» — [PHASE] и тайминг).
+echo ">>> [PHASE] publish PgWorker.WalReceiver ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" \
+  -c Release -o "$ROOT/artifacts/wal/publish" --nologo \
+  || { echo "❌ publish WalReceiver не удался"; exit 1; }
+docker build -q -f "$ROOT/docker/PgWorker.Wal.Dockerfile" -t pgworker-wal:dev "$ROOT/artifacts/wal/publish" \
+  || { echo "❌ образ pgworker-wal:dev не собрался"; exit 1; }
+echo "  образ pgworker-wal:dev готов"
+
+# Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
+# deploy/.env в .gitignore; t41: стенд задаёт PGW_CONTOUR_NETWORK/
+# METRICS-ключи = стендовая сеть — шаблон уже несёт).
 [ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
 # Синхронизация хост-порта API в .env: пересоздания pgworker из чеков
 # (05-seed force-recreate) в свежих оболочках интерполируют compose из .env —
@@ -84,26 +86,16 @@ if grep -q '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env"; then
 else
   printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
 fi
-# t15: единая сеть мониторинга — sync в .env (deploy/.env после апгрейда не
-#     содержит новых ключей; стендовый METRICS_NETWORK синхронен дефолту).
+# t15/t41: единая сеть контура = стендовая сеть (adminpanel-stand-net);
+# отдельная pgw-metrics на стенде НЕ создаётся (весь стенд в одной сети).
 for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
-  v="${!k:-pgw-metrics}"
+  v="${!k:-adminpanel-stand-net}"
   if grep -q "^$k=" "$ROOT/deploy/.env"; then
     sed -i.bak "s/^$k=.*/$k=$v/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
   else
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
-# тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
-pg_up_ok=0
-for _ in 1 2 3; do
-  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 owns3 2>&1 | tail -2 ); then
-    pg_up_ok=1; break
-  fi
-  echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
-done
-[ "$pg_up_ok" = 1 ] || { echo "❌ pgworker не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
-
 # ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
 #     deploy/.env, дефолт 9010).
 OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
@@ -113,7 +105,9 @@ curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
   || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
 echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
 
-# ownS3: bucket бэкапов — идемпотентный сид root-кредами (arch/owns3/05 §2-3:
+# ownS3: bucket бэкапов — идемпотентный сид root-кредами; хост-переход НАРУЖУ
+# (bucket-сид — чек-подобная операция с хоста; внутри контура адресация
+# owns3:9000 — arch/owns3/05 §2-3:
 # CreateBucket — только admin, воркер bucket не создаёт — как и раньше с
 # as-minio). Ephemeral mc ходит через хост-публикацию (прецедент чека 46);
 # стоит ДО проверок pgworker: подсистема бэкапов стартует против готового
@@ -141,31 +135,28 @@ for _ in 1 2 3; do
 done
 [ "$compose_up_ok" = 1 ] || { echo "❌ стенд не поднялся за 3 попытки (docker compose logs kafkaworker)"; exit 1; }
 
+# deploy-контур (воркеры + owns3) — в стендовую сеть (контур-override t41;
+# владелец сети adminpanel-stand-net — стендовый compose выше, deploy
+# подключается external; отдельная pgw-metrics не создаётся). force-recreate
+# + --build: свежий процесс из свежего образа надёжнее (кеш DNS/коннектов
+# умершего etcd); healthz/api-ключи — ниже в §1b.
+pg_up_ok=0
+for _ in 1 2 3; do
+  if ( cd "$ROOT/deploy" && docker compose -f docker-compose.yml -f docker-compose.contour.yml \
+       --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 owns3 2>&1 | tail -2 ); then
+    pg_up_ok=1; break
+  fi
+  echo "  deploy up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
+done
+[ "$pg_up_ok" = 1 ] || { echo "❌ deploy-контур не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
+
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
-# Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
-sq()   { docker compose exec -T "$1" psql -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 -c "$2"; }
 
 # 1) etcd-контур: кворум собран (3 узла одним кластером, arch/04 §8)
 ect_ok() { [ "$(ect member list 2>/dev/null | grep -c 'started')" = "3" ]; }
 for i in $(seq 1 100); do ect_ok && break; sleep 1; done
 ect_ok || { echo "  ❌ кворум as-etcd-1/2/3 не собрался за 100 c (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
 echo "  etcd-контур ready (3/3 started)"
-
-# 1a) as-minio — переходный read-only-архив переходного периода (t41:
-#      стендовое хранилище бэкапов — ownS3 выше; новых объектов as-minio не
-#      получает, снос по критерию docs/owns3-migration.md): healthy-гвард +
-#      идемпотентный bucket-сид mc mb --ignore-existing (креды — стендовые
-#      дефолты; entrypoint образа mc = mc, shell зовём через --entrypoint
-#      /bin/sh).
-for i in $(seq 1 60); do curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 \
-  || { echo "  ❌ as-minio не стал здоровым за 60 c (docker compose logs minio)"; exit 1; }
-minio_net="$(docker inspect as-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
-#      (mc запинен — как и WAL-агенты E2E; зеркало в локальном registry, см. docs/runbook.md)
-docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:RELEASE.2025-08-13T08-35-41Z \
-  -c "mc alias set standup http://as-minio:9000 minioadmin minioadmin >/dev/null && mc mb --ignore-existing standup/pgworker-backups >/dev/null" \
-  || { echo "  ❌ bucket pgworker-backups не создан (mc против as-minio)"; exit 1; }
-echo "  as-minio жив, bucket pgworker-backups готов (:9000 API / :9001 консоль)"
 
 # 1a-2) Образ джоба бэкапов (t02): собирается рядом с pgworker:dev — тег
 #       PgWorker:Backups:Job:Image (дефолт pgworker-backup:dev). Прямой docker
@@ -202,107 +193,41 @@ done
   || { echo "❌ /pgworker/api/ содержит ${pgw_api_keys:-0} ключей (<2) — второй инстанс не публикует AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
 echo "  pgworker жив ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; ключей /pgworker/api/: ${pgw_api_keys})"
 
-# 1c) pg-сид — ЧЕРЕЗ API воркера (spec §3.5; прямой etcdctl-сид упразднён):
-#     05-seed.sh идемпотентно ждёт /healthz и зовёт POST /api/seed/demo,
-#     затем проверяем ключ контроль-плейна как раньше.
-"$PWD/checks/05-seed.sh" pg
-for i in $(seq 1 30); do
-  [ -n "$(ect get /clusters/demo/config --print-value-only 2>/dev/null)" ] && break
-  sleep 1
-done
-[ -n "$(ect get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
-  || { echo "❌ сид не появился за 30 c (curl -X POST https://localhost:${PGW_API_HOST_PORT:-8080}/api/seed/demo)"; exit 1; }
-echo "  сид контроль-плейна на месте (налит через API pgworker)"
+# 1c) Канонический demo (t41, arch/adminpanel/04 §2.2): декларация ЧЕРЕЗ API
+#     воркера (mTLS healthcheck-парой): движок провижинит Spilo-ноды с
+#     Patroni в стендовой сети, portalloc-порты, схемы bucket_*, → Active.
+#     Идемпотентность: живой config → 409 (перезапуск 00-up на живом стенде —
+#     no-op); пересборка demo — полный цикл (90-down.sh -v → 00-up.sh).
+echo ">>> [PHASE] создание кластера demo (POST /api/clusters, $(date +%H:%M:%S))"
+create_code="$(curl -s -o /tmp/pgw-create-demo.json -w '%{http_code}' -m 10 \
+  --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
+  --key "$ROOT/deploy/tls/healthcheck.key" \
+  -X POST "https://localhost:${PGW_API_HOST_PORT:-8080}/api/clusters" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"demo","buckets":16,"shards":2,"replicas":2,"requestCpu":2,"requestMem":2,"requestDisk":100}')"
+case "$create_code" in
+  201) echo "  demo: заявка принята (201)";;
+  409) echo "  demo уже существует (409) — пропускаю создание";;
+  *) { echo "❌ POST /api/clusters → $create_code"; cat /tmp/pgw-create-demo.json; exit 1; };;
+esac
 
-# 2) PG-ноды готовы; hba-replication (нужен basebackup/rejoin — паттерн ../pg).
-#    Порядок как в spec §7.1: сначала мастера *a -> patch_hba -> реплики *b
-#    (pg_basebackup реплик не пройдёт без replication-строки на мастере).
-for c in s1a s2a; do
-  for i in $(seq 1 60); do
-    docker compose exec -T "$c" pg_isready -U postgres -q 2>/dev/null && break
-    sleep 1
+# Wait-гейт конвергенции (arch/14: Active = config без NOT_INITIALIZED, все
+# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 600 c (Spilo-инициализация),
+# [PHASE]-метки.
+echo ">>> [PHASE] жду конвергенцию demo (бюджет 600 c, $(date +%H:%M:%S))"
+demo_ready() {
+  conf="$(ect get /clusters/demo/config --print-value-only 2>/dev/null || true)"
+  [ -n "$conf" ] && ! echo "$conf" | grep -q '"state":"NOT_INITIALIZED"' || return 1
+  for s in shard1 shard2; do
+    for n in a b; do
+      [ "$(ect get "/clusters/demo/shards/$s/nodes/$s$n/state" --print-value-only 2>/dev/null)" = "RUNNING" ] || return 1
+    done
   done
-  docker compose exec -T "$c" pg_isready -U postgres -q 2>/dev/null \
-    || { echo "  ❌ $c не готов за 60 c (docker compose logs $c)"; exit 1; }
-  echo "  $c ready"
-done
-patch_hba() {
-  docker compose exec -T "$1" bash -c \
-    'grep -q "host replication all all trust" $PGDATA/pg_hba.conf || echo "host replication all all trust" >> $PGDATA/pg_hba.conf;
-     psql -U postgres -d postgres -qtAc "select pg_reload_conf()" >/dev/null'
+  [ -z "$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null)" ] || return 1
 }
-patch_hba s1a; patch_hba s2a
-echo "  pg_hba: replication-trust добавлен мастерам (s1a, s2a)"
-for c in s1b s2b; do
-  for i in $(seq 1 90); do
-    docker compose exec -T "$c" pg_isready -U postgres -q 2>/dev/null && break
-    sleep 1
-  done
-  docker compose exec -T "$c" pg_isready -U postgres -q 2>/dev/null \
-    || { echo "  ❌ $c не готов за 90 c (docker compose logs $c)"; exit 1; }
-  echo "  $c ready"
-done
-patch_hba s1b; patch_hba s2b
-echo "  pg_hba: replication-trust добавлен репликам (s1b, s2b)"
-
-# 3) реплики в recovery (базовый basebackup идёт с retry в command-скриптах нод)
-for c in s1b s2b; do
-  for i in $(seq 1 120); do
-    [ "$(sq "$c" 'select pg_is_in_recovery()' 2>/dev/null)" = "t" ] && break
-    sleep 2
-  done
-  [ "$(sq "$c" 'select pg_is_in_recovery()' 2>/dev/null)" = "t" ] \
-    || { echo "❌ $c не стала репликой за 240 c (docker compose logs $c)"; exit 1; }
-  echo "  $c в recovery (реплика своего шарда)"
-done
-
-# 4) эмуляторы зарегистрировались: lease-ключи /cluster/nodes + master шардов
-for c in s1a s1b s2a s2b; do
-  for i in $(seq 1 30); do
-    [ -n "$(ect get "/cluster/nodes/$c" --print-value-only 2>/dev/null)" ] && break
-    sleep 1
-  done
-  [ -n "$(ect get "/cluster/nodes/$c" --print-value-only 2>/dev/null)" ] \
-    || { echo "❌ $c не зарегистрирован в /cluster/nodes (эмулятор hc: docker compose logs hc*)"; exit 1; }
-done
-echo "  эмуляторы: /cluster/nodes/* живы (lease TTL 5 c)"
-m1="$(ect get /clusters/demo/shards/s1/master --print-value-only)"
-m2="$(ect get /clusters/demo/shards/s2/master --print-value-only)"
-[ -n "$m1" ] && [ -n "$m2" ] \
-  || { echo "  ❌ master-ключ шарда пуст (s1='$m1' s2='$m2' — эмулятор мастера не зашёл в цикл?)"; exit 1; }
-echo "  master s1=$m1 s2=$m2"
-
-# 5) sync-standby: имена ALTER SYSTEM'ом (НЕ флагами -c — ловушка SyncRep,
-#    урок ../pg: после promote без реплики коммиты виснут)
-set_sync() { # master replica
-  docker compose exec -T "$1" psql -U postgres -d postgres -qAt \
-    -c "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 ($2)'" \
-    -c "SELECT pg_reload_conf()" >/dev/null
-  st=""
-  for i in $(seq 1 30); do
-    st="$(sq "$1" "select sync_state from pg_stat_replication where application_name='$2'")"
-    [ "$st" = "sync" ] && break
-    sleep 1
-  done
-  [ "$st" = "sync" ] || { echo "❌ $2 не sync-standby у $1 (было: ${st:-нет})"; exit 1; }
-  echo "  $1: sync-standby $2 -> sync"
-}
-master1="${m1%:*}"; rep1=s1b; [ "$master1" = s1b ] && rep1=s1a
-master2="${m2%:*}"; rep2=s2b; [ "$master2" = s2b ] && rep2=s2a
-set_sync "$master1" "$rep1"
-set_sync "$master2" "$rep2"
-
-# 6) инвентарь: схемы ВСЕХ бакетов владельца по routing (adopt-repair: сид
-#    больше не сеет аномалий — все 16 ACTIVE; 10 на s1, 6 на s2)
-schemas() { # master "список бакетов"
-  for b in $2; do
-    docker compose exec -T "$1" psql -U postgres -d demo -qAt \
-      -c "CREATE SCHEMA IF NOT EXISTS bucket_$b" >/dev/null
-  done
-}
-schemas "$master1" "0 2 3 4 6 8 10 11 12 14"
-schemas "$master2" "1 5 7 9 13 15"
-echo "  инвентарь: 10 схем на $master1, 6 на $master2"
+for i in $(seq 1 300); do demo_ready && break; sleep 2; done
+demo_ready || { echo "❌ demo не сошёлся за 600 c (docker logs deploy-pgworker-1; docker ps | grep pgw-demo)"; exit 1; }
+echo "  demo: Active, ноды RUNNING, status-ключи бакетов сняты (shard1/shard2 × a/b)"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
 #    /kafkaworker/instances/ (два инстанса = два ключа каждого вида).
