@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Amazon.Runtime;
 using Amazon.S3;
 
@@ -60,10 +61,10 @@ public static class OwnS3E2eETag
 
     public static string Multipart(int parts, IReadOnlyList<string> partEtags)
     {
-        var concat = new List<byte>();
-        foreach (var etag in partEtags)
-            concat.AddRange(Convert.FromHexString(etag.Trim('"')));
-        return $"{parts}-{Md5Hex([.. concat])}";
+        // Канон 02 §1: конкатенация hex-СТРОК ETag частей без разделителей,
+        // md5 от неё (ASCII-байты hex-текста — как считает сервер).
+        var concat = string.Concat(partEtags.Select(e => e.Trim('"')));
+        return $"{parts}-{Md5Hex(Encoding.ASCII.GetBytes(concat))}";
     }
 }
 
