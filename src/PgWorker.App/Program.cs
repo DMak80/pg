@@ -220,14 +220,14 @@ builder.Services.AddSingleton(sp => new OrphanHoldHandler(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
-        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null));
 builder.Services.AddSingleton(sp => new OrphanDeleteHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
-        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null));
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -293,6 +293,14 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         throw new ApplicationException(
             "PgWorker:Docker:ScrapeNetwork не поддерживается в Mode=Swarm — сетевой attach нод реализован для plain-контейнеров");
 
+    // ContourNetwork (t41, arch/14 §2.1): контур-режим сетей движка — ноды/
+    // wal-агенты/джобы бэкапов в одной внешней сети поставки; для swarm-сервисов
+    // режима нет (fail-fast, прецедент ScrapeNetwork).
+    if (!string.IsNullOrWhiteSpace(docker.ContourNetwork)
+        && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+        throw new ApplicationException(
+            "PgWorker:Docker:ContourNetwork не поддерживается в Mode=Swarm — режим сети контура реализован для plain-контейнеров");
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -309,6 +317,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
         pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
+        contourNetwork: docker.ContourNetwork is { Length: > 0 } ? docker.ContourNetwork : null,
         restCertificates: sp.GetRequiredService<RestCertificateCache>());
 });
 
@@ -338,7 +347,7 @@ builder.Services.AddSingleton(sp =>
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return opts.Snapshots.Export.Enabled
         ? new EtcdSnapshotSink(
-            new BackupS3(opts.Backups.ToRuntime()),
+            new BackupS3(opts.BackupsRuntime()),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
@@ -596,7 +605,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
@@ -615,7 +624,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<IBackupS3>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<EtcdEndpoints>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
@@ -654,7 +663,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
         () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
-            ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+            ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
             : null,
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<TimeProvider>(),
@@ -673,7 +682,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<IBackupS3>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
@@ -692,7 +701,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IBackupS3>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime(),
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify,
@@ -709,7 +718,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
     sp.GetRequiredService<IBackupS3>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreDrillProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupDrill,
@@ -727,7 +736,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
-        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
@@ -742,7 +751,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphan
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
-        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupOrphanSweeper>()));
@@ -866,7 +875,7 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
             if (_disposed)
                 throw new ObjectDisposedException(nameof(ReloadableBackupS3));
             var runtime = options.CurrentValue.Backups.Enabled
-                ? options.CurrentValue.Backups.ToRuntime()
+                ? options.CurrentValue.BackupsRuntime()
                 : null;
 
             if (_current is { } pair && (runtime is null || pair.Config != runtime))

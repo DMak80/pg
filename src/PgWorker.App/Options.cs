@@ -41,6 +41,13 @@ public sealed class PgWorkerOptions
     /// процессная логика — t02–t07. Default Enabled=false.</summary>
     public BackupsOptions Backups { get; set; } = new();
 
+    /// <summary>Единая точка сборки BackupsRuntimeOptions (t41): контур-сеть
+    /// читается ЗДЕСЬ из Docker-секции — все процессы-потребители (полные/
+    /// restore/wal/ретенция/verify/drill/супервизор) получают один и тот же
+    /// режим сетей спек джобов и адресации источника.</summary>
+    public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime(
+        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null);
+
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
     /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
     public PgtuneOptions Pgtune { get; set; } = new();
@@ -202,6 +209,17 @@ public sealed class DockerOptions
     /// провижининга. Не поддерживается в Mode=Swarm (fail-fast старта).
     /// </summary>
     public string ScrapeNetwork { get; set; } = "";
+
+    /// <summary>
+    /// Внешняя сеть контура поставки (arch/14 §2.1/§2.4): задана → ноды кластера,
+    /// wal-агенты и ephemeral-джобы бэкапов создаются в ней одной; pgw-net-&lt;C&gt;
+    /// не создаётся, extra_hosts спек джобов не применяются (адресация по именам
+    /// сети). Пусто (прод/умолчание) — per-cluster pgw-net-&lt;C&gt; + default bridge
+    /// с extra_hosts у джобов. Сеть принадлежит поставке/сценарию (движок не
+    /// создаёт и не удаляет; ensure идемпотентен, 409 = успех). Не поддерживается
+    /// в Mode=Swarm (fail-fast старта). Env: PGW_CONTOUR_NETWORK.
+    /// </summary>
+    public string ContourNetwork { get; set; } = "";
 
     /// <summary>TLS к Engine API (arch/14 §2.2.1, t03); null — без TLS (unix/dev).</summary>
     public DockerTlsOptions? Tls { get; set; }
@@ -468,8 +486,10 @@ public sealed class BackupsOptions
 
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
-    /// — именованными аргументами: record расширялся с обеих сторон.</summary>
-    public BackupsRuntimeOptions ToRuntime() => new(
+    /// — именованными аргументами: record расширялся с обеих сторон.
+    /// t41: contourNetwork — режим сети контура (Docker.ContourNetwork;
+    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()).</summary>
+    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null) => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
@@ -507,7 +527,8 @@ public sealed class BackupsOptions
         JobRestoreTimeoutSec: Job.RestoreTimeoutSec,
         DrillIntervalDays: Drill.IntervalDays,
         DrillTimeoutSec: Drill.TimeoutSec,
-        WalAgentImage: Wal.AgentImage);
+        WalAgentImage: Wal.AgentImage,
+        ContourNetwork: contourNetwork);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.

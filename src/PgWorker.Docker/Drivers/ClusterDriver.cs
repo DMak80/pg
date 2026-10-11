@@ -145,6 +145,7 @@ public sealed class PlainClusterDriver(
     string? advertisedHost = null,
     IReadOnlySet<string>? pgtuneExclude = null,
     string? scrapeNetwork = null,
+    string? contourNetwork = null,
     RestCertificateCache? restCertificates = null) : IClusterDriver
 {
     // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
@@ -160,6 +161,14 @@ public sealed class PlainClusterDriver(
     // алиасов, сетевой изоляции контуров не было; per-cluster сеть даёт её
     // по построению (уникальное имя кластера ⇒ уникальная DNS-зона, t24).
     public const string NodesNetworkPrefix = "pgw-net-";
+
+    // Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/агенты живут в
+    // ней (pgw-net-<C> не создаётся и не удаляется движком; сеть — владелец
+    // поставка).
+    private readonly string? contourNetwork = contourNetwork;
+
+    // Сеть нод/агентов кластера по режиму: контур или per-cluster pgw-net-<C>.
+    private string NodesNet(string cluster) => contourNetwork ?? NetworkName(cluster);
 
     public static string NetworkName(string cluster) => $"{NodesNetworkPrefix}{cluster}";
 
