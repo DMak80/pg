@@ -47,11 +47,16 @@ public static class DrillJobSpec
             Label: cluster,
             ResetEntrypoint: true, // inline-команда джоба — ENTRYPOINT образа сброшен (t02)
             Cmd: DrillJobCommand.Build(),
-            Network: null,
+            // Режим сети контура (t41, arch/14 §2.1): джоб в сети контура,
+            // extra_hosts не применяются (S3 резолвится compose-DNS/alias).
+            // Прод-режим — default bridge + фиксированные host-переходы.
+            Network: opts.ContourNetwork,
             NetworkAliases: null,
             Tmpfs: null,
             // advertised-хосты S3 (как у джоба t02, arch/19 §2/§7).
-            ExtraHosts: ["host.docker.internal:host-gateway", "local:host-gateway"],
+            ExtraHosts: opts.ContourNetwork is null
+                ? ["host.docker.internal:host-gateway", "local:host-gateway"]
+                : null,
             RestartPolicy: "no");
     }
 }

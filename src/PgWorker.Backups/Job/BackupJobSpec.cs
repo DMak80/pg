@@ -37,7 +37,11 @@ public static class BackupJobSpec
             LabelKey: "pgworker",
             Label: cluster,
             Cmd: null,
-            Network: null,
+            // Режим сети контура (t41, arch/14 §2.1): джоб в сети контура,
+            // extra_hosts не применяются (адресация по именам сети; S3/источник
+            // резолвятся compose-DNS/alias). Прод-режим — default bridge +
+            // фиксированные host-переходы advertised-хостов (arch/19 §2/§6).
+            Network: opts.ContourNetwork,
             NetworkAliases: null,
             Tmpfs: opts.StagingQuotaBytes is { } quota
                 ? new Dictionary<string, string> { [opts.StagingDir] = $"size={quota}" }
@@ -45,7 +49,9 @@ public static class BackupJobSpec
             // advertised-хосты источника (arch/19 §2/§6): host.docker.internal —
             // general-правило; "local" — зарезервированное имя docker-хоста стенда
             // (deploy-compose extra_hosts воркера; portalloc усвоенного demo).
-            ExtraHosts: ["host.docker.internal:host-gateway", "local:host-gateway"],
+            ExtraHosts: opts.ContourNetwork is null
+                ? ["host.docker.internal:host-gateway", "local:host-gateway"]
+                : null,
             RestartPolicy: "no");
     }
 }

@@ -85,4 +85,25 @@ public class DrillJobSpecTests
         markers.Result!.Ok.Should().BeTrue();
         markers.Result.RestoredToLsn.Should().Be("0/42");
     }
+
+    // AAA (t41): сеть drill-джоба по режиму — контур (без extra_hosts) или
+    // прод (default bridge + фиксированные host-переходы).
+    [Theory]
+    [InlineData(null, null, new[] { "host.docker.internal:host-gateway", "local:host-gateway" })]
+    [InlineData("adminpanel-stand-net", "adminpanel-stand-net", null)]
+    public void Network_ByContourMode(string? contour, string? expectedNet, string[]? expectedHosts)
+    {
+        // Arrange
+        var opts = Opts() with { ContourNetwork = contour };
+
+        // Act
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
+
+        // Assert
+        spec.Network.Should().Be(expectedNet);
+        if (expectedHosts is null)
+            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+        else
+            spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
+    }
 }

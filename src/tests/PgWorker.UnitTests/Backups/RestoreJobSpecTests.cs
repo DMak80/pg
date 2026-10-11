@@ -59,4 +59,28 @@ public class RestoreJobSpecTests
         // Assert
         spec.Env!["TARGET_TIME"].Should().BeEmpty();
     }
+
+    // AAA (t41): сеть restore-джоба по режиму — контур (без extra_hosts) или
+    // прод (default bridge + фиксированные host-переходы).
+    [Theory]
+    [InlineData(null, null, new[] { "host.docker.internal:host-gateway", "local:host-gateway" })]
+    [InlineData("adminpanel-stand-net", "adminpanel-stand-net", null)]
+    public void Network_ByContourMode(string? contour, string? expectedNet, string[]? expectedHosts)
+    {
+        // Arrange
+        var opts = new BackupsRuntimeOptions(
+            Enabled: true, S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
+            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:dev",
+            ContourNetwork: contour);
+
+        // Act
+        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+
+        // Assert
+        spec.Network.Should().Be(expectedNet);
+        if (expectedHosts is null)
+            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+        else
+            spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
+    }
 }
