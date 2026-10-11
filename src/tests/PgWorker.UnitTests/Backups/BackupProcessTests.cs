@@ -432,6 +432,28 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .Should().Be($"started/shard1/{id}");
     }
 
+    // AAA (t41): контур-режим — DSN джоба указывает на имя канонической ноды
+    // сети контура :5432 (симметрия ResolveNodeRef); прод-режим — host:pg-port
+    // portalloc без изменений.
+    [Theory]
+    [InlineData(null, "h1", 15000)]
+    [InlineData("adminpanel-stand-net", "shard1a", 5432)]
+    public async Task FullJob_Dsn_ByContourMode(string? contour, string expectedHost, int expectedPort)
+    {
+        // Arrange — портalloc сида: shard1a = h1:15000; движок-фейк ловит
+        // CreateContainerAsync (спеку джоба с env PGW_BK_DSN).
+        var rig = await NewRig(options: new BackupsRuntimeOptions { Enabled = true, ContourNetwork = contour });
+
+        // Act — тик планировщика полных (COMPLETED нет → due) запускает джоб.
+        (await rig.Process.TickAsync(await Snapshot(rig.Etcd), [], CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — env PGW_BK_DSN джоба: host/port ожидаемого режима
+        var (_, spec) = rig.Engine.Created.Should().ContainSingle().Subject;
+        spec.Env!["PGW_BK_DSN"].Should().Contain($"host={expectedHost}");
+        spec.Env!["PGW_BK_DSN"].Should().Contain($"port={expectedPort}");
+    }
+
     // Счётчик прогресс-отметок (аудит долгих фаз, код-ревью B3).
     private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
     {
