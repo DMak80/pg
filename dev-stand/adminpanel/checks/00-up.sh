@@ -231,11 +231,15 @@ case "$create_code" in
 esac
 
 # Wait-гейт конвергенции (arch/14: Active = config без NOT_INITIALIZED, все
-# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 600 c (Spilo-инициализация —
-# аварийный потолок, не норма), пофазовая телеметрия с [PHASE]-метками в
-# журнал + phases.log: сеть/контейнеры → Patroni REST per-node → leader-ключ
-# → реплики streaming → снятие status-ключей → Active + суммарная строка.
-echo ">>> [PHASE] жду конвергенцию demo (бюджет 600 c, $(date +%H:%M:%S))"
+# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 90 c — общий потолок; ранее
+# обнаружение отказа — детектор стагнации 45 c без продвижения НИ ОДНОГО
+# порога подфазы (норма: самое длинное «молчание» на живом подъёме ~41 c —
+# patroni REST → streaming, pg_basebackup реплик). Пофазовая телеметрия с
+# [PHASE]-метками в журнал + phases.log: сеть/контейнеры → Patroni REST
+# per-node → leader-ключ → реплики streaming → снятие status-ключей → Active
+# + суммарная строка. Отказ (потолок/стагнация) — немедленный abort со
+# сбором диагностики (логи воркера, контейнеры нод, последние [PHASE]).
+echo ">>> [PHASE] жду конвергенцию demo (потолок 90 c, стагнация 45 c, $(date +%H:%M:%S))"
 demo_ready() {
   conf="$(ect get /clusters/demo/config --print-value-only 2>/dev/null || true)"
   [ -n "$conf" ] && ! echo "$conf" | grep -q '"state":"NOT_INITIALIZED"' || return 1
@@ -247,12 +251,14 @@ demo_ready() {
   [ -z "$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null)" ] || return 1
 }
 # Порог подфазы: первый вызов фиксирует метку и печатает [PHASE] с дельтой
-# от conv_t0; повторные — no-op (порог уже достигнут).
+# от conv_t0; повторные — no-op (порог уже достигнут). Каждое продвижение
+# двигает conv_last_progress — база детектора стагнации.
 conv_mark() {
   local var="$1" label="$2"
   [ -n "${!var:-}" ] && return 0
   local now; now="$(date +%s)"
   printf -v "$var" '%s' "$now"
+  conv_last_progress="$now"
   phase "demo: $label — $((now - conv_t0)) c"
 }
 # Дельта порога от conv_t0; незакрытый порог — прочерк (не «отрицательное время»).
@@ -303,7 +309,26 @@ demo_streaming_ok() {
 }
 t_containers=""; t_patroni=""; t_leader=""; t_streaming=""; t_status=""
 seen_status_keys=""
-conv_deadline=$((conv_t0 + 600))
+conv_last_progress="$conv_t0"
+conv_deadline=$((conv_t0 + 90))
+conv_idle_max=45
+# Диагностика отказа: состояние контейнеров нод + хвост лога воркера +
+# незакрытые пороги. Печатается ДО любого abort — «почему встало» видно
+# без повторного прогона (канон телеметрии e2e-launch).
+conv_fail_diag() {
+  local why="$1" next
+  echo "❌ demo не сошёлся: $why"
+  echo "--- контейнеры нод demo:"
+  docker ps -a --filter name='pgw-demo-' --format '{{.Names}}\t{{.Status}}' || true
+  echo "--- хвост лога deploy-pgworker-1:"
+  docker logs --tail 25 deploy-pgworker-1 2>&1 | grep -aP "[а-яА-Я]" | tail -12 || true
+  echo "--- незакрытые пороги:"
+  for pair in "t_containers:сеть/контейнеры" "t_patroni:patroni REST" \
+              "t_leader:leader-ключи" "t_streaming:реплики streaming" "t_status:status-ключи"; do
+    next="${pair%%:*}"
+    [ -z "${!next:-}" ] && echo "  не достигнут: ${pair#*:}"
+  done
+}
 while [ "$(date +%s)" -lt "$conv_deadline" ]; do
   [ -n "$t_containers" ] || { demo_containers_up && conv_mark t_containers "сеть/контейнеры: первый pgw-demo-* RUNNING"; }
   [ -n "$t_patroni" ] || { demo_patroni_ok && conv_mark t_patroni "patroni REST: все ноды отвечают /cluster"; }
@@ -315,9 +340,15 @@ while [ "$(date +%s)" -lt "$conv_deadline" ]; do
     conv_mark t_status "status-ключи бакетов сняты"
   fi
   demo_ready && break
+  # Детектор стагнации: ни один порог не продвигался дольше conv_idle_max —
+  # отказ обнаружен рано, не дожидаясь общего потолка.
+  if [ "$(( $(date +%s) - conv_last_progress ))" -gt "$conv_idle_max" ]; then
+    conv_fail_diag "стагнация — без продвижения подфаз более ${conv_idle_max} c (потолок 90 c не достигнут)"
+    exit 1
+  fi
   sleep 1
 done
-demo_ready || { echo "❌ demo не сошёлся за 600 c (docker logs deploy-pgworker-1; docker ps | grep pgw-demo)"; exit 1; }
+demo_ready || { conv_fail_diag "потолок 90 c исчерпан"; exit 1; }
 [ -n "$t_status" ] || t_status="$(date +%s)"   # сняты быстрее первого опроса — порог = гейт
 conv_done="$(date +%s)"
 phase "demo: конвергенция $((conv_done - conv_t0)) c (фазы: сеть/контейнеры $(conv_delta t_containers), patroni $(conv_delta t_patroni), leader $(conv_delta t_leader), streaming $(conv_delta t_streaming), status $(conv_delta t_status))"
