@@ -37,10 +37,11 @@
                  └────────────────────────────────────────┘
 
                  ┌────────────────────────┴───────────────┐
-                 │ MinIO live-тик (AdminPanel.Probes/S3,  │  тик 60 c
-                 │  AdminPanel:Backups)                   │──► MinIO/S3 bucket
-                 │  ListBuckets + health + list-v2 bucket │    бэкапов установки
-                 │  → MinioInventoryStore → снапшот       │    (read-only!)
+                 │ S3 live-тик (AdminPanel.Probes/S3,     │  тик 60 c
+                 │  AdminPanel:Backups)                   │──► S3 bucket бэкапов
+                 │  ListBuckets + health + list-v2 bucket │    установки
+                 │  → MinioInventoryStore → снапшот       │    (ownS3/MinIO,
+                 │                                        │    read-only!)
                  └────────────────────────────────────────┘
 
                  ┌──────────────────────────────────────────────────────┐
@@ -92,7 +93,7 @@ critical-алерт `worker-api-unreachable` (03 §4.1); чтение при э�
 | `/common/` (Shared.Core, Shared.Etcd, Shared.Tls) | Общие сборки монорепо (паттерн `Shared.Metrics`, шаблон `../Puzzle` `Infrastructure.App`): `Shared.Core` — каркас (attribute-DI, `Result`, CQRS, Contexts, Traces, HealthChecks-базис, Retry); `Shared.Etcd` — etcd-клиент HTTP JSON gateway `/v3/*` (вкл. транспортные records `EtcdMember`/`EtcdAlarm`); `Shared.Tls` — хелперы mTLS-граней. Бывший `AdminPanel.Infrastructure` (t08) |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>`, транспортные records etcd (`EtcdMember`/`EtcdAlarm`) — общие из `Shared.Etcd` |
 | `AdminPanel.Etcd` | Клиент etcd — общая сборка `Shared.Etcd` (`IEtcdGateway`); у панели: парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
-| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3/MinIO-инвентарь бэкапов (t08: read-only обёртка AWSSDK.S3 + health-эндпоинты). Обогащение снапшота полями runtime |
+| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3-инвентарь бэкапов (t08: read-only обёртка AWSSDK.S3 + health-проба с фолбэком /healthz). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
 | `tests/AdminPanel.UnitTests` | xunit v3 + FluentAssertions: парсеры etcd-ключей, `AlertEngine`, auth-логика, DTO-мапперы |
@@ -211,7 +212,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | Протух master-lease шарда | ключа `/clusters/<C>/shards/X/master` нет при живом `dsn` → алерт critical (P11) |
 | Patroni REST недоступен | поля пробы `null`, `Probes[]` фиксирует ошибку, алерт `probe-failed` warning (все члены скопа недоступны — critical, [03](03-panels.md) §4); etcd-часть HA остаётся |
 | SQL-проба недоступна | аналогично; Active-шард — critical `probe-failed` (шард недоступен); SQL-поля (слоты/лаги) скрыты в UI с пометкой |
-| MinIO недоступен | инвентарь устаревает (`inventoryUpdatedUnix` не растёт), алерт warning `backup-s3-unreachable` после 2 неудачных тиков; etcd-часть грани (статусы/квота/сироты) продолжает работать |
+| S3-хранилище бэкапов недоступно | инвентарь устаревает (`inventoryUpdatedUnix` не растёт), алерт warning `backup-s3-unreachable` после 2 неудачных тиков; etcd-часть грани (статусы/квота/сироты) продолжает работать |
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 

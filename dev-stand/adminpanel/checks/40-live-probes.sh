@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Live-пробы панели: Patroni-REST через HostMap + SQL-пробы multi-host
-# (spec t10 §7.5). Гоняется ПОСЛЕ 30-failover (мастер s1 = s1b, реплика
-# s1a sync; шард 2 нетронут). Только full.
+# Live-пробы панели на каноническом кластере (t41): Patroni/SQL-пробы —
+# advertised portalloc-адреса нод напрямую (HostMap демонтирован; адреса из
+# /api/clusters/demo: patroni :18xxx, pg :15xxx через host.docker.internal).
+# Гоняется ПОСЛЕ 30-failover — топология любая: мастер по факту.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,40 +14,39 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 
 # 1) HA-скопы: все члены пробиты без ошибок; роли/состояния живые.
-#    Тик проб 15 c — ждём до 40 c (spec §7.5).
+#    Тик проб 15 c — ждём до 40 c.
 ha_ok() {
   api /api/ha/"$1" | jq -e '
     all(.members[]; .probeError == null and .probeAtUtc != null)
     and any(.members[]; .state == "running")
     and any(.members[]; .state == "streaming" and .lagBytes != null and .timeline >= 1)' >/dev/null
 }
-for i in $(seq 1 40); do ha_ok demo-s1 && break; sleep 2; done
-ha_ok demo-s1 || { echo "❌ /api/ha/demo-s1: пробы не обогащены (HostMap? эмуляторы?)"; exit 1; }
-echo "  demo-s1: мастер running, реплика streaming+lag (Patroni-REST через HostMap)"
-for i in $(seq 1 40); do ha_ok demo-s2 && break; sleep 2; done
-ha_ok demo-s2 || { echo "❌ /api/ha/demo-s2: пробы не обогащены"; exit 1; }
-echo "  demo-s2: то же"
+for scope in demo-shard1 demo-shard2; do
+  ok=""
+  for i in $(seq 1 40); do ha_ok "$scope" && { ok=1; break; }; sleep 2; done
+  [ -n "$ok" ] || { echo "❌ /api/ha/$scope: пробы не обогащены (advertised portalloc-адреса?)"; exit 1; }
+  echo "  $scope: мастер running, реплика streaming+lag (Patroni-REST по advertised)"
+done
 
-# 2) SQL-пробы: runtime без ошибок, sync-standby, инвентарь 10+6 (все
-#    ACTIVE — сид чистый, adopt-repair spec §3.6), lease живы
+# 2) SQL-пробы: runtime без ошибок, sync-standby есть, инвентарь схем
+#    непуст, lease живы; адрес мастера portalloc-динамичен — без хардкода.
 cl_ok() {
   api /api/clusters/demo | jq -e '
-    ([.shards[] | select(.name=="s1")][0] |
+    ([.shards[] | select(.name=="shard1")][0] |
       .runtime.error == null and .runtime.standbiesSync >= 1
-      and (.runtime.bucketSchemas | length) == 10
-      and .masterAddress == "s1b:5432" and .masterLeaseAlive == true)
-    and ([.shards[] | select(.name=="s2")][0] |
+      and (.runtime.bucketSchemas | length) > 0
+      and (.masterAddress | length > 0) and .masterLeaseAlive == true)
+    and ([.shards[] | select(.name=="shard2")][0] |
       .runtime.error == null and .runtime.standbiesSync >= 1
-      and (.runtime.bucketSchemas | length) == 6
+      and (.runtime.bucketSchemas | length) > 0
       and .masterLeaseAlive == true)' >/dev/null
 }
-for i in $(seq 1 40); do cl_ok && break; sleep 2; done
-cl_ok || { echo "❌ /api/clusters/demo: runtime/инвентарь/lease (SQL-проба на 127.0.0.1:5433-5436?)"; exit 1; }
-echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь 10+6"
+ok=""
+for i in $(seq 1 40); do cl_ok && { ok=1; break; }; sleep 2; done
+[ -n "$ok" ] || { echo "❌ /api/clusters/demo: runtime/инвентарь/lease (SQL-пробы по advertised portalloc)"; exit 1; }
+echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь схем непуст"
 
-# 3) никаких ошибок проб и расхождений (spec §7.5 п.4): probe-failed быть не
-#    должно вовсе — неподнятые кластеры чека 15 (canon10/smoke/solo) подавлены
-#    lifecycle-правилом (NOT_INITIALIZED, arch/03 §4), живые цели — без ошибок.
+# 3) никаких ошибок проб и расхождений: probe-failed быть не должно вовсе.
 api /api/alerts | jq -e \
   'all(.[]; .kind != "probe-failed"
      and .kind != "inventory-mismatch" and .kind != "shard-no-master")' >/dev/null \

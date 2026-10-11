@@ -6,9 +6,11 @@
 ## Быстрый старт
 
 ```bash
-# всё — одним скриптом; стенд = локальный запуск ПОЛНОЙ системы (AGENTS.md):
-# панель (докер, localhost:5050, admin/admin), PG-шарды+эмуляторы, kafkaworker,
-# PgWorker (deploy/) — и ВСЕ на одном etcd-кластере as-etcd-1/2/3 (источник правды, контур один, 3 узла — зеркало прода, arch/04 §8)
+# всё — одним скриптом; стенд = ОДИН контур ОДНА сеть adminpanel-stand-net
+# (AGENTS.md): панель (докер, localhost:5050, admin/admin), PG-ноды demo
+# канонические (движок, Spilo/Patroni, pgw-demo-*), kafkaworker/valkeyworker,
+# PgWorker+owns3 (deploy/, contour-override) — и ВСЕ на одном etcd-кластере
+# as-etcd-1/2/3 (источник правды, 3 узла — зеркало прода, arch/04 §8)
 cd dev-stand/adminpanel && checks/00-up.sh
 # или: docker compose up -d   # стенд части: etcd-кластер+панель (без PG/kafka/PgWorker);
 #                             # сиды — отдельно через checks/05-seed.sh
@@ -17,15 +19,16 @@ open http://localhost:5050
 ```
 
 Порт панели/логин переопределяются: `ADMINPANEL_URL` (чеки), env `AdminPanel__Auth__*`
-сервиса `adminpanel`. Панель живёт в сети стенда и резолвит ноды напрямую
-(`s1a:5432`, patroni `:8008`) — HostMap для adminpanel-стенда не нужен.
+сервиса `adminpanel`. Панель живёт в стендовой сети: etcd/ownS3/kafka — по
+compose-DNS, канонические ноды demo — по advertised portalloc-адресам
+(`host.docker.internal:15xxx/:18xxx`, extra_hosts) — HostMap не нужен.
 
 ## Профили
 
 | Профиль | Состав | Для чего |
 |---|---|---|
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
-| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b, minio (бэкапы, :9000/:9001) | live-пробы, failover, e2e |
+| full | + as-minio (переходный архив, :9000/:9001) | live-пробы, failover, e2e |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 | metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
 
@@ -38,26 +41,38 @@ open http://localhost:5050
   `METRICS_GRAFANA_PORT`, `METRICS_ALERTMANAGER_PORT` (коллизии хост-портов),
   `METRICS_ALERT_WEBHOOK_URL` (URL webhook-ресивера Alertmanager; пусто —
   алерты только в UI Prometheus/Alertmanager, Д4).
-- Scrape: pgworker — `host.docker.internal:8080` (deploy-проект), kafkaworker/
-  adminpanel — DNS сети стенда (`kafkaworker:8080`, `adminpanel:8080`),
-  patroni — `hc1a..hc2b:8008` (эмуляторы отдают `/metrics`, arch/18 §2.5).
+- Scrape: таргеты — имена стендовой сети `adminpanel-stand-net`
+  (`pgworker:8080`, `kafkaworker:8080`, `adminpanel:8080`; patroni-ноды —
+  по alias portalloc-скрейпа, отдельной сети мониторинга на стенде нет).
 - Проверка: `checks/65-metrics.sh` — /metrics трёх сервисов, все scrape-джобы
   up, серии словаря arch/18 §2 в TSDB, rules, дашборды Grafana, живость
   Alertmanager и симуляция алерта ServiceDown (stop/start kafkaworker). Чек
   запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
 - Канон мониторинга — `../../arch/18-metrics.md` §5.
 
-## MinIO (подсистема бэкапов, arch/19)
+## Хранилище бэкапов (ownS3, arch/19 + arch/owns3)
 
-Профиль `full`: `as-minio` — S3 API `:9000`, консоль `:9001` (стендовые креды
-`minioadmin`/`minioadmin`, только локальный стенд); bucket `pgworker-backups`
-создаёт `00-up.sh` (`mc mb --ignore-existing`, идемпотентно). Воркер
-(deploy-проект) ходит публикацией `host.docker.internal:9000`; включение
-подсистемы — с t02 (env-блок `PGW_BACKUP_S3_*` в `deploy/.env.example`).
-Панель читает bucket read-only (t08, грань «Хранилище бэкапов»): env
-`AdminPanel__Backups__S3__*` сервиса `adminpanel`; проверка —
-`checks/45-backups-storage.sh` (mc-налив тестовых объектов → configured/
-health/дерево/objects/без секретов).
+Хранилище бэкапов стенда — **ownS3** (deploy-контур, alias стендовой сети
+`owns3:9000` внутри; `:9010` — наружу: чеки/миграция/оператор): bucket
+`pgworker-backups` создаёт `00-up.sh` (`mc mb --ignore-existing`
+root-кредами, идемпотентно); воркер (deploy-проект) ходит по имени сети
+writer-ключом `pgw-backups-writer` (env-блок `PGW_BACKUP_S3_*` =
+`OWNS3_ACCESS_KEYS__0__*` в `deploy/.env`, один комплект — arch/19 §7).
+Панель читает bucket read-only (грань «Хранилище бэкапов»): ключ
+`panel-reader`, env `AdminPanel__Backups__S3__*` сервиса `adminpanel`;
+проверка — `checks/45-backups-storage.sh` (дерево — реальные бэкапы
+`demo/shard1` + идемпотентный налив: configured/health/objects/без
+секретов), smoke ownS3 — `checks/46-owns3.sh`.
+
+demo-кластер — канонический: `00-up.sh` создаёт его `POST /api/clusters`
+(Spilo/Patroni, контейнеры движка `pgw-demo-*`, шард1/shard2); стенд задаёт
+`PGW_CONTOUR_NETWORK` = `adminpanel-stand-net` (режим сети контура движка,
+arch/14 §2.1 — ноды/wal-агенты/джобы бэкапов в одной сети со всем контуром).
+
+Профиль `full`: `as-minio` (S3 API `:9000`, консоль `:9001`, креды
+`minioadmin`/`minioadmin`) — переходный read-only-архив старых цепочек:
+новых объектов не получает, снос — по критерию готовности
+(`docs/owns3-migration.md`).
 
 **HA-etcd (t09)**: контур всегда 3 узла (`as-etcd-1/2/3`, порты
 2379/2381/2383, env `ETCD{1,2,3}_HOST_PORT` при коллизиях);
@@ -66,18 +81,19 @@ health/дерево/objects/без секретов).
 
 ## Сиды через API воркеров
 
-Прямая запись etcdctl'ом упразднена (spec etcd-via-worker-api §3.5): демо-сид
-pg-контура наливается `POST /api/seed/demo` PgWorker, kafka-домена — тем же
-эндпоинтом KafkaWorker (обa за флагом `EnableSeedEndpoint`, в стеночных compose —
-`true`). Идемпотентны: повторный вызов — no-op `{"seeded":false}`.
+Прямая запись etcdctl'ом упразднена (spec etcd-via-worker-api §3.5).
+Pg-демо-контур сидом НЕ наливается — кластер demo создаёт `00-up.sh` через
+`POST /api/clusters` (канонический, движок); kafka/valkey-домены наливаются
+`05-seed.sh` (`POST /api/seed/demo` соответствующего воркера, за флагом
+`EnableSeedEndpoint`). Идемпотентны: повторный вызов — no-op.
 
-- `checks/05-seed.sh [pg|kafka|all]` (default `all`) — поднимает нужного
-  воркера (pgworker — `deploy/`, kafkaworker — `--profile kafka`, хост-порт
-  8082), ждёт `/healthz`, зовёт `POST /api/seed/demo`, в kafka-режиме
-  дожидается живого lease-ключа `/kafkaworker/api/<id>`. Жизнью воркера ПОСЛЕ
-  наливки НЕ управляет — решает потребитель сида.
-- `00-up.sh` зовёт `05-seed.sh pg` после подъёма PgWorker (kafka-сид в полный
-  подъём не входит — e2e 55-го идёт на чистом `/kafka/`).
+- `checks/05-seed.sh [kafka|valkey|all]` (default `all`) — поднимает нужного
+  воркера (kafkaworker — `--profile kafka`, хост-порт 8082; valkeyworker —
+  `--profile valkey`), ждёт `/healthz`, зовёт `POST /api/seed/demo`, в
+  kafka-режиме дожидается живого lease-ключа `/kafkaworker/api/<id>`. Жизнью
+  воркера ПОСЛЕ наливки НЕ управляет — решает потребитель сида.
+- `00-up.sh` зовёт `05-seed.sh valkey` после создания demo (kafka-сид в
+  полный подъём не входит — e2e 55-го идёт на чистом `/kafka/`).
 - Совместимость kafka-сида с живым воркером: у сида нет контейнеров брокеров →
   пробы воркера слепые (arch/16 §5 C: слепая проба = бездействие) → сидовые
   заявки (lifecycle/rotate/rebalance) не исполняются, данные сида стабильны.
@@ -117,14 +133,16 @@ checks/90-down.sh -v        # если стенд уже поднимался
 checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
   && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh \
   && checks/50-kafka-api.sh
-# сиды — внутри: 00-up наливает pg-сид (05-seed.sh pg), 50-й — kafka-сид
-# (05-seed.sh kafka, живой API, финальный stop воркера); e2e 55-й — отдельно
-# с чистого состояния (разбирает стенд)
+# демо создаёт 00-up (POST /api/clusters); сиды — внутри: 00-up наливает
+# valkey-сид (05-seed.sh valkey), 50-й — kafka-сид (05-seed.sh kafka, живой
+# API, финальный stop воркера); e2e 55-й — отдельно с чистого состояния
+# (разбирает стенд)
 ```
 
-Порядок важен: 30-й делает failover s1 (мастером остаётся s1b, s1a
-rejoin'ится репликой) — 40-й рассчитан на эту топологию. Повторный
-прогон — только с чистого состояния (`90-down.sh -v`).
+Порядок важен: 30-й делает Patroni-failover shard1 (kill мастера → промоут
+реплики → rejoin надзором движка) — 40-й гоняется по фактической топологии
+(мастер по API). Повторный прогон — только с чистого состояния
+(`90-down.sh -v`).
 
 Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 `10-smoke-api.sh` и `20-alerts.sh` (quick-ветка); 30/40 требуют full.
@@ -134,12 +152,11 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 ## Отладка
 
 - контейнеры: `docker compose ps`, логи `docker compose logs <сервис>`;
-  ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
-  со стендом pg (этот монорепозиторий));
+  канонические ноды demo — контейнеры движка `pgw-demo-*` (`docker ps | grep pgw-`);
 - etcd: `docker compose exec etcd1 etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
 - живые ключи API воркеров (lease TTL 15 c): `etcdctl get /pgworker/api/ --prefix`
   и `/kafkaworker/api/` — ключ есть = инстанс жив и URL валиден;
-- эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
+- Patroni нод: portalloc-порты из `/pgworker/portalloc/demo` ( REST `:18xxx`);
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
 

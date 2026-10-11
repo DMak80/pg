@@ -66,7 +66,11 @@ public sealed record BackupsRuntimeOptions(
     int DrillTimeoutSec = 21600,
     // t27 (arch/19 §3/§9): образ wal-агента-приёмника (per-node long-running
     // контейнеры pgw-backup-wal-*); дефолт — локальная сборка стенда.
-    string WalAgentImage = "pgworker-wal:dev")
+    string WalAgentImage = "pgworker-wal:dev",
+    // t41 (arch/14 §2.1): сеть контура поставки — задана → ноды/wal-агенты/
+    // ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не
+    // используется, extra_hosts спек не применяются); null — прод-режим.
+    string? ContourNetwork = null)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>

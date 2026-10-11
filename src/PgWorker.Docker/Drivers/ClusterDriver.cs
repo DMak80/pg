@@ -145,6 +145,7 @@ public sealed class PlainClusterDriver(
     string? advertisedHost = null,
     IReadOnlySet<string>? pgtuneExclude = null,
     string? scrapeNetwork = null,
+    string? contourNetwork = null,
     RestCertificateCache? restCertificates = null) : IClusterDriver
 {
     // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
@@ -160,6 +161,25 @@ public sealed class PlainClusterDriver(
     // алиасов, сетевой изоляции контуров не было; per-cluster сеть даёт её
     // по построению (уникальное имя кластера ⇒ уникальная DNS-зона, t24).
     public const string NodesNetworkPrefix = "pgw-net-";
+
+    // Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/агенты живут в
+    // ней (pgw-net-<C> не создаётся и не удаляется движком; сеть — владелец
+    // поставка).
+    private readonly string? contourNetwork = contourNetwork;
+
+    // Сеть нод/агентов кластера по режиму: контур или per-cluster pgw-net-<C>.
+    private string NodesNet(string cluster) => contourNetwork ?? NetworkName(cluster);
+
+    // Ensure сети (идемпотентность, arch/14 §2.1): 409 already exists — успех
+    // (сеть контура существует у поставки; реальный движок глотает 409 сам —
+    // обёртка страхует контракт для любого движка/фейка).
+    private static async Task<Result> EnsureNetAsync(IDockerEngine engine, string name, CancellationToken ct)
+    {
+        var ensured = await engine.EnsureNetworkAsync(name, ct);
+        return !ensured.IsSuccess && ensured.Error!.Message.Contains("409", StringComparison.Ordinal)
+            ? Result.Success()
+            : ensured;
+    }
 
     public static string NetworkName(string cluster) => $"{NodesNetworkPrefix}{cluster}";
 
@@ -228,8 +248,9 @@ public sealed class PlainClusterDriver(
         {
             var name = NodeName(topology.Cluster, topology.Shard, nodeName);
 
-            // Сеть нод кластера (идемпотентно; 409 already exists = успех).
-            var network = await engine.EnsureNetworkAsync(NetworkName(topology.Cluster), ct);
+            // Сеть нод кластера (идемпотентно; 409 already exists = успех);
+            // в контур-режиме — сеть контура (владелец — поставка).
+            var network = await EnsureNetAsync(engine, NodesNet(topology.Cluster), ct);
             if (!network.IsSuccess)
                 throw network.Error!;
 
@@ -253,10 +274,11 @@ public sealed class PlainClusterDriver(
                 if (PortsMatchPlan(inspect.Value.Ports, addr))
                 {
                     // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): нода
-                    // обязана жить в pgw-net-<C> — контейнер из старой единой
-                    // сети (наследие миграции) подключается к сети кластера;
+                    // обязана жить в сети кластера (в контур-режиме — сеть
+                    // контура, подключение идемпотентно) — контейнер из старой
+                    // единой сети (наследие миграции) подключается к ней;
                     // пересоздание недопустимо (нода с данными).
-                    var clusterNet = NetworkName(topology.Cluster);
+                    var clusterNet = NodesNet(topology.Cluster);
                     if ((inspect.Value.Networks ?? []).All(n => n != clusterNet))
                     {
                         var connected = await engine.NetworkConnectAsync(clusterNet, name, ct);
@@ -342,6 +364,10 @@ public sealed class PlainClusterDriver(
             // force-remove) — ретраи; итоговая неудача НЕ роняет демонтаж (сеть
             // могла быть снесена параллельно) — громкий след в stderr воркера,
             // подберут следующий демонтаж/чистка хоста.
+            // Контур-режим (t41): сеть контура принадлежит поставке — движок
+            // её не удаляет (pgw-net-<C> на стенде не существует вовсе).
+            if (contourNetwork is not null)
+                return;
             var objects = await ListNodeObjectsAsync(cluster, ct);
             if (!objects.IsSuccess || objects.Value.Count > 0)
                 return;
@@ -402,8 +428,9 @@ public sealed class PlainClusterDriver(
 
         return await Result.FromAsync(async () =>
         {
-            // Сеть нод кластера (как EnsureNode): агент видит мастера по alias :5432.
-            var network = await engine.EnsureNetworkAsync(NetworkName(cluster), ct);
+            // Сеть нод кластера (как EnsureNode): агент видит мастера по alias :5432;
+            // в контур-режиме — сеть контура (единая сеть с нодами кластера).
+            var network = await EnsureNetAsync(engine, NodesNet(cluster), ct);
             if (!network.IsSuccess)
                 throw network.Error!;
 
@@ -412,7 +439,7 @@ public sealed class PlainClusterDriver(
             // недоступен, pg_receivewal не подключился бы (рестарт-луп). Проставляем
             // при create независимо от спеки (WalStreamProcess передаёт Network: null;
             // alias не нужны — hostname контейнера = имя агента).
-            var agentSpec = spec with { Network = NetworkName(cluster) };
+            var agentSpec = spec with { Network = NodesNet(cluster) };
 
             var name = BackupAgentNames.Container(cluster, shard, node);
             var existing = await engine.ListContainersAsync(name, all: true, ct);
@@ -421,14 +448,15 @@ public sealed class PlainClusterDriver(
             if (existing.Value.FirstOrDefault(c => c.Names.Contains(name)) is { } agent)
             {
                 // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): агент
-                // обязан жить в pgw-net-<C> вместе с нодой — агент из старой
-                // единой сети мастера не видит (pg_receivewal-рестарт-луп).
+                // обязан жить в сети кластера вместе с нодой (в контур-режиме —
+                // сеть контура) — агент из старой единой сети мастера не видит
+                // (pg_receivewal-рестарт-луп).
                 // Лечение по канону идемпотентности: пересоздание (stateless),
                 // staging-volume вместе с ним (семантика RemoveBackupAgents).
                 var inspect = await engine.InspectContainerAsync(agent.Id, ct);
                 if (!inspect.IsSuccess)
                     throw inspect.Error!;
-                var clusterNet = NetworkName(cluster);
+                var clusterNet = NodesNet(cluster);
                 if ((inspect.Value.Networks ?? []).All(n => n != clusterNet))
                 {
                     var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
@@ -751,7 +779,7 @@ public sealed class PlainClusterDriver(
             MemoryBytes: resources?.MemoryBytes,
             LabelKey: LabelKey,
             Label: topology.Cluster,
-            Network: NetworkName(topology.Cluster),
+            Network: NodesNet(topology.Cluster),
             NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);
     }
 

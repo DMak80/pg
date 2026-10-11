@@ -179,4 +179,47 @@ public class BackupJobSpecTests
         var spec = VerifyJobSpec.Build(_opts, "c1", "s1", "id1");
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
     }
+
+    // AAA (t41): сеть джоба полного по режиму — контур (без extra_hosts,
+    // адресация по именам сети) или прод (default bridge + фиксированные
+    // extra_hosts).
+    [Theory]
+    [InlineData(null, null, new[] { "host.docker.internal:host-gateway", "local:host-gateway" })]
+    [InlineData("adminpanel-stand-net", "adminpanel-stand-net", null)]
+    public void Network_ByContourMode(string? contour, string? expectedNet, string[]? expectedHosts)
+    {
+        // Arrange
+        var opts = _opts with { ContourNetwork = contour };
+
+        // Act
+        var spec = BackupJobSpec.Build(opts, "demo", "shard1", "20260911a",
+            new NodeAddress("shard1a", new NodePorts(5432, 8008, 6432)), "pwd");
+
+        // Assert
+        spec.Network.Should().Be(expectedNet);
+        if (expectedHosts is null)
+            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+        else
+            spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
+    }
+
+    // AAA (t41): verify-джоб — та же таблица режимов сети/extra_hosts.
+    [Theory]
+    [InlineData(null, null, new[] { "host.docker.internal:host-gateway", "local:host-gateway" })]
+    [InlineData("adminpanel-stand-net", "adminpanel-stand-net", null)]
+    public void VerifyNetwork_ByContourMode(string? contour, string? expectedNet, string[]? expectedHosts)
+    {
+        // Arrange
+        var opts = new BackupsRuntimeOptions { ContourNetwork = contour };
+
+        // Act
+        var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "id1");
+
+        // Assert
+        spec.Network.Should().Be(expectedNet);
+        if (expectedHosts is null)
+            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+        else
+            spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
+    }
 }

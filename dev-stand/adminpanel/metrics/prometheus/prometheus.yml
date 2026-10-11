@@ -8,8 +8,8 @@ alerting:
         - targets: ["alertmanager:9093"]
 scrape_configs:
   # Таргеты — сетевые адреса deploy-воркеров (aliases pgworker/pgworker-2 в
-  # единой сети контура pgw-metrics, t15 arch/18 §5.2) — файл file_sd пишет
-  # 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
+  # единой стендовой сети контура adminpanel-stand-net, arch/18 §5.2) — файл
+  # file_sd пишет 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
   - job_name: pgworker            # deploy-compose (mTLS, t03)
     scheme: https
     tls_config:
@@ -34,12 +34,7 @@ scrape_configs:
     static_configs: [{targets: ["valkeyworker:8080", "valkeyworker-2:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]
-  - job_name: patroni             # эмуляторы :8008 (arch/18 §2.5) — TLS per-install CA
-    scheme: https
-    tls_config:
-      ca_file: /tls/ca.pem
-    static_configs: [{targets: ["hc1a:8008", "hc1b:8008", "hc2a:8008", "hc2b:8008"]}]
-  - job_name: patroni-nodes       # реальные ноды PgWorker (t15, arch/18 §2.5/§5.4)
+  - job_name: patroni-nodes       # реальные ноды PgWorker (arch/18 §2.5/§5.4)
     scheme: https
     tls_config:
       ca_file: /tls/ca.pem

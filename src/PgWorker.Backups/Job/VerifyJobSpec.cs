@@ -41,14 +41,20 @@ public static class VerifyJobSpec
             Label: cluster,
             ResetEntrypoint: true, // inline-команда джоба — ENTRYPOINT образа сброшен (t02)
             Cmd: VerifyJobCommand.Build(),
-            Network: null,
+            // Режим сети контура (t41, arch/14 §2.1): джоб в сети контура,
+            // extra_hosts не применяются (адресация по именам сети; S3
+            // резолвится compose-DNS/alias). Прод-режим — default bridge +
+            // фиксированные host-переходы advertised-хостов (arch/19 §2/§6).
+            Network: opts.ContourNetwork,
             NetworkAliases: null,
             Tmpfs: opts.StagingQuotaBytes is { } quota
                 ? new Dictionary<string, string> { [opts.StagingDir] = $"size={quota}" }
                 : null,
             // advertised-хосты источника (как у джоба t02): host.docker.internal —
             // general-правило; "local" — зарезервированное имя docker-хоста стенда
-            ExtraHosts: ["host.docker.internal:host-gateway", "local:host-gateway"],
+            ExtraHosts: opts.ContourNetwork is null
+                ? ["host.docker.internal:host-gateway", "local:host-gateway"]
+                : null,
             RestartPolicy: "no");
     }
 }

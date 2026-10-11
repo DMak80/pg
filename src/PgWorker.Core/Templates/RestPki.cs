@@ -39,12 +39,17 @@ public static class RestPki
         request.CertificateExtensions.Add(
             new X509EnhancedKeyUsageExtension([ServerAuthOid], critical: false));
         // Окно серта ноды не может выходить за границы CA (валидация issuer):
-        // NotAfter зажимаем в NotAfter CA.
+        // NotAfter зажимаем в NotAfter CA; NotBefore — не раньше NotBefore CA
+        // (свежевыпущенный per-install CA моложе skew-запаса «сутки назад» —
+        // Create отвергает серт раньше издателя).
+        var notBefore = DateTimeOffset.UtcNow.AddDays(-1);
+        if (notBefore < caWithKey.NotBefore)
+            notBefore = caWithKey.NotBefore;
         var notAfter = DateTimeOffset.UtcNow.AddYears(10);
         if (notAfter > caWithKey.NotAfter)
             notAfter = caWithKey.NotAfter;
         using var certificate = request.Create(
-            caWithKey, DateTimeOffset.UtcNow.AddDays(-1), notAfter,
+            caWithKey, notBefore, notAfter,
             RandomNumberGenerator.GetBytes(16));
         return (certificate.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
     }

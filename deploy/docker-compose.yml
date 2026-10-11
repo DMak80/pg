@@ -81,6 +81,10 @@ x-pgworker-env: &pgworker-env
   # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4). Пусто —
   # деградационный контур без сетевой идентичности (advertised-таргеты).
   PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
+  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/wal-агенты/
+  # ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
+  # extra_hosts спек не применяются); пусто — прод-режим (канон arch/14).
+  PgWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
 
 x-pgworker-base: &pgworker-base
   build:
@@ -256,10 +260,11 @@ services:
       <<: *valkeyworker-env
       ValkeyWorker__Api__AdvertiseUrl: https://host.docker.internal:${VWK_API_HOST_PORT2:-8085}
 
-  # ownS3 (arch/owns3/01, 05 §6): целевое S3-хранилище бэкапов; после
-  # перевода клиентов (t41) вытесняет as-minio. До того — живёт в контуре
-  # стенда параллельно (бэкапы остаются на as-minio). standalone-сервис:
-  # без etcd, без docker.sock; один процесс, один том.
+  # ownS3 (arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
+  # `owns3` в стендовой сети — override `docker-compose.contour.yml`,
+  # `:9010` — наружу); as-minio полного стенда — переходный read-only-архив
+  # (docs/owns3-migration.md). standalone-сервис: без etcd, без docker.sock;
+  # один процесс, один том.
   owns3:
     build:
       context: ..
@@ -275,6 +280,16 @@ services:
     environment:
       OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
       OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      # Статические ключи (arch/owns3/05 §2): writer подсистемы бэкапов
+      # (= PGW_BACKUP_S3_* — один комплект, arch/19 §7) + read-only панель.
+      # Пустые значения безопасны: сервис читает их напрямую и стоп на
+      # первом пустом индексе (только root).
+      OWNS3_ACCESS_KEYS__0__ACCESSKEY: ${OWNS3_ACCESS_KEYS__0__ACCESSKEY:-}
+      OWNS3_ACCESS_KEYS__0__SECRETKEY: ${OWNS3_ACCESS_KEYS__0__SECRETKEY:-}
+      OWNS3_ACCESS_KEYS__0__POLICY: ${OWNS3_ACCESS_KEYS__0__POLICY:-}
+      OWNS3_ACCESS_KEYS__1__ACCESSKEY: ${OWNS3_ACCESS_KEYS__1__ACCESSKEY:-}
+      OWNS3_ACCESS_KEYS__1__SECRETKEY: ${OWNS3_ACCESS_KEYS__1__SECRETKEY:-}
+      OWNS3_ACCESS_KEYS__1__POLICY: ${OWNS3_ACCESS_KEYS__1__POLICY:-}
     volumes:
       - owns3-data:/data
   # TLS-опция ПРОД-инсталляции (t42, arch/owns3/05 §6): раскомментировать —
@@ -321,12 +336,14 @@ services:
     profiles: ["build"]
     entrypoint: ["true"]
 
-  # Образ WAL-агента-приёмника (t27, arch/19 §3): только сборка — сервиса нет,
-  # агентов запускает PgWorker как long-running контейнеры per-node.
+  # Образ wal-агента (t27/t41, arch/19 §3): publish НА ХОСТЕ (00-up.sh,
+  # [PHASE]) → compose build пакует только вывод (канон E2E-образов).
   pgworker-wal:
     build:
       context: ..
       dockerfile: docker/PgWorker.Wal.Dockerfile
+      args:
+        WAL_PUBLISH_DIR: artifacts/wal/publish
     image: pgworker-wal:dev
     profiles: ["build"]
     entrypoint: ["true"]

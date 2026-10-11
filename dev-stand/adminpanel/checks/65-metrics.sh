@@ -61,10 +61,10 @@ for u in "$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$MTLS htt
 done
 echo "  /metrics трёх сервисов: 200 text-format"
 
-# 2) все scrape-джобы up, КРОМЕ patroni-nodes (t15): down-таргеты этой джобы —
-#    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; остановленный
-#    эмулятор демо-кластера; устаревший file_sd при лежачем etcd) — её проверка
-#    условная, шаг 2.1; остальные джобы (включая sd-generator) — строго все up.
+# 2) все scrape-джобы up, КРОМЕ patroni-nodes: down-таргеты этой джобы —
+#    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; устаревший file_sd
+#    при лежачем etcd) — её проверка условная, шаг 2.1; остальные джобы
+#    (включая sd-generator) — строго все up.
 up_count=""
 for i in $(seq 1 30); do
   up_count=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health=="up")] | length')
@@ -74,9 +74,7 @@ for i in $(seq 1 30); do
 done
 bad=$(curl -fsS "$PROM/api/v1/targets" | jq -r '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health!="up")] | .[] | .labels.job+"/"+.labels.instance' | tr '\n' ' ')
 [ -z "$bad" ] || { echo "  ❌ таргеты не up: $bad"; exit 1; }
-patroni_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni" and .health=="up")] | length')
-[ "$patroni_up" -ge 2 ] || { echo "  ❌ patroni-эмуляторы: up только $patroni_up (<2)"; exit 1; }
-echo "  scrape-джобы up (включая patroni: $patroni_up; patroni-nodes — шаг 2.1)"
+echo "  scrape-джобы up (patroni-nodes — шаг 2.1)"
 
 # 2.1) patroni-nodes (t15): файл file_sd существует/валиден; таргеты — условно:
 #      ≥1 up = канал скрейпа жив; единичные down не роняют чек (rebuild/остановка).
@@ -86,10 +84,9 @@ docker exec as-prometheus cat /etc/prometheus/sd/patroni-nodes.json | jq -e 'typ
   || { echo "  ❌ file_sd patroni-nodes.json — не JSON-массив"; exit 1; }
 pn_total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes")] | length')
 pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes" and .health=="up")] | length')
-# t15 (ревизия 3, spec §6 п.5): классификация по scrapeUrl — alias-таргеты
-# канонических кластеров (<alias>:8008, контейнерный порт) vs advertised
-# усыновлённого контура (host-публикация local:<порт>: R9 — alias усыновлённым
-# не пишется, extra_hosts-моста больше нет).
+# классификация по scrapeUrl — alias-таргеты канонических кластеров
+# (<alias>:8008, контейнерный порт) vs advertised host-публикации portalloc
+# (local:<порт>).
 pn_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
   | select(.labels.job=="patroni-nodes")
   | select(.scrapeUrl | test(":8008/metrics$"))] | length')
@@ -109,23 +106,17 @@ elif [ "$pn_net" -gt 0 ]; then
   [ "$net_up" -ge 1 ] || { echo "  ❌ patroni-nodes: все $pn_net alias-таргетов down (канонический контур ослеп: file_sd устарел? Patroni-REST нод живы?)"; exit 1; }
   adv_down=$(( (pn_total - pn_net) - (pn_up - net_up) ))
   echo "  patroni-nodes: $net_up/$pn_net alias-таргетов up (сетевые :8008)${adv_down:+; advertised down: $adv_down — деградационная зона (spec §6 п.5)}"
-else
-  # только advertised усыновлённого контура — деградационная зона: их
-  # наблюдение несёт джоба patroni (static hc*:8008, шаг 2); warning, не фейл.
-  if [ "$pn_up" -ge 1 ]; then
-    echo "  patroni-nodes: $pn_up/$pn_total up (advertised усыновлённого контура)"
-  else
-    echo "  ⚠ patroni-nodes: все $pn_total advertised-таргетов усыновлённого контура down — деградационная зона (spec t15 §6 п.5); наблюдение контура — джоба patroni (шаг 2: $patroni_up up)"
-  fi
 fi
 
 # 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
-#    worker/pg — гарантированы живыми циклами воркера и эмуляторами.
+#    worker/pg — воркеровые серии дают живые циклы воркера; pg-грань —
+#    нативные patroni_* серии скрейпа patroni-nodes (канон-минимум arch/18
+#    §2.5; эмуляторная pg_replica_lag_seconds демонтирована с hc-эмуляторами).
 #    kafka-серия — ТОЛЬКО при живых брокерах: сидовой кластер стенда «слепой»
 #    (endpoints слушает только в e2e 55-го), сбор коллектора консервативно
 #    неуспешен и kafka_collector_last_success честно НЕ обновляется
 #    (алерт KafkaCollectorStalled в этот период горит — это корректно, arch/18 §4).
-for s in worker_loop_ticks_total pg_replica_lag_seconds; do
+for s in worker_loop_ticks_total patroni_postgres_running patroni_xlog_replayed_timestamp; do
   curl -fsS --data-urlencode "query=$s" "$PROM/api/v1/query" | jq -e '.data.result | length > 0' >/dev/null \
     || { echo "  ❌ серия $s не найдена в TSDB"; exit 1; }
 done
