@@ -6,8 +6,10 @@ using Xunit;
 namespace OwnS3.IntegrationTests.E2e;
 
 // SDK TLS-smoke (t42, AC2): AWS SDK .NET против HTTPS-only грани, доверие CA —
-// env AWS_CA_BUNDLE (механизм SDK воркера бэкапов). Роли по матрице
-// arch/owns3/05 §3: бакетные операции — root, объектные/multipart — writer.
+// фабрика HttpClient SDK-клиента с валидацией корня цепочки по отпечатку CA
+// (механизм SDK воркера бэкапов; env AWS_CA_BUNDLE линейкой AWSSDK.Core 3.7.x
+// не читается). Роли по матрице arch/owns3/05 §3: бакетные операции — root,
+// объектные/multipart — writer.
 [Collection(OwnS3E2eCollection.Name)]
 public class AwsSdkTlsScenarios
 {
@@ -17,7 +19,7 @@ public class AwsSdkTlsScenarios
     // вскрыто этим E2E). Бакет создаёт/удаляет root (матрица 05 §3),
     // объекты/multipart — writer.
     [Fact]
-    public async Task Sdk_СA_Bundle_ПолныйSmoke()
+    public async Task Sdk_CaFactory_ПолныйSmoke()
     {
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;

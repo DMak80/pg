@@ -3,7 +3,8 @@ namespace PgWorker.Backups;
 /// <summary>Материал CA https S3-endpoint для контейнеров джобов/агентов
 /// (t42, arch/19 §7): файл CA хоста воркера в мульти-хост контейнерам недоступен —
 /// PEM передаётся значением env S3_CA_PEM и материализуется внутри контейнера
-/// (mc — SSL_CERT_FILE, AWS SDK — AWS_CA_BUNDLE). null — путь не задан
+/// (mc — SSL_CERT_FILE; SDK-клиенты — фабрика HttpClient с валидацией корня
+/// цепочки по отпечатку CA, при заданном CaBundlePath). null — путь не задан
 /// (http-endpoint, прежний env-набор).</summary>
 public static class BackupCaPem
 {

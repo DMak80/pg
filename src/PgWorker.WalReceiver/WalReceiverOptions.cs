@@ -19,7 +19,8 @@ public sealed record WalReceiverOptions(
     string S3SecretKey,
     bool S3PathStyle,
     // t42 (arch/19 §7): PEM CA https S3-endpoint (материализуется Program приёмника
-    // в файл + AWS_CA_BUNDLE SDK); null — http-endpoint.
+    // в файл → S3CaBundlePath: SDK-клиент — фабрика HttpClient с валидацией корня
+    // цепочки по отпечатку CA); null — http-endpoint.
     string? S3CaPem = null);
 
 /// <summary>Парсер env-контракта приёмника (arch/19 §3.1): невалидный env → null +
