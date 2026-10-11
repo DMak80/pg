@@ -5,10 +5,11 @@ namespace OwnS3.IntegrationTests.Api;
 
 // Формат ошибок (глава 03 §5): структура XML, RequestId/HostId/Resource,
 // HEAD-ошибки без тела, x-amz-request-id в каждом ответе.
-[Collection(OwnS3TestCollection.Name)]
-public sealed class ErrorFormatScenarios(OwnS3AppFactory factory)
+// Параметризация режима (t40): логика — в базе, single/EC-наследники
+// объявляют коллекцию.
+public abstract class ErrorFormatScenariosBase(OwnS3AppFactory factory)
 {
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
     public async Task ErrorXml_ContainsAllFiveElements()
@@ -68,3 +69,7 @@ public sealed class ErrorFormatScenarios(OwnS3AppFactory factory)
         (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Should().BeEmpty();
     }
 }
+
+// single-режим: общая коллекция single-хоста (как до t40).
+[Collection(OwnS3TestCollection.Name)]
+public sealed class ErrorFormatScenarios(OwnS3AppFactory factory) : ErrorFormatScenariosBase(factory);

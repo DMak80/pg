@@ -6,9 +6,16 @@ namespace OwnS3.IntegrationTests.Api;
 // Права (глава 05 §3): репрезентативный набор ролей — reader/writer/admin.
 // Том на класс (IClassFixture); мутационный кейс — на уникальном бакете СВОЕГО
 // кейса, немутационные — на никогда не создаваемом «bucket».
-public sealed class AccessScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// Параметризация режима (t40): логика кейсов — в базе, single/EC-наследники
+// объявляют фикстуру/коллекцию и проверку «бакет реально на томе».
+public abstract class AccessScenariosBase(OwnS3AppFactory factory)
 {
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
+
+    // «Бакет реально создан на томе» — платформенная проверка режима
+    // (single: каталог тома; EC-наследник: каталог на каждом диске пула).
+    protected virtual void AssertBucketExistsOnVolume(string bucket) =>
+        Directory.Exists(Path.Combine(factory.TempVolumeDir, bucket)).Should().BeTrue();
 
     [Fact]
     public async Task Reader_GetObject_PassesRights_ReachesStorage()
@@ -66,7 +73,7 @@ public sealed class AccessScenarios(OwnS3AppFactory factory) : IClassFixture<Own
 
         // Assert: право admin — бакет реально создан на томе
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        Directory.Exists(Path.Combine(factory.TempVolumeDir, "b-admin")).Should().BeTrue();
+        AssertBucketExistsOnVolume("b-admin");
     }
 
     [Theory]
@@ -83,3 +90,7 @@ public sealed class AccessScenarios(OwnS3AppFactory factory) : IClassFixture<Own
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 }
+
+// single-режим: свой том на класс (как до t40); проверка бакета — базовая.
+public sealed class AccessScenarios(OwnS3AppFactory factory) : AccessScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;

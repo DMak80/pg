@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using OwnS3.Storage.Erasure;
 
@@ -318,12 +319,22 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // ── бакеты: на дисках ВСЕХ сетов (канон 06 §8) ──
 
-    public bool BucketExists(string bucket) =>
-        bucket != ".owns3.sys" && _pool.Sets
-            .Where(set => set.Count(d => d.Online) >= ErasureQuorum.Read(
-                _pool.Topology.SetSize - _defaultParity, _defaultParity))
+    public bool BucketExists(string bucket)
+    {
+        if (bucket == ".owns3.sys")
+            return false;
+        // Бакет живёт на всех сетах: мнение любого сета с read-кворумом
+        // достаточно. НЕТ сетов с read-кворумом → кворумная недоступность
+        // (503 InsufficientReadQuorum, не «бакета нет» — канон 06 §7)
+        var threshold = ErasureQuorum.Read(
+            _pool.Topology.SetSize - _defaultParity, _defaultParity);
+        if (_pool.Sets.All(set => set.Count(d => d.Online) < threshold))
+            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+        return _pool.Sets
+            .Where(set => set.Count(d => d.Online) >= threshold)
             .SelectMany(set => set)
             .Any(disk => Directory.Exists(Path.Combine(disk.Root, bucket)));
+    }
 
     public void CreateBucket(string bucket)
     {
@@ -368,8 +379,28 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     continue;
                 if (Directory.EnumerateFiles(bucketRoot, "xl.meta", SearchOption.AllDirectories).Any())
                     throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
-                // живые multipart-загрузки бакета блокируют удаление (загрузки — Task 11)
             }
+        }
+
+        // Живые multipart-загрузки бакета блокируют удаление (канон 02 §1/§5):
+        // активная запись = запись с существующим каталогом загрузки (М2);
+        // журналы реплицированы на диски сета — ListUploadKeyDirs отдаёт один
+        // keyDir на ключ
+        foreach (var keyDirPath in ListUploadKeyDirs())
+        {
+            List<MultipartJournals.UploadJournalEntry> uploads;
+            try
+            {
+                uploads = ReadUploadsByKeyDir(keyDirPath);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Битый uploads.json в {KeyDir} при DeleteBucket: пропущен", keyDirPath);
+                continue;
+            }
+
+            if (uploads.Any(e => e.Bucket == bucket && UploadDirExists(e.Bucket, e.Key, e.UploadId)))
+                throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
         }
 
         foreach (var disk in _pool.Disks.Where(d => d.Online))
@@ -469,8 +500,75 @@ public sealed partial class ErasureXlDrive : IXlDrive
             throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
         return majority.First();
     }
-    public void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta) =>
-        throw new NotImplementedException();
+    // Copy: перенос частей источника в staging цели (канон 06 §8). Шардовые
+    // part.N копируются побайтово с позиций dist сета источника на те же
+    // позиции сета цели (байты шарда от сета не зависят) — bitrot-набор
+    // наследуется из записи источника. Раскладка несовместима (parity/размер
+    // сета) или шард-источник недоступен (офлайн/файла нет) — часть
+    // перекодируется: реконструкция исходного потока и шардирование с
+    // раскладкой staging.
+    public void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta)
+    {
+        var erasureStaging = RequireErasureStaging(staging);
+        ArgumentNullException.ThrowIfNull(srcMeta.Ec, nameof(srcMeta));
+        var srcEc = srcMeta.Ec;
+        var srcSet = _pool.Sets[_pool.PickSetIndex(srcBucket, srcKey)];
+        var dataDir = erasureStaging.VersionId.ToString("N");
+        var sameLayout = srcEc.EcN == _pool.Topology.SetSize
+            && srcEc.EcN - srcEc.EcM == _pool.Topology.SetSize - erasureStaging.Parity
+            && srcEc.EcDist.Select(b => (int)b).SequenceEqual(erasureStaging.Distribution);
+
+        var partOffset = 0L;
+        for (var i = 0; i < srcEc.Parts.Count; i++)
+        {
+            var bitrot = srcEc.Parts[i];
+            var partNumber = i + 1;
+            var transferred = false;
+            if (sameLayout)
+            {
+                transferred = true;
+                for (var j = 0; j < srcEc.EcN; j++)
+                {
+                    var position = srcEc.EcDist[j];
+                    var srcDisk = srcSet.FirstOrDefault(d => d.Online && d.PositionInSet == position);
+                    var dstDisk = erasureStaging.SetDisks.FirstOrDefault(d => d.Online && d.PositionInSet == position);
+                    if (dstDisk is null)
+                        continue; // цель-позиция офлайн: шард не переносится (как при записи)
+                    if (srcDisk is null)
+                    {
+                        transferred = false; // позиции нет среди онлайн — реконструкция
+                        break;
+                    }
+                    var srcPath = Path.Combine(ObjectDirOnDisk(srcDisk, srcBucket, srcKey),
+                        srcMeta.DataDirName, $"part.{partNumber}");
+                    if (!File.Exists(srcPath))
+                    {
+                        transferred = false; // шард недоступен (деградация записи) — реконструкция
+                        break;
+                    }
+                    var dstPath = Path.Combine(erasureStaging.StagingDirs[dstDisk], dataDir, $"part.{partNumber}");
+                    Directory.CreateDirectory(Path.GetDirectoryName(dstPath)!);
+                    File.Copy(srcPath, dstPath, overwrite: true);
+                }
+
+                if (transferred)
+                    erasureStaging.PartResults[partNumber] = new ErasurePartResult(
+                        string.Empty, string.Empty, bitrot.SourceSize,
+                        bitrot.BlockHashes.Length > 0 ? bitrot.BlockHashes[0].Length : 0,
+                        bitrot.BlockHashes);
+            }
+
+            if (!transferred)
+            {
+                // перекодирование: реконструированный поток части → шардирование staging
+                using var decoded = OpenData(srcBucket, srcKey, srcMeta, partOffset, bitrot.SourceSize);
+                WriteObjectPartAsync(erasureStaging, partNumber, decoded, bitrot.SourceSize, CancellationToken.None)
+                    .ConfigureAwait(false).GetAwaiter().GetResult();
+            }
+
+            partOffset += bitrot.SourceSize;
+        }
+    }
     public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
     {
         ArgumentNullException.ThrowIfNull(meta.Ec, nameof(meta));
@@ -538,9 +636,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
             throw new XlIntegrityException(
                 $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual} (реконструкция)");
     }
-    // Delete: rename каталога объекта в .trash/ на каждом диске сета (кворум
-    // ≥ writeQuorum; недоступные диски выравниваются при возврате: живое-в-
-    // консенсусе доливается heal; фантом-записи чистятся по порогу — канон 06 §8).
+    // Delete: трэш ФАЙЛОВ записи (мета+данные) в .trash/ на каждом диске сета
+    // (кворум ≥ writeQuorum; недоступные диски выравниваются при возврате: живое-
+    // в-консенсусе доливается heal; фантом-записи чистятся по порогу — канон 06 §8).
     public void Delete(string bucket, string key, XlMetaRecord meta)
     {
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
@@ -557,7 +655,20 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 continue; // записи нет (деградированная запись/фантом — heal/чистки)
             try
             {
-                MoveToTrash(disk, target);
+                // семантика single (04 §4 п.5): трэшатся файлы записи, а не весь
+                // объектный каталог — вложенные объекты («a/b» внутри «a»)
+                // не затрагиваются; каталог удаляется только без записей в поддереве
+                var metaPath = Path.Combine(target, "xl.meta");
+                if (File.Exists(metaPath))
+                    MoveToTrash(disk, metaPath);
+                var bkpPath = Path.Combine(target, "xl.meta.bkp");
+                if (File.Exists(bkpPath))
+                    MoveToTrash(disk, bkpPath);
+                var dataDirPath = Path.Combine(target, meta.DataDirName);
+                if (Directory.Exists(dataDirPath))
+                    MoveToTrash(disk, dataDirPath);
+                if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
+                    Directory.Delete(target, recursive: true); // записей в поддереве нет
                 successes++;
             }
             catch (Exception ex)
@@ -704,18 +815,26 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
     }
 
-    public IReadOnlyList<string> ListUploadKeyDirs() =>
-        _pool.Disks.Where(d => d.Online)
-            .SelectMany(disk =>
+    public IReadOnlyList<string> ListUploadKeyDirs()
+    {
+        // один keyDir на ключ: журналы реплицированы на диски сета — ключ
+        // представляем первым онлайн-диском, где каталог существует (дедуп по
+        // имени keyDir; пути дисков различны корнями — путь не дедуплит)
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>();
+        foreach (var disk in _pool.Disks.Where(d => d.Online))
+        {
+            var multipartRoot = Path.Combine(disk.Root, ".owns3.sys", "multipart");
+            if (!Directory.Exists(multipartRoot))
+                continue;
+            foreach (var dir in Directory.EnumerateDirectories(multipartRoot))
             {
-                var multipartRoot = Path.Combine(disk.Root, ".owns3.sys", "multipart");
-                return Directory.Exists(multipartRoot)
-                    ? Directory.EnumerateDirectories(multipartRoot).Select(dir =>
-                        Path.Combine(disk.Root, ".owns3.sys", "multipart", Path.GetFileName(dir)))
-                    : [];
-            })
-            .Distinct()
-            .ToList();
+                if (seen.Add(Path.GetFileName(dir)))
+                    result.Add(dir);
+            }
+        }
+        return result;
+    }
 
     public List<MultipartJournals.UploadJournalEntry> ReadUploadsByKeyDir(string keyDirPath) =>
         MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDirPath));

@@ -6,7 +6,8 @@ namespace OwnS3.IntegrationTests.Api;
 // Фабрика EC-режима (t40): override in-memory конфигурации базовой фабрики —
 // 4 temp-подкаталога, setSize 4, parity 1 (канон 05 §4/06 §1). Root-пара и
 // статические ключи наследуются от базовой (те же креды сценариев).
-public sealed class OwnS3EcAppFactory : OwnS3AppFactory
+// Не sealed: наследник деградационной серии (OwnS3EcDegrAppFactory) — свой том.
+public class OwnS3EcAppFactory : OwnS3AppFactory
 {
     public IReadOnlyList<string> DataDirs { get; } = Enumerable.Range(1, 4)
         .Select(i => Path.Combine(Path.GetTempPath(), "owns3-waf-ec-" + Guid.NewGuid().ToString("N") + $"-d{i}"))
