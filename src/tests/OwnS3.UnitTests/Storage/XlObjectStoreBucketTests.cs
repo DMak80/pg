@@ -9,13 +9,15 @@ public class XlObjectStoreBucketTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid().ToString("N"));
     private readonly XlVolume _volume;
+    private readonly SingleXlDrive _drive;
     private readonly XlObjectStore _store;
 
     public XlObjectStoreBucketTests()
     {
         _volume = new XlVolume(_root, TimeProvider.System);
         _volume.Initialize();
-        _store = new XlObjectStore(_volume, new FixedTimeProvider(TestVectors.FixedTime),
+        _drive = new SingleXlDrive(_volume, new FixedTimeProvider(TestVectors.FixedTime));
+        _store = new XlObjectStore(_drive, new FixedTimeProvider(TestVectors.FixedTime),
             NullLogger<XlObjectStore>.Instance);
     }
 
@@ -84,7 +86,7 @@ public class XlObjectStoreBucketTests : IDisposable
     {
         // Arrange: объект собирается руками — ObjectDir + xl.meta
         await _store.CreateBucketAsync("b", CancellationToken.None);
-        var objectDir = _store.ObjectDir("b", "k");
+        var objectDir = _drive.ObjectDir("b", "k");
         Directory.CreateDirectory(objectDir);
         XlMetaFile.Write(objectDir, new XlMetaRecord(Guid.NewGuid(), 1,
             DateTimeOffset.FromUnixTimeMilliseconds(0), "d41d8cd98f00b204e9800998ecf8427e",

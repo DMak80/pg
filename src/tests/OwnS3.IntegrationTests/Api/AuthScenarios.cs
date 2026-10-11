@@ -5,10 +5,11 @@ using OwnS3.UnitTests;
 namespace OwnS3.IntegrationTests.Api;
 
 // Аутентификация (глава 03 §1–2 + арх-правки 2/8): все исходы заголовочного
-// режима и presigned.
-public sealed class AuthScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// режима и presigned. Параметризация режима (t40): логика — в базе,
+// single/EC-наследники объявляют фикстуру/коллекцию.
+public abstract class AuthScenariosBase(OwnS3AppFactory factory)
 {
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
     public async Task ValidSignature_ReachesStorage()
@@ -276,3 +277,7 @@ public sealed class AuthScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3
         return url[..q] + "?" + string.Join("&", pairs);
     }
 }
+
+// single-режим: свой том на класс (как до t40).
+public sealed class AuthScenarios(OwnS3AppFactory factory) : AuthScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;

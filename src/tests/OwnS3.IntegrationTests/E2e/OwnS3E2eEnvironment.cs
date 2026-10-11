@@ -41,19 +41,9 @@ public sealed class OwnS3E2eEnvironment : IAsyncDisposable
     public const string AdminAccessKey = "os3e2e-admin";
     public const string AdminSecretKey = "os3e2e-admin-secret";
 
-    // Статическая сборка образа — раз на процесс (прецедент E2eEnvironment
-    // PgWorker): publish+build платит только первый Fact серии.
-    private static readonly SemaphoreSlim StaticGate = new(1, 1);
-    private static bool _staticReady;
-
-    // Env вложенных dotnet-сборок: build-server/nodeReuse держат stdout-пайп
-    // после завершения publish (e2e-факт) — реюз отключаем (канон E2eFixture).
-    private static readonly IReadOnlyDictionary<string, string> NoMsBuildReuseEnv =
-        new Dictionary<string, string>
-        {
-            ["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1",
-            ["MSBUILDDISABLENODEREUSE"] = "1",
-        };
+    // Статический ассет процесса: owns3:e2e — общий сборщик OwnS3E2eImage
+    // (с EC-окружением t40): сборка раз на процесс тест-хоста независимо от
+    // числа серий; [PHASE]/логи — в ArtifactsDir окружения.
 
     private readonly INetwork _net;
     private readonly IContainer _service;
@@ -304,64 +294,11 @@ public sealed class OwnS3E2eEnvironment : IAsyncDisposable
         await LogPhaseAsync("teardown", sw);
     }
 
-    // ── Статическая сборка образа (раз на процесс): publish на хосте +
-    // docker build CLI-режимом (узкий контекст артефактов; канон
-    // E2E-образов). Фазы — с UTC-метками в phases.log окружения и
-    // [PHASE]-метками в Console; docker-диагностика к сборочным фазам
-    // НЕ применима (контейнера ещё нет) — «тихая фаза» исключена метками
-    // и полными логами процессов в ArtifactsDir. ──
-
-    private static async Task BuildImageOnceAsync(string artifactsDir, CancellationToken ct)
-    {
-        if (_staticReady || Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
-            return;
-        await StaticGate.WaitAsync(ct);
-        try
-        {
-            if (_staticReady)
-                return;
-            var root = FindRepoRoot();
-            var outDir = Path.Combine(root, "artifacts", "e2e", "owns3");
-            var sw = Stopwatch.StartNew();
-            PhaseStatic(artifactsDir, "build owns3:e2e: publish (host) — старт");
-            await RunProcessAsync("dotnet",
-                ["publish", Path.Combine(root, "src", "OwnS3.App", "OwnS3.App.csproj"),
-                 "-c", "Release", "-o", outDir, "--nologo"],
-                ct, TimeSpan.FromMinutes(10), env: NoMsBuildReuseEnv,
-                logFile: Path.Combine(artifactsDir, "process-build-publish.log"));
-            PhaseStatic(artifactsDir,
-                $"build owns3:e2e: publish готов за {sw.Elapsed.TotalSeconds:F0} c — docker build…");
-            await RunProcessAsync("docker",
-                ["build", "-f", Path.Combine(root, "docker", "OwnS3.Dockerfile"),
-                 "-t", ServiceImage, outDir],
-                ct, TimeSpan.FromSeconds(120),
-                logFile: Path.Combine(artifactsDir, "process-build-docker.log"));
-            PhaseStatic(artifactsDir,
-                $"build owns3:e2e: готов за {sw.Elapsed.TotalSeconds:F0} c (publish+build)");
-            _staticReady = true;
-        }
-        finally
-        {
-            StaticGate.Release();
-        }
-    }
-
-    // [PHASE]-метка сборочной фазы: Console + phases.log (UTC) окружения.
-    private static void PhaseStatic(string artifactsDir, string message)
-    {
-        Console.WriteLine($"[PHASE] {message}");
-        File.AppendAllText(Path.Combine(artifactsDir, "phases.log"),
-            $"{DateTime.UtcNow:O} {message}\n");
-    }
-
-    private static string FindRepoRoot()
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "OwnS3.Dockerfile")))
-            dir = dir.Parent;
-        return dir?.FullName
-            ?? throw new InvalidOperationException("корень репо (docker/OwnS3.Dockerfile) не найден");
-    }
+    // Статическая сборка образа — делегирование общему сборщику (канон
+    // E2E-образов: publish на хосте + docker build; [PHASE]/логи процессов —
+    // в ArtifactsDir окружения).
+    private static Task BuildImageOnceAsync(string artifactsDir, CancellationToken ct) =>
+        OwnS3E2eImage.BuildOnceAsync(artifactsDir, ct);
 
     // ── Процесс-хелперы (канон RunProcessAsync: таймаут убивает дерево,
     //    вывод — в исключение, полный лог — в logFile) ──

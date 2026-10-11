@@ -74,7 +74,9 @@ health и метрики, правила запуска. Операции — г
 | Env | Секция appsettings | Назначение | Дефолт |
 |---|---|---|---|
 | `OWNS3_SERVER_PORT` | `OwnS3:Server:Port` | порт HTTP-грани Kestrel | **9000** (S3-конвенция) |
-| `OWNS3_DATA_DIR` | `OwnS3:DataDir` | путь тома данных | **`/data`** (докер-конвенция) |
+| `OWNS3_DATA_DIR` | `OwnS3:DataDir` | путь(и) тома данных: **1 путь — single-режим**, **список путей через запятую (≥ 2) — erasure-режим** (глава [06-erasure.md](06-erasure.md) §1; порядок путей = порядок дисков) | **`/data`** (докер-конвенция) |
+| `OWNS3_EC_SET_SIZE` | `OwnS3:Ec:SetSize` | размер erasure-сета (k+m), 4–16 | авто: наибольший делитель числа дисков из {4, 8, 16}; нет делителя — отказ старта (глава 06 §1) |
+| `OWNS3_EC_PARITY` | `OwnS3:Ec:Parity` | parity m для новых объектов, 1 ≤ m ≤ setSize/2 | **2** |
 | `OWNS3_ROOT_USER` | `OwnS3:Root:User` | root-учётка | нет — обязательно |
 | `OWNS3_ROOT_PASSWORD` | `OwnS3:Root:Password` | root-пароль | нет — обязательно |
 | `OWNS3_ACCESS_KEYS__*` | `OwnS3:AccessKeys` | статические ключи (п. 2) | пусто = только root |
@@ -94,6 +96,17 @@ health и метрики, правила запуска. Операции — г
 | `ownS3_request_duration_seconds{operation}` | histogram | длительность обработки по операциям |
 | `ownS3_disk_used_bytes` | gauge | занятость тома данных |
 | `ownS3_disk_total_bytes` | gauge | размер тома данных |
+
+Метрики erasure-режима (глава [06-erasure.md](06-erasure.md) §7/§9; в
+single-режиме не экспортируются):
+
+| Метрика | Тип | Смысл |
+|---|---|---|
+| `ownS3_ec_drive_online{set,drive}` | gauge | 1 — диск сета онлайн |
+| `ownS3_ec_set_readable{set}` | gauge | 1 — онлайн-дисков сета ≥ k |
+| `ownS3_ec_set_writable{set}` | gauge | 1 — онлайн-дисков сета ≥ write-кворума |
+| `ownS3_heal_passes_total` | counter | завершённые heal-проходы |
+| `ownS3_heal_objects_total` | counter | объекты, восстановленные heal |
 
 Расширенный состав (по частям, очередям чисток) — задачами
 эксплуатации, не каноном этой главы.
@@ -150,3 +163,33 @@ health и метрики, правила запуска. Операции — г
   обоих режимах: `WHEN_REQUIRED` (основной) и `WHEN_SUPPORTED`
   (чанковая подпись с трейлерами).
 - ownS3 всегда запускается в докере (никогда хост-процессом — глава 01).
+
+## 7. Админ-грань (erasure-режим)
+
+Наблюдение и управление состоянием EC-тома — вне 21 операции S3, отдельные
+эндпоинты ownS3 тем же конвейером подписи (SigV4; права — `policy=admin`
+или root, прочим **403** `AccessDenied`; матрица п. 3 на них не
+распространяется — грань служебная):
+
+- **`GET /admin/storage`** — статус: режим, топология (сеты/диски: путь,
+  diskId, online), деградация сетов (readable/writable), состояние heal
+  (идёт/последний проход/восстановлено объектов и шардов). Формат — JSON.
+- **`POST /admin/heal`** — запуск внепланового heal-прохода (глава
+  [06-erasure.md](06-erasure.md) §9): **202 Accepted**; идущий проход
+  продолжается (параллельный не создаётся).
+- В single-режиме оба эндпоинта отвечают статусом single-тома без сетов
+  (грань доступна всегда — единый интерфейс наблюдения).
+
+## 8. Стенд-сервис erasure-режима
+
+- **Профиль-сервис `owns3-ec`** в `deploy/docker-compose.yml` (образ тот же
+  `owns3:dev`): минимальный erasure-контур — 4 тома `owns3-ec-data-1..4`
+  (`OWNS3_DATA_DIR=/data1,/data2,/data3,/data4`,
+  `OWNS3_EC_SET_SIZE=4`, `OWNS3_EC_PARITY=1`), порт
+  `${OWNS3_EC_HOST_PORT:-9011}:9000`; поднимается профилем compose
+  (`--profile owns3-ec`), в базовый подъём стенда не входит (single-сервис
+  `owns3` — п. 6). Секреты — та же секция `OWNS3_*` `deploy/.env`.
+- До перевода подсистемы бэкапов на ownS3 (`t41`) EC-сервис живёт в
+  стенде параллельно с single-сервисом; smoke-проверки —
+  `dev-stand/adminpanel/checks/47-owns3-ec.sh` (`/healthz`,
+  `/admin/storage`, `mc`-операции против хост-публикации).

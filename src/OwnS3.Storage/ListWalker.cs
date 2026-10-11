@@ -4,11 +4,11 @@ using Microsoft.Extensions.Logging;
 
 namespace OwnS3.Storage;
 
-// Обход bucket-дерева ленивым k-way merge «следующих ключей поддеревьев»
-// (спека §4.5). Порядок эмитов — строгий байтовый порядок полных ключей
-// (Utf8ByteOrder, P9). Битый xl.meta — warning и пропуск ключа (листинг не
-// роняет один битый объект).
-internal sealed class ListWalker(XlVolume volume, ILogger? logger = null)
+// Обход ключей бакета ленивым курсором драйва (спека §4.5; механика курсора —
+// IXlDrive.EnumerateObjects). Порядок эмитов — строгий байтовый порядок полных
+// ключей (Utf8ByteOrder, P9). Битый xl.meta — warning и пропуск ключа (листинг
+// не роняет один битый объект).
+internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
 {
     public ListPage Walk(string bucket, ListQuery query)
     {
@@ -40,8 +40,7 @@ internal sealed class ListWalker(XlVolume volume, ILogger? logger = null)
 
         var prefix = query.Prefix ?? string.Empty;
         var delimiter = query.Delimiter;
-        var bucketRoot = Path.Combine(volume.Root, bucket);
-        var cursor = (IKeyCursor)new DirectoryCursor(bucketRoot, ownKey: null, prefix: string.Empty, after);
+        var cursor = drive.EnumerateObjects(bucket);
 
         var contents = new List<ListEntry>();
         var prefixes = new List<CommonPrefixEntry>();
@@ -104,11 +103,11 @@ internal sealed class ListWalker(XlVolume volume, ILogger? logger = null)
                 truncated = true; // эмитов ровно maxKeys и есть следующий объект
                 break;
             }
-            // Эмит объекта: чтение xl.meta (битый — warning + пропуск)
+            // Эмит объекта: чтение xl.meta курсором драйва (битый — warning + пропуск)
             XlMetaRecord meta;
             try
             {
-                meta = XlMetaFile.Read(ObjectDirOf(bucketRoot, key), out _);
+                meta = cursor.ReadCurrentMeta();
             }
             catch (XlIntegrityException ex)
             {
@@ -143,10 +142,6 @@ internal sealed class ListWalker(XlVolume volume, ILogger? logger = null)
         return new ListPage(contents, prefixes, truncated, nextMarker, nextToken,
             contents.Count + prefixes.Count);
     }
-
-    // Каталог объекта по декодированному ключу.
-    private static string ObjectDirOf(string bucketRoot, string key) =>
-        Path.Combine([bucketRoot, .. XlPathEncoder.EncodePath(key).Split('/')]);
 }
 
 // Курсор поддерева: минимальный ещё не эмитнутый ключ (null — исчерпан).

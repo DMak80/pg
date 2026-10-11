@@ -30,22 +30,25 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 - **21 операция** API (объекты/листинги/бакеты/multipart) — полный
   контракт в главе 02.
 - Бакеты без versioning (`ListObjectVersions` — unversioned-семантика).
-- Single-drive без erasure coding и репликации.
+- **Два режима хранения**: `XL Single` (один том, глава 04) и
+  `XL Erasure` (multi-drive с кодами Рида—Соломона, сетами, кворумами,
+  bitrot-контролем и heal — глава 06); режим задаётся `OWNS3_DATA_DIR`
+  (1 путь / список путей). Репликации нет.
 - Обращение к вне-наборным граням (сабресурсы объекта, конфигурации
   бакета, S3-Express, notification, select) — единый канонизированный
   отказ (глава 02).
 - **Path-style only, HTTP-only**: виртуальные хосты не поддерживаются,
   TLS — задача трека.
-- Последующие этапы (erasure coding, репликация) — трек.
+- Последующие этапы (репликация) — трек.
 
 ## Главы канона
 
 - [owns3/01-overview.md](owns3/01-overview.md) — место в системе, клиенты, состав проектов, durability-ограничения, таблица ключевых решений;
-- [owns3/02-operations.md](owns3/02-operations.md) — полный контракт 21 операции + общие семантики (ETag, conditional, Range);
+- [owns3/02-operations.md](owns3/02-operations.md) — полный контракт 21 операции + общие семантики (ETag, conditional, Range, кворумные отказы);
 - [owns3/03-protocol.md](owns3/03-protocol.md) — SigV4 (заголовочная/presigned/чанковая), XML-схемы, формат ошибок, транспорт;
-- [owns3/04-storage.md](owns3/04-storage.md) — xl-хранение single-drive: раскладка, `xl.meta`, `.owns3.sys`, атомарность, чистки;
-- [owns3/05-access-config.md](owns3/05-access-config.md) — учётки, матрица прав, конфиг/env, health/метрики, запуск в докере.
+- [owns3/04-storage.md](owns3/04-storage.md) — xl-хранение: раскладка, `xl.meta`, `.owns3.sys`, атомарность, чистки (single-режим + общие xl-механизмы);
+- [owns3/05-access-config.md](owns3/05-access-config.md) — учётки, матрица прав, конфиг/env, health/метрики, админ-грань, запуск в докере;
+- [owns3/06-erasure.md](owns3/06-erasure.md) — erasure coding: сеты, формат multi-drive тома, кодирование, bitrot, кворумы, heal.
 
-Развитие — трек [roadmap/owns3.md](roadmap/owns3.md): порядок
-t35–t40 (канон → протокол → хранение/операции → multipart → приёмка →
-erasure coding); следующие задачи — erasure coding (t40) и TLS.
+Развитие — трек [roadmap/owns3.md](roadmap/owns3.md); новые задачи
+после приёмочной грани (миграция с MinIO, TLS).

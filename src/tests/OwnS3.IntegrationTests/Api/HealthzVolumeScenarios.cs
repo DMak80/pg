@@ -21,7 +21,12 @@ public sealed class HealthzVolumeScenarios(OwnS3AppFactory factory) : IClassFixt
     [Fact]
     public async Task Healthz_503WhenVolumeUnavailable()
     {
-        // Arrange: tmp-каталог недоступен — touch-проба записи невозможна
+        // Arrange: прогрев — первый CreateClient лениво стартует хост, и
+        // Program.Initialize пересоздал бы .owns3.sys/tmp ПОСЛЕ удаления при
+        // порядке «503-тест первым в фабрике» — удаление валидно только после
+        // старта хоста (флейк порядка исполнения, не поведения продукта)
+        (await factory.CreateClient().GetAsync("/healthz", TestContext.Current.CancellationToken))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
         var tmpDir = Path.Combine(factory.TempVolumeDir, ".owns3.sys", "tmp");
         if (Directory.Exists(tmpDir))
             Directory.Delete(tmpDir, recursive: true);

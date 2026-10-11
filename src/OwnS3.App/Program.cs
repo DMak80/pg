@@ -9,6 +9,7 @@ using OwnS3.App;
 using OwnS3.App.Access;
 using OwnS3.App.Pipeline;
 using OwnS3.Storage;
+using OwnS3.Storage.Erasure;
 using Shared.Metrics;
 
 // Точка входа ownS3 (arch/owns3/01 §3, arch/owns3/05): Kestrel-хост S3-грани,
@@ -26,6 +27,8 @@ foreach (var (env, key) in new[]
              ("OWNS3_ROOT_PASSWORD", "OwnS3:Root:Password"),
              ("OWNS3_SERVER_PORT", "OwnS3:Server:Port"),
              ("OWNS3_DATA_DIR", "OwnS3:DataDir"),
+             ("OWNS3_EC_SET_SIZE", "OwnS3:Ec:SetSize"),
+             ("OWNS3_EC_PARITY", "OwnS3:Ec:Parity"),
              ("OWNS3_HOST_ID", "OwnS3:HostId"),
          })
 {
@@ -67,18 +70,59 @@ builder.Services.AddOptions<OwnS3Options>()
 // серии ownS3_*_total/ownS3_request_duration_seconds совпадают со словарём главы 05).
 builder.Services.AddAppMetrics("ownS3", builder.Configuration.GetSection("OwnS3:Metrics"));
 
-// Домен: реестр учёток + том и объектный слой t37 (xl-хранение, канон 04).
+// Домен: реестр учёток + объектный слой (xl-хранение, канон 04). Режим — по
+// числу путей OwnS3:DataDir (канон 06 §1): 1 путь — XL Single (SingleXlDrive
+// над XlVolume); список ≥ 2 — XL Erasure (ErasurePool + ErasureXlDrive + heal).
+// Все регистрации ленивы: режим разрешается по итоговому конфигу ПОСЛЕ Build
+// (in-memory-инжект WAF-тестов слит к этому моменту), ошибки конфига —
+// fail-fast до старта прослушивания Kestrel (ниже, Critical + exit 1).
 builder.Services.AddSingleton<AccessKeyRegistry>();
+builder.Services.AddSingleton(sp => StorageModeInfo.Resolve(
+    sp.GetRequiredService<IOptions<OwnS3Options>>().Value));
+
+// XL Single: том и драйв (строятся только при разрешении в single-режиме).
 builder.Services.AddSingleton(sp => new XlVolume(
-    sp.GetRequiredService<IOptions<OwnS3Options>>().Value.DataDir,
+    sp.GetRequiredService<StorageModeInfo>().SingleRoot
+        ?? throw new InvalidOperationException("XlVolume разрешён только в single-режиме"),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<XlVolume>>()));
-builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
+builder.Services.AddSingleton(sp => new SingleXlDrive(
     sp.GetRequiredService<XlVolume>(),
     sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<SingleXlDrive>>()));
+
+// XL Erasure: пул, драйв, статус и heal (строятся только в EC-режиме).
+builder.Services.AddSingleton(sp =>
+{
+    var mode = sp.GetRequiredService<StorageModeInfo>();
+    return new ErasurePool(mode.DataRoots,
+        mode.Topology ?? throw new InvalidOperationException("ErasurePool разрешён только в EC-режиме"),
+        sp.GetRequiredService<TimeProvider>());
+});
+builder.Services.AddSingleton(sp => new ErasureXlDrive(
+    sp.GetRequiredService<ErasurePool>(),
+    sp.GetRequiredService<StorageModeInfo>().Topology!.Parity,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<ErasureXlDrive>>()));
+builder.Services.AddSingleton<ErasureStatusProvider>();
+builder.Services.AddSingleton(sp => new ErasureHealService(
+    sp.GetRequiredService<ErasurePool>(), sp.GetRequiredService<ErasureXlDrive>(),
+    sp.GetRequiredService<ErasureStatusProvider>(), sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<ErasureHealService>>()));
+builder.Services.AddSingleton<OwnS3EcMetrics>();
+
+// Общий контракт размещения: развилка режима — при разрешении.
+builder.Services.AddSingleton<IXlDrive>(sp =>
+    sp.GetRequiredService<StorageModeInfo>().IsErasure
+        ? sp.GetRequiredService<ErasureXlDrive>()
+        : sp.GetRequiredService<SingleXlDrive>());
+
+builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
+    sp.GetRequiredService<IXlDrive>(),
+    sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<XlObjectStore>>()));
-builder.Services.AddSingleton<BucketMetaStore>();
 builder.Services.AddHostedService<VolumeCleanupService>();
+builder.Services.AddHostedService<ErasureHealHostedService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
 
 // 21 хендлер протокольного контура (spec §3.4.1) — диспетчеризация по операции.
@@ -160,23 +204,35 @@ app.Urls.Add($"http://*:{options.Server.Port}");
 // путей — шаг 0 S3Middleware.
 app.UseMiddleware<S3Middleware>();
 
-// Том данных (arch/owns3/04 §3/§6): fail-fast до старта Kestrel — невалидный
-// том = диагностика + ненулевой exit (спека §6.1). XlVolume уже в DI — берём
-// тот же инстанс, который получат XlObjectStore и VolumeCleanupService.
-var volume = app.Services.GetRequiredService<XlVolume>();
+// Режим и том (arch/owns3/04 §3/§6, 06 §1): fail-fast до старта прослушивания
+// Kestrel — к этому моменту конфигурация слита целиком (прод — env/appsettings,
+// тесты — in-memory WAF); невалидный конфиг/том = диагностика + ненулевой exit
+// (спека §6.1). Драйв уже в DI — тот же инстанс, который получат XlObjectStore
+// и VolumeCleanupService.
+IXlDrive drive = null!; // присваивается ниже; провал валидации — Environment.Exit
 try
 {
-    volume.Initialize();
+    _ = app.Services.GetRequiredService<StorageModeInfo>(); // парсинг/валидации режима
+    drive = app.Services.GetRequiredService<IXlDrive>();
+    drive.Initialize();
 }
 catch (Exception ex)
 {
-    app.Logger.LogCritical(ex, "Том ownS3 {DataDir} невалиден — отказ старта", options.DataDir);
+    app.Logger.LogCritical(ex, "Конфигурация/том ownS3 (DataDir={DataDir}) невалидны — отказ старта",
+        options.DataDir);
     Environment.Exit(1);
 }
 
+// EC-режим: инструменты OwnS3EcMetrics создаются конструктором (observable-gauge
+// + счётчики heal), класс никто не инжектит — без явного инстанса серии не
+// экспортировались бы. Meter в DI — только при включённых метриках (05 §5).
+if (app.Services.GetRequiredService<StorageModeInfo>().IsErasure
+    && app.Services.GetRequiredService<Shared.Metrics.MetricsOptions>().Enabled)
+    _ = app.Services.GetRequiredService<OwnS3EcMetrics>();
+
 // Вне S3-конвейера: healthz (том валиден + touch-проба записи, спека §6.2)
 // и metrics.
-app.MapGet("/healthz", () => volume.CheckHealth()
+app.MapGet("/healthz", () => drive.CheckHealth()
     ? Results.Ok()
     : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 app.MapAppMetrics();

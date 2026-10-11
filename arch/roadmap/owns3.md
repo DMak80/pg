@@ -28,11 +28,13 @@ ownS3 — действующее S3-хранилище подсистемы бэ
   конфигурации бакета (versioning/lifecycle/replication/…) и S3-Express
   — вне набора: бакеты без versioning, ListObjectVersions отвечает
   текущими версиями как unversioned.
-- **Хранение — single-drive xl-раскладка MinIO без erasure coding**:
-  бакеты — каталоги первого уровня, объект — каталог с `xl.meta` +
+- **Хранение — xl-раскладка MinIO**: режимы single-drive и erasure-сеты
+  (RS-коды, кворумы, деградация, heal — канон
+  [`arch/owns3/06-erasure.md`](../owns3/06-erasure.md)); бакеты —
+  каталоги первого уровня, объект — каталог с `xl.meta` +
   `<dataDir-uuid>/part.N`, служебный контур `.owns3.sys` (формат тома,
-  multipart, tmp/.trash). Межсайтовая и бакетная репликация, erasure
-  sets — не делаем (позже отдельными задачами трека).
+  multipart, tmp/.trash). Межсайтовая и бакетная репликация — не
+  делаем (позже отдельными задачами трека).
 - Протокол: подпись SigV4 (включая presigned и чанковую потоковую
   STREAMING-AWS4-HMAC-SHA256-PAYLOAD), XML-схемы ответов, канонический
   формат ошибок, семантика ETag (MD5 простого PUT / составной
@@ -54,18 +56,6 @@ multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
 
-- **`t40-owns3-erasure-coding`** — хранение с
-  кодами Рида—Соломона по образцу MinIO (в начальной версии
-  не реализуется): multi-drive тома и erasure-сеты,
-  распределение объектов по сетам (у MinIO — SIPMOD+PARITY),
-  кодирование/декодирование шардов data+parity, кворумы записи/чтения,
-  работа в деградации (потеря дисков до parity), bitrot-контроль
-  шардов, расширение `xl.meta` EC-полями (EcAlgo/EcM/EcN/EcBSize/
-  EcIndex/EcDist), формат multi-drive тома, heal недостающих/
-  повреждённых шардов; конфигурация числа дисков и parity — каноном
-  задачи. Референс: `cmd/erasure-coding.go`, `cmd/erasure-encode.go`,
-  `cmd/erasure-decode.go`, `cmd/erasure-sets.go`,
-  `cmd/erasure-object.go`, `cmd/format-erasure.go`.
 - **`t42-owns3-tls`** — TLS-опция S3-грани:
   per-install сертификат, режим HTTP-only для стенда, доверие CA у
   клиентов (SDK бэкапов, `mc`).

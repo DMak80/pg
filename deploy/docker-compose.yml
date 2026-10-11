@@ -290,6 +290,30 @@ services:
     volumes:
       - owns3-data:/data
 
+  # ownS3 XL Erasure (t40, arch/owns3/06 §1): второй режим хранения — тот же
+  # образ owns3:dev (build НЕ дублируется: профиль поднимается на образе,
+  # собранном сервисом owns3 / 00-up.sh), 4 тома под /data1../data4 (сет 3+1).
+  # Профиль owns3-ec — явно: `docker compose --profile owns3-ec up -d owns3-ec`.
+  # Контур standalone: без etcd, без docker.sock.
+  owns3-ec:
+    image: owns3:dev
+    restart: unless-stopped
+    profiles: ["owns3-ec"]
+    ports:
+      # продолжение портового ряда ownS3 (single 9010 → EC 9011, канон 05 §8)
+      - "${OWNS3_EC_HOST_PORT:-9011}:9000"
+    environment:
+      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
+      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      OWNS3_DATA_DIR: /data1,/data2,/data3,/data4
+      OWNS3_EC_SET_SIZE: "4"
+      OWNS3_EC_PARITY: "1"
+    volumes:
+      - owns3-ec-data-1:/data1
+      - owns3-ec-data-2:/data2
+      - owns3-ec-data-3:/data3
+      - owns3-ec-data-4:/data4
+
   # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
   # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
   # подняться в up; entrypoint-заглушка — защита от случайного run.
@@ -330,3 +354,7 @@ volumes:
   vw-snapshots:
   vw-api-tls:
   owns3-data:
+  owns3-ec-data-1:
+  owns3-ec-data-2:
+  owns3-ec-data-3:
+  owns3-ec-data-4:

@@ -25,6 +25,17 @@ public static class OwnS3E2eClients
     /// STREAMING-UNSIGNED-PAYLOAD-TRAILER → 400).</summary>
     public static IAmazonS3 CreateS3(OwnS3E2eEnvironment fx, OwnS3Role role,
         OwnS3ChecksumMode checksum = OwnS3ChecksumMode.WhenRequired)
+        => CreateS3(fx.S3BaseUrl, role, checksum);
+
+    /// <summary>Клиент против EC-окружения (t40) — тот же паттерн, свой baseUrl;
+    /// maxErrorRetry: 0 — кейсы кворумной недоступности (503 без SDK-ретраев,
+    /// иначе каждый отказ тянется минутами экспоненциального backoff).</summary>
+    public static IAmazonS3 CreateS3(OwnS3EcE2eEnvironment fx, OwnS3Role role,
+        OwnS3ChecksumMode checksum = OwnS3ChecksumMode.WhenRequired, int maxErrorRetry = 4)
+        => CreateS3(fx.S3BaseUrl, role, checksum, maxErrorRetry);
+
+    private static IAmazonS3 CreateS3(string baseUrl, OwnS3Role role, OwnS3ChecksumMode checksum,
+        int maxErrorRetry = 4)
     {
         var (access, secret) = role switch
         {
@@ -36,10 +47,11 @@ public static class OwnS3E2eClients
         };
         var config = new AmazonS3Config
         {
-            ServiceURL = fx.S3BaseUrl,
+            ServiceURL = baseUrl,
             ForcePathStyle = true,
             AuthenticationRegion = "us-east-1",
             Timeout = TimeSpan.FromSeconds(10),
+            MaxErrorRetry = maxErrorRetry,
             RequestChecksumCalculation = checksum == OwnS3ChecksumMode.WhenRequired
                 ? RequestChecksumCalculation.WHEN_REQUIRED
                 : RequestChecksumCalculation.WHEN_SUPPORTED,

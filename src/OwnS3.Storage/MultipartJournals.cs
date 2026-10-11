@@ -6,9 +6,9 @@ using System.Text.Json.Serialization;
 namespace OwnS3.Storage;
 
 // Журналы multipart-контура (канон 04 §5): camelCase-JSON; атомарная запись
-// tmp + fsync + rename (по образцу XlMetaFile.Write). internal — для
-// XlVolume/XlObjectStore и юнит-тестов (InternalsVisibleTo).
-internal static class MultipartJournals
+// tmp + fsync + rename (по образцу XlMetaFile.Write). Записи журналов — public:
+// входят в сигнатуры public-контракта IXlDrive.
+public static class MultipartJournals
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -18,16 +18,16 @@ internal static class MultipartJournals
     // Запись журнала активных загрузок (uploads.json, канон 04 §5):
     // bucket/key — обратная расшифровка sha256-каталога для ListMultipartUploads;
     // accessKey — владелец для матрицы видимости (глава 05).
-    internal sealed record UploadJournalEntry(string UploadId, string Bucket, string Key,
+    public sealed record UploadJournalEntry(string UploadId, string Bucket, string Key,
         long InitiatedMs, string AccessKey);
 
     // Запись журнала частей (parts.json, канон 04 §5; etag — hex-MD5 БЕЗ кавычек).
     // JsonPropertyName: camelCase от «ETag» дал бы «eTag», а имя поля по канону — «etag».
-    internal sealed record PartJournalEntry(int PartNumber,
+    public sealed record PartJournalEntry(int PartNumber,
         [property: JsonPropertyName("etag")] string ETag, long Size, long ModTimeMs);
 
     // Маркер попытки Complete (attempt.json): dataDir текущей сборки.
-    internal sealed record AttemptMarker(string DataDir);
+    public sealed record AttemptMarker(string DataDir);
 
     // Каталог ключа: sha256 UTF-8("<bucket>/<key>"), hex lowercase (канон 04 §1/§5).
     public static string KeyDir(string multipartRoot, string bucket, string key) =>

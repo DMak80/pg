@@ -2,31 +2,23 @@ using Microsoft.Extensions.Logging;
 
 namespace OwnS3.Storage;
 
-// Реализация IObjectStore на xl-томе (том обязан быть Initialized до первого
-// вызова). Partial-раскладка: бакеты/объекты/copy/листинги/multipart.
-public sealed partial class XlObjectStore(XlVolume volume, TimeProvider timeProvider,
+// Реализация IObjectStore поверх драйва размещения (IXlDrive): держит ВСЮ
+// логику 21 операции (conditional/Range/ETag/листинги/multipart-валидации/
+// идемпотентность), способ размещения — за драйвом (канон 04/06).
+// Partial-раскладка: бакеты/объекты/copy/листинги/multipart.
+public sealed partial class XlObjectStore(IXlDrive drive, TimeProvider timeProvider,
     ILogger<XlObjectStore> logger) : IObjectStore
 {
-    private readonly BucketMetaStore _bucketMeta = new(volume, timeProvider);
+    // Драйв размещения (single/EC — единая логика операций).
+    internal readonly IXlDrive Drive = drive;
 
-    // Логгер объекта (задачи 6–9: warning битых xl.meta, fromBackup и т.п.)
+    // Логгер объекта (warning битых журналов, fromBackup и т.п.).
     private readonly ILogger<XlObjectStore> _logger = logger;
-
-    // Корень бакета в томе.
-    internal string BucketRoot(string bucket) => Path.Combine(volume.Root, bucket);
-
-    // Каталог существует и не служебный.
-    internal bool BucketExists(string bucket) =>
-        bucket != ".owns3.sys" && Directory.Exists(BucketRoot(bucket));
-
-    // Каталог объекта по ключу (кодированный путь канона 04 §1).
-    internal string ObjectDir(string bucket, string key) =>
-        Path.Combine(BucketRoot(bucket), XlPathEncoder.EncodePath(key));
 
     // Отсутствие бакета — доменный исход NoSuchBucket.
     internal void EnsureBucket(string bucket)
     {
-        if (!BucketExists(bucket))
+        if (!Drive.BucketExists(bucket))
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchBucket);
     }
 }

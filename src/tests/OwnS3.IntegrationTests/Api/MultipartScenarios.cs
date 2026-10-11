@@ -10,12 +10,14 @@ namespace OwnS3.IntegrationTests.Api;
 // Полный HTTP-цикл multipart (глава 02 §5) через подписанные запросы: 7 операций,
 // составной ETag, Range через стыки, права/видимость, DeleteBucket-гейт, ошибки.
 // Изоляция: каждый мутационный кейс — уникальный бакет b-mp-<суффикс> (admin).
-public sealed class MultipartScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// Параметризация режима (t40): логика — в базе, single/EC-наследники
+// объявляют фикстуру/коллекцию.
+public abstract class MultipartScenariosBase(OwnS3AppFactory factory)
 {
     private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
     private static readonly byte[] FiveMiB = new byte[5 * 1024 * 1024]; // нули
 
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     // CreateMultipartUpload: тело канонически отсутствует, но отправляем ОДИН байт —
     // пустое body НЕ создаёт request.Content у тест-клиента, и Content-Type/
@@ -541,3 +543,7 @@ public sealed class MultipartScenarios(OwnS3AppFactory factory) : IClassFixture<
         list.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }
+
+// single-режим: свой том на класс (как до t40).
+public sealed class MultipartScenarios(OwnS3AppFactory factory) : MultipartScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;
