@@ -22,8 +22,11 @@ wait_no_alert() { for i in $(seq 1 120); do has_alert "$1" "$2" || return 0; sle
 # кластера несёт portalloc-формат advertised-хоста); контейнер движка
 # pgw-demo-shard1-<node>.
 m1_raw="$(ect get /service/demo-shard1/leader --print-value-only 2>/dev/null)"
-m1_node="$(echo "$m1_raw" | jq -r '.name // empty' 2>/dev/null)"
-[ -n "$m1_node" ] || m1_node="$m1_raw"
+if [[ "$m1_raw" == {*} ]]; then
+  m1_node="$(echo "$m1_raw" | jq -r '.name // empty')"
+else
+  m1_node="$m1_raw"
+fi
 [ -n "$m1_node" ] && [ "$m1_node" != "null" ] \
   || { echo "❌ DCS leader demo-shard1 пуст"; exit 1; }
 m1="$(ect get /clusters/demo/shards/shard1/master --print-value-only)"
