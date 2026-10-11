@@ -34,7 +34,10 @@ public interface IXlDrive
 
     // ── бакеты (04 §1 / 06 §8) ──
     bool BucketExists(string bucket);
-    void CreateBucket(string bucket);                    // каталоги + bucket.json
+
+    // Каталоги + bucket.json; creationDate — CreationDate реплики/бэктфила (t35, глава 07),
+    // null = текущее время (клиентский CreateBucket).
+    void CreateBucket(string bucket, DateTimeOffset? creationDate = null);
     void DeleteBucket(string bucket);                    // emptiness-проверка + trash
     IReadOnlyList<BucketEntry> ListBuckets();            // 06 §8: EC — консенсус по любому кворумному сету
 

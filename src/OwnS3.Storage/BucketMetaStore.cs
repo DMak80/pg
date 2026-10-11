@@ -14,12 +14,13 @@ public sealed class BucketMetaStore(XlVolume volume, TimeProvider timeProvider)
     // Модель bucket.json.
     private sealed record BucketMeta(long CreatedAt);
 
-    // Создаёт bucket.json, возвращает createdAt.
-    public DateTimeOffset CreateBucketMeta(string bucket)
+    // Создаёт bucket.json, возвращает createdAt; at — CreationDate реплики
+    // (t35, глава 07 §9 backfill), null = текущее время.
+    public DateTimeOffset CreateBucketMeta(string bucket, DateTimeOffset? at = null)
     {
         var dir = Path.Combine(volume.BucketsMetaDir, bucket);
         Directory.CreateDirectory(dir);
-        var createdAt = timeProvider.GetUtcNow();
+        var createdAt = at ?? timeProvider.GetUtcNow();
         File.WriteAllText(Path.Combine(dir, "bucket.json"),
             JsonSerializer.Serialize(new BucketMeta(createdAt.ToUnixTimeMilliseconds()), JsonOptions));
         return createdAt;

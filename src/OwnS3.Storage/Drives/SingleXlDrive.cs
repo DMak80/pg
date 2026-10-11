@@ -70,10 +70,10 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
     public bool BucketExists(string bucket) =>
         bucket != ".owns3.sys" && Directory.Exists(BucketRoot(bucket));
 
-    public void CreateBucket(string bucket)
+    public void CreateBucket(string bucket, DateTimeOffset? creationDate = null)
     {
         Directory.CreateDirectory(BucketRoot(bucket));
-        _bucketMeta.CreateBucketMeta(bucket);
+        _bucketMeta.CreateBucketMeta(bucket, creationDate);
     }
 
     public void DeleteBucket(string bucket)
