@@ -29,9 +29,14 @@ else
 fi
 [ -n "$m1_node" ] && [ "$m1_node" != "null" ] \
   || { echo "❌ DCS leader demo-shard1 пуст"; exit 1; }
-m1="$(ect get /clusters/demo/shards/shard1/master --print-value-only)"
+m1=""
+for i in $(seq 1 30); do
+  m1="$(ect get /clusters/demo/shards/shard1/master --print-value-only 2>/dev/null)"
+  [ -n "$m1" ] && break
+  sleep 2
+done
 [ -n "$m1" ] \
-  || { echo "❌ master-ключ shard1 пуст"; exit 1; }
+  || { echo "❌ master-ключ shard1 пуст (60 c; предыдущий чек 20 останавливал воркеров — ждём MasterKeyReconciler)"; exit 1; }
 m1_container="pgw-demo-shard1-${m1_node}"
 docker inspect "$m1_container" >/dev/null 2>&1 \
   || { echo "❌ контейнер мастера $m1_container не найден (docker ps | grep pgw-demo)"; exit 1; }
