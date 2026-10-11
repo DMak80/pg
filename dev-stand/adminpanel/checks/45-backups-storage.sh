@@ -8,10 +8,17 @@ cd "$(dirname "$0")/.."
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
-# Гвард: as-minio жив (full-профиль стенда) — без S3 бэкапов грань не проверить.
-curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 \
-  || { echo "❌ as-minio не отвечает на :9000/minio/health/live — запусти checks/00-up.sh (full-профиль)"; exit 1; }
-echo "  as-minio жив (health/live ok)"
+# Гвард: ownS3 жив (deploy-контур, t41) — без S3 бэкапов грань не проверить;
+# порт/root — из deploy/.env (по образцу чека 46).
+ROOT="$(cd ../.. && pwd)"
+ENV_FILE="$ROOT/deploy/.env"
+OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
+OWNS3_PORT="${OWNS3_PORT:-9010}"
+OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
+OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
+curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 \
+  || { echo "❌ owns3 не отвечает на :${OWNS3_PORT}/healthz — запусти checks/00-up.sh"; exit 1; }
+echo "  owns3 жив (/healthz ok, :${OWNS3_PORT})"
 
 # Панель поднята (до 60 c) + cookie-логин — как 10-smoke-api.sh.
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
@@ -23,16 +30,16 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 echo "  панель жива ($BASE), login ok"
 
-# Налив тестовых объектов mc-контейнером — ТОЧНО по прецеденту 00-up.sh:
-# у образа mc ENTRYPOINT ["mc"] — shell зовём через --entrypoint /bin/sh;
-# сеть — из inspect as-minio (имя сети не хардкодим); идемпотентно (перепись).
-minio_net="$(docker inspect as-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
-docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:RELEASE.2025-08-13T08-35-41Z \
-  -c "mc alias set a http://as-minio:9000 minioadmin minioadmin >/dev/null \
+# Налив тестовых объектов mc-контейнером против ХОСТ-ПУБЛИКАЦИИ ownS3
+# (прецедент чека 46: --add-host host-gateway, root-креды из deploy/.env;
+# идемпотентно — перепись тех же ключей).
+docker run --rm --add-host host.docker.internal:host-gateway \
+  --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
+  -c "mc alias set a http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
       && echo data | mc pipe a/pgworker-backups/demo/s1/full/20260913a/base.tar \
       && echo wal  | mc pipe a/pgworker-backups/demo/s1/wal/000000010000000000000001" \
-  || { echo "❌ mc-налив в as-minio/pgworker-backups не прошёл"; exit 1; }
-echo "  налиты demo/s1/full/20260913a/base.tar и demo/s1/wal/…01"
+  || { echo "❌ mc-налив в ownS3/pgworker-backups не прошёл (:${OWNS3_PORT})"; exit 1; }
+echo "  налиты demo/s1/full/20260913a/base.tar и demo/s1/wal/…01 (ownS3)"
 
 # Ждём инвентарь-тик панели (интервал 60 c — ретрай до 70 c). ВАЖНО: ждать
 # надо ИМЕННО налитое дерево — configured/health зелёные сразу от первого
@@ -41,16 +48,16 @@ echo "  налиты demo/s1/full/20260913a/base.tar и demo/s1/wal/…01"
 # подъёме, reconfigure не нужна.
 tree_ok() {
   api /api/backups/storage | jq -e \
-    '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == true
+    '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == null
      and any(.clusters[]?; .cluster == "demo")
      and any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "s1" and .fullsCount >= 1)' >/dev/null
 }
 for i in $(seq 1 70); do tree_ok && break; sleep 1; done
 tree_ok || { echo "❌ /api/backups/storage: configured/health/дерево demo не зелёные за 70 c (инвентарь-тик?)"; exit 1; }
 storage="$(api /api/backups/storage)"
-echo "$storage" | jq -e '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == true' >/dev/null \
+echo "$storage" | jq -e '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == null' >/dev/null \
   || { echo "❌ /api/backups/storage: configured/health"; exit 1; }
-echo "  /api/backups/storage: configured=true, health api/live/cluster ok"
+echo "  /api/backups/storage: configured=true, health api/live ok, cluster n/a (ownS3)"
 
 # Дерево: кластер demo налит, шард s1 несёт полный бэкап.
 echo "$storage" | jq -e 'any(.clusters[]?; .cluster == "demo")' >/dev/null \
