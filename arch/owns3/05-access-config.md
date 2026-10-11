@@ -120,10 +120,18 @@ health и метрики, правила запуска. Операции — г
   persistent-volume (глава 01). Подъём — `dev-stand/adminpanel/checks/
   00-up.sh` (publish на хосте → compose build), smoke-проверки —
   `checks/46-owns3.sh` (`/healthz`, `/metrics`, операции `mc` против
-  хост-публикации). До перевода подсистемы бэкапов (roadmap
-  `t41-owns3-minio-migration`) стендовые бэкапы остаются на `as-minio`:
-  ownS3 живёт в стендовом контуре параллельно, `PGW_BACKUP_S3_*`
-  не меняются.
+  хост-публикации). Подсистема бэкапов пишет в ownS3: комплект
+  `PGW_BACKUP_S3_*` → `http://host.docker.internal:${OWNS3_HOST_PORT}`
+  (ключи — §2: writer `read-write`; значения совпадают с
+  `OWNS3_ACCESS_KEYS__0__*` — один комплект S3-секретов воркера,
+  arch/19 §7), bucket `pgworker-backups` сеет `00-up.sh` (`mc mb
+  --ignore-existing` root-кредами — CreateBucket только `admin`, матрица
+  §3). Панель читает bucket read-only (ключ `read-only`, §2).
+  `as-minio` полного стенда — переходный read-only-контур старых цепочек
+  (новых объектов не получает, ретенцией воркера не чистится); критерий
+  готовности к отказу и порядок сноса — `docs/owns3-migration.md`. Грань
+  «Хранилище бэкапов» панели проверяет `checks/45-backups-storage.sh`
+  против ownS3.
 - **E2E реальными клиентами** — серия
   `src/tests/OwnS3.IntegrationTests/E2e` (AWS SDK .NET и `mc` против
   собственного контейнера `owns3:e2e`): гейт `PGW_TEST_DOCKER=1`,
