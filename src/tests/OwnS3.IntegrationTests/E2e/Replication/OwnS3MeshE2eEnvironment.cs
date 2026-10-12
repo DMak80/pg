@@ -77,7 +77,7 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     /// полного mesh (каждый знает всех); false — соседей нет (состав через
     /// PUT /admin/replication/targets сценарием). Retry старта ×3 (полное удаление попытки).</summary>
     public static async Task<OwnS3MeshE2eEnvironment> StartAsync(string slug, int nodes,
-        bool fullMeshTargets = true, Action<int, ContainerBuilder>? configureNode = null,
+        bool fullMeshTargets = true, Func<int, ContainerBuilder, ContainerBuilder>? configureNode = null,
         CancellationToken ct = default)
     {
         if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
@@ -137,7 +137,8 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                             index++;
                         }
                     }
-                    configureNode?.Invoke(i, builder);
+                    // ContainerBuilder иммутабелен: перехватываем возвращённый builder
+                    builder = configureNode?.Invoke(i, builder) ?? builder;
                     var container = builder
                         .WithWaitStrategy(Wait.ForUnixContainer()
                             .UntilHttpRequestIsSucceeded(
@@ -182,7 +183,7 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     /// teardown — DisposeAsync при любом исходе.</summary>
     public static async Task RunScenarioAsync(string slug, int nodes,
         Func<OwnS3MeshE2eEnvironment, Task> body, bool fullMeshTargets = true,
-        Action<int, ContainerBuilder>? configureNode = null, CancellationToken ct = default)
+        Func<int, ContainerBuilder, ContainerBuilder>? configureNode = null, CancellationToken ct = default)
     {
         var fx = await StartAsync(slug, nodes, fullMeshTargets, configureNode, ct);
         try

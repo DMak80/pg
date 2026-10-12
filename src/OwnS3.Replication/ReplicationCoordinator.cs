@@ -79,7 +79,7 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
                 var dispatcher = new NotificationDispatcher(target, journal, cursors, transport, options,
                     metrics, originHostId, timeProvider, dispatcherLogger);
                 var fetcher = new ObjectFetcher(target, queues.ForSource(target.Name), transport, applier,
-                    counters, getFreeDiskBytes, options, timeProvider, fetcherLogger);
+                    counters, getFreeDiskBytes, options, timeProvider, fetcherLogger, metrics);
                 _executors[target.Name] = (dispatcher, fetcher, cts);
                 _executorTasks.Add(dispatcher.RunAsync(cts.Token));
                 _executorTasks.Add(fetcher.RunAsync(cts.Token));

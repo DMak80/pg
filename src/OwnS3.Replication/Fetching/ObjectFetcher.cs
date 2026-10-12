@@ -35,9 +35,10 @@ public sealed class ObjectFetcher
 
     public ObjectFetcher(TargetRecord source, FetchQueue queue, IReplicationTransport transport,
         ReplicaApplier applier, IOutcomeCounters counters, Func<long> getFreeDiskBytes,
-        ReplicationOptions options, TimeProvider timeProvider, ILogger<ObjectFetcher> logger)
+        ReplicationOptions options, TimeProvider timeProvider, ILogger<ObjectFetcher> logger,
+        ReplicationMetrics metrics)
         : this(source, queue, transport, applier, counters, getFreeDiskBytes, options, timeProvider, logger,
-              DiskPausePoll, BackoffBase)
+              metrics, DiskPausePoll, BackoffBase)
     {
     }
 
@@ -45,7 +46,7 @@ public sealed class ObjectFetcher
     internal ObjectFetcher(TargetRecord source, FetchQueue queue, IReplicationTransport transport,
         ReplicaApplier applier, IOutcomeCounters counters, Func<long> getFreeDiskBytes,
         ReplicationOptions options, TimeProvider timeProvider, ILogger<ObjectFetcher> logger,
-        TimeSpan diskPoll, TimeSpan backoffBase)
+        ReplicationMetrics metrics, TimeSpan diskPoll, TimeSpan backoffBase)
     {
         _source = source;
         _queue = queue;
@@ -56,9 +57,12 @@ public sealed class ObjectFetcher
         _options = options;
         _timeProvider = timeProvider;
         _logger = logger;
+        _metrics = metrics;
         _diskPoll = diskPoll;
         _backoffBase = backoffBase;
     }
+
+    private readonly ReplicationMetrics _metrics;
 
     // Фетчи на паузе (нет места на диске — глава 07 §7).
     public bool Paused => _paused;
@@ -98,6 +102,7 @@ public sealed class ObjectFetcher
                 if (!_paused)
                 {
                     _paused = true;
+                    _metrics.SetFetchPaused(_source.Name, true);
                     _logger.LogWarning("Фетчи {Source} на паузе: свободного места меньше {Min} байт",
                         _source.Name, _options.DiskFreeMinBytes);
                 }
@@ -107,14 +112,21 @@ public sealed class ObjectFetcher
             if (_paused)
             {
                 _paused = false;
+                _metrics.SetFetchPaused(_source.Name, false);
                 _logger.LogInformation("Место освободилось — фетчи {Source} продолжаются", _source.Name);
             }
 
             if (!_queue.TryDequeue(out var task))
             {
+                // Метрики очереди/лага данных (глава 07 §10): 0 — очередь пуста
+                _metrics.SetFetchQueueDepth(_source.Name, 0);
+                _metrics.SetFetchLagSeconds(_source.Name, 0);
                 await Task.Delay(_diskPoll, ct);
                 continue;
             }
+            _metrics.SetFetchQueueDepth(_source.Name, _queue.Depth);
+            _metrics.SetFetchLagSeconds(_source.Name,
+                Math.Max(0, _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - task.NotifiedModMs) / 1000.0);
 
             var failed = await TryFetchOneAsync(ct, task);
             if (failed)

@@ -36,12 +36,14 @@ public sealed class ObjectFetcherFixture : IDisposable
     // Очередь фетчей fixture — тесты enqueue'ат задачи (фетчер их разбирает).
     public FetchQueue Queue { get; } = new(100);
 
+    public ReplicationMetrics Metrics { get; } = new(new System.Diagnostics.Metrics.Meter("owns3.test.fetcher"));
+
     public ObjectFetcher Create(long freeDisk = long.MaxValue, long minDisk = 0, int pollMs = 5) =>
         new(new TargetRecord("peer-a", "http://peer-a:9000", "ak", "sk"),
             Queue, Transport, Applier, Counters,
             () => freeDisk,
             new ReplicationOptions { DiskFreeMinBytes = minDisk, Parallelism = 1, BackoffMaxSec = 60 },
-            TimeProvider.System, NullLogger<ObjectFetcher>.Instance,
+            TimeProvider.System, NullLogger<ObjectFetcher>.Instance, Metrics,
             diskPoll: TimeSpan.FromMilliseconds(pollMs), backoffBase: TimeSpan.FromMilliseconds(10));
 
     public void Dispose()
@@ -227,7 +229,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         var fetcherWithQueue = new ObjectFetcher(new TargetRecord("peer-a", "http://a:9000", "ak", "sk"),
             queue, _fixture.Transport, _fixture.Applier, _fixture.Counters, () => long.MaxValue,
             new ReplicationOptions { DiskFreeMinBytes = 0 }, TimeProvider.System,
-            NullLogger<ObjectFetcher>.Instance);
+            NullLogger<ObjectFetcher>.Instance, _fixture.Metrics);
         var bucket = "bdrain";
         _fixture.Store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(100));
         foreach (var key in new[] { "d1", "d2", "d3" })
