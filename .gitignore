@@ -27,4 +27,7 @@ src/AdminPanel.Api/wwwroot/
 
 # Секреты установки PgWorker (deploy/.env; шаблон — deploy/.env.example)
 deploy/.env
+# Производный файл секретов нод s3worker (env_file, собирает 00-up.sh из .env;
+# прод — создаёт оператор per-install)
+deploy/s3w-node-secrets.env
 artifacts/

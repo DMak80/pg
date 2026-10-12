@@ -205,17 +205,6 @@ x-s3worker-env: &s3worker-env
   S3W_API_TLS_KEY_PATH: /tls/server.key
   S3W_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
   S3Worker__Api__EnableSeedEndpoint: ${S3W_API_ENABLE_SEED:-false}
-  # Демо-профиль секретов нод (arch/23 §6): значения — в .env (прод —
-  # per-install секрет; в etcd/лог/журнал НЕ попадают). Пустые ключи —
-  # валидно (ключи опциональны, root-пара обязательна).
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER:?задайте секрет}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD:?задайте секрет}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__ACCESSKEY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__ACCESSKEY:-}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__SECRETKEY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__SECRETKEY:-}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__POLICY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__POLICY:-}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__ACCESSKEY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__ACCESSKEY:-}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__SECRETKEY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__SECRETKEY:-}
-  S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__POLICY: ${S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__POLICY:-}
 
 x-s3worker-base: &s3worker-base
   build:
@@ -225,6 +214,13 @@ x-s3worker-base: &s3worker-base
       S3W_PUBLISH_DIR: artifacts/s3worker/publish
   image: s3worker:dev
   restart: unless-stopped
+  # Профили секретов нод (arch/23 §6) — env_file БЕЗ интерполяции: имена
+  # S3W_NODE_SECRETS__<PROFILE>__* допускают дефис в <PROFILE>, который
+  # compose-парсер ${...} читает как оператор дефолта (секрет не доезжает).
+  # Файл per-install (в git НЕ попадает); формат — те же строки KEY=VAL,
+  # что в .env; отсутствие файла = падение up (fail-fast).
+  env_file:
+    - ./s3w-node-secrets.env
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - s3w-snapshots:/snapshots
