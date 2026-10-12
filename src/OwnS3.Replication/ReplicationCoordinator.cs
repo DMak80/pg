@@ -120,6 +120,8 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
     // Цикл обслуживания: проход при старте и каждые 60 с (§8-а) + периодический
     // reconcile раз в ReconcileIntervalSeconds (§9 триггер 4); graceful по cancel.
+    // Эффективный период reconcile ограничен снизу гранулярностью цикла: env < 60
+    // фактически даёт 60 с (проверка срока — раз в проход обслуживания).
     private async Task RunMaintenanceLoopAsync(CancellationToken ct)
     {
         var timerPeriod = MaintenancePeriod;
@@ -174,7 +176,7 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
                 {
                     // Не всё применено (источник недоступен в окне drain) — чистый
                     // маркер НЕ ставить: он заблокирует стартовый reconcile, а дыры
-                    // не закрылись бы до периодического (до 24 ч) — глава 07 §7/§9
+                    // не закрылись бы до периодического (60 с по умолчанию) — глава 07 §7/§9
                     drainedClean = false;
                     logger.LogWarning(
                         "Drain {Fetcher}: есть НЕ применённые ключи — маркер останется грязным (стартовый reconcile закроет дыры)",
