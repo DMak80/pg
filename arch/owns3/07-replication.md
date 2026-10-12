@@ -384,8 +384,11 @@ App (§11 раскладка исполнения) зовёт проход **п�
 3. **грязная остановка процесса** — маркер `state.json` отсутствует/
    false (крах/kill без drain) → стартовый reconcile-проход по всем
    соседям;
-4. **периодически** — `OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS`
-   (дефолт **24** — страховой контур);
+4. **периодически** — `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS`
+   (дефолт **60**: самозаживление приостановленных проходов — suspend
+   при переполнении fetch-очереди подхватывается следующим проходом
+   максимум через минуту — и общий страховой контур сходимости;
+   нагрузка листинга на домашнем контуре пренебрежима);
 5. **админ-команда** `POST /admin/replication/reconcile` (202; идущий
    продолжается, параллельный не создаётся).
 
@@ -510,7 +513,7 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 | `OWNS3_REPLICATION_BACKOFF_MAX_SEC` | потолок эксп-бэкоффа (§7/§8) | **60** |
 | `OWNS3_REPLICATION_DISK_FREE_MIN_BYTES` | watermark свободного места фетчей (§7) | **1 ГиБ** |
 | `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | retention tombstones (§7) | **168** |
-| `OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS` | период reconcile (§9) | **24** |
+| `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | период reconcile (§9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | ёмкость fetch-очереди на источник (§7) | **10000** |
 | `OWNS3_HOST_ID` | originHostId уведомлений — диагностика (§2; глава 05 §4) | имя контейнера |
 
