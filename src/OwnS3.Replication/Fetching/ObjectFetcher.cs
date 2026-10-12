@@ -17,7 +17,9 @@ namespace OwnS3.Replication.Fetching;
 // skipped, Conflict → conflict; успешное тело → fetched.
 public sealed class ObjectFetcher
 {
-    internal static readonly TimeSpan DiskPausePoll = TimeSpan.FromSeconds(5);
+    // 250 мс — измерение A15 (глава 07 §10) вскрыло: «сон 5 с» при пустой очереди
+    // давал сквозную латентность ~5 с (у порога A15 ≤5 с); 250 мс — ~0.75 с с запасом.
+    internal static readonly TimeSpan DiskPausePoll = TimeSpan.FromMilliseconds(250);
     internal static readonly TimeSpan BackoffBase = TimeSpan.FromSeconds(1);
 
     private readonly TargetRecord _source;

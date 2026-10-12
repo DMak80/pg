@@ -289,6 +289,24 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
         await RunDockerAsync(["network", "disconnect", _splitNet.Name, NodeName(i)], ct);
     }
 
+    /// <summary>Отключить ВСЕ узлы от сети раскола (finaл heal).</summary>
+    public async Task DetachAllFromSplitNetworkAsync(CancellationToken ct)
+    {
+        if (_splitNet is null)
+            return;
+        for (var i = 0; i < Nodes; i++)
+        {
+            try
+            {
+                await RunDockerAsync(["network", "disconnect", _splitNet.Name, NodeName(i)], ct);
+            }
+            catch (ApplicationException)
+            {
+                // узел не в split-сети — норма
+            }
+        }
+    }
+
     /// <summary>Срастание половин: возврат {2,3} в основную сеть, вторая удаляется.</summary>
     public async Task HealHalvesAsync(CancellationToken ct)
     {
@@ -322,7 +340,18 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     public Task<string> RunDockerAsync(IReadOnlyList<string> args, CancellationToken ct)
         => OwnS3E2eEnvironmentShim.RunProcessAsync("docker", [.. args], ct, TimeSpan.FromMinutes(2));
 
-    /// <summary>Телеметрия ДО любых удалений: logs+inspect ВСЕХ узлов.</summary>
+    /// <summary>Сквозная метрика серии (глава 07 §10, [METRIC] по канону
+    /// docs/e2e-launch.md): строка [METRIC] name=value в Console + дописывание
+    /// в metrics.log ArtifactsDir (по образцу phases.log).</summary>
+    public async Task LogMetricAsync(string name, string value)
+    {
+        var line = $"{name}={value}";
+        Console.WriteLine($"[METRIC] {line}");
+        await File.AppendAllTextAsync(Path.Combine(_artifactsDir, "metrics.log"),
+            $"{DateTime.UtcNow:O} {line}\n");
+    }
+
+        /// <summary>Телеметрия ДО любых удалений: logs+inspect ВСЕХ узлов.</summary>
     public async Task CollectDiagnosticsAsync(string mark)
     {
         foreach (var container in _containers)
