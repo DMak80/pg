@@ -78,7 +78,7 @@
   - §7 Приёмник: fetch-очередь in-memory bounded per-source (параметр `OWNS3_REPLICATION_FETCH_QUEUE_MAX`, дефолт 10000), фетчер per-source (parallelism/rate/backoff/пауза по месту `OWNS3_REPLICATION_DISK_FREE_MIN_BYTES` = 1 ГиБ), маркер чистого завершения `state.json {shutdownClean}`, LWW `(modTime, contentSha256)` с тай-брейком sha лексикографически и журналируемым конфликтом при равных modTime/разных sha, tombstone-хранилище `tombstones/<sha256(bucket)>/<sha256(key)>.json {bucket, key, deleteTimeUnixMs}` с retention `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` (168) — хранилище едино: пишется и локальным клиентским DELETE (fetch-ответы «ключ удалён»), и применением реплики object-delete, и защитой от воскрешения; отложенные bucket-delete.
   - §8 Notifier: per-target исполнитель, окно `OWNS3_REPLICATION_INFLIGHT_WINDOW` (64), бэкофф эксп. 1 с → `OWNS3_REPLICATION_BACKOFF_MAX_SEC` (60), at-least-once + дедуп.
   - §8-а Цикл обслуживания (ReplicationCoordinator): периодический проход (60 с): штатный тримминг `Trim(min(watermark приёма активных соседей))`; при превышении бюджета журнала — `ForceTrimToBudget()` + лог-событие «потеряны уведомления для отстающих соседей» (алерт-метрика `ownS3_replication_outbox_budget_exceeded`); retention-чистка tombstones `Cleanup(now, retentionHours)`.
-  - §9 Reconcile: ВСЕ ПЯТЬ триггеров 3.7 явно: (1) добавление соседа; (2) старт на пустом томе при существующем составе; (3) грязная остановка процесса (отсутствующий/`false` маркер `state.json` — стартовый reconcile-проход по всем соседям; «пустой том» триггера (2) реализуется этим же механизмом: на пустом томе нет `state.json` → маркер грязный → стартовый reconcile); (4) периодически `OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS`; (5) админ-команда. Механизм: постраничный листинг+LWW+маркер `reconcile/<source>.marker`, сверка состава бакетов в сторону backfill, параллельный не создаётся. Листинг-грань без `bucket` возвращает состав бакетов (backfill).
+  - §9 Reconcile: ВСЕ ПЯТЬ триггеров 3.7 явно: (1) добавление соседа; (2) старт на пустом томе при существующем составе; (3) грязная остановка процесса (отсутствующий/`false` маркер `state.json` — стартовый reconcile-проход по всем соседям; «пустой том» триггера (2) реализуется этим же механизмом: на пустом томе нет `state.json` → маркер грязный → стартовый reconcile); (4) периодически `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` (дефолт 60); (5) админ-команда. Механизм: постраничный листинг+LWW+маркер `reconcile/<source>.marker`, сверка состава бакетов в сторону backfill, параллельный не создаётся. Листинг-грань без `bucket` возвращает состав бакетов (backfill).
   - §10 Наблюдаемость: таблица метрик 3.8 (имена как в spec), sync-report формат `{bucket, prefix, marker, firstKey, firstModTime, lastKey, lastModTime, count, totalSize, aggregateHash}` (aggregateHash = XOR 64-бит FNV-1a свёртка пар (key, modTimeUnixMs)), лог-события; `GET /admin/replication/status` отражает по каждому соседу стейт (online/offline, watermark приёма, глубины очередей, лаги, ход reconcile) И счётчики исходов (notified accepted/backoff/retry; fetched; applied/skipped/conflict). Точки инкремента счётчиков исходов приёма: applied — применение самодостаточных событий приёмником уведомлений И применение фетча; skipped — LWW-предфильтр уведомлений и skip фетча.
   - §11 Раскладка/env-таблица (все `OWNS3_REPLICATION_*`), EC-режим: состояние репликации на служебном контуре первого диска, НЕ реплицируется на диски сета.
   - §12 Границы надёжности (раздел 6 spec).
@@ -285,7 +285,7 @@ public sealed class ReplicationOptions
     public int BackoffMaxSec { get; set; } = 60;
     public long DiskFreeMinBytes { get; set; } = 1024L * 1024 * 1024;
     public int TombstoneRetentionHours { get; set; } = 168;
-    public int ReconcileIntervalHours { get; set; } = 24;
+    public int ReconcileIntervalSeconds { get; set; } = 60;
     public int FetchQueueMax { get; set; } = 10000;
 }
 public sealed record TargetOptions(string Name, string Endpoint, string AccessKey, string SecretKey);
@@ -833,7 +833,7 @@ public interface IReplicationEventSink { ... } // реализация + NullRep
 - `DeleteObjectsHandler`: для каждого `r.Deleted` → событие на каждый ключ.
 - `CreateBucketHandler` / `DeleteBucketHandler`: после коммита → `BucketCreated/BucketDeleted` (время из `TimeProvider` — хендлеры берут TimeProvider из DI, не `DateTimeOffset.UtcNow`).
 
-Env-трансляция Program.cs (по образцу `OWNS3_ACCESS_KEYS__*`): скаляры `OWNS3_REPLICATION_{OUTBOX_BUDGET_BYTES,INFLIGHT_WINDOW,PARALLELISM,MAX_RATE_BYTES,BACKOFF_MAX_SEC,DISK_FREE_MIN_BYTES,TOMBSTONE_RETENTION_HOURS,RECONCILE_INTERVAL_HOURS,FETCH_QUEUE_MAX}` → `OwnS3:Replication:*`; массив `OWNS3_REPLICATION_TARGETS__<i>__{NAME,ENDPOINT,ACCESSKEY,SECRETKEY}` → `OwnS3:Replication:Targets:<i>:*` (скан до первого пропуска индекса).
+Env-трансляция Program.cs (по образцу `OWNS3_ACCESS_KEYS__*`): скаляры `OWNS3_REPLICATION_{OUTBOX_BUDGET_BYTES,INFLIGHT_WINDOW,PARALLELISM,MAX_RATE_BYTES,BACKOFF_MAX_SEC,DISK_FREE_MIN_BYTES,TOMBSTONE_RETENTION_HOURS,RECONCILE_INTERVAL_SECONDS,FETCH_QUEUE_MAX}` → `OwnS3:Replication:*`; массив `OWNS3_REPLICATION_TARGETS__<i>__{NAME,ENDPOINT,ACCESSKEY,SECRETKEY}` → `OwnS3:Replication:Targets:<i>:*` (скан до первого пропуска индекса).
 
 DI: `ReplicationTargets.Load(...)` на `.owns3.sys/replication/` тома (путь — от StorageModeInfo.DataRoots[0] + `.owns3.sys`; каталог раскладки создать), `OutboxJournal`, `TombstoneStore`, `ReplicaApplier`, `FetchQueueRegistry`, `NotificationInbox`, `IReplicationEventSink` (активен/Null по `targets.Active`).
 
@@ -1047,7 +1047,7 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
 1. добавление соседа (`TargetsChanged`: reconcile по НОВОМУ соседу);
 2. старт на пустом томе при существующем составе — реализуется стартовым reconcile: на пустом томе нет `state.json` → `WasCleanShutdown()==false` → стартовый проход по всем соседям (код-комментарий в `ReplicationCoordinator` фиксирует это покрытие явно);
 3. грязная остановка (`WasCleanShutdown()==false`) — стартовый проход по всем соседям;
-4. периодически `ReconcileIntervalHours` (таймер координатора);
+4. периодически `ReconcileIntervalSeconds` (таймер координатора, дефолт 60);
 5. админ-команда `POST /admin/replication/reconcile` (Task 14 → `Trigger` по всем).
 
 `GET /replication/listing` без `bucket` (или пустой) возвращает `{buckets:[{name, creationDateUnixMs}]}` — состав бакетов для backfill; с `bucket` — постраничный листинг ключей. Транспорт — `ListingBucketsAsync` (Task 7), ветка добавляется в `ReplicationHandlers`.

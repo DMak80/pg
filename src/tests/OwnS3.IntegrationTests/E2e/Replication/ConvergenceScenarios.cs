@@ -97,6 +97,14 @@ public sealed class ConvergenceScenarios
                     break;
                 await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
             }
+            // Ассерт офлайна: сосед n0 УВИДЕЛ обрыв за бюджет 30 с — иначе измерение
+            // восстановления бессмысленно (падаем сразу с понятной причиной)
+            var statusCut = JsonDocument.Parse(
+                await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+            statusCut.GetProperty("neighbors").EnumerateArray()
+                .First(n => n.GetProperty("name").GetString() == env.NodeName(1))
+                .GetProperty("online").GetBoolean()
+                .Should().BeFalse("сосед увидел обрыв связи за 30 с после split (A4)");
             var statusBefore = JsonDocument.Parse(
                 await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
             var acceptedBefore = statusBefore.GetProperty("neighbors").EnumerateArray()

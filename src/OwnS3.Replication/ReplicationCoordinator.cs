@@ -119,11 +119,11 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
     }
 
     // Цикл обслуживания: проход при старте и каждые 60 с (§8-а) + периодический
-    // reconcile раз в ReconcileIntervalHours (§9 триггер 4); graceful по cancel.
+    // reconcile раз в ReconcileIntervalSeconds (§9 триггер 4); graceful по cancel.
     private async Task RunMaintenanceLoopAsync(CancellationToken ct)
     {
         var timerPeriod = MaintenancePeriod;
-        var nextReconcile = timeProvider.GetUtcNow().AddHours(options.ReconcileIntervalHours);
+        var nextReconcile = timeProvider.GetUtcNow().AddSeconds(options.ReconcileIntervalSeconds);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -140,7 +140,7 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
                 {
                     foreach (var neighbor in targets.Snapshot)
                         reconcile.Trigger(neighbor.Name, ct);
-                    nextReconcile = timeProvider.GetUtcNow().AddHours(options.ReconcileIntervalHours);
+                    nextReconcile = timeProvider.GetUtcNow().AddSeconds(options.ReconcileIntervalSeconds);
                 }
                 await Task.Delay(timerPeriod, ct);
             }

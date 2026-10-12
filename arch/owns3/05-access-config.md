@@ -98,7 +98,7 @@ health и метрики, правила запуска. Операции — г
 | `OWNS3_REPLICATION_BACKOFF_MAX_SEC` | `OwnS3:Replication:BackoffMaxSec` | потолок эксп-бэкоффа notifier/фетчера (глава 07 §7/§8) | **60** |
 | `OWNS3_REPLICATION_DISK_FREE_MIN_BYTES` | `OwnS3:Replication:DiskFreeMinBytes` | watermark свободного места фетчей — пауза ниже порога (глава 07 §7) | **1073741824** (1 ГиБ) |
 | `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | `OwnS3:Replication:TombstoneRetentionHours` | retention tombstones (глава 07 §7) | **168** (7 суток) |
-| `OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS` | `OwnS3:Replication:ReconcileIntervalHours` | период reconcile (глава 07 §9) | **24** |
+| `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | `OwnS3:Replication:ReconcileIntervalSeconds` | период reconcile (глава 07 §9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | `OwnS3:Replication:FetchQueueMax` | ёмкость fetch-очереди на источник (глава 07 §7) | **10000** |
 
 Материал TLS: задан только один из пары серт/ключ, файл пути не читается

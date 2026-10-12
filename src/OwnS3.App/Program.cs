@@ -52,7 +52,7 @@ foreach (var (env, key) in new[]
              ("OWNS3_REPLICATION_BACKOFF_MAX_SEC", "OwnS3:Replication:BackoffMaxSec"),
              ("OWNS3_REPLICATION_DISK_FREE_MIN_BYTES", "OwnS3:Replication:DiskFreeMinBytes"),
              ("OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS", "OwnS3:Replication:TombstoneRetentionHours"),
-             ("OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS", "OwnS3:Replication:ReconcileIntervalHours"),
+             ("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS", "OwnS3:Replication:ReconcileIntervalSeconds"),
              ("OWNS3_REPLICATION_FETCH_QUEUE_MAX", "OwnS3:Replication:FetchQueueMax"),
          })
 {

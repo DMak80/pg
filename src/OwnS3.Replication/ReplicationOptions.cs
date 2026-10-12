@@ -15,7 +15,7 @@ public sealed class ReplicationOptions
     public int BackoffMaxSec { get; set; } = 60;                            // потолок эксп-бэкоффа (§7/§8)
     public long DiskFreeMinBytes { get; set; } = 1024L * 1024 * 1024;       // watermark места фетчей (§7)
     public int TombstoneRetentionHours { get; set; } = 168;                 // retention tombstones (§7)
-    public int ReconcileIntervalHours { get; set; } = 24;                   // период reconcile (§9)
+    public int ReconcileIntervalSeconds { get; set; } = 60;                 // период reconcile (§9)
     public int FetchQueueMax { get; set; } = 10000;                         // ёмкость fetch-очереди на источник (§7)
 }
 
