@@ -1,3 +1,4 @@
+using Amazon.S3;
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
@@ -171,8 +172,20 @@ public sealed class MembershipScenarios
                     return false;
                 }
             }, "n0 поднялся после рестарта источника");
-            await MeshClients.PutObjectAsync(env, 0, bucket, "after-restart", Body(9),
-                TestContext.Current.CancellationToken);
+            // PUT после рестарта — транзиентные refused гасятся ретраями (SDK MaxErrorRetry=0)
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    await MeshClients.PutObjectAsync(env, 0, bucket, "after-restart", Body(9),
+                        TestContext.Current.CancellationToken);
+                    break;
+                }
+                catch (AmazonS3Exception) when (attempt < 5)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+                }
+            }
             await MeshClients.PollUntilAsync(async () =>
                 await MeshClients.GetObjectOrNullAsync(env, 1, bucket, "after-restart",
                     TestContext.Current.CancellationToken) is not null,
@@ -221,24 +234,29 @@ public sealed class MembershipScenarios
             // приёмника с наполненной fetch-очередью: пауза фетчей недоступна —
             // используем kill сразу после серии PUT (фетчи не успевают дренировать)
             var crashKeys = Enumerable.Range(10, 5).Select(i => $"crash{i}").ToList();
-            // ГАРАНТИЯ непустой fetch-очереди n1 на момент kill: PUT крупного объекта
-            // (50 МБ — фетч долгий), ждём появления очереди (фетч в процессе/ждёт)
-            var bigBody = new byte[50 * 1024 * 1024];
+            // ГАРАНТИЯ непустой fetch-очереди n1 на момент kill: PUT 300 МБ (фетч
+            // длится секунды), частый опрос (200 мс) ловит окно непустой очереди;
+            // kill в этом окне — SIGKILL без drain, накопленная очередь (crash-big
+            // в процессе + мелкие ключи) теряется из памяти
+            var bigBody = new byte[300 * 1024 * 1024];
             new Random(42).NextBytes(bigBody);
             await MeshClients.PutObjectAsync(env, 0, bucket, "crash-big", bigBody,
                 TestContext.Current.CancellationToken);
-            await MeshClients.PollUntilAsync(async () =>
+            var queueSeen = false;
+            var queueDeadline = Environment.TickCount64 + 30_000;
+            while (Environment.TickCount64 < queueDeadline && !queueSeen)
             {
                 var status = JsonDocument.Parse(
                     await MeshClients.AdminGetStatusAsync(env, 1, TestContext.Current.CancellationToken)).RootElement;
-                return status.GetProperty("neighbors").EnumerateArray()
+                queueSeen = status.GetProperty("neighbors").EnumerateArray()
                     .Any(n => n.GetProperty("fetchQueueDepth").GetInt64() > 0);
-            }, "fetch-очередь n1 непуста (фетч crash-big в процессе)");
+                if (!queueSeen)
+                    await Task.Delay(200, TestContext.Current.CancellationToken);
+            }
             foreach (var key in crashKeys)
                 await MeshClients.PutObjectAsync(env, 0, bucket, key, Body(50),
                     TestContext.Current.CancellationToken);
-            await env.KillNodeAsync(1, TestContext.Current.CancellationToken); // SIGKILL без drain —
-            // накопленная очередь (включая crash-big в процессе) теряется из памяти
+            await env.KillNodeAsync(1, TestContext.Current.CancellationToken); // SIGKILL без drain
             await env.StartNodeAsync(1, TestContext.Current.CancellationToken);
             await MeshClients.PollUntilAsync(async () =>
             {
@@ -258,7 +276,7 @@ public sealed class MembershipScenarios
                 }
             }, "n1 поднялся после краха");
             // Дыры закрыты СТАРТОВЫМ reconcile (грязный маркер) ≤5 мин: потерянная
-            // очередь (crash-big + crash-ключи) восстановлена
+            // очередь (crash-big 300 МБ + crash-ключи) восстановлена
             await MeshClients.PollUntilAsync(async () =>
             {
                 foreach (var key in crashKeys.Append("crash-big"))

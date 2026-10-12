@@ -176,7 +176,9 @@ public static class MeshClients
         {
             targets = targets.Select(t =>
             {
-                var peerIndex = int.Parse(t.Name.Split('-')[1]);
+                // имя соседа os3m-n{j}-{runId} → индекс j (цифры после 'n' во втором сегменте)
+                var peerIndex = int.Parse(t.Name.Split('-')[1].Substring(1),
+                    System.Globalization.CultureInfo.InvariantCulture);
                 return new { name = t.Name, endpoint = t.Endpoint,
                     accessKey = OwnS3MeshE2eEnvironment.PeerPairAccessKeyOf(node, peerIndex),
                     secretKey = OwnS3MeshE2eEnvironment.PeerPairSecretKeyOf(node, peerIndex) };
