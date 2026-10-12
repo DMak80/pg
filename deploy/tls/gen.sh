@@ -9,7 +9,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
-SERVER_SAN="DNS:kafkaworker,DNS:kafkaworker-2,DNS:valkeyworker,DNS:valkeyworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+SERVER_SAN="DNS:kafkaworker,DNS:kafkaworker-2,DNS:valkeyworker,DNS:valkeyworker-2,DNS:s3worker,DNS:s3worker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 DAYS=3650
 
 if [ ! -f ca.pem ]; then
@@ -40,6 +40,12 @@ if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
+# t32: сетевые таргеты s3worker/s3worker-2 (arch/24, стендовые инстансы) —
+# серт без DNS:s3worker-2 перегенерируем (CA жив).
+if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:s3worker-2'; then
+  issue server kafkaworker serverAuth "$SERVER_SAN"
+fi
+
 # t15: сетевой таргет pgworker-2:8080 (единая сеть контура) верифицируется
 # Prometheus'ом против SAN — серт без DNS:pgworker-2 перегенерируем (CA жив).
 if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/null | grep -q 'DNS:pgworker-2'; then
@@ -64,4 +70,4 @@ fi
 [ -f prometheus.crt ] || issue prometheus prometheus clientAuth ""
 [ -f healthcheck.crt ] || issue healthcheck healthcheck clientAuth ""
 chmod 600 ca.key ./*.key
-echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
+echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
