@@ -195,8 +195,9 @@ public static class MeshClients
     public static async Task<string> AdminSyncReportAsync(OwnS3MeshE2eEnvironment env, int node,
         string bucket, CancellationToken ct)
     {
+        // query — ОТДЕЛЬНЫМ параметром (участвует в canonical query подписи)
         var response = await AdminClient(env, node).SendAsync(
-            "GET", $"/admin/replication/sync-report?bucket={Uri.EscapeDataString(bucket)}", "", null, ct);
+            "GET", "/admin/replication/sync-report", $"bucket={Uri.EscapeDataString(bucket)}", null, ct);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync(ct);
     }
@@ -247,7 +248,7 @@ public sealed class MeshPeerClient
             headerList.Select(h => h.Item1).Where(n => n != "host"), signature);
 
         using var request = new HttpRequestMessage(new HttpMethod(method),
-            query is null ? pathAndQuery : $"{pathAndQuery}?{query}");
+            string.IsNullOrEmpty(query) ? pathAndQuery : $"{pathAndQuery}?{query}");
         if (payloadBytes.Length > 0)
             request.Content = new ByteArrayContent(payloadBytes);
         foreach (var (lowerName, value) in headerList.Where(h => h.Item1 != "host"))
