@@ -28,7 +28,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 | Ключ | Формат значения | Пишет | Примечание |
 |---|---|---|---|
-| `config` | JSON `{"platform":"minio"\|"owns3","nodes":N,"secret_profile":"<имя>","created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` фиксируется при создании навсегда; `nodes` — плановое число нод; `secret_profile` — имя per-install env-профиля кредов нод (§6; секреты вне etcd); валидация состава: `minio` — 1..3 ноды (факт 12 `docs/s3-replication.md`: 4+ нод непригодны для кластера бэкапов), `owns3` — 1..9 (структурный предел; операционная рекомендация 2–3 — гео-минимум и бюджет R1) |
+| `config` | JSON `{"platform":"owns3","nodes":N,"secret_profile":"<имя>","created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` — единственное значение `"owns3"` (фиксируется при создании навсегда; точка расширения контракта); `nodes` — плановое число нод, 1..9 (структурный предел; операционная рекомендация 2–3 — гео-минимум и бюджет R1); `secret_profile` — имя per-install env-профиля кредов нод (§6; секреты вне etcd) |
 | `nodes/node<k>/placement` | JSON-селектор атрибутов хоста: `{"docker_host":"h1"}` (plain) \| `{"swarm_node":"n1"}` \| `{"swarm_labels":{"geo":"dc1",...}}` \| комбинация атрибутов | панель через API воркера | явная привязка ноды; модель «хост = набор атрибутов» (§4); привязка = предикат равенства по всем указанным атрибутам; изменение привязки живой ноды — только выводом/перевозом ноды (перепривязка на месте не допускается: данные тома привязаны к хосту) |
 | `nodes/node<k>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"200Gi"}` | панель через API воркера (мутация ресурсов) | форматы — канон pg ([adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) §9.3; kafka — §10.3): cpu — десятичные ядра 0.01..64, mem/disk — целые GiB, в etcd `"<n>Gi"`; cpu/mem — лимиты контейнера; `disk` — целевой объём volume данных ноды (декларация: создание volume и операционная квота-наблюдение; жёсткого enforcement-примитива у docker-volume нет — занятость наблюдается `usage` и алертами панели t34) |
 | `nodes/node<k>/state` | строка `NOT_INITIALIZED`\|`PROVISIONING`\|`RUNNING`\|`UNREACHABLE`\|`REMOVING`\|`TO_REMOVE` | `NOT_INITIALIZED`/`TO_REMOVE` — **только панель** (заявка / one-way маркер демонтажа ноды); остальные — воркер | жизненный цикл ноды — семантика kafka/valkey; `UNREACHABLE` ставит надзор по health-пробам (платформенные health-грани — §5) |
@@ -84,7 +84,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 | Ключ | Формат | Кто пишет |
 |---|---|---|
-| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — PUT-пробы межнодовых линков (health-проба недоступность записи не доказывает: изолированная от всех целей нода отвечает health, но не принимает запись — факт 8 `docs/s3-replication.md`) |
+| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — PUT-пробы межнодовых линков (health-проба недоступность записи не доказывает: детект недоступности строится на PUT-таймауте и переборе — R3 `docs/owns3-replication-requirements.md`; параллель MinIO — факт 8 `docs/s3-replication.md`) |
 | `/s3/clusters/<C>/sync` | JSON `{"state":"SYNCED"\|"LAGGING"\|"DIVERGED","checked_unix":T,"pairs":[{"from":"node1","to":"node2","missing":N,"extra":N,"lag_bytes"?,"lag_objects"?}...],"last_error"?}` | зонд t33: сверка содержимого bucket между нодами (list/хвосты; штатные метрики репликации лаг данных не отражают — факт 7 `docs/s3-replication.md`; админ-грань ownS3 «стартовая позиция/хвост префикса per-target» — R5 `docs/owns3-replication-requirements.md`) |
 
 `state`-агрегаты: connectivity `DOWN` — нет ни одного живого линка записи;
@@ -140,28 +140,22 @@ health-ключа нет: состояние живости несёт `state`, 
   кластера — на разных хостах/площадках» и панельную индикацию совпадений
   (t34).
 
-## 5. Платформы нод
+## 5. Платформа нод
 
-- **minio** (переходная): образ — фиксированный RELEASE из локального
-  registry `192.168.0.1:5000` (строка `images.txt`, зеркалирование — ранбук
-  `docs/runbook.md`; CE — end-of-life, обновлений нет); нода — контейнер
-  `minio server` с volume данных; bucket per-install
-  ([19-backups.md](19-backups.md) §5) создаётся на каждой ноде с
-  **versioning** (replication без него не работает); mesh — правила bucket
-  replication fan-out с уникальными приоритетами, флаги
-  `delete,delete-marker,existing-objects` (backfill подключаемой ноды);
-  предел состава 1..3 ноды (факт 12 `docs/s3-replication.md`).
-  Health-грани — `/minio/health/live|cluster` (200/503).
-- **owns3** (целевая): образ `owns3:dev` (правила E2E-образов: сборка .NET
-  на хосте, publish-COPY, в registry не кладётся); нода — ownS3
-  single-drive (`OWNS3_DATA_DIR=/data`); bucket per-install на каждой ноде
-  (CreateBucket admin-кредом, идемпотентно); mesh — конфиг ownS3
-  per-install (адреса/креды целей — R6
-  `docs/owns3-replication-requirements.md`) — реализация и глава канона
-  `arch/owns3/07-replication.md` — t35; до неё кластеры `platform=owns3`
-  с N≥2 декларативно валидны, но mesh-синхронизация отсутствует (статусы
-  `sync` это отразят). Health — `/healthz`
-  ([owns3/05-access-config.md](owns3/05-access-config.md) §5).
+- **owns3** — единственная платформа пула: образ `owns3:dev` (правила
+  E2E-образов: сборка .NET на хосте, publish-COPY, в registry не
+  кладётся); нода — ownS3 single-drive (`OWNS3_DATA_DIR=/data`); bucket
+  per-install ([19-backups.md](19-backups.md) §5) на каждой ноде
+  (CreateBucket admin-кредом, идемпотентно);
+  mesh-синхронизация — внутренняя механика ownS3 (конфиг per-install —
+  R6 `docs/owns3-replication-requirements.md`; реализация и глава
+  канона `arch/owns3/07-replication.md` — t35): до неё кластеры с N≥2
+  декларативно валидны, но синхронизации нет (статусы `sync` это
+  отразят). Health — `/healthz`
+  ([owns3/05-access-config.md](owns3/05-access-config.md) §5);
+  занятость диска — админ-грань `GET /admin/storage` (там же).
+  Удаления ownS3 — физические (versioning отсутствует): ретенция
+  arch/19 §4 работает напрямую, чистки версий не требуется.
 - **Общее**: S3-порт контейнера 9000 → host-порт из portalloc; bucket
   per-install — единое имя на всех нодах кластера (клиент с одним
   комплектом кредов работает с любой нодой); создание/поддержание bucket —
@@ -186,8 +180,7 @@ health-ключа нет: состояние живости несёт `state`, 
     `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__SECRETKEY`,
     `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__POLICY`
     (`read-write`\|`read-only`).
-- В ноды передаётся env контейнера: minio —
-  `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`; owns3 —
+- В ноды передаётся env контейнера:
   `OWNS3_ROOT_USER`/`OWNS3_ROOT_PASSWORD` + `OWNS3_ACCESS_KEYS__<i>__*`.
 - Отсутствие/неполнота профиля — отказ фазы provisioning с диагностикой
   (валидация API — 422 по факту env воркера).
