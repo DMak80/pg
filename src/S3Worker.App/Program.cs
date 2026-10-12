@@ -99,6 +99,13 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
 const string KeyPrefix = "/s3worker";
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
+
+// Клиент ownS3-ноды (arch/23 §5): health/bucket/usage; таймаут — поллинг-
+// инвариант (половина окна watchdog).
+builder.Services.AddHttpClient("owns3-node", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+builder.Services.AddSingleton<S3Worker.Core.OwnS3.IOwnS3NodeClient>(sp =>
+    new S3Worker.Core.OwnS3.OwnS3NodeClient(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("owns3-node")));
 builder.Services.AddSingleton(sp => new ClaimStore(
     KeyPrefix,
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,

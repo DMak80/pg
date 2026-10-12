@@ -1,0 +1,69 @@
+using System.Security.Cryptography;
+using System.Text;
+using FluentAssertions;
+using S3Worker.Core.OwnS3;
+using Xunit;
+
+namespace S3Worker.UnitTests.OwnS3;
+
+// Клиентская SigV4-подпись GET (owns3/05 §7): паттерн «двойная реализация» —
+// ожидаемая подпись пересчитывается в теле теста отдельным кодом (HMAC-цепочка)
+// и сверяется с выводом сигнера.
+public class SigV4GetSignerTests
+{
+    private const string AccessKey = "AKIDEXAMPLE";
+    private const string SecretKey = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    private static readonly DateTimeOffset FixedTime =
+        new(2026, 1, 15, 10, 30, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void Sign_ДетерминированныйВектор_ТочнаяЗаголовочнаяПодпись()
+    {
+        // Arrange: фиксированные дата/креды/путь; ожидание — независимый пересчёт.
+        const string path = "/admin/storage";
+        const string hostHeader = "h1:9000";
+        const string region = "us-east-1";
+        const string amzDate = "20260115T103000Z";
+        const string date = "20260115";
+        var payloadHash = Convert.ToHexString(SHA256.HashData([])).ToLowerInvariant();
+
+        // Двойная реализация: canonical request → string-to-sign → ключ → подпись.
+        var canonicalRequest =
+            $"GET\n{path}\n\nhost:{hostHeader}\n" +
+            $"x-amz-content-sha256:{payloadHash}\nx-amz-date:{amzDate}\n" +
+            "host;x-amz-content-sha256;x-amz-date\n" + payloadHash;
+        var scope = $"{date}/{region}/s3/aws4_request";
+        var stringToSign =
+            $"AWS4-HMAC-SHA256\n{amzDate}\n{scope}\n" +
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))).ToLowerInvariant();
+        var key = Hmac(Encoding.UTF8.GetBytes("AWS4" + SecretKey), Encoding.UTF8.GetBytes(date));
+        key = Hmac(key, Encoding.UTF8.GetBytes(region));
+        key = Hmac(key, Encoding.UTF8.GetBytes("s3"));
+        key = Hmac(key, Encoding.UTF8.GetBytes("aws4_request"));
+        var expectedSignature = Convert.ToHexString(Hmac(key, Encoding.UTF8.GetBytes(stringToSign))).ToLowerInvariant();
+
+        // Act
+        var signed = SigV4GetSigner.Sign(path, hostHeader, AccessKey, SecretKey, region, FixedTime);
+
+        // Assert: заголовок точен по всем трём секциям.
+        signed.AmzDate.Should().Be(amzDate);
+        signed.ContentSha256.Should().Be(payloadHash);
+        signed.Authorization.Should().Be(
+            $"AWS4-HMAC-SHA256 Credential={AccessKey}/{scope}, " +
+            "SignedHeaders=host;x-amz-content-sha256;x-amz-date, " +
+            $"Signature={expectedSignature}");
+    }
+
+    [Fact]
+    public void Sign_ДругаяДатаИлиКреды_ДругаяПодпись()
+    {
+        // Arrange: два сигна с разными секретами.
+        var first = SigV4GetSigner.Sign("/admin/storage", "h1:9000", AccessKey, SecretKey, "us-east-1", FixedTime);
+        var second = SigV4GetSigner.Sign("/admin/storage", "h1:9000", AccessKey, "другой-секрет", "us-east-1", FixedTime);
+
+        // Assert: подпись чувствительна к кредам (санити двойной реализации).
+        first.Authorization.Should().NotBe(second.Authorization);
+    }
+
+    private static byte[] Hmac(byte[] key, byte[] data) => HMACSHA256.HashData(key, data);
+}
