@@ -76,8 +76,9 @@ public sealed class OutboxJournal : IDisposable
         lock (_lock)
         {
             var result = new List<ReplicationEvent>();
-            if (maxCount <= 0 || !_enumerated)
+            if (maxCount <= 0)
                 return result;
+            EnsureOpened(); // ленивый скан существующих сегментов (рестарт источника, глава 07 §4)
             foreach (var startSeqNo in ScanSegmentsLocked())
             {
                 if (result.Count >= maxCount)
@@ -103,19 +104,19 @@ public sealed class OutboxJournal : IDisposable
 
     public long LastSeqNo
     {
-        get { lock (_lock) return _lastSeqNo; }
+        get { lock (_lock) { EnsureOpened(); return _lastSeqNo; } }
     }
 
     // Сумма размеров сегментов (метрика ownS3_replication_outbox_bytes, глава 07 §10).
     public long TotalBytes
     {
-        get { lock (_lock) return TotalBytesLocked(); }
+        get { lock (_lock) { EnsureOpened(); return TotalBytesLocked(); } }
     }
 
     // Бюджет превышен (метрика ownS3_replication_outbox_budget_exceeded, глава 07 §10).
     public bool BudgetExceeded
     {
-        get { lock (_lock) return TotalBytesLocked() > _budgetBytes; }
+        get { lock (_lock) { EnsureOpened(); return TotalBytesLocked() > _budgetBytes; } }
     }
 
     // Штатный тримминг: удалить сегменты, чей конец (максимальный seqNo) <
@@ -125,6 +126,7 @@ public sealed class OutboxJournal : IDisposable
     {
         lock (_lock)
         {
+            EnsureOpened(); // скан существующих сегментов ДО вычисления конца (иначе end=0 → ложное удаление всего)
             var removed = false;
             var starts = ScanSegmentsLocked();
             foreach (var startSeqNo in starts)
@@ -149,6 +151,7 @@ public sealed class OutboxJournal : IDisposable
     {
         lock (_lock)
         {
+            EnsureOpened();
             var removed = false;
             while (TotalBytesLocked() > _budgetBytes)
             {

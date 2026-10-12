@@ -206,16 +206,15 @@ builder.Services.AddSingleton(sp => new OwnS3.Replication.Outbox.OutboxJournal(
     Path.Combine(ReplicationSysDir(sp), "outbox"),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.OutboxBudgetBytes,
     sp.GetRequiredService<ILogger<OwnS3.Replication.Outbox.OutboxJournal>>()));
+// Sink ВСЕГДА живой: он сам no-op при неактивной репликации (targets.Active
+// проверяется на каждом вызове — hot-apply состава включает события без рестарта,
+// глава 07 §2; без соседей — ноль IO, Existing-регресс)
 builder.Services.AddSingleton<OwnS3.Replication.IReplicationEventSink>(sp =>
-{
-    var targets = sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>();
-    if (!targets.Active)
-        return OwnS3.Replication.NullReplicationEventSink.Instance;
-    return new OwnS3.Replication.ReplicationEventSink(
-        sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>(), targets,
+    new OwnS3.Replication.ReplicationEventSink(
+        sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>(),
+        sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
         sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
-        sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName);
-});
+        sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),

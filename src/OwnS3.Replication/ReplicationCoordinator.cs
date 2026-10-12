@@ -39,18 +39,19 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!targets.Active)
-        {
-            logger.LogInformation("Репликация неактивна (соседей нет) — координатор не запускается");
+        // Неактивная репликация (соседей нет): ЖДАТЬ активации — hot-apply состава
+        // (PUT targets) включает исполнители без рестарта (глава 07 §2); поллинг 1 с
+        while (!targets.Active && !stoppingToken.IsCancellationRequested)
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        if (stoppingToken.IsCancellationRequested)
             return;
-        }
+        logger.LogInformation("Репликация активна ({Count} соседей) — координатор запущен", targets.Snapshot.Count);
 
-        // Маркер: при старте — сразу грязный (до готовности, глава 07 §7)
+        // Маркер: чистота ПРЕДЫДУЩЕЙ остановки — до сброса (глава 07 §7);
+        // триггеры reconcile §9 (2) «пустой том» и (3) «грязная остановка» — по нему
+        var wasClean = state.WasCleanShutdown();
         state.MarkDirty();
-        // Триггеры reconcile главы 07 §9: (2) старт на пустом томе и (3) грязная
-        // остановка — стартовый проход по всем соседям (на пустом томе нет state.json —
-        // маркер грязный — тот же механизм)
-        if (!state.WasCleanShutdown())
+        if (!wasClean)
         {
             logger.LogWarning("Грязный старт репликации (маркер state.json) — стартовый reconcile по всем соседям");
             foreach (var neighbor in targets.Snapshot)
