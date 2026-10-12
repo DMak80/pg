@@ -1,3 +1,4 @@
+using System.Net;
 using Amazon;
 using Amazon.S3;
 
@@ -19,7 +20,9 @@ public interface IOwnS3NodeClient
     // (транзиент, не исключение наружу).
     Task<Result<bool>> HealthAsync(string host, int port, CancellationToken ct);
 
-    // exists-проба: GetBucketLocation → 200=true, 404=false.
+    // exists-проба: ListBuckets root-кредом → имя в списке (HeadBucket через
+    // HttpListener-стабы и GetBucketLocation ownS3 (LocationConstraint без
+    // проверки) ненадёжны для различения отсутствующего bucket).
     Task<Result<bool>> BucketExistsAsync(string host, int port, OwnS3NodeSecrets creds, string bucket, CancellationToken ct);
 
     // Идемпотентно: exists → Success(skip); PutBucket;
@@ -66,12 +69,13 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         try
         {
             using var s3 = NewS3Client(host, port, creds);
-            await s3.GetBucketLocationAsync(bucket, ct);
-            return Result<bool>.Success(true);
+            var list = await s3.ListBucketsAsync(ct);
+            return Result<bool>.Success(
+                list.Buckets.Any(b => string.Equals(b.BucketName, bucket, StringComparison.Ordinal)));
         }
-        catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchBucket")
+        catch (AmazonS3Exception)
         {
-            return Result<bool>.Success(false);
+            return Result<bool>.Success(false); // ошибка листинга не утверждает exists
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -128,8 +132,11 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
 
             using var response = await http.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
                 return Result<OwnS3NodeUsage>.Failed(new ApplicationException(
-                    $"usage {host}:{port}: HTTP {(int)response.StatusCode}"));
+                    $"usage {host}:{port}: HTTP {(int)response.StatusCode} {(string.IsNullOrWhiteSpace(errorBody) ? "" : errorBody.Length > 300 ? errorBody[..300] : errorBody)}"));
+            }
 
             var body = await response.Content.ReadAsStringAsync(ct);
             using var doc = System.Text.Json.JsonDocument.Parse(body);

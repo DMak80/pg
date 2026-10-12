@@ -8,12 +8,15 @@ namespace S3Worker.Core.OwnS3;
 /// /admin/storage — owns3/05 §7; то же ядро, что OwnS3.Protocol SigV4Core,
 /// но сторона клиента — без ссылки воркера на серверный протокол).
 /// Canonical request: GET / canonical URI / пустой query /
-/// host;x-amz-content-sha256;x-amz-date / x-amz-content-sha256 = SHA256
-/// пустого тела.
+/// host;x-amz-content-sha256;x-amz-date / payload — UNSIGNED-PAYLOAD
+/// (эталонный клиент ownS3, owns3/05 §7; пустой hex-хэш тела сервером
+/// тоже принимается, но эталон — unsigned).
 /// </summary>
 public static class SigV4GetSigner
 {
     public const string Algorithm = "AWS4-HMAC-SHA256";
+
+    public const string UnsignedPayload = "UNSIGNED-PAYLOAD";
 
     public sealed record SignedGet(
         string Authorization,
@@ -33,17 +36,19 @@ public static class SigV4GetSigner
         var instant = now ?? DateTimeOffset.UtcNow;
         var amzDate = instant.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
         var date = amzDate[..8];
-        var payloadHash = HexSha256([]);
+        const string payloadHash = UnsignedPayload;
 
         // Canonical request: method \n canonicalURI \n canonicalQuery \n
-        // canonicalHeaders \n signedHeaders \n payloadHash.
+        // canonicalHeaders (каждая строка с \n, блок завершается пустой строкой —
+        // терминатор заголовков) \n signedHeaders \n payloadHash.
         var canonicalUri = UriEncodingPath(uriPath);
         var canonicalRequest =
             $"GET\n{canonicalUri}\n\n" +
             $"host:{hostHeader}\n" +
             $"x-amz-content-sha256:{payloadHash}\n" +
             $"x-amz-date:{amzDate}\n" +
-            $"host;x-amz-content-sha256;x-amz-date\n" +
+            "\n" +
+            "host;x-amz-content-sha256;x-amz-date\n" +
             payloadHash;
 
         var scope = $"{date}/{region}/s3/aws4_request";

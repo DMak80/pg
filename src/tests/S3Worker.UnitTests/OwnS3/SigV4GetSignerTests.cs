@@ -25,12 +25,13 @@ public class SigV4GetSignerTests
         const string region = "us-east-1";
         const string amzDate = "20260115T103000Z";
         const string date = "20260115";
-        var payloadHash = Convert.ToHexString(SHA256.HashData([])).ToLowerInvariant();
+        const string payloadHash = SigV4GetSigner.UnsignedPayload; // UNSIGNED-PAYLOAD (эталон ownS3)
 
         // Двойная реализация: canonical request → string-to-sign → ключ → подпись.
         var canonicalRequest =
             $"GET\n{path}\n\nhost:{hostHeader}\n" +
             $"x-amz-content-sha256:{payloadHash}\nx-amz-date:{amzDate}\n" +
+            "\n" +
             "host;x-amz-content-sha256;x-amz-date\n" + payloadHash;
         var scope = $"{date}/{region}/s3/aws4_request";
         var stringToSign =

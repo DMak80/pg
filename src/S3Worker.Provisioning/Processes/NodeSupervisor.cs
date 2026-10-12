@@ -127,8 +127,10 @@ public sealed class NodeSupervisor(
                 }
             }
 
-            // Health-проба платформенной health-грани (arch/23 §5) по адресу portalloc.
-            var health = await nodeClient.HealthAsync(address.Value.Host, address.Value.S3Port, ct);
+            // Health-проба платформенной health-грани (arch/23 §5) — по advertised-адресу
+            // (как endpoints; нода публикуется на advertised host:port).
+            var health = await nodeClient.HealthAsync(
+                options.AdvertisedHost ?? address.Value.Host, address.Value.S3Port, ct);
             if (health.IsSuccess && health.Value)
             {
                 // Успешное зондирование — счётчик молчания ноды стартует заново;
@@ -284,7 +286,8 @@ public sealed class NodeSupervisor(
             }
         }
 
-        var fact = await nodeClient.GetUsageAsync(address.Host, address.S3Port, nodeSecrets, ct);
+        var fact = await nodeClient.GetUsageAsync(
+            options.AdvertisedHost ?? address.Host, address.S3Port, nodeSecrets, ct);
         if (!fact.IsSuccess)
             return fact.Error!;
 

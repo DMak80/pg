@@ -129,15 +129,15 @@ public class OwnS3NodeClientTests
     [Fact]
     public async Task EnsureBucket_Absent_Creates_IdempotentSkip()
     {
-        // Arrange: GetBucketLocation 404 → PutBucket 200; затем exists → true.
+        // Arrange: ListBuckets пусто → PutBucket 200; затем bucket в списке.
         var putCalls = 0;
         var exists = false;
         using var server = new LoopbackServer(req =>
         {
-            if (req.HttpMethod == "GET" && req.Url!.Query.Contains("location"))
+            if (req.HttpMethod == "GET" && req.Url!.AbsolutePath == "/")
                 return exists
-                    ? (200, """<?xml version="1.0"?><LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/"/>""")
-                    : (404, """<?xml version="1.0"?><Error><Code>NoSuchBucket</Code><Message>no</Message></Error>""");
+                    ? (200, """<?xml version="1.0"?><ListAllMyBucketsResult><Buckets><Bucket><Name>demo-bucket</Name></Bucket></Buckets></ListAllMyBucketsResult>""")
+                    : (200, """<?xml version="1.0"?><ListAllMyBucketsResult><Buckets/></ListAllMyBucketsResult>""");
             if (req.HttpMethod == "PUT")
             {
                 Interlocked.Increment(ref putCalls);
@@ -167,8 +167,8 @@ public class OwnS3NodeClientTests
         // Arrange: exists=false, PutBucket отвечает 409 already owned.
         using var server = new LoopbackServer(req =>
         {
-            if (req.HttpMethod == "GET" && req.Url!.Query.Contains("location"))
-                return (404, """<?xml version="1.0"?><Error><Code>NoSuchBucket</Code><Message>no</Message></Error>""");
+            if (req.HttpMethod == "GET" && req.Url!.AbsolutePath == "/")
+                return (200, """<?xml version="1.0"?><ListAllMyBucketsResult><Buckets/></ListAllMyBucketsResult>""");
             if (req.HttpMethod == "PUT")
                 return (409, """<?xml version="1.0"?><Error><Code>BucketAlreadyOwnedByYou</Code><Message>own</Message></Error>""");
             return (400, "");

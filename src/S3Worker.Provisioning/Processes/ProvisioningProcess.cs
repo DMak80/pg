@@ -315,7 +315,8 @@ public sealed class ProvisioningProcess(
         foreach (var node in pending.Distinct().OrderBy(n => n, StringComparer.Ordinal))
         {
             var addr = addresses[node];
-            var health = await nodeClient.HealthAsync(addr.Host, addr.S3Port, ct);
+            var health = await nodeClient.HealthAsync(
+                options.AdvertisedHost ?? addr.Host, addr.S3Port, ct);
             if (!health.IsSuccess || !health.Value)
             {
                 // Не готов: бюджет с первого наблюдения (диагностика, не клэйм).
@@ -352,7 +353,7 @@ public sealed class ProvisioningProcess(
         {
             var addr = addresses[node.Node];
             var ensured = await nodeClient.EnsureBucketAsync(
-                addr.Host, addr.S3Port, nodeSecrets, options.Bucket, ct);
+                options.AdvertisedHost ?? addr.Host, addr.S3Port, nodeSecrets, options.Bucket, ct);
             if (!ensured.IsSuccess)
                 return Result.Failed(ensured.Error!);
         }
