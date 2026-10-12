@@ -4,7 +4,11 @@ using Microsoft.Extensions.Options;
 using S3Worker.App;
 using Shared.Metrics;
 using S3Worker.App.Api;
+using S3Worker.App.HealthChecks;
+using S3Worker.App.Loops;
+using Shared.Core.HealthChecks;
 using Shared.Core.Hosting;
+using Shared.Etcd.Client;
 
 // Точка входа S3Worker (arch/24 §8): host-builder с mTLS-гранью HTTP API
 // (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
@@ -32,8 +36,10 @@ builder.Services.AddSingleton(sp =>
     var m = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
         sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
         sp.GetRequiredService<TimeProvider>());
-    // TODO(Task 4): подписка WorkJournal.PhaseWritten += e => m.OnJournalPhase(...);
-    // WorkJournal появляется в Task 4 — в этом шаге сборка без координации.
+    // Единый seam фаз/операций (S2, зеркало PgWorker/Kafka/Valkey): терминальные
+    // фазы/first-seen/подавление supervise — внутри OnJournalPhase.
+    sp.GetRequiredService<WorkJournal>().PhaseWritten
+        += e => m.OnJournalPhase(e.Cluster, e.Op, e.Phase);
     return m;
 });
 
@@ -80,23 +86,94 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
     ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
     : null;
 
-// etcd-клиент (HTTP JSON gateway /v3/*) + координация: ClaimStore/PortAllocLock/
-// WorkJournal — Task 4 (единый литерал префикса /s3worker там же).
+// etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
+// Единое место литерала префикса etcd-ключей: Shared-координация параметризована
+// (arch/23 §8: /s3worker/{leader,claims,work,portalloc,locks/portalloc,instances,api,rotations}).
+const string KeyPrefix = "/s3worker";
+builder.Services.AddSingleton<IEtcdGateway>(sp =>
+    new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
+builder.Services.AddSingleton(sp => new ClaimStore(
+    KeyPrefix,
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
+// Глобальный portalloc-клэйм (arch/23 §8) — DI-синглтон, InstanceId единый с
+// ClaimStore (сквозная диагностика держателя).
+builder.Services.AddSingleton(sp => new PortAllocLock(
+    KeyPrefix,
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ClaimStore>().InstanceId));
+builder.Services.AddSingleton(sp => new WorkJournal(
+    KeyPrefix,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
 
 // docker-фабрика движков (health-пробы docker-hosts; драйвер Plain/Swarm —
 // Task 6; fail-fast топологии — валидация выше).
 builder.Services.AddSingleton<DockerEngineFactory>();
 
-// TODO(Task 4): SnapshotJob (снапшоты P12), координация, циклы, health-чеки.
+// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений «до/после»):
+// контроль-плейн /s3/ + /s3worker/ — SnapshotJob снимает etcd целиком.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value;
+    return new SnapshotJob(
+        sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
+        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
+});
+
+// Процессы A–E + вспомогательные — Tasks 7/9–13 (PlacementResolver, драйвер,
+// SecretProfileStore, ProvisioningProcess и т.д.); агрегатор — каркас Task 4.
+builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
+
+// Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
+builder.Services.AddSingleton<KeepaliveLoop>();
+builder.Services.AddSingleton<SnapshotLoop>();
+builder.Services.AddSingleton<ReconcileLoop>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
+
+// Наблюдаемость (arch/24 §7): агрегированный health + per-loop обёртки.
+builder.Services.AddSingleton<ServiceProbes>();
+builder.Services.AddSingleton<S3WorkerHealth>();
+builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
+    sp => new(sp.GetRequiredService<ReconcileLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
+    sp => new(sp.GetRequiredService<KeepaliveLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<SnapshotLoop>>(
+    sp => new(sp.GetRequiredService<SnapshotLoop>()));
+builder.Services.AddHealthChecks()
+    .AddCheck<S3WorkerHealth>("s3worker", tags: ["ready"])
+    .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
+    .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
+    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/24 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал + метрика + graceful self-stop;
+// Enabled=false (секция S3Worker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<S3WorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<S3WorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("S3Worker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
+// fail-fast инварианта живости (arch/24 §8): тики быстрых циклов чаще порога
+// сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
+var loopsCfg = builder.Configuration.GetSection("S3Worker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
+if (loopsWatchdog.Enabled)
+    Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+        loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
+
 // TODO(Tasks 10–13): процессы A–E + ротатор.
 // TODO(Task 14): хендлеры API + MapWorkerApi-эндпоинты (каркас — пустой).
-
-// Циклы: keepalive → snapshot → reconcile (Task 4).
-
-// Наблюдаемость (arch/24 §7): агрегированный health + per-loop обёртки — Task 4.
-builder.Services.AddHealthChecks();
-
-// Watchdog зависших циклов (arch/24 §6): регистрация с циклами — Task 4.
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
