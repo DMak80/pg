@@ -180,9 +180,12 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                                 request => request.ForPort(9000).ForPath("/healthz"),
                                 wait => wait.WithTimeout(TimeSpan.FromSeconds(30))))
                         .Build();
-                    await container.StartAsync(ct);
+                    // В списки попытки — СРАЗУ после Build (до старта): упавший на
+                    // старте контейнер обязан вычищаться RemoveAttemptAsync, иначе
+                    // ретрай ловит Conflict имени (гонка параллельных кейсов, A1)
                     containers.Add(container);
                     volumeNames.Add(volumeName);
+                    await container.StartAsync(ct);
                     hostPorts.Add(hostPort);
                 }
                 var env = new OwnS3MeshE2eEnvironment(slug, runId, net, containers, volumeNames,
@@ -199,7 +202,8 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
             catch (Exception ex) when (attempt < 3
                 && (ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
                     || ex.Message.Contains("bind", StringComparison.OrdinalIgnoreCase)
-                    || ex.Message.Contains("port", StringComparison.OrdinalIgnoreCase)))
+                    || ex.Message.Contains("port", StringComparison.OrdinalIgnoreCase)
+                    || ex.Message.Contains("already in use", StringComparison.OrdinalIgnoreCase)))
             {
                 Console.WriteLine($"[PHASE] start: попытка {attempt} не удалась ({ex.Message.Split('\n')[0]}) — ретрай с чистого листа");
                 await RemoveAttemptAsync(net, containers, volumeNames);
