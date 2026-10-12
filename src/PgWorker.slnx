@@ -45,6 +45,13 @@
         <Project Path="ValkeyWorker.Provisioning/ValkeyWorker.Provisioning.csproj" />
         <Project Path="ValkeyWorker.App/ValkeyWorker.App.csproj" />
     </Folder>
+    <Folder Name="/s3/">
+        <Project Path="S3Worker.Core/S3Worker.Core.csproj" />
+        <Project Path="S3Worker.Etcd/S3Worker.Etcd.csproj" />
+        <Project Path="S3Worker.Docker/S3Worker.Docker.csproj" />
+        <Project Path="S3Worker.Provisioning/S3Worker.Provisioning.csproj" />
+        <Project Path="S3Worker.App/S3Worker.App.csproj" />
+    </Folder>
     <Folder Name="/admin/">
         <Project Path="AdminPanel.Api/AdminPanel.Api.csproj" />
         <Project Path="AdminPanel.Core/AdminPanel.Core.csproj" />
@@ -73,5 +80,7 @@
         <Project Path="tests/ValkeyWorker.IntegrationTests/ValkeyWorker.IntegrationTests.csproj" />
         <Project Path="tests/OwnS3.UnitTests/OwnS3.UnitTests.csproj" />
         <Project Path="tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj" />
+        <Project Path="tests/S3Worker.UnitTests/S3Worker.UnitTests.csproj" />
+        <Project Path="tests/S3Worker.IntegrationTests/S3Worker.IntegrationTests.csproj" />
     </Folder>
 </Solution>
