@@ -37,6 +37,7 @@ internal sealed class S3ClusterProcesses(
     NodeSupervisor supervisor,
     AddNodeProcess addNode,
     RemoveNodeProcess removeNode,
+    SecretRotator rotator,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
@@ -122,11 +123,19 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Active:
-                    // Active-ветка (arch/24 §5): надзор (C) → add-node (D) →
-                    // remove-node (E); ротация (живая заявка) — эксклюзивная
-                    // ветка Task 13.
+                    // Active-ветка (arch/24 §5): живая заявка ротации —
+                    // ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E не идут — дисциплина
+                    // «одно пересоздание за тик»); иначе надзор (C) →
+                    // add-node (D) → remove-node (E).
                     await RunClusterOpAsync(cluster, "active", async () =>
                     {
+                        // Живая заявка ротации (любой endpoint: read-only проверка).
+                        var rotating = await etcd.GetAsync(
+                            options.CurrentValue.Etcd.Endpoints[0],
+                            $"/s3worker/rotations/{cluster}", ct);
+                        if (rotating.IsSuccess && rotating.Value is not null)
+                            return await rotator.TickAsync(snap, ct);
+
                         var supervised = await supervisor.TickAsync(snap, ct);
                         if (!supervised.IsSuccess)
                             return supervised;

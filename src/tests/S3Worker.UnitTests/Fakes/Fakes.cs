@@ -224,6 +224,9 @@ internal static class Fakes
         public readonly List<S3Worker.Docker.Drivers.S3NodeSpec> Ensured = [];
         public readonly List<string> Removed = [];
 
+        // env-факт живых нод (сверка ротации R): cluster/node → env.
+        public readonly Dictionary<string, IReadOnlyDictionary<string, string>> Envs = [];
+
         public bool InspectFault { get; set; }
 
         public bool HostsFault { get; set; }
@@ -276,7 +279,8 @@ internal static class Fakes
                 Nodes.ContainsKey($"{cluster}/{node}") ? Limits : null));
 
         public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string node, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+            => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(
+                Envs.TryGetValue($"{cluster}/{node}", out var env) ? env : null));
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(

@@ -226,6 +226,14 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.RemoveNo
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<PortAllocLock>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRotator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value)));
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
