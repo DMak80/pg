@@ -109,7 +109,8 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
   05 §7; тем же конвейером SigV4, права admin/root):
   - `PUT /admin/replication/targets` — идемпотентная замена полного
     списка; тело `{targets:[{name, endpoint, accessKey, secretKey}]}`;
-    валидация: имена уникальны, endpoint `scheme://host:port`; ответ
+    валидация: имена и accessKey уникальны (accessKey — идентификатор
+    источника на приёмнике, §6), endpoint `scheme://host:port`; ответ
     **202 Accepted**. Персист targets.json (tmp + rename), применяется
     на лету: **добавленный сосед** → наш notifier начинает слать ему
     уведомления с текущего конца журнала (курсор соседа −1, §8) + наш
