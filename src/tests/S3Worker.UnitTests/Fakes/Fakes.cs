@@ -280,7 +280,9 @@ internal static class Fakes
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(
-                Nodes.Keys.Where(k => k.StartsWith($"{cluster}/", StringComparison.Ordinal)).ToList()));
+                Nodes.Keys.Where(k => k.StartsWith($"{cluster}/", StringComparison.Ordinal))
+                    .Select(k => $"s3w-{k.Replace('/', '-')}")
+                    .ToList()));
     }
 
     /// <summary>Клиент ownS3-ноды-дублёр: health-флаг, usage-факт, бакеты в памяти;

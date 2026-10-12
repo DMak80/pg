@@ -131,6 +131,132 @@ public static class S3ProcessCommon
                 $"{op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
 
     /// <summary>
+    /// Завершающее окно D/E (spec §2.2, arch/23 §2 после правки): RMW
+    /// endpoints (txn по mod_revision) + актуализация config.nodes до
+    /// фактического состава (txn по mod_revision, канонический JSON без
+    /// state). Идемпотентность: endpoints уже канон и nodes уже равен
+    /// составу — no-op (повторные тики не переписывают).
+    /// </summary>
+    public static async Task<Result> ConvergeTopologyAsync(
+        IEtcdGateway gateway,
+        string[] endpoints,
+        string cluster,
+        string platform,
+        string? secretProfile,
+        long? createdUnix,
+        IReadOnlyDictionary<string, NodeAddress> addresses,
+        CancellationToken ct)
+    {
+        // endpoints: advertised host:port Ordinal-списком (arch/23 §2.1).
+        var endpointsValue = string.Join(",", addresses
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => $"{p.Value.Host}:{p.Value.S3Port}"));
+        var endpointsResult = await RmwKeyAsync(
+            gateway, endpoints, EndpointsKey(cluster), endpointsValue, ct);
+        if (!endpointsResult.IsSuccess)
+            return endpointsResult;
+
+        // config.nodes: канонический JSON Active с фактическим числом нод;
+        // чужая state (TO_REMOVE) сохраняется — актуализация не снимает заявки.
+        var configKey = ConfigKey(cluster);
+        var current = await GetWithFailoverAsync(gateway, endpoints, configKey, ct);
+        if (!current.IsSuccess)
+            return current.Error!;
+        if (current.Value is not { } kv)
+            return Result.Success(); // ключа нет (внешняя очистка) — не наш случай
+
+        string? state = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(kv.Value);
+            if (doc.RootElement.TryGetProperty("state", out var st))
+                state = st.GetString();
+        }
+        catch (JsonException)
+        {
+            // битый config — актуализировать нечем, тик повторит после починки
+            return Result.Failed(new ApplicationException($"config {configKey}: битый JSON"));
+        }
+
+        var canonical = SerializeCanonicalConfig(platform, addresses.Count, secretProfile, createdUnix, state);
+        if (kv.Value == canonical)
+            return Result.Success(); // уже актуален (no-op)
+
+        return await RmwKeyAsync(gateway, endpoints, configKey, canonical, ct);
+    }
+
+    /// <summary>Канонический JSON config (arch/23 §2.1, порядок полей канона;
+    /// state — опционально для заявочных форм).</summary>
+    public static string SerializeCanonicalConfig(
+        string platform, int nodes, string? secretProfile, long? createdUnix, string? state = null)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("platform", platform);
+            writer.WriteNumber("nodes", nodes);
+            writer.WriteString("secret_profile", secretProfile);
+            if (createdUnix is { } created)
+                writer.WriteNumber("created_unix", created);
+            if (state is { Length: > 0 })
+                writer.WriteString("state", state);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // RMW ключа: txn compare mod_revision (ключ отсутствует — NotExists).
+    private static async Task<Result> RmwKeyAsync(
+        IEtcdGateway gateway, string[] endpoints, string key, string value, CancellationToken ct)
+    {
+        var current = await GetWithFailoverAsync(gateway, endpoints, key, ct);
+        if (!current.IsSuccess)
+            return current.Error!;
+
+        if (current.Value is { } kv && kv.Value == value)
+            return Result.Success(); // уже канон (no-op)
+
+        var compare = current.Value is { } existing
+            ? TxnCompare.ModRevisionEqual(key, (long)existing.ModRevision)
+            : TxnCompare.NotExists(key);
+        Result<TxnResult> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var txn = await gateway.TxnAsync(endpoint, TxnRequest.Of([compare], [new TxnOp.Put(key, value, null)]), ct);
+            if (!txn.IsSuccess)
+            {
+                last = txn;
+                continue;
+            }
+
+            return txn.Value.Succeeded
+                ? Result.Success()
+                : Result.Failed(new ApplicationException(
+                    $"{key} изменился под нами — ретрай тиком"));
+        }
+
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+    }
+
+    // Failover-чтение ключа (первый успешный endpoint).
+    public static async Task<Result<Kv?>> GetWithFailoverAsync(
+        IEtcdGateway gateway, string[] endpoints, string key, CancellationToken ct)
+    {
+        Result<Kv?> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var read = await gateway.GetAsync(endpoint, key, ct);
+            if (read.IsSuccess)
+                return read;
+            last = read;
+        }
+
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+    }
+
+    /// <summary>
     /// Ресурсы декларации → лимиты контейнера (cpu/mem; disk — декларация, не
     /// парсится — канон arch/23 §2). cpu — decimal-строка инвариантной культуры
     /// ("2", "0.5"; БЕЗ суффиксов); mem — "&lt;n&gt;Gi" → n × 2^30; незнакомый

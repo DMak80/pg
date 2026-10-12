@@ -199,6 +199,33 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.NodeSupe
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocHealer>()));
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.DeprovisioningProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.AddNodeProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.RemoveNodeProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.

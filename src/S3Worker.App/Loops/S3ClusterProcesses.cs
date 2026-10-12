@@ -33,7 +33,10 @@ internal sealed class S3ClusterProcesses(
     ClaimStore claims,
     WorkJournal journal,
     ProvisioningProcess provision,
+    DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
+    AddNodeProcess addNode,
+    RemoveNodeProcess removeNode,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
@@ -114,14 +117,24 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Deprovision:
-                    logger.LogDebug("{Cluster}: Deprovision — процесс подключится в Task 12", cluster);
+                    await RunClusterOpAsync(cluster, "deprovision",
+                        () => deprovision.TickAsync(snap, ct), ct);
                     break;
 
                 case S3ClusterKind.Active:
-                    // Active-ветка (arch/24 §5): надзор (C) первым; D/E
-                    // подключаются Task 12, ротация — Task 13.
-                    await RunClusterOpAsync(cluster, "active",
-                        () => supervisor.TickAsync(snap, ct), ct);
+                    // Active-ветка (arch/24 §5): надзор (C) → add-node (D) →
+                    // remove-node (E); ротация (живая заявка) — эксклюзивная
+                    // ветка Task 13.
+                    await RunClusterOpAsync(cluster, "active", async () =>
+                    {
+                        var supervised = await supervisor.TickAsync(snap, ct);
+                        if (!supervised.IsSuccess)
+                            return supervised;
+                        var added = await addNode.TickAsync(snap, ct);
+                        if (!added.IsSuccess)
+                            return added;
+                        return await removeNode.TickAsync(snap, ct);
+                    }, ct);
                     break;
 
                 case S3ClusterKind.Skip:
