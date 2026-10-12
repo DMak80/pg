@@ -57,10 +57,34 @@ public sealed class BoundaryScenarios
                         await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
                     status.GetProperty("outbox").GetProperty("budgetExceeded").GetBoolean().Should().BeTrue();
 
+                    // Статус: бюджет превышен (до/вне прохода обслуживания)
+                    var exceededSeen = false;
+                    var deadline = Environment.TickCount64 + 90_000; // цикл обслуживания 60 с
+                    string logs = string.Empty;
+                    while (Environment.TickCount64 < deadline)
+                    {
+                        var statusNow = JsonDocument.Parse(
+                            await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+                        if (statusNow.GetProperty("outbox").GetProperty("budgetExceeded").GetBoolean())
+                        {
+                            exceededSeen = true;
+                            break;
+                        }
+                        await Task.Delay(5_000, TestContext.Current.CancellationToken);
+                    }
+                    exceededSeen.Should().BeTrue("бюджет превышен и зафиксирован статусом (R6)");
+
                     // Лог принудительного тримминга (глава 07 §8-а): событие потерь
-                    // уведомлений в docker logs источника
-                    var logs = await env.RunDockerAsync(
-                        ["logs", env.NodeName(0)], TestContext.Current.CancellationToken);
+                    // уведомлений появляется в docker logs после прохода обслуживания
+                    var logDeadline = Environment.TickCount64 + 90_000;
+                    while (Environment.TickCount64 < logDeadline)
+                    {
+                        logs = await env.RunDockerAsync(
+                            ["logs", env.NodeName(0)], TestContext.Current.CancellationToken);
+                        if (logs.Contains("принудительный тримминг", StringComparison.Ordinal))
+                            break;
+                        await Task.Delay(5_000, TestContext.Current.CancellationToken);
+                    }
                     logs.Should().Contain("принудительный тримминг",
                         "потеря уведомлений журналируется (глава 07 §4/§8-а)");
                 }
