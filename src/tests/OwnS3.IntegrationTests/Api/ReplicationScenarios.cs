@@ -261,6 +261,32 @@ public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClass
     }
 
     [Fact]
+    public async Task ReplicationHttpClient_PairKeyModel_Authorized()
+    {
+        // Arrange — pair-модель кред (t35 ревью finding 5): targets узла содержит
+        // accessKey пары; транспорт подписывает target.AccessKey
+        var client = new OwnS3.Replication.Transport.ReplicationHttpClient(
+            new HttpClient { BaseAddress = new Uri(factory.CreateClient().BaseAddress!.GetLeftPart(System.UriPartial.Authority)) });
+        var target = new OwnS3.Replication.TargetRecord("peer-a", factory.CreateClient().BaseAddress!.GetLeftPart(System.UriPartial.Authority),
+            OwnS3AppFactory.ReplicationAccessKey, OwnS3AppFactory.ReplicationSecretKey);
+        var batch = JsonSerializer.Serialize(new OwnS3.Replication.Transport.NotificationBatchRequest("mesh-a",
+        [
+            new OwnS3.Replication.ReplicationEvent(1500, OwnS3.Replication.ReplicationEventType.BucketCreate,
+                "pair-bucket", "", 100, "", 0, "", "peer"),
+        ]), OwnS3.Replication.Transport.ReplicationTransportJson.Options);
+
+        // Act
+        var accepted = await client.SendNotificationsAsync(target,
+            new OwnS3.Replication.Transport.NotificationBatchRequest("mesh-a",
+                JsonSerializer.Deserialize<OwnS3.Replication.Transport.NotificationBatchRequest>(batch,
+                    OwnS3.Replication.Transport.ReplicationTransportJson.Options)!.Events),
+            TestContext.Current.CancellationToken);
+
+        // Assert — pair-подпись проходит собственную replication-грань
+        accepted.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task ReplicationEdge_PolicyIsolation()
     {
         // Arrange — ключи всех ролей; seqNo вне других кейсов (дедуп не влияет на 403)

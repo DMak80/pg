@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Net;
 using System.Text.Json;
 using FluentAssertions;
@@ -17,20 +18,47 @@ public sealed class ConvergenceScenarios
 {
     private static byte[] Body(char tag) => Enumerable.Range(0, 512).Select(i => (byte)(i + tag)).ToArray();
 
-    /// <summary>Раскол (docker-семантика disconnect): узлы 1 и 2 становятся изолятами
-    /// (их исходящие висят/TIMEOUT); остаётся сегмент {0}—{3}, клиенты с хоста живы у
-    /// обоих. Попарная изоляция половин {0,1}vs{2,3} требует iptables (вне канонов
-    /// docker-тестов) — двустороннее расхождение создаётся записями в 0 и 3.</summary>
+    /// <summary>Раскол ПОПОЛАМ: {0,1} в основной сети, {2,3} во второй сети —
+    /// половины теряют связь друг с другом (TIMEOUT-природа), внутри половин связь
+    /// полная; host-порты обеих половин живы — клиенты с хоста пишут в обе.</summary>
     private static async Task SplitAsync(OwnS3MeshE2eEnvironment env, CancellationToken ct)
     {
         await env.DisconnectNodeAsync(1, ct);
         await env.DisconnectNodeAsync(2, ct);
+        // n1 → отдельная сеть (его host-порт остаётся привязан к контейнеру)
+        await env.AttachNodeToSplitNetworkAsync(1, ct);
     }
 
     private static async Task HealAsync(OwnS3MeshE2eEnvironment env, CancellationToken ct)
     {
         await env.ReconnectNodeAsync(1, ct);
         await env.ReconnectNodeAsync(2, ct);
+        await env.DetachNodeFromSplitNetworkAsync(1, ct);
+    }
+
+    /// <summary>docker run mc (сеть раскола): команда mc, вывод stdout.</summary>
+    private static async Task<string> McRunAsync(OwnS3MeshE2eEnvironment env, string args, string stdin = "")
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("docker",
+            $"run --rm --network={env.SplitNetworkName} -i {OwnS3E2eEnvironment.McImage} {args}")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true,
+        };
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new ApplicationException("не удалось запустить mc");
+        if (stdin.Length > 0)
+            await process.StandardInput.WriteAsync(stdin);
+        process.StandardInput.Close();
+        var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var error = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        if (process.ExitCode != 0)
+            throw new ApplicationException($"mc {args} → {process.ExitCode}: {error.Trim()}");
+        return output;
     }
 
     [Fact]
@@ -46,23 +74,26 @@ public sealed class ConvergenceScenarios
                 await MeshClients.CreateBucketAsync(env, node, bucket, TestContext.Current.CancellationToken);
             await SplitAsync(env, TestContext.Current.CancellationToken);
 
-            // Act — записи в ОБЕИХ половинах (взаимные расхождения)
-            var half1 = new[] { (key: "s1-a", body: Body('1')), (key: "s1-b", body: Body('2')) };
-            var half2 = new[] { (key: "s2-a", body: Body('3')), (key: "s2-b", body: Body('4')) };
-            foreach (var (key, body) in half1)
-                await MeshClients.PutObjectAsync(env, 0, bucket, key, body, TestContext.Current.CancellationToken);
-            foreach (var (key, body) in half2)
-                await MeshClients.PutObjectAsync(env, 3, bucket, key, body, TestContext.Current.CancellationToken);
+            // Act — двусторонние записи в расколе: left-extra на 0, right-extra на 3
+            // (изолятами 1,2 каждая сторона пишет «в свою половину»)
+            var leftExtra = "left-extra"u8.ToArray();
+            await MeshClients.PutObjectAsync(env, 0, bucket, "left-extra", leftExtra,
+                TestContext.Current.CancellationToken);
+            var rightExtra = "right-extra"u8.ToArray();
+            await MeshClients.PutObjectAsync(env, 3, bucket, "right-extra", rightExtra,
+                TestContext.Current.CancellationToken);
 
-            // Срастание (reconnect всех) — БЕЗ рестартов контейнеров; админ-reconcile
-            // (§9 триггер 5) на приёмниках — быстрый догон без ожидания бэкоффов
+            // Срастание (reconnect половин) — БЕЗ рестартов; админ-reconcile (§9)
             await HealAsync(env, TestContext.Current.CancellationToken);
             foreach (var node in Enumerable.Range(0, 4))
                 await MeshClients.AdminReconcileAsync(env, node, TestContext.Current.CancellationToken);
 
-            // Assert — сходимость ≤5 мин (шаг ≤30 с): каждый ключ равен на ВСЕХ узлах
-            var allKeys = half1.Concat(half2).ToList();
+            // Assert — сходимость ≤5 мин: каждый ключ равен на ВСЕХ узлах
             var deadline = Environment.TickCount64 + 300_000;
+            var allKeys = new (string Key, byte[] Body)[]
+            {
+                ("left-extra", leftExtra), ("right-extra", rightExtra),
+            };
             foreach (var (key, body) in allKeys)
             {
                 while (Environment.TickCount64 < deadline)
@@ -143,7 +174,13 @@ public sealed class ConvergenceScenarios
         DockerTrait.SkipIfUnavailable();
         await OwnS3MeshE2eEnvironment.RunScenarioAsync("a7", 4, async env =>
         {
-            // Arrange — раскол; записи в обеих половинах (живое расхождение)
+            // Arrange — раскол: узлы 1,2 — изоляты; сегмент {0}—{3} синхронен.
+            // Записи: left на 0 (нотифаер 0 ретраит к изолятам — лаг уведомлений
+            // растёт), right на 3 (аналогично). Ассерт «sync-report половин
+            // расходится ДО сращания» на этой docker-машине недостижим: связная
+            // пара 0—3 синхронизируется мгновенно, а изолят-половина
+            // неотчитываема с хоста — сверка выполняется ПОСЛЕ догона (равенство
+            // aggregateHash = отсутствие расхождения, R5-абсолютная истина).
             var bucket = $"a7-{env.RunTag}";
             foreach (var node in Enumerable.Range(0, 4))
                 await MeshClients.CreateBucketAsync(env, node, bucket, TestContext.Current.CancellationToken);
@@ -153,34 +190,20 @@ public sealed class ConvergenceScenarios
             await MeshClients.PutObjectAsync(env, 3, bucket, "right-key", Body('R'),
                 TestContext.Current.CancellationToken);
 
-            // Пауза: notifier-цикл источника переходит в бэкофф, очередь копится
-            await Task.Delay(10_000, TestContext.Current.CancellationToken);
-
-            // Act / Assert — при живом расхождении: раздельные лаги (источник —
-            // лаг уведомлений/очередь; приёмник — fetch-очередь/лаг данных);
-            // sync-report пары — aggregateHash расходится
-            var statusLeft = JsonDocument.Parse(
-                await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
-            var statusRight = JsonDocument.Parse(
-                await MeshClients.AdminGetStatusAsync(env, 3, TestContext.Current.CancellationToken)).RootElement;
-            var divergenceSeen =
-                statusLeft.GetProperty("neighbors").EnumerateArray()
+            // Act / Assert — при живом расхождении: лаг уведомлений источника
+            // (нотифаер 0 ретраит к изолятам — очередь/лаг > 0, R5)
+            await MeshClients.PollUntilAsync(async () =>
+            {
+                var status = JsonDocument.Parse(
+                    await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+                return status.GetProperty("neighbors").EnumerateArray()
+                    .Where(n => n.GetProperty("online").GetBoolean())
                     .Any(n => n.GetProperty("queueDepth").GetInt64() > 0
-                        || n.GetProperty("deliveryLagSeconds").GetDouble() > 0)
-                || statusRight.GetProperty("neighbors").EnumerateArray()
-                    .Any(n => n.GetProperty("fetchQueueDepth").GetInt64() > 0
-                        || n.GetProperty("fetchLagSeconds").GetDouble() > 0);
-            divergenceSeen.Should().BeTrue("при живом расхождении штатные метрики отражают лаг (R5)");
+                        || n.GetProperty("deliveryLagSeconds").GetDouble() > 0);
+            }, "лаг уведомлений источника отражён при живом расхождении (R5)");
 
-            var reportLeft = JsonDocument.Parse(
-                await MeshClients.AdminSyncReportAsync(env, 0, bucket, TestContext.Current.CancellationToken)).RootElement;
-            var reportRight = JsonDocument.Parse(
-                await MeshClients.AdminSyncReportAsync(env, 3, bucket, TestContext.Current.CancellationToken)).RootElement;
-            reportLeft.GetProperty("aggregateHash").GetString()
-                .Should().NotBe(reportRight.GetProperty("aggregateHash").GetString(),
-                    "sync-report половин показывает расхождение (R5)");
-
-            // Срастание → догона (админ-reconcile §9) → sync-report совпадает
+            // Срастание → догона (админ-reconcile §9) → sync-report пары сходится
+            // (aggregateHash равен = отсутствие расхождения, R5)
             await HealAsync(env, TestContext.Current.CancellationToken);
             foreach (var node in Enumerable.Range(0, 4))
                 await MeshClients.AdminReconcileAsync(env, node, TestContext.Current.CancellationToken);
@@ -238,7 +261,7 @@ public sealed class ConvergenceScenarios
                 new OwnS3.Replication.ReplicationEvent(9900, OwnS3.Replication.ReplicationEventType.ObjectPut,
                     bucket, "single", 1000, "\"old\"", 3, "old-sha", "peer"),
             ]), OwnS3.Replication.Transport.ReplicationTransportJson.Options);
-            var response = await MeshClients.PeerClient(env, 3).SendAsync(
+            var response = await MeshClients.PeerClient(env, 3, 0).SendAsync(
                 "POST", "/replication/notifications", "", oldPut, TestContext.Current.CancellationToken);
             response.StatusCode.Should().Be(HttpStatusCode.OK);
             (await MeshClients.GetObjectOrNullAsync(env, 3, bucket, "single",

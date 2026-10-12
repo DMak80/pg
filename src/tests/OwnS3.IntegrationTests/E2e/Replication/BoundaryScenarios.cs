@@ -188,8 +188,8 @@ public sealed class BoundaryScenarios
 
             // replication-ключ на 21 операцию → 403 (матрица 05 §3)
             using var s3Peer = new Amazon.S3.AmazonS3Client(new Amazon.Runtime.BasicAWSCredentials(
-                    OwnS3MeshE2eEnvironment.PeerAccessKeyOf(1),
-                    OwnS3MeshE2eEnvironment.PeerSecretKeyOf(1)),
+                    OwnS3MeshE2eEnvironment.PeerPairAccessKeyOf(1, 0),
+                    OwnS3MeshE2eEnvironment.PeerPairSecretKeyOf(1, 0)),
                 new Amazon.S3.AmazonS3Config
                 {
                     ServiceURL = env.NodeHostUrl(0),

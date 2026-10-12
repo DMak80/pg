@@ -30,15 +30,27 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     public const string WriterAccessKey = "os3m-writer";
     public const string WriterSecretKey = "os3m-writer-secret";
 
-    // Peer-ключи ПЕР-УЗЛОВЫЕ (глава 07 §2): accessKey — идентификатор источника
-    // на приёмнике (sourceName для дедупа (источник, seqNo)); общие креды
-    // гасили бы события второго отправителя (ревью t35, finding 5).
+    // Peer-ключи ПЕР-ПАРА узлов (глава 07 §2/§6): K_pair(i,j) уникален для пары,
+    // ОБЕ стороны его регистрируют (policy=replication) и им подписывают запросы
+    // друг к другу → резолв sourceName по accessKey в targets работает в обе
+    // стороны, а дедуп (sourceName, seqNo) различает всех отправителей (ревью
+    // t35, finding 5: общий на весь mesh ключ ломал резолв источников).
     public const string PeerKeyPrefix = "os3m-peer";
 
-    /// <summary>ИСХОДЯЩИЙ peer-ключ узла i (его подпись; у соседей в targets).</summary>
-    public static string PeerAccessKeyOf(int i) => $"{PeerKeyPrefix}-{i}";
+    /// <summary>Peer-ключ пары узлов (a, b) — симметричен: pair(a,b)=pair(b,a).</summary>
+    public static string PeerPairAccessKeyOf(int a, int b)
+    {
+        var lo = Math.Min(a, b);
+        var hi = Math.Max(a, b);
+        return $"{PeerKeyPrefix}-{lo}-{hi}";
+    }
 
-    public static string PeerSecretKeyOf(int i) => $"{PeerKeyPrefix}-{i}-secret";
+    public static string PeerPairSecretKeyOf(int a, int b)
+    {
+        var lo = Math.Min(a, b);
+        var hi = Math.Max(a, b);
+        return $"{PeerKeyPrefix}-{lo}-{hi}-secret";
+    }
 
     private readonly INetwork _net;
     private readonly List<IContainer> _containers = [];
@@ -123,15 +135,29 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                         .WithEnvironment("OWNS3_ROOT_PASSWORD", RootPassword)
                         .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", WriterAccessKey)
                         .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", WriterSecretKey)
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__ACCESSKEY", PeerAccessKeyOf(i))
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__SECRETKEY", PeerSecretKeyOf(i))
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__POLICY", "replication")
+                        .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write");
+                    // Peer-ключи ПЕР-ПАРА: узел i регистрирует pair(i,j) для каждого
+                    // соседа j (проверка подписей входящих) и кладёт ТОТ ЖЕ ключ в
+                    // targets записи j (исходящая подпись к j) — глава 07 §2/§6.
+                    // Слоты БЕЗ пропусков (env-трансляция OwnS3 обрывает на первом
+                    // пропущенном индексе — канон 05 §2), pair(i,i) — пропускается.
+                    var keySlot = 1;
+                    for (var j = 0; j < nodes; j++)
+                    {
+                        if (j == i)
+                            continue;
+                        builder = builder
+                            .WithEnvironment($"OWNS3_ACCESS_KEYS__{keySlot}__ACCESSKEY", PeerPairAccessKeyOf(i, j))
+                            .WithEnvironment($"OWNS3_ACCESS_KEYS__{keySlot}__SECRETKEY", PeerPairSecretKeyOf(i, j))
+                            .WithEnvironment($"OWNS3_ACCESS_KEYS__{keySlot}__POLICY", "replication");
+                        keySlot++;
+                    }
+                    builder = builder
                         .WithEnvironment("OWNS3_HOST_ID", $"os3m-{i}-{runId[..8]}");
                     if (fullMeshTargets)
                     {
                         // Полный mesh: каждый знает всех (env-seed первого старта — глава 07 §2);
-                        // креды СОСЕДА j — его ИСХОДЯЩИЙ peer-ключ peer-{j}
+                        // accessKey записи соседа j — pair(i,j) (обе стороны его зарегистрировали)
                         var index = 0;
                         for (var j = 0; j < nodes; j++)
                         {
@@ -141,8 +167,8 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                                 .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__NAME", NodeNameStatic(runId, j))
                                 .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ENDPOINT",
                                     $"http://{NodeNameStatic(runId, j)}:9000")
-                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ACCESSKEY", PeerAccessKeyOf(j))
-                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__SECRETKEY", PeerSecretKeyOf(j));
+                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ACCESSKEY", PeerPairAccessKeyOf(i, j))
+                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__SECRETKEY", PeerPairSecretKeyOf(i, j));
                             index++;
                         }
                     }
@@ -212,7 +238,7 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
         }
     }
 
-    /// <summary>Сетевая изоляция узла (A2/A4): docker network disconnect.</summary>
+    /// <summary>Сетевая изоляция узла (A2): docker network disconnect.</summary>
     public async Task DisconnectNodeAsync(int i, CancellationToken ct)
     {
         await RunDockerAsync(["network", "disconnect", NetName, NodeName(i)], ct);
@@ -222,6 +248,57 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     public async Task ReconnectNodeAsync(int i, CancellationToken ct)
     {
         await RunDockerAsync(["network", "connect", NetName, NodeName(i)], ct);
+    }
+
+    /// <summary>Раскол ПОПОЛАМ (A4/A7, честные половины): узлы {0,1} остаются в
+    /// основной сети, {2,3} переводятся во вторую сеть os3m-split-{runId} —
+    /// половины теряют связь друг с другом (TIMEOUT-природа), внутри половин
+    /// связь полная, host-порты обеих половин живы (клиенты с хоста пишут в обе).</summary>
+    private INetwork? _splitNet;
+
+    /// <summary>Имя сети раскола (создаётся SplitIntoHalvesAsync).</summary>
+    public string SplitNetworkName => $"os3m-split-{_runId}";
+
+    public async Task SplitIntoHalvesAsync(CancellationToken ct)
+    {
+        _splitNet = new NetworkBuilder().WithName($"os3m-split-{_runId}").Build();
+        await _splitNet.CreateAsync(ct);
+        for (var i = 2; i < Nodes; i++)
+        {
+            await RunDockerAsync(["network", "disconnect", NetName, NodeName(i)], ct);
+            await RunDockerAsync(["network", "connect", _splitNet.Name, NodeName(i)], ct);
+        }
+    }
+
+    /// <summary>Подключить узел к сети раскола (изолят сохраняет host-доступность).</summary>
+    public async Task AttachNodeToSplitNetworkAsync(int i, CancellationToken ct)
+    {
+        if (_splitNet is null)
+        {
+            _splitNet = new NetworkBuilder().WithName($"os3m-split-{_runId}").Build();
+            await _splitNet.CreateAsync(ct);
+        }
+        await RunDockerAsync(["network", "connect", _splitNet.Name, NodeName(i)], ct);
+    }
+
+    /// <summary>Отключить узел от сети раскола.</summary>
+    public async Task DetachNodeFromSplitNetworkAsync(int i, CancellationToken ct)
+    {
+        if (_splitNet is null)
+            return;
+        await RunDockerAsync(["network", "disconnect", _splitNet.Name, NodeName(i)], ct);
+    }
+
+    /// <summary>Срастание половин: возврат {2,3} в основную сеть, вторая удаляется.</summary>
+    public async Task HealHalvesAsync(CancellationToken ct)
+    {
+        for (var i = 2; i < Nodes; i++)
+        {
+            await RunDockerAsync(["network", "disconnect", _splitNet!.Name, NodeName(i)], ct);
+            await RunDockerAsync(["network", "connect", NetName, NodeName(i)], ct);
+        }
+        try { await _splitNet!.DeleteAsync(ct); } catch { /* уже нет */ }
+        _splitNet = null;
     }
 
     /// <summary>docker stop (graceSec — `-t`, SIGKILL после бюджета; A1/A11).</summary>
@@ -295,6 +372,10 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                 await Task.Delay(TimeSpan.FromSeconds(2));
             }
         }
+        if (_splitNet is not null)
+        {
+            await TryDockerAsync(["network", "rm", _splitNet.Name]);
+        }
         try { await _net.DeleteAsync(); } catch { /* уже нет */ }
 
         // Ассерт чистоты: ни контейнера, ни тома, ни сети с runId прогона (own-only)
@@ -313,6 +394,11 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                 ["network", "ls", "--format", "{{.Name}}", "--filter", $"name={NetName}"],
                 CancellationToken.None))
             .Trim().Should().BeEmpty($"после teardown не осталось сети {NetName}");
+        if (_splitNet is not null)
+            (await RunDockerOrNullAsync(
+                    ["network", "ls", "--format", "{{.Name}}", "--filter", $"name={_splitNet.Name}"],
+                    CancellationToken.None))
+                .Trim().Should().BeEmpty($"после teardown не осталось сети {_splitNet.Name}");
 
         Console.WriteLine($"[PHASE] teardown: ok, {sw.Elapsed.TotalSeconds:F1}s");
         await File.AppendAllTextAsync(Path.Combine(_artifactsDir, "phases.log"),

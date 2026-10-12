@@ -143,7 +143,9 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         };
         var (authorization, _, _) = SigV4Signer.Sign(target.SecretKey, target.AccessKey, method.Method, path,
             query, headers, payloadHashValue, at);
-        var request = new HttpRequestMessage(method, new UriBuilder(endpoint) { Path = path, Query = query }.Uri);
+        // URI строкой: UriBuilder{Path=...} сбрасывает нестандартный порт (80/443)
+        var uriText = $"{endpoint.AbsoluteUri.TrimEnd('/')}{path}{(string.IsNullOrEmpty(query) ? "" : $"?{query}")}";
+        var request = new HttpRequestMessage(method, new Uri(uriText));
         foreach (var (name, value) in headers)
             request.Headers.TryAddWithoutValidation(name, value);
         request.Headers.TryAddWithoutValidation("Authorization", authorization);
