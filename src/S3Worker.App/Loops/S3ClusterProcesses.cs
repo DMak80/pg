@@ -33,6 +33,7 @@ internal sealed class S3ClusterProcesses(
     ClaimStore claims,
     WorkJournal journal,
     ProvisioningProcess provision,
+    NodeSupervisor supervisor,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
@@ -117,7 +118,10 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Active:
-                    logger.LogDebug("{Cluster}: Active — ветка подключится в Tasks 11–13", cluster);
+                    // Active-ветка (arch/24 §5): надзор (C) первым; D/E
+                    // подключаются Task 12, ротация — Task 13.
+                    await RunClusterOpAsync(cluster, "active",
+                        () => supervisor.TickAsync(snap, ct), ct);
                     break;
 
                 case S3ClusterKind.Skip:

@@ -228,6 +228,9 @@ internal static class Fakes
 
         public bool HostsFault { get; set; }
 
+        // docker-факт лимитов живых нод (автоконверге C).
+        public Shared.Docker.NodeLimits? Limits { get; set; }
+
         public int S3ContainerPort => 9000;
 
         public Task<Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>> GetHostsAsync(CancellationToken ct)
@@ -269,7 +272,8 @@ internal static class Fakes
         }
 
         public Task<Result<Shared.Docker.NodeLimits?>> NodeResourcesAsync(string cluster, string node, CancellationToken ct)
-            => Task.FromResult(Result<Shared.Docker.NodeLimits?>.Success(null));
+            => Task.FromResult(Result<Shared.Docker.NodeLimits?>.Success(
+                Nodes.ContainsKey($"{cluster}/{node}") ? Limits : null));
 
         public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string node, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
