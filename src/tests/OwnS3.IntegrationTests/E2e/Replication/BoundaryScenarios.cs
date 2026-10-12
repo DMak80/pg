@@ -56,6 +56,13 @@ public sealed class BoundaryScenarios
                     var status = JsonDocument.Parse(
                         await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
                     status.GetProperty("outbox").GetProperty("budgetExceeded").GetBoolean().Should().BeTrue();
+
+                    // Лог принудительного тримминга (глава 07 §8-а): событие потерь
+                    // уведомлений в docker logs источника
+                    var logs = await env.RunDockerAsync(
+                        ["logs", env.NodeName(0)], TestContext.Current.CancellationToken);
+                    logs.Should().Contain("принудительный тримминг",
+                        "потеря уведомлений журналируется (глава 07 §4/§8-а)");
                 }
                 finally
                 {
@@ -88,6 +95,7 @@ public sealed class BoundaryScenarios
             var bucket = $"a12-{env.RunTag}";
             await MeshClients.CreateBucketAsync(env, 0, bucket, TestContext.Current.CancellationToken);
             var partSize = 1024 * 1024 * 1024; // 1 ГиБ
+            long expectedHashedBytes = 0; // длина эталонного потока, ушедшая в sha
             var sw = Stopwatch.StartNew();
 
             // Act — загрузка и Complete на узле-0
@@ -114,23 +122,35 @@ public sealed class BoundaryScenarios
             sw.Stop();
             Console.WriteLine($"[PHASE] a12: доставка 6 ГиБ — {sw.Elapsed.TotalSeconds:F0} с");
 
-            // Клиентская сверка sha чанками (GetObject потоково с n1)
+            // Клиентская сверка sha чанками (GetObject потоково с n1) против эталона:
+            // инкрементальный SHA256 нулевого потока 6 ГиБ (тот же генератор данных)
             using (var s3 = MeshClients.S3(env, 1, timeoutSec: 60))
             using (var response = await s3.GetObjectAsync(bucket, "big", TestContext.Current.CancellationToken))
             {
                 response.ContentLength.Should().Be(6L * partSize);
-                var sha = System.Security.Cryptography.SHA256.Create();
+                var received = System.Security.Cryptography.SHA256.Create();
+                var expected = System.Security.Cryptography.SHA256.Create();
+                var zeroBlock = new byte[8 * 1024 * 1024]; // нули — генератор данных
                 var buffer = new byte[8 * 1024 * 1024];
                 long total = 0;
                 int read;
                 while ((read = await response.ResponseStream.ReadAsync(buffer, TestContext.Current.CancellationToken)) > 0)
                 {
-                    sha.TransformBlock(buffer, 0, read, null, 0);
+                    received.TransformBlock(buffer, 0, read, null, 0);
                     total += read;
+                    // эталон той же длины нулями (1 ГиБ-часть = 128 блоков по 8 МиБ)
+                    while (total > expectedHashedBytes)
+                    {
+                        expected.TransformBlock(zeroBlock, 0, zeroBlock.Length, null, 0);
+                        expectedHashedBytes += zeroBlock.Length;
+                    }
                 }
-                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                received.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                expected.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
                 total.Should().Be(6L * partSize);
-                Convert.ToHexString(sha.Hash!).ToLowerInvariant().Should().HaveLength(64);
+                Convert.ToHexString(received.Hash!).ToLowerInvariant()
+                    .Should().Be(Convert.ToHexString(expected.Hash!).ToLowerInvariant(),
+                        "sha полученного тела равен эталону нулевого потока");
             }
         }, ct: TestContext.Current.CancellationToken);
     }
@@ -168,7 +188,8 @@ public sealed class BoundaryScenarios
 
             // replication-ключ на 21 операцию → 403 (матрица 05 §3)
             using var s3Peer = new Amazon.S3.AmazonS3Client(new Amazon.Runtime.BasicAWSCredentials(
-                    MeshClients.PeerAccessKey, MeshClients.PeerSecretKey),
+                    OwnS3MeshE2eEnvironment.PeerAccessKeyOf(1),
+                    OwnS3MeshE2eEnvironment.PeerSecretKeyOf(1)),
                 new Amazon.S3.AmazonS3Config
                 {
                     ServiceURL = env.NodeHostUrl(0),

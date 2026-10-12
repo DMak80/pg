@@ -40,9 +40,11 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     private readonly Func<long>? _outboxBytes;
     private readonly Func<long>? _outboxBudgetExceeded;
 
-    // enabled=false (соседей нет, Existing-регресс): инструменты НЕ создаются —
-    // ни одной ownS3_replication_-серии в экспорте; инкременты — no-op.
-    private readonly bool _enabled;
+    // enabled=false (соседей нет, Existing-регресс): инкременты no-op, gauge-колбэки
+    // возвращают пусто → серии не экспортируются. ПЕРЕКЛЮЧАЕМО (SetEnabled при
+    // TargetsChanged): узел, стартовавший без соседей и активированный hot-apply,
+    // начинает экспортировать серии без рестарта (глава 07 §2, A5/A9).
+    private volatile bool _enabled;
 
     public ReplicationMetrics(Meter meter, bool enabled = true, Func<long>? outboxBytes = null,
         Func<long>? outboxBudgetExceeded = null)
@@ -50,8 +52,6 @@ public sealed class ReplicationMetrics : IOutcomeCounters
         _enabled = enabled;
         _outboxBytes = outboxBytes;
         _outboxBudgetExceeded = outboxBudgetExceeded;
-        if (!enabled)
-            return;
         _notified = meter.CreateCounter<long>("ownS3.replication.notified.total", unit: "{event}",
             description: "Исходы рассылки уведомлений соседям (accepted/backoff/retry)");
         _retries = meter.CreateCounter<long>("ownS3.replication.retries.total", unit: "{retry}",
@@ -63,35 +63,53 @@ public sealed class ReplicationMetrics : IOutcomeCounters
         _conflictsCounter = meter.CreateCounter<long>("ownS3.replication.conflicts_total", unit: "{conflict}",
             description: "Зафиксированные LWW-конфликты (журналируются)");
         meter.CreateObservableGauge<long>("ownS3.replication.link.online",
-            () => _linkOnline.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("target", p.Key))),
+            () => _enabled
+                ? _linkOnline.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("target", p.Key)))
+                : [],
             description: "1 — сосед онлайн по исходам notifier");
         meter.CreateObservableGauge<long>("ownS3.replication.queue.depth",
-            () => _queueDepth.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("target", p.Key))),
+            () => _enabled
+                ? _queueDepth.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("target", p.Key)))
+                : [],
             description: "Событий журнала после watermark приёма соседа");
         meter.CreateObservableGauge<double>("ownS3.replication.delivery.lag.seconds",
-            () => _deliveryLagSeconds.Select(p => new Measurement<double>(p.Value, new KeyValuePair<string, object?>("target", p.Key))),
+            () => _enabled
+                ? _deliveryLagSeconds.Select(p => new Measurement<double>(p.Value, new KeyValuePair<string, object?>("target", p.Key)))
+                : [],
             unit: "s", description: "Возраст старейшего события, не подтверждённого приёмом (лаг уведомлений)");
         meter.CreateObservableGauge<long>("ownS3.replication.fetch.queue.depth",
-            () => _fetchQueueDepth.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
+            () => _enabled
+                ? _fetchQueueDepth.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key)))
+                : [],
             description: "Ключей в fetch-очереди приёмника");
         meter.CreateObservableGauge<double>("ownS3.replication.fetch.lag.seconds",
-            () => _fetchLagSeconds.Select(p => new Measurement<double>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
+            () => _enabled
+                ? _fetchLagSeconds.Select(p => new Measurement<double>(p.Value, new KeyValuePair<string, object?>("source", p.Key)))
+                : [],
             unit: "s", description: "Возраст старейшего принятого-но-несохранённого ключа (лаг данных)");
         meter.CreateObservableGauge<long>("ownS3.replication.fetch.paused",
-            () => _fetchPaused.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
+            () => _enabled
+                ? _fetchPaused.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key)))
+                : [],
             description: "1 — фетчи на паузе (нет места)");
         meter.CreateObservableGauge<long>("ownS3.replication.reconcile.position",
-            () => _reconcilePosition.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
+            () => _enabled
+                ? _reconcilePosition.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key)))
+                : [],
             description: "Прогресс reconcile (обработано ключей)");
-        if (_enabled && _outboxBytes is not null)
+        if (_outboxBytes is not null)
             meter.CreateObservableGauge<long>("ownS3.replication.outbox.bytes",
-                () => new Measurement<long>(_outboxBytes()),
+                () => _enabled ? [new Measurement<long>(_outboxBytes())] : [],
                 unit: "By", description: "Текущий размер журнала доставки");
-        if (_enabled && _outboxBudgetExceeded is not null)
+        if (_outboxBudgetExceeded is not null)
             meter.CreateObservableGauge<long>("ownS3.replication.outbox.budget.exceeded",
-                () => new Measurement<long>(_outboxBudgetExceeded()),
+                () => _enabled ? [new Measurement<long>(_outboxBudgetExceeded())] : [],
                 description: "1 — бюджет журнала превышен (алерт-состояние)");
     }
+
+    // Переключение экспорта (глава 07 §2: hot-apply состава). Включение — серии
+    // появляются с первыми данными; выключение — gauge-колбэки пусты, инкременты no-op.
+    public void SetEnabled(bool enabled) => _enabled = enabled;
 
     public void SetLinkOnline(string target, bool online)
     {

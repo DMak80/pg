@@ -150,9 +150,10 @@ public sealed class NotificationDispatcher
     }
 
     // Возраст старейшего события после watermark (сек; 0 — хвост подтверждён).
+    // PeekFirstAfter — дешёвый lookup (сегменты до watermark пропускаются целиком).
     private double DeliveryLagSeconds(long watermark)
     {
-        var oldest = _journal.ReadBatch(watermark, 1).FirstOrDefault();
+        var oldest = _journal.PeekFirstAfter(watermark);
         if (oldest is null)
             return 0;
         var ageMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - oldest.ModTimeUnixMs;

@@ -30,7 +30,7 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
         {
             batch = null;
         }
-        if (batch is null)
+        if (batch is null || batch.Events is null)
         {
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             await context.Response.WriteAsJsonAsync(new { error = "malformed notification batch" },

@@ -61,12 +61,20 @@ public sealed class FakeFetchTransport : IReplicationTransport
     // Ответ на следующий фетч: исключение, tombstone (unix-ms), 404 (null) или объект.
     public Queue<object?> Outcomes { get; } = new();
 
+    // Первые N фетчей — сетевой сбой (HttpClientException), затем обычные исходы.
+    public int FailuresBeforeSuccess { get; set; }
+
     public static FetchResult BodyResult(byte[] body, long modMs, string sha) =>
         new(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"", "application/x-test",
             new Dictionary<string, string>(), TombstoneUnixMs: null);
 
     public Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
     {
+        if (FailuresBeforeSuccess > 0)
+        {
+            FailuresBeforeSuccess--;
+            throw new System.Net.Http.HttpRequestException("источник offline (тест)");
+        }
         if (Outcomes.Count == 0)
         {
             var defaultBody = "default"u8.ToArray();
@@ -174,6 +182,40 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         _fixture.Store.ReadKeyState("bt", "gone").Should().BeNull();
         _fixture.Tombstones.GetDeleteTime("bt", "gone").Should().Be(5000);
         _fixture.Counters.AppliedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Drain_SourceOffline_TaskNotLost_RetryAfterRecovery()
+    {
+        // Arrange — транспорт падает (источник offline): drain НЕ теряет задачу,
+        // ретрай после восстановления (finding 2/1)
+        var payload = "drain-body"u8.ToArray();
+        var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        _fixture.Transport.FailuresBeforeSuccess = int.MaxValue; // источник offline
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(payload, 100, sha));
+        _fixture.Queue.TryEnqueue(new FetchTask("b", "drain", 100));
+        var fetcher = _fixture.Create();
+
+        // Act — drain с недоступным источником (бюджет ограничен токеном)
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        try
+        {
+            await fetcher.DrainAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // бюджет истёк на ретраях — ожидаемо приoffline
+        }
+
+        // Assert — задача НЕ потеряна (HasUnapplied true — чистый маркер не ставить, R2)
+        fetcher.HasUnapplied.Should().BeTrue();
+
+        // Восстановление: транспорт вернулся — ретрай (RunAsync) применяет задачу
+        _fixture.Transport.FailuresBeforeSuccess = 0;
+        using var runCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await fetcher.RunAsync(runCts.Token);
+        _fixture.Store.ReadKeyState("b", "drain")!.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(100));
+        fetcher.HasUnapplied.Should().BeFalse("после успешного ретрая незавершённой работы нет");
     }
 
     [Fact]

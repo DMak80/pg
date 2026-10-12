@@ -32,6 +32,13 @@ public sealed class ObjectFetcher
     private readonly TimeSpan _diskPoll;
     private readonly TimeSpan _backoffBase;
     private volatile bool _paused;
+    // Упавшие (не применённые) задачи — НЕограниченная retry-коллекция воркера:
+    // источник событие не повторит (курсор ушёл за ACK приёма) — потеря = расхождение
+    // до reconcile (до 24 ч). Неограниченность безопасна: ключей на источнике конечное
+    // число; bounded-очередь для retry нельзя (TryEnqueue в полную очередь теряет).
+    private readonly List<FetchTask> _retryTasks = [];
+    private readonly object _retryLock = new();
+    // Есть не применённые задачи (для решения о чистом маркере при остановке).
 
     public ObjectFetcher(TargetRecord source, FetchQueue queue, IReplicationTransport transport,
         ReplicaApplier applier, IOutcomeCounters counters, Func<long> getFreeDiskBytes,
@@ -65,7 +72,20 @@ public sealed class ObjectFetcher
     private readonly ReplicationMetrics _metrics;
 
     // Фетчи на паузе (нет места на диске — глава 07 §7).
+    public TargetRecord Source => _source;
+
     public bool Paused => _paused;
+
+    // Есть НЕ применённые ключи (в очереди или retry-коллекции) — признак
+    // незавершённой работы при остановке (чистый маркер не ставить, глава 07 §7).
+    public bool HasUnapplied
+    {
+        get
+        {
+            lock (_retryLock)
+                return _queue.Depth > 0 || _retryTasks.Count > 0;
+        }
+    }
 
     // Воркеры (Parallelism) над одной очередью — до cancel (graceful, без исключений).
     public async Task RunAsync(CancellationToken ct)
@@ -84,11 +104,39 @@ public sealed class ObjectFetcher
         }
     }
 
-    // Доработать текущую очередь до пустоты (graceful stop, бюджет — вызывающий).
+    // Доработать очередь и retry-коллекцию до пустоты (graceful stop): упавшие
+    // задачи РЕТРАЯТСЯ с бэкоффом до исчерпания бюджета вызывающего — drain не
+    // бросает задачи с одной попытки (источник их не повторит, глава 07 §7).
     public async Task DrainAsync(CancellationToken ct)
     {
-        while (_queue.Depth > 0 && !ct.IsCancellationRequested)
-            await TryFetchOneAsync(ct);
+        var backoff = _backoffBase;
+        while (!ct.IsCancellationRequested)
+        {
+            var task = _queue.TryDequeue(out var queued) ? queued : null;
+            lock (_retryLock)
+            {
+                if (task is null && _retryTasks.Count > 0)
+                {
+                    task = _retryTasks[0];
+                    _retryTasks.RemoveAt(0);
+                }
+            }
+            if (task is null)
+                return; // всё применено — drain завершён
+            var failed = await TryFetchOneAsync(ct, task);
+            if (failed)
+            {
+                lock (_retryLock)
+                    _retryTasks.Add(task);
+                await Task.Delay(backoff, ct);
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2,
+                    TimeSpan.FromSeconds(_options.BackoffMaxSec).Ticks));
+            }
+            else
+            {
+                backoff = _backoffBase;
+            }
+        }
     }
 
     private async Task WorkerLoopAsync(CancellationToken ct)
@@ -116,7 +164,18 @@ public sealed class ObjectFetcher
                 _logger.LogInformation("Место освободилось — фетчи {Source} продолжаются", _source.Name);
             }
 
-            if (!_queue.TryDequeue(out var task))
+            // Упавшая задача — из retry-коллекции воркера (НЕ из bounded-очереди:
+            // повторная постановка в полную очередь молча теряет задачу)
+            FetchTask? task = null;
+            lock (_retryLock)
+            {
+                if (_retryTasks.Count > 0)
+                {
+                    task = _retryTasks[0];
+                    _retryTasks.RemoveAt(0);
+                }
+            }
+            if (task is null && !_queue.TryDequeue(out task))
             {
                 // Метрики очереди/лага данных (глава 07 §10): 0 — очередь пуста
                 _metrics.SetFetchQueueDepth(_source.Name, 0);
@@ -126,16 +185,18 @@ public sealed class ObjectFetcher
             }
             _metrics.SetFetchQueueDepth(_source.Name, _queue.Depth);
             _metrics.SetFetchLagSeconds(_source.Name,
-                Math.Max(0, _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - task.NotifiedModMs) / 1000.0);
+                Math.Max(0, _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - task!.NotifiedModMs) / 1000.0);
 
             var failed = await TryFetchOneAsync(ct, task);
             if (failed)
             {
-                // Бэкофф эксп: повтор той же задачи (идемпотентно)
+                // Бэкофф эксп: повтор той же задачи из retry-коллекции (неограниченной —
+                // не теряется при переполнении bounded-очереди)
+                lock (_retryLock)
+                    _retryTasks.Add(task);
                 await Task.Delay(backoff, ct);
                 backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2,
                     TimeSpan.FromSeconds(_options.BackoffMaxSec).Ticks));
-                _queue.TryEnqueue(task);
             }
             else
             {
@@ -167,10 +228,15 @@ public sealed class ObjectFetcher
             }
 
             // 200-объект: применение с исходными метаданными; sha-сверка тела на лету —
-            // внутри ApplyObjectAsync (expectedSha из заголовка)
+            // внутри ApplyObjectAsync (expectedSha из заголовка); чтение тела — под
+            // троттлингом MaxRateBytes (глава 07 §7; 0 — безлимит)
             await using (result.Body)
             {
-                var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, result.Body,
+                // Троттлинг чтения тела MaxRateBytes байт/с (глава 07 §7; 0 — безлимит)
+                Stream body = _options.MaxRateBytes > 0
+                    ? new ThrottledStream(result.Body, _options.MaxRateBytes)
+                    : result.Body;
+                var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
                     contentLength: result.ContentLength,
                     new ReplicaObjectMetadata(
                         DateTimeOffset.FromUnixTimeMilliseconds(result.ModTimeUnixMs),
@@ -205,4 +271,58 @@ public sealed class ObjectFetcher
             return true;
         }
     }
+
+// Троттлинг-поток (глава 07 §7): пропускает байты не быстрее rateLimit байт/с —
+// чтение тела фетча не конкурирует с S3-гранью за диск сверх лимита.
+internal sealed class ThrottledStream(Stream inner, long rateLimitBytesPerSec) : Stream
+{
+    private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
+    private long _allowedBytes;
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var permitted = Reserve(count);
+        return inner.Read(buffer, offset, permitted);
+    }
+
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count,
+        CancellationToken cancellationToken)
+    {
+        var permitted = Reserve(count);
+        return await inner.ReadAsync(buffer.AsMemory(offset, permitted), cancellationToken);
+    }
+
+    // Резерв байтов: лимит пополняется со скоростью rateLimit; чтение сверх
+    // накопленного — ожидание (TokenBucket-семантика).
+    private int Reserve(int requested)
+    {
+        if (requested <= 0)
+            return 0;
+        while (true)
+        {
+            var available = (long)(_stopwatch.Elapsed.TotalSeconds * rateLimitBytesPerSec);
+            if (available > _allowedBytes)
+                _allowedBytes = available;
+            if (_allowedBytes > 0)
+            {
+                var take = (int)Math.Min(requested, _allowedBytes);
+                _allowedBytes -= take;
+                return take;
+            }
+            Thread.Sleep(10); // гранулярность накопления
+        }
+    }
+
+    public override void Flush() => inner.Flush();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    protected override void Dispose(bool disposing) => inner.Dispose();
+}
 }

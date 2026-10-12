@@ -79,10 +79,15 @@ public sealed class OutboxJournal : IDisposable
             if (maxCount <= 0)
                 return result;
             EnsureOpened(); // ленивый скан существующих сегментов (рестарт источника, глава 07 §4)
-            foreach (var startSeqNo in ScanSegmentsLocked())
+            var starts = ScanSegmentsLocked();
+            foreach (var startSeqNo in starts)
             {
                 if (result.Count >= maxCount)
                     break;
+                // Целиком устаревший сегмент (конец <= fromExclusive, вычислим из имён) —
+                // пропустить БЕЗ чтения и декодирования
+                if (EndOf(starts, startSeqNo) <= fromSeqNoExclusive)
+                    continue;
                 var path = SegmentPath(startSeqNo);
                 var bytes = ReadSegment(path);
                 var offset = 0;
@@ -99,6 +104,33 @@ public sealed class OutboxJournal : IDisposable
                 }
             }
             return result;
+        }
+    }
+
+    // Первое событие после fromSeqNoExclusive (для лага notifier'а, глава 07 §10):
+    // дешёвый lookup — сегменты до содержащего пропускаются целиком, декодируется
+    // только нужный сегмент до первого события после watermark.
+    public ReplicationEvent? PeekFirstAfter(long fromSeqNoExclusive)
+    {
+        lock (_lock)
+        {
+            EnsureOpened();
+            var starts = ScanSegmentsLocked();
+            foreach (var startSeqNo in starts)
+            {
+                if (EndOf(starts, startSeqNo) <= fromSeqNoExclusive)
+                    continue;
+                var bytes = ReadSegment(SegmentPath(startSeqNo));
+                var offset = 0;
+                while (offset < bytes.Length)
+                {
+                    if (!OutboxEntryCodec.TryDecode(bytes, offset, out var e, out offset))
+                        break;
+                    if (e.SeqNo > fromSeqNoExclusive)
+                        return e;
+                }
+            }
+            return null;
         }
     }
 

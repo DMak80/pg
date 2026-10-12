@@ -187,11 +187,13 @@ builder.Services.AddSingleton(sp =>
     // Экспорт серий — при активной репликации (глава 07 §12: без соседей серий нет).
     // Outbox-серии — делегаты журнала (глава 07 §10: outbox_bytes/budget_exceeded);
     // журнал ещё не сконструирован — ленивый захват после резолва.
-    var active = sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>().Active;
+    // enabled=true: переключается SetEnabled — координатор подписан на TargetsChanged
+    // (старт без соседей: инкременты no-op, gauge-колбэки пусты — серий нет,
+    // Existing-регресс; hot-apply состава включает экспорт без рестарта, A5/A9)
     OwnS3.Replication.Outbox.OutboxJournal? journal = null;
     var metrics = new OwnS3.Replication.ReplicationMetrics(
         sp.GetService<Meter>() ?? new Meter("ownS3"),
-        enabled: active,
+        enabled: true,
         outboxBytes: () => journal?.TotalBytes ?? 0,
         outboxBudgetExceeded: () => journal is { BudgetExceeded: true } ? 1 : 0);
     journal = sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>();
@@ -266,7 +268,10 @@ builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
         sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
         sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
         sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
-        () => new DriveInfo(sp.GetRequiredService<StorageModeInfo>().DataRoots[0]).AvailableFreeSpace,
+        // Свободное место для паузы фетчей: single — корень тома; EC — MIN по всем
+        // дискам (глава 07 §11: пауза — по худшему диску)
+        () => sp.GetRequiredService<StorageModeInfo>().DataRoots
+            .Select(r => new DriveInfo(r).AvailableFreeSpace).Min(),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<ILogger<OwnS3.Replication.ReplicationCoordinator>>(),
         sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>(),

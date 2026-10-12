@@ -61,8 +61,31 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
             return;
         logger.LogInformation("Reconcile по соседу {Source}: старт", sourceName);
 
+        // Ретрай транспорта: сосед на момент триггера может быть ещё недоступен
+        // (бэкофф 5 с → 60 с, до ~5 мин) — сбой не роняет проход (глава 07 §9)
+        IReadOnlyList<(string Name, long CreationUnixMs)> neighborBuckets;
+        var backoff = TimeSpan.FromSeconds(5);
+        while (true)
+        {
+            try
+            {
+                neighborBuckets = await transport.ListingBucketsAsync(target, ct);
+                break;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Reconcile {Source}: сосед недоступен — ретрай через {Backoff}",
+                    sourceName, backoff);
+                await Task.Delay(backoff, ct);
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
+            }
+        }
+
         // Backfill состава бакетов (§9): у соседа есть — у нас нет → create с CreationDate соседа
-        var neighborBuckets = await transport.ListingBucketsAsync(target, ct);
         foreach (var (name, creationUnixMs) in neighborBuckets)
         {
             applier.ApplyBucketCreate(name, creationUnixMs);
@@ -75,20 +98,46 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
             var marker = ReadMarker(sourceName, bucket);
             while (!ct.IsCancellationRequested)
             {
-                var page = await transport.ListAsync(target, bucket, marker, maxKeys: 1000, ct);
+                ReplicationListingResponse page;
+                var pageBackoff = TimeSpan.FromSeconds(5);
+                while (true)
+                {
+                    try
+                    {
+                        page = await transport.ListAsync(target, bucket, marker, maxKeys: 1000, ct);
+                        break;
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Reconcile {Source}: листинг {Bucket} не удался — ретрай через {Backoff}",
+                            sourceName, bucket, pageBackoff);
+                        await Task.Delay(pageBackoff, ct);
+                        pageBackoff = TimeSpan.FromTicks(Math.Min(pageBackoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
+                    }
+                }
                 foreach (var entry in page.Entries)
                 {
                     processed++;
                     var local = store.ReadKeyState(bucket, entry.Key);
                     var localMod = local?.ModTime.ToUnixTimeMilliseconds() ?? -1;
-                    if (entry.ModTime.ToUnixTimeMilliseconds() > localMod)
+                    // Решение через LWW-компаратор (та же таблица, что у приёмника —
+                    // глава 07 §7): IncomingWins — включая sha-тай-брейк при равных
+                    // modTime (иначе reconcile не чинит потерянное tie-уведомление)
+                    var (outcome, _) = LwwComparator.Compare(
+                        entry.ModTime.ToUnixTimeMilliseconds(), entry.ContentSha256Hex,
+                        localMod, local?.ContentSha256Hex ?? string.Empty);
+                    if (outcome == LwwOutcome.IncomingWins)
                     {
-                        // старее/отсутствует → fetch-задача в очередь источника (§9;
-                        // идемпотентно — фетчер применит по LWW)
+                        // старее/отсутствует/тай-проигрыш → fetch-задача в очередь
+                        // источника (§9; идемпотентно — фетчер применит по LWW)
                         queues.ForSource(sourceName).TryEnqueue(new FetchTask(bucket, entry.Key,
                             entry.ModTime.ToUnixTimeMilliseconds()));
                     }
-                    // новее → ничего: наш вариант выиграет при взаимной доставке (§9)
+                    // новее/Identical → ничего: наш вариант выиграет при взаимной доставке (§9)
                 }
                 metrics.SetReconcilePosition(sourceName, processed);
                 marker = page.NextMarker;

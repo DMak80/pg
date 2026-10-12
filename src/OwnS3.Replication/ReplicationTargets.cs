@@ -73,14 +73,30 @@ public sealed class ReplicationTargets(string sysDir, ILogger<ReplicationTargets
         TargetsChanged?.Invoke(Snapshot);
     }
 
-    // Уникальность имён соседей (глава 07 §2: имя — ключ курсоров/очередей/метрик).
+    // Валидация состава (глава 07 §2): имена И accessKey уникальны (accessKey —
+    // идентификатор источника на приёмнике: дедуп (sourceName, seqNo) при общих
+    // кредах гасил бы события второго отправителя); endpoint — scheme://host:port.
     private static void Validate(IReadOnlyList<TargetRecord> targets)
     {
-        var duplicates = targets.GroupBy(t => t.Name, StringComparer.Ordinal).Where(g => g.Count() > 1)
-            .Select(g => g.Key).ToList();
-        if (duplicates.Count > 0)
-            throw new ArgumentException($"Дубликаты имён соседей mesh: {string.Join(",", duplicates)}",
-                nameof(targets));
+        foreach (var (field, values) in new[]
+                 {
+                     (field: "имён", values: targets.Select(t => t.Name).ToList()),
+                     (field: "accessKey", values: targets.Select(t => t.AccessKey).ToList()),
+                 })
+        {
+            var duplicates = values.GroupBy(v => v, StringComparer.Ordinal).Where(g => g.Count() > 1)
+                .Select(g => g.Key).ToList();
+            if (duplicates.Count > 0)
+                throw new ArgumentException(
+                    $"Дубликаты {field} соседей mesh: {string.Join(",", duplicates)}", nameof(targets));
+        }
+        foreach (var target in targets)
+            if (!Uri.TryCreate(target.Endpoint, UriKind.Absolute, out var uri)
+                || uri.Scheme is not ("http" or "https")
+                || string.IsNullOrEmpty(uri.Host))
+                throw new ArgumentException(
+                    $"Невалидный endpoint соседа {target.Name}: {target.Endpoint} (ожидалось scheme://host:port)",
+                    nameof(targets));
     }
 
     private void LoadFromFile()

@@ -221,10 +221,24 @@ public sealed class MembershipScenarios
             // приёмника с наполненной fetch-очередью: пауза фетчей недоступна —
             // используем kill сразу после серии PUT (фетчи не успевают дренировать)
             var crashKeys = Enumerable.Range(10, 5).Select(i => $"crash{i}").ToList();
+            // ГАРАНТИЯ непустой fetch-очереди n1 на момент kill: PUT крупного объекта
+            // (50 МБ — фетч долгий), ждём появления очереди (фетч в процессе/ждёт)
+            var bigBody = new byte[50 * 1024 * 1024];
+            new Random(42).NextBytes(bigBody);
+            await MeshClients.PutObjectAsync(env, 0, bucket, "crash-big", bigBody,
+                TestContext.Current.CancellationToken);
+            await MeshClients.PollUntilAsync(async () =>
+            {
+                var status = JsonDocument.Parse(
+                    await MeshClients.AdminGetStatusAsync(env, 1, TestContext.Current.CancellationToken)).RootElement;
+                return status.GetProperty("neighbors").EnumerateArray()
+                    .Any(n => n.GetProperty("fetchQueueDepth").GetInt64() > 0);
+            }, "fetch-очередь n1 непуста (фетч crash-big в процессе)");
             foreach (var key in crashKeys)
                 await MeshClients.PutObjectAsync(env, 0, bucket, key, Body(50),
                     TestContext.Current.CancellationToken);
-            await env.KillNodeAsync(1, TestContext.Current.CancellationToken); // SIGKILL без drain
+            await env.KillNodeAsync(1, TestContext.Current.CancellationToken); // SIGKILL без drain —
+            // накопленная очередь (включая crash-big в процессе) теряется из памяти
             await env.StartNodeAsync(1, TestContext.Current.CancellationToken);
             await MeshClients.PollUntilAsync(async () =>
             {
@@ -243,10 +257,11 @@ public sealed class MembershipScenarios
                     return false;
                 }
             }, "n1 поднялся после краха");
-            // Дыры закрыты СТАРТОВЫМ reconcile (грязный маркер) ≤5 мин
+            // Дыры закрыты СТАРТОВЫМ reconcile (грязный маркер) ≤5 мин: потерянная
+            // очередь (crash-big + crash-ключи) восстановлена
             await MeshClients.PollUntilAsync(async () =>
             {
-                foreach (var key in crashKeys)
+                foreach (var key in crashKeys.Append("crash-big"))
                     if (await MeshClients.GetObjectOrNullAsync(env, 1, bucket, key,
                             TestContext.Current.CancellationToken) is null)
                         return false;

@@ -46,6 +46,9 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
         if (stoppingToken.IsCancellationRequested)
             return;
         logger.LogInformation("Репликация активна ({Count} соседей) — координатор запущен", targets.Snapshot.Count);
+        // Экспорт метрик следует за составом (глава 07 §2): hot-apply состава
+        // включает/выключает серии без рестарта (A5/A9)
+        targets.TargetsChanged += snapshot => metrics.SetEnabled(snapshot.Count > 0);
 
         // Маркер: чистота ПРЕДЫДУЩЕЙ остановки — до сброса (глава 07 §7);
         // триггеры reconcile §9 (2) «пустой том» и (3) «грязная остановка» — по нему
@@ -159,6 +162,7 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
         }
 
         var fetchers = GetAllFetchers();
+        var drainedClean = true;
         using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         drainCts.CancelAfter(TimeSpan.FromSeconds(30)); // бюджет drain (глава 07 §7)
         foreach (var fetcher in fetchers)
@@ -166,17 +170,36 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
             try
             {
                 await fetcher.DrainAsync(drainCts.Token);
+                if (fetcher.HasUnapplied)
+                {
+                    // Не всё применено (источник недоступен в окне drain) — чистый
+                    // маркер НЕ ставить: он заблокирует стартовый reconcile, а дыры
+                    // не закрылись бы до периодического (до 24 ч) — глава 07 §7/§9
+                    drainedClean = false;
+                    logger.LogWarning(
+                        "Drain {Fetcher}: есть НЕ применённые ключи — маркер останется грязным (стартовый reconcile закроет дыры)",
+                        fetcher.Source.Name);
+                }
             }
             catch (OperationCanceledException)
             {
-                logger.LogWarning("Drain fetch-очередей не уложился в 30 с — остаток закроет стартовый reconcile");
+                drainedClean = false;
+                logger.LogWarning("Drain fetch-очередей не уложился в 30 с — маркер останется грязным (стартовый reconcile закроет дыры)");
             }
         }
 
         CancelExecutors();
         cursors.Flush();                 // graceful-персист watermark приёма (§5)
-        state.MarkCleanAndPersist();     // маркер чистого завершения (§7)
-        logger.LogInformation("Репликация остановлена штатно (drain+flush+clean)");
+        if (drainedClean)
+        {
+            state.MarkCleanAndPersist(); // маркер чистого завершения (§7)
+            logger.LogInformation("Репликация остановлена штатно (drain+flush+clean)");
+        }
+        else
+        {
+            state.MarkDirty();           // грязный маркер → стартовый reconcile (§9, R2)
+            logger.LogWarning("Репликация остановлена с незавершённым drain — маркер ГРЯЗНЫЙ (стартовый reconcile)");
+        }
         await base.StopAsync(cancellationToken);
     }
 

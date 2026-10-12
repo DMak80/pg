@@ -29,8 +29,16 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     public const string RootPassword = "os3m-root-secret";
     public const string WriterAccessKey = "os3m-writer";
     public const string WriterSecretKey = "os3m-writer-secret";
-    public const string PeerAccessKey = "os3m-peer";
-    public const string PeerSecretKey = "os3m-peer-secret";
+
+    // Peer-ключи ПЕР-УЗЛОВЫЕ (глава 07 §2): accessKey — идентификатор источника
+    // на приёмнике (sourceName для дедупа (источник, seqNo)); общие креды
+    // гасили бы события второго отправителя (ревью t35, finding 5).
+    public const string PeerKeyPrefix = "os3m-peer";
+
+    /// <summary>ИСХОДЯЩИЙ peer-ключ узла i (его подпись; у соседей в targets).</summary>
+    public static string PeerAccessKeyOf(int i) => $"{PeerKeyPrefix}-{i}";
+
+    public static string PeerSecretKeyOf(int i) => $"{PeerKeyPrefix}-{i}-secret";
 
     private readonly INetwork _net;
     private readonly List<IContainer> _containers = [];
@@ -116,13 +124,14 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                         .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", WriterAccessKey)
                         .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", WriterSecretKey)
                         .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__ACCESSKEY", PeerAccessKey)
-                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__SECRETKEY", PeerSecretKey)
+                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__ACCESSKEY", PeerAccessKeyOf(i))
+                        .WithEnvironment("OWNS3_ACCESS_KEYS__1__SECRETKEY", PeerSecretKeyOf(i))
                         .WithEnvironment("OWNS3_ACCESS_KEYS__1__POLICY", "replication")
                         .WithEnvironment("OWNS3_HOST_ID", $"os3m-{i}-{runId[..8]}");
                     if (fullMeshTargets)
                     {
-                        // Полный mesh: каждый знает всех (env-seed первого старта — глава 07 §2)
+                        // Полный mesh: каждый знает всех (env-seed первого старта — глава 07 §2);
+                        // креды СОСЕДА j — его ИСХОДЯЩИЙ peer-ключ peer-{j}
                         var index = 0;
                         for (var j = 0; j < nodes; j++)
                         {
@@ -132,8 +141,8 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                                 .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__NAME", NodeNameStatic(runId, j))
                                 .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ENDPOINT",
                                     $"http://{NodeNameStatic(runId, j)}:9000")
-                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ACCESSKEY", PeerAccessKey)
-                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__SECRETKEY", PeerSecretKey);
+                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__ACCESSKEY", PeerAccessKeyOf(j))
+                                .WithEnvironment($"OWNS3_REPLICATION_TARGETS__{index}__SECRETKEY", PeerSecretKeyOf(j));
                             index++;
                         }
                     }

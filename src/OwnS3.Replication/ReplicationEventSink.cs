@@ -55,8 +55,12 @@ public sealed class ReplicationEventSink(OutboxJournal journal, ReplicationTarge
 
     public void ClientObjectDeleted(string bucket, string key, long deleteTimeUnixMs)
     {
-        // Tombstone-запись — при ЛЮБОМ составе (fetch-ответы «ключ удалён» — глава 07 §7);
-        // событие — только при активной репликации
+        // Tombstone и событие — только при активной репликации (глава 07 §7/§12:
+        // без соседей каталог replication/ не создаётся; добавленный позже сосед
+        // захватывает состояние стартовым reconcile §9 — отсутствие tombstone
+        // безопасно)
+        if (!targets.Active)
+            return;
         tombstones.Put(bucket, key, deleteTimeUnixMs);
         ObjectDeleted(bucket, key, deleteTimeUnixMs);
     }

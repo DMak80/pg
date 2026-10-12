@@ -15,8 +15,6 @@ namespace OwnS3.IntegrationTests.E2e.Replication;
 // (подпись — тестовый signer юнитов) + поллинг-хелперы (шаг ≤5 с в первых циклах).
 public static class MeshClients
 {
-    public const string PeerAccessKey = OwnS3MeshE2eEnvironment.PeerAccessKey;
-    public const string PeerSecretKey = OwnS3MeshE2eEnvironment.PeerSecretKey;
     public const string WriterAccessKey = OwnS3MeshE2eEnvironment.WriterAccessKey;
     public const string WriterSecretKey = OwnS3MeshE2eEnvironment.WriterSecretKey;
     public const string AdminAccessKey = OwnS3MeshE2eEnvironment.RootUser;
@@ -139,9 +137,12 @@ public static class MeshClients
         }
     }
 
-    /// <summary>HTTP-клиент узла с peer-кредами (replication-операции: батчи, фетч).</summary>
+    /// <summary>HTTP-клиент узла с ЕГО peer-кредами (replication-операции: батчи,
+    /// фетч); подпись узла source резолвится у приёмников как sourceName=узел source.</summary>
     public static MeshPeerClient PeerClient(OwnS3MeshE2eEnvironment env, int node) =>
-        new(env.NodeHostUrl(node), PeerAccessKey, PeerSecretKey);
+        new(env.NodeHostUrl(node),
+            OwnS3MeshE2eEnvironment.PeerAccessKeyOf(node),
+            OwnS3MeshE2eEnvironment.PeerSecretKeyOf(node));
 
     /// <summary>HTTP-клиент узла с admin-кредами (админ-грань replication).</summary>
     public static MeshAdminClient AdminClient(OwnS3MeshE2eEnvironment env, int node) =>
@@ -165,14 +166,21 @@ public static class MeshClients
         }
     }
 
-    /// <summary>PUT /admin/replication/targets узлу (замена состава mesh).</summary>
+    /// <summary>PUT /admin/replication/targets узлу (замена состава mesh);
+    /// креды каждого соседа — ЕГО peer-ключ (index в имени узла, глава 07 §2).</summary>
     public static Task<HttpResponseMessage> AdminPutTargetsAsync(OwnS3MeshE2eEnvironment env, int node,
         IReadOnlyList<(string Name, string Endpoint)> targets, CancellationToken ct)
     {
         var body = JsonSerializer.Serialize(new
         {
-            targets = targets.Select(t => new { name = t.Name, endpoint = t.Endpoint,
-                accessKey = PeerAccessKey, secretKey = PeerSecretKey }).ToList(),
+            targets = targets.Select(t =>
+            {
+                // peer-индекс соседа — из его имени os3m-n{j}-{runId}
+                var peerIndex = int.Parse(t.Name.Split('-')[1]);
+                return new { name = t.Name, endpoint = t.Endpoint,
+                    accessKey = OwnS3MeshE2eEnvironment.PeerAccessKeyOf(peerIndex),
+                    secretKey = OwnS3MeshE2eEnvironment.PeerSecretKeyOf(peerIndex) };
+            }).ToList(),
         });
         return AdminClient(env, node).SendAsync("PUT", "/admin/replication/targets", "", body, ct);
     }

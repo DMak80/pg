@@ -123,14 +123,17 @@ public sealed class ConvergenceScenarios
             bodies.Should().OnlyContain(v => v!.SequenceEqual(bodies[0]!), "LWW-победитель един");
 
             // R4 «факт слияния журналируется с обеих сторон»: LWW-конфликт в терминах
-            // главы 07 §7 — равные modTime при разных sha; клиентские PUT двух узлов
-            // дают РАЗНЫЕ modTime (часы узлов) → разрешение по modTime БЕЗ конфликта.
-            // Детерминированное равенство modTime недостижимо клиентскими средствами —
-            // журналирование конфликта (событие + счётчик) приёмкой на уровне
-            // LWW-таблицы: юниты LwwComparatorTests (полная таблица, conflict=true) +
-            // ReplicaApplierTests.ApplyObject_Conflict_ResultFlagAndEvent (событие
-            // ConflictDetected с обеими версиями). Здесь — главный критерий A6:
-            // сходимость всех узлов к ОДНОЙ версии без рестартов.
+            // главы 07 §7 — равные modTime при разных sha. Клиентские PUT двух узлов
+            // дают РАЗНЫЕ modTime (modTime ставит сервер приёма, часы узлов) →
+            // разрешение по modTime БЕЗ конфликта. Детерминированный equal-mod PUT
+            // клиентскими средствами недостижим (PUT-запрос не несёт modTime, а фетч
+            // перечитывает фактические метаданные источника — принцип 6 «доставляй
+            // актуальное»), поэтому журналирование конфликта (событие ConflictDetected
+            // с обеими версиями + счётчик) приёмкой на уровне LWW-таблицы:
+            // юниты LwwComparatorTests (полная таблица, conflict=true) и
+            // ReplicaApplierTests.ApplyObject_Conflict_ResultFlagAndEvent.
+            // Здесь — главный критерий A6: сходимость всех узлов к ОДНОЙ версии
+            // без рестартов.
         }, ct: TestContext.Current.CancellationToken);
     }
 

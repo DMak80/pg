@@ -95,11 +95,13 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
     }
 
     // POST /admin/replication/reconcile: внеплановый проход по всем соседям — 202;
-    // идущий продолжается, параллельный не создаётся (глава 07 §9).
+    // идущий продолжается, параллельный не создаётся (глава 07 §9). Проход — фон
+    // БЕЗ привязки к HTTP-соединению (завершение запроса проход не обрывает —
+    // по прецеденту координатора).
     public Task HandleReconcileAsync(HttpContext context)
     {
         foreach (var target in targets.Snapshot)
-            reconcile.Trigger(target.Name, context.RequestAborted);
+            reconcile.Trigger(target.Name, CancellationToken.None);
         context.Response.StatusCode = StatusCodes.Status202Accepted;
         return Task.CompletedTask;
     }
