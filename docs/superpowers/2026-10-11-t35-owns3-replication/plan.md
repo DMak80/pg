@@ -59,6 +59,7 @@
 | `src/tests/OwnS3.IntegrationTests/E2e/Replication/MembershipScenarios.cs` | Task 19 |
 | `src/tests/OwnS3.IntegrationTests/E2e/Replication/BoundaryScenarios.cs` | Task 20 |
 | `deploy/.env.example`, `deploy/docker-compose.yml` (mesh-инструкции) | Task 21 |
+| `src/tests/OwnS3.IntegrationTests/E2e/Replication/ReplicationLatencyScenarios.cs` (новый), `ConvergenceScenarios.cs` + `OwnS3MeshE2eEnvironment.cs` (правки), `arch/owns3/07-replication.md` (§10 — абзац сквозных измерений) | Task 22 |
 
 ---
 
@@ -1348,17 +1349,52 @@ public static class MeshClients
 
 ---
 
-## Финальный гейт задачи (после Task 21, до запроса мержа)
+## Task 22: Сквозные измерения E2E — A15 (латентность репликации) + время восстановления связи (A4) (Ф6-дополнение)
 
-1. Самопроверка покрытия приёмочной матрицы: A1–A14 ↔ Task 17–20 (таблица соответствия в PR-описании мержа).
+> Доработка ПОВЕРХ исполненных Task 0–21 (код репликации и E2E-серии в ветке): измерительные шаги, ничего в рантайме узлов не меняется.
+
+**Files:**
+- Modify: `arch/owns3/07-replication.md` (§10 — новый абзац «Сквозные измерения в E2E» дословно из spec 3.8: не рантайм-метрики узлов — end-to-end латентность репликации и время восстановления связи после срастания измеряются самой тестовой серией, публикуются фактическими значениями `[METRIC]`-строками в журнале прогона по канону `docs/e2e-launch.md` (по образцу `[PHASE]`), попадают в артефакты телеметрии; пороги — раздел 7: A15 ≤5 с, A4 ≤60 с; `delivery_lag`/`fetch_lag` сверяются тестом со своими измерениями)
+- Modify: `src/tests/OwnS3.IntegrationTests/E2e/Replication/OwnS3MeshE2eEnvironment.cs` (хелпер `LogMetricAsync(string name, string value)`: `[METRIC] name=<value>` в Console + дописывание в `metrics.log` ArtifactsDir — по образцу `LogPhaseAsync`)
+- Create: `src/tests/OwnS3.IntegrationTests/E2e/Replication/ReplicationLatencyScenarios.cs` (A15, коллекция `owns3-mesh-e2e`)
+- Modify: `src/tests/OwnS3.IntegrationTests/E2e/Replication/ConvergenceScenarios.cs` (кейс A4 — измерительные шаги поверх существующего сценария срастания)
+
+**Interfaces:**
+- Consumes: исполненные Task 16–20 — контур `OwnS3MeshE2eEnvironment` (`DisconnectNodeAsync`/`ReconnectNodeAsync`, ArtifactsDir), `MeshClients` (`PutObjectAsync`/`HeadObject`/`AdminGetStatusAsync`/`GetMetricsAsync`), рантайм-серии `ownS3_replication_delivery_lag_seconds` / `ownS3_replication_fetch_lag_seconds`.
+- Produces: `OwnS3MeshE2eEnvironment.LogMetricAsync(name, value)` — телеметрия `[METRIC]` + файл `metrics.log` в артефактах прогона (для A15/A4 и будущих серий).
+
+**Вход:** Tasks 0–21 исполнены (код в ветке, `E2e/Replication/*` существуют); spec расширен: A15, A4-измерение, 3.8-абзац, поток 5, Ф6, «Дополнительно — Сквозные измерения E2E».
+
+**Действие:**
+- **A15 — сквозная латентность (спокойный контур, `ReplicationLatencyScenarios`, 2 узла, AAA):** серия 10 PUT (~1 КБ, уникальные ключи) в узел-0; для каждого объекта: `t0` = момент 200 OK источника (Stopwatch от завершения `PutObjectAsync`); поллинг HeadObject узла-1 с шагом ≤1 с (бюджет 5 с, промежуточные проверки без sleep >1 с) до ответа с modTime/sha256 источника (Last-Modified/ETag равны зафиксированным в ответе PUT); `latencyMs = t_applied − t0`; `LogMetricAsync("repl-e2e-latency-ms", latencyMs)` по каждому объекту; по серии — `[METRIC] repl-e2e-latency-ms min/max/median=<v>` (три строки); ассерт: каждый объект ≤5000 мс (превышение — провал с разбором по логам, НЕ рост таймаута). Сверка честности R5: после серии поллинг (бюджет 10 с) до `ownS3_replication_delivery_lag_seconds == 0` (источник) и `ownS3_replication_fetch_lag_seconds == 0` (приёмник) — тестовое «применено» подтверждено рантайм-метриками; фактические значения лагов фиксируются `[METRIC] repl-runtime-delivery-lag-seconds=<v>` / `repl-runtime-fetch-lag-seconds=<v>`.
+- **A4 — время восстановления связи (в существующем кейсе срастания `ConvergenceScenarios`):** в расколе — фиксация `ownS3_replication_link_online{target} == 0` у источника и снапшот `acceptedSeqNo` (AdminGetStatus); `t_heal` = момент завершения `ReconnectNodeAsync` (фактическое восстановление docker-сети); от `t_heal` — поллинг с шагом ≤5 с (бюджет 60 с) признака первого успешного репликационного взаимодействия: `link_online == 1` И `acceptedSeqNo` строго вырос сверх снапшота на t_heal (уведомление принято — watermark двинулся); вспомогательный материал разбора — docker-логи/inspect узлов (телеметрия окружения снимает их в ArtifactsDir ДО удалений); `LogMetricAsync("repl-recover-after-heal-ms", ms)`; ассерт ≤60000 мс (потолок бэкоффа `OWNS3_REPLICATION_BACKOFF_MAX_SEC` + запас; превышение — провал с разбором, НЕ увеличением таймаута). Существующие ассерты сходимости кейса A4 не меняются.
+
+- [ ] **Шаг 1 (arch-first).** §10 главы 07 — абзац «Сквозные измерения в E2E»; коммит `t35(arch): 07 §10 — сквозные измерения E2E ([METRIC] repl-e2e-latency/repl-recover-after-heal, пороги A15 ≤5с / A4 ≤60с)`.
+- [ ] **Шаг 2.** `LogMetricAsync` в `OwnS3MeshE2eEnvironment` (Console + `metrics.log` в ArtifactsDir, по образцу `LogPhaseAsync`).
+- [ ] **Шаг 3.** Сценарий A15 `ReplicationLatencyScenarios` (серия PUT → пер-объектный поллинг → [METRIC] → min/max/median → ассерты → сверка лагов).
+- [ ] **Шаг 4.** Измерительные шаги A4 в `ConvergenceScenarios` (снапшоты до раскола → t_heal → поллинг признака → [METRIC] → ассерт ≤60 с).
+- [ ] **Шаг 5.** Прогон: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj -c Release --filter "FullyQualifiedName~E2e.Replication.ReplicationLatency|FullyQualifiedName~E2e.Replication.Convergence"` → PASS; контроль: `[METRIC]`-строки в выводе и `metrics.log` в `/tmp/pgw-e2e-artifacts-<guid>/`; зачистка серии (`docker ps -a --filter name=os3` пусто, `docker network ls | grep os3m` пусто).
+- [ ] **Шаг 6.** Коммит: `t35(e2e): сквозные измерения — A15 repl-e2e-latency-ms (≤5с, per-object+min/max/median, сверка delivery_lag/fetch_lag) + A4 repl-recover-after-heal-ms (≤60с, от reconnect до первого репликационного взаимодействия)`.
+
+**Выход:** обе величины запроса (скорость репликации, скорость восстановления связи) измеряются тестовой серией и публикуются фактическими значениями в журнале прогона; пороги — ассерты (превышение = провал с разбором).
+
+**Проверка:** обе серии зелёные; в артефактах прогона — `[METRIC] repl-e2e-latency-ms` (каждый объект + min/max/median), `repl-runtime-*-lag-seconds`, `repl-recover-after-heal-ms`; чистота docker после серии.
+
+**Spec:** 7 (A15; A4 — измерение восстановления связи), 3.8 («Сквозные измерения в E2E»), 4-поток 5 (измерение времени восстановления), Ф6 (`[METRIC]`), «Дополнительно — Сквозные измерения E2E (телеметрия)», R5.
+
+---
+
+## Финальный гейт задачи (после Task 22, до запроса мержа)
+
+1. Самопроверка покрытия приёмочной матрицы: A1–A14 ↔ Task 17–20, A15 ↔ Task 22, измерение времени восстановления в A4 ↔ Task 22 (таблица соответствия в PR-описании мержа).
 2. Канон: arch-глава 07 смержена ВМЕСТЕ с кодом (arch-first в истории коммитов — Task 0 первый).
 3. Roadmap: удаление тега `t35-owns3-replication` из `arch/roadmap/owns3.md` — мерж-коммитом в main (правила `arch/roadmap/README.md`).
 4. Мерж в `main` — ТОЛЬКО по явной команде пользователя (базовые правила §7).
 
 ---
 
-## Self-review плана (выполнен; обновлён по ревью Фазы 4, раунды 1–3)
+## Self-review плана (выполнен; обновлён по ревью Фазы 4 раунды 1–3 + расширение spec A15/A4-измерение → Task 22)
 
-- **Покрытие spec:** 3.1→Task 3/14; 3.2→Task 10; 3.3→Task 4/5 (цикл обслуживания — Task 12 `ReplicationMaintenance`); 3.4→Task 7/9; 3.5→Task 6/12 (retention-чистка — цикл Task 12); 3.6→Task 11; 3.7→Task 13 (все 5 триггеров; «пустой том» — через стартовый reconcile по отсутствующему `state.json`, зафиксировано в каноне 07 §9 и код-комментарии координатора); 3.8→Task 11/15 + sync-report Task 14; 3.1 счётчики исходов в статусе→Task 14 (снапшот `SnapshotCounters` и WAF-ассерты counters — в Task 14; контракт точек инкремента `IOutcomeCounters` определён в Task 9, реализация/wiring — Task 12: inbox — самодостаточные applied / предфильтр skipped+conflict, фетчер — apply/skip/conflict/fetched по `ReplicaApplyResult`; ассерты Task 14 достижимы в WAF с фиктивным соседом через inbox-точки, инверсии порядка и вечного FAIL нет); 3.9→карта проектов (Task 3 создаёт проект, границы зависимостей соблюдены: Replication→Storage+Protocol, App стыкует; hosted-чистки журнала/tombstones — Task 12); 3.10→Task 21; потоки 4→Task 19; раздел 6 границы — Task 0 §12; раздел 7 A1–A14→Task 17–20; юнит-список из «Дополнительно»→Tasks 4–7/11–13, дедуп уведомлений — юнит `NotificationInboxTests` в Task 9; регресс→Task 21.
+- **Покрытие spec:** 3.1→Task 3/14; 3.2→Task 10; 3.3→Task 4/5 (цикл обслуживания — Task 12 `ReplicationMaintenance`); 3.4→Task 7/9; 3.5→Task 6/12 (retention-чистка — цикл Task 12); 3.6→Task 11; 3.7→Task 13 (все 5 триггеров; «пустой том» — через стартовый reconcile по отсутствующему `state.json`, зафиксировано в каноне 07 §9 и код-комментарии координатора); 3.8→Task 11/15 + sync-report Task 14; 3.1 счётчики исходов в статусе→Task 14 (снапшот `SnapshotCounters` и WAF-ассерты counters — в Task 14; контракт точек инкремента `IOutcomeCounters` определён в Task 9, реализация/wiring — Task 12: inbox — самодостаточные applied / предфильтр skipped+conflict, фетчер — apply/skip/conflict/fetched по `ReplicaApplyResult`; ассерты Task 14 достижимы в WAF с фиктивным соседом через inbox-точки, инверсии порядка и вечного FAIL нет); 3.9→карта проектов (Task 3 создаёт проект, границы зависимостей соблюдены: Replication→Storage+Protocol, App стыкует; hosted-чистки журнала/tombstones — Task 12); 3.10→Task 21; потоки 4→Task 19; раздел 6 границы — Task 0 §12; раздел 7 A1–A14→Task 17–20, A15→Task 22, A4-измерение восстановления→Task 22 (расширение кейса срастания ConvergenceScenarios), 3.8-абзац «Сквозные измерения в E2E»→Task 22 (arch-шаг: 07 §10 + `[METRIC]`-телеметрия), Ф6 «включая сквозные измерения `[METRIC]`»→Task 22, «Дополнительно — Сквозные измерения E2E (телеметрия)»→Task 22, 3.9-строка IntegrationTests (вкл. сквозные измерения)→Task 22, поток 5 (время восстановления — измеряется)→Task 22; юнит-список из «Дополнительно»→Tasks 4–7/11–13, дедуп уведомлений — юнит `NotificationInboxTests` в Task 9; регресс→Task 21.
 - **Типовая консистентность:** `ReplicationEvent` используется в журнале/транспорте; `IReplicaStore`-сигнатуры Task 2 потреблены Tasks 6/9/13; `NotificationAcceptedResponse.AcceptedToSeqNo` = `TargetCursors.Advance`-аргумент; `FetchTask` определён в Task 9 и потреблён Tasks 12/13 (очереди per-source через `FetchQueueRegistry`, `sourceName` резолвится по accessKey подписи — канон 3.1/07 §2); дедуп-ключ по всей цепочке (канон 07 §6, Task 9) — (источник по accessKey, seqNo), `originHostId` — диагностика; `IOutcomeCounters` определён в Task 9 (контракт inbox'а и фетчера), реализован в Task 12 на `ReplicationMetrics` (wiring координатора подменяет no-op-заглушку); инкременты inbox'а работают с Task 9, наполняются после wiring'а Task 12; conflict инкрементируется только точками применения (компаратор предфильтра inbox / `ReplicaApplyResult.Conflict` фетчера), событие `ConflictDetected` — только лог (без инкремента, нет мульти-счёта при ≥2 источниках); `ReplicaApplyResult {Applied, Conflict}` — возврат `ReplicaApplier.ApplyObjectAsync` (Task 6), питает `applied_total{result}`/конфликты; `ReplicationMetrics` пробрасывается в конструкторы NotificationDispatcher (Task 11) и через `IOutcomeCounters` в inbox/фетчер — все точки инкремента описаны; `ReplicationMaintenance` принимает `ReplicationOptions` (retention из `options.TombstoneRetentionHours`); пакеты Task 3 — только существующие PackageVersion (`Options.ConfigurationExtensions`, `Logging.Abstractions`); порядок Tasks 14/15 по счётчикам: снапшот и ассерты counters в Task 14, полный словарь/экспорт — Task 15 (снапшот не меняет); Task 11 Files синхронен карте файлов (fetch-серии/счётчики — Task 12, reconcile.position — Task 13).
-- **Каноны:** динамические порты (Task 16), полный teardown+ассерт чистоты (Task 16), телеметрия `[PHASE]`/MarkFailed (Task 16), таймауты ≤30 с/поллинг срастания ≤30 с шагом (Tasks 16–20; A11(б) — предусловие «очередь пуста» + `docker stop -t 30`), зачистка сетей между сериями (Tasks 16–21), E2E-образ без исходников (переиспользование OwnS3E2eImage), TreatWarningsAsErrors/центральный packages (Global Constraints), AAA (все тест-шаги).
+- **Каноны:** динамические порты (Task 16), полный teardown+ассерт чистоты (Task 16), телеметрия `[PHASE]`/MarkFailed (Task 16) и `[METRIC]` сквозных измерений по канону `docs/e2e-launch.md` (Task 22: metrics.log в ArtifactsDir), таймауты ≤30 с/поллинг срастания ≤30 с шагом (Tasks 16–20; A11(б) — предусловие «очередь пуста» + `docker stop -t 30`; Task 22: A15-поллинг шаг ≤1 с бюджет 5 с, A4-поллинг шаг ≤5 с бюджет 60 с; пороги — ассерты, превышение = провал с разбором, НЕ рост таймаутов), зачистка сетей между сериями (Tasks 16–22), E2E-образ без исходников (переиспользование OwnS3E2eImage), TreatWarningsAsErrors/центральный packages (Global Constraints), AAA (все тест-шаги).
