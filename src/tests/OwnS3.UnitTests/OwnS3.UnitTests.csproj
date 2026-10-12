@@ -22,6 +22,7 @@
     <ItemGroup>
         <ProjectReference Include="..\..\OwnS3.Protocol\OwnS3.Protocol.csproj"/>
         <ProjectReference Include="..\..\OwnS3.Storage\OwnS3.Storage.csproj"/>
+        <ProjectReference Include="..\..\OwnS3.Replication\OwnS3.Replication.csproj"/>
         <ProjectReference Include="..\..\OwnS3.App\OwnS3.App.csproj"/>
     </ItemGroup>
 

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="OwnS3.UnitTests"/>
+    </ItemGroup>
+
+    <!-- FrameworkReference AspNetCore.App: BackgroundService/HostedService координатора
+         (глава 07 §11); Logging/Options подтягиваются им же (NU1510 на явные ссылки). -->
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\OwnS3.Protocol\OwnS3.Protocol.csproj"/>
+        <ProjectReference Include="..\OwnS3.Storage\OwnS3.Storage.csproj"/>
+    </ItemGroup>
+
+</Project>

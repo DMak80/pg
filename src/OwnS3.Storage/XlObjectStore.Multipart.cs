@@ -126,7 +126,7 @@ public sealed partial class XlObjectStore
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         }
 
-        return new PutResult('"' + digest.ETagHex + '"', modTime);
+        return new PutResult('"' + digest.ETagHex + '"', modTime, digest.Length, digest.Sha256Hex);
     }
 
     // Журнал частей загрузки: битый parts.json (JsonException) — warning + загрузка

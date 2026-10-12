@@ -33,14 +33,16 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 - **Два режима хранения**: `XL Single` (один том, глава 04) и
   `XL Erasure` (multi-drive с кодами Рида—Соломона, сетами, кворумами,
   bitrot-контролем и heal — глава 06); режим задаётся `OWNS3_DATA_DIR`
-  (1 путь / список путей). Репликации нет.
+  (1 путь / список путей). **Межсерверная mesh-репликация** (пул 2–5
+  серверов) — глава [owns3/07-replication.md](owns3/07-replication.md);
+  бакетная политика репликации/lifecycle S3 — не делаются
+  (вне-наборные грани).
 - Обращение к вне-наборным граням (сабресурсы объекта, конфигурации
   бакета, S3-Express, notification, select) — единый канонизированный
   отказ (глава 02).
 - **Path-style only**: виртуальные хосты не поддерживаются; транспорт —
   HTTP (режим по умолчанию) или TLS-опция per-install
   ([owns3/03-protocol.md](owns3/03-protocol.md) §6).
-- Последующие этапы (репликация) — трек.
 
 ## Главы канона
 
@@ -49,12 +51,13 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 - [owns3/03-protocol.md](owns3/03-protocol.md) — SigV4 (заголовочная/presigned/чанковая), XML-схемы, формат ошибок, транспорт;
 - [owns3/04-storage.md](owns3/04-storage.md) — xl-хранение: раскладка, `xl.meta`, `.owns3.sys`, атомарность, чистки (single-режим + общие xl-механизмы);
 - [owns3/05-access-config.md](owns3/05-access-config.md) — учётки, матрица прав, конфиг/env, health/метрики, админ-грань, запуск в докере;
-- [owns3/06-erasure.md](owns3/06-erasure.md) — erasure coding: сеты, формат multi-drive тома, кодирование, bitrot, кворумы, heal.
+- [owns3/06-erasure.md](owns3/06-erasure.md) — erasure coding: сеты, формат multi-drive тома, кодирование, bitrot, кворумы, heal;
+- [owns3/07-replication.md](owns3/07-replication.md) — межсерверная mesh-репликация (2–5 серверов): уведомления+pull, журнал доставки/курсоры приёма, replication-грань, приёмник (LWW/tombstones/место), notifier, reconcile/backfill, метрики/sync-report, админ-грань состава.
 
 Развитие — трек [roadmap/owns3.md](roadmap/owns3.md); новые задачи
 после приёмочной грани (миграция с MinIO).
 
 ownS3 — платформа нод пула S3-кластеров хранилища бэкапов: управление пулом —
 трек [roadmap/s3.md](roadmap/s3.md), канон [23-s3-clusters.md](23-s3-clusters.md)
-+ [24-s3worker.md](24-s3worker.md); межсерверная mesh-репликация ownS3 — задача
-`t35-owns3-replication`.
++ [24-s3worker.md](24-s3worker.md); межсерверная mesh-репликация ownS3 —
+канон [owns3/07-replication.md](owns3/07-replication.md).

@@ -24,6 +24,8 @@ public sealed class S3Middleware(
     Shared.Metrics.MetricsOptions metricsOptions,
     IOptions<OwnS3Options> options,
     ILogger<S3Middleware> logger,
+    Handlers.ReplicationHandlers replicationHandlers,
+    Handlers.ReplicationAdminHandlers replicationAdminHandlers,
     IEnumerable<Handlers.IOperationHandler> handlers)
 {
     // Словарь диспетчеризации: операция → хендлер (21 хендлер протокольного контура).
@@ -62,6 +64,55 @@ public sealed class S3Middleware(
                 // те же шаги подписи SigV4, права admin/root (прочим 403 AccessDenied).
                 if (context.Request.Path.StartsWithSegments("/admin"))
                 {
+                    // Mesh-репликация (t35, глава 07 §2/§10): те же права admin/root;
+                    // replication-ключ на админ-грани → 403 (A13-зеркало)
+                    if (context.Request.Path.StartsWithSegments("/admin/replication"))
+                    {
+                        var replAdminPath = context.Request.Path.Value;
+                        var isAdminRepl = replAdminPath is "/admin/replication/targets"
+                            or "/admin/replication/status"
+                            or "/admin/replication/reconcile"
+                            or "/admin/replication/sync-report";
+                        if (!isAdminRepl)
+                        {
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                                Resource: context.Request.Path, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: "Unknown admin resource"));
+                            return;
+                        }
+                        operationLabel = "admin-replication";
+                        var replAdminModel = S3ModelFactory.Create(context);
+                        var replAdminAuth = new S3Authenticator(
+                            new SigV4HeaderVerifier(timeProvider), new PresignedRequestVerifier(timeProvider), registry);
+                        var replAdminOutcome = replAdminAuth.Authenticate(context, replAdminModel, S3Operation.None);
+                        if (replAdminOutcome.Error is not null)
+                        {
+                            await WriteErrorAsync(context, new S3Error(replAdminOutcome.Error.Code,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: replAdminOutcome.Error.Message));
+                            return;
+                        }
+                        if (replAdminOutcome.Identity!.Policy != Access.AccessPolicy.Admin)
+                        {
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        if (HttpMethods.IsPut(method) && replAdminPath == "/admin/replication/targets")
+                            await replicationAdminHandlers.HandlePutTargetsAsync(context);
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/status")
+                            await replicationAdminHandlers.HandleStatusAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/reconcile")
+                            await replicationAdminHandlers.HandleReconcileAsync(context);
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/sync-report")
+                            await replicationAdminHandlers.HandleSyncReportAsync(context);
+                        else
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                                Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: "Method not allowed for admin resource"));
+                        return;
+                    }
+
                     var isAdminPath = context.Request.Path.Value is "/admin/storage" or "/admin/heal";
                     if (!isAdminPath)
                     {
@@ -99,6 +150,64 @@ public sealed class S3Middleware(
                         await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
                             Resource: adminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
                             MessageOverride: "Method not allowed for admin resource"));
+                    return;
+                }
+
+                // Шаг 2.4: replication-грань /replication/* (t35, глава 07 §6) — до роутинга
+                // 21 операций: аутентификация SigV4 тем же конвейером (S3Operation.None),
+                // политика строго AccessPolicy.Replication (иначе 403 AccessDenied, включая
+                // admin/root — A13), sourceName — по accessKey подписи из targets
+                // (не числится соседом → 403, A13), затем диспетчеризация трёх операций.
+                if (context.Request.Path.StartsWithSegments("/replication"))
+                {
+                    operationLabel = "replication";
+                    var replModel = S3ModelFactory.Create(context);
+                    var replAuthenticator = new S3Authenticator(
+                        new SigV4HeaderVerifier(timeProvider), new PresignedRequestVerifier(timeProvider), registry);
+                    var replOutcome = replAuthenticator.Authenticate(context, replModel, S3Operation.None);
+                    if (replOutcome.Error is not null)
+                    {
+                        await WriteErrorAsync(context, new S3Error(replOutcome.Error.Code,
+                            Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                            MessageOverride: replOutcome.Error.Message));
+                        return;
+                    }
+                    if (replOutcome.Identity!.Policy != Access.AccessPolicy.Replication)
+                    {
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied,
+                            Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                        return;
+                    }
+                    if (!replicationHandlers.TryResolveSource(replOutcome.Identity!.AccessKey, out var sourceName))
+                    {
+                        // Валидный replication-ключ, не числящийся соседом (глава 07 §6)
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied,
+                            Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                        return;
+                    }
+
+                    if (HttpMethods.IsPost(method) && context.Request.Path.Value == "/replication/notifications")
+                        await replicationHandlers.HandleNotificationsAsync(context, sourceName);
+                    else if (HttpMethods.IsGet(method) && context.Request.Path.StartsWithSegments("/replication/object"))
+                    {
+                        // Парсинг {bucket}/{key} — от под-пути грани (префикс /replication/object срезается)
+                        var replSubPath = context.Request.Path.Value!["/replication/object".Length..];
+                        var replPath = OwnS3.Protocol.Requests.S3PathParser.Parse(replSubPath);
+                        if (replPath.Bucket is null || replPath.Key is null)
+                        {
+                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                                MessageOverride: "bucket and key required"));
+                            return;
+                        }
+                        await replicationHandlers.HandleObjectFetchAsync(context, replPath.Bucket, replPath.Key);
+                    }
+                    else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/listing")
+                        await replicationHandlers.HandleListingAsync(context);
+                    else
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                            Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                            MessageOverride: "Unknown replication resource"));
                     return;
                 }
 
