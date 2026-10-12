@@ -256,7 +256,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
             }
 
-            return new PutResult('"' + record.ETag + '"', record.ModTime);
+            return new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
         }
     }
 
@@ -361,9 +361,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
             .Any(disk => Directory.Exists(Path.Combine(disk.Root, bucket)));
     }
 
-    public void CreateBucket(string bucket)
+    public void CreateBucket(string bucket, DateTimeOffset? creationDate = null)
     {
         // каталоги + bucket.json на дисках всех сетов, кворум ≥ writeQuorum каждого сета
+        // (createdAt — CreationDate реплики t35, глава 07, по образцу single: одна дата на все диски)
+        var createdAt = (creationDate ?? _timeProvider.GetUtcNow()).ToUnixTimeMilliseconds();
         foreach (var set in _pool.Sets)
         {
             var successes = 0;
@@ -378,7 +380,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     var metaDir = Path.Combine(disk.Root, ".owns3.sys", "buckets", bucket);
                     Directory.CreateDirectory(metaDir);
                     File.WriteAllText(Path.Combine(metaDir, "bucket.json"),
-                        "{\"createdAt\":" + _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() + "}");
+                        "{\"createdAt\":" + createdAt + "}");
                     successes++;
                 }
                 catch (Exception ex)
@@ -1376,7 +1378,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             WriteUploads(bucket, key, updated);
             TrashUpload(bucket, key, uploadId);
             // ETag — quoted (формат PutResult коммит-пути Put/Complete)
-            return new CompleteResult('"' + record.ETag + '"');
+            return new CompleteResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
         }
     }
 

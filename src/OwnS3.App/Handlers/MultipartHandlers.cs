@@ -5,6 +5,7 @@ using OwnS3.App.Routing;
 using OwnS3.Protocol.Auth;
 using OwnS3.Protocol.Xml;
 using OwnS3.Storage;
+using OwnS3.Replication;
 
 namespace OwnS3.App.Handlers;
 
@@ -69,7 +70,8 @@ public static class MultipartHandlers
         }
     }
 
-    public sealed class CompleteMultipartUploadHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class CompleteMultipartUploadHandler(IObjectStore store, IReplicationEventSink replication) :
+        OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.CompleteMultipartUpload;
 
@@ -87,6 +89,10 @@ public static class MultipartHandlers
             // Act
             var result = await Store.CompleteMultipartUploadAsync(context.Bucket, context.Key, uploadId,
                 [.. manifest.Parts.Select(p => new PartEtag(p.PartNumber, p.ETag))], ct);
+
+            // Событие репликации object-put собранного объекта (глава 07 §3)
+            replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
+                result.ETag, result.Size, result.ContentSha256Hex);
 
             // Respond: CompleteMultipartUploadResult (Location http://<host>/<bucket>/<key>)
             var host = context.Request.Model.Host;

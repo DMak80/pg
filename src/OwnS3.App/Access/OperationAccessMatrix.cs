@@ -30,6 +30,9 @@ public static class OperationAccessMatrix
         AccessPolicy.Admin => operation != S3Operation.None,
         AccessPolicy.ReadWrite => ReadWrite.Contains(operation),
         AccessPolicy.ReadOnly => ReadOnly.Contains(operation),
+        // A13 (t35, глава 07 §6): replication-ключ не проходит НИ ОДНУ из 21 операции
+        // (replication-грань авторизуется отдельно в S3Middleware — не через матрицу)
+        AccessPolicy.Replication => false,
         _ => false,
     };
 }

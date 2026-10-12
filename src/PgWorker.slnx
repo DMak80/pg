@@ -61,6 +61,7 @@
     <Folder Name="/owns3/">
         <Project Path="OwnS3.Protocol/OwnS3.Protocol.csproj" />
         <Project Path="OwnS3.Storage/OwnS3.Storage.csproj" />
+        <Project Path="OwnS3.Replication/OwnS3.Replication.csproj" />
         <Project Path="OwnS3.App/OwnS3.App.csproj" />
     </Folder>
     <Folder Name="/tests/">

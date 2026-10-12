@@ -53,6 +53,17 @@ public sealed class AccessKeyRegistryTests
     }
 
     [Fact]
+    public void Registry_ReplicationPolicy_Parsed()
+    {
+        // Arrange / Act — peer-креды mesh с политикой replication (глава 05 §3)
+        var registry = new AccessKeyRegistry(Microsoft.Extensions.Options.Options.Create(Options(
+            ("peer", "peer-secret", "replication"))));
+
+        // Assert
+        registry.Find("peer")!.Policy.Should().Be(AccessPolicy.Replication);
+    }
+
+    [Fact]
     public void Registry_UnknownPolicy_FailsFast()
     {
         // Arrange: policy вне {read-only, read-write, admin}

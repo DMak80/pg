@@ -7,6 +7,7 @@ using OwnS3.Protocol.Uris;
 using OwnS3.Protocol.Validation;
 using OwnS3.Protocol.Xml;
 using OwnS3.Storage;
+using OwnS3.Replication;
 
 namespace OwnS3.App.Handlers;
 
@@ -14,7 +15,8 @@ namespace OwnS3.App.Handlers;
 // DeleteObject, DeleteObjects, CopyObject, GetObjectAttributes.
 public static class ObjectHandlers
 {
-    public sealed class PutObjectHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class PutObjectHandler(IObjectStore store, IReplicationEventSink replication) :
+        OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.PutObject;
 
@@ -52,6 +54,10 @@ public static class ObjectHandlers
                 await DrainBodyAsync(body, ct);
                 throw;
             }
+
+            // Событие репликации object-put — после коммит-поинта, до ответа (глава 07 §3)
+            replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
+                result.ETag, result.Size, result.ContentSha256Hex);
 
             // Respond: 200 + ETag (тела нет)
             context.Response.StatusCode = 200;
@@ -149,7 +155,8 @@ public static class ObjectHandlers
         }
     }
 
-    public sealed class DeleteObjectHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class DeleteObjectHandler(IObjectStore store, IReplicationEventSink replication,
+        TimeProvider timeProvider) : OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.DeleteObject;
 
@@ -160,12 +167,17 @@ public static class ObjectHandlers
             EnsureObjectKey(context.Key);
             await Store.DeleteObjectAsync(context.Bucket, context.Key, ct);
 
+            // Событие + локальный tombstone — после delete-коммита (глава 07 §3/§7)
+            replication.ClientObjectDeleted(context.Bucket, context.Key,
+                timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+
             // Respond: 204 No Content
             context.Response.StatusCode = 204;
         }
     }
 
-    public sealed class DeleteObjectsHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class DeleteObjectsHandler(IObjectStore store, IReplicationEventSink replication,
+        TimeProvider timeProvider) : OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.DeleteObjects;
 
@@ -190,6 +202,11 @@ public static class ObjectHandlers
             // Act
             var results = await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct);
 
+            // Событие на каждый удалённый ключ + tombstones (глава 07 §3)
+            var deletedAt = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+            foreach (var deleted in results.Where(r => r.Deleted))
+                replication.ClientObjectDeleted(context.Bucket, deleted.Key, deletedAt);
+
             // Respond: DeleteResult (Quiet — только ошибки)
             var result = new DeleteResult
             {
@@ -203,7 +220,8 @@ public static class ObjectHandlers
         }
     }
 
-    public sealed class CopyObjectHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class CopyObjectHandler(IObjectStore store, IReplicationEventSink replication) :
+        OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.CopyObject;
 
@@ -224,6 +242,10 @@ public static class ObjectHandlers
             var result = await Store.CopyObjectAsync(new CopyRequest(
                 sourceBucket, sourceKey, context.Bucket, context.Key,
                 directive == "REPLACE", newMetadata, CopyConditions(context)), ct);
+
+            // Событие репликации object-put копии (глава 07 §3)
+            replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
+                result.ETag, result.Size, result.ContentSha256Hex);
 
             // Respond: CopyObjectResult — LastModified новой записи (modTime),
             // не времени обработки

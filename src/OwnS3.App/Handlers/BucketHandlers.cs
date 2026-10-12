@@ -4,6 +4,7 @@ using OwnS3.Protocol.Uris;
 using OwnS3.Protocol.Validation;
 using OwnS3.Protocol.Xml;
 using OwnS3.Storage;
+using OwnS3.Replication;
 
 namespace OwnS3.App.Handlers;
 
@@ -39,7 +40,8 @@ public static class BucketHandlers
         }
     }
 
-    public sealed class CreateBucketHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class CreateBucketHandler(IObjectStore store, IReplicationEventSink replication,
+        TimeProvider timeProvider) : OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.CreateBucket;
 
@@ -58,13 +60,17 @@ public static class BucketHandlers
             // Act
             await Store.CreateBucketAsync(context.Bucket, ct);
 
+            // Событие репликации bucket-create — после коммита (глава 07 §3)
+            replication.BucketCreated(context.Bucket, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+
             // Respond: 200 + Location
             context.Response.StatusCode = 200;
             context.Response.Headers.Location = "/" + context.Bucket;
         }
     }
 
-    public sealed class DeleteBucketHandler(IObjectStore store) : OperationHandlerBase(store)
+    public sealed class DeleteBucketHandler(IObjectStore store, IReplicationEventSink replication,
+        TimeProvider timeProvider) : OperationHandlerBase(store)
     {
         public override S3Operation Operation => S3Operation.DeleteBucket;
 
@@ -73,6 +79,9 @@ public static class BucketHandlers
             // Validate / Act
             EnsureBucketName(context.Bucket);
             await Store.DeleteBucketAsync(context.Bucket, ct);
+
+            // Событие репликации bucket-delete — после коммита (глава 07 §3)
+            replication.BucketDeleted(context.Bucket, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
 
             // Respond: 204 No Content
             context.Response.StatusCode = 204;

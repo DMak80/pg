@@ -70,10 +70,10 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
     public bool BucketExists(string bucket) =>
         bucket != ".owns3.sys" && Directory.Exists(BucketRoot(bucket));
 
-    public void CreateBucket(string bucket)
+    public void CreateBucket(string bucket, DateTimeOffset? creationDate = null)
     {
         Directory.CreateDirectory(BucketRoot(bucket));
-        _bucketMeta.CreateBucketMeta(bucket);
+        _bucketMeta.CreateBucketMeta(bucket, creationDate);
     }
 
     public void DeleteBucket(string bucket)
@@ -213,7 +213,7 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
                 "fsync каталога объекта не выполняется (только BCL, приказ пользователя): {Target}", target);
         }
 
-        return new PutResult('"' + record.ETag + '"', record.ModTime);
+        return new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
     }
 
     public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
@@ -426,7 +426,7 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             uploads.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
             MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
             volume.MoveToTrash(uploadDir);
-            return new CompleteResult('"' + compositeEtag + '"');
+            return new CompleteResult('"' + compositeEtag + '"', record.ModTime, record.Size, record.ContentSha256);
         }
     }
 
