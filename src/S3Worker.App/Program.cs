@@ -112,9 +112,28 @@ builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
 
-// docker-фабрика движков (health-пробы docker-hosts; драйвер Plain/Swarm —
-// Task 6; fail-fast топологии — валидация выше).
+// docker-фабрика движков (health-пробы docker-hosts) + драйвер по режиму
+// (Plain: таблица Hosts; Swarm: manager endpoint) — fail-fast на противоречивой
+// конфигурации уже в S3StartupChecks.DockerTopology (arch/24 §8).
 builder.Services.AddSingleton<DockerEngineFactory>();
+builder.Services.AddSingleton<S3Worker.Docker.Drivers.IS3ClusterDriver>(sp =>
+{
+    var docker = sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Docker;
+    var factory = sp.GetRequiredService<DockerEngineFactory>();
+    if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+    {
+        // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени
+        // (hostname из /nodes) — том данных нод-локален; пустая таблица
+        // (однонодовый контур) — manager.
+        return new S3Worker.Docker.Drivers.SwarmClusterDriver(
+            docker.SwarmManager!, factory,
+            docker.Hosts.Select(h => new S3Worker.Docker.Drivers.HostEndpoint(h.Name, h.Endpoint)).ToList());
+    }
+
+    return new S3Worker.Docker.Drivers.PlainClusterDriver(
+        docker.Hosts.Select(h => new S3Worker.Docker.Drivers.HostEndpoint(h.Name, h.Endpoint)).ToList(),
+        factory);
+});
 
 // Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений «до/после»):
 // контроль-плейн /s3/ + /s3worker/ — SnapshotJob снимает etcd целиком.

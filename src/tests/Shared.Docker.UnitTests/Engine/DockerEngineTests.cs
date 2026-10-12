@@ -321,6 +321,41 @@ public class DockerEngineTests
         handler.Requests.Single().Url.Should().Contain("filters=");
     }
 
+    // t32 (arch/23 §4): placement-селекторы swarm_labels — парсинг node.Spec.Labels
+    // из GET /nodes; у ноды без labels — пустой словарь (не null).
+    [Fact]
+    public async Task ListNodes_ParsesSpecLabels_UnknownNodeGetsEmpty()
+    {
+        // Arrange — ответ GET /nodes: одна нода с Spec.Labels, другая без
+        var handler = new FakeHandler(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/v1.44/nodes", StringComparison.Ordinal))
+                return Json(
+                    """
+                    [{"ID":"n1","Description":{"Hostname":"h1"},"Status":{"State":"ready"},
+                      "Spec":{"Labels":{"geo":"dc1","tier":"s3"}}},
+                     {"ID":"n2","Description":{"Hostname":"h2"},"Status":{"State":"ready"}}]
+                    """);
+            // tasks — пусто (running-тасков нет)
+            return Json("[]");
+        });
+        var engine = NewEngine(handler);
+
+        // Act
+        var result = await engine.ListNodesAsync(CancellationToken.None);
+
+        // Assert: labels размеченной ноды отражены; у второй — пустой словарь
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().HaveCount(2);
+        var labeled = result.Value.Single(n => n.Hostname == "h1");
+        labeled.Labels.Should().NotBeNull();
+        labeled.Labels.Should().Equal(new Dictionary<string, string> { ["geo"] = "dc1", ["tier"] = "s3" });
+        var unlabeled = result.Value.Single(n => n.Hostname == "h2");
+        unlabeled.Labels.Should().NotBeNull();
+        unlabeled.Labels.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task CreateService_SendsConstraintAndHostPublish()
     {
