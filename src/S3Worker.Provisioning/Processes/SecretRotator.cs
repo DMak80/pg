@@ -23,6 +23,7 @@ public sealed class SecretRotator(
     ClaimStore claims,
     WorkJournal journal,
     SecretProfileStore secrets,
+    IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options)
 {
     private const string Op = "rotate-secrets";
@@ -65,11 +66,27 @@ public sealed class SecretRotator(
 
             if (matches.Value)
             {
-                // Нода на env профиля, но ещё не ожила после пересоздания —
-                // ждём (следующая не трогается: rolling, не параллельный снос).
+                // Нода на env профиля, но ещё не ожила после пересоздания:
+                // health-проба по advertised-адресу (канон P) → RUNNING.
+                // НЕ ожила — ждём (следующая не трогается: rolling, не
+                // параллельный снос). Оживление — сам ротатор: заявка —
+                // ЭКСКЛЮЗИВНАЯ ветка тика, надзор этим тиком не идёт.
                 if (node.State != S3NodeStates.Running)
-                    return await journal.WritePhaseAsync(
-                        cluster, Op, "waiting-node", claims.InstanceId, null, ct);
+                {
+                    var probe = await ResolveAddressAsync(cluster, node.Node, ct);
+                    if (!probe.IsSuccess)
+                        return probe.Error!;
+                    var health = await nodeClient.HealthAsync(
+                        options.AdvertisedHost ?? probe.Value.Host, probe.Value.S3Port, ct);
+                    if (!health.IsSuccess || !health.Value)
+                        return await journal.WritePhaseAsync(
+                            cluster, Op, "waiting-node", claims.InstanceId, null, ct);
+                    var running = await S3ProcessCommon.WriteNodeStateAsync(
+                        gateway, endpoints, cluster, node.Node, S3NodeStates.Running, ct);
+                    if (!running.IsSuccess)
+                        return running;
+                }
+
                 continue;
             }
 
@@ -124,9 +141,11 @@ public sealed class SecretRotator(
             || !string.Equals(actualUser, expected.RootUser, StringComparison.Ordinal))
             return Result<bool>.Success(false);
 
+        // Индекс — ВТОРОЙ сегмент: OWNS3_ACCESS_KEYS__<i>__<FIELD>.Split("__")
+        // = [OWNS3_ACCESS_KEYS, <i>, <FIELD>]; [2] — имя поля, не индекс.
         var actualKeyIndexes = env.Value.Keys
             .Where(k => k.StartsWith("OWNS3_ACCESS_KEYS__", StringComparison.Ordinal))
-            .Select(k => k.Split("__")[2])
+            .Select(k => k.Split("__")[1])
             .ToHashSet(StringComparer.Ordinal);
         var expectedKeyIndexes = expected.AccessKeys
             .Select((_, i) => i.ToString(System.Globalization.CultureInfo.InvariantCulture))

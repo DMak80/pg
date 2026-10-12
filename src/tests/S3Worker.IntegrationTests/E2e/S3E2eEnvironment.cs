@@ -46,10 +46,16 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private readonly IContainer _etcd;
     private readonly IContainer _worker;
     private readonly IContainer? _worker2; // двухинстансный контур (StartTwoAsync)
-    private readonly IContainer[] _workers; // воркеры окружения: 1 или 2
+    private IContainer[] _workers; // воркеры окружения: 1 или 2 (teardown/телеметрия)
     private readonly string[] _workerNames; // docker-имена воркеров (ассерт чистоты)
     private readonly INetwork _net;
     private readonly HttpClient _gatewayHttp = new();
+
+    // Параметры старта воркеров — пересоздание с env-оверрайдами (ротация).
+    private string? _workerImageName;
+    private string? _tlsDirPath;
+    private int _etcdPortValue;
+    private (int From, int To) _portRangeValue;
 
     private bool _failed;
 
@@ -135,6 +141,39 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
     public void MarkFailed() => _failed = true;
 
+    /// <summary>Пересоздание воркера окружения с env-оверрайдами (сценарий
+    /// ротации spec §5.8: оператор обновляет env и перезапускает воркер, затем
+    /// подаёт заявку). Тот же образ/сеть/порты/байнды; env = WorkerEnv +
+    /// overrides; teardown/телеметрия следят за заменой.</summary>
+    public async Task RecreateWorkerAsync(
+        int workerIndex, IReadOnlyDictionary<string, string> envOverrides, CancellationToken ct)
+    {
+        if (workerIndex < 0 || workerIndex >= _workers.Length)
+            throw new ArgumentOutOfRangeException(nameof(workerIndex));
+        var name = _workerNames[workerIndex];
+        var apiPort = workerIndex == 0
+            ? _api1Port
+            : _api2Port ?? throw new InvalidOperationException("второго воркера нет (одиночный контур)");
+
+        await SafeStopAsync(_workers[workerIndex], remove: true);
+
+        var env = new Dictionary<string, string>(WorkerEnv(_etcdPortValue, apiPort, _portRangeValue));
+        foreach (var (key, value) in envOverrides)
+            env[key] = value;
+        var replacement = new ContainerBuilder(_workerImageName!)
+            .WithName(name)
+            .WithNetwork(_net)
+            .WithPortBinding(apiPort, 8080)
+            .WithBindMount("/var/run/docker.sock", "/var/run/docker.sock")
+            .WithBindMount(_tlsDirPath!, "/tls")
+            .WithEnvironment(env)
+            .WithExtraHost("host.docker.internal", "host-gateway")
+            .WithExtraHost("local", "host-gateway")
+            .Build();
+        await replacement.StartAsync(ct);
+        _workers[workerIndex] = replacement;
+    }
+
     /// <summary>Подъём окружения (3 попытки — против гонок глобального prune).</summary>
     public static async Task<S3E2eEnvironment> StartAsync(string slug)
     {
@@ -192,6 +231,10 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                 var environment = new S3E2eEnvironment(slug, runId, netName, net, etcd, worker,
                     $"http://localhost:{etcdPort}", artifactsDir,
                     $"https://localhost:{apiPort}", clientCert, clientKey);
+                environment._workerImageName = workerImage;
+                environment._tlsDirPath = tlsDir;
+                environment._etcdPortValue = etcdPort;
+                environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
                     "# Зачистка окружения прогона (own-only):\n"
                     + $"docker rm -f s3w-ew-{runId} s3w-ee-{runId}\n"
@@ -294,6 +337,10 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                     $"http://localhost:{etcdPort}", artifactsDir,
                     $"https://localhost:{api1Port}", clientCert, clientKey,
                     worker2, api2Port);
+                environment._workerImageName = workerImage;
+                environment._tlsDirPath = tlsDir;
+                environment._etcdPortValue = etcdPort;
+                environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
                     "# Зачистка окружения прогона (own-only):\n"
                     + $"docker rm -f s3w-ew1-{runId} s3w-ew2-{runId} s3w-ee-{runId}\n"

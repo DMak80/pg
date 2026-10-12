@@ -40,6 +40,7 @@ public class SecretRotatorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
                 rig.Secrets,
+                new Fakes.FakeNodeClient(),
                 new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
             return rig;
         }
@@ -111,6 +112,7 @@ public class SecretRotatorTests
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
             rig.Secrets,
+            new Fakes.FakeNodeClient(),
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
 
@@ -152,14 +154,52 @@ public class SecretRotatorTests
         journal.Value.LastError.Should().BeNull();
     }
 
-    // AAA: wait-семантика — node1 пересоздана, но не RUNNING: тик 2 НЕ трогает
-    // node2 (rolling: ожидание, не параллельный снос).
+    // AAA: ротатор САМ живит пересозданную ноду (health OK → RUNNING) и
+    // переходит к следующей: node1 доведена, node2 пересоздана (одно
+    // пересоздание за тик; живление — etcd-запись, не docker-мутация).
+    [Fact]
+    public async Task Тик2_Ожила_ДоводитИПереходитКСледующей()
+    {
+        // Arrange: после тика 1 — node1 PROVISIONING, env уже новый;
+        // node2 всё ещё с чужим env; health-грань отвечает OK.
+        var rig = Rig.New();
+        await rig.SeedAsync();
+        await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
+        rig.Driver.Envs["demo/node1"] = new Dictionary<string, string>
+        {
+            ["OWNS3_ROOT_USER"] = NewUser,
+            ["OWNS3_DATA_DIR"] = "/data",
+        };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(
+            rig.Snap(node1State: S3NodeStates.Provisioning), TestContext.Current.CancellationToken);
+
+        // Assert: node1 → RUNNING (оживлена ротатором), node2 пересоздана
+        // (одно пересоздание за тик), заявка ещё жива.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store["/s3/clusters/demo/nodes/node1/state"].Value.Should().Be(S3NodeStates.Running);
+        rig.Driver.Removed.Should().BeEquivalentTo(["demo/node1", "demo/node2"]);
+        rig.Etcd.Store.Should().ContainKey($"{Prefix}/rotations/demo");
+        var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("rotated-node2");
+    }
+
+    // AAA: wait-семантика — node1 пересоздана, health молчит (не ожила):
+    // тик 2 НЕ трогает node2 (rolling: ожидание, не параллельный снос).
     [Fact]
     public async Task Тик2_НеоживлённаяДержитСледующую()
     {
         // Arrange: после тика 1 — node1 PROVISIONING (не RUNNING), env уже новый;
-        // node2 всё ещё с чужим env.
+        // node2 всё ещё с чужим env; health-грань молчит.
         var rig = Rig.New();
+        var nodes = new Fakes.FakeNodeClient { Health = false };
+        rig.Rotator = new SecretRotator(
+            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
+            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
+            rig.Secrets, nodes,
+            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
         await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
         rig.Driver.Envs["demo/node1"] = new Dictionary<string, string>
@@ -201,6 +241,63 @@ public class SecretRotatorTests
         journal.Value!.Phase.Should().Be("done");
     }
 
+    // AAA: профиль С access key — env-сверка по индексу ВТОРОГО сегмента
+    // (OWNS3_ACCESS_KEYS__<i>__<FIELD>): нода на env профиля — matches, без
+    // пересозданий (регрессия: Split("__")[2] давал имя поля вместо индекса —
+    // сверка всегда false, пересоздание каждый тик).
+    [Fact]
+    public async Task ПрофильСAccessKey_СверкаПоИндексу_БезПересозданий()
+    {
+        // Arrange: профиль с access key #0; env обеих нод несёт тот же ключ,
+        // root-пара — новая; обе RUNNING.
+        var rig = Rig.New();
+        rig.Secrets = new SecretProfileStore(
+            name => name switch
+            {
+                "S3W_NODE_SECRETS__backups-main__ROOT_USER" => NewUser,
+                "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" => "pw",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__ACCESSKEY" => "key0",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__SECRETKEY" => "secret0",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__POLICY" => "read-write",
+                _ => null,
+            },
+            [
+                "S3W_NODE_SECRETS__backups-main__ROOT_USER",
+                "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__ACCESSKEY",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__SECRETKEY",
+                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__POLICY",
+            ]);
+        rig.Rotator = new SecretRotator(
+            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
+            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
+            rig.Secrets,
+            new Fakes.FakeNodeClient(),
+            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
+        await rig.SeedAsync(envUser: NewUser);
+        foreach (var node in new[] { "node1", "node2" })
+        {
+            var env = new Dictionary<string, string>(rig.Driver.Envs[$"demo/{node}"])
+            {
+                ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "key0",
+                ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "secret0",
+                ["OWNS3_ACCESS_KEYS__0__POLICY"] = "read-write",
+            };
+            rig.Driver.Envs[$"demo/{node}"] = env;
+        }
+
+        // Act
+        var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: env совпадает — пересозданий нет, заявка погашена, done.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Etcd.Store.Should().NotContainKey($"{Prefix}/rotations/demo");
+        var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("done");
+    }
+
     // AAA: значения секретов не появляются в journal-фазах.
     [Fact]
     public async Task СекретыНеВЖурнале()
@@ -216,6 +313,7 @@ public class SecretRotatorTests
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
             rig.Secrets,
+            new Fakes.FakeNodeClient(),
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
 

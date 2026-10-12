@@ -21,7 +21,8 @@ public class RemoveNodeProcessTests
         var process = new RemoveNodeProcess(
             etcd, ["http://etcd:2379"], driver, claims,
             new WorkJournal(Prefix, etcd, ["http://etcd:2379"]),
-            new PortAllocLock(Prefix, ["http://etcd:2379"], etcd, TimeProvider.System, "inst-1"));
+            new PortAllocLock(Prefix, ["http://etcd:2379"], etcd, TimeProvider.System, "inst-1"),
+            S3ProvisioningOptions.Default);
         return (process, etcd, driver, claims);
     }
 

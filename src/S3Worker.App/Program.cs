@@ -256,6 +256,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.RemoveNo
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<PortAllocLock>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -264,6 +265,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRo
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value)));
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 

@@ -20,6 +20,7 @@ public sealed class RemoveNodeProcess(
     ClaimStore claims,
     WorkJournal journal,
     PortAllocLock portLock,
+    S3ProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "remove-node";
@@ -107,8 +108,9 @@ public sealed class RemoveNodeProcess(
                      n.Node != node.Node
                      && n.State is null or S3NodeStates.NotInitialized or S3NodeStates.Provisioning or S3NodeStates.Running))
         {
-            if (pinned.Value.TryGetValue(other.Node, out var addr))
-                addresses[other.Node] = addr;
+        if (pinned.Value.TryGetValue(other.Node, out var addr))
+            addresses[other.Node] = new NodeAddress(
+                options.AdvertisedHost ?? addr.Host, addr.S3Port);
         }
 
         var converge = await S3ProcessCommon.ConvergeTopologyAsync(
