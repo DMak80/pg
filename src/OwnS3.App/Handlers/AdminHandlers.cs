@@ -18,6 +18,37 @@ public static class AdminHandlers
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
+    // Дисковые поля корня/диска (канон 05 §7): used = total − free по DriveInfo;
+    // корень недоступен (IOException/UnauthorizedAccess и пр.) — поля null,
+    // грань не падает (наблюдаемость деградации — метрики §5).
+    private static (long? Used, long? Total) DiskOf(string root)
+    {
+        try
+        {
+            var d = new DriveInfo(root);
+            return (d.TotalSize - d.TotalFreeSpace, d.TotalSize);
+        }
+        catch (Exception)
+        {
+            return (null, null); // корень недоступен — поля null
+        }
+    }
+
+    // Агрегат дисковых полей: сумма не-null значений; все null → null (канон 05 §7).
+    private static (long? Used, long? Total) SumDisks(IEnumerable<(long? Used, long? Total)> disks)
+    {
+        long? used = null, total = null;
+        foreach (var disk in disks)
+        {
+            if (disk.Used is { } u)
+                used = (used ?? 0) + u;
+            if (disk.Total is { } t)
+                total = (total ?? 0) + t;
+        }
+
+        return (used, total);
+    }
+
     public static async Task HandleStorageAsync(HttpContext context)
     {
         var mode = context.RequestServices.GetRequiredService<StorageModeInfo>();
@@ -26,20 +57,29 @@ public static class AdminHandlers
         {
             // EC-режим: полная картина сетов/деградации/heal
             var s = context.RequestServices.GetRequiredService<ErasureStatusProvider>().GetStatus();
+            var top = SumDisks(s.Sets.SelectMany(set => set.Drives.Select(d => DiskOf(d.Path))));
             status = new
             {
                 mode = s.Mode,
+                usedBytes = top.Used,
+                totalBytes = top.Total,
                 sets = s.Sets.Select(set => new
                 {
                     index = set.Index,
                     readable = set.Readable,
                     writable = set.Writable,
-                    drives = set.Drives.Select(d => new
+                    drives = set.Drives.Select(d =>
                     {
-                        position = d.Position,
-                        path = d.Path,
-                        diskId = d.DiskId,
-                        online = d.Online,
+                        var disk = DiskOf(d.Path);
+                        return new
+                        {
+                            position = d.Position,
+                            path = d.Path,
+                            diskId = d.DiskId,
+                            online = d.Online,
+                            usedBytes = disk.Used,
+                            totalBytes = disk.Total,
+                        };
                     }),
                 }),
                 heal = new
@@ -53,10 +93,15 @@ public static class AdminHandlers
         }
         else
         {
-            // single-режим: статус single-тома без сетов (грань доступна всегда — 05 §7)
+            // single-режим: статус single-тома без сетов (грань доступна всегда — 05 §7);
+            // дисковые поля — по корню данных (несколько корней — агрегат)
+            var disks = mode.DataRoots.Select(DiskOf).ToList();
+            var top = SumDisks(disks);
             status = new
             {
                 mode = "XL Single",
+                usedBytes = top.Used,
+                totalBytes = top.Total,
                 sets = Array.Empty<object>(),
                 heal = new { running = false, lastPassAt = (DateTimeOffset?)null, healedObjects = 0L, healedShards = 0L },
             };

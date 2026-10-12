@@ -43,6 +43,43 @@ public class AdminScenarios(OwnS3EcAppFactory factory)
         json.RootElement.GetProperty("heal").GetProperty("running").GetBoolean().Should().BeFalse();
     }
 
+    // Дисковые поля (owns3/05 §7, t32): EC — per-drive + суммы верхнего уровня.
+    [Fact]
+    public async Task Storage_EcDiskFields_PerDriveAndSum()
+    {
+        // Arrange — root-ключ (admin-политика)
+        var client = NewClient();
+
+        // Act
+        var response = await client.SendSignedAsync("GET", "/admin/storage",
+            credentials: new OwnS3TestClient.Credentials("root", "rootpassword"));
+        var json = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+
+        // Assert — каждый диск: поля не-null, used ≤ total; верхний уровень — суммы по дискам пула
+        var drives = json.GetProperty("sets")[0].GetProperty("drives");
+        long sumUsed = 0, sumTotal = 0;
+        foreach (var d in drives.EnumerateArray())
+        {
+            d.TryGetProperty("usedBytes", out var usedEl).Should().BeTrue();
+            d.TryGetProperty("totalBytes", out var totalEl).Should().BeTrue();
+            usedEl.ValueKind.Should().Be(JsonValueKind.Number);
+            totalEl.ValueKind.Should().Be(JsonValueKind.Number);
+            var used = usedEl.GetInt64();
+            var total = totalEl.GetInt64();
+            used.Should().BeGreaterThanOrEqualTo(0);
+            used.Should().BeLessThanOrEqualTo(total);
+            sumUsed += used;
+            sumTotal += total;
+        }
+
+        json.GetProperty("usedBytes").GetInt64().Should().Be(sumUsed);
+        json.GetProperty("totalBytes").GetInt64().Should().Be(sumTotal);
+        // 4 диска-подкаталога одного физического тома: сумма total равна 4×размер тома
+        var volumeTotal = new DriveInfo(Path.GetFullPath(factory.DataDirs[0])).TotalSize;
+        sumTotal.Should().Be(volumeTotal * 4);
+    }
+
     [Fact]
     public async Task Storage_AdminKey_200()
     {
@@ -114,6 +151,29 @@ public class AdminScenarios(OwnS3EcAppFactory factory)
             json.GetProperty("mode").GetString().Should().Be("XL Single");
             json.GetProperty("sets").GetArrayLength().Should().Be(0);
             heal.StatusCode.Should().Be(System.Net.HttpStatusCode.Accepted);
+        }
+
+        // Single: дисковые поля верхнего уровня присутствуют и согласованы с томом (owns3/05 §7, t32).
+        [Fact]
+        public async Task Storage_SingleMode_DiskFieldsMatchDataRoot()
+        {
+            // Arrange — single-фабрика; root-креды
+            var client = NewClient();
+
+            // Act
+            var response = await client.SendSignedAsync("GET", "/admin/storage",
+                credentials: new OwnS3TestClient.Credentials("root", "rootpassword"));
+            var json = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+
+            // Assert — поля есть; used в [0, total]; total согласован с фактическим томом корня
+            var used = json.GetProperty("usedBytes").GetInt64();
+            var total = json.GetProperty("totalBytes").GetInt64();
+            used.Should().BeGreaterThanOrEqualTo(0);
+            total.Should().BeGreaterThan(0);
+            used.Should().BeLessThanOrEqualTo(total);
+            var root = singleFactory.TempVolumeDir;
+            new DriveInfo(Path.GetFullPath(root)).TotalSize.Should().Be(total);
         }
     }
 }
