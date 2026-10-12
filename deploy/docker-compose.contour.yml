@@ -36,6 +36,10 @@ services:
     networks: { default: !reset null, contour: {} }
   valkeyworker-2:
     networks: { default: !reset null, contour: {} }
+  s3worker:
+    networks: { default: !reset null, contour: { aliases: [s3worker] } }
+  s3worker-2:
+    networks: { default: !reset null, contour: { aliases: [s3worker-2] } }
   owns3:
     networks:
       default: !reset null

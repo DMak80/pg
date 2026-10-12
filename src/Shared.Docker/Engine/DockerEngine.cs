@@ -15,6 +15,11 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 {
     private const string Api = "/v1.44";
 
+    // Общий пустой словарь labels swarm-нод (не null — унифицированный доступ
+    // placement-селекторов, arch/23 §4).
+    private static readonly IReadOnlyDictionary<string, string> EmptyLabels =
+        new Dictionary<string, string>();
+
     // PascalCase-имена как в Engine API (Go-парсер матчит без учёта регистра,
     // но канонический вид надёжнее и читаемее в логах).
     private static readonly JsonSerializerOptions Json = new()
@@ -358,7 +363,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     n.Id,
                     n.Description?.Hostname ?? string.Empty,
                     n.Status?.State ?? string.Empty,
-                    runningByNode.TryGetValue(n.Id, out var count) ? count : 0))
+                    runningByNode.TryGetValue(n.Id, out var count) ? count : 0,
+                    n.Spec?.Labels is { Count: > 0 } labels
+                        ? new Dictionary<string, string>(labels)
+                        : EmptyLabels))
                 .ToList();
         });
     }
@@ -1137,6 +1145,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("Description")] public NodeDescriptionDto? Description { get; set; }
 
         [JsonPropertyName("Status")] public NodeStatusDto? Status { get; set; }
+
+        [JsonPropertyName("Spec")] public NodeSpecDto? Spec { get; set; }
+    }
+
+    private sealed class NodeSpecDto
+    {
+        [JsonPropertyName("Labels")] public Dictionary<string, string>? Labels { get; set; }
     }
 
     private sealed class NodeDescriptionDto

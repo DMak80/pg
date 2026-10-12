@@ -188,6 +188,51 @@ x-valkeyworker-base: &valkeyworker-base
     - "local:host-gateway"
     - "host.docker.internal:host-gateway"
 
+x-s3worker-env: &s3worker-env
+  # HA-контур (arch/23 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт).
+  S3Worker__Etcd__Endpoints__0: ${S3W_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
+  S3Worker__Etcd__Endpoints__1: ${S3W_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
+  S3Worker__Etcd__Endpoints__2: ${S3W_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
+  # Advertised-хост S3-порта нод → endpoints в etcd резолвимы клиентами
+  # (arch/23 §2.1 advertised-правило).
+  S3Worker__Docker__AdvertisedHost: ${S3W_ADVERTISED_HOST:-host.docker.internal}
+  # per-install bucket (arch/19 §5; env S3W_BUCKET — fail-fast старта).
+  S3Worker__Bucket: ${S3W_BUCKET:?задайте bucket per-install}
+  # HTTP API воркера (arch/24 §1.1): mTLS-серты из /tls (env-фоллбек до
+  # ключа /workers/api_tls/s3worker от панели t34), демо-сид за флагом.
+  S3W_API_TLS_CERT_PATH: /tls/server.crt
+  S3W_API_TLS_KEY_PATH: /tls/server.key
+  S3W_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+  S3Worker__Api__EnableSeedEndpoint: ${S3W_API_ENABLE_SEED:-false}
+
+x-s3worker-base: &s3worker-base
+  build:
+    context: ..
+    dockerfile: docker/S3Worker.Dockerfile
+    args:
+      S3W_PUBLISH_DIR: artifacts/s3worker/publish
+  image: s3worker:dev
+  restart: unless-stopped
+  # Профили секретов нод (arch/23 §6) — env_file БЕЗ интерполяции: имена
+  # S3W_NODE_SECRETS__<PROFILE>__* допускают дефис в <PROFILE>, который
+  # compose-парсер ${...} читает как оператор дефолта (секрет не доезжает).
+  # Файл per-install (в git НЕ попадает); формат — те же строки KEY=VAL,
+  # что в .env; отсутствие файла = падение up (fail-fast).
+  env_file:
+    - ./s3w-node-secrets.env
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - s3w-snapshots:/snapshots
+    # mTLS HTTP API (arch/24 §1.1): общий TLS-volume pgw-api-tls (server-серт
+    # kfw/vwk-ряда с SAN s3worker*, deploy/tls/gen.sh); наполнение — 00-up.sh.
+    - pgw-api-tls:/tls:ro
+  extra_hosts:
+    # docker-хост "local" (appsettings Docker:Hosts) + advertised-хост нод —
+    # из контейнера резолвим их в шлюз docker-хоста.
+    - "local:host-gateway"
+    - "host.docker.internal:host-gateway"
+
 services:
   pgworker:
     <<: *pgworker-base
@@ -259,6 +304,27 @@ services:
     environment:
       <<: *valkeyworker-env
       ValkeyWorker__Api__AdvertiseUrl: https://host.docker.internal:${VWK_API_HOST_PORT2:-8085}
+
+  # S3Worker (arch/24): оркестратор кластеров S3-хранилища бэкапов (префикс
+  # /s3/ + координация /s3worker/); портовой ряд 8086 (после pg 8080-8083 /
+  # kfw 8081-8084 / vwk 8082-8085); ноды кластеров он поднимает сам.
+  s3worker:
+    <<: *s3worker-base
+    ports:
+      - "${S3W_API_HOST_PORT:-8086}:8080"
+    environment:
+      <<: *s3worker-env
+      S3Worker__Api__AdvertiseUrl: ${S3W_API_ADVERTISE_URL:-https://host.docker.internal:${S3W_API_HOST_PORT:-8086}}
+
+  # Второй инстанс S3Worker (arch/24 §2): ряд 8086→8089; advertise следует
+  # за портом (compose-дефолт). Том s3w-snapshots — общий.
+  s3worker-2:
+    <<: *s3worker-base
+    ports:
+      - "${S3W_API_HOST_PORT2:-8089}:8080"
+    environment:
+      <<: *s3worker-env
+      S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
 
   # ownS3 (arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
   # `owns3` в стендовой сети — override `docker-compose.contour.yml`,
@@ -410,6 +476,7 @@ networks:
     name: ${PGW_METRICS_NETWORK:-pgw-metrics}
 
 volumes:
+  s3w-snapshots:
   pgw-snapshots:
   pgw-api-tls:
   kfw-snapshots:

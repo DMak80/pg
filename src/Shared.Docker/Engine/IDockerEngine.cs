@@ -62,8 +62,12 @@ public sealed record DockerContainerInspect(
     // null = инспект без сетей (фейки/урезанный ответ).
     string[]? Networks = null);
 
-// Swarm-нода из /nodes + число работающих тасков.
-public sealed record DockerSwarmNode(string Id, string Hostname, string State, int RunningTasks);
+// Swarm-нода из /nodes + число работающих тасков. Labels — node.Spec.Labels
+// (placement-селекторы swarm_labels, arch/23 §4); у ноды без labels — пустой
+// словарь (не null: предикат равенства селектора упрощается).
+public sealed record DockerSwarmNode(
+    string Id, string Hostname, string State, int RunningTasks,
+    IReadOnlyDictionary<string, string>? Labels = null);
 
 // Таск swarm-сервиса; Host — hostname ноды (NodeId → /nodes), PublishedPort —
 // publish mode=host, ContainerId — контейнер running-таска (t01: exec).

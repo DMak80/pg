@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="S3Worker.UnitTests"/>
+        <InternalsVisibleTo Include="S3Worker.IntegrationTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\S3Worker.Core\S3Worker.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Docker\Shared.Docker.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Docker"/>
+        <Using Include="Shared.Core.Planning"/>
+    </ItemGroup>
+
+</Project>
