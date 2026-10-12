@@ -26,7 +26,8 @@ public sealed record S3ProvisioningOptions(
     int HealthIntervalSec,
     string? AdvertisedHost,
     string OwnS3Image,
-    string Bucket)
+    string Bucket,
+    string? ContourNetwork = null)
 {
     public static S3ProvisioningOptions Default { get; } =
         new(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups");

@@ -207,8 +207,8 @@ internal static class Fakes
     }
 
     /// <summary>
-    /// Драйвер-дублёр (порт FakeDriver valkey, срез для healer/E9 и процессов):
-    /// имя объекта s3w-&lt;C&gt;-node&lt;k&gt; → факт инспекта; флаги сбоев — слепота.
+    /// Драйвер-дублёр (порт FakeDriver valkey): имя объекта s3w-&lt;C&gt;-node&lt;k&gt; →
+    /// факт инспекта; hosts/busy/ensure-журнал для процессов; флаги сбоев — слепота.
     /// </summary>
     internal sealed class FakeS3Driver : S3Worker.Docker.Drivers.IS3ClusterDriver
     {
@@ -216,9 +216,44 @@ internal static class Fakes
 
         public readonly Dictionary<string, NodeFact> Nodes = [];
 
+        public IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes> Hosts { get; set; } =
+            [new S3Worker.Docker.Drivers.S3HostAttributes("h1", 0, new Dictionary<string, string>())];
+
+        public HashSet<(string Host, int Port)> BusyPorts { get; } = new();
+
+        public readonly List<S3Worker.Docker.Drivers.S3NodeSpec> Ensured = [];
+        public readonly List<string> Removed = [];
+
         public bool InspectFault { get; set; }
 
+        public bool HostsFault { get; set; }
+
         public int S3ContainerPort => 9000;
+
+        public Task<Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>> GetHostsAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>.Success(
+                HostsFault
+                    ? throw new ApplicationException("docker-хосты недоступны")
+                    : Hosts));
+
+        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(
+                (IReadOnlySet<(string Host, int Port)>)BusyPorts));
+
+        public Task<Result> EnsureNodeAsync(
+            S3Worker.Docker.Drivers.S3NodeSpec spec, string? contourNetwork, CancellationToken ct)
+        {
+            Ensured.Add(spec);
+            Nodes[$"{spec.Cluster}/{spec.NodeName}"] = new NodeFact(spec.Host, spec.S3HostPort);
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> RemoveNodeAsync(string cluster, string node, bool removeVolume, CancellationToken ct)
+        {
+            Removed.Add($"{cluster}/{node}");
+            Nodes.Remove($"{cluster}/{node}");
+            return Task.FromResult(Result.Success());
+        }
 
         public Task<Result<S3Worker.Docker.Drivers.S3NodeInspection?>> InspectNodeAsync(
             string cluster, string node, CancellationToken ct)
@@ -233,15 +268,47 @@ internal static class Fakes
                     : null));
         }
 
-        // Остальные члены гранцы — вне сценариев текущих тестов.
-        private static NotImplementedException NotUsed() => new("драйвер-дублёр: маршрут вне сценария теста");
+        public Task<Result<Shared.Docker.NodeLimits?>> NodeResourcesAsync(string cluster, string node, CancellationToken ct)
+            => Task.FromResult(Result<Shared.Docker.NodeLimits?>.Success(null));
 
-        public Task<Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>> GetHostsAsync(CancellationToken ct) => throw NotUsed();
-        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotUsed();
-        public Task<Result> EnsureNodeAsync(S3Worker.Docker.Drivers.S3NodeSpec spec, string? contourNetwork, CancellationToken ct) => throw NotUsed();
-        public Task<Result> RemoveNodeAsync(string cluster, string node, bool removeVolume, CancellationToken ct) => throw NotUsed();
-        public Task<Result<Shared.Docker.NodeLimits?>> NodeResourcesAsync(string cluster, string node, CancellationToken ct) => throw NotUsed();
-        public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string node, CancellationToken ct) => throw NotUsed();
-        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string node, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+
+        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(
+                Nodes.Keys.Where(k => k.StartsWith($"{cluster}/", StringComparison.Ordinal)).ToList()));
+    }
+
+    /// <summary>Клиент ownS3-ноды-дублёр: health-флаг, usage-факт, бакеты в памяти;
+    /// флаг сбоя — транзиент-ветки процессов.</summary>
+    internal sealed class FakeNodeClient : S3Worker.Core.OwnS3.IOwnS3NodeClient
+    {
+        public bool Health { get; set; } = true;
+
+        public bool UsageFault { get; set; }
+
+        public S3Worker.Core.OwnS3.OwnS3NodeUsage Usage { get; set; } = new(1, 2);
+
+        public readonly HashSet<(string Host, int Port, string Bucket)> Buckets = [];
+
+        public Task<Result<bool>> HealthAsync(string host, int port, CancellationToken ct)
+            => Task.FromResult(Result<bool>.Success(Health));
+
+        public Task<Result<bool>> BucketExistsAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string bucket, CancellationToken ct)
+            => Task.FromResult(Result<bool>.Success(Buckets.Contains((host, port, bucket))));
+
+        public Task<Result> EnsureBucketAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string bucket, CancellationToken ct)
+        {
+            Buckets.Add((host, port, bucket));
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>> GetUsageAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
+            => Task.FromResult(UsageFault
+                ? Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Failed(new ApplicationException("грань usage недоступна"))
+                : Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Success(Usage));
     }
 }

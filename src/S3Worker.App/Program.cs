@@ -159,8 +159,27 @@ builder.Services.AddSingleton(sp =>
         opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
 });
 
-// Процессы A–E + вспомогательные — Tasks 7/9–13 (PlacementResolver, драйвер,
-// SecretProfileStore, ProvisioningProcess и т.д.); агрегатор — каркас Task 4.
+// Процессы A–E + вспомогательные (Tasks 7–13): индекс portalloc, опции
+// процессов (плоский срез дерева), provisioning (A); остальные подключаются
+// задачами 11–13; агрегатор — каркас Task 4.
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.PortAllocIndex(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<S3Worker.Provisioning.Processes.PortAllocIndex>>()));
+builder.Services.AddSingleton(ToProvisioningOptions(
+    builder.Configuration.GetSection("S3Worker").Get<S3WorkerOptions>()!));
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.ProvisioningProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
@@ -221,6 +240,22 @@ app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
 
 await app.RunAsync();
+
+// Опции процессов из дерева конфигурации (arch/24 §8; порт valkey).
+static S3Worker.Provisioning.Processes.S3ProvisioningOptions ToProvisioningOptions(S3WorkerOptions opts) => new(
+    opts.Docker.PortRange.From,
+    opts.Docker.PortRange.To,
+    opts.Thresholds.NodeBootSec,
+    opts.Thresholds.NodeDeadSec,
+    opts.Thresholds.HealthIntervalSec,
+    opts.Docker.AdvertisedHost,
+    opts.Docker.Images.OwnS3,
+    opts.Bucket,
+    opts.Docker.ContourNetwork);
+
+// Делегат снапшота для процессов (P12 «до/после» в точках изменений).
+static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
+    => async ct => await job.TakeAsync(ct);
 
 // WAF-тесты (S3Worker.IntegrationTests/Api, Task 15): точка входа как public partial.
 public partial class Program;

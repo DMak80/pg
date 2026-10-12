@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using S3Worker.App;
 using S3Worker.Core.Model;
 using S3Worker.Etcd.Parsing;
+using S3Worker.Provisioning.Processes;
 using Shared.Etcd.Client;
 
 namespace S3Worker.App.Loops;
@@ -12,7 +13,7 @@ namespace S3Worker.App.Loops;
 // Valkey): цикл не знает конкретных машин состояний — только эту грань
 // (мокабельно в unit-тестах цикла). Active-ветка (arch/24 §5): надзор (C) →
 // add-node (D) → remove-node (E); живая заявка ротации — эксклюзивная ветка.
-// Каркас Task 4: классификация → no-op с логом (процессы — Tasks 10–13).
+// Процессы подключаются задачами 10–13 (A — готово).
 
 /// <summary>Один reconcile-тик над всеми кластерами (процессы arch/24 §5).</summary>
 public interface IS3ClusterProcesses
@@ -31,6 +32,7 @@ internal sealed class S3ClusterProcesses(
     IOptionsMonitor<S3WorkerOptions> options,
     ClaimStore claims,
     WorkJournal journal,
+    ProvisioningProcess provision,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
@@ -105,17 +107,17 @@ internal sealed class S3ClusterProcesses(
 
             switch (kind)
             {
-                // TODO(Tasks 10–13): процессы Provision/Deprovision/Active-ветки.
                 case S3ClusterKind.Provision:
-                    logger.LogDebug("{Cluster}: Provision — процесс подключится в Tasks 10–13", cluster);
+                    await RunClusterOpAsync(cluster, "provision",
+                        () => provision.RunAsync(snap, ct), ct);
                     break;
 
                 case S3ClusterKind.Deprovision:
-                    logger.LogDebug("{Cluster}: Deprovision — процесс подключится в Tasks 10–13", cluster);
+                    logger.LogDebug("{Cluster}: Deprovision — процесс подключится в Task 12", cluster);
                     break;
 
                 case S3ClusterKind.Active:
-                    logger.LogDebug("{Cluster}: Active — ветка подключится в Tasks 10–13", cluster);
+                    logger.LogDebug("{Cluster}: Active — ветка подключится в Tasks 11–13", cluster);
                     break;
 
                 case S3ClusterKind.Skip:
