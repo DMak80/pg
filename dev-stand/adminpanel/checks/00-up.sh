@@ -22,7 +22,7 @@ phase() {
 # prometheus-target — файл file_sd (оба инстанса).
 export PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
 export PGW_API_HOST_PORT2="${PGW_API_HOST_PORT2:-8083}"
-# t32: хост-публикации API s3worker (ряд 8086/8089; advertise следует за портом).
+# Хост-публикации API s3worker (ряд 8086/8089; advertise следует за портом).
 export S3W_API_HOST_PORT="${S3W_API_HOST_PORT:-8086}"
 export S3W_API_HOST_PORT2="${S3W_API_HOST_PORT2:-8089}"
 [ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
@@ -80,7 +80,7 @@ docker build -q -f "$ROOT/docker/PgWorker.Wal.Dockerfile" -t pgworker-wal:dev "$
   || { echo "❌ образ pgworker-wal:dev не собрался"; exit 1; }
 echo "  образ pgworker-wal:dev готов"
 
-# S3Worker (t32, arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
+# S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
 echo ">>> [PHASE] publish S3Worker.App ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/S3Worker.App/S3Worker.App.csproj" \
@@ -106,7 +106,7 @@ if grep -q '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env"; then
 else
   printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
 fi
-# t32: sync хост-портов API s3worker в .env (чеки читают порт из .env).
+# Синхронизация хост-портов API s3worker в .env (чеки читают порт из .env).
 for k in S3W_API_HOST_PORT S3W_API_HOST_PORT2; do
   v="${!k}"
   if grep -q "^$k=" "$ROOT/deploy/.env"; then
@@ -115,13 +115,13 @@ for k in S3W_API_HOST_PORT S3W_API_HOST_PORT2; do
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
-# t32: демо-профиль секретов нод — в СТАРЫЙ .env (до t32) дописывается
+# Демо-профиль секретов нод — в .env без блока дописывается
 # ЦЕЛИКОМ: compose-плейсхолдеры :?задайте секрет срывают up на интерполяции.
 # Свежий .env (копия .env.example) блок уже несёт — дописки нет.
 if ! grep -q '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER=' "$ROOT/deploy/.env"; then
 cat >> "$ROOT/deploy/.env" <<'EOF'
 
-# S3Worker (t32): bucket per-install (fail-fast старта) + демо-профиль
+# S3Worker: bucket per-install (fail-fast старта) + демо-профиль
 # секретов нод (arch/23 §6) — стендовые примеры (прод — per-install секрет).
 S3W_BUCKET=pgworker-backups
 S3W_ETCD_ENDPOINT_0=http://host.docker.internal:2379
@@ -137,7 +137,7 @@ S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__SECRETKEY=panel-reader-pwd
 S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__POLICY=read-only
 EOF
 fi
-# t32: производный файл секретов нод для env_file s3worker — строки KEY=VAL
+# Производный файл секретов нод для env_file s3worker — строки KEY=VAL
 # едут в контейнер КАК ЕСТЬ (compose-интерполяция ${S3W_NODE_SECRETS__…-…}
 # невозможна: дефис в имени переменной парсер читает как оператор дефолта).
 grep -E '^S3W_NODE_SECRETS__' "$ROOT/deploy/.env" > "$ROOT/deploy/s3w-node-secrets.env"
@@ -430,7 +430,7 @@ done
   || { echo "❌ /valkeyworker/instances/ меньше 2 ключей"; exit 1; }
 echo "  valkeyworker жив ×2 (heartbeat /valkeyworker/{api,instances}/*: по ${vwk_keys})"
 
-# 7c) s3worker жив ×2 (t32, arch/24): healthz по mTLS healthcheck-парой
+# 7c) s3worker жив ×2 (arch/24): healthz по mTLS healthcheck-парой
 #     (общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
 for i in $(seq 1 60); do $MTLS https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done

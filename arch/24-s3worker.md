@@ -31,7 +31,7 @@ lease-клэймы, arch/23 §8); смерть контролирующего и
 
 Границы (что НЕ входит): механика mesh-репликации ownS3 (t35); зонды
 синхронности (t33); панель домена S3 (t34); клиентская интеграция пула
-(t36); стенд/E2E-механика S3Worker (t32).
+(t36).
 
 ---
 
@@ -368,8 +368,8 @@ Fail-fast валидации старта — по образцу pg (непол
   [21-valkeyworker.md](21-valkeyworker.md).
 - Принципы синхронизации —
   [17-synchronization-principles.md](17-synchronization-principles.md).
-- Отложенные задачи — [roadmap/s3.md](roadmap/s3.md) (t32 provisioning,
-  t33 зонды, t34 панель, t36 клиентская интеграция; mesh-ownS3 —
+- Отложенные задачи — [roadmap/s3.md](roadmap/s3.md) (t33 зонды,
+  t34 панель, t36 клиентская интеграция; mesh-ownS3 —
   [roadmap/owns3.md](roadmap/owns3.md) t35).
 - Требования mesh-ownS3 —
   `docs/owns3-replication-requirements.md`; изыскания платформ

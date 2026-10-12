@@ -40,7 +40,7 @@ if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
-# t32: сетевые таргеты s3worker/s3worker-2 (arch/24, стендовые инстансы) —
+# Сетевые таргеты s3worker/s3worker-2 (arch/24, стендовые инстансы) —
 # серт без DNS:s3worker-2 перегенерируем (CA жив).
 if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:s3worker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"
