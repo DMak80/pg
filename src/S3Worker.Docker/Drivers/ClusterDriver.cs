@@ -283,14 +283,15 @@ public sealed class PlainClusterDriver(
         });
     }
 
-    // Хост, отвечающий за том node<k>: том нод-локален — проверяем на движке
-    // узла размещения; размещения нет в plain-таблице (домены хостов совпадают)
-    // — первый движок. Достаточно одного: тома одного кластера не размазаны.
+    // Том нод-локален, но размещение plain-таблица не отслеживает: сирота-том
+    // (утраченный контейнер) может остаться на ЛЮБОМ хосте — существование
+    // проверяется на всех движках (объединение инспекций); имена томов
+    // детерминированы node1..node9 (предел arch/23 §2).
     private IEnumerable<(string Node, IDockerEngine Engine)> NodeEnginesByVolume()
     {
-        var engine = _engines.Values.First();
-        for (var k = 1; k <= MaxNodes; k++)
-            yield return ($"node{k}", engine);
+        foreach (var engine in _engines.Values)
+            for (var k = 1; k <= MaxNodes; k++)
+                yield return ($"node{k}", engine);
     }
 
     internal static string NodeName(string cluster, string nodeName)
@@ -445,11 +446,14 @@ public sealed class SwarmClusterDriver(
             names.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList());
     }
 
+    // Том нод-локален, сирота-том (утраченный контейнер) может остаться на
+    // любой swarm-ноде или менеджере — существование проверяется на всех
+    // движках (объединение инспекций, как в RemoveNodeAsync); имена детерминированы.
     private IEnumerable<(string Node, IDockerEngine Engine)> NodeEnginesByVolume()
     {
-        var engine = _nodeEngines.Values.FirstOrDefault() ?? _engine;
-        for (var k = 1; k <= 9; k++)
-            yield return ($"node{k}", engine);
+        foreach (var engine in _nodeEngines.Values.Append(_engine))
+            for (var k = 1; k <= 9; k++)
+                yield return ($"node{k}", engine);
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =

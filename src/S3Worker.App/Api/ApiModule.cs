@@ -190,8 +190,8 @@ public static class ApiModule
             return response;
         });
 
-        // POST /api/s3/clusters/{cluster}/sync-probe — 202 always (заглушка t33;
-        // исполнение зонда синхронности mesh — t35).
+        // POST /api/s3/clusters/{cluster}/sync-probe — 202-заглушка; исполнение
+        // зонда синхронности mesh — t33.
         endpoints.MapPost("/api/s3/clusters/{cluster}/sync-probe", async (
             string cluster, SyncProbeHandler handler, CancellationToken ct) =>
         {

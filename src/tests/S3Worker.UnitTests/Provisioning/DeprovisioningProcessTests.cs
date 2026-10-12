@@ -20,7 +20,8 @@ public class DeprovisioningProcessTests
         var claims = new ClaimStore(Prefix, ["http://etcd:2379"], etcd, TimeProvider.System);
         var process = new DeprovisioningProcess(
             etcd, ["http://etcd:2379"], driver, claims,
-            new WorkJournal(Prefix, etcd, ["http://etcd:2379"]));
+            new WorkJournal(Prefix, etcd, ["http://etcd:2379"]),
+            new BootWaitBudget(TimeProvider.System));
         return (process, etcd, driver, claims);
     }
 
@@ -87,7 +88,8 @@ public class DeprovisioningProcessTests
         var breaking = new RemovingFaultDriver(driver);
         var brokenProcess = new DeprovisioningProcess(
             etcd, ["http://etcd:2379"], breaking, claims,
-            new WorkJournal(Prefix, etcd, ["http://etcd:2379"]));
+            new WorkJournal(Prefix, etcd, ["http://etcd:2379"]),
+            new BootWaitBudget(TimeProvider.System));
 
         // Act
         var result = await brokenProcess.TickAsync(Snap(), TestContext.Current.CancellationToken);

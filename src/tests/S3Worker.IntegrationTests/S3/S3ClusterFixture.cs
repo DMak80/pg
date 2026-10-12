@@ -215,10 +215,10 @@ public sealed class S3ClusterFixture : IAsyncLifetime
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex,
-            SecretStore, NodeClient, Options);
+            SecretStore, NodeClient, Options, new BootWaitBudget(TimeProvider.System));
 
     public DeprovisioningProcess NewDeprovisioning(ClaimStore claims, WorkJournal journal) =>
-        new(Gateway, [Endpoint], Driver, claims, journal);
+        new(Gateway, [Endpoint], Driver, claims, journal, new BootWaitBudget(TimeProvider.System));
 
     public NodeSupervisor NewSupervisor(ClaimStore claims, WorkJournal journal,
         PortAllocHealer healer, int nodeDeadSec = 90) =>

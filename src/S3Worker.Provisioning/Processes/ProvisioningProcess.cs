@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -30,6 +29,7 @@ public sealed class ProvisioningProcess(
     SecretProfileStore secrets,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
+    BootWaitBudget bootWait,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "provision";
@@ -38,11 +38,6 @@ public sealed class ProvisioningProcess(
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
-
-    // Время первого наблюдения «health ноды молчит» (бюджет NodeBootSec;
-    // после takeover отсчёт начинается заново — диагностический бюджет, не
-    // клэйм). ConcurrentDictionary: процесс — DI-синглтон, кластеры параллельно.
-    private readonly ConcurrentDictionary<string, long> _bootWaitSince = new();
 
     public async Task<Result> RunAsync(S3ClusterSnapshot snap, CancellationToken ct)
     {
@@ -320,9 +315,7 @@ public sealed class ProvisioningProcess(
             if (!health.IsSuccess || !health.Value)
             {
                 // Не готов: бюджет с первого наблюдения (диагностика, не клэйм).
-                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                var since = _bootWaitSince.GetOrAdd(cluster, now);
-                if (options.NodeBootSec <= 0 || now - since > options.NodeBootSec)
+                if (bootWait.Exceeded(cluster, options.NodeBootSec))
                     return Result<bool>.Failed(new ApplicationException(
                         $"кластер {cluster}: нода {node} не ожила за бюджет {options.NodeBootSec} с"));
                 return Result<bool>.Success(false);
@@ -330,7 +323,7 @@ public sealed class ProvisioningProcess(
         }
 
         // Все живы: state=RUNNING (put только не-RUNNING).
-        _bootWaitSince.TryRemove(cluster, out _);
+        bootWait.Reset(cluster);
         foreach (var node in snap.Nodes.Where(n => n.State != S3NodeStates.Running))
         {
             var running = await PutAsync(S3ProcessCommon.NodeStateKey(cluster, node.Node), S3NodeStates.Running, ct);
@@ -418,7 +411,14 @@ public sealed class ProvisioningProcess(
     }
 
     private async Task<Result> FinishAsync(string cluster, string phase, CancellationToken ct)
-        => await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+    {
+        // Выход из provisioning (done / aborted-state-changed → демонтаж):
+        // бюджет boot-ожидания — заново; waiting-* кластер из provisioning не
+        // выводит, отсчёт продолжается.
+        if (phase is "done" or "aborted-state-changed")
+            bootWait.Reset(cluster);
+        return await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+    }
 
     private Result Fail(string cluster, Exception error, string phase)
     {

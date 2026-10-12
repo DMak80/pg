@@ -16,7 +16,16 @@ S3W_PORT="${S3W_PORT:-8086}"
 API="https://localhost:${S3W_PORT}"
 MTLS=(curl -s -m 10 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# Own-only зачистка по TAG текущего прогона: падение между create и delete не
+# оставляет демо-контейнер/том/ключи etcd (уже снесённые ресурсы — не падаем;
+# живость API не требуется — ect дёргает etcd-контейнер стенда).
+cleanup() {
+  rm -rf "$TMP"
+  docker rm -f $(docker ps -a --format '{{.Names}}' | grep "^s3w-$TAG" || true) >/dev/null 2>&1 || true
+  docker volume rm $(docker volume ls -q --filter name="s3w-$TAG" || true) >/dev/null 2>&1 || true
+  ect del "/s3/$TAG/" --prefix >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 etcd_key() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
 ect()      { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }

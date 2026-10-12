@@ -21,6 +21,7 @@ public sealed class DeprovisioningProcess(
     IS3ClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
+    BootWaitBudget bootWait,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "deprovision";
@@ -103,7 +104,10 @@ public sealed class DeprovisioningProcess(
         }
 
         // Journal done (arch/24 §5 B: финальная фаза X3) + снапшот «после» +
-        // ЯВНОЕ снятие клэйма (не ждём TTL).
+        // ЯВНОЕ снятие клэйма (не ждём TTL). Демонтаж завершён — бюджет
+        // boot-ожидания имени кластера начинается заново (повторный
+        // provisioning того же имени — без старого since).
+        bootWait.Reset(cluster);
         var done = await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
         if (!done.IsSuccess)
             return done;

@@ -13,7 +13,6 @@ namespace S3Worker.App.Loops;
 // Valkey): цикл не знает конкретных машин состояний — только эту грань
 // (мокабельно в unit-тестах цикла). Active-ветка (arch/24 §5): надзор (C) →
 // add-node (D) → remove-node (E); живая заявка ротации — эксклюзивная ветка.
-// Процессы подключаются задачами 10–13 (A — готово).
 
 /// <summary>Один reconcile-тик над всеми кластерами (процессы arch/24 §5).</summary>
 public interface IS3ClusterProcesses
@@ -129,10 +128,9 @@ internal sealed class S3ClusterProcesses(
                     // add-node (D) → remove-node (E).
                     await RunClusterOpAsync(cluster, "active", async () =>
                     {
-                        // Живая заявка ротации (любой endpoint: read-only проверка).
-                        var rotating = await etcd.GetAsync(
-                            options.CurrentValue.Etcd.Endpoints[0],
-                            $"/s3worker/rotations/{cluster}", ct);
+                        // Живая заявка ротации (failover по endpoints: read-only
+                        // проверка — первый живой endpoint выигрывает).
+                        var rotating = await GetWithFailoverAsync($"/s3worker/rotations/{cluster}", ct);
                         if (rotating.IsSuccess && rotating.Value is not null)
                             return await rotator.TickAsync(snap, ct);
 
@@ -169,7 +167,6 @@ internal sealed class S3ClusterProcesses(
 
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
-    // (Задействуется процессами Tasks 10–13.)
     internal async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result>> call, CancellationToken ct)
     {
@@ -199,6 +196,21 @@ internal sealed class S3ClusterProcesses(
                 logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
             }
         }
+    }
+
+    // Чтение одного ключа с failover: первый успешный endpoint выигрывает.
+    private async Task<Result<Kv?>> GetWithFailoverAsync(string key, CancellationToken ct)
+    {
+        Result<Kv?> last = default;
+        foreach (var endpoint in options.CurrentValue.Etcd.Endpoints)
+        {
+            var result = await etcd.GetAsync(endpoint, key, ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(

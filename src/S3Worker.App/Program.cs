@@ -199,6 +199,10 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.PortAllo
     sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<S3Worker.Provisioning.Processes.PortAllocIndex>>()));
 builder.Services.AddSingleton(ToProvisioningOptions(
     builder.Configuration.GetSection("S3Worker").Get<S3WorkerOptions>()!));
+// Бюджет boot-ожидания — общий синглтон provisioning/deprovisioning: сброс на
+// done/aborted-state-changed выводит из provisioning, демонтаж начинается с нуля.
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.BootWaitBudget(
+    sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
@@ -210,6 +214,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.Provisio
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
+    sp.GetRequiredService<S3Worker.Provisioning.Processes.BootWaitBudget>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.PortAllocHealer(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -236,6 +241,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.Deprovis
     sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<S3Worker.Provisioning.Processes.BootWaitBudget>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.AddNodeProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -310,9 +316,6 @@ var loopsCfg = builder.Configuration.GetSection("S3Worker:Loops").Get<LoopsOptio
 if (loopsWatchdog.Enabled)
     Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
         loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
-
-// TODO(Tasks 10–13): процессы A–E + ротатор.
-// TODO(Task 14): хендлеры API + MapWorkerApi-эндпоинты (каркас — пустой).
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)

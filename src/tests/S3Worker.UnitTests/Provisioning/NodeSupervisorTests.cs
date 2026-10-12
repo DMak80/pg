@@ -96,6 +96,28 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/s3/clusters/demo/nodes/node1/state"].Value.Should().Be(S3NodeStates.Provisioning);
     }
 
+    // AAA: контейнер остановлен (inspect → Running=false; restart-политика
+    // unless-stopped его не поднимет) → пересоздание (S7: не-running по
+    // инспекции — положительное свидетельство), а не вечный UNREACHABLE.
+    [Fact]
+    public async Task КонтейнерОстановлен_Пересоздание()
+    {
+        // Arrange: docker-объект есть, но не running.
+        var rig = Rig.New();
+        await rig.SeedActiveAsync();
+        rig.Driver.Nodes["demo/node1"] = new Fakes.FakeS3Driver.NodeFact("h1", 18000, Running: false);
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: снос без тома + ensure на том же placed_on; state=PROVISIONING.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Driver.Removed.Should().Contain("demo/node1");
+        rig.Driver.Ensured.Should().ContainSingle()
+            .Which.Host.Should().Be("h1");
+        rig.Etcd.Store["/s3/clusters/demo/nodes/node1/state"].Value.Should().Be(S3NodeStates.Provisioning);
+    }
+
     // AAA: одно пересоздание за тик — вторая снесённая нода следующим тиком.
     [Fact]
     public async Task ОдноПересозданиеЗаТик()

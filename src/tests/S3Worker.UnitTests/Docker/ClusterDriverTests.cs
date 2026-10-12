@@ -34,6 +34,8 @@ public class ClusterDriverTests
         public IReadOnlyList<Shared.Docker.DockerSwarmNode> Nodes { get; set; } =
             [new Shared.Docker.DockerSwarmNode("id-a", "h1", "ready", 0)];
 
+        public IReadOnlyList<string> Services { get; set; } = [];
+
         public HashSet<string> Volumes { get; } = new(StringComparer.Ordinal);
 
         public readonly List<string> DeletedContainers = [];
@@ -138,7 +140,9 @@ public class ClusterDriverTests
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(
+                Services.Where(s => s.StartsWith(namePrefix, StringComparison.Ordinal)).ToList()));
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<string>?>> InspectContainerCmdAsync(string idOrName, CancellationToken ct) => throw NotUsed();
@@ -327,6 +331,51 @@ public class ClusterDriverTests
         // Assert — и контейнер, и оба тома в перечне.
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeEquivalentTo(["s3w-c1-node1", "s3w-c1-node1-data", "s3w-c1-node2-data"]);
+    }
+
+    // AAA: Plain — сироты X2 multi-host: сирота-том на другом хосте (утраченный
+    // контейнер) попадает в перечень — существование тома проверяется на ВСЕХ
+    // движках, не только на первом.
+    [Fact]
+    public async Task Plain_ListNodeObjects_OrphanVolumeOnOtherHost()
+    {
+        // Arrange — два хоста; том node2 существует только на h2.
+        var h1 = new StubEngine();
+        var h2 = new StubEngine();
+        await h2.EnsureVolumeAsync("s3w-c1-node2-data", CancellationToken.None);
+        var driver = new PlainClusterDriver(
+            [new HostEndpoint("h1", "fake://h1"), new HostEndpoint("h2", "fake://h2")],
+            new RoutingFactory([h1, h2]));
+
+        // Act
+        var result = await driver.ListNodeObjectsAsync("c1", CancellationToken.None);
+
+        // Assert — сирота-том h2 в перечне (снос X2 его подберёт).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEquivalentTo(["s3w-c1-node2-data"]);
+    }
+
+    // AAA: Swarm — сироты: сервисы по префиксу + сирота-том на другой swarm-ноде
+    // (утраченный контейнер) — объединение инспекций всех движков (как в сносе).
+    [Fact]
+    public async Task Swarm_ListNodeObjects_OrphanVolumeOnOtherNode()
+    {
+        // Arrange — менеджер + две swarm-ноды; том node3 только на второй ноде.
+        var manager = new StubEngine();
+        var n1 = new StubEngine();
+        var n2 = new StubEngine();
+        await n2.EnsureVolumeAsync("s3w-c1-node3-data", CancellationToken.None);
+        var driver = new SwarmClusterDriver(
+            "fake://manager",
+            new RoutingFactory([manager, n1, n2]),
+            [new HostEndpoint("n1", "fake://n1"), new HostEndpoint("n2", "fake://n2")]);
+
+        // Act
+        var result = await driver.ListNodeObjectsAsync("c1", CancellationToken.None);
+
+        // Assert — сирота-том второй ноды в перечне.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEquivalentTo(["s3w-c1-node3-data"]);
     }
 
     // AAA: Plain — placement-атрибуты (arch/23 §4): Name из Hosts, UsedSlots по

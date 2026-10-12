@@ -9,7 +9,8 @@ namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
 /// Надзор (arch/24 §5 C): health-проба каждой ноды по host:port из portalloc;
-/// снесённый контейнер (положительное свидетельство docker-инспекции, S7) и
+/// снесённый или остановленный контейнер (положительное свидетельство
+/// docker-инспекции, S7: не-running объект unless-stopped сам не поднимет) и
 /// расхождение лимитов (автоконверге) → пересоздание на том же placed_on
 /// (volume сохраняется), state=PROVISIONING — в RUNNING переводит следующий
 /// тик по health; молчание дольше NodeDeadSec → UNREACHABLE, БЕЗ деструктива
@@ -86,14 +87,17 @@ public sealed class NodeSupervisor(
             if (!live.IsSuccess)
                 return live.Error!;
 
-            if (live.Value is null)
+            // Снесённый или остановленный контейнер — положительное свидетельство
+            // инспекции (S7) → пересоздание: restart-политика unless-stopped
+            // остановленный вручную контейнер не поднимет — иначе вечный UNREACHABLE.
+            if (live.Value is null || !live.Value.Running)
             {
-                // Снесённый контейнер (положительное свидетельство) → пересоздание.
                 if (!supervisable)
                     continue; // PROVISIONING чужого процесса — чужая ответственность
                 if (recreated)
                     continue; // одно пересоздание за тик
-                var rebuilt = await RecreateAsync(snap, node, address.Value, nodeSecrets!, "container missing", ct);
+                var reason = live.Value is null ? "container missing" : "container stopped";
+                var rebuilt = await RecreateAsync(snap, node, address.Value, nodeSecrets!, reason, ct);
                 if (!rebuilt.IsSuccess)
                     return rebuilt.Error!;
                 recreated = true;

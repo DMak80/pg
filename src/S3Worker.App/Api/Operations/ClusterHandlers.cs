@@ -249,8 +249,8 @@ public sealed class PostRotationHandler(IEtcdGateway gateway, string[] endpoints
         [property: System.Text.Json.Serialization.JsonPropertyName("requested_by")] string RequestedBy);
 }
 
-// POST /api/s3/clusters/{c}/sync-probe — 202 always (заглушка t33:
-// исполнение зонда синхронности mesh — задача t35).
+// POST /api/s3/clusters/{c}/sync-probe — 202-заглушка; исполнение зонда
+// синхронности mesh — t33.
 public sealed class SyncProbeHandler
 {
     public Task<Result<bool>> HandleAsync(string cluster, CancellationToken ct)

@@ -31,10 +31,12 @@ public class ProvisioningProcessTests
         public Fakes.FakeEtcd Etcd = new();
         public Fakes.FakeS3Driver Driver = new();
         public Fakes.FakeNodeClient NodeClient = new();
+        public FixedTimeProvider Clock = new();
         public SecretProfileStore Secrets = new(
             name => name is not null && FullProfileEnv.TryGetValue(name, out var v) ? v : null,
             FullProfileEnv.Keys);
         public ClaimStore Claims = null!;
+        public BootWaitBudget BootWait = null!;
         public ProvisioningProcess Process = null!;
 
         public static Rig New(int portFrom = 18000, string? advertised = null)
@@ -46,6 +48,7 @@ public class ProvisioningProcessTests
                 new S3HostAttributes("h1", 0, new Dictionary<string, string>()),
                 new S3HostAttributes("h2", 1, new Dictionary<string, string>()),
             ];
+            rig.BootWait = new BootWaitBudget(rig.Clock);
             rig.Process = new ProvisioningProcess(
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
@@ -53,7 +56,8 @@ public class ProvisioningProcessTests
                 new PortAllocIndex(rig.Etcd, ["http://etcd:2379"],
                     Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
                 rig.Secrets, rig.NodeClient,
-                new S3ProvisioningOptions(portFrom, 18999, 100, 90, 15, advertised, "owns3:dev", Bucket));
+                new S3ProvisioningOptions(portFrom, 18999, 100, 90, 15, advertised, "owns3:dev", Bucket),
+                rig.BootWait);
             return rig;
         }
     }
@@ -205,7 +209,8 @@ public class ProvisioningProcessTests
             new PortAllocIndex(rig.Etcd, ["http://etcd:2379"],
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
             rig.Secrets, rig.NodeClient,
-            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", Bucket));
+            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", Bucket),
+            rig.BootWait);
         await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
         await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
 
@@ -320,5 +325,54 @@ public class ProvisioningProcessTests
         journal.Value!.Phase.Should().Be("waiting-nodes");
         rig.Etcd.Store[$"/s3/clusters/demo/nodes/node1/state"].Value.Should().Be(S3NodeStates.Provisioning);
         rig.Etcd.Store.Keys.Should().NotContain("/s3/clusters/demo/endpoints");
+    }
+
+    // AAA: provisioning → deprovision → повторный provisioning того же имени —
+    // бюджет boot-ожидания с нуля (нет мгновенного permanent-фейла по старому
+    // since того же процесса воркера).
+    [Fact]
+    public async Task ДепровижинСбрасываетБюджетBootОжидания()
+    {
+        // Arrange: health молчит; общий бюджет у provisioning/deprovision;
+        // клэйм и живые docker-хосты.
+        var rig = Rig.New();
+        var deprovision = new DeprovisioningProcess(
+            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
+            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]), rig.BootWait);
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        rig.Driver.Hosts =
+        [
+            new S3HostAttributes("h1", 0, new Dictionary<string, string>()),
+            new S3HostAttributes("h2", 1, new Dictionary<string, string>()),
+        ];
+        rig.NodeClient.Health = false;
+
+        // Act 1: первый provisioning — InProgress (waiting-nodes), since зафиксирован.
+        var first = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+        // Время ушло за бюджет: следующий прогон — мгновенный permanent-фейл
+        // (проверка предусловия «старый since фейлит»).
+        rig.Clock.Utc = rig.Clock.Utc.AddSeconds(101);
+        var stale = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+        // Act 2: демонтаж той же заявки → done (сброс бюджета, снятие клэйма).
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.ToRemove);
+        var deprov = await deprovision.TickAsync(
+            Snap(state: S3NodeStates.ToRemove), TestContext.Current.CancellationToken);
+        // Act 3: то же имя снова NOT_INITIALIZED, клэйм заново, health молчит.
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        var again = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: первый — InProgress; «протухший» — permanent-фейл; после
+        // демонтажа повторный provisioning — снова InProgress без last_error
+        // (бюджет пошёл заново, а не мгновенный фейл).
+        first.IsSuccess.Should().BeTrue();
+        stale.IsSuccess.Should().BeFalse();
+        deprov.IsSuccess.Should().BeTrue(deprov.Error?.Message);
+        again.IsSuccess.Should().BeTrue(again.Error?.Message);
+        var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("waiting-nodes");
+        journal.Value.LastError.Should().BeNull();
     }
 }
