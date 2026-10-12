@@ -22,6 +22,13 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
     private readonly ConcurrentDictionary<string, byte> _running = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Task> _runs = new(StringComparer.Ordinal);
 
+    // Ожидание свободного слота fetch-очереди при переполнении (§9): очередь
+    // обычно дренируется приёмником за секунды — проход ждёт до бюджета, и лишь
+    // пережившее бюджет переполнение приостанавливает проход (маркер сохранён).
+    // Шаг опроса 250 мс; тесты (InternalsVisibleTo) задают малый бюджет.
+    public TimeSpan QueueWaitBudget { get; internal init; } = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan QueueWaitPoll = TimeSpan.FromMilliseconds(250);
+
     // Один проход по соседу; идущий — await (повторный Trigger не порождает второй).
     public async Task RunForSourceAsync(string sourceName, CancellationToken ct)
     {
@@ -133,17 +140,36 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                     if (outcome != LwwOutcome.IncomingWins)
                         continue; // новее/Identical → ничего: наш вариант выиграет (§9)
                     // fetch-задача в очередь источника (§9; идемпотентно — фетчер
-                    // применит по LWW). Переполнение очереди: маркер НЕ двигается и
-                    // проход приостанавливается — задача не теряется (at-least-once,
-                    // как 429 в inbox); продолжение — следующий триггер/периодический
-                    if (!queues.ForSource(sourceName).TryEnqueue(new FetchTask(bucket, entry.Key,
-                            entry.ModTime.ToUnixTimeMilliseconds())))
+                    // применит по LWW). Переполнение очереди: короткий ожид ёмкости
+                    // (обычно дренируется за секунды); пережило бюджет — маркер НЕ
+                    // двигается и проход приостанавливается — задача не теряется
+                    // (at-least-once, как 429 в inbox); продолжение — следующий
+                    // триггер/периодический
+                    var fetchTask = new FetchTask(bucket, entry.Key,
+                        entry.ModTime.ToUnixTimeMilliseconds());
+                    var queue = queues.ForSource(sourceName);
+                    if (!queue.TryEnqueue(fetchTask))
                     {
-                        logger.LogWarning(
-                            "Reconcile {Source}: fetch-очередь переполнена — проход приостановлен на {Bucket}/{Key}, маркер сохранён (ретрай следующим проходом)",
-                            sourceName, bucket, entry.Key);
-                        WriteMarker(sourceName, bucket, marker);
-                        return;
+                        var waited = TimeSpan.Zero;
+                        var enqueued = false;
+                        while (waited < QueueWaitBudget && !ct.IsCancellationRequested)
+                        {
+                            await Task.Delay(QueueWaitPoll, ct);
+                            waited += QueueWaitPoll;
+                            if (queue.TryEnqueue(fetchTask))
+                            {
+                                enqueued = true;
+                                break;
+                            }
+                        }
+                        if (!enqueued)
+                        {
+                            logger.LogWarning(
+                                "Reconcile {Source}: fetch-очередь переполнена — проход приостановлен на {Bucket}/{Key}, маркер сохранён (ретрай следующим проходом)",
+                                sourceName, bucket, entry.Key);
+                            WriteMarker(sourceName, bucket, marker);
+                            return;
+                        }
                     }
                 }
                 metrics.SetReconcilePosition(sourceName, processed);

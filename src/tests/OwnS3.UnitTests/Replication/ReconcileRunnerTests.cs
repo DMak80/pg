@@ -189,4 +189,58 @@ public class ReconcileRunnerTests : IClassFixture<ReconcileRunnerFixture>
         _fixture.Store.ListBuckets().Should().ContainSingle(b => b.Name == "new-bucket")
             .Which.CreationDate.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
     }
+
+    // Runner с очередью на 1 слот и малым бюджетом ожидания (suspend-кейсы §9).
+    private ReconcileRunner SuspendRunner(TimeSpan budget, out FetchQueueRegistry queues)
+    {
+        queues = new FetchQueueRegistry(new ReplicationOptions { FetchQueueMax = 1 });
+        return new ReconcileRunner(_fixture.Targets, _fixture.Store, _fixture.Applier, queues,
+            _fixture.Transport, _fixture.ReconcileDir, NullLogger<ReconcileRunner>.Instance,
+            _fixture.Metrics) { QueueWaitBudget = budget };
+    }
+
+    [Fact]
+    public async Task QueueFull_AfterWaitBudget_SuspendsWithMarker()
+    {
+        // Arrange — очередь на 1 слот, листинг [a, b], бюджет 400 мс: «b» не влезает,
+        // переживает бюджет → проход приостанавливается, маркер сохранён
+        _fixture.Transport.Buckets.Add(("bb", 1));
+        _fixture.Transport.Listing["bb"] = [Entry("a", 1000), Entry("b", 2000)];
+        var runner = SuspendRunner(TimeSpan.FromMilliseconds(400), out var queues);
+
+        // Act
+        await runner.RunForSourceAsync("peer-a", TestContext.Current.CancellationToken);
+
+        // Assert — «a» поставлен, «b» остался в листинге; маркер-файл «bb|» —
+        // страница будет перечитана следующим проходом (at-least-once)
+        queues.ForSource("peer-a").Depth.Should().Be(1);
+        var markerPath = Path.Combine(_fixture.ReconcileDir, "peer-a.marker");
+        File.Exists(markerPath).Should().BeTrue();
+        File.ReadAllText(markerPath).Should().Be("bb|");
+    }
+
+    [Fact]
+    public async Task QueueFull_WaitCapacity_EnqueuesAfterDrain()
+    {
+        // Arrange — очередь на 1 слот, листинг [a, b], бюджет 10 с; фон дренирует
+        // «a» через 300 мс — «b» должен встать в очередь ВНУТРИ прохода (ожид ёмкости)
+        _fixture.Transport.Buckets.Add(("bb", 1));
+        _fixture.Transport.Listing["bb"] = [Entry("a", 1000), Entry("b", 2000)];
+        var runner = SuspendRunner(TimeSpan.FromSeconds(10), out var queues);
+        var drain = Task.Run(async () =>
+        {
+            await Task.Delay(300, TestContext.Current.CancellationToken);
+            queues.ForSource("peer-a").TryDequeue(out _);
+        }, TestContext.Current.CancellationToken);
+
+        // Act
+        await runner.RunForSourceAsync("peer-a", TestContext.Current.CancellationToken);
+        await drain;
+
+        // Assert — «b» поставлен (проход НЕ приостанавливался), маркер снят
+        queues.ForSource("peer-a").Depth.Should().Be(1);
+        queues.ForSource("peer-a").TryDequeue(out var task).Should().BeTrue();
+        task!.Key.Should().Be("b");
+        File.Exists(Path.Combine(_fixture.ReconcileDir, "peer-a.marker")).Should().BeFalse();
+    }
 }

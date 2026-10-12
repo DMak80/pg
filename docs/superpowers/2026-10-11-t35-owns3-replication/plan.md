@@ -1351,7 +1351,7 @@ public static class MeshClients
 
 ## Task 22: Сквозные измерения E2E — A15 (латентность репликации) + время восстановления связи (A4) (Ф6-дополнение)
 
-> Доработка ПОВЕРХ исполненных Task 0–21 (код репликации и E2E-серии в ветке): измерительные шаги, ничего в рантайме узлов не меняется.
+> Доработка ПОВЕРХ исполненных Task 0–21 (код репликации и E2E-серии в ветке): измерительные шаги; рантайм-контракты не меняются. Зафиксированное отступление от первоначальной формулировки «рантайм не меняется»: в ходе реализации A15 вскрыта латентность poll-цикла фетчера — константа `DiskPausePoll` сокращена 5 с → 250 мс (ece30558/5e4fae93); контракт не менялся (интервал poll в arch не был канонизирован), порог A15 ≤5 с выполнен.
 
 **Files:**
 - Modify: `arch/owns3/07-replication.md` (§10 — новый абзац «Сквозные измерения в E2E» дословно из spec 3.8: не рантайм-метрики узлов — end-to-end латентность репликации и время восстановления связи после срастания измеряются самой тестовой серией, публикуются фактическими значениями `[METRIC]`-строками в журнале прогона по канону `docs/e2e-launch.md` (по образцу `[PHASE]`), попадают в артефакты телеметрии; пороги — раздел 7: A15 ≤5 с, A4 ≤60 с; `delivery_lag`/`fetch_lag` сверяются тестом со своими измерениями)
@@ -1373,12 +1373,12 @@ public static class MeshClients
 - [ ] **Шаг 2.** `LogMetricAsync` в `OwnS3MeshE2eEnvironment` (Console + `metrics.log` в ArtifactsDir, по образцу `LogPhaseAsync`).
 - [ ] **Шаг 3.** Сценарий A15 `ReplicationLatencyScenarios` (серия PUT → пер-объектный поллинг → [METRIC] → min/max/median → ассерты → сверка лагов).
 - [ ] **Шаг 4.** Измерительные шаги A4 в `ConvergenceScenarios` (снапшоты до раскола → t_heal → поллинг признака → [METRIC] → ассерт ≤60 с).
-- [ ] **Шаг 5.** Прогон: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj -c Release --filter "FullyQualifiedName~E2e.Replication.ReplicationLatency|FullyQualifiedName~E2e.Replication.Convergence"` → PASS; контроль: `[METRIC]`-строки в выводе и `metrics.log` в `/tmp/pgw-e2e-artifacts-<guid>/`; зачистка серии (`docker ps -a --filter name=os3` пусто, `docker network ls | grep os3m` пусто).
+- [ ] **Шаг 5.** Прогон измерительных серий: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj -c Release --filter "FullyQualifiedName~E2e.Replication.ReplicationLatency|FullyQualifiedName~E2e.Replication.Convergence"` → PASS; контроль: `[METRIC]`-строки в выводе и `metrics.log` в `/tmp/pgw-e2e-artifacts-<guid>/`; зачистка серии (`docker ps -a --filter name=os3` пусто, `docker network ls | grep os3m` пусто). Затем — **полный регресс всей серии `E2e.Replication`** (Task 22 правит общие файлы тест-инфраструктуры — `OwnS3MeshE2eEnvironment` (база серий Task 17–20) и `ConvergenceScenarios`; критерий приёмки spec «Регресс: существующие серии зелёные» обязан выполняться в КОНЕЧНОМ состоянии ветки, полный прогон Task 21 Шаг 2 выполнен ДО Task 22; образец — Task 21 Шаг 2): `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj -c Release --filter FullyQualifiedName~E2e.Replication` → зелёная финальная строка; зачистка после серии.
 - [ ] **Шаг 6.** Коммит: `t35(e2e): сквозные измерения — A15 repl-e2e-latency-ms (≤5с, per-object+min/max/median, сверка delivery_lag/fetch_lag) + A4 repl-recover-after-heal-ms (≤60с, от reconnect до первого репликационного взаимодействия)`.
 
 **Выход:** обе величины запроса (скорость репликации, скорость восстановления связи) измеряются тестовой серией и публикуются фактическими значениями в журнале прогона; пороги — ассерты (превышение = провал с разбором).
 
-**Проверка:** обе серии зелёные; в артефактах прогона — `[METRIC] repl-e2e-latency-ms` (каждый объект + min/max/median), `repl-runtime-*-lag-seconds`, `repl-recover-after-heal-ms`; чистота docker после серии.
+**Проверка:** обе измерительные серии зелёные; вся серия `E2e.Replication` зелёная в конечном состоянии ветки (полный регресс Шага 5); в артефактах прогона — `[METRIC] repl-e2e-latency-ms` (каждый объект + min/max/median), `repl-runtime-*-lag-seconds`, `repl-recover-after-heal-ms`; чистота docker после серий.
 
 **Spec:** 7 (A15; A4 — измерение восстановления связи), 3.8 («Сквозные измерения в E2E»), 4-поток 5 (измерение времени восстановления), Ф6 (`[METRIC]`), «Дополнительно — Сквозные измерения E2E (телеметрия)», R5.
 

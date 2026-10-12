@@ -83,8 +83,55 @@ public sealed class ConvergenceScenarios
             await MeshClients.PutObjectAsync(env, 3, bucket, "right-extra", rightExtra,
                 TestContext.Current.CancellationToken);
 
-            // Срастание (reconnect половин) — БЕЗ рестартов; админ-reconcile (§9)
+            // ── Измерение A4 (глава 07 §10, план Task 22 Шаг 4) ──
+            // Фиксация link_online==0 (изоляты ещё не пробуждены) и снапшот
+            // acceptedSeqNo соседа n1
+            var isoDeadline = Environment.TickCount64 + 30_000;
+            while (Environment.TickCount64 < isoDeadline)
+            {
+                var statusIso = JsonDocument.Parse(
+                    await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+                var n1Iso = statusIso.GetProperty("neighbors").EnumerateArray()
+                    .First(n => n.GetProperty("name").GetString() == env.NodeName(1));
+                if (!n1Iso.GetProperty("online").GetBoolean())
+                    break;
+                await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+            }
+            var statusBefore = JsonDocument.Parse(
+                await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+            var acceptedBefore = statusBefore.GetProperty("neighbors").EnumerateArray()
+                .First(n => n.GetProperty("name").GetString() == env.NodeName(1))
+                .GetProperty("acceptedSeqNo").GetInt64();
+
+            // Срастание (reconnect половин) — БЕЗ рестартов; t_heal = завершение reconnect
             await HealAsync(env, TestContext.Current.CancellationToken);
+            var tHeal = Stopwatch.GetTimestamp();
+
+            // Поллинг (шаг ≤5 с, бюджет 60 с): link_online==1 И acceptedSeqNo вырос
+            // (первое репликационное взаимодействие — watermark двинулся)
+            var recovered = false;
+            long recoverMs = -1;
+            while (Stopwatch.GetTimestamp() - tHeal < 60 * Stopwatch.Frequency)
+            {
+                var statusAfter = JsonDocument.Parse(
+                    await MeshClients.AdminGetStatusAsync(env, 0, TestContext.Current.CancellationToken)).RootElement;
+                var n1After = statusAfter.GetProperty("neighbors").EnumerateArray()
+                    .First(n => n.GetProperty("name").GetString() == env.NodeName(1));
+                if (n1After.GetProperty("online").GetBoolean()
+                    && n1After.GetProperty("acceptedSeqNo").GetInt64() > acceptedBefore)
+                {
+                    recoverMs = (long)((Stopwatch.GetTimestamp() - tHeal) * 1000.0 / Stopwatch.Frequency);
+                    recovered = true;
+                    break;
+                }
+                await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+            }
+            await env.LogMetricAsync("repl-recover-after-heal-ms", recoverMs.ToString());
+            recovered.Should().BeTrue("связь восстановлена и watermark двинулся за 60 с (A4)");
+            recoverMs.Should().BeLessThanOrEqualTo(60000, "время восстановления ≤60 с (A4)");
+
+            // Сеть срослась выше (reconnect половин, БЕЗ рестартов) — админ-reconcile
+            // закрывает файловые дыры раскола (§9)
             foreach (var node in Enumerable.Range(0, 4))
                 await MeshClients.AdminReconcileAsync(env, node, TestContext.Current.CancellationToken);
 
