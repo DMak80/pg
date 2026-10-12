@@ -77,6 +77,37 @@ foreach (var broken in secretStore.ValidateEnvPairs())
     throw new ApplicationException($"S3W_NODE_SECRETS__{broken}: неполная секретная пара");
 builder.Services.AddSingleton(secretStore);
 
+// HTTP API хендлеры (arch/24 §1.1; Task 14) + счётчик операций.
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.S3ApiMetrics(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.CreateClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.DeleteClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.AddNodeHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.DeleteNodeHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.UpdateNodeResourcesHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PostRotationHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<S3Worker.App.Api.Operations.SyncProbeHandler>();
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SeedDemoHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<S3Worker.App.Api.Operations.CreateClusterHandler>(),
+    sp.GetRequiredService<IOptionsMonitor<S3WorkerOptions>>()));
+
 // Управляемый серт API (arch/24 §1.1): чтение ключа /workers/api_tls/s3worker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
 var etcdEndpoints = builder.Configuration.GetSection("S3Worker:Etcd:Endpoints").Get<string[]>() ?? [];
