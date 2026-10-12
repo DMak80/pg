@@ -38,13 +38,21 @@ public sealed class ObjectFetcherFixture : IDisposable
 
     public ReplicationMetrics Metrics { get; } = new(new System.Diagnostics.Metrics.Meter("owns3.test.fetcher"));
 
-    public ObjectFetcher Create(long freeDisk = long.MaxValue, long minDisk = 0, int pollMs = 5) =>
-        new(new TargetRecord("peer-a", "http://peer-a:9000", "ak", "sk"),
+    // Переключаемое свободное место (тест DiskPause: пауза → резюм в рантайме)
+    private long _freeDisk = long.MaxValue;
+
+    public void SetFreeDisk(long bytes) => Interlocked.Exchange(ref _freeDisk, bytes);
+
+    public ObjectFetcher Create(long freeDisk = long.MaxValue, long minDisk = 0, int pollMs = 5)
+    {
+        SetFreeDisk(freeDisk);
+        return new ObjectFetcher(new TargetRecord("peer-a", "http://peer-a:9000", "ak", "sk"),
             Queue, Transport, Applier, Counters,
-            () => freeDisk,
+            () => Interlocked.Read(ref _freeDisk),
             new ReplicationOptions { DiskFreeMinBytes = minDisk, Parallelism = 1, BackoffMaxSec = 60 },
             TimeProvider.System, NullLogger<ObjectFetcher>.Instance, Metrics,
             diskPoll: TimeSpan.FromMilliseconds(pollMs), backoffBase: TimeSpan.FromMilliseconds(10));
+    }
 
     public void Dispose()
     {
@@ -239,25 +247,65 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
     [Fact]
     public async Task DiskPause_FetchesHalted_ResumeWithSpace()
     {
-        // Arrange — места меньше минимума: фетчи не идут, Paused==true
+        // Arrange — места меньше минимума: фетчи не идут; локальный ключ новее
+        // уведомления → предфильтр skip (без сети); транспорт с исходом после паузы
         _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(Body("v"), 100,
             FakeFetchTransport.Sha(Body("v"))));
         var fetcher = _fixture.Create(freeDisk: 100, minDisk: 1000);
         _fixture.Store.ApplyBucketCreate("bp", DateTimeOffset.FromUnixTimeMilliseconds(100));
-        await _fixture.Store.ApplyObjectAsync("bp", "local-newer", new MemoryStream(Body("newer")), 5,
+        var localBody = Body("newer");
+        await _fixture.Store.ApplyObjectAsync("bp", "local-newer", new MemoryStream(localBody), localBody.Length,
             new ReplicaObjectMetadata(DateTimeOffset.FromUnixTimeMilliseconds(200), "e",
-                FakeFetchTransport.Sha(Body("newer")), "text/plain", new Dictionary<string, string>()),
-            FakeFetchTransport.Sha(Body("newer")), TestContext.Current.CancellationToken);
+                FakeFetchTransport.Sha(localBody), "text/plain", new Dictionary<string, string>()),
+            FakeFetchTransport.Sha(localBody), TestContext.Current.CancellationToken);
+        _fixture.Queue.TryEnqueue(new FetchTask("bp", "local-newer", 100));
 
-        // Act — воркер в фоне; очередь: ключ старее локального → skip-ветка (без сети,
-        // транспорт вызван только после снятия паузы — счётчик fetched отсюда)
+        // Act фаза 1 — воркер в фоне: пауза по месту
         using var cts = new CancellationTokenSource();
         var run = fetcher.RunAsync(cts.Token);
         await Task.Delay(50, TestContext.Current.CancellationToken);
 
-        // Assert — пауза активна, транспорт не вызывался
+        // Assert фаза 1 — пауза активна, транспорт не вызывался
         fetcher.Paused.Should().BeTrue();
         _fixture.Transport.Outcomes.Should().HaveCount(1, "фетчи на паузе — транспорт не тронут");
+
+        // Act фаза 2 — место появилось
+        _fixture.SetFreeDisk(long.MaxValue);
+
+        // Assert фаза 2 — пауза снята, задача из очереди обработана (skip-ветка:
+        // локальная новее — транспорт тоже не нужен, но фазы прошли)
+        await Task.Delay(120, TestContext.Current.CancellationToken);
+        fetcher.Paused.Should().BeFalse("место появилось — фетчи продолжаются");
+
+        cts.Cancel();
+        await run;
+    }
+
+    [Fact]
+    public async Task DiskPause_Resume_AppliesQueuedKey()
+    {
+        // Arrange — пауза, затем место: ключ из очереди применяется (резюм по канону §7)
+        var payload = "resume-body"u8.ToArray();
+        var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(payload, 100, sha));
+        _fixture.Queue.TryEnqueue(new FetchTask("br", "resumed", 100));
+        var fetcher = _fixture.Create(freeDisk: 100, minDisk: 1000);
+
+        using var cts = new CancellationTokenSource();
+        var run = fetcher.RunAsync(cts.Token);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        fetcher.Paused.Should().BeTrue();
+
+        // Act — место появилось
+        _fixture.SetFreeDisk(long.MaxValue);
+        await Task.Delay(150, TestContext.Current.CancellationToken);
+
+        // Assert — пауза снята, ключ из очереди применён с исходным sha
+        fetcher.Paused.Should().BeFalse();
+        var state = _fixture.Store.ReadKeyState("br", "resumed");
+        state.Should().NotBeNull();
+        state!.ContentSha256Hex.Should().Be(sha);
+        _fixture.Counters.AppliedCount.Should().BeGreaterThanOrEqualTo(1);
         cts.Cancel();
         await run;
     }

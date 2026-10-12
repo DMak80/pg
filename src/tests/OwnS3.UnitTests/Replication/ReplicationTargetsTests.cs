@@ -99,6 +99,45 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
     }
 
     [Fact]
+    public void Replace_DuplicateAccessKey_Throws()
+    {
+        // Arrange — два соседа с ОДНИМ accessKey (ревью t35, finding 5: accessKey —
+        // идентификатор источника на приёмнике, общие креды ломают дедуп)
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var withDuplicateKey = new List<TargetRecord>
+        {
+            new("peer-a", "http://a:9000", "shared-key", "s1"),
+            new("peer-b", "http://b:9000", "shared-key", "s2"),
+        };
+
+        // Act
+        var act = () => targets.Replace(withDuplicateKey);
+
+        // Assert
+        act.Should().Throw<ArgumentException>().WithMessage("*shared-key*");
+    }
+
+    [Theory]
+    [InlineData("peer-a:9000")]      // нет схемы
+    [InlineData("ftp://peer-a:9000")] // не http(s)
+    [InlineData("http://")]          // нет host
+    public void Replace_InvalidEndpoint_Throws(string endpoint)
+    {
+        // Arrange — endpoint вне scheme://host:port (ревью t35, finding 13)
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var withBadEndpoint = new List<TargetRecord>
+        {
+            new("peer-x", endpoint, "ak", "sk"),
+        };
+
+        // Act
+        var act = () => targets.Replace(withBadEndpoint);
+
+        // Assert
+        act.Should().Throw<ArgumentException>().WithMessage("*endpoint*");
+    }
+
+    [Fact]
     public void Replace_DuplicateName_Throws()
     {
         // Arrange — замена с дублем имени

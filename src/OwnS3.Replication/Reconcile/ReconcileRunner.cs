@@ -121,7 +121,7 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                 }
                 foreach (var entry in page.Entries)
                 {
-                    processed++;
+                    processed++; // обработан (любой исход — поставлен/skip)
                     var local = store.ReadKeyState(bucket, entry.Key);
                     var localMod = local?.ModTime.ToUnixTimeMilliseconds() ?? -1;
                     // Решение через LWW-компаратор (та же таблица, что у приёмника —
@@ -130,14 +130,21 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                     var (outcome, _) = LwwComparator.Compare(
                         entry.ModTime.ToUnixTimeMilliseconds(), entry.ContentSha256Hex,
                         localMod, local?.ContentSha256Hex ?? string.Empty);
-                    if (outcome == LwwOutcome.IncomingWins)
+                    if (outcome != LwwOutcome.IncomingWins)
+                        continue; // новее/Identical → ничего: наш вариант выиграет (§9)
+                    // fetch-задача в очередь источника (§9; идемпотентно — фетчер
+                    // применит по LWW). Переполнение очереди: маркер НЕ двигается и
+                    // проход приостанавливается — задача не теряется (at-least-once,
+                    // как 429 в inbox); продолжение — следующий триггер/периодический
+                    if (!queues.ForSource(sourceName).TryEnqueue(new FetchTask(bucket, entry.Key,
+                            entry.ModTime.ToUnixTimeMilliseconds())))
                     {
-                        // старее/отсутствует/тай-проигрыш → fetch-задача в очередь
-                        // источника (§9; идемпотентно — фетчер применит по LWW)
-                        queues.ForSource(sourceName).TryEnqueue(new FetchTask(bucket, entry.Key,
-                            entry.ModTime.ToUnixTimeMilliseconds()));
+                        logger.LogWarning(
+                            "Reconcile {Source}: fetch-очередь переполнена — проход приостановлен на {Bucket}/{Key}, маркер сохранён (ретрай следующим проходом)",
+                            sourceName, bucket, entry.Key);
+                        WriteMarker(sourceName, bucket, marker);
+                        return;
                     }
-                    // новее/Identical → ничего: наш вариант выиграет при взаимной доставке (§9)
                 }
                 metrics.SetReconcilePosition(sourceName, processed);
                 marker = page.NextMarker;

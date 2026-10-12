@@ -56,6 +56,37 @@ public sealed class ReplicationAdminScenarios(ReplicationAppFactory factory) :
     }
 
     [Fact]
+    public async Task PutTargets_DuplicateAccessKey_400()
+    {
+        // Arrange — дубль accessKey (ревью t35 finding 5: accessKey — идентификатор
+        // источника на приёмнике, общие креды ломают дедуп (источник, seqNo))
+        var body = """{"targets":[{"name":"dup-a","endpoint":"http://a:9000","accessKey":"same-ak","secretKey":"s1"},{"name":"dup-b","endpoint":"http://b:9000","accessKey":"same-ak","secretKey":"s2"}]}""";
+
+        // Act
+        var response = await Client.SendSignedAsync("PUT", "/admin/replication/targets",
+            payloadString: PayloadHash(body), body: Encoding.UTF8.GetBytes(body),
+            credentials: OwnS3TestClient.Admin());
+
+        // Assert — валидация accessKey → 400 (глава 07 §2)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task PutTargets_InvalidEndpoint_400()
+    {
+        // Arrange — endpoint вне scheme://host:port (ревью t35 finding 13)
+        var body = """{"targets":[{"name":"bad-ep","endpoint":"peer-a:9000","accessKey":"ak","secretKey":"sk"}]}""";
+
+        // Act
+        var response = await Client.SendSignedAsync("PUT", "/admin/replication/targets",
+            payloadString: PayloadHash(body), body: Encoding.UTF8.GetBytes(body),
+            credentials: OwnS3TestClient.Admin());
+
+        // Assert — валидация endpoint → 400 (глава 07 §2)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
     public async Task Status_StructureAndOutcomeCounters()
     {
         // Arrange — восстановить peer-a (кейс PutTargets выше заменил состав на peer-x):

@@ -25,15 +25,4 @@ public sealed class FetchQueue
 
     // Глубина очереди (метрика fetch_queue_depth).
     public int Depth => _channel.Reader.Count;
-
-    // Возраст старейшего ждущего ключа (лаг данных, метрика fetch_lag_seconds); 0 — пуста.
-    public long OldestEnqueuedUnixMs
-    {
-        get
-        {
-            if (_channel.Reader.TryPeek(out var task))
-                return task.NotifiedModMs;
-            return 0;
-        }
-    }
 }
