@@ -41,13 +41,18 @@ public sealed class AddNodeProcess(
 
         // Заявка: ноды NOT_INITIALIZED (могло быть несколько за один тик —
         // доводим по одной за вызов, остальные следующим тиком — одна
-        // docker-мутация за тик).
+        // docker-мутация за тик). PROVISIONING-ноды Active-кластера доводим
+        // ТОЖЕ: надзор (C) идёт в тике раньше D и переводит живой контейнер
+        // PROVISIONING → RUNNING — заявка исчезает из вида, а финал D
+        // (RMW endpoints + config.nodes) остаётся невыполненным. Resume
+        // идемпотентен по факту (arch/24 §5): PlanNode вернёт закреплённый
+        // portalloc-адрес, EnsureNode/health/bucket — no-op/повтор.
         var pending = snap.Nodes
-            .Where(n => n.State == S3NodeStates.NotInitialized)
+            .Where(n => n.State is S3NodeStates.NotInitialized or S3NodeStates.Provisioning)
             .OrderBy(n => n.Node, StringComparer.Ordinal)
             .ToList();
         if (pending.Count == 0)
-            return Result.Success(); // заявок нет — no-op (защита повторного тика)
+            return Result.Success(); // заявок нет — no-op
 
         var node = pending[0];
 
@@ -102,8 +107,10 @@ public sealed class AddNodeProcess(
             return Fail(cluster, node.Node, ensured.Error!, "ensure-node");
 
         // Mini-A фаза 3: health → RUNNING (не ожила — InProgress, тик повторит);
-        // bucket per-install (P3).
-        var health = await nodeClient.HealthAsync(address.Host, address.S3Port, ct);
+        // bucket per-install (P3). Пробы — по advertised-хосту (канон P,
+        // arch/23 §2.1 advertised-правило; размещение — portalloc-хост).
+        var probeHost = options.AdvertisedHost ?? address.Host;
+        var health = await nodeClient.HealthAsync(probeHost, address.S3Port, ct);
         if (!health.IsSuccess || !health.Value)
             return await journal.WritePhaseAsync(cluster, Op, "waiting-node", claims.InstanceId, null, ct);
         var running = await S3ProcessCommon.WriteNodeStateAsync(
@@ -111,7 +118,7 @@ public sealed class AddNodeProcess(
         if (!running.IsSuccess)
             return Fail(cluster, node.Node, running.Error!, "running");
         var bucket = await nodeClient.EnsureBucketAsync(
-            address.Host, address.S3Port, nodeSecrets, options.Bucket, ct);
+            probeHost, address.S3Port, nodeSecrets, options.Bucket, ct);
         if (!bucket.IsSuccess)
             return Fail(cluster, node.Node, bucket.Error!, "ensure-bucket");
 
@@ -228,7 +235,8 @@ public sealed class AddNodeProcess(
                      n.State is null or S3NodeStates.NotInitialized or S3NodeStates.Provisioning or S3NodeStates.Running))
         {
             if (pinned.Value.TryGetValue(node.Node, out var addr))
-                addresses[node.Node] = addr;
+                addresses[node.Node] = new NodeAddress(
+                    options.AdvertisedHost ?? addr.Host, addr.S3Port);
         }
 
         return await S3ProcessCommon.ConvergeTopologyAsync(
