@@ -46,6 +46,14 @@ healthz/metrics/mTLS-API).
    заглушка: 202 Accepted без исполнения, ключи `connectivity`/`sync`
    не пишет; исполнение — t33 (arch/24 §1.1: «эндпоинт канонизируется
    сейчас»).
+4. **Источник `usage` — расширение админ-грани ownS3** (развилка
+   plan-фазы, 2026-10-12): ответ `GET /admin/storage` пополняется
+   дисковыми полями `usedBytes`/`totalBytes` (single-режим — том `/data`;
+   EC-режим — в разрезе сетов/дисков); в зону t32 входят arch-first
+   правка `arch/owns3/05-access-config.md` §7, код
+   `OwnS3.App/AdminHandlers` и тесты OwnS3 (§2.1). S3Worker собирает
+   `usage` ровно как прежде — SigV4 `GET /admin/storage`;
+   требования к S3Worker не меняются.
 
 **Цель задачи**: рабочий сервис S3Worker, исполняющий декларативный
 контракт arch/23/arch/24 процессы A–E (зонд F — контракт t33, в t32 —
@@ -53,10 +61,12 @@ healthz/metrics/mTLS-API).
 journal-before-manipulations по arch/17, поставленный в deploy-контур и
 стенд, покрытый юнит-/интеграционными/E2E-тестами по канонам проекта.
 
-## 2. Arch-first правки (сделаны в этой ветке, источник истины)
+## 2. Arch-first правки (ветка t32, источник истины)
 
-Правки канона выполнены ДО спеки реализации (arch-first); код обязан
-зеркалить обновлённый канон.
+Правки канона, перечисленные ниже, выполнены до спеки реализации; правки
+§2.1/§2.2 фиксируются спекой и выполняются в этой ветке первыми шагами
+реализации (arch-first: до зависящего кода). Код обязан зеркалить
+обновлённый канон.
 
 - [`arch/23-s3-clusters.md`](../../../arch/23-s3-clusters.md):
   - §2 `config`: `platform` — единственное значение `"owns3"`
@@ -93,12 +103,59 @@ journal-before-manipulations по arch/17, поставленный в deploy-к
 - [`arch/roadmap/README.md`](../../../arch/roadmap/README.md): строка
   трека s3 — «кластеры ownS3 … mesh-репликация (t35) …».
 
+### 2.1. Точечное расширение зоны: дисковые поля админ-грани ownS3
+
+Решение пользователя (§1 п. 4): источник `usage` для S3Worker — сама
+админ-грань ownS3, грань расширяется в t32 (arch-first, правка — первый
+шаг реализации, до кода грани):
+
+- **`arch/owns3/05-access-config.md` §7** (arch-правка): ответ
+  `GET /admin/storage` дополняется дисковыми полями
+  `usedBytes`/`totalBytes` — single-режим: верхнего уровня по тому
+  данных (`/data`); EC-режим: в разрезе сетов/дисков (точный формат
+  EC-разреза фиксирует arch-правка). Существующие поля ответа
+  (`mode`/`sets`/`heal`, camelCase) сохраняются — грань расширяется,
+  обратной поломки нет.
+- **Код**: `src/OwnS3.App/Handlers/AdminHandlers.cs` — дисковые поля в
+  обоих режимах (источник данных EC-разреза — реализация плана по
+  факту контракта arch-правки).
+- **Тесты**: `src/tests/OwnS3.IntegrationTests/Api/AdminScenarios.cs`
+  (single + EC) — поля присутствуют и согласованы с фактическим томом.
+
+Требования к S3Worker не меняются: usage-сбор остаётся SigV4
+`GET /admin/storage` (§4/§5); маппинг ответа грани в формат etcd-ключа
+`nodes/node<k>/usage` (`{"used_bytes","total_bytes","updated_unix"}`,
+arch/23 §2.1) — на стороне S3Worker.
+
+### 2.2. Точечное расширение зоны: актуализация `config.nodes` воркером
+
+Решение по итогам plan-ревью (Фаза 4, категория contract): воркер
+актуализирует поле `nodes` в `config` при изменении состава кластера —
+процессы D (AddNode) и E (RemoveNode) доводят `config.nodes` до
+фактического числа нод, txn по `mod_revision` (тот же паттерн, что снятие
+`state` в P5). Без актуализации панель (t34) после AddNode/RemoveNode
+видит устаревшее плановое число нод.
+
+- **`arch/23-s3-clusters.md` §2** (arch-правка, выполняется до кода
+  процессов D/E — фаза 7 §12): графа «Пишет» ключа `config`
+  дополняется — воркер «снимает `state`, актуализирует `nodes` при
+  изменении состава (D/E), txn по `mod_revision`»; той же правкой
+  согласовывается примечание поля `nodes`: плановое число нод при
+  создании (заявка панели), после D/E — поддерживается воркером равным
+  фактическому составу.
+- Реализация: процессы D/E (§5) — RMW `endpoints` + актуализация
+  `config.nodes` в одном завершающем окне процесса, txn по
+  `mod_revision`; идемпотентно по факту (`nodes` уже равен фактическому
+  составу — no-op).
+
 **Не трогается** (вне зоны t32): `docs/s3-replication.md` и
 `docs/owns3-replication-requirements.md` (справочники фактов/требований);
 `arch/adminpanel/*` и сервис `as-minio` стенда (переходный read-only-архив
 бэкапов, история `docs/owns3-migration.md` — не кластерный трек);
-`arch/22`/`arch/owns3/*` (домен ownS3); `arch/19` (bucket per-install уже
-канонизирован).
+`arch/22`; `arch/19` (bucket per-install уже канонизирован); домен ownS3
+(`arch/owns3/*`, код и тесты OwnS3) — **кроме точечного исключения §2.1**
+(правка owns3/05 §7 + `OwnS3.App/AdminHandlers` + тесты AdminScenarios);
+прочие главы `arch/owns3/*` и остальной код OwnS3 — вне зоны.
 
 ## 3. Принципы
 
@@ -138,6 +195,13 @@ ValkeyWorker/KafkaWorker:
 | `src/S3Worker.Docker` | `ClusterDriver` над `Shared.Docker`: создание/снос контейнеров `s3w-<C>-node<k>` и volumes `s3w-<C>-node<k>-data`, инспекция (положительное свидетельство S7), порт-публикации |
 | `src/S3Worker.Provisioning` | процессы A–E (§5 ниже), `PlacementResolver` (arch/23 §4), `PortAllocIndex`/`PortAllocHealer` (t90-паттерн, образцы ValkeyWorker), `SecretProfileStore` (env `S3W_NODE_SECRETS__<PROFILE>__*`), ротация секретов |
 | `src/S3Worker.App` | `Program` (DI, fail-fast валидации), `Options` (arch/24 §8), Loops (`ReconcileLoop` тик 5 с, `KeepaliveLoop`), `Api/Operations` (7 эндпоинтов §6), `TlsEndpoints` (mTLS-грань), healthz, метрики `s3worker_*` |
+
+Точечное расширение ownS3 (зона t32 — §2.1): код
+`src/OwnS3.App/Handlers/AdminHandlers.cs` — дисковые поля
+`usedBytes`/`totalBytes` в ответе `GET /admin/storage` (single —
+верхнего уровня по тому `/data`; EC — в разрезе сетов/дисков); тесты —
+`src/tests/OwnS3.IntegrationTests/Api/AdminScenarios.cs` (single + EC).
+Прочий код и главы ownS3 не затрагиваются.
 
 Поставка и инфраструктура:
 
@@ -209,7 +273,8 @@ X2 docker: снос контейнеров и volumes на всех хостах
 - недоступная нода (проба молчит дольше `NodeDeadSec`) →
   `state=UNREACHABLE` + ретраи тиками; деструктивных действий по факту
   «не отвечает» нет;
-- сбор `usage` (`HealthIntervalSec`): `GET /admin/storage` ownS3 →
+- сбор `usage` (`HealthIntervalSec`): SigV4 `GET /admin/storage` ownS3
+  (дисковые поля ответа — §2.1) → маппинг в
   `{"used_bytes","total_bytes","updated_unix"}` в
   `nodes/node<k>/usage`;
 - слепая проба (docker-хост молчит) — никаких действий;
@@ -221,16 +286,18 @@ X2 docker: снос контейнеров и volumes на всех хостах
 ### D. AddNodeProcess
 
 Заявка (`nodes/node<max+1>/state=NOT_INITIALIZED`): подъём по A
-(placement/portalloc/volume/контейнер/bucket) + RMW `endpoints`; финал —
-`state=RUNNING`. Mesh+backfill — с t35.
+(placement/portalloc/volume/контейнер/bucket) + RMW `endpoints` +
+актуализация `config.nodes` до фактического числа нод (txn по
+`mod_revision`, §2.2); финал — `state=RUNNING`. Mesh+backfill — с t35.
 
 ### E. RemoveNodeProcess
 
 Маркер `state=TO_REMOVE`: гварды (не последняя нода кластера; при
 мёртвых остальных — нет живой RUNNING-ноды кроме выводимой — отказ
 фазы) → остановка/снос контейнера и volume → чистка ключей ноды и
-записи portalloc → RMW `endpoints`. До t35 репликации нет — объекты
-выводимой ноды теряются (risk R1, осознан).
+записи portalloc → RMW `endpoints` + актуализация `config.nodes` до
+фактического числа нод (txn по `mod_revision`, §2.2). До t35 репликации
+нет — объекты выводимой ноды теряются (risk R1, осознан).
 
 ### Ротация секретов
 
@@ -407,31 +474,48 @@ docker-логи/inspect и host.log в `/tmp/pgw-e2e-artifacts-<guid>/` ДО
 docker-E2E на свежем Release; для t32 — полный прогон E2E-серии
 S3Worker (задача создаёт новую серию).
 
+### OwnS3 (расширение админ-грани — §2.1)
+
+- `Api/AdminScenarios` (single + EC): ответ `GET /admin/storage` содержит
+  дисковые поля `usedBytes`/`totalBytes` (single — верхнего уровня; EC —
+  per set/drive по формату arch-правки), значения согласованы с
+  фактическим томом; прежние поля (`mode`/`sets`/`heal`) не сломаны.
+- Юниты `OwnS3.UnitTests` — если правка затронет контракт провайдера
+  статуса EC (по факту плана).
+
 ## 12. Фазы работ
 
 1. **Arch-правки** — выполнены (§2): arch/23, arch/24, roadmap/s3.md,
    roadmap/README.md.
-2. **Каркас**: проекты S3Worker.{Core,Etcd,Docker,Provisioning,App} в
+2. **Админ-грань ownS3 — дисковые поля** (§2.1; arch-first порядок):
+   правка `arch/owns3/05-access-config.md` §7 → код
+   `OwnS3.App/AdminHandlers` (single: том `/data`; EC: по сетам/дискам)
+   → тесты OwnS3 (AdminScenarios single + EC).
+3. **Каркас**: проекты S3Worker.{Core,Etcd,Docker,Provisioning,App} в
    slnx; Options + fail-fast валидации старта; Program/DI; координация
    (ClaimStore/PortAllocLock/WorkJournal — Shared.Etcd, префикс
    `/s3worker`); mTLS-грань + healthz + метрики; Loops (ReconcileLoop
    тик, Keepalive, Watchdog).
-3. **Чтение домена**: `S3SnapshotParser` (юниты на канонических
+4. **Чтение домена**: `S3SnapshotParser` (юниты на канонических
    примерах arch/23 §2.1).
-4. **Docker-слой**: ClusterDriver, PlacementResolver, PortAllocIndex/
+5. **Docker-слой**: ClusterDriver, PlacementResolver, PortAllocIndex/
    Healer (+юниты/интеграция).
-5. **Клиент ownS3**: health/bucket/usage (+юниты на моках, контракты
-   таймаутов).
-6. **Процессы**: A → C → B → D → E → ротация → resources-мутация
-   (+юниты; интеграционные прогоняет реальный контур).
-7. **HTTP API**: 7 эндпоинтов, валидации, компенсации (+интеграционные
+6. **Клиент ownS3**: health/bucket/usage (+юниты на моках, контракты
+   таймаутов); usage-клиент опирается на формат грани §2.1.
+7. **Процессы**: arch-правка §2.2 (`arch/23` §2: воркер актуализирует
+   `nodes` в `config` при D/E, txn по `mod_revision`) — до кода D/E;
+   далее A → C → B → D → E → ротация → resources-мутация (+юниты;
+   интеграционные прогоняет реальный контур).
+8. **HTTP API**: 7 эндпоинтов, валидации, компенсации (+интеграционные
    API-тесты).
-8. **Поставка**: Dockerfile, deploy compose ×2, .env.example.
-9. **Стенд**: 00-up.sh, dev-stand compose, чек.
-10. **E2E**: фикстура + сценарии §11; мерж-гейт — свежий Release.
+9. **Поставка**: Dockerfile, deploy compose ×2, .env.example.
+10. **Стенд**: 00-up.sh, dev-stand compose, чек.
+11. **E2E**: фикстура + сценарии §11; мерж-гейт — свежий Release.
 
-Порядок фаз 2–7 допускает перестановку внутри слоя при сохранении
-«юниты раньше интеграции»; фазы 8–10 — после устойчивых процессов.
+Порядок фаз 3–8 допускает перестановку внутри слоя при сохранении
+«юниты раньше интеграции»; фаза 2 выполняется до фазы 6 (usage-клиент
+читает формат грани §2.1), arch-правка §2.2 — до кода процессов D/E
+(внутри фазы 7); фазы 9–11 — после устойчивых процессов.
 
 ## 13. Ограничения и границы (что НЕ входит в t32)
 
@@ -447,6 +531,9 @@ S3Worker (задача создаёт новую серию).
   декларация + наблюдение `usage`; алерты — t34.
 - **MinIO** — платформа снята с канона (§2); кластеров minio не
   существует.
+- Касание домена ownS3 в t32 — только расширение §2.1 (owns3/05 §7 +
+  AdminHandlers + AdminScenarios); прочие изменения домена ownS3 — вне
+  зоны.
 
 ## 14. Критерии приёмки
 
@@ -454,31 +541,38 @@ S3Worker (задача создаёт новую серию).
    `/s3/`, `/s3worker/` — форматы arch/23 §2/§8 (канонические примеры
    §2.1 — критерий приёмки парсеров); `/s3/` и `/s3worker/` пишет
    только S3Worker (панель/ сиды — через API).
-2. Заявка `POST /api/s3/clusters` (platform=owns3, N 1..9, валидные
+2. Админ-грань ownS3 (§2.1): arch-правка owns3/05 §7 выполнена ДО кода
+   грани; `GET /admin/storage` отвечает дисковыми полями
+   `usedBytes`/`totalBytes` в обоих режимах (single — верхнего уровня,
+   том `/data`; EC — в разрезе сетов/дисков); тесты OwnS3
+   (AdminScenarios single + EC) зелёные; требования к usage-сбору
+   S3Worker не изменились (SigV4 `GET /admin/storage` → маппинг в
+   формат arch/23 §2.1).
+3. Заявка `POST /api/s3/clusters` (platform=owns3, N 1..9, валидные
    placement/resources/secret_profile) → кластер доезжает до Active:
    `config` без `state`, ноды `RUNNING`, `endpoints` записаны,
    bucket per-install существует на каждой ноде.
-3. Все операции идемпотентны: повторный тик/повторный запрос — no-op
+4. Все операции идемпотентны: повторный тик/повторный запрос — no-op
    по факту; прерывание процесса между фазами — доводка ретраем тика
    по journal-фазе (проверено E2E-сценарием прерывания/takeover).
-4. Takeover: смерть инстанса-держателя → продолжение вторым инстансом
+5. Takeover: смерть инстанса-держателя → продолжение вторым инстансом
    ≤ TTL 15 с + тик; двойной контроллер невозможен (клэймы).
-5. Deprovision (`TO_REMOVE`) и RemoveNode оставляют чистые etcd и
+6. Deprovision (`TO_REMOVE`) и RemoveNode оставляют чистые etcd и
    docker (контейнеры, volumes, portalloc) — ассерт чистоты E2E.
-6. Надзор: снесённый контейнер пересоздаётся на `placed_on` с
+7. Надзор: снесённый контейнер пересоздаётся на `placed_on` с
    сохранением volume; молчащая нода → `UNREACHABLE` (деструктива нет);
    `usage` обновляется периодически.
-7. Секреты: значения профилей не появляются в etcd, логах, журнале,
+8. Секреты: значения профилей не появляются в etcd, логах, журнале,
    метриках; ротация — rolling, заявка гасится по завершении.
-8. API-валидации: name/platform/nodes/placement/resources/
+9. API-валидации: name/platform/nodes/placement/resources/
    secret_profile → 400/422 по §6; sync-probe → 202 (no-op).
-9. Стенд: полный подъём `00-up.sh` поднимает s3worker×2; чек
-   s3worker зелёный; deploy compose соответствует правилам поставки
-   (docker.sock, TLS-volume, уникальные порты/AdvertiseUrl).
-10. E2E-серия §11 зелёная на свежем Release (мерж-гейт), с полной
+10. Стенд: полный подъём `00-up.sh` поднимает s3worker×2; чек
+    s3worker зелёный; deploy compose соответствует правилам поставки
+    (docker.sock, TLS-volume, уникальные порты/AdvertiseUrl).
+11. E2E-серия §11 зелёная на свежем Release (мерж-гейт), с полной
     самоочисткой и телеметрией по e2e-launch/e2e-isolation; серии
     прогонов не оставляют осиротевших сетей/контейнеров.
-11. `TreatWarningsAsErrors=true` — сборка без предупреждений;
+12. `TreatWarningsAsErrors=true` — сборка без предупреждений;
     `BrokerBootSec`-аналоги (NodeBootSec ≤ 100 с) в фикстурах.
 
 ## 15. Риски
