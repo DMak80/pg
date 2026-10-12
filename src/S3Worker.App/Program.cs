@@ -70,6 +70,13 @@ builder.Services.AddOptions<S3WorkerOptions>()
         "S3Worker:Docker:PortRange: 0 < From < To ≤ 65535")
     .ValidateOnStart();
 
+// env-профили секретов нод (arch/23 §6): читатель + fail-fast полупар
+// (arch/24 §8 «неполные секретные пары») — воркер с обрезанным env не стартует.
+var secretStore = new S3Worker.Provisioning.SecretProfileStore();
+foreach (var broken in secretStore.ValidateEnvPairs())
+    throw new ApplicationException($"S3W_NODE_SECRETS__{broken}: неполная секретная пара");
+builder.Services.AddSingleton(secretStore);
+
 // Управляемый серт API (arch/24 §1.1): чтение ключа /workers/api_tls/s3worker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
 var etcdEndpoints = builder.Configuration.GetSection("S3Worker:Etcd:Endpoints").Get<string[]>() ?? [];
