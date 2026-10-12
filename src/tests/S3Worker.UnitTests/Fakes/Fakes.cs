@@ -205,4 +205,43 @@ internal static class Fakes
             }
         }
     }
+
+    /// <summary>
+    /// Драйвер-дублёр (порт FakeDriver valkey, срез для healer/E9 и процессов):
+    /// имя объекта s3w-&lt;C&gt;-node&lt;k&gt; → факт инспекта; флаги сбоев — слепота.
+    /// </summary>
+    internal sealed class FakeS3Driver : S3Worker.Docker.Drivers.IS3ClusterDriver
+    {
+        public sealed record NodeFact(string Host, int S3HostPort, bool Running = true);
+
+        public readonly Dictionary<string, NodeFact> Nodes = [];
+
+        public bool InspectFault { get; set; }
+
+        public int S3ContainerPort => 9000;
+
+        public Task<Result<S3Worker.Docker.Drivers.S3NodeInspection?>> InspectNodeAsync(
+            string cluster, string node, CancellationToken ct)
+        {
+            if (InspectFault)
+                return Task.FromResult(Result<S3Worker.Docker.Drivers.S3NodeInspection?>.Failed(
+                    new ApplicationException("docker-хост молчит")));
+
+            return Task.FromResult(Result<S3Worker.Docker.Drivers.S3NodeInspection?>.Success(
+                Nodes.TryGetValue($"{cluster}/{node}", out var f)
+                    ? new S3Worker.Docker.Drivers.S3NodeInspection(f.Host, f.S3HostPort, f.Running)
+                    : null));
+        }
+
+        // Остальные члены гранцы — вне сценариев текущих тестов.
+        private static NotImplementedException NotUsed() => new("драйвер-дублёр: маршрут вне сценария теста");
+
+        public Task<Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>> GetHostsAsync(CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotUsed();
+        public Task<Result> EnsureNodeAsync(S3Worker.Docker.Drivers.S3NodeSpec spec, string? contourNetwork, CancellationToken ct) => throw NotUsed();
+        public Task<Result> RemoveNodeAsync(string cluster, string node, bool removeVolume, CancellationToken ct) => throw NotUsed();
+        public Task<Result<Shared.Docker.NodeLimits?>> NodeResourcesAsync(string cluster, string node, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string node, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotUsed();
+    }
 }
