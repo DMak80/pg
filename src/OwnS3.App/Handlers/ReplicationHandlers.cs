@@ -11,10 +11,12 @@ using OwnS3.Storage;
 namespace OwnS3.App.Handlers;
 
 // Replication-грань (t35, глава 07 §6): приём уведомлений, фетч-отдача, листинг.
-// Вызов — из S3Middleware ПОСЛЕ аутентификации SigV4 и проверки политики строго
-// Replication; sourceName резолвится middleware'ом по accessKey подписи из targets.
+// Вызов — из S3Middleware ПОСЛЕ аутентификации (SigV4 или peer-схема OWNS3-PEER, t39)
+// и проверки политики/состава; sourceName резолвится middleware'ом (accessKey —
+// legacy-ветка, имя из Credential — key-ветка). Входящий join — HandleJoinAsync.
 public sealed class ReplicationHandlers(ReplicationTargets targets, NotificationInbox inbox,
-    IReplicaStore store, TombstoneStore tombstones, string hostId, ILogger<ReplicationHandlers> logger)
+    IReplicaStore store, TombstoneStore tombstones, string hostId, ILogger<ReplicationHandlers> logger,
+    JoinPeerService joinService)
 {
 
     private static readonly JsonSerializerOptions Json = ReplicationTransportJson.Options;
@@ -182,4 +184,90 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
         sourceName = match?.Name ?? string.Empty;
         return match is not null;
     }
+
+    // Резолв key-пира по имени из Credential (t39, глава 07 §6): запись состава
+    // с этим именем и auth=key; отсутствует/не key → false (грань ответит 403).
+    public bool TryResolvePeer(string name, out TargetRecord target)
+    {
+        targets.TryGet(name, out var found);
+        target = found!;
+        return found is { Auth: TargetRecord.AuthKey };
+    }
+
+    // POST /replication/join (t39, глава 07 §2/spec §4.4): входящая сторона handshake —
+    // до-join аутентификация по сертификату X-OwnS3-Peer-Certificate и подписи запроса
+    // (JoinPeerService.HandleIncoming); 200 {name, advertisedEndpoint, certificate} с
+    // заголовком X-OwnS3-Peer-Signature (тело — та же строка, что подписана) |
+    // 403 (отказ trust/CA/deny/подписи) | 409 (конфликт имени) | 400 (malformed).
+    public async Task HandleJoinAsync(HttpContext context, string requestId, string? errorHostId)
+    {
+        // Модель — та же сборка, что в middleware (сырой путь/регистронезависимые
+        // заголовки); тело верификатор не читает (хэш — из заголовка схемы).
+        var joinModel = S3ModelFactory.Create(context);
+        var certificateHeader = context.Request.Headers["X-OwnS3-Peer-Certificate"].FirstOrDefault();
+        if (string.IsNullOrEmpty(certificateHeader))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new { error = "X-OwnS3-Peer-Certificate header required" },
+                context.RequestAborted);
+            return;
+        }
+        JoinRequestBody? body;
+        try
+        {
+            body = await JsonSerializer.DeserializeAsync<JoinRequestBody>(context.Request.Body, Json,
+                context.RequestAborted);
+        }
+        catch (JsonException)
+        {
+            body = null;
+        }
+        if (string.IsNullOrWhiteSpace(body?.AdvertisedEndpoint))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new { error = "malformed join body" }, context.RequestAborted);
+            return;
+        }
+
+        var outcome = joinService.HandleIncoming(joinModel, certificateHeader, body.AdvertisedEndpoint);
+        if (outcome.IsSuccess)
+        {
+            var accept = outcome.Value;
+            // Тело ответа — та же строка, что подписана в HandleIncoming: стабильная
+            // camelCase-сериализация с тем же порядком полей, что JoinResponseBody.
+            var responseBody = JsonSerializer.Serialize(
+                new { name = accept.Name, advertisedEndpoint = accept.AdvertisedEndpoint,
+                    certificate = accept.CertificateBase64 }, Json);
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.Headers["X-OwnS3-Peer-Signature"] = accept.SignatureBase64;
+            await context.Response.WriteAsync(responseBody, context.RequestAborted);
+            return;
+        }
+        switch (outcome.Error)
+        {
+            case JoinRefusedException refused:
+                // Отказ проверки подписи запроса — код каталога подписи (глава 07 §6:
+                // SignatureDoesNotMatch/RequestTimeTooSkewed/…, XML-ответ); прочие причины
+                // отказа (trust/CA/deny) — AccessDenied в том же XML-формате грани.
+                var code = refused.ErrorCode ?? OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/xml";
+                await context.Response.WriteAsync(OwnS3.Protocol.Xml.S3ErrorXmlWriter.Write(
+                    new OwnS3.Protocol.Xml.S3Error(code, Resource: context.Request.Path,
+                        RequestId: requestId, HostId: errorHostId, MessageOverride: refused.Message)),
+                    context.RequestAborted);
+                return;
+            case JoinConflictException conflict:
+                // Конфликт имени (другой публичный ключ) — 409 JSON (стиль join-контрактов).
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                await context.Response.WriteAsJsonAsync(new { error = conflict.Message }, context.RequestAborted);
+                return;
+            default:
+                // Неожиданный тип отказа — прежний путь catch-all middleware (500 XML).
+                throw outcome.Error!;
+        }
+    }
+
+    // Тело входящего join-запроса (глава 07 §2).
+    private sealed record JoinRequestBody(string AdvertisedEndpoint);
 }

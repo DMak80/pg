@@ -220,13 +220,30 @@ builder.Services.AddSingleton<OwnS3.Replication.IReplicationEventSink>(sp =>
         sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
         sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
         sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
+// PeerAuth-контур (t39, глава 07 §2): identity/trust — материал env каждого старта;
+// значение вычисляет fail-fast-блок ПОСЛЕ Build (замыкание, как tlsCert) — до того
+// обе стороны join/peer-подписи исходящих неактивны (null = Existing-регресс).
+OwnS3.Replication.PeerIdentity? peerIdentity = null;
+OwnS3.Protocol.PeerAuth.PeerTrustAnchor? peerTrust = null;
+// DenyList — локальный список отзыва (.owns3.sys/replication/denylist.json, глава 07 §2):
+// каталог создаётся при первой записи — identity без соседей каталог не трогает.
+builder.Services.AddSingleton(sp => new OwnS3.Replication.DenyList(
+    Path.Combine(ReplicationSysDir(sp), "denylist.json"), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new OwnS3.Replication.JoinPeerService(
+    peerIdentity, peerTrust,
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    sp.GetRequiredService<OwnS3.Replication.DenyList>(),
+    new HttpClient(), sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<OwnS3.Replication.JoinPeerService>>(),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.AdvertisedEndpoint));
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
-    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>()));
+    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>(),
+    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>()));
 
 // Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
 // (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.
