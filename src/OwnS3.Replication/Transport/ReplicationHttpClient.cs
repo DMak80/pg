@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
@@ -106,6 +107,39 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         var response = JsonSerializer.Deserialize<ReplicationBucketsResponse>(payload, ReplicationTransportJson.Options)
             ?? new ReplicationBucketsResponse([]);
         return response.Buckets.Select(b => (b.Name, b.CreationDateUnixMs)).ToList();
+    }
+
+    // GET /replication/ping (глава 07 §2/§6): лёгкая подписанная проба линка.
+    // rtt — от старта запроса до статус-строки (ResponseHeadersRead); per-target
+    // таймаут — linked CTS поверх общего таймаута HttpClient 10 с (глава 07 §2).
+    public async Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            using var request = BuildRequest(target, HttpMethod.Get, "/replication/ping", "",
+                payload: null, payloadHash: null);
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                timeoutCts.Token);
+            sw.Stop();
+            // reachable строго при валидном 200 ping-грани (глава 07 §2);
+            // rttMs фиксируется при любом HTTP-ответе (включая не-200)
+            return new PingResult(response.StatusCode == HttpStatusCode.OK,
+                (long)sw.Elapsed.TotalMilliseconds);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Per-target таймаут probe — HTTP-ответа нет, rttMs отсутствует
+            return new PingResult(false, null);
+        }
+        catch (HttpRequestException)
+        {
+            // Транспортный обрыв (connection refused/DNS) — rttMs отсутствует
+            return new PingResult(false, null);
+        }
+        // Отмена внешнего ct — OperationCanceledException пробрасывается вызывающему
     }
 
     // ── внутренняя механика ──
