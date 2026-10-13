@@ -222,4 +222,97 @@ public sealed class ReplicationAdminScenarios(ReplicationAppFactory factory) :
                 .StatusCode.Should().Be(HttpStatusCode.Forbidden);
         }
     }
+
+    [Fact]
+    public async Task Probe_NoTargets_Inactive200()
+    {
+        // Arrange — чистый хост без соседей (базовая фабрика: targets пуст)
+        using var factory = new OwnS3AppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await client.SendSignedAsync("POST", "/admin/replication/probe",
+            payloadString: PayloadHash(string.Empty), credentials: OwnS3TestClient.Admin());
+
+        // Assert — осмысленный «соседей нет», не ошибка (глава 07 §2)
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+        json.GetProperty("active").GetBoolean().Should().BeFalse();
+        json.GetProperty("targets").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Probe_UnreachableNeighbors_FalseWithoutRtt()
+    {
+        // Arrange — собственный хост: все соседи фабрики недостижимы (127.0.0.1:9),
+        // per-target таймаут занижен до 200 мс
+        using var factory = new ReplicationProbeFastAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await client.SendSignedAsync("POST", "/admin/replication/probe",
+            payloadString: PayloadHash(string.Empty), credentials: OwnS3TestClient.Admin());
+
+        // Assert — 200; active=true (соседи в составе); все reachable=false БЕЗ rttMs
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+        json.GetProperty("active").GetBoolean().Should().BeTrue();
+        var targets = json.GetProperty("targets").EnumerateArray().ToList();
+        targets.Should().HaveCount(3);
+        foreach (var target in targets)
+        {
+            target.GetProperty("name").GetString().Should().NotBeNullOrEmpty();
+            target.GetProperty("reachable").GetBoolean().Should().BeFalse();
+            target.TryGetProperty("rttMs", out _).Should().BeFalse(
+                "таймаут/обрыв транспорта — rttMs отсутствует (глава 07 §2)");
+        }
+    }
+
+    [Fact]
+    public async Task Probe_TargetFilter_Single_UnknownTarget_400()
+    {
+        // Arrange — собственный хост с сид-составом фабрики (peer-a/b/c)
+        using var factory = new ReplicationAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act — фильтр ровно одного соседа
+        var single = await client.SendSignedAsync("POST", "/admin/replication/probe?target=peer-b",
+            payloadString: PayloadHash(string.Empty), credentials: OwnS3TestClient.Admin());
+
+        // Assert — один исход, имя запрошенного соседа (сосед недостижим — не важно:
+        // кейс про форму фильтра, не про достижимость)
+        single.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = JsonDocument.Parse(
+            await single.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+        json.GetProperty("active").GetBoolean().Should().BeTrue();
+        json.GetProperty("targets").EnumerateArray().Should().ContainSingle()
+            .Which.GetProperty("name").GetString().Should().Be("peer-b");
+
+        // Act — имя не из состава
+        var unknown = await client.SendSignedAsync("POST", "/admin/replication/probe?target=ghost",
+            payloadString: PayloadHash(string.Empty), credentials: OwnS3TestClient.Admin());
+
+        // Assert — 400 с пояснением в JSON (глава 07 §2)
+        unknown.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await unknown.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("ghost");
+    }
+
+    [Fact]
+    public async Task Probe_NonAdmin_403()
+    {
+        // Act / Assert — replication-ключ и writer на probe → 403 (A13-зеркало;
+        // 403 даёт конвейер admin-ветки до хендлера — состав роли не играет)
+        foreach (var creds in new[]
+                 {
+                     new OwnS3TestClient.Credentials(OwnS3AppFactory.ReplicationAccessKey,
+                         OwnS3AppFactory.ReplicationSecretKey),
+                     OwnS3TestClient.Writer(),
+                 })
+            (await Client.SendSignedAsync("POST", "/admin/replication/probe",
+                payloadString: PayloadHash(string.Empty), credentials: creds))
+                .StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
 }

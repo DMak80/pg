@@ -66,6 +66,20 @@ public sealed class ReplicationSmallQueueAppFactory : ReplicationAppFactory
     }
 }
 
+// Фабрика с заниженным probe-таймаутом: недостижимые соседи 127.0.0.1:9
+// закрываются за 200 мс — быстрый тест-таймаут (глава 07 §2/§11).
+public sealed class ReplicationProbeFastAppFactory : ReplicationAppFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["OwnS3:Replication:ProbeTimeoutMs"] = "200",
+        }));
+    }
+}
+
 // Replication-грань (t35, глава 07 §6): приём уведомлений (дедуп/LWW-предфильтр/429),
 // фетч-отдача (заголовки/tombstone/404), листинг (пагинация), изоляция политик (A13).
 public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClassFixture<ReplicationAppFactory>

@@ -54,6 +54,7 @@ foreach (var (env, key) in new[]
              ("OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS", "OwnS3:Replication:TombstoneRetentionHours"),
              ("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS", "OwnS3:Replication:ReconcileIntervalSeconds"),
              ("OWNS3_REPLICATION_FETCH_QUEUE_MAX", "OwnS3:Replication:FetchQueueMax"),
+             ("OWNS3_REPLICATION_PROBE_TIMEOUT_MS", "OwnS3:Replication:ProbeTimeoutMs"),
          })
 {
     var value = Environment.GetEnvironmentVariable(env);
@@ -224,7 +225,13 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
 
-// Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report
+// Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
+// (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.
+builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationProber(
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    ReplicationTransportFactory(sp),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
+// Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report/probe
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
@@ -233,7 +240,8 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandl
     sp.GetRequiredService<OwnS3.Replication.Inbound.FetchQueueRegistry>(),
     sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
-    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
+    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>()));
 
 // Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
 // обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —

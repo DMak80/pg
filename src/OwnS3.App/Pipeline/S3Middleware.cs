@@ -72,7 +72,8 @@ public sealed class S3Middleware(
                         var isAdminRepl = replAdminPath is "/admin/replication/targets"
                             or "/admin/replication/status"
                             or "/admin/replication/reconcile"
-                            or "/admin/replication/sync-report";
+                            or "/admin/replication/sync-report"
+                            or "/admin/replication/probe";
                         if (!isAdminRepl)
                         {
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
@@ -106,6 +107,8 @@ public sealed class S3Middleware(
                             await replicationAdminHandlers.HandleReconcileAsync(context);
                         else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/sync-report")
                             await replicationAdminHandlers.HandleSyncReportAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/probe")
+                            await replicationAdminHandlers.HandleProbeAsync(context);
                         else
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
                                 Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
