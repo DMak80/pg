@@ -67,15 +67,24 @@ public sealed class S3Middleware(
                 if (context.Request.Path.StartsWithSegments("/admin"))
                 {
                     // Mesh-репликация (t35, глава 07 §2/§10): те же права admin/root;
-                    // replication-ключ на админ-грани → 403 (A13-зеркало)
+                    // replication-ключ на админ-грани → 403 (A13-зеркало).
+                    // Маршрутизация (t39): ресурсы списком + хвостовые сегменты
+                    // targets/{name} и denylist/{name} (DELETE) — остальное 400.
                     if (context.Request.Path.StartsWithSegments("/admin/replication"))
                     {
-                        var replAdminPath = context.Request.Path.Value;
+                        var replAdminPath = context.Request.Path.Value ?? string.Empty;
+                        var replAdminSegments = replAdminPath.Length > "/admin/replication/".Length
+                            ? replAdminPath["/admin/replication/".Length..].Split('/')
+                            : [];
                         var isAdminRepl = replAdminPath is "/admin/replication/targets"
                             or "/admin/replication/status"
                             or "/admin/replication/reconcile"
                             or "/admin/replication/sync-report"
-                            or "/admin/replication/probe";
+                            or "/admin/replication/probe"
+                            or "/admin/replication/join"
+                            or "/admin/replication/denylist"
+                            || (HttpMethods.IsDelete(method)
+                                && replAdminSegments is ["targets", _] or ["denylist", _]);
                         if (!isAdminRepl)
                         {
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
@@ -103,6 +112,15 @@ public sealed class S3Middleware(
                         }
                         if (HttpMethods.IsPut(method) && replAdminPath == "/admin/replication/targets")
                             await replicationAdminHandlers.HandlePutTargetsAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/join")
+                            await replicationAdminHandlers.HandleJoinTriggerAsync(context);
+                        else if (HttpMethods.IsDelete(method) && replAdminSegments is ["targets", var targetName])
+                            await replicationAdminHandlers.HandleDeleteTargetAsync(context, targetName,
+                                context.Request.Query["revoke"] == "true");
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/denylist")
+                            await replicationAdminHandlers.HandleDenyListAsync(context);
+                        else if (HttpMethods.IsDelete(method) && replAdminSegments is ["denylist", var denyName])
+                            await replicationAdminHandlers.HandleDenyRemoveAsync(context, denyName);
                         else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/status")
                             await replicationAdminHandlers.HandleStatusAsync(context);
                         else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/reconcile")

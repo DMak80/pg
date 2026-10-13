@@ -252,6 +252,7 @@ builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationProber(
     ReplicationTransportFactory(sp),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
 // Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report/probe
+// (+ t39: join/delete/denylist)
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
@@ -261,7 +262,10 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandl
     sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
-    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>()));
+    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>(),
+    sp.GetRequiredService<OwnS3.Replication.DenyList>(),
+    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>(),
+    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationAdminHandlers>>()));
 
 // Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
 // обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —
