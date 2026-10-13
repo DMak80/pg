@@ -160,7 +160,7 @@ public sealed class S3Middleware(
                 // 21 операций: аутентификация SigV4 тем же конвейером (S3Operation.None),
                 // политика строго AccessPolicy.Replication (иначе 403 AccessDenied, включая
                 // admin/root — A13), sourceName — по accessKey подписи из targets
-                // (не числится соседом → 403, A13), затем диспетчеризация трёх операций.
+                // (не числится соседом → 403, A13), затем диспетчеризация четырёх операций.
                 if (context.Request.Path.StartsWithSegments("/replication"))
                 {
                     operationLabel = "replication";
