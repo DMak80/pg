@@ -110,6 +110,9 @@ public sealed class FakeFetchTransport : IReplicationTransport
 
     public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord t,
         CancellationToken ct) => throw new NotSupportedException("фетчер не листит");
+
+    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+        throw new NotSupportedException("fetcher не пингует");
 }
 
 public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>

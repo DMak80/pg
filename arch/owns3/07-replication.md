@@ -121,6 +121,21 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
     включая счётчики исходов (§10).
   - `POST /admin/replication/reconcile` — внеплановый reconcile-проход
     (§9): 202; идущий продолжается, параллельный не создаётся.
+  - `POST /admin/replication/probe` — активная проба репликационных линков
+    (детектор живости для владельца/зонда; `online` статуса — пассивный кэш
+    исходов notifier, §10). Синхронный ответ (не 202/фон — в отличие от
+    reconcile): пингует всех соседей снапшота targets (или одного
+    `?target=<name>`) ПАРАЛЛЕЛЬНО исходящим репликационным транспортом
+    (креды/маршрут notifier'а, мимо outbox) — `GET /replication/ping` (§6);
+    per-target таймаут `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` (§11); ответ 200
+    `{active, targets:[{name, reachable, rttMs?}]}`: `reachable=true` строго
+    при валидном 200 ping-грани, `rttMs` (мс) — при любом полученном
+    HTTP-ответе (отсутствует при таймауте/обрыве транспорта); неизвестное имя
+    `?target` — 400; без соседей — `{active: false, targets: []}` (не ошибка).
+    Probe не меняет `link_online`, курсоры, outbox, fetch-очереди и счётчики
+    (только по требованию — периодический автопинг/фон-цикл НЕ вводится;
+    retry-логики нет: один запрос — один исход). Задержка ответа — max
+    per-target, не sum (параллельность).
 - Оркестратор трека s3 управляет составом живого пула именно через эту
   грань; ownS3 сам без etcd (глава 01).
 - **Идентификация соседа-источника на приёмнике — по accessKey
@@ -240,6 +255,7 @@ per-install, глава 03 §6). Пути `/replication/*` — отдельны�
 | приём уведомлений | `POST /replication/notifications` — JSON `{originHostId, events:[...]}` (батч событий с seqNo и метаданными целиком) | Дедуп по **(источник, seqNo)** — источник резолвится по accessKey подписи (§2), `originHostId` — диагностика: события с seqNo ≤ последнего принятого от этого источника — skip без повторного применения, повторный ACK. Самодостаточные события (§3) применяются сразу; `object-put` — LWW-предфильтр (§7): локально не старше → skip, старее/нет → fetch-очередь источника; очередь полна → **429** (приёмный буфер переполнен — источник бэкоффит). Ответ **200 `{"acceptedToSeqNo": N}`** — последний seqNo батча, поставленный в очередь/применённый, — **ACK приёма**, двигающий курсор источника (§5). Malformed JSON → **400** |
 | фетч объекта | `GET /replication/object/{bucket}/{key+}` | Актуальное состояние ключа (принцип 6): **200** + поток тела (без S3-лимита 5 ГБ — грань служебная) + заголовки `x-owns3-repl-modtime` (unix-мс), `x-owns3-repl-sha256`, `x-owns3-repl-etag`, `x-owns3-repl-origin` (HostId источника), `Content-Type`, `x-amz-meta-*` \| **200** + заголовок `x-owns3-repl-tombstone: <deleteTimeUnixMs>` без тела (ключ удалён, tombstone-знание живо) \| **404** (ключа нет, tombstone-знание истекло — приёмник состояние не меняет). SHA-256 тела приёмник сверяет на лету с `x-owns3-repl-sha256` — расхождение = фетч-ошибка → повтор |
 | листинг | `GET /replication/listing?bucket=&marker=&max-keys=` | Постраничный листинг ключей бакета — источник для reconcile/backfill (§9): **200** `{entries:[{key, modTimeUnixMs, contentSha256, size}], nextMarker}`; порядок — байтовый UTF-8 (Utf8ByteOrder), пагинация по маркеру; `max-keys` дефолт 1000, потолок 1000. **Без `bucket` (или пустой)** — `{buckets:[{name, creationDateUnixMs}]}` — состав бакетов для backfill (§9) |
+| ping | `GET /replication/ping` | Активная проба линка (источник — админ-trigger `POST /admin/replication/probe`, §2): **200, тело отсутствует**. Полный конвейер грани без изъятий: SigV4-подпись, политика строго `replication` (глава 05 §3, прочие — 403 `AccessDenied`), accessKey подписи обязан числиться соседом приёмника (резолв `sourceName`, §2). Приёмник ничего не пишет и не применяет: дедуп, fetch-очереди, курсоры, tombstones, счётчики применения ping-ом не затрагиваются (состояние байт-в-байт то же). Прочие методы — **400 `InvalidArgument`** («Unknown replication resource») |
 
 ## 7. Приёмник: fetch-очередь, LWW, tombstones, место на диске
 
@@ -515,6 +531,7 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 | `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | retention tombstones (§7) | **168** |
 | `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | период reconcile (§9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | ёмкость fetch-очереди на источник (§7) | **10000** |
+| `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` | per-target таймаут ping-пробы линков (§2) | **2000** |
 | `OWNS3_HOST_ID` | originHostId уведомлений — диагностика (§2; глава 05 §4) | имя контейнера |
 
 **Исполнение в App** (глава 01 §3 — App стыкует): события в 7 хендлерах

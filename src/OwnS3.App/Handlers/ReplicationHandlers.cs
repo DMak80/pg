@@ -113,6 +113,15 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
             Json, context.RequestAborted);
     }
 
+    // GET /replication/ping (глава 07 §6): 200 без тела — активная проба линка;
+    // приёмник ничего не пишет и не применяет (auth/политика/резолв соседа —
+    // конвейер S3Middleware, источник имени не используется).
+    public Task HandlePingAsync(HttpContext context)
+    {
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        return Task.CompletedTask;
+    }
+
     // Соседи, известные приёмнику (для резолва sourceName middleware'ом — §2).
     public bool TryResolveSource(string accessKey, out string sourceName)
     {

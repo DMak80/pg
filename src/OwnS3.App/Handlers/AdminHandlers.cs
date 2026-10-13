@@ -57,29 +57,33 @@ public static class AdminHandlers
         {
             // EC-режим: полная картина сетов/деградации/heal
             var s = context.RequestServices.GetRequiredService<ErasureStatusProvider>().GetStatus();
-            var top = SumDisks(s.Sets.SelectMany(set => set.Drives.Select(d => DiskOf(d.Path))));
+            // Один снапшот дисков на запрос: верхняя сумма и per-drive поля из одного
+            // чтения DriveInfo — JSON внутренне консистентен (двойное чтение даёт
+            // расхождение сумм при фоновой записи тома между чтениями)
+            var setSnapshots = s.Sets
+                .Select(set => (Set: set, Drives: set.Drives
+                    .Select(d => new { d.Position, d.Path, d.DiskId, d.Online, Disk = DiskOf(d.Path) })
+                    .ToList()))
+                .ToList();
+            var top = SumDisks(setSnapshots.SelectMany(x => x.Drives).Select(d => d.Disk));
             status = new
             {
                 mode = s.Mode,
                 usedBytes = top.Used,
                 totalBytes = top.Total,
-                sets = s.Sets.Select(set => new
+                sets = setSnapshots.Select(x => new
                 {
-                    index = set.Index,
-                    readable = set.Readable,
-                    writable = set.Writable,
-                    drives = set.Drives.Select(d =>
+                    index = x.Set.Index,
+                    readable = x.Set.Readable,
+                    writable = x.Set.Writable,
+                    drives = x.Drives.Select(d => new
                     {
-                        var disk = DiskOf(d.Path);
-                        return new
-                        {
-                            position = d.Position,
-                            path = d.Path,
-                            diskId = d.DiskId,
-                            online = d.Online,
-                            usedBytes = disk.Used,
-                            totalBytes = disk.Total,
-                        };
+                        position = d.Position,
+                        path = d.Path,
+                        diskId = d.DiskId,
+                        online = d.Online,
+                        usedBytes = d.Disk.Used,
+                        totalBytes = d.Disk.Total,
                     }),
                 }),
                 heal = new

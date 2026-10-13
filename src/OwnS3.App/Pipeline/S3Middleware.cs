@@ -72,7 +72,8 @@ public sealed class S3Middleware(
                         var isAdminRepl = replAdminPath is "/admin/replication/targets"
                             or "/admin/replication/status"
                             or "/admin/replication/reconcile"
-                            or "/admin/replication/sync-report";
+                            or "/admin/replication/sync-report"
+                            or "/admin/replication/probe";
                         if (!isAdminRepl)
                         {
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
@@ -106,6 +107,8 @@ public sealed class S3Middleware(
                             await replicationAdminHandlers.HandleReconcileAsync(context);
                         else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/sync-report")
                             await replicationAdminHandlers.HandleSyncReportAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/probe")
+                            await replicationAdminHandlers.HandleProbeAsync(context);
                         else
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
                                 Resource: replAdminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
@@ -157,7 +160,7 @@ public sealed class S3Middleware(
                 // 21 операций: аутентификация SigV4 тем же конвейером (S3Operation.None),
                 // политика строго AccessPolicy.Replication (иначе 403 AccessDenied, включая
                 // admin/root — A13), sourceName — по accessKey подписи из targets
-                // (не числится соседом → 403, A13), затем диспетчеризация трёх операций.
+                // (не числится соседом → 403, A13), затем диспетчеризация четырёх операций.
                 if (context.Request.Path.StartsWithSegments("/replication"))
                 {
                     operationLabel = "replication";
@@ -204,6 +207,8 @@ public sealed class S3Middleware(
                     }
                     else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/listing")
                         await replicationHandlers.HandleListingAsync(context);
+                    else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/ping")
+                        await replicationHandlers.HandlePingAsync(context);
                     else
                         await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
                             Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,

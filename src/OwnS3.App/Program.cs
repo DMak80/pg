@@ -54,6 +54,7 @@ foreach (var (env, key) in new[]
              ("OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS", "OwnS3:Replication:TombstoneRetentionHours"),
              ("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS", "OwnS3:Replication:ReconcileIntervalSeconds"),
              ("OWNS3_REPLICATION_FETCH_QUEUE_MAX", "OwnS3:Replication:FetchQueueMax"),
+             ("OWNS3_REPLICATION_PROBE_TIMEOUT_MS", "OwnS3:Replication:ProbeTimeoutMs"),
          })
 {
     var value = Environment.GetEnvironmentVariable(env);
@@ -187,13 +188,15 @@ builder.Services.AddSingleton(sp =>
     // Экспорт серий — при активной репликации (глава 07 §12: без соседей серий нет).
     // Outbox-серии — делегаты журнала (глава 07 §10: outbox_bytes/budget_exceeded);
     // журнал ещё не сконструирован — ленивый захват после резолва.
-    // enabled=true: переключается SetEnabled — координатор подписан на TargetsChanged
-    // (старт без соседей: инкременты no-op, gauge-колбэки пусты — серий нет,
-    // Existing-регресс; hot-apply состава включает экспорт без рестарта, A5/A9)
+    // Начальное состояние — ПО СОСТАВУ (не true): без соседей gauge-колбэки
+    // пусты и ЖУРНАЛ НЕ ТРОГАЕТСЯ (иначе сбор метрик OTel создаёт каталог
+    // outbox на неактивном томе — нарушение Existing-регресса 07 §12);
+    // переключение SetEnabled — координатор, подписка на TargetsChanged
+    // (hot-apply состава включает экспорт без рестарта, A5/A9)
     OwnS3.Replication.Outbox.OutboxJournal? journal = null;
     var metrics = new OwnS3.Replication.ReplicationMetrics(
         sp.GetService<Meter>() ?? new Meter("ownS3"),
-        enabled: true,
+        enabled: sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>().Active,
         outboxBytes: () => journal?.TotalBytes ?? 0,
         outboxBudgetExceeded: () => journal is { BudgetExceeded: true } ? 1 : 0);
     journal = sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>();
@@ -224,7 +227,13 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
 
-// Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report
+// Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
+// (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.
+builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationProber(
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    ReplicationTransportFactory(sp),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
+// Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report/probe
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
@@ -233,7 +242,8 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandl
     sp.GetRequiredService<OwnS3.Replication.Inbound.FetchQueueRegistry>(),
     sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
-    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
+    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>()));
 
 // Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
 // обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —

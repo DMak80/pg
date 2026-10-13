@@ -100,6 +100,7 @@ health и метрики, правила запуска. Операции — г
 | `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | `OwnS3:Replication:TombstoneRetentionHours` | retention tombstones (глава 07 §7) | **168** (7 суток) |
 | `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | `OwnS3:Replication:ReconcileIntervalSeconds` | период reconcile (глава 07 §9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | `OwnS3:Replication:FetchQueueMax` | ёмкость fetch-очереди на источник (глава 07 §7) | **10000** |
+| `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` | `OwnS3:Replication:ProbeTimeoutMs` | per-target таймаут ping-пробы репликационных линков (глава 07 §2) | **2000** |
 
 Материал TLS: задан только один из пары серт/ключ, файл пути не читается
 или PEM невалиден — **отказ старта** (fail-fast, как root-пара п. 1);
@@ -238,6 +239,10 @@ single-режиме не экспортируются):
 - **`GET /admin/replication/sync-report?bucket=&prefix=&marker=`** —
   отчёт листинга этого сервера со свёрткой `aggregateHash` — попарная
   сверка листингов (глава 07 §10). JSON.
+- **`POST /admin/replication/probe`** — активная проба репликационных линков:
+  пинг всех (или `?target=`) соседей параллельно, per-target таймаут,
+  синхронный ответ `{active, targets:[{name, reachable, rttMs?}]}` (глава
+  07 §2). JSON.
 
 ## 8. Стенд-сервис erasure-режима
 

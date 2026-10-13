@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
 using OwnS3.Protocol.Auth;
@@ -13,12 +14,14 @@ namespace OwnS3.App.Handlers;
 
 // Админ-грань mesh-репликации (t35, глава 07 §2/§10; глава 05 §7): управление
 // составом без даунтайма (PUT targets — 202), статус со счётчиками исходов,
-// внеплановый reconcile (202), сверка листингов (sync-report с XOR-свёрткой).
+// внеплановый reconcile (202), сверка листингов (sync-report с XOR-свёрткой),
+// активная проба линков (probe — синхронный JSON-отчёт).
 // Права admin/root — проверяет S3Middleware (прочим, включая replication, 403).
 public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTargets targets,
     OwnS3.Replication.Cursors.TargetCursors cursors, OutboxJournal journal,
     OwnS3.Replication.ReplicationMetrics metrics, FetchQueueRegistry fetchQueues,
-    ReconcileRunner reconcile, IReplicaStore store, OwnS3.Replication.ReplicationOptions options)
+    ReconcileRunner reconcile, IReplicaStore store, OwnS3.Replication.ReplicationOptions options,
+    OwnS3.Replication.ReplicationProber prober)
 {
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -106,6 +109,30 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
         return Task.CompletedTask;
     }
 
+    // POST /admin/replication/probe?target=<name> (глава 07 §2): активная проба
+    // линков — СИНХРОННЫЙ ответ (не 202/фон — в отличие от reconcile); без
+    // target — все соседи, неизвестное имя — 400; неактивная репликация —
+    // осмысленный {active:false, targets:[]} (не ошибка).
+    public async Task HandleProbeAsync(HttpContext context)
+    {
+        var targetName = context.Request.Query["target"].FirstOrDefault();
+        var report = await prober.ProbeAsync(string.IsNullOrEmpty(targetName) ? null : targetName,
+            context.RequestAborted);
+        if (report is null)
+        {
+            // Имя не из состава — 400 с пояснением (глава 07 §2)
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(
+                new { error = $"unknown replication target: {targetName}" }, context.RequestAborted);
+            return;
+        }
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        await context.Response.WriteAsJsonAsync(
+            new ProbeResponse(report.Active,
+                report.Targets.Select(o => new ProbeTargetDto(o.Name, o.Reachable, o.RttMs)).ToList()),
+            Json, context.RequestAborted);
+    }
+
     // GET /admin/replication/sync-report?bucket=&prefix=&marker=: отчёт листинга ЭТОГО
     // сервера со свёрткой aggregateHash (XOR 64-бит FNV-1a пар (key, modTimeUnixMs)) —
     // попарная сверка серверов (глава 07 §10).
@@ -144,4 +171,9 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
 
     private sealed record PutTargetsRequest(List<TargetDto> Targets);
     private sealed record TargetDto(string Name, string Endpoint, string AccessKey, string SecretKey);
+
+    // rttMs присутствует только при полученном HTTP-ответе (WhenWritingNull).
+    private sealed record ProbeResponse(bool Active, IReadOnlyList<ProbeTargetDto> Targets);
+    private sealed record ProbeTargetDto(string Name, bool Reachable,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? RttMs);
 }

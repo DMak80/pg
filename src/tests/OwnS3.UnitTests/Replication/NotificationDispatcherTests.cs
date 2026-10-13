@@ -81,6 +81,9 @@ public sealed class FakeTransport : IReplicationTransport
 
     public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord target,
         CancellationToken ct) => throw new NotSupportedException("notifier не листит");
+
+    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+        throw new NotSupportedException("notifier не пингует");
 }
 
 public class NotificationDispatcherTests : IClassFixture<NotificationDispatcherFixture>

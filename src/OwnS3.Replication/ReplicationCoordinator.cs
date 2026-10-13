@@ -39,6 +39,12 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Экспорт метрик следует за составом (глава 07 §2): подписка ДО ожидания
+        // активации и начальное состояние по составу — hot-apply на неактивном
+        // старте включает серии (событие TargetsChanged от Replace не пропускается)
+        targets.TargetsChanged += snapshot => metrics.SetEnabled(snapshot.Count > 0);
+        metrics.SetEnabled(targets.Active);
+
         // Неактивная репликация (соседей нет): ЖДАТЬ активации — hot-apply состава
         // (PUT targets) включает исполнители без рестарта (глава 07 §2); поллинг 1 с
         while (!targets.Active && !stoppingToken.IsCancellationRequested)
@@ -46,9 +52,6 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
         if (stoppingToken.IsCancellationRequested)
             return;
         logger.LogInformation("Репликация активна ({Count} соседей) — координатор запущен", targets.Snapshot.Count);
-        // Экспорт метрик следует за составом (глава 07 §2): hot-apply состава
-        // включает/выключает серии без рестарта (A5/A9)
-        targets.TargetsChanged += snapshot => metrics.SetEnabled(snapshot.Count > 0);
 
         // Маркер: чистота ПРЕДЫДУЩЕЙ остановки — до сброса (глава 07 §7);
         // триггеры reconcile §9 (2) «пустой том» и (3) «грязная остановка» — по нему
@@ -63,6 +66,7 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
         StartExecutors(targets.Snapshot);
         // Триггер §9 (1): добавление соседа — reconcile по НОВОМУ (в OnTargetsChanged)
+        // и включение экспорта серий (подписка по составу — выше, до ожидания активации)
         targets.TargetsChanged += OnTargetsChanged;
 
         // Триггер §9 (4): периодический reconcile по расписанию + цикл обслуживания §8-а

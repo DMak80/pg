@@ -86,6 +86,9 @@ public sealed class FakeReconcileTransport : IReplicationTransport
 
     public Task<FetchResult> FetchObjectAsync(TargetRecord t, string bucket, string key, CancellationToken ct) =>
         throw new NotSupportedException("reconcile фетчит через очередь");
+
+    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+        throw new NotSupportedException("reconcile не пингует");
 }
 
 public class ReconcileRunnerTests : IClassFixture<ReconcileRunnerFixture>

@@ -218,6 +218,17 @@ public static class MeshClients
         using var http = new HttpClient { BaseAddress = new Uri(env.NodeHostUrl(node)) };
         return await http.GetStringAsync("/metrics", ct);
     }
+
+    /// <summary>POST /admin/replication/probe узла (статус + JSON-строка;
+    /// target — фильтр одного соседа, null — все).</summary>
+    public static async Task<(HttpStatusCode Status, string Body)> AdminProbeAsync(
+        OwnS3MeshE2eEnvironment env, int node, string? target, CancellationToken ct)
+    {
+        // query — ОТДЕЛЬНЫМ параметром (участвует в canonical query подписи)
+        var response = await AdminClient(env, node).SendAsync("POST", "/admin/replication/probe",
+            target is null ? "" : $"target={Uri.EscapeDataString(target)}", null, ct);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(ct));
+    }
 }
 
 /// <summary>Raw-SigV4 HTTP-клиент mesh (подпись — TestSigV4Signer юнитов:
