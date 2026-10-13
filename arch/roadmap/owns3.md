@@ -56,21 +56,3 @@ ownS3 — действующее S3-хранилище подсистемы бэ
 multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
-
-- **`t38-owns3-result-migration`** —
-  унификация исходов операций ownS3 на Result-парадигму монорепо
-  (`Result`/`Result<T>` из `src/Shared.Core/Result.cs`, как в воркерах
-  PgWorker/KafkaWorker/S3Worker). Сейчас проекты `src/OwnS3.*` не
-  ссылаются на Shared.Core и живут на собственной конвенции исходов:
-  специализированные DTO транспорта/стора (`FetchResult`, `PutResult`,
-  `CompleteResult`, `ObjectAttributesResult`, `DeletedKeyResult`) и
-  nullable-маркеры для дискретных вариантов (`SendNotificationsAsync →
-  Task<long?>` с 429→null; `ProbeAsync → Task<ProbeReport?>` с
-  null=«имя не из состава»). Задача: подключить Shared.Core к OwnS3.* и
-  перевести внутренние сигнатуры (транспорт репликации, стор,
-  пайплайн/хендлеры) на `Result<T>`/`Result` там, где исход —
-  ошибка/отказ, устранив nullable-маркеры и DTO-дискриминации по
-  месту. HTTP-контракт S3-API, admin/replication-грани и дисковые
-  форматы (xl.meta) не меняются — миграция чисто внутренняя. Arch-first:
-  правки раскладок интерфейсов в `arch/owns3/*` (05/06/07 и
-  документация пайплайна).
