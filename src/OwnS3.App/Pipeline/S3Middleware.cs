@@ -106,7 +106,7 @@ public sealed class S3Middleware(
                         else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/reconcile")
                             await replicationAdminHandlers.HandleReconcileAsync(context);
                         else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/sync-report")
-                            await replicationAdminHandlers.HandleSyncReportAsync(context);
+                            await replicationAdminHandlers.HandleSyncReportAsync(context, requestId, options.Value.HostId);
                         else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/probe")
                             await replicationAdminHandlers.HandleProbeAsync(context);
                         else
@@ -190,7 +190,8 @@ public sealed class S3Middleware(
                     }
 
                     if (HttpMethods.IsPost(method) && context.Request.Path.Value == "/replication/notifications")
-                        await replicationHandlers.HandleNotificationsAsync(context, sourceName);
+                        await replicationHandlers.HandleNotificationsAsync(context, sourceName,
+                            requestId, options.Value.HostId);
                     else if (HttpMethods.IsGet(method) && context.Request.Path.StartsWithSegments("/replication/object"))
                     {
                         // Парсинг {bucket}/{key} — от под-пути грани (префикс /replication/object срезается)
@@ -203,10 +204,11 @@ public sealed class S3Middleware(
                                 MessageOverride: "bucket and key required"));
                             return;
                         }
-                        await replicationHandlers.HandleObjectFetchAsync(context, replPath.Bucket, replPath.Key);
+                        await replicationHandlers.HandleObjectFetchAsync(context, replPath.Bucket, replPath.Key,
+                            requestId, options.Value.HostId);
                     }
                     else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/listing")
-                        await replicationHandlers.HandleListingAsync(context);
+                        await replicationHandlers.HandleListingAsync(context, requestId, options.Value.HostId);
                     else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/ping")
                         await replicationHandlers.HandlePingAsync(context);
                     else
@@ -271,27 +273,9 @@ public sealed class S3Middleware(
                     Route = route,
                     Identity = identity,
                     Model = model,
+                    HostId = options.Value.HostId,
                 });
             }
-        }
-        catch (XlInvalidArgumentException ex)
-        {
-            // Доменный 400-исход Storage (лимит сегмента, битый continuation-token)
-            await WriteErrorAsync(context, new S3Error(S3ErrorCode.InvalidArgument,
-                Resource: path, RequestId: requestId, HostId: options.Value.HostId,
-                MessageOverride: ex.Message));
-        }
-        catch (ObjectStoreException ex)
-        {
-            // Доменные исходы объектного слоя → S3-код по каталогу.
-            await WriteErrorAsync(context, new S3Error(MapStorageCode(ex.Code),
-                Resource: path, RequestId: requestId, HostId: options.Value.HostId));
-        }
-        catch (ObjectStoreUnavailableException)
-        {
-            // Заглушка t36 → 500 InternalError (служебного кода в каталоге нет).
-            await WriteErrorAsync(context, new S3Error(S3ErrorCode.InternalError,
-                Resource: path, RequestId: requestId, HostId: options.Value.HostId));
         }
         catch (S3ProtocolException ex)
         {
@@ -348,21 +332,4 @@ public sealed class S3Middleware(
     }
 
     // Маппинг доменных кодов Storage в каталог S3-ошибок (имена синхронны).
-    private static S3ErrorCode MapStorageCode(ObjectStoreErrorCode code) => code switch
-    {
-        ObjectStoreErrorCode.NoSuchBucket => S3ErrorCode.NoSuchBucket,
-        ObjectStoreErrorCode.NoSuchKey => S3ErrorCode.NoSuchKey,
-        ObjectStoreErrorCode.BucketAlreadyOwnedByYou => S3ErrorCode.BucketAlreadyOwnedByYou,
-        ObjectStoreErrorCode.BucketNotEmpty => S3ErrorCode.BucketNotEmpty,
-        ObjectStoreErrorCode.InvalidPart => S3ErrorCode.InvalidPart,
-        ObjectStoreErrorCode.InvalidPartOrder => S3ErrorCode.InvalidPartOrder,
-        ObjectStoreErrorCode.NoSuchUpload => S3ErrorCode.NoSuchUpload,
-        ObjectStoreErrorCode.InvalidRange => S3ErrorCode.InvalidRange,
-        ObjectStoreErrorCode.PreconditionFailed => S3ErrorCode.PreconditionFailed,
-        ObjectStoreErrorCode.NotModified => S3ErrorCode.NotModified,
-        ObjectStoreErrorCode.EntityTooLarge => S3ErrorCode.EntityTooLarge,
-        ObjectStoreErrorCode.InsufficientReadQuorum => S3ErrorCode.InsufficientReadQuorum,
-        ObjectStoreErrorCode.InsufficientWriteQuorum => S3ErrorCode.InsufficientWriteQuorum,
-        _ => S3ErrorCode.InternalError,
-    };
 }

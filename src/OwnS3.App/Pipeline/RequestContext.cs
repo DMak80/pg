@@ -12,4 +12,9 @@ public sealed class RequestContext
     public required S3Route Route { get; init; }
     public required AuthenticatedIdentity Identity { get; init; }
     public required S3RequestModel Model { get; init; }
+
+    // Сырой nullable OwnS3Options.HostId (как middleware-ветки писали в S3Error):
+    // null → пустой <HostId></HostId> в XML-ошибке — байт-в-байт как сегодня;
+    // MachineName-фолбэк — только originHostId репликации (DI, x-owns3-repl-origin).
+    public required string? HostId { get; init; }
 }

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
+using OwnS3.App.Pipeline;
 using OwnS3.Protocol.Auth;
 using OwnS3.Replication.Inbound;
 using OwnS3.Replication.Outbox;
@@ -139,7 +140,7 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
     // GET /admin/replication/sync-report?bucket=&prefix=&marker=: отчёт листинга ЭТОГО
     // сервера со свёрткой aggregateHash (XOR 64-бит FNV-1a пар (key, modTimeUnixMs)) —
     // попарная сверка серверов (глава 07 §10).
-    public async Task HandleSyncReportAsync(HttpContext context)
+    public async Task HandleSyncReportAsync(HttpContext context, string requestId, string? errorHostId)
     {
         var bucket = context.Request.Query["bucket"].FirstOrDefault();
         if (string.IsNullOrEmpty(bucket))
@@ -151,9 +152,14 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
         }
         var prefix = context.Request.Query["prefix"].FirstOrDefault() ?? string.Empty;
         var marker = context.Request.Query["marker"].FirstOrDefault();
-        // мост t38: кворумный отказ листинга — Throw() (middleware → 503 + XML), демонтаж в Task 7
-        var page = store.ListReplicationEntries(bucket, marker, maxKeys: 1000).Throw().Value;
-        var filtered = page.Entries.Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal)).ToList();
+        var page = store.ListReplicationEntries(bucket, marker, maxKeys: 1000);
+        if (!page.IsSuccess)
+        {
+            // Кворумный отказ листинга → 503 + XML (канон 06 §7, 03 §5)
+            await S3ResultTranslator.WriteAsync(context, page.Error!, requestId, errorHostId);
+            return;
+        }
+        var filtered = page.Value.Entries.Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal)).ToList();
         var hash = OwnS3.Replication.SyncReportHash.Compute(filtered.Select(e => (e.Key, e.ModTime.ToUnixTimeMilliseconds())));
         var report = new
         {
@@ -167,7 +173,7 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
             count = filtered.Count,
             totalSize = filtered.Sum(e => e.Size),
             aggregateHash = hash,
-            nextMarker = page.NextMarker,
+            nextMarker = page.Value.NextMarker,
         };
         context.Response.StatusCode = StatusCodes.Status200OK;
         await context.Response.WriteAsJsonAsync(report, Json, context.RequestAborted);

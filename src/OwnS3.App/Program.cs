@@ -225,7 +225,8 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
-    sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
+    sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
+    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>()));
 
 // Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
 // (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.

@@ -122,7 +122,6 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                 foreach (var entry in page.Entries)
                 {
                     processed++; // обработан (любой исход — поставлен/skip)
-                    // мост t38: демонтаж в задаче перевода ReplicaApplier (Failed — Throw())
                     var localLookup = store.ReadKeyState(bucket, entry.Key);
                     var local = localLookup.IsSuccess
                         ? localLookup.Value is ReplicaKeyLookup.Found rf ? rf.State : null
