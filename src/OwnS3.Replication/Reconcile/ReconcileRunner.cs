@@ -74,22 +74,16 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
         var backoff = TimeSpan.FromSeconds(5);
         while (true)
         {
-            try
+            var listResult = await transport.ListingBucketsAsync(target, ct);
+            if (listResult.IsSuccess)
             {
-                neighborBuckets = await transport.ListingBucketsAsync(target, ct);
+                neighborBuckets = listResult.Value;
                 break;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Reconcile {Source}: сосед недоступен — ретрай через {Backoff}",
-                    sourceName, backoff);
-                await Task.Delay(backoff, ct);
-                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
-            }
+            logger.LogWarning(listResult.Error, "Reconcile {Source}: сосед недоступен — ретрай через {Backoff}",
+                sourceName, backoff);
+            await Task.Delay(backoff, ct);
+            backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
         }
 
         // Backfill состава бакетов (§9): у соседа есть — у нас нет → create с CreationDate соседа
@@ -109,22 +103,17 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                 var pageBackoff = TimeSpan.FromSeconds(5);
                 while (true)
                 {
-                    try
+                    var listResult = await transport.ListAsync(target, bucket, marker, maxKeys: 1000, ct);
+                    if (listResult.IsSuccess)
                     {
-                        page = await transport.ListAsync(target, bucket, marker, maxKeys: 1000, ct);
+                        page = listResult.Value;
                         break;
                     }
-                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogWarning(ex, "Reconcile {Source}: листинг {Bucket} не удался — ретрай через {Backoff}",
-                            sourceName, bucket, pageBackoff);
-                        await Task.Delay(pageBackoff, ct);
-                        pageBackoff = TimeSpan.FromTicks(Math.Min(pageBackoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
-                    }
+                    logger.LogWarning(listResult.Error,
+                        "Reconcile {Source}: листинг {Bucket} не удался — ретрай через {Backoff}",
+                        sourceName, bucket, pageBackoff);
+                    await Task.Delay(pageBackoff, ct);
+                    pageBackoff = TimeSpan.FromTicks(Math.Min(pageBackoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
                 }
                 foreach (var entry in page.Entries)
                 {

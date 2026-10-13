@@ -216,52 +216,56 @@ public sealed class ObjectFetcher
             return false;
         try
         {
-            var result = await _transport.FetchObjectAsync(_source, task.Bucket, task.Key, ct);
-            if (result.TombstoneUnixMs is long deleteTime)
+            var fetch = await _transport.FetchObjectAsync(_source, task.Bucket, task.Key, ct);
+            if (!fetch.IsSuccess)
+                return HandleFetchFailure(_source.Name, task, fetch.Error!); // Failed → повтор по бэкоффу (глава 07 §7)
+            switch (fetch.Value)
             {
-                // Tombstone-ответ: ключ удалён у источника (глава 07 §7)
-                _applier.ApplyDelete(task.Bucket, task.Key, deleteTime);
-                _counters.Applied(_source.Name);
-                return false;
-            }
-            if (result.Body is null)
-            {
-                // 404: ключ неизвестен — состояние приёмника не меняется
-                return false;
+                case FetchOutcome.Tombstone t:
+                    // Ключ удалён у источника — tombstone-применение (глава 07 §7)
+                    _applier.ApplyDelete(task.Bucket, task.Key, t.DeleteTimeUnixMs);
+                    _counters.Applied(_source.Name);
+                    return false;
+                case FetchOutcome.KeyNotFound:
+                    // 404: ключ неизвестен — состояние приёмника не меняется (skip без повтора)
+                    return false;
+                case FetchOutcome.Fetched f:
+                {
+                    // 200-объект: применение с исходными метаданными; sha-сверка тела на лету —
+                    // внутри ApplyObjectAsync (expectedSha из заголовка); чтение тела — под
+                    // троттлингом MaxRateBytes (глава 07 §7; 0 — безлимит)
+                    await using (f.Body)
+                    {
+                        Stream body = _options.MaxRateBytes > 0
+                            ? new ThrottledStream(f.Body, _options.MaxRateBytes)
+                            : f.Body;
+                        var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
+                            contentLength: f.ContentLength,
+                            new ReplicaObjectMetadata(
+                                DateTimeOffset.FromUnixTimeMilliseconds(f.ModTimeUnixMs),
+                                f.ETag.Trim('"'), f.ContentSha256, f.ContentType, f.UserMetadata),
+                            expectedSha256: f.ContentSha256, ct);
+                        // счётчики исходов — по результату СВОЕГО применения (перевод аплаера —
+                        // следующая задача; здесь мост: applyResult — прежний тип до Task 6)
+                        _counters.Fetched(_source.Name);
+                        if (applyResult.Conflict)
+                            _counters.Conflict(_source.Name);
+                        if (applyResult.Applied)
+                            _counters.Applied(_source.Name);
+                        else
+                            _counters.Skipped(_source.Name);
+                    }
+
+                    return false;
+                }
             }
 
-            // 200-объект: применение с исходными метаданными; sha-сверка тела на лету —
-            // внутри ApplyObjectAsync (expectedSha из заголовка); чтение тела — под
-            // троттлингом MaxRateBytes (глава 07 §7; 0 — безлимит)
-            await using (result.Body)
-            {
-                // Троттлинг чтения тела MaxRateBytes байт/с (глава 07 §7; 0 — безлимит)
-                Stream body = _options.MaxRateBytes > 0
-                    ? new ThrottledStream(result.Body, _options.MaxRateBytes)
-                    : result.Body;
-                var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
-                    contentLength: result.ContentLength,
-                    new ReplicaObjectMetadata(
-                        DateTimeOffset.FromUnixTimeMilliseconds(result.ModTimeUnixMs),
-                        result.ETag.Trim('"'), result.ContentSha256, result.ContentType,
-                        result.UserMetadata),
-                    expectedSha256: result.ContentSha256, ct);
-                _counters.Fetched(_source.Name);
-                if (applyResult.Conflict)
-                    _counters.Conflict(_source.Name);
-                if (applyResult.Applied)
-                    _counters.Applied(_source.Name);
-                else
-                    _counters.Skipped(_source.Name);
-            }
-            return false;
+            return false; // недостижимо (варианты закрыты)
         }
         catch (ReplicationChecksumMismatchException ex)
         {
-            // sha тела ≠ заголовка — фетч-ошибка → повтор (глава 07 §6)
-            _logger.LogWarning(ex, "sha тела фетча {Source}/{Bucket}/{Key} не совпал — повтор",
-                _source.Name, task.Bucket, task.Key);
-            return true;
+            // мост t38: аплаер ещё бросает (до Task 6) — маршрутизуем в единый helper повтора
+            return HandleFetchFailure(_source.Name, task, ex);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -269,10 +273,17 @@ public sealed class ObjectFetcher
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Фетч {Source}/{Bucket}/{Key} не удался — повтор по бэкоффу",
-                _source.Name, task.Bucket, task.Key);
-            return true;
+            // мост t38: техотказ применения/чтения тела (до Task 6) — повтор
+            return HandleFetchFailure(_source.Name, task, ex);
         }
+    }
+
+    // Отказ фетча/применения: sha-мисматч и техотказы — повтор по бэкоффу (глава 07 §7).
+    private bool HandleFetchFailure(string sourceName, FetchTask task, Exception error)
+    {
+        _logger.LogWarning(error, "Фетч {Source}/{Bucket}/{Key} не удался — повтор по бэкоффу",
+            sourceName, task.Bucket, task.Key);
+        return true;
     }
 
 // Троттлинг-поток (глава 07 §7): пропускает байты не быстрее rateLimit байт/с —

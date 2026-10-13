@@ -14,29 +14,32 @@ public sealed class FakeProbeTransport : IReplicationTransport
     public HashSet<string> Throwers { get; } = new();
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
 
-    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
+    public Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
     {
         if (Throwers.Contains(target.Name))
-            throw new HttpRequestException("connection refused");
+            return Task.FromResult(Result<PingResult>.Failed(
+                new PeerRejectedException("connection refused (тест)")));
         if (Delay <= TimeSpan.Zero)
-            return Task.FromResult(Results.GetValueOrDefault(target.Name, new PingResult(true, 1)));
+            return Task.FromResult(Result<PingResult>.Success(
+                Results.GetValueOrDefault(target.Name, new PingResult(true, 1))));
         return Task.Run(async () =>
         {
             await Task.Delay(Delay, ct);
-            return Results.GetValueOrDefault(target.Name, new PingResult(true, 1));
+            return Result<PingResult>.Success(
+                Results.GetValueOrDefault(target.Name, new PingResult(true, 1)));
         }, ct);
     }
 
-    public Task<long?> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
+    public Task<Result<long>> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
         throw new NotSupportedException("probe не рассылает");
 
-    public Task<FetchResult> FetchObjectAsync(TargetRecord t, string bucket, string key, CancellationToken ct) =>
+    public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord t, string bucket, string key, CancellationToken ct) =>
         throw new NotSupportedException("probe не фетчит");
 
-    public Task<ReplicationListingResponse> ListAsync(TargetRecord t, string bucket, string? marker,
+    public Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord t, string bucket, string? marker,
         int maxKeys, CancellationToken ct) => throw new NotSupportedException("probe не листит");
 
-    public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord t,
+    public Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord t,
         CancellationToken ct) => throw new NotSupportedException("probe не листит");
 }
 

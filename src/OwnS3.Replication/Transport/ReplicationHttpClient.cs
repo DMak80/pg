@@ -26,93 +26,156 @@ public sealed class ReplicationHttpClient : IReplicationTransport
             _http.Timeout = RequestTimeout;
     }
 
-    public async Task<long?> SendNotificationsAsync(TargetRecord target, NotificationBatchRequest batch,
+    public async Task<Result<long>> SendNotificationsAsync(TargetRecord target, NotificationBatchRequest batch,
         CancellationToken ct)
     {
         var payload = JsonSerializer.SerializeToUtf8Bytes(batch, ReplicationTransportJson.Options);
         var payloadHash = SigV4Core.HexSha256(payload);
         using var request = BuildRequest(target, HttpMethod.Post, "/replication/notifications", "",
             payload, payloadHash);
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
-        if (response.StatusCode == HttpStatusCode.TooManyRequests)
-            return null; // приёмный буфер переполнен — вызывающий бэкоффит (глава 07 §8)
-        response.EnsureSuccessStatusCode();
-        var accepted = JsonSerializer.Deserialize<NotificationAcceptedResponse>(
-            await response.Content.ReadAsByteArrayAsync(ct), ReplicationTransportJson.Options);
-        return accepted?.AcceptedToSeqNo;
+        try
+        {
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                return Result<long>.Failed(new PeerRejectedException(
+                    $"сосед не принял батч: 429 (target={target.Name})")); // приёмный буфер переполнен — вызывающий бэкоффит (глава 07 §8)
+            if (!response.IsSuccessStatusCode)
+                return Result<long>.Failed(new PeerRejectedException(
+                    $"HTTP {(int)response.StatusCode} от {target.Name}"));
+            var accepted = JsonSerializer.Deserialize<NotificationAcceptedResponse>(
+                await response.Content.ReadAsByteArrayAsync(ct), ReplicationTransportJson.Options);
+            return Result<long>.Success(accepted?.AcceptedToSeqNo ?? 0);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // внешняя отмена — не исход операции (graceful stop)
+        }
+        catch (Exception ex)
+        {
+            return Result<long>.Failed(new PeerRejectedException(
+                $"транспорт рассылки к {target.Name}: {ex.Message}"));
+        }
     }
 
-    public async Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key,
+    public async Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key,
         CancellationToken ct)
     {
         var path = $"/replication/object/{EscapeKeyPath(bucket)}/{EscapeKeyPath(key)}";
         using var request = BuildRequest(target, HttpMethod.Get, path, "", payload: null, payloadHash: null);
-        var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        HttpResponseMessage response;
+        try
         {
-            response.Dispose();
-            // Ключ неизвестен — приёмник состояние не меняет (глава 07 §6)
-            return new FetchResult(Body: null, ContentLength: 0, ModTimeUnixMs: 0, ContentSha256: string.Empty,
-                ETag: string.Empty, ContentType: string.Empty, UserMetadata: FrozenEmpty, TombstoneUnixMs: null);
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         }
-        response.EnsureSuccessStatusCode();
-
-        var headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
-            StringComparer.OrdinalIgnoreCase)
-            .Union(response.Content.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
-                StringComparer.OrdinalIgnoreCase))
-            .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
-
-        // Tombstone-ответ: ключ удалён, тела нет (глава 07 §6)
-        if (headers.TryGetValue("x-owns3-repl-tombstone", out var tombstoneText)
-            && long.TryParse(tombstoneText, out var tombstone))
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            var empty = await response.Content.ReadAsByteArrayAsync(ct);
-            response.Dispose();
-            return new FetchResult(Body: null, ContentLength: 0, ModTimeUnixMs: 0, ContentSha256: string.Empty,
-                ETag: string.Empty, ContentType: string.Empty, UserMetadata: FrozenEmpty, TombstoneUnixMs: tombstone);
+            throw; // внешняя отмена — не исход операции
+        }
+        catch (Exception ex)
+        {
+            return Result<FetchOutcome>.Failed(new PeerRejectedException(
+                $"транспорт фетча у {target.Name}: {ex.Message}"));
         }
 
-        var userMetadata = headers.Where(h => h.Key.StartsWith("x-amz-meta-", StringComparison.OrdinalIgnoreCase))
-            .ToDictionary(h => h.Key["x-amz-meta-".Length..], h => h.Value, StringComparer.Ordinal);
-        headers.TryGetValue("x-owns3-repl-modtime", out var modTimeText);
-        headers.TryGetValue("x-owns3-repl-sha256", out var sha);
-        headers.TryGetValue("x-owns3-repl-etag", out var etag);
-        var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
-        var body = await response.Content.ReadAsStreamAsync(ct);
-        return new FetchResult(
-            Body: body,
-            ContentLength: response.Content.Headers.ContentLength ?? -1,
-            ModTimeUnixMs: long.TryParse(modTimeText, out var modTime) ? modTime : 0,
-            ContentSha256: sha ?? string.Empty,
-            ETag: etag ?? string.Empty,
-            ContentType: contentType,
-            UserMetadata: userMetadata,
-            TombstoneUnixMs: null);
+        using (response)
+        {
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                // Ключ неизвестен — приёмник состояние не меняет (глава 07 §6);
+                // терминальный Success-вариант
+                return Result<FetchOutcome>.Success(new FetchOutcome.KeyNotFound());
+            }
+            if (!response.IsSuccessStatusCode)
+                return Result<FetchOutcome>.Failed(new PeerRejectedException(
+                    $"HTTP {(int)response.StatusCode} от {target.Name}"));
+
+            var headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
+                StringComparer.OrdinalIgnoreCase)
+                .Union(response.Content.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
+                    StringComparer.OrdinalIgnoreCase))
+                .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+
+            // Tombstone-ответ: ключ удалён, тела нет (глава 07 §6)
+            if (headers.TryGetValue("x-owns3-repl-tombstone", out var tombstoneText)
+                && long.TryParse(tombstoneText, out var tombstone))
+            {
+                await response.Content.ReadAsByteArrayAsync(ct); // дочитать тело ответа
+                return Result<FetchOutcome>.Success(new FetchOutcome.Tombstone(tombstone));
+            }
+
+            var userMetadata = headers.Where(h => h.Key.StartsWith("x-amz-meta-", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(h => h.Key["x-amz-meta-".Length..], h => h.Value, StringComparer.Ordinal);
+            headers.TryGetValue("x-owns3-repl-modtime", out var modTimeText);
+            headers.TryGetValue("x-owns3-repl-sha256", out var sha);
+            headers.TryGetValue("x-owns3-repl-etag", out var etag);
+            var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
+            var body = await response.Content.ReadAsStreamAsync(ct);
+            return Result<FetchOutcome>.Success(new FetchOutcome.Fetched(
+                body,
+                response.Content.Headers.ContentLength ?? -1,
+                long.TryParse(modTimeText, out var modTime) ? modTime : 0,
+                sha ?? string.Empty,
+                etag ?? string.Empty,
+                contentType,
+                userMetadata));
+        }
     }
 
-    public async Task<ReplicationListingResponse> ListAsync(TargetRecord target, string bucket, string? marker,
+    public async Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord target, string bucket, string? marker,
         int maxKeys, CancellationToken ct)
     {
         var query = BuildListingQuery(bucket, marker, maxKeys);
-        var payload = await SendListingAsync(target, query, ct);
-        return JsonSerializer.Deserialize<ReplicationListingResponse>(payload, ReplicationTransportJson.Options)
-            ?? new ReplicationListingResponse([], null);
+        byte[] payload;
+        try
+        {
+            payload = await SendListingAsync(target, query, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // внешняя отмена — не исход операции
+        }
+        catch (Exception ex)
+        {
+            return Result<ReplicationListingResponse>.Failed(ex is PeerRejectedException pre
+                ? pre
+                : new PeerRejectedException($"транспорт листинга у {target.Name}: {ex.Message}"));
+        }
+
+        return Result<ReplicationListingResponse>.Success(
+            JsonSerializer.Deserialize<ReplicationListingResponse>(payload, ReplicationTransportJson.Options)
+            ?? new ReplicationListingResponse([], null));
     }
 
-    public async Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord target,
+    public async Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord target,
         CancellationToken ct)
     {
-        var payload = await SendListingAsync(target, string.Empty, ct);
+        byte[] payload;
+        try
+        {
+            payload = await SendListingAsync(target, string.Empty, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // внешняя отмена — не исход операции
+        }
+        catch (Exception ex)
+        {
+            return Result<IReadOnlyList<(string Name, long CreationUnixMs)>>.Failed(
+                ex is PeerRejectedException pre
+                    ? pre
+                    : new PeerRejectedException($"транспорт листинга у {target.Name}: {ex.Message}"));
+        }
+
         var response = JsonSerializer.Deserialize<ReplicationBucketsResponse>(payload, ReplicationTransportJson.Options)
             ?? new ReplicationBucketsResponse([]);
-        return response.Buckets.Select(b => (b.Name, b.CreationDateUnixMs)).ToList();
+        return Result<IReadOnlyList<(string Name, long CreationUnixMs)>>.Success(
+            response.Buckets.Select(b => (b.Name, b.CreationDateUnixMs)).ToList());
     }
 
     // GET /replication/ping (глава 07 §2/§6): лёгкая подписанная проба линка.
     // rtt — от старта запроса до статус-строки (ResponseHeadersRead); per-target
     // таймаут — linked CTS поверх общего таймаута HttpClient 10 с (глава 07 §2).
-    public async Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
+    public async Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
@@ -125,19 +188,21 @@ public sealed class ReplicationHttpClient : IReplicationTransport
                 timeoutCts.Token);
             sw.Stop();
             // reachable строго при валидном 200 ping-грани (глава 07 §2);
-            // rttMs фиксируется при любом HTTP-ответе (включая не-200)
-            return new PingResult(response.StatusCode == HttpStatusCode.OK,
-                (long)sw.Elapsed.TotalMilliseconds);
+            // любой полученный HTTP-ответ — Success (rttMs не-null, конвенция 01 §4)
+            return Result<PingResult>.Success(new PingResult(response.StatusCode == HttpStatusCode.OK,
+                (long)sw.Elapsed.TotalMilliseconds));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // Per-target таймаут probe — HTTP-ответа нет, rttMs отсутствует
-            return new PingResult(false, null);
+            // Per-target таймаут probe — HTTP-ответа нет — Failed
+            return Result<PingResult>.Failed(new PeerRejectedException(
+                $"probe {target.Name}: таймаут {timeout.TotalMilliseconds:F0} мс"));
         }
-        catch (HttpRequestException)
+        catch (HttpRequestException ex)
         {
-            // Транспортный обрыв (connection refused/DNS) — rttMs отсутствует
-            return new PingResult(false, null);
+            // Транспортный обрыв (connection refused/DNS) — Failed
+            return Result<PingResult>.Failed(new PeerRejectedException(
+                $"probe {target.Name}: обрыв транспорта ({ex.Message})"));
         }
         // Отмена внешнего ct — OperationCanceledException пробрасывается вызывающему
     }
@@ -148,9 +213,25 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     {
         using var request = BuildRequest(target, HttpMethod.Get, "/replication/listing", query,
             payload: null, payloadHash: null);
-        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(ct);
+        try
+        {
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+            if (!response.IsSuccessStatusCode)
+                throw new PeerRejectedException($"HTTP {(int)response.StatusCode} от {target.Name}");
+            return await response.Content.ReadAsByteArrayAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // внешняя отмена — не исход операции
+        }
+        catch (PeerRejectedException)
+        {
+            throw; // уже типизированный отказ — наверх как Failed вызывающего
+        }
+        catch (Exception ex)
+        {
+            throw new PeerRejectedException($"транспорт листинга у {target.Name}: {ex.Message}");
+        }
     }
 
     private static string BuildListingQuery(string bucket, string? marker, int maxKeys)

@@ -58,7 +58,7 @@ public sealed class FakeReconcileTransport : IReplicationTransport
     public Dictionary<string, List<ReplicationListEntry>> Listing { get; } = new();
     public List<(string Name, long CreationUnixMs)> Buckets { get; } = [];
 
-    public Task<ReplicationListingResponse> ListAsync(TargetRecord target, string bucket, string? marker,
+    public Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord target, string bucket, string? marker,
         int maxKeys, CancellationToken ct)
     {
         var keys = Listing.GetValueOrDefault(bucket, []);
@@ -67,27 +67,44 @@ public sealed class FakeReconcileTransport : IReplicationTransport
             from = keys.FindIndex(e => string.CompareOrdinal(e.Key, marker) > 0);
         var page = keys.Skip(from).Take(maxKeys).ToList();
         var next = from + maxKeys < keys.Count ? page[^1].Key : null;
-        return Task.FromResult(new ReplicationListingResponse(page, next));
+        return Task.FromResult(Result<ReplicationListingResponse>.Success(
+            new ReplicationListingResponse(page, next)));
     }
 
     // Гейт длительности прохода (тест «второй Trigger не порождает второй проход»).
     public Func<Task<IReadOnlyList<(string Name, long CreationUnixMs)>>>? ListingBucketsAsyncOverride { get; set; }
 
-    public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord target,
+    public Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord target,
         CancellationToken ct)
     {
         if (ListingBucketsAsyncOverride is not null)
-            return ListingBucketsAsyncOverride();
-        return Task.FromResult<IReadOnlyList<(string, long)>>(Buckets.ToList());
+            return ContinueWithBuckets(ListingBucketsAsyncOverride());
+        return Task.FromResult(Result<IReadOnlyList<(string, long)>>.Success(
+            Buckets.ToList() as IReadOnlyList<(string, long)>));
     }
 
-    public Task<long?> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
+    private static async Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ContinueWithBuckets(
+        Task<IReadOnlyList<(string Name, long CreationUnixMs)>> pending)
+    {
+        // Гейт может бросать (фейк-отказ — ретрай-сценарий): исход — Failed
+        try
+        {
+            return Result<IReadOnlyList<(string Name, long CreationUnixMs)>>.Success(await pending);
+        }
+        catch (Exception ex)
+        {
+            return Result<IReadOnlyList<(string Name, long CreationUnixMs)>>.Failed(
+                new PeerRejectedException($"сосед недоступен (тест): {ex.Message}"));
+        }
+    }
+
+    public Task<Result<long>> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
         throw new NotSupportedException("reconcile не рассылает");
 
-    public Task<FetchResult> FetchObjectAsync(TargetRecord t, string bucket, string key, CancellationToken ct) =>
+    public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord t, string bucket, string key, CancellationToken ct) =>
         throw new NotSupportedException("reconcile фетчит через очередь");
 
-    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+    public Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
         throw new NotSupportedException("reconcile не пингует");
 }
 

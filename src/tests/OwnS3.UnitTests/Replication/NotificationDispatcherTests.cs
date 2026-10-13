@@ -52,12 +52,13 @@ public sealed class NotificationDispatcherFixture : IDisposable
 // Фейк-транспорт: сценарии ответов + журнал отправленных батчей.
 public sealed class FakeTransport : IReplicationTransport
 {
-    // Очередь исходов: null = 429; long = accepted; исключение — Throw.
+    // Очередь исходов: null = 429 (Failed(PeerRejected)); long = accepted (Success);
+    // исключение — Throw.
     public Queue<object?> Outcomes { get; } = new();
     public List<IReadOnlyList<ReplicationEvent>> Sent { get; } = [];
     public Exception? Throw { get; set; }
 
-    public Task<long?> SendNotificationsAsync(TargetRecord target, NotificationBatchRequest batch,
+    public Task<Result<long>> SendNotificationsAsync(TargetRecord target, NotificationBatchRequest batch,
         CancellationToken ct)
     {
         if (Throw is not null)
@@ -68,21 +69,24 @@ public sealed class FakeTransport : IReplicationTransport
         }
         Sent.Add(batch.Events);
         if (Outcomes.Count == 0)
-            return Task.FromResult<long?>(batch.Events.Count > 0 ? batch.Events[^1].SeqNo : 0);
+            return Task.FromResult(Result<long>.Success(
+                batch.Events.Count > 0 ? batch.Events[^1].SeqNo : 0));
         var outcome = Outcomes.Dequeue();
-        return Task.FromResult(outcome as long?);
+        return Task.FromResult(outcome is long ack
+            ? Result<long>.Success(ack)
+            : Result<long>.Failed(new PeerRejectedException("429 (тест)")));
     }
 
-    public Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct) =>
+    public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct) =>
         throw new NotSupportedException("notifier не фетчит");
 
-    public Task<ReplicationListingResponse> ListAsync(TargetRecord target, string bucket, string? marker,
+    public Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord target, string bucket, string? marker,
         int maxKeys, CancellationToken ct) => throw new NotSupportedException("notifier не листит");
 
-    public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord target,
+    public Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord target,
         CancellationToken ct) => throw new NotSupportedException("notifier не листит");
 
-    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+    public Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
         throw new NotSupportedException("notifier не пингует");
 }
 

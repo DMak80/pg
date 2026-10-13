@@ -24,25 +24,15 @@ public sealed class ReplicationProber(ReplicationTargets targets,
         return new ProbeReport(selected.Count > 0, outcomes);
     }
 
-    // Ветка ping одного соседа: гасит свои транспортные исключения (probe
-    // отвечает за все цели); внешняя отмена ct — проброс наверх.
+    // Ветка ping одного соседа: обрыв/таймаут пер-цели — исход false без rttMs
+    // (probe отвечает за все цели, глава 07 §2); внешняя отмена ct — проброс наверх.
     private async Task<ProbeOutcome> PingQuietAsync(TargetRecord target, CancellationToken ct)
     {
-        try
-        {
-            var result = await transport.PingAsync(target,
-                TimeSpan.FromMilliseconds(options.ProbeTimeoutMs), ct);
-            return new ProbeOutcome(target.Name, result.Reachable, result.RttMs);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            // Обрыв/таймаут пер-цели — исход false без rttMs (глава 07 §2)
-            return new ProbeOutcome(target.Name, false, null);
-        }
+        var ping = await transport.PingAsync(target,
+            TimeSpan.FromMilliseconds(options.ProbeTimeoutMs), ct);
+        return ping is { IsSuccess: true, Value: var p }
+            ? new ProbeOutcome(target.Name, p.Reachable, p.RttMs)
+            : new ProbeOutcome(target.Name, false, null);
     }
 }
 

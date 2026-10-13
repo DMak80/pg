@@ -72,29 +72,30 @@ public sealed class FakeFetchTransport : IReplicationTransport
     // Первые N фетчей — сетевой сбой (HttpClientException), затем обычные исходы.
     public int FailuresBeforeSuccess { get; set; }
 
-    public static FetchResult BodyResult(byte[] body, long modMs, string sha) =>
-        new(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"", "application/x-test",
-            new Dictionary<string, string>(), TombstoneUnixMs: null);
+    public static FetchOutcome BodyResult(byte[] body, long modMs, string sha) =>
+        new FetchOutcome.Fetched(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"",
+            "application/x-test", new Dictionary<string, string>());
 
-    public Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
+    public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
     {
         if (FailuresBeforeSuccess > 0)
         {
             FailuresBeforeSuccess--;
-            throw new System.Net.Http.HttpRequestException("источник offline (тест)");
+            return Task.FromResult(Result<FetchOutcome>.Failed(
+                new PeerRejectedException("источник offline (тест)")));
         }
         if (Outcomes.Count == 0)
         {
             var defaultBody = "default"u8.ToArray();
-            return Task.FromResult(BodyResult(defaultBody, 1, Sha(defaultBody)));
+            return Task.FromResult(Result<FetchOutcome>.Success(BodyResult(defaultBody, 1, Sha(defaultBody))));
         }
         var outcome = Outcomes.Dequeue();
         return Task.FromResult(outcome switch
         {
             Exception ex => throw ex,
-            long tomb => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), tomb),
-            null => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), null),
-            FetchResult r => r,
+            long tomb => Result<FetchOutcome>.Success(new FetchOutcome.Tombstone(tomb)),
+            null => Result<FetchOutcome>.Success(new FetchOutcome.KeyNotFound()),
+            FetchOutcome r => Result<FetchOutcome>.Success(r),
             _ => throw new InvalidOperationException("неизвестный исход"),
         });
     }
@@ -102,16 +103,16 @@ public sealed class FakeFetchTransport : IReplicationTransport
     public static string Sha(byte[] body) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant();
 
-    public Task<long?> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
+    public Task<Result<long>> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
         throw new NotSupportedException("фетчер не рассылает");
 
-    public Task<ReplicationListingResponse> ListAsync(TargetRecord t, string bucket, string? marker, int maxKeys,
+    public Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord t, string bucket, string? marker, int maxKeys,
         CancellationToken ct) => throw new NotSupportedException("фетчер не листит");
 
-    public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord t,
+    public Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord t,
         CancellationToken ct) => throw new NotSupportedException("фетчер не листит");
 
-    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+    public Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
         throw new NotSupportedException("fetcher не пингует");
 }
 
