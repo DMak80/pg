@@ -67,7 +67,9 @@ health и метрики, правила запуска. Операции — г
   (ни одна строка матрицы replication-ключ не действует). Ключи
   `read-only`/`read-write`/`admin` на replication-грани — тоже 403
   (изоляция peer-доступа, глава 07 §6). Ключи этой политики клиентам
-  не выдаются.
+  не выдаются. Legacy peer-креды; key-соседи аутентифицируются на
+  replication-грани мимо access keys (схема OWNS3-PEER, глава 07 §6) —
+  записи `auth=key` в кредах не нуждаются.
 - Граница матрицы: справочник бакетов (`HeadBucket`/`ListBuckets`/
   `GetBucketLocation`) доступен всем ролям — нужен целевым клиентам
   (инициализация SDK вызывает локацию/список); мутации бакетов —
@@ -101,10 +103,19 @@ health и метрики, правила запуска. Операции — г
 | `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | `OwnS3:Replication:ReconcileIntervalSeconds` | период reconcile (глава 07 §9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | `OwnS3:Replication:FetchQueueMax` | ёмкость fetch-очереди на источник (глава 07 §7) | **10000** |
 | `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` | `OwnS3:Replication:ProbeTimeoutMs` | per-target таймаут ping-пробы репликационных линков (глава 07 §2) | **2000** |
+| `OWNS3_REPLICATION_CERT` / `OWNS3_REPLICATION_CERT_PATH` | `OwnS3:Replication:Identity:Certificate` / `OwnS3:Replication:Identity:CertificatePath` | сертификат пира (JSON; значение/путь — прецедент TLS, глава 07 §11) | нет — peer-схема не активна |
+| `OWNS3_REPLICATION_PRIVATE_KEY` / `OWNS3_REPLICATION_PRIVATE_KEY_PATH` | `OwnS3:Replication:Identity:PrivateKeyPem` / `OwnS3:Replication:Identity:PrivateKeyPath` | приватный ключ identity (PEM) | нет |
+| `OWNS3_REPLICATION_TRUST_CA` / `OWNS3_REPLICATION_TRUST_CA_PATH` | `OwnS3:Replication:TrustCa:Certificate` / `OwnS3:Replication:TrustCa:CertificatePath` | trust-anchor CA `{"name","publicKeyPem"}` | нет — join-ручной режим |
+| `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` | `OwnS3:Replication:AdvertisedEndpoint` | `scheme://host:port` себя для join | нет |
 
 Материал TLS: задан только один из пары серт/ключ, файл пути не читается
 или PEM невалиден — **отказ старта** (fail-fast, как root-пара п. 1);
 `Shared.Tls` — общая загрузка PEM/путей с воркерами монорепо.
+
+Identity-материал (сертификат/ключ/trust/advertised) — пара
+значение/путь по прецеденту TLS (п. 4); неполная пара (серт без ключа
+и наоборот), битый JSON/PEM, ключ не соответствует сертификату,
+истёкший `expiresAt` — отказ старта (fail-fast).
 
 ## 5. Health и метрики
 
@@ -243,6 +254,17 @@ single-режиме не экспортируются):
   пинг всех (или `?target=`) соседей параллельно, per-target таймаут,
   синхронный ответ `{active, targets:[{name, reachable, rttMs?}]}` (глава
   07 §2). JSON.
+- **`POST /admin/replication/join`** — join-handshake с соседом (тело
+  `{"endpoint"}`): 200 `{"joined":true,"peer"}` / 400 (нет identity,
+  trust-anchor или advertised endpoint — глава 07 §2) / 403, 409
+  (прокси исхода соседа) / 502 (невалидный ответ/транспорт) — глава
+  07 §2.
+- **`DELETE /admin/replication/targets/{name}[?revoke=true]`** —
+  удаление соседа: 202 (курсор сохраняется); `revoke=true` — запись в
+  локальный deny-list (legacy-запись → 400; неизвестное имя → 404) —
+  глава 07 §2.
+- **`GET /admin/replication/denylist`, `DELETE /admin/replication/denylist/{name}`** —
+  список отозванных / снятие отзыва (202) — глава 07 §2.
 
 ## 8. Стенд-сервис erasure-режима
 

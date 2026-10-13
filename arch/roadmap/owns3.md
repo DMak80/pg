@@ -56,3 +56,12 @@ ownS3 — действующее S3-хранилище подсистемы бэ
 multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
+
+- `t39-owns3-repl-pubkey-ca` — асимметричная идентификация репликации
+  ownS3: пары ключей ECDSA P-256 per-сервер (env-поставка без персиста на
+  томе), прикладная подпись `OWNS3-PEER-ECC-P256-SHA256` исходящих
+  replication-запросов для key-записей соседей, опциональный per-install
+  trust-anchor CA + join-handshake по API (двусторонний, оркестратор
+  join-ит пары), двухступенчатое удаление `?revoke=true` с локальным
+  deny-list, CLI `src/OwnS3.Pki` (выпуск CA/серверов). Existing-регресс
+  (legacy SigV4-креды, поведение без identity/CA) — байт-в-байт.
