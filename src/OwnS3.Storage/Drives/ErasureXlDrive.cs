@@ -119,8 +119,10 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var setDisks = _pool.Sets[setIndex];
         var versionId = Guid.NewGuid();
         var stagingGuid = Guid.NewGuid().ToString("N");
-        // Недостижимо после EnsureBucket (BucketExists при пустом сете отказывает
-        // раньше) — мост-идиома: доменный отказ пробрасывается, как сегодня
+        // Гарантия EnsureBucket — бакет-глобальная (все сеты без read-кворума),
+        // НЕ пер-сет: при multi-set сет ключа может быть без онлайн-дисков —
+        // ReadDistribution даст Failed(InsufficientReadQuorum). Бросок пробрасывается
+        // и конвертируется в Failed на границе XlObjectStore (доменный 503)
         var distribution = ReadDistribution(setDisks).Throw().Value;
         var stagingDirs = new Dictionary<ErasureDisk, string>();
         foreach (var disk in setDisks)
@@ -1101,7 +1103,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
             PartResults = new Dictionary<int, ErasurePartResult>(),
             Parity = _defaultParity,
             SetDisks = SetOf(bucket, key),
-            // Недостижимо после EnsureBucket — мост-идиома (см. CreateStaging)
+            // Гарантия EnsureBucket — бакет-глобальная (см. CreateStaging): отказ
+            // ReadDistribution пробрасывается, конвертация — на границе XlObjectStore
             Distribution = ReadDistribution(SetOf(bucket, key)).Throw().Value,
         };
 

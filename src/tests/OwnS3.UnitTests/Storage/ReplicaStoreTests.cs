@@ -172,7 +172,7 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
     }
 
     [Fact]
-    public void ReadKeyState_ОтсутствующийКлюч_TерминальныйSuccessMissing()
+    public void ReadKeyState_ОтсутствующийКлюч_ТерминальныйSuccessMissing()
     {
         // Act
         var lookup = Store.ReadKeyState("b", "no-such-repl-key");

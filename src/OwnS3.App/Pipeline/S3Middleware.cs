@@ -331,5 +331,4 @@ public sealed class S3Middleware(
         return context.Response.WriteAsync(xml);
     }
 
-    // Маппинг доменных кодов Storage в каталог S3-ошибок (имена синхронны).
 }

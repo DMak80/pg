@@ -60,7 +60,7 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
                     case ReplicationEventType.ObjectDelete:
                         // мост t38 (постоянный): отказ применения — исключение из inbox.Handle
                         // → хендлер грани → 503/400+XML соседу → повтор батча (at-least-once);
-                        // BucketNotEmpty уже закрыт RetryQueue'й аплаера (Success)
+                        // BucketNotEmpty уже закрыт RetryQueue'й аплайера (Success)
                         var deleted = applier.ApplyDelete(e.Bucket, e.Key, e.ModTimeUnixMs);
                         if (!deleted.IsSuccess)
                             throw deleted.Error!;
@@ -94,8 +94,8 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
     // → событие закрыто без фетча (skip); старее/нет → fetch-очередь источника.
     private bool HandleObjectPut(string sourceName, ReplicationEvent e)
     {
-        // мост t38: демонтаж в задаче перевода ReplicaApplier (Failed — Throw(),
-        // поведение прежнее)
+        // мост t38 (постоянный): отказ чтения состояния — исключение из Handle
+        // (хендлер → 503/400+XML соседу), поведение прежнее
         var localLookup = store.ReadKeyState(e.Bucket, e.Key);
         var local = localLookup.IsSuccess
             ? localLookup.Value is ReplicaKeyLookup.Found f ? f.State : null

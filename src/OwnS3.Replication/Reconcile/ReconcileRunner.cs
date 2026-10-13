@@ -125,7 +125,7 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
                     var localLookup = store.ReadKeyState(bucket, entry.Key);
                     var local = localLookup.IsSuccess
                         ? localLookup.Value is ReplicaKeyLookup.Found rf ? rf.State : null
-                        : throw localLookup.Error!;
+                        : throw localLookup.Error!; // мост t38 (постоянный): отказ — исключение из прохода
                     var localMod = local?.ModTime.ToUnixTimeMilliseconds() ?? -1;
                     // Решение через LWW-компаратор (та же таблица, что у приёмника —
                     // глава 07 §7): IncomingWins — включая sha-тай-брейк при равных

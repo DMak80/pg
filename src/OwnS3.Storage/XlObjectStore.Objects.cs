@@ -17,9 +17,10 @@ public sealed partial class XlObjectStore
         try
         {
             // 2. Staging драйва (versionId/dataDir — за драйвом, нормализация в WriteMeta)
-            // 3–6. Запись/коммит; ключ не представим xl-путём (сегмент >255 байт,
-            // канон 04 §1) — доменный 400 (чистая функция кодирования бросает
-            // из staging/коммит-пути драйва — конвертация на границе слоя операции)
+            // 3–6. Запись/коммит; экранированные броски драйва конвертируются на границе
+            // слоя операции: ключ не представим xl-путём (сегмент >255 байт, канон 04 §1)
+            // — доменный 400; кворумный отказ staging-пути EC (сет ключа без онлайн-дисков
+            // при бакет-глобальном кворуме EnsureBucket, multi-set) — доменный 503
             using var staging = Drive.CreateStaging(bucket, key);
             // 3. Тело → part.1 (MD5+SHA-256 исходника, fsync — внутри драйва)
             var digestResult = await Drive.WritePartAsync(staging, 1, body, contentLength, ct);
@@ -35,7 +36,7 @@ public sealed partial class XlObjectStore
             await Task.Yield(); // async-контракт при синхронном файловом IO (P4)
             return Drive.Commit(bucket, key, record, staging);
         }
-        catch (XlInvalidArgumentException ex)
+        catch (Exception ex) when (ex is ObjectStoreException or XlInvalidArgumentException)
         {
             return Result<PutResult>.Failed(ex);
         }

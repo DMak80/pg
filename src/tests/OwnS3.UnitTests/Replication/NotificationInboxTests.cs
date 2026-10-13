@@ -123,7 +123,7 @@ public class NotificationInboxTests : IClassFixture<NotificationInboxFixture>
     [Fact]
     public void Handle_ApplyDeleteFails_ThrowsOut_NoAck()
     {
-        // Arrange — аплаер со стором, ReadKeyState которого отказывает (кворум):
+        // Arrange — аплайер со стором, ReadKeyState которого отказывает (кворум):
         // ApplyDelete вернёт Failed → мост бросает → Handle — исключение наружу
         var failingStore = new FailingReadStore(_fixture.Store);
         var failingApplier = new ReplicaApplier(failingStore, _fixture.Tombstones,

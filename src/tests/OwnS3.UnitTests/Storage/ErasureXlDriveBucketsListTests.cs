@@ -209,6 +209,41 @@ public class ErasureXlDriveBucketsListTests : IDisposable
     }
 
     [Fact]
+    public async Task Put_SetOfKeyFullyOffline_FailedInsufficientReadQuorum()
+    {
+        // Arrange: multi-set 2×4; бакет создан при обоих сетах онлайн, затем сет 1
+        // целиком офлайн (сет 0 жив — бакет-глобальный read-кворум обеспечен)
+        _drive.CreateBucket("besc");
+        const int deadSet = 1;
+        foreach (var disk in _pool.Sets[deadSet])
+            Directory.Delete(disk.Root, recursive: true);
+        _pool.RefreshOnline();
+        // ключ, чей сет (SIPMOD) — мёртвый
+        var key = Enumerable.Range(0, 64).Select(i => "esc-" + i)
+            .First(k => _pool.PickSetIndex("besc", k) == deadSet);
+
+        // Act (драйв): CreateStaging — ReadDistribution сета без онлайн-дисков
+        var act = () => _drive.CreateStaging("besc", key);
+
+        // Assert — кворумный отказ пробрасывается драйвом (не Failed: конвертация
+        // на границе XlObjectStore), как и в main до миграции
+        act.Should().Throw<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
+
+        // Act/Assert (стор): граничная конвертация → Failed с кодом (503 через
+        // транслятор — как в main), а не 500 InternalError
+        var store = new XlObjectStore(_drive, TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<XlObjectStore>.Instance);
+        var result = await store.PutObjectAsync("besc", key, new MemoryStream(new byte[16]), 16,
+            new ObjectUploadMetadata("text/plain", new Dictionary<string, string>()),
+            TestContext.Current.CancellationToken);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
+    }
+
+    [Fact]
     public async Task EnumerateObjects_BrokenMetaOnOneDisk_EmitsFromHealthyDisk()
     {
         // Arrange

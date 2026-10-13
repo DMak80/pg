@@ -22,9 +22,12 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
         {
             staging = drive.CreateStaging(bucket, key);
         }
-        catch (XlInvalidArgumentException ex)
+        catch (Exception ex) when (ex is ObjectStoreException or XlInvalidArgumentException)
         {
-            // Ключ не представим xl-путём (сегмент >255 байт, канон 04 §1) — доменный 400
+            // Экранированные броски драйва — конвертация на границе слоя (фетчер
+            // получает Error-исход → повтор по бэкоффу): ключ не представим xl-путём
+            // (сегмент >255 байт, канон 04 §1) — доменный 400; кворумный отказ
+            // staging-пути EC (сет ключа без онлайн-дисков, multi-set) — доменный 503
             return Result.Failed(ex);
         }
 

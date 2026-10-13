@@ -127,9 +127,10 @@ public sealed partial class XlObjectStore
             return Result<PutResult>.Failed(resolved.Error!);
         try
         {
-            // staging части ВНУТРИ загрузки; ключ не представим xl-путём (сегмент
-            // >255 байт, канон 04 §1) — доменный 400 (чистая функция кодирования
-            // бросает из staging/журнального пути драйва — конвертация на границе)
+            // staging части ВНУТРИ загрузки; экранированные броски драйва — конвертация
+            // на границе слоя операции: ключ не представим xl-путём (сегмент >255 байт,
+            // канон 04 §1) — доменный 400; кворумный отказ staging-пути EC (сет ключа
+            // без онлайн-дисков, multi-set) — доменный 503
             using var staging = Drive.CreateUploadStaging(bucket, key, uploadId);
             // Тело: MD5-инкремент + счётчик + fsync (длина ≠ contentLength →
             // XlIntegrityException; staging-tmp удаляется Dispose при отказе)
@@ -157,7 +158,7 @@ public sealed partial class XlObjectStore
             return Result<PutResult>.Success(
                 new PutResult('"' + digest.ETagHex + '"', modTime, digest.Length, digest.Sha256Hex));
         }
-        catch (XlInvalidArgumentException ex)
+        catch (Exception ex) when (ex is ObjectStoreException or XlInvalidArgumentException)
         {
             return Result<PutResult>.Failed(ex);
         }

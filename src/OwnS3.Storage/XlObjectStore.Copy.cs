@@ -34,9 +34,10 @@ public sealed partial class XlObjectStore
             var ensuredDest = EnsureBucket(request.DestBucket);
             if (!ensuredDest.IsSuccess)
                 return Result<PutResult>.Failed(ensuredDest.Error!);
-            // Ключ не представим xl-путём (сегмент >255 байт, канон 04 §1) —
-            // доменный 400; чистая функция кодирования бросает из staging/коммит-пути
-            // драйва — конвертация на границе слоя операции
+            // Экранированные броски драйва — конвертация на границе слоя операции:
+            // ключ не представим xl-путём (сегмент >255 байт, канон 04 §1) — доменный 400;
+            // кворумный отказ staging-пути EC (сет приёмника без онлайн-дисков,
+            // multi-set) — доменный 503
             using var staging = Drive.CreateStaging(request.DestBucket, request.DestKey);
             var copied = Drive.CopyPartsToStaging(staging, request.SourceBucket, request.SourceKey, src);
             if (!copied.IsSuccess)
@@ -54,7 +55,7 @@ public sealed partial class XlObjectStore
             await Task.Yield(); // async-контракт при синхронном файловом IO
             return Drive.Commit(request.DestBucket, request.DestKey, record, staging);
         }
-        catch (XlInvalidArgumentException ex)
+        catch (Exception ex) when (ex is ObjectStoreException or XlInvalidArgumentException)
         {
             return Result<PutResult>.Failed(ex);
         }
