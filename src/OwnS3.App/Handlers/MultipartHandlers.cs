@@ -26,8 +26,8 @@ public static class MultipartHandlers
             var metadata = ObjectHandlers.UploadMetadata(context, contentTypeDefault: "application/octet-stream");
 
             // Act: инициатор — владелец загрузки в uploads.json (канон 05 §3)
-            var uploadId = await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata,
-                context.Request.Identity!.AccessKey, ct);
+            var uploadId = (await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata,
+                context.Request.Identity!.AccessKey, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: InitiateMultipartUploadResult
             await context.WriteXmlAsync(S3Xml.Serialize(new InitiateMultipartUploadResult
@@ -61,8 +61,8 @@ public static class MultipartHandlers
                 md5.Length > 0 ? md5 : null);
 
             // Act
-            var result = await Store.UploadPartAsync(context.Bucket, context.Key, uploadId, partNumber,
-                body, contentLength, ct);
+            var result = (await Store.UploadPartAsync(context.Bucket, context.Key, uploadId, partNumber,
+                body, contentLength, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: 200 + ETag части
             context.Response.StatusCode = 200;
@@ -87,8 +87,8 @@ public static class MultipartHandlers
                 [.. manifest.Parts.Select(p => (p.PartNumber, p.ETag))]);
 
             // Act
-            var result = await Store.CompleteMultipartUploadAsync(context.Bucket, context.Key, uploadId,
-                [.. manifest.Parts.Select(p => new PartEtag(p.PartNumber, p.ETag))], ct);
+            var result = (await Store.CompleteMultipartUploadAsync(context.Bucket, context.Key, uploadId,
+                [.. manifest.Parts.Select(p => new PartEtag(p.PartNumber, p.ETag))], ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Событие репликации object-put собранного объекта (глава 07 §3)
             replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
@@ -113,7 +113,7 @@ public static class MultipartHandlers
             // Validate / Act: NoSuchUpload-исход — от Storage (глава 02)
             BucketHandlers.EnsureBucketName(context.Bucket);
             ObjectHandlers.EnsureObjectKey(context.Key);
-            await Store.AbortMultipartUploadAsync(context.Bucket, context.Key, RequiredQuery(context, "uploadId"), ct);
+            (await Store.AbortMultipartUploadAsync(context.Bucket, context.Key, RequiredQuery(context, "uploadId"), ct)).Throw(); // мост t38: демонтаж в задаче App-финала
 
             // Respond: 204 No Content
             context.Response.StatusCode = 204;
@@ -140,9 +140,9 @@ public static class MultipartHandlers
                 : UploadVisibility.AllUploads;
 
             // Act
-            var page = await Store.ListPartsAsync(context.Bucket, context.Key, uploadId,
+            var page = (await Store.ListPartsAsync(context.Bucket, context.Key, uploadId,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
-                marker == 0 ? null : marker, visibility, ct);
+                marker == 0 ? null : marker, visibility, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListPartsResult (Initiator/Owner — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListPartsResult
@@ -185,10 +185,10 @@ public static class MultipartHandlers
                 : UploadVisibility.AllUploads;
 
             // Act
-            var page = await Store.ListMultipartUploadsAsync(context.Bucket, new UploadsQuery(
+            var page = (await Store.ListMultipartUploadsAsync(context.Bucket, new UploadsQuery(
                 prefix, delimiter, keyMarker, uploadIdMarker,
                 maxUploads == OperationValidation.DefaultPagingLimit ? null : maxUploads, encodingType,
-                visibility), ct);
+                visibility), ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListMultipartUploadsResult (Owner/Initiator — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListMultipartUploadsResult

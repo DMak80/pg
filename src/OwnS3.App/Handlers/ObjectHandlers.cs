@@ -47,7 +47,10 @@ public static class ObjectHandlers
             PutResult result;
             try
             {
-                result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+                // мост t38: демонтаж в задаче App-финала — Failed бросает Error,
+                // ловится тем же catch → drain → проброс (drain-семантика сохранена)
+                result = (await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength,
+                    metadata, ct)).Throw().Value;
             }
             catch
             {
@@ -78,7 +81,7 @@ public static class ObjectHandlers
             var options = ReadOptions(context);
 
             // Act
-            var content = await Store.GetObjectAsync(context.Bucket, context.Key, options, ct);
+            var content = (await Store.GetObjectAsync(context.Bucket, context.Key, options, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: 304 без тела с ETag/Last-Modified; 206 + Content-Range при
             // применённом Range; иначе 200 (глава 02 §1)
@@ -125,7 +128,7 @@ public static class ObjectHandlers
             var options = ReadOptions(context);
 
             // Act
-            var content = await Store.HeadObjectAsync(context.Bucket, context.Key, options, ct);
+            var content = (await Store.HeadObjectAsync(context.Bucket, context.Key, options, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: те же исходы, что GetObject, без тела (глава 02 §1)
             var metadata = content.Metadata;
@@ -165,7 +168,7 @@ public static class ObjectHandlers
             // Validate / Act (идемпотентен — 204 и для отсутствующего)
             BucketHandlers.EnsureBucketName(context.Bucket);
             EnsureObjectKey(context.Key);
-            await Store.DeleteObjectAsync(context.Bucket, context.Key, ct);
+            (await Store.DeleteObjectAsync(context.Bucket, context.Key, ct)).Throw(); // мост t38: демонтаж в задаче App-финала
 
             // Событие + локальный tombstone — после delete-коммита (глава 07 §3/§7)
             replication.ClientObjectDeleted(context.Bucket, context.Key,
@@ -200,7 +203,7 @@ public static class ObjectHandlers
             OperationValidation.ValidateDeleteKeys(keys.Count);
 
             // Act
-            var results = await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct);
+            var results = (await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Событие на каждый удалённый ключ + tombstones (глава 07 §3)
             var deletedAt = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
@@ -239,9 +242,9 @@ public static class ObjectHandlers
             var newMetadata = directive == "REPLACE" ? UploadMetadata(context, contentTypeDefault: null) : null;
 
             // Act
-            var result = await Store.CopyObjectAsync(new CopyRequest(
+            var result = (await Store.CopyObjectAsync(new CopyRequest(
                 sourceBucket, sourceKey, context.Bucket, context.Key,
-                directive == "REPLACE", newMetadata, CopyConditions(context)), ct);
+                directive == "REPLACE", newMetadata, CopyConditions(context)), ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Событие репликации object-put копии (глава 07 §3)
             replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
@@ -277,19 +280,19 @@ public static class ObjectHandlers
             var conditions = ReadOptions(context).Conditions;
 
             // Act
-            var result = await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
+            var outcome = (await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
-                partNumberMarker == 0 ? null : partNumberMarker, conditions, ct);
+                partNumberMarker == 0 ? null : partNumberMarker, conditions, ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: Not-Modified → 304 без тела с ETag/Last-Modified (P10)
-            if (result.NotModifiedMetadata is { } nm)
+            if (outcome is GetAttributesOutcome.NotModified nm)
             {
                 context.Response.StatusCode = 304;
-                context.Response.Headers.ETag = nm.ETag;
-                context.Response.Headers.LastModified = nm.LastModified.ToString("R");
+                context.Response.Headers.ETag = nm.Metadata.ETag;
+                context.Response.Headers.LastModified = nm.Metadata.LastModified.ToString("R");
                 return;
             }
-            var attrs = result.Attributes!;
+            var attrs = ((GetAttributesOutcome.Full)outcome).Attributes;
 
             // GetObjectAttributesOutput — только запрошенные элементы
             var requested = new HashSet<string>(context.Http.Headers["x-amz-object-attributes"].ToString()

@@ -23,8 +23,8 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
-                prefix, delimiter, marker, null, null, maxKeys, encodingType, false, ListVariant.V1), ct);
+            var page = (await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+                prefix, delimiter, marker, null, null, maxKeys, encodingType, false, ListVariant.V1), ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListBucketResult v1-вид
             await context.WriteXmlAsync(S3Xml.Serialize(new ListBucketResult
@@ -63,8 +63,8 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
-                prefix, delimiter, null, startAfter, continuationToken, maxKeys, encodingType, fetchOwner, ListVariant.V2), ct);
+            var page = (await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+                prefix, delimiter, null, startAfter, continuationToken, maxKeys, encodingType, fetchOwner, ListVariant.V2), ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListBucketResult V2-вид (KeyCount, ContinuationToken)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListBucketResult
@@ -107,8 +107,8 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
-                prefix, delimiter, keyMarker, null, null, maxKeys, encodingType, false, ListVariant.Versions), ct);
+            var page = (await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+                prefix, delimiter, keyMarker, null, null, maxKeys, encodingType, false, ListVariant.Versions), ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListVersionsResult — unversioned-вид без VersionId/IsLatest
             await context.WriteXmlAsync(S3Xml.Serialize(new ListVersionsResult

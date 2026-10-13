@@ -7,31 +7,32 @@ public sealed partial class XlObjectStore
         new Dictionary<string, string>();
 
     // Существует → BucketAlreadyOwnedByYou; иначе каталоги + bucket.json (drive).
-    public Task CreateBucketAsync(string bucket, CancellationToken ct)
+    public Task<Result> CreateBucketAsync(string bucket, CancellationToken ct)
     {
-        // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
-        if (Drive.BucketExists(bucket).Throw().Value)
-            throw new ObjectStoreException(ObjectStoreErrorCode.BucketAlreadyOwnedByYou);
-        Drive.CreateBucket(bucket).Throw(); // мост t38
-        return Task.CompletedTask;
+        var exists = Drive.BucketExists(bucket);
+        if (!exists.IsSuccess)
+            return Task.FromResult(Result.Failed(exists.Error!)); // кворумный отказ — Failed («503», канон 06 §7)
+        if (exists.Value)
+            return Task.FromResult(Result.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.BucketAlreadyOwnedByYou)));
+        return Task.FromResult(Drive.CreateBucket(bucket));
     }
 
     // Нет → NoSuchBucket; emptiness-проверка (объекты/живые загрузки) →
     // BucketNotEmpty; иначе trash — всё в drive.
-    public Task DeleteBucketAsync(string bucket, CancellationToken ct)
+    public Task<Result> DeleteBucketAsync(string bucket, CancellationToken ct)
     {
-        EnsureBucket(bucket);
-        Drive.DeleteBucket(bucket).Throw(); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
-        return Task.CompletedTask;
+        var ensured = EnsureBucket(bucket);
+        if (!ensured.IsSuccess)
+            return Task.FromResult(ensured);
+        return Task.FromResult(Drive.DeleteBucket(bucket));
     }
 
     // Каталог существует и не служебный.
-    public Task<bool> BucketExistsAsync(string bucket, CancellationToken ct) =>
-        // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
-        Task.FromResult(Drive.BucketExists(bucket).Throw().Value);
+    public Task<Result<bool>> BucketExistsAsync(string bucket, CancellationToken ct) =>
+        Task.FromResult(Drive.BucketExists(bucket));
 
     // Сортировка Utf8ByteOrder + CreationDate из bucket.json — drive.
-    public Task<IReadOnlyList<BucketEntry>> ListBucketsAsync(CancellationToken ct) =>
-        // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
-        Task.FromResult(Drive.ListBuckets().Throw().Value);
+    public Task<Result<IReadOnlyList<BucketEntry>>> ListBucketsAsync(CancellationToken ct) =>
+        Task.FromResult(Drive.ListBuckets());
 }

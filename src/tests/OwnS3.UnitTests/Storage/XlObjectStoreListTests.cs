@@ -27,8 +27,8 @@ public class XlObjectStoreListTests(StoreFixture fixture) : IClassFixture<StoreF
         await Store.PutObjectAsync(bucket, key, new MemoryStream(Encoding.UTF8.GetBytes(content)),
             Encoding.UTF8.GetByteCount(content), Meta, TestContext.Current.CancellationToken);
 
-    private Task<ListPage> ListAsync(string bucket, ListQuery query) =>
-        Store.ListObjectsAsync(bucket, query, TestContext.Current.CancellationToken);
+    private async Task<ListPage> ListAsync(string bucket, ListQuery query) =>
+        (await Store.ListObjectsAsync(bucket, query, TestContext.Current.CancellationToken)).Throw().Value;
 
     private static ListQuery Q(string? prefix = null, string? delimiter = null, string? marker = null,
         string? startAfter = null, string? token = null, int? maxKeys = null, ListVariant variant = ListVariant.V2) =>
@@ -245,11 +245,12 @@ public class XlObjectStoreListTests(StoreFixture fixture) : IClassFixture<StoreF
         await PutAsync(b, "k1");
 
         // Act: не-base64url токен
-        var act = async () => await ListAsync(b, Q(token: "не токен!!"));
+        var result = await Store.ListObjectsAsync(b, Q(token: "не токен!!"), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<XlInvalidArgumentException>()
-            .WithMessage("Invalid continuation token");
+        // Assert — битый токен — Failed (400-семантика, конвенция 01 §4)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<XlInvalidArgumentException>()
+            .Which.Message.Should().Be("Invalid continuation token");
     }
 
     [Fact]
@@ -405,13 +406,13 @@ public class XlObjectStoreListTests(StoreFixture fixture) : IClassFixture<StoreF
     [Fact]
     public async Task MissingBucket_NoSuchBucket()
     {
-        // Arrange / Act
-        var act = async () => await Store.ListObjectsAsync("missing", Q(),
-            TestContext.Current.CancellationToken);
+        // Act
+        var result = await Store.ListObjectsAsync("missing", Q(), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отсутствие бакета — доменный NoSuchBucket (Failed)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 
     [Fact]

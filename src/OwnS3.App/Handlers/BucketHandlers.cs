@@ -26,7 +26,7 @@ public static class BucketHandlers
         public override async Task HandleAsync(S3HandlerContext context, CancellationToken ct)
         {
             // Act: список всех бакетов тома
-            var buckets = await Store.ListBucketsAsync(ct);
+            var buckets = (await Store.ListBucketsAsync(ct)).Throw().Value; // мост t38: демонтаж в задаче App-финала
 
             // Respond: ListAllMyBucketsResult с Owner-заполнителем ownS3, по алфавиту
             var result = new ListAllMyBucketsResult
@@ -58,7 +58,7 @@ public static class BucketHandlers
             }
 
             // Act
-            await Store.CreateBucketAsync(context.Bucket, ct);
+            (await Store.CreateBucketAsync(context.Bucket, ct)).Throw(); // мост t38: демонтаж в задаче App-финала
 
             // Событие репликации bucket-create — после коммита (глава 07 §3)
             replication.BucketCreated(context.Bucket, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
@@ -78,7 +78,7 @@ public static class BucketHandlers
         {
             // Validate / Act
             EnsureBucketName(context.Bucket);
-            await Store.DeleteBucketAsync(context.Bucket, ct);
+            (await Store.DeleteBucketAsync(context.Bucket, ct)).Throw(); // мост t38: демонтаж в задаче App-финала
 
             // Событие репликации bucket-delete — после коммита (глава 07 §3)
             replication.BucketDeleted(context.Bucket, timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
@@ -96,7 +96,8 @@ public static class BucketHandlers
         {
             // Validate / Act
             EnsureBucketName(context.Bucket);
-            if (!await Store.BucketExistsAsync(context.Bucket, ct))
+            // мост t38: демонтаж в задаче App-финала (кворумный отказ — Failed → бросок Error)
+            if (!(await Store.BucketExistsAsync(context.Bucket, ct)).Throw().Value)
                 throw new OwnS3.Protocol.Errors.S3ProtocolException(OwnS3.Protocol.Errors.S3ErrorCode.NoSuchBucket);
 
             // Respond: 200 + регион (HEAD — без тела)

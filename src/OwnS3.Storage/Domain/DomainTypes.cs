@@ -29,9 +29,8 @@ public sealed record AppliedByteRange(long Start, long End, long Total);
 // Range != null: применённый диапазон; Body — Stream части объекта (у Head — Stream.Null).
 public sealed record ObjectContent(ObjectMetadata Metadata, Stream Body, bool NotModified, AppliedByteRange? Range);
 
-// Исход GetObjectAttributes (P10): NotModifiedMetadata != null → 304 (Metadata несёт
-// ETag/LastModified для заголовков); иначе Attributes заполнены.
-public sealed record ObjectAttributesResult(ObjectAttributes? Attributes, ObjectMetadata? NotModifiedMetadata);
+// Исход GetObjectAttributes — Result<GetAttributesOutcome> (NotModified|Full —
+// терминальные Success-варианты); отдельный DTO-дискриминатор не нужен.
 
 public sealed record CopyRequest(string SourceBucket, string SourceKey, string DestBucket, string DestKey,
     bool ReplaceMetadata, ObjectUploadMetadata? NewMetadata, ObjectConditions? SourceConditions);
