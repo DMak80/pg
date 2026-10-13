@@ -77,48 +77,53 @@ public sealed class ReplicationHttpClient : IReplicationTransport
                 $"транспорт фетча у {target.Name}: {ex.Message}"));
         }
 
-        using (response)
+        // ВАЖНО: response НЕ диспозится здесь — поток тела (Fetched) живёт дольше
+        // вызова (фетчер читает его в применении и закрывает сам); диспоз внутрь
+        // using закрыл бы тело до чтения. Не-успешные ветки дисрозят явно.
+        if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            if (response.StatusCode == HttpStatusCode.NotFound)
-            {
-                // Ключ неизвестен — приёмник состояние не меняет (глава 07 §6);
-                // терминальный Success-вариант
-                return Result<FetchOutcome>.Success(new FetchOutcome.KeyNotFound());
-            }
-            if (!response.IsSuccessStatusCode)
-                return Result<FetchOutcome>.Failed(new PeerRejectedException(
-                    $"HTTP {(int)response.StatusCode} от {target.Name}"));
-
-            var headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
-                StringComparer.OrdinalIgnoreCase)
-                .Union(response.Content.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
-                    StringComparer.OrdinalIgnoreCase))
-                .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
-
-            // Tombstone-ответ: ключ удалён, тела нет (глава 07 §6)
-            if (headers.TryGetValue("x-owns3-repl-tombstone", out var tombstoneText)
-                && long.TryParse(tombstoneText, out var tombstone))
-            {
-                await response.Content.ReadAsByteArrayAsync(ct); // дочитать тело ответа
-                return Result<FetchOutcome>.Success(new FetchOutcome.Tombstone(tombstone));
-            }
-
-            var userMetadata = headers.Where(h => h.Key.StartsWith("x-amz-meta-", StringComparison.OrdinalIgnoreCase))
-                .ToDictionary(h => h.Key["x-amz-meta-".Length..], h => h.Value, StringComparer.Ordinal);
-            headers.TryGetValue("x-owns3-repl-modtime", out var modTimeText);
-            headers.TryGetValue("x-owns3-repl-sha256", out var sha);
-            headers.TryGetValue("x-owns3-repl-etag", out var etag);
-            var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
-            var body = await response.Content.ReadAsStreamAsync(ct);
-            return Result<FetchOutcome>.Success(new FetchOutcome.Fetched(
-                body,
-                response.Content.Headers.ContentLength ?? -1,
-                long.TryParse(modTimeText, out var modTime) ? modTime : 0,
-                sha ?? string.Empty,
-                etag ?? string.Empty,
-                contentType,
-                userMetadata));
+            response.Dispose();
+            // Ключ неизвестен — приёмник состояние не меняет (глава 07 §6);
+            // терминальный Success-вариант
+            return Result<FetchOutcome>.Success(new FetchOutcome.KeyNotFound());
         }
+        if (!response.IsSuccessStatusCode)
+        {
+            response.Dispose();
+            return Result<FetchOutcome>.Failed(new PeerRejectedException(
+                $"HTTP {(int)response.StatusCode} от {target.Name}"));
+        }
+
+        var headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
+            StringComparer.OrdinalIgnoreCase)
+            .Union(response.Content.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value),
+                StringComparer.OrdinalIgnoreCase))
+            .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+
+        // Tombstone-ответ: ключ удалён, тела нет (глава 07 §6)
+        if (headers.TryGetValue("x-owns3-repl-tombstone", out var tombstoneText)
+            && long.TryParse(tombstoneText, out var tombstone))
+        {
+            await response.Content.ReadAsByteArrayAsync(ct); // дочитать тело ответа
+            response.Dispose();
+            return Result<FetchOutcome>.Success(new FetchOutcome.Tombstone(tombstone));
+        }
+
+        var userMetadata = headers.Where(h => h.Key.StartsWith("x-amz-meta-", StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(h => h.Key["x-amz-meta-".Length..], h => h.Value, StringComparer.Ordinal);
+        headers.TryGetValue("x-owns3-repl-modtime", out var modTimeText);
+        headers.TryGetValue("x-owns3-repl-sha256", out var sha);
+        headers.TryGetValue("x-owns3-repl-etag", out var etag);
+        var contentType = response.Content.Headers.ContentType?.ToString() ?? string.Empty;
+        var body = await response.Content.ReadAsStreamAsync(ct);
+        return Result<FetchOutcome>.Success(new FetchOutcome.Fetched(
+            body,
+            response.Content.Headers.ContentLength ?? -1,
+            long.TryParse(modTimeText, out var modTime) ? modTime : 0,
+            sha ?? string.Empty,
+            etag ?? string.Empty,
+            contentType,
+            userMetadata));
     }
 
     public async Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord target, string bucket, string? marker,

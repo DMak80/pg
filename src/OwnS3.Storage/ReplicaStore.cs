@@ -47,6 +47,16 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
                 return Result.Failed(metaResult.Error!);
             return drive.Commit(bucket, key, record, staging);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // graceful stop — не исход операции
+        }
+        catch (Exception ex)
+        {
+            // Технический отказ чтения тела/записи (обрыв сети фетчера, IO диска) —
+            // Failed по конвенции 01 §4: ошибки стора не летят через границу интерфейса
+            return Result.Failed(ex);
+        }
         finally
         {
             // Сбой/мисматч: staging сносится; после успешного Commit — безвреден
