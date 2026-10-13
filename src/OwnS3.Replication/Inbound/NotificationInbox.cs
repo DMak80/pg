@@ -58,15 +58,26 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
                             return null; // fetch-очередь полна — 429
                         break;
                     case ReplicationEventType.ObjectDelete:
-                        applier.ApplyDelete(e.Bucket, e.Key, e.ModTimeUnixMs);
+                        // мост t38 (постоянный): отказ применения — исключение из inbox.Handle
+                        // → хендлер грани → 503/400+XML соседу → повтор батча (at-least-once);
+                        // BucketNotEmpty уже закрыт RetryQueue'й аплаера (Success)
+                        var deleted = applier.ApplyDelete(e.Bucket, e.Key, e.ModTimeUnixMs);
+                        if (!deleted.IsSuccess)
+                            throw deleted.Error!;
                         counters.Applied(sourceName);
                         break;
                     case ReplicationEventType.BucketCreate:
-                        applier.ApplyBucketCreate(e.Bucket, e.ModTimeUnixMs);
+                        // мост t38 (постоянный): см. ObjectDelete
+                        var created = applier.ApplyBucketCreate(e.Bucket, e.ModTimeUnixMs);
+                        if (!created.IsSuccess)
+                            throw created.Error!;
                         counters.Applied(sourceName);
                         break;
                     case ReplicationEventType.BucketDelete:
-                        applier.ApplyBucketDelete(e.Bucket);
+                        // мост t38 (постоянный): см. ObjectDelete
+                        var removed = applier.ApplyBucketDelete(e.Bucket);
+                        if (!removed.IsSuccess)
+                            throw removed.Error!;
                         counters.Applied(sourceName);
                         break;
                     default:

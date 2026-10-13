@@ -122,6 +122,19 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
 
     private static byte[] Body(string content) => Encoding.UTF8.GetBytes(content);
 
+    // Тело, чей SHA-256 hex начинается с заданного символа (перебор суффикса):
+    // лексикографический порядок sha-hex — тай-брейк конфликта канона 07 §7.
+    private static byte[] BodyWithShaHexStarting(char hexChar)
+    {
+        for (var i = 0; i < 1_000_000; i++)
+        {
+            var body = Encoding.UTF8.GetBytes("conflict-body-" + i);
+            if (FakeFetchTransport.Sha(body)[0] == hexChar)
+                return body;
+        }
+        throw new InvalidOperationException("не подобрано тело с sha-префиксом " + hexChar);
+    }
+
     [Fact]
     public async Task FetchBody_AppliedWithSourceMetadata()
     {
@@ -143,6 +156,73 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         state.ContentSha256Hex.Should().Be(FakeFetchTransport.Sha(Body(content)));
         _fixture.Counters.AppliedCount.Should().Be(1);
         _fixture.Counters.FetchedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Fetch_ConflictApplied_IncrementsConflictAndApplied()
+    {
+        // Arrange — локальная запись с modTime=M и sha «aaa…» (запись несёт sha
+        // ИСТОЧНИКА); фетч приносит равный modTime и тело, чей РЕАЛЬНЫЙ sha-hex
+        // начинается с «f» — лексикографически БОЛЬШЕ «aaa…»: тай-брейк за incoming
+        // (07 §7), конфликтная победа incoming → применено. sha в fetch — реальный
+        // хэш тела: стор сверяет тело с заголовком (x-owns3-repl-sha256).
+        const string bucket = "bcfa";
+        _fixture.Store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var localSha = new string('a', 64);
+        await _fixture.Store.ApplyObjectAsync(bucket, "c", new MemoryStream(Body("local")),
+            5, new ReplicaObjectMetadata(DateTimeOffset.FromUnixTimeMilliseconds(1000), "e", localSha,
+                "text/plain", new Dictionary<string, string>()),
+            FakeFetchTransport.Sha(Body("local")), TestContext.Current.CancellationToken);
+        var incomingBody = BodyWithShaHexStarting('f');
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(
+            incomingBody, 1000, FakeFetchTransport.Sha(incomingBody)));
+        _fixture.Queue.TryEnqueue(new FetchTask(bucket, "c", 1000));
+        var fetcher = _fixture.Create();
+
+        // Act
+        using var cts = new CancellationTokenSource();
+        await fetcher.DrainAsync(cts.Token);
+
+        // Assert — ConflictApplied → конфликт И applied (ОБА счётчика — канон 07 §10,
+        // conflicts_total не занижается)
+        _fixture.Counters.ConflictCount.Should().Be(1);
+        _fixture.Counters.AppliedCount.Should().Be(1);
+        _fixture.Counters.FetchedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Fetch_ConflictSkipped_IncrementsConflictAndSkipped()
+    {
+        // Arrange — локальная запись с modTime=M и sha «fff…» (лексикографически больший);
+        // фетч приносит равный modTime и тело, чей РЕАЛЬНЫЙ sha-hex начинается с «0» —
+        // МЕНЬШЕ «fff…»: тай-брейк за локальную, конфликтный LocalWins → входящая
+        // не применена (тело фетчем получено, но skipped — чтения для применения нет)
+        const string bucket = "bcfs";
+        _fixture.Store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var localSha = new string('f', 64);
+        await _fixture.Store.ApplyObjectAsync(bucket, "s", new MemoryStream(Body("local")),
+            5, new ReplicaObjectMetadata(DateTimeOffset.FromUnixTimeMilliseconds(1000), "e", localSha,
+                "text/plain", new Dictionary<string, string>()),
+            FakeFetchTransport.Sha(Body("local")), TestContext.Current.CancellationToken);
+        var incomingBody = BodyWithShaHexStarting('0');
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(
+            incomingBody, 1000, FakeFetchTransport.Sha(incomingBody)));
+        _fixture.Queue.TryEnqueue(new FetchTask(bucket, "s", 1000));
+        var fetcher = _fixture.Create();
+
+        // Act
+        using var cts = new CancellationTokenSource();
+        await fetcher.DrainAsync(cts.Token);
+
+        // Assert — ConflictSkipped → конфликт И skipped (ОБА счётчика — канон 07 §10);
+        // локальная версия не перезаписана
+        _fixture.Counters.ConflictCount.Should().Be(1);
+        _fixture.Counters.SkippedCount.Should().Be(1);
+        _fixture.Counters.AppliedCount.Should().Be(0);
+        var kept = _fixture.Store.ReadKeyState(bucket, "s").Throw().Value is ReplicaKeyLookup.Found f
+            ? f.State
+            : throw new InvalidOperationException("локальная запись потеряна после ConflictSkipped");
+        kept.ContentSha256Hex.Should().Be(localSha);
     }
 
     [Fact]

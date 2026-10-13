@@ -164,6 +164,33 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
     }
 
     [Fact]
+    public async Task ApplyObject_ConflictLocalWins_ConflictSkipped()
+    {
+        // Arrange — равные modTime, разные sha; локальный sha лексикографически БОЛЬШЕ
+        // (тай-брейк канона 07 §7 в пользу локальной)
+        const string bucket = "bcfl2", key = "conflict-local";
+        var shaLocal = new string('b', 64);
+        await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("local-body")),
+            10, MetaOf("local-body", sha: shaLocal), Sha256Hex("local-body"),
+            TestContext.Current.CancellationToken);
+        var incomingSha = new string('a', 64); // лексикографически меньше "bbb…b"
+
+        // Act — входящий с равным modTime и меньшим sha
+        var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("incoming-body")),
+            13, MetaOf("incoming-body", sha: incomingSha), Sha256Hex("incoming-body"),
+            TestContext.Current.CancellationToken);
+
+        // Assert — ConflictSkipped: конфликт зафиксирован, входящая НЕ применена,
+        // локальная версия не перезаписана (канон 07 §10)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.ConflictSkipped);
+        var keptState = Store.ReadKeyState(bucket, key).Throw().Value is ReplicaKeyLookup.Found f
+            ? f.State
+            : throw new InvalidOperationException("локальная запись потеряна после ConflictSkipped");
+        keptState.ContentSha256Hex.Should().Be(shaLocal);
+    }
+
+    [Fact]
     public async Task ApplyDelete_LocalNewer_Skipped()
     {
         // Arrange — локальная запись новее tombstone-времени

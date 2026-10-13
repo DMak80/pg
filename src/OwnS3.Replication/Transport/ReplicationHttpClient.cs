@@ -79,7 +79,7 @@ public sealed class ReplicationHttpClient : IReplicationTransport
 
         // ВАЖНО: response НЕ диспозится здесь — поток тела (Fetched) живёт дольше
         // вызова (фетчер читает его в применении и закрывает сам); диспоз внутрь
-        // using закрыл бы тело до чтения. Не-успешные ветки дисрозят явно.
+        // using закрыл бы тело до чтения. Не-успешные ветки диспозят явно.
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
             response.Dispose();

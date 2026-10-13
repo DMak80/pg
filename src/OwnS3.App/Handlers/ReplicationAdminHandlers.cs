@@ -128,7 +128,7 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
                 new { error = $"unknown replication target: {targetName}" }, context.RequestAborted);
             return;
         }
-        probe.Throw(); // прочие отказы — прежний путь (catch-all → 500); демонтаж в Task 7
+        probe.Throw(); // прочие отказы — прежний путь (catch-all → 500)
         var report = probe.Value;
         context.Response.StatusCode = StatusCodes.Status200OK;
         await context.Response.WriteAsJsonAsync(
