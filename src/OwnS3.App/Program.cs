@@ -188,13 +188,15 @@ builder.Services.AddSingleton(sp =>
     // Экспорт серий — при активной репликации (глава 07 §12: без соседей серий нет).
     // Outbox-серии — делегаты журнала (глава 07 §10: outbox_bytes/budget_exceeded);
     // журнал ещё не сконструирован — ленивый захват после резолва.
-    // enabled=true: переключается SetEnabled — координатор подписан на TargetsChanged
-    // (старт без соседей: инкременты no-op, gauge-колбэки пусты — серий нет,
-    // Existing-регресс; hot-apply состава включает экспорт без рестарта, A5/A9)
+    // Начальное состояние — ПО СОСТАВУ (не true): без соседей gauge-колбэки
+    // пусты и ЖУРНАЛ НЕ ТРОГАЕТСЯ (иначе сбор метрик OTel создаёт каталог
+    // outbox на неактивном томе — нарушение Existing-регресса 07 §12);
+    // переключение SetEnabled — координатор, подписка на TargetsChanged
+    // (hot-apply состава включает экспорт без рестарта, A5/A9)
     OwnS3.Replication.Outbox.OutboxJournal? journal = null;
     var metrics = new OwnS3.Replication.ReplicationMetrics(
         sp.GetService<Meter>() ?? new Meter("ownS3"),
-        enabled: true,
+        enabled: sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>().Active,
         outboxBytes: () => journal?.TotalBytes ?? 0,
         outboxBudgetExceeded: () => journal is { BudgetExceeded: true } ? 1 : 0);
     journal = sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>();

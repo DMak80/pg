@@ -80,6 +80,21 @@ public sealed class ReplicationProbeFastAppFactory : ReplicationAppFactory
     }
 }
 
+// Фабрика с отключённой периодикой reconcile (§9 триггер 4): после стартового
+// прохода фон хоста простаивает (журнал/очереди пусты) — срезы статуса
+// детерминированы для проверок чистоты приёмника под нагрузкой.
+public sealed class ReplicationQuietAppFactory : ReplicationAppFactory
+{
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        base.ConfigureWebHost(builder);
+        builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["OwnS3:Replication:ReconcileIntervalSeconds"] = "3600",
+        }));
+    }
+}
+
 // Replication-грань (t35, глава 07 §6): приём уведомлений (дедуп/LWW-предфильтр/429),
 // фетч-отдача (заголовки/tombstone/404), листинг (пагинация), изоляция политик (A13).
 public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClassFixture<ReplicationAppFactory>
@@ -350,11 +365,17 @@ public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClass
     [Fact]
     public async Task Ping_ReceiverPurity_StatusCountersUnchanged()
     {
-        // Arrange — стабильный срез статуса: счётчики/курсоры/fetch-очереди
+        // Arrange — СОБСТВЕННЫЙ хост с сид-составом и отключённой периодикой
+        // reconcile: журнал/очереди пусты (предыдущие кейсы не мутируют), фоновые
+        // циклы после стартового reconcile простаивают — срезы сравнимы
+        using var factory = new ReplicationQuietAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Стабильный срез статуса: счётчики/курсоры/fetch-очереди
         // (время-зависимые deliveryLagSeconds/fetchLagSeconds исключены)
-        async Task<string> StableNeighborsAsync()
+        async Task<string> StableNeighborsAsync(OwnS3TestClient c)
         {
-            var response = await Client.SendSignedAsync("GET", "/admin/replication/status",
+            var response = await c.SendSignedAsync("GET", "/admin/replication/status",
                 credentials: OwnS3TestClient.Admin());
             var json = JsonDocument.Parse(
                 await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
@@ -372,17 +393,38 @@ public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClass
                 }));
         }
 
+        // Синхронизация с фоновым циклом ДО среза «до»: гарантированный reconcile-проход
+        // (§9) и ожидание его завершения — периодика выключена, дальше фон пуст
+        var trigger = await client.SendSignedAsync("POST", "/admin/replication/reconcile",
+            payloadString: PayloadHash(string.Empty), credentials: OwnS3TestClient.Admin());
+        trigger.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var settleDeadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < settleDeadline)
+        {
+            var settled = JsonDocument.Parse(await (await client.SendSignedAsync(
+                    "GET", "/admin/replication/status", credentials: OwnS3TestClient.Admin()))
+                .Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement
+                .GetProperty("neighbors").EnumerateArray()
+                .All(n => !n.GetProperty("reconcileRunning").GetBoolean());
+            if (settled)
+                break;
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        }
+
         // Act — серия ping-запросов к узлу-приёмнику (принцип 3: ping бесплатен)
-        var before = await StableNeighborsAsync();
+        var replClient = new OwnS3TestClient(factory.CreateClient());
+        var replCreds = new OwnS3TestClient.Credentials(OwnS3AppFactory.ReplicationAccessKey,
+            OwnS3AppFactory.ReplicationSecretKey);
+        var before = await StableNeighborsAsync(client);
         for (var i = 0; i < 10; i++)
         {
-            var ping = await ReplicationClient.SendSignedAsync("GET", "/replication/ping",
-                credentials: ReplicationCreds);
+            var ping = await replClient.SendSignedAsync("GET", "/replication/ping",
+                credentials: replCreds);
             ping.StatusCode.Should().Be(HttpStatusCode.OK);
         }
 
         // Assert — состояние приёмника байт-в-байт то же: срезы до/после идентичны
-        var after = await StableNeighborsAsync();
+        var after = await StableNeighborsAsync(client);
         after.Should().Be(before);
     }
 
