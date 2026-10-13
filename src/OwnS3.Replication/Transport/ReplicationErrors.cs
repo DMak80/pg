@@ -1,3 +1,5 @@
+using OwnS3.Protocol.Errors;
+
 namespace OwnS3.Replication.Transport;
 
 // Новые типизированные ошибки транспорта (конвенция главы 01 §4): кладутся в
@@ -10,3 +12,39 @@ public sealed class PeerRejectedException(string message) : Exception(message);
 /// <summary>Probe: имя цели не входит в состав targets снапшота — маркер 400
 /// для хендлера (глава 07 §2).</summary>
 public sealed class UnknownReplicationTargetException(string message) : Exception(message);
+
+// ── t39: доменные ошибки join-handshake (глава 07 §2, конвенция 01 §4) ──
+
+/// <summary>Конфигурация инициатора join неполна (нет identity, trust-anchor
+/// или advertised endpoint) — маркер 400 админ-грани; fail-fast: без
+/// trust-anchor инициатор не проверит сертификат ответа соседа (spec §4.4 п.1).</summary>
+public sealed class JoinBadConfigurationException(string message) : Exception(message);
+
+/// <summary>Сосед отказал в join — маркер 403: trust-anchor не задан (ручной
+/// режим состава), сертификат невалиден (CA/срок/deny-list) или подпись
+/// запроса не проходит. ErrorCode — исходный код каталога подписи
+/// (SignatureDoesNotMatch/RequestTimeTooSkewed/…), когда отказ вызван именно
+/// проверкой подписи запроса; грань маппит errorCode ?? AccessDenied.</summary>
+public sealed class JoinRefusedException(string message, S3ErrorCode? errorCode = null)
+    : Exception(message)
+{
+    public S3ErrorCode? ErrorCode { get; } = errorCode;
+}
+
+/// <summary>Join-конфликт: имя числится в targets с другим публичным ключом —
+/// маркер 409 (глава 07 §2).</summary>
+public sealed class JoinConflictException(string message) : Exception(message);
+
+/// <summary>Join не состоялся по вине соседа/транспорта: не-200 (кроме
+/// 403/409), битое тело, невалидный сертификат/подпись ответа, обрыв —
+/// маркер 502 (глава 07 §2: состав не менялся).</summary>
+public sealed class JoinBadGatewayException(string message) : Exception(message);
+
+/// <summary>Исход исходящей стороны JoinAsync: сосед добавлен в состав.</summary>
+public sealed record PeerJoined(string Name, string Endpoint, string PublicKeyPem);
+
+/// <summary>Исход входящей стороны HandleIncoming: пира приняли; тело ответа
+/// {"name","advertisedEndpoint","certificate"} грань отдаёт как есть вместе
+/// с SignatureBase64 в заголовке X-OwnS3-Peer-Signature.</summary>
+public sealed record JoinAccept(string Name, string AdvertisedEndpoint,
+    string CertificateBase64, string SignatureBase64);
