@@ -25,8 +25,8 @@ public class CommitResultEventMetadataTests(StoreFixture fixture) : IClassFixtur
         var payload = "replication-meta"u8.ToArray();
 
         // Act
-        var result = await Store.PutObjectAsync("b", "event-meta", new MemoryStream(payload), payload.Length,
-            Meta, TestContext.Current.CancellationToken);
+        var result = (await Store.PutObjectAsync("b", "event-meta", new MemoryStream(payload), payload.Length,
+            Meta, TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — результат несёт всё для события object-put без повторного чтения меты
         result.ETag.Should().NotBeNullOrEmpty();
@@ -40,18 +40,18 @@ public class CommitResultEventMetadataTests(StoreFixture fixture) : IClassFixtur
     {
         // Arrange — составной объект из двух частей: первая ≥ MinPartSize (канон 02 §5),
         // вторая (последняя) малая
-        var uploadId = await Store.CreateMultipartUploadAsync("b", "event-mp", Meta, "writer",
-            TestContext.Current.CancellationToken);
+        var uploadId = (await Store.CreateMultipartUploadAsync("b", "event-mp", Meta, "writer",
+            TestContext.Current.CancellationToken)).Throw().Value;
         var p1 = new byte[5 * 1024 * 1024];
         var p2 = "part-two-payload"u8.ToArray();
-        var e1 = await Store.UploadPartAsync("b", "event-mp", uploadId, 1, new MemoryStream(p1),
-            p1.Length, TestContext.Current.CancellationToken);
-        var e2 = await Store.UploadPartAsync("b", "event-mp", uploadId, 2, new MemoryStream(p2),
-            p2.Length, TestContext.Current.CancellationToken);
+        var e1 = (await Store.UploadPartAsync("b", "event-mp", uploadId, 1, new MemoryStream(p1),
+            p1.Length, TestContext.Current.CancellationToken)).Throw().Value;
+        var e2 = (await Store.UploadPartAsync("b", "event-mp", uploadId, 2, new MemoryStream(p2),
+            p2.Length, TestContext.Current.CancellationToken)).Throw().Value;
 
         // Act
-        var result = await Store.CompleteMultipartUploadAsync("b", "event-mp", uploadId,
-            [new PartEtag(1, e1.ETag), new PartEtag(2, e2.ETag)], TestContext.Current.CancellationToken);
+        var result = (await Store.CompleteMultipartUploadAsync("b", "event-mp", uploadId,
+            [new PartEtag(1, e1.ETag), new PartEtag(2, e2.ETag)], TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — CompleteResult несёт полные метаданные собранного объекта
         result.ETag.Should().NotBeNullOrEmpty();
@@ -69,9 +69,9 @@ public class CommitResultEventMetadataTests(StoreFixture fixture) : IClassFixtur
             Meta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.CopyObjectAsync(new CopyRequest("b", "copy-src", "b", "copy-dst",
+        var result = (await Store.CopyObjectAsync(new CopyRequest("b", "copy-src", "b", "copy-dst",
             ReplaceMetadata: false, NewMetadata: null, SourceConditions: null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — PutResult копии несёт метаданные события нового объекта
         result.ETag.Should().NotBeNullOrEmpty();

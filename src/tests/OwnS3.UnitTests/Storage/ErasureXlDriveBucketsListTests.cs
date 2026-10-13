@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using OwnS3.Storage;
 using OwnS3.Storage.Erasure;
+using Shared.Core;
 
 namespace OwnS3.UnitTests.Storage;
 
@@ -38,8 +39,8 @@ public class ErasureXlDriveBucketsListTests : IDisposable
     private async Task PutAsync(string bucket, string key, byte[] body)
     {
         using var staging = _drive.CreateStaging(bucket, key);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         var record = new XlMetaRecord(Guid.Empty, body.LongLength, DateTimeOffset.UnixEpoch,
             digest.ETagHex, "text/plain", new Dictionary<string, string>(), new Dictionary<string, string>(),
             digest.Sha256Hex);
@@ -59,16 +60,18 @@ public class ErasureXlDriveBucketsListTests : IDisposable
     {
         // Arrange
         await PutAsync("b", "del", RandomBytes(10_000));
-        var meta = _drive.TryReadMeta("b", "del");
+        var meta = _drive.TryReadMeta("b", "del").Throw().Value is XlMetaLookup.Found f ? f.Record
+            : throw new InvalidOperationException("запись не найдена после Put");
 
         // Act
-        _drive.Delete("b", "del", meta!);
+        _drive.Delete("b", "del", meta);
 
         // Assert: каталога объекта нет ни на одном диске сета
         var setIndex = _pool.PickSetIndex("b", "del");
         foreach (var disk in _pool.Sets[setIndex])
             Directory.Exists(Path.Combine(disk.Root, "b", "del")).Should().BeFalse();
-        _drive.TryReadMeta("b", "del").Should().BeNull();
+        _drive.TryReadMeta("b", "del").Should().Match<Result<XlMetaLookup>>(
+            r => r.IsSuccess && r.Value is XlMetaLookup.Missing);
     }
 
     [Fact]
@@ -76,7 +79,8 @@ public class ErasureXlDriveBucketsListTests : IDisposable
     {
         // Arrange: 2 диска сета ключа offline (успехов ≤ 2 < writeQuorum 3)
         await PutAsync("b", "delq", RandomBytes(1000));
-        var meta = _drive.TryReadMeta("b", "delq");
+        var meta = _drive.TryReadMeta("b", "delq").Throw().Value is XlMetaLookup.Found fq ? fq.Record
+            : throw new InvalidOperationException("запись не найдена после Put");
         var setIndex = _pool.PickSetIndex("b", "delq");
         var offline = _pool.Sets[setIndex].Take(2).ToList();
         foreach (var disk in offline)
@@ -84,10 +88,11 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        var act = () => _drive.Delete("b", "delq", meta!);
+        var result = _drive.Delete("b", "delq", meta);
 
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
+        // Assert — кворумный отказ: Failed с кодом 503-семантики
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
             .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientWriteQuorum);
     }
 
@@ -117,10 +122,11 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        var act = () => _drive.CreateBucket("degr");
+        var result = _drive.CreateBucket("degr");
 
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
+        // Assert — кворумный отказ: Failed с кодом 503-семантики
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
             .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientWriteQuorum);
     }
 
@@ -132,10 +138,11 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         await PutAsync("nb", "obj", RandomBytes(100));
 
         // Act
-        var act = () => _drive.DeleteBucket("nb");
+        var result = _drive.DeleteBucket("nb");
 
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
+        // Assert — доменный отказ: Failed с кодом
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
             .Which.Code.Should().Be(ObjectStoreErrorCode.BucketNotEmpty);
     }
 
@@ -147,7 +154,7 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         _drive.CreateBucket("beta");
 
         // Act
-        var buckets = _drive.ListBuckets();
+        var buckets = _drive.ListBuckets().Throw().Value;
 
         // Assert: сортировка Utf8ByteOrder
         buckets.Select(b => b.Name).Should().Equal("alpha", "beta");
@@ -164,10 +171,11 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        var act = () => _drive.EnumerateObjects("l");
+        var result = _drive.EnumerateObjects("l");
 
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
+        // Assert — кворумный отказ: Failed (не бросок) с кодом 503-семантики
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
             .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
     }
 
@@ -187,7 +195,7 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         expected.Sort((l, r) => Utf8ByteOrder.Compare(l, r));
 
         // Act
-        var cursor = _drive.EnumerateObjects("u");
+        var cursor = _drive.EnumerateObjects("u").Throw().Value;
         var listed = new List<string>();
         while (cursor.PeekKey is { } key)
         {
@@ -201,12 +209,48 @@ public class ErasureXlDriveBucketsListTests : IDisposable
     }
 
     [Fact]
+    public async Task Put_SetOfKeyFullyOffline_FailedInsufficientReadQuorum()
+    {
+        // Arrange: multi-set 2×4; бакет создан при обоих сетах онлайн, затем сет 1
+        // целиком офлайн (сет 0 жив — бакет-глобальный read-кворум обеспечен)
+        _drive.CreateBucket("besc");
+        const int deadSet = 1;
+        foreach (var disk in _pool.Sets[deadSet])
+            Directory.Delete(disk.Root, recursive: true);
+        _pool.RefreshOnline();
+        // ключ, чей сет (SIPMOD) — мёртвый
+        var key = Enumerable.Range(0, 64).Select(i => "esc-" + i)
+            .First(k => _pool.PickSetIndex("besc", k) == deadSet);
+
+        // Act (драйв): CreateStaging — ReadDistribution сета без онлайн-дисков
+        var act = () => _drive.CreateStaging("besc", key);
+
+        // Assert — кворумный отказ пробрасывается драйвом (не Failed: конвертация
+        // на границе XlObjectStore), как и в main до миграции
+        act.Should().Throw<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
+
+        // Act/Assert (стор): граничная конвертация → Failed с кодом (503 через
+        // транслятор — как в main), а не 500 InternalError
+        var store = new XlObjectStore(_drive, TimeProvider.System,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<XlObjectStore>.Instance);
+        var result = await store.PutObjectAsync("besc", key, new MemoryStream(new byte[16]), 16,
+            new ObjectUploadMetadata("text/plain", new Dictionary<string, string>()),
+            TestContext.Current.CancellationToken);
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
+    }
+
+    [Fact]
     public async Task EnumerateObjects_BrokenMetaOnOneDisk_EmitsFromHealthyDisk()
     {
         // Arrange
         _drive.CreateBucket("bm");
         await PutAsync("bm", "k", RandomBytes(50));
-        var meta = _drive.TryReadMeta("bm", "k");
+        var meta = _drive.TryReadMeta("bm", "k").Throw().Value is XlMetaLookup.Found fm ? fm.Record
+            : throw new InvalidOperationException("запись не найдена после Put");
         var setIndex = _pool.PickSetIndex("bm", "k");
         var disk = _pool.Sets[setIndex][0];
         var objectDir = Path.Combine(disk.Root, "bm", "k");
@@ -214,7 +258,7 @@ public class ErasureXlDriveBucketsListTests : IDisposable
         File.Delete(Path.Combine(objectDir, "xl.meta.bkp"));
 
         // Act
-        var cursor = _drive.EnumerateObjects("bm");
+        var cursor = _drive.EnumerateObjects("bm").Throw().Value;
         var listed = new List<string>();
         while (cursor.PeekKey is { } key)
         {

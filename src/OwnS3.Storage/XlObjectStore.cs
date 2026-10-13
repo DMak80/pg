@@ -6,6 +6,8 @@ namespace OwnS3.Storage;
 // логику 21 операции (conditional/Range/ETag/листинги/multipart-валидации/
 // идемпотентность), способ размещения — за драйвом (канон 04/06).
 // Partial-раскладка: бакеты/объекты/copy/листинги/multipart.
+// Исходы операций — Result-конвенция главы 01 §4: ошибки каталога — Failed
+// с доменным кодом, значения успеха — в Value.
 public sealed partial class XlObjectStore(IXlDrive drive, TimeProvider timeProvider,
     ILogger<XlObjectStore> logger) : IObjectStore
 {
@@ -15,10 +17,15 @@ public sealed partial class XlObjectStore(IXlDrive drive, TimeProvider timeProvi
     // Логгер объекта (warning битых журналов, fromBackup и т.п.).
     private readonly ILogger<XlObjectStore> _logger = logger;
 
-    // Отсутствие бакета — доменный исход NoSuchBucket.
-    internal void EnsureBucket(string bucket)
+    // Отсутствие бакета — доменный исход NoSuchBucket (Failed по конвенции 01 §4);
+    // кворумная недоступность EC — Failed(InsufficientReadQuorum) («503, не „бакета нет“», канон 06 §7)
+    internal Result EnsureBucket(string bucket)
     {
-        if (!Drive.BucketExists(bucket))
-            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchBucket);
+        var exists = Drive.BucketExists(bucket);
+        return !exists.IsSuccess
+            ? Result.Failed(exists.Error!)
+            : exists.Value
+                ? Result.Success()
+                : Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.NoSuchBucket));
     }
 }

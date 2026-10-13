@@ -70,9 +70,13 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync("bap", "new", new MemoryStream(Body("v1")),
             2, MetaOf("v1"), Sha256Hex("v1"), TestContext.Current.CancellationToken);
 
-        // Assert — применено, xl-запись несёт modTime источника (LWW-сходимость)
-        result.Applied.Should().BeTrue();
-        Store.ReadKeyState("bap", "new")!.ModTime.Should().Be(SourceModTime);
+        // Assert — применено (Applied), xl-запись несёт modTime источника (LWW-сходимость)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Applied);
+        var appliedState = Store.ReadKeyState("bap", "new").Throw().Value is ReplicaKeyLookup.Found ra
+            ? ra.State
+            : throw new InvalidOperationException("запись не найдена после Apply");
+        appliedState.ModTime.Should().Be(SourceModTime);
     }
 
     [Fact]
@@ -86,9 +90,10 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("stale")),
             5, MetaOf("stale"), Sha256Hex("stale"), TestContext.Current.CancellationToken);
 
-        // Assert — skip: ключ не воскрешён, tombstone на месте
-        result.Applied.Should().BeFalse();
-        Store.ReadKeyState(bucket, key).Should().BeNull();
+        // Assert — skip (Skipped): ключ не воскрешён, tombstone на месте
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Skipped);
+        Store.ReadKeyState(bucket, key).Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         Tombstones.GetDeleteTime(bucket, key).Should().NotBeNull();
     }
 
@@ -103,8 +108,9 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("fresh")),
             5, MetaOf("fresh"), Sha256Hex("fresh"), TestContext.Current.CancellationToken);
 
-        // Assert — применён, tombstone снят (запись жива — негативное знание снято)
-        result.Applied.Should().BeTrue();
+        // Assert — применён (Applied), tombstone снят (запись жива — негативное знание снято)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Applied);
         Store.ReadKeyState(bucket, key).Should().NotBeNull();
         Tombstones.GetDeleteTime(bucket, key).Should().BeNull();
     }
@@ -122,9 +128,13 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("incoming-old")),
             12, MetaOf("incoming-old"), Sha256Hex("incoming-old"), TestContext.Current.CancellationToken);
 
-        // Assert — skip: локальная версия не перезаписана
-        result.Applied.Should().BeFalse();
-        Store.ReadKeyState(bucket, key)!.ModTime.Should().Be(newerMod);
+        // Assert — skip (Skipped): локальная версия не перезаписана
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Skipped);
+        var keptState = Store.ReadKeyState(bucket, key).Throw().Value is ReplicaKeyLookup.Found rb
+            ? rb.State
+            : throw new InvalidOperationException("запись не найдена после skip");
+        keptState.ModTime.Should().Be(newerMod);
     }
 
     [Fact]
@@ -144,12 +154,40 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
             13, MetaOf("incoming-body", sha: incomingSha), Sha256Hex("incoming-body"),
             TestContext.Current.CancellationToken);
 
-        // Assert — флаг Conflict в результате СВОЕГО вызова + событие с обеими версиями (только лог)
-        result.Conflict.Should().BeTrue();
-        result.Applied.Should().BeTrue();
+        // Assert — ConflictApplied в результате СВОЕГО вызова (конфликт И применено —
+        // канон 07 §10) + событие с обеими версиями (только лог)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.ConflictApplied);
         raised.Key.Should().Be(key);
         raised.InSha.Should().Be(incomingSha);
         raised.LocalSha.Should().Be(shaA);
+    }
+
+    [Fact]
+    public async Task ApplyObject_ConflictLocalWins_ConflictSkipped()
+    {
+        // Arrange — равные modTime, разные sha; локальный sha лексикографически БОЛЬШЕ
+        // (тай-брейк канона 07 §7 в пользу локальной)
+        const string bucket = "bcfl2", key = "conflict-local";
+        var shaLocal = new string('b', 64);
+        await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("local-body")),
+            10, MetaOf("local-body", sha: shaLocal), Sha256Hex("local-body"),
+            TestContext.Current.CancellationToken);
+        var incomingSha = new string('a', 64); // лексикографически меньше "bbb…b"
+
+        // Act — входящий с равным modTime и меньшим sha
+        var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("incoming-body")),
+            13, MetaOf("incoming-body", sha: incomingSha), Sha256Hex("incoming-body"),
+            TestContext.Current.CancellationToken);
+
+        // Assert — ConflictSkipped: конфликт зафиксирован, входящая НЕ применена,
+        // локальная версия не перезаписана (канон 07 §10)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.ConflictSkipped);
+        var keptState = Store.ReadKeyState(bucket, key).Throw().Value is ReplicaKeyLookup.Found f
+            ? f.State
+            : throw new InvalidOperationException("локальная запись потеряна после ConflictSkipped");
+        keptState.ContentSha256Hex.Should().Be(shaLocal);
     }
 
     [Fact]
@@ -198,6 +236,6 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         Applier.RetryTick();
 
         // Assert — бакет удалён отложенным ретраем (до тика он был жив)
-        _fixture.Drive.BucketExists(bucket).Should().BeFalse();
+        _fixture.Drive.BucketExists(bucket).Throw().Value.Should().BeFalse();
     }
 }

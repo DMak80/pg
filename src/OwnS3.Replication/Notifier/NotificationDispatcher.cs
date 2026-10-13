@@ -110,23 +110,9 @@ public sealed class NotificationDispatcher
                 continue;
             }
 
-            long? accepted;
-            try
-            {
-                accepted = await _transport.SendNotificationsAsync(_target,
-                    new NotificationBatchRequest(_originHostId, batch), ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Рассылка соседу {Target} не удалась — бэкофф", _target.Name);
-                accepted = null;
-            }
-
-            if (accepted is long ack)
+            var send = await _transport.SendNotificationsAsync(_target,
+                new NotificationBatchRequest(_originHostId, batch), ct);
+            if (send is { IsSuccess: true, Value: var ack })
             {
                 // ACK приёма: watermark двигается (только вперёд), персист дебаунсом (§5)
                 watermark = Math.Max(watermark, ack);
@@ -141,8 +127,8 @@ public sealed class NotificationDispatcher
             Online = false;
             _metrics.Notified(_target.Name, "backoff");
             _metrics.Retried(_target.Name);
-            _logger.LogInformation("Сосед {Target} не принял уведомления — бэкофф {Backoff}",
-                _target.Name, backoff);
+            _logger.LogInformation("Сосед {Target} не принял уведомления ({Error}) — бэкофф {Backoff}",
+                _target.Name, send.Error!.Message, backoff);
             await Task.Delay(backoff, ct);
             backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2,
                 TimeSpan.FromSeconds(_options.BackoffMaxSec).Ticks));

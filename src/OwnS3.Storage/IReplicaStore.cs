@@ -10,7 +10,7 @@ public sealed record ReplicaObjectMetadata(DateTimeOffset ModTime, string ETagHe
 // Состояние ключа для LWW-сравнения приёмника (null — ключа нет).
 public sealed record ReplicaKeyState(DateTimeOffset ModTime, string ContentSha256Hex, long Size);
 
-// Элемент листинга replication-грани (reconcile/backfill, глава 07 §6/§9).
+// Элемент листинга replication-грани (reconcile/листинг грани, глава 07 §6/§9).
 public sealed record ReplicationListEntry(string Key, DateTimeOffset ModTime, string ContentSha256Hex, long Size);
 
 // sha тела ≠ ожидаемого (заголовок x-owns3-repl-sha256) — до Commit (глава 07 §6/§7).
@@ -20,23 +20,25 @@ public interface IReplicaStore
 {
     // Штатный xl-коммит (staging→WritePart→WriteMeta→Commit) с ИСХОДНЫМИ
     // modTime/etag/sha/метаданными; expectedSha256Hex сверяется по дайджесту
-    // тела ДО Commit (мисматч → ReplicationChecksumMismatchException, staging сносится).
-    Task ApplyObjectAsync(string bucket, string key, Stream body, long contentLength,
+    // тела ДО Commit (мисматч → Failed(ReplicationChecksumMismatchException),
+    // staging сносится).
+    Task<Result> ApplyObjectAsync(string bucket, string key, Stream body, long contentLength,
         ReplicaObjectMetadata metadata, string expectedSha256Hex, CancellationToken ct);
 
-    void DeleteObject(string bucket, string key);            // идемпотентно (204-семантика Delete)
+    Result DeleteObject(string bucket, string key);            // идемпотентно (204-семантика Delete)
 
-    ReplicaKeyState? ReadKeyState(string bucket, string key); // null — ключа нет
+    Result<ReplicaKeyLookup> ReadKeyState(string bucket, string key); // Found | Missing
 
-    // Utf8ByteOrder от маркера (reconcile/листинг грани); nextMarker — последний отданный ключ (null — конец).
-    IReadOnlyList<ReplicationListEntry> ListReplicationEntries(string bucket, string? marker,
-        int maxKeys, out string? nextMarker);
+    // Utf8ByteOrder от маркера (reconcile/листинг грани); NextMarker — последний
+    // отданный ключ в составе значения (null — конец).
+    Result<ReplicaListingPage> ListReplicationEntries(string bucket, string? marker, int maxKeys);
 
-    (ObjectMetadata Metadata, Stream Body) OpenObjectForReplication(string bucket, string key); // fetch-грань: без VerifyFullChecksum
+    // fetch-грань: без VerifyFullChecksum; NoSuchKey → Failed(ObjectStoreException(NoSuchKey))
+    Result<(ObjectMetadata Metadata, Stream Body)> OpenObjectForReplication(string bucket, string key);
 
-    void ApplyBucketCreate(string bucket, DateTimeOffset creationDate); // идемпотентно: есть → skip
-    void ApplyBucketDelete(string bucket);                    // пустой → удалить; непустой → ObjectStoreException(BucketNotEmpty)
+    Result ApplyBucketCreate(string bucket, DateTimeOffset creationDate); // идемпотентно: есть → skip
+    Result ApplyBucketDelete(string bucket);                    // пустой → удалить; непустой → Failed(ObjectStoreException(BucketNotEmpty))
 
     // Состав бакетов (листинг replication-грани без bucket — backfill reconcile, глава 07 §6).
-    IReadOnlyList<BucketEntry> ListBuckets();
+    Result<IReadOnlyList<BucketEntry>> ListBuckets();
 }

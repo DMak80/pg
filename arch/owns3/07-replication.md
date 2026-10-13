@@ -539,7 +539,10 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 S3Middleware; hosted-сервисы — координатор: notifier per-target, фетчер
 per-source, цикл обслуживания §8-а, reconcile-триггеры §9, graceful
 stop (drain → flush курсоров → маркер clean). Путь записи клиента не
-содержит синхронных сетевых вызовов (принцип 1).
+содержит синхронных сетевых вызовов (принцип 1). Внутренние исходы
+транспорта/notifier/фетчера/prober — Result-конвенция главы 01 §4:
+429/обрыв — отказ (бэкофф), ACK/404/tombstone — терминальные значения
+фетчера и notifier'а.
 
 ## 12. Границы надёжности
 

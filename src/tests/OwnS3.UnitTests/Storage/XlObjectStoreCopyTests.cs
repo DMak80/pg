@@ -23,8 +23,8 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
 
     private async Task<string> ReadBodyAsync(string bucket, string key)
     {
-        var content = await Store.GetObjectAsync(bucket, key, new ObjectReadOptions(null, null),
-            TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync(bucket, key, new ObjectReadOptions(null, null),
+            TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
         return await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
     }
@@ -37,16 +37,16 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.CopyObjectAsync(new CopyRequest("b", "copy-src", "b", "copy-dst",
+        var result = (await Store.CopyObjectAsync(new CopyRequest("b", "copy-src", "b", "copy-dst",
             ReplaceMetadata: false, NewMetadata: null, SourceConditions: null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert: содержимое скопировано; метаданные источника; ETag наследован
         // (P8, в кавычках); LastModified — modTime новой записи
         (await ReadBodyAsync("b", "copy-dst")).Should().Be("hello");
         result.ETag.Should().Be(HelloEtagQuoted);
         result.LastModified.Should().Be(TestVectors.FixedTime);
-        var dst = await Store.HeadObjectAsync("b", "copy-dst", null, TestContext.Current.CancellationToken);
+        var dst = (await Store.HeadObjectAsync("b", "copy-dst", null, TestContext.Current.CancellationToken)).Throw().Value;
         dst.Metadata.ContentType.Should().Be("text/csv");
         dst.Metadata.UserMetadata.Should().ContainKey("src").WhoseValue.Should().Be("yes");
     }
@@ -64,7 +64,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             TestContext.Current.CancellationToken);
 
         // Assert
-        var dst = await Store.HeadObjectAsync("b", "repl-dst", null, TestContext.Current.CancellationToken);
+        var dst = (await Store.HeadObjectAsync("b", "repl-dst", null, TestContext.Current.CancellationToken)).Throw().Value;
         dst.Metadata.ContentType.Should().Be("application/json");
         dst.Metadata.UserMetadata.Should().ContainKey("dst").WhoseValue.Should().Be("replaced");
     }
@@ -130,7 +130,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
 
         // Assert: копия закоммичена, но part.1 НЕ создан копированием —
         // fallback-ветка не выполнялась (линк-имитация не пишет байтов)
-        var dst = await Store.HeadObjectAsync("b", "link-dst", null, TestContext.Current.CancellationToken);
+        var dst = (await Store.HeadObjectAsync("b", "link-dst", null, TestContext.Current.CancellationToken)).Throw().Value;
         dst.Metadata.Size.Should().Be(5);
         var objectDir = Path.Combine(Root, "b", "link-dst");
         var dataDir = Path.Combine(objectDir, XlMetaFile.Read(objectDir, out _).DataDirName);
@@ -145,32 +145,35 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act: If-Match не совпал
-        var act = async () => await Store.CopyObjectAsync(new CopyRequest("b", "cond-src", "b", "cond-dst",
+        var result = await Store.CopyObjectAsync(new CopyRequest("b", "cond-src", "b", "cond-dst",
             false, null, IfMatch("\"other\"")), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        // Assert — 412 как Failed
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
 
         // Act: If-None-Match СОВПАЛ — copy не GET: 412, не 304
-        var act2 = async () => await Store.CopyObjectAsync(new CopyRequest("b", "cond-src", "b", "cond-dst",
+        var result2 = await Store.CopyObjectAsync(new CopyRequest("b", "cond-src", "b", "cond-dst",
             false, null, IfNoneMatch(HelloEtagQuoted)), TestContext.Current.CancellationToken);
 
         // Assert
-        await act2.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        (!result2.IsSuccess).Should().BeTrue();
+        result2.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
     }
 
     [Fact]
     public async Task Copy_MissingSource_NoSuchKey()
     {
-        // Arrange / Act
-        var act = async () => await Store.CopyObjectAsync(new CopyRequest("b", "no-such-src", "b", "dst",
+        // Act
+        var result = await Store.CopyObjectAsync(new CopyRequest("b", "no-such-src", "b", "dst",
             false, null, null), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchKey);
+        // Assert — отсутствие источника — Failed(NoSuchKey)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchKey);
     }
 
     [Fact]
@@ -181,12 +184,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var act = async () => await Store.CopyObjectAsync(new CopyRequest("b", "ok-src", "missing", "dst",
+        var result = await Store.CopyObjectAsync(new CopyRequest("b", "ok-src", "missing", "dst",
             false, null, null), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отсутствие бакета-приёмника — Failed(NoSuchBucket)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 
     [Fact]
@@ -200,12 +204,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         XlMetaFile.Write(objectDir, current with { Size = 5L * 1024 * 1024 * 1024 + 1 });
 
         // Act
-        var act = async () => await Store.CopyObjectAsync(new CopyRequest("b", "huge-src", "b", "huge-dst",
+        var result = await Store.CopyObjectAsync(new CopyRequest("b", "huge-src", "b", "huge-dst",
             false, null, null), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.EntityTooLarge);
+        // Assert — лимит копии — Failed(EntityTooLarge)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.EntityTooLarge);
     }
 
     [Fact]
@@ -216,13 +221,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.CopyObjectAsync(new CopyRequest("b", "self", "b", "self",
-            true, ReplaceMeta, null), TestContext.Current.CancellationToken);
+        var result = (await Store.CopyObjectAsync(new CopyRequest("b", "self", "b", "self",
+            true, ReplaceMeta, null), TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert: содержимое то же, метаданные заменены
         (await ReadBodyAsync("b", "self")).Should().Be("hello");
         result.ETag.Should().Be(HelloEtagQuoted);
-        var head = await Store.HeadObjectAsync("b", "self", null, TestContext.Current.CancellationToken);
+        var head = (await Store.HeadObjectAsync("b", "self", null, TestContext.Current.CancellationToken)).Throw().Value;
         head.Metadata.ContentType.Should().Be("application/json");
     }
 
@@ -240,13 +245,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.GetObjectAttributesAsync("b", "attr", AllAttributes,
+        var outcome = (await Store.GetObjectAttributesAsync("b", "attr", AllAttributes,
             maxParts: null, partNumberMarker: null, conditions: null,
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert: unversioned-объект — ровно одна синтетическая часть (P8: ETag в кавычках)
-        result.NotModifiedMetadata.Should().BeNull();
-        var attrs = result.Attributes!;
+        (outcome is GetAttributesOutcome.Full).Should().BeTrue();
+        var attrs = ((GetAttributesOutcome.Full)outcome).Attributes;
         attrs.ETag.Should().Be(HelloEtagQuoted);
         attrs.ObjectSize.Should().Be(5);
         attrs.LastModified.Should().Be(TestVectors.FixedTime, "LastModified — modTime записи, не UtcNow");
@@ -266,12 +271,12 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.GetObjectAttributesAsync("b", "attr-mp", AllAttributes,
-            maxParts: 7, partNumberMarker: 3, conditions: null, TestContext.Current.CancellationToken);
+        var attrs = ((GetAttributesOutcome.Full)(await Store.GetObjectAttributesAsync("b", "attr-mp", AllAttributes,
+            maxParts: 7, partNumberMarker: 3, conditions: null, TestContext.Current.CancellationToken)).Throw().Value).Attributes;
 
         // Assert
-        result.Attributes!.Parts!.MaxParts.Should().Be(7);
-        result.Attributes.Parts.PartNumberMarker.Should().Be(3);
+        attrs.Parts!.MaxParts.Should().Be(7);
+        attrs.Parts.PartNumberMarker.Should().Be(3);
     }
 
     [Fact]
@@ -282,12 +287,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var act = async () => await Store.GetObjectAttributesAsync("b", "attr-412", AllAttributes,
+        var result = await Store.GetObjectAttributesAsync("b", "attr-412", AllAttributes,
             null, null, IfMatch("\"other\""), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        // Assert — 412 как Failed
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
     }
 
     [Fact]
@@ -298,13 +304,13 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.GetObjectAttributesAsync("b", "attr-304", AllAttributes,
-            null, null, IfNoneMatch(HelloEtagQuoted), TestContext.Current.CancellationToken);
+        var outcome = (await Store.GetObjectAttributesAsync("b", "attr-304", AllAttributes,
+            null, null, IfNoneMatch(HelloEtagQuoted), TestContext.Current.CancellationToken)).Throw().Value;
 
-        // Assert: 304-обёртка — Attributes пуст, Metadata несёт ETag в кавычках (P10)
-        result.Attributes.Should().BeNull();
-        result.NotModifiedMetadata!.ETag.Should().Be(HelloEtagQuoted);
-        result.NotModifiedMetadata.LastModified.Should().Be(TestVectors.FixedTime);
+        // Assert: 304-обёртка — вариант NotModified с Metadata (ETag в кавычках, P10)
+        var nm = outcome.Should().BeOfType<GetAttributesOutcome.NotModified>().Subject;
+        nm.Metadata.ETag.Should().Be(HelloEtagQuoted);
+        nm.Metadata.LastModified.Should().Be(TestVectors.FixedTime);
     }
 
     [Fact]
@@ -315,12 +321,12 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var result = await Store.GetObjectAttributesAsync("b", "attr-ims", AllAttributes,
+        var outcome = (await Store.GetObjectAttributesAsync("b", "attr-ims", AllAttributes,
             null, null, new ObjectConditions(null, null, TestVectors.FixedTime, null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
-        // Assert
-        result.NotModifiedMetadata.Should().NotBeNull();
+        // Assert — Not-Modified — терминальный Success-вариант
+        (outcome is GetAttributesOutcome.NotModified).Should().BeTrue();
     }
 
     [Fact]
@@ -331,36 +337,39 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             5, SourceMeta, TestContext.Current.CancellationToken);
 
         // Act
-        var act = async () => await Store.GetObjectAttributesAsync("b", "attr-ius", AllAttributes,
+        var result = await Store.GetObjectAttributesAsync("b", "attr-ius", AllAttributes,
             null, null, new ObjectConditions(null, null, null, TestVectors.FixedTime.AddSeconds(-10)),
             TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        // Assert — 412 как Failed
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
     }
 
     [Fact]
     public async Task Attributes_Missing_NoSuchKey()
     {
-        // Arrange / Act
-        var act = async () => await Store.GetObjectAttributesAsync("b", "no-such-attr", AllAttributes,
+        // Act
+        var result = await Store.GetObjectAttributesAsync("b", "no-such-attr", AllAttributes,
             null, null, null, TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchKey);
+        // Assert — отсутствие ключа — Failed(NoSuchKey)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchKey);
     }
 
     [Fact]
     public async Task Attributes_MissingBucket_NoSuchBucket()
     {
-        // Arrange / Act
-        var act = async () => await Store.GetObjectAttributesAsync("missing", "k", AllAttributes,
+        // Act
+        var result = await Store.GetObjectAttributesAsync("missing", "k", AllAttributes,
             null, null, null, TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отсутствие бакета — Failed(NoSuchBucket)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 }

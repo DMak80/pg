@@ -45,17 +45,17 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     private XlVolume Volume => fixture.Volume;
     private string Root => fixture.Root;
 
-    private static Task<PutResult> PutAsync(XlObjectStore store, string bucket, string key, string content) =>
-        store.PutObjectAsync(bucket, key, new MemoryStream(Encoding.UTF8.GetBytes(content)),
-            Encoding.UTF8.GetByteCount(content), Meta, TestContext.Current.CancellationToken);
+    private static async Task<PutResult> PutAsync(XlObjectStore store, string bucket, string key, string content) =>
+        (await store.PutObjectAsync(bucket, key, new MemoryStream(Encoding.UTF8.GetBytes(content)),
+            Encoding.UTF8.GetByteCount(content), Meta, TestContext.Current.CancellationToken)).Throw().Value;
 
     [Fact]
     public async Task PutGet_Roundtrip_ContentMetadataEtag()
     {
         // Arrange / Act
         var result = await PutAsync(Store, "b", "roundtrip", "hello");
-        var content = await Store.GetObjectAsync("b", "roundtrip", new ObjectReadOptions(null, null),
-            TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync("b", "roundtrip", new ObjectReadOptions(null, null),
+            TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
 
         // Assert: ETag = md5("hello") hex В КАВЫЧКАХ (P8); тело/метаданные на месте
@@ -72,15 +72,17 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     }
 
     [Fact]
-    public async Task Get_Missing_NoSuchKey()
+    public async Task GetObject_ОтсутствующийКлюч_FailedСКодомNoSuchKey()
     {
-        // Arrange / Act
-        var act = async () => await Store.GetObjectAsync("b", "missing-key",
+        // Act
+        var result = await Store.GetObjectAsync("b", "missing-key",
             new ObjectReadOptions(null, null), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchKey);
+        // Assert — ошибка каталога операции — Failed с кодом
+        // (преобразование Missing→NoSuchKey на уровне S3-операции)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchKey);
     }
 
     [Fact]
@@ -90,8 +92,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "range-206", "abcdef");
 
         // Act
-        var content = await Store.GetObjectAsync("b", "range-206",
-            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync("b", "range-206",
+            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
         var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
 
@@ -112,7 +114,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         bytes[tamperByte] ^= 0xFF;
         File.WriteAllBytes(part, bytes);
 
-        // Act
+        // Act — битая структура вне перечня миграции: XlIntegrityException летит
         var act = async () => await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, range),
             TestContext.Current.CancellationToken);
         var message = (await act.Should().ThrowAsync<XlIntegrityException>()).Which.Message;
@@ -142,9 +144,9 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
 
         // Act: If-Match совпал → полный объект
-        var content = await Store.GetObjectAsync("b", "cond-ifmatch",
+        var content = (await Store.GetObjectAsync("b", "cond-ifmatch",
             new ObjectReadOptions(new ObjectConditions(etag, null, null, null), null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert
         content.NotModified.Should().BeFalse();
@@ -157,13 +159,14 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "cond-412", "hello");
 
         // Act
-        var act = async () => await Store.GetObjectAsync("b", "cond-412",
+        var result = await Store.GetObjectAsync("b", "cond-412",
             new ObjectReadOptions(new ObjectConditions("\"other\"", null, null, null), null),
             TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        // Assert — условие не выполнено — Failed(PreconditionFailed) — 412
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
     }
 
     [Fact]
@@ -174,9 +177,9 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
 
         // Act
-        var content = await Store.GetObjectAsync("b", "cond-inm",
+        var content = (await Store.GetObjectAsync("b", "cond-inm",
             new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
         using (content.Body)
         {
             // Assert: флаг NotModified, Body = Stream.Null, Metadata заполнен для 304
@@ -195,9 +198,9 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var since = TestVectors.FixedTime; // == modTime (обрезка мс)
 
         // Act
-        var content = await Store.GetObjectAsync("b", "cond-ims",
+        var content = (await Store.GetObjectAsync("b", "cond-ims",
             new ObjectReadOptions(new ObjectConditions(null, null, since, null), null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
         using (content.Body)
         {
             // Assert
@@ -213,13 +216,14 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var since = TestVectors.FixedTime.AddSeconds(-10);
 
         // Act
-        var act = async () => await Store.GetObjectAsync("b", "cond-ius",
+        var result = await Store.GetObjectAsync("b", "cond-ius",
             new ObjectReadOptions(new ObjectConditions(null, null, null, since), null),
             TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+        // Assert — объект менялся после границы — Failed(PreconditionFailed) — 412
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.PreconditionFailed);
     }
 
     [Fact]
@@ -230,9 +234,9 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
 
         // Act
-        var content = await Store.GetObjectAsync("b", "cond-prio",
+        var content = (await Store.GetObjectAsync("b", "cond-prio",
             new ObjectReadOptions(new ObjectConditions(etag, etag, null, null), null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert: не 304 — условие If-None-Match не применилось
         content.NotModified.Should().BeFalse();
@@ -249,8 +253,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "range-forms", "abcdef");
 
         // Act
-        var content = await Store.GetObjectAsync("b", "range-forms",
-            new ObjectReadOptions(null, new ByteRange(start, end)), TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync("b", "range-forms",
+            new ObjectReadOptions(null, new ByteRange(start, end)), TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
         var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
 
@@ -266,12 +270,13 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "range-416", "abcdef");
 
         // Act
-        var act = async () => await Store.GetObjectAsync("b", "range-416",
+        var result = await Store.GetObjectAsync("b", "range-416",
             new ObjectReadOptions(null, new ByteRange(6, null)), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.InvalidRange);
+        // Assert — 416 InvalidRange как Failed
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InvalidRange);
     }
 
     [Fact]
@@ -281,12 +286,13 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "range-empty", "");
 
         // Act
-        var act = async () => await Store.GetObjectAsync("b", "range-empty",
+        var result = await Store.GetObjectAsync("b", "range-empty",
             new ObjectReadOptions(null, new ByteRange(0, null)), TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.InvalidRange);
+        // Assert — пустой объект + Range — Failed(InvalidRange) — 416
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.InvalidRange);
     }
 
     [Fact]
@@ -294,8 +300,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     {
         // Arrange / Act
         await PutAsync(Store, "b", "range-emptyfull", "");
-        var content = await Store.GetObjectAsync("b", "range-emptyfull",
-            new ObjectReadOptions(null, null), TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync("b", "range-emptyfull",
+            new ObjectReadOptions(null, null), TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
 
         // Assert: без Range пустой объект читается (200)
@@ -316,7 +322,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         File.WriteAllBytes(part, bytes);
 
         // Act
-        var content = await Store.HeadObjectAsync("b", "head-meta", null, TestContext.Current.CancellationToken);
+        var content = (await Store.HeadObjectAsync("b", "head-meta", null, TestContext.Current.CancellationToken)).Throw().Value;
         using (content.Body)
         {
             // Assert
@@ -332,8 +338,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "head-range", "abcdef");
 
         // Act
-        var content = await Store.HeadObjectAsync("b", "head-range",
-            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken);
+        var content = (await Store.HeadObjectAsync("b", "head-range",
+            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken)).Throw().Value;
         using (content.Body)
         {
             // Assert: 206-семантика — диапазон применён, тела нет
@@ -350,9 +356,9 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
 
         // Act
-        var content = await Store.HeadObjectAsync("b", "head-inm",
+        var content = (await Store.HeadObjectAsync("b", "head-inm",
             new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null),
-            TestContext.Current.CancellationToken);
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert
         content.NotModified.Should().BeTrue();
@@ -372,8 +378,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", key, "payload-" + key.Length);
 
         // Act
-        var content = await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, null),
-            TestContext.Current.CancellationToken);
+        var content = (await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, null),
+            TestContext.Current.CancellationToken)).Throw().Value;
         using var reader = new StreamReader(content.Body);
 
         // Assert: Get по исходному ключу возвращает записанное
@@ -400,12 +406,14 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     [Fact]
     public async Task Put_MissingBucket_NoSuchBucket()
     {
-        // Arrange / Act
-        var act = async () => await PutAsync(Store, "missing", "k", "x");
+        // Act
+        var result = await Store.PutObjectAsync("missing", "k", new MemoryStream(Encoding.UTF8.GetBytes("x")),
+            1, Meta, TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отсутствие бакета — Failed(NoSuchBucket)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 
     [Fact]
@@ -574,7 +582,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "mix-1", "v1");
 
         // Act
-        var results = await Store.DeleteObjectsAsync("b", ["mix-1", "mix-2"], quiet: false, TestContext.Current.CancellationToken);
+        var results = (await Store.DeleteObjectsAsync("b", ["mix-1", "mix-2"], quiet: false,
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert: per-key исходы; несуществующий ключ — успех
         results.Should().HaveCount(2);
@@ -584,12 +593,13 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     [Fact]
     public async Task DeleteObjects_MissingBucket_NoSuchBucket()
     {
-        // Arrange / Act
-        var act = async () => await Store.DeleteObjectsAsync("missing", ["k"], false, TestContext.Current.CancellationToken);
+        // Act
+        var result = await Store.DeleteObjectsAsync("missing", ["k"], false, TestContext.Current.CancellationToken);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отказ всей операции — Failed(NoSuchBucket)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 
     [Fact]
@@ -619,11 +629,14 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         // Arrange: сегмент 300 ASCII-символов — за лимитом 255 байт
 
         // Act
-        var act = async () => await PutAsync(Store, "b", new string('a', 300), "x");
+        var result = await Store.PutObjectAsync("b", new string('a', 300),
+            new MemoryStream(Encoding.UTF8.GetBytes("x")), 1, Meta, TestContext.Current.CancellationToken);
 
-        // Assert: доменный 400-исход Storage (App маппит в InvalidArgument)
-        await act.Should().ThrowAsync<XlInvalidArgumentException>()
-            .WithMessage("Key too long after encoding");
+        // Assert: доменный 400-исход Storage (App маппит в InvalidArgument) —
+        // конвертация XlPathEncoder-броска в Failed на границе XlObjectStore
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<XlInvalidArgumentException>()
+            .Which.Message.Should().Be("Key too long after encoding");
     }
 
     [Theory]

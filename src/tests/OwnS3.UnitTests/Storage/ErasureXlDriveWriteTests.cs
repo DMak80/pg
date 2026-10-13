@@ -37,13 +37,13 @@ public class ErasureXlDriveWriteTests : IDisposable
     private async Task<PutResult> PutAsync(string bucket, string key, byte[] body)
     {
         using var staging = _drive.CreateStaging(bucket, key);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         var record = new XlMetaRecord(Guid.Empty, body.LongLength, DateTimeOffset.UnixEpoch,
             digest.ETagHex, "text/plain", new Dictionary<string, string>(), new Dictionary<string, string>(),
             digest.Sha256Hex);
         _drive.WriteMeta(staging, record);
-        return _drive.Commit(bucket, key, record, staging);
+        return _drive.Commit(bucket, key, record, staging).Throw().Value;
     }
 
     private static byte[] RandomBytes(int len, int seed = 3)
@@ -178,8 +178,8 @@ public class ErasureXlDriveWriteTests : IDisposable
         using var staging = _drive.CreateStaging("b", "digest");
 
         // Act
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
 
         // Assert — ETag/SHA — исходного тела
         digest.ETagHex.Should().Be(Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body))

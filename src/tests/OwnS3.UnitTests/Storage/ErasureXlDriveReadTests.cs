@@ -38,14 +38,16 @@ public class ErasureXlDriveReadTests : IDisposable
     private async Task<XlMetaRecord> PutAsync(string bucket, string key, byte[] body)
     {
         using var staging = _drive.CreateStaging(bucket, key);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         var record = new XlMetaRecord(Guid.Empty, body.LongLength, DateTimeOffset.UnixEpoch,
             digest.ETagHex, "text/plain", new Dictionary<string, string>(), new Dictionary<string, string>(),
             digest.Sha256Hex);
         _drive.WriteMeta(staging, record);
         _drive.Commit(bucket, key, record, staging);
-        return _drive.TryReadMeta(bucket, key)!;
+        return _drive.TryReadMeta(bucket, key).Throw().Value is XlMetaLookup.Found f
+            ? f.Record
+            : throw new InvalidOperationException("запись не найдена после Put");
     }
 
     private static byte[] ReadAll(Stream stream)
@@ -70,7 +72,7 @@ public class ErasureXlDriveReadTests : IDisposable
         var meta = await PutAsync("b", "full", body);
 
         // Act
-        using var stream = _drive.OpenData("b", "full", meta, 0, meta.Size);
+        using var stream = _drive.OpenData("b", "full", meta, 0, meta.Size).Throw().Value;
 
         // Assert
         ReadAll(stream).Should().Equal(body);
@@ -86,7 +88,7 @@ public class ErasureXlDriveReadTests : IDisposable
         // Act — срез через границу блока
         var offset = 1024 * 1024 - 100;
         var length = 1024 * 1024 + 200;
-        using var stream = _drive.OpenData("b", "range", meta, offset, length);
+        using var stream = _drive.OpenData("b", "range", meta, offset, length).Throw().Value;
 
         // Assert
         var slice = ReadAll(stream);
@@ -103,7 +105,7 @@ public class ErasureXlDriveReadTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        using var stream = _drive.OpenData("b", "rec", meta, 0, meta.Size);
+        using var stream = _drive.OpenData("b", "rec", meta, 0, meta.Size).Throw().Value;
 
         // Assert — реконструкция из k=3 оставшихся
         ReadAll(stream).Should().Equal(body);
@@ -123,7 +125,7 @@ public class ErasureXlDriveReadTests : IDisposable
         File.WriteAllBytes(partPath, bytes);
 
         // Act
-        using var stream = _drive.OpenData("b", "bitrot", meta, 0, meta.Size);
+        using var stream = _drive.OpenData("b", "bitrot", meta, 0, meta.Size).Throw().Value;
         var read = ReadAll(stream);
 
         // Assert — чтение сходится (реконструкция), шард помечен
@@ -132,15 +134,17 @@ public class ErasureXlDriveReadTests : IDisposable
     }
 
     [Fact]
-    public async Task TryReadMeta_NoRecordsOnlineQuorum_ReturnsNull()
+    public void TryReadMeta_ОтсутствующаяЗапись_ТерминальныйSuccessMissing()
     {
-        // Arrange — объекта нет при кворумном онлайне
-        // Act/Assert
-        _drive.TryReadMeta("b", "absent").Should().BeNull();
+        // Act
+        var lookup = _drive.TryReadMeta("b", "k");
+        // Assert — отсутствие записи — терминальный Success (конвенция 01 §4)
+        lookup.IsSuccess.Should().BeTrue();
+        lookup.Value.Should().BeOfType<XlMetaLookup.Missing>();
     }
 
     [Fact]
-    public async Task TryReadMeta_OnlineBelowReadQuorum_Throws503()
+    public void TryReadMeta_OnlineBelowReadQuorum_FailedInsufficientReadQuorum()
     {
         // Arrange: 2 диска offline (онлайн 2 < k=3)
         Directory.Delete(_roots[0], recursive: true);
@@ -148,26 +152,11 @@ public class ErasureXlDriveReadTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        var act = () => _drive.TryReadMeta("b", "any");
+        var result = _drive.TryReadMeta("b", "any");
 
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
-            .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
-    }
-
-    [Fact]
-    public async Task Get_OnlineBelowReadQuorum_ThrowsInsufficientReadQuorum()
-    {
-        // Arrange
-        Directory.Delete(_roots[2], recursive: true);
-        Directory.Delete(_roots[3], recursive: true);
-        _pool.RefreshOnline();
-
-        // Act
-        var act = () => _drive.TryReadMeta("b", "any2");
-
-        // Assert
-        act.Should().Throw<ObjectStoreException>()
+        // Assert — кворумный отказ: Failed с кодом 503-семантики
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<ObjectStoreException>()
             .Which.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
     }
 
@@ -219,8 +208,8 @@ public class ErasureXlDriveReadTests : IDisposable
         foreach (var (number, body) in new[] { (1, part1), (2, part2) })
         {
             using var staging = _drive.CreateUploadStaging("b", "parts", uploadId);
-            var digest = await _drive.WritePartAsync(staging, number, new MemoryStream(body), body.LongLength,
-                CancellationToken.None);
+            var digest = (await _drive.WritePartAsync(staging, number, new MemoryStream(body), body.LongLength,
+                CancellationToken.None)).Throw().Value;
             _drive.CommitUploadPart(staging, number, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
         }
 
@@ -232,10 +221,11 @@ public class ErasureXlDriveReadTests : IDisposable
             new PartEtag(2, '"' + etag2 + '"'),
         ], new XlMetaRecord(Guid.Empty, 0, DateTimeOffset.UnixEpoch, "", "text/plain",
             new Dictionary<string, string>(), new Dictionary<string, string>(), ""));
-        var meta = _drive.TryReadMeta("b", "parts");
+        var meta = _drive.TryReadMeta("b", "parts").Throw().Value is XlMetaLookup.Found fp ? fp.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
 
         // Act
-        var parts = _drive.EnumerateParts("b", "parts", meta!);
+        var parts = _drive.EnumerateParts("b", "parts", meta).Throw().Value;
 
         // Assert — исходные размеры частей (GetObjectAttributes без декодирования)
         parts.Should().Equal((1, (long)partSize), (2, (long)(partSize / 2)));

@@ -45,14 +45,16 @@ public class ErasureHealTests : IDisposable
         var body = new byte[len];
         new Random(seed).NextBytes(body);
         using var staging = _drive.CreateStaging("b", key);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         var record = new XlMetaRecord(Guid.Empty, body.LongLength, DateTimeOffset.UnixEpoch,
             digest.ETagHex, "text/plain", new Dictionary<string, string>(), new Dictionary<string, string>(),
             digest.Sha256Hex);
         _drive.WriteMeta(staging, record);
         _drive.Commit("b", key, record, staging);
-        return _drive.TryReadMeta("b", key)!;
+        return _drive.TryReadMeta("b", key).Throw().Value is XlMetaLookup.Found f
+            ? f.Record
+            : throw new InvalidOperationException("запись не найдена после Put");
     }
 
     private static byte[] ReadAll(Stream stream)
@@ -79,7 +81,7 @@ public class ErasureHealTests : IDisposable
 
         // Assert: файл восстановлен, содержимое идентично (чтение без реконструкции)
         File.Exists(partPath).Should().BeTrue("шард восстановлен heal");
-        using var stream = _drive.OpenData("b", "missing", meta, 0, meta.Size);
+        using var stream = _drive.OpenData("b", "missing", meta, 0, meta.Size).Throw().Value;
         ReadAll(stream).Should().Equal(body);
     }
 
@@ -103,7 +105,7 @@ public class ErasureHealTests : IDisposable
         // Assert: хэш совпал (файл перезаписан реконструированным)
         var restored = File.ReadAllBytes(partPath);
         restored[42].Should().Be((byte)(bytes[42] ^ 0xFF), "битый байт перезаписан исходным значением");
-        using var stream = _drive.OpenData("b", "bitrot", meta, 0, meta.Size);
+        using var stream = _drive.OpenData("b", "bitrot", meta, 0, meta.Size).Throw().Value;
         ReadAll(stream).Should().Equal(body);
     }
 
@@ -159,8 +161,8 @@ public class ErasureHealTests : IDisposable
         {
             var body = new byte[5 * 1024 * 1024];
             new Random(9).NextBytes(body);
-            var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-                CancellationToken.None);
+            var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+                CancellationToken.None)).Throw().Value;
             _drive.CommitUploadPart(staging, 1, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
         }
 
@@ -174,7 +176,8 @@ public class ErasureHealTests : IDisposable
         await _heal.RunPassAsync(CancellationToken.None);
 
         // Assert: журнал восстановлен копией
-        _drive.ReadParts("b", "jrnl", uploadId).Should().ContainSingle().Which.PartNumber.Should().Be(1);
+        _drive.ReadParts("b", "jrnl", uploadId).Throw().Value.Should().ContainSingle()
+            .Which.PartNumber.Should().Be(1);
     }
 
     [Fact]
@@ -247,12 +250,12 @@ public class ErasureHealTests : IDisposable
         string etag1, etag2;
         using (var staging = _drive.CreateUploadStaging("b", "mp-heal", uploadId))
         {
-            var d1 = await _drive.WritePartAsync(staging, 1, new MemoryStream(part1), part1.LongLength,
-                CancellationToken.None);
+            var d1 = (await _drive.WritePartAsync(staging, 1, new MemoryStream(part1), part1.LongLength,
+                CancellationToken.None)).Throw().Value;
             _drive.CommitUploadPart(staging, 1, d1.ETagHex, d1.Length, DateTimeOffset.UnixEpoch);
             etag1 = d1.ETagHex;
-            var d2 = await _drive.WritePartAsync(staging, 2, new MemoryStream(part2), part2.LongLength,
-                CancellationToken.None);
+            var d2 = (await _drive.WritePartAsync(staging, 2, new MemoryStream(part2), part2.LongLength,
+                CancellationToken.None)).Throw().Value;
             _drive.CommitUploadPart(staging, 2, d2.ETagHex, d2.Length, DateTimeOffset.UnixEpoch);
             etag2 = d2.ETagHex;
         }
@@ -273,8 +276,10 @@ public class ErasureHealTests : IDisposable
             new PartEtag(1, etag1), new PartEtag(2, etag2),
         ], new XlMetaRecord(Guid.Empty, 0, DateTimeOffset.UnixEpoch, "", "text/plain",
             new Dictionary<string, string>(), new Dictionary<string, string>(), ""));
-        var meta = _drive.TryReadMeta("b", "mp-heal");
-        using var stream = _drive.OpenData("b", "mp-heal", meta!, 0, meta!.Size);
+        var meta = _drive.TryReadMeta("b", "mp-heal").Throw().Value is XlMetaLookup.Found f
+            ? f.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
+        using var stream = _drive.OpenData("b", "mp-heal", meta, 0, meta.Size).Throw().Value;
         ReadAll(stream).Should().Equal([.. part1, .. part2]);
     }
 
@@ -339,7 +344,7 @@ public class ErasureHealTests : IDisposable
             new MultipartJournals.UploadJournalEntry(uploadId, "b", "lock-key",
                 DateTimeOffset.UnixEpoch.ToUnixTimeMilliseconds(), "root"),
         ]);
-        var keyDirPath = _drive.ListUploadKeyDirs().Single();
+        var keyDirPath = _drive.ListUploadKeyDirs().Throw().Value.Single();
         var stalePath = Path.Combine(_roots[^1], ".owns3.sys", "multipart",
             Path.GetFileName(keyDirPath), "uploads.json");
         var staleBytes = "[]"u8.ToArray();
@@ -363,6 +368,6 @@ public class ErasureHealTests : IDisposable
 
         // Assert: устаревшая копия выровнена по свежему reference
         File.ReadAllBytes(stalePath).Should().NotEqual(staleBytes);
-        _drive.ReadUploads("b", "lock-key").Should().ContainSingle(u => u.UploadId == uploadId);
+        _drive.ReadUploads("b", "lock-key").Throw().Value.Should().ContainSingle(u => u.UploadId == uploadId);
     }
 }

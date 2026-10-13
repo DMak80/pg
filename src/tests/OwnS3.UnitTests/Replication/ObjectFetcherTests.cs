@@ -72,29 +72,34 @@ public sealed class FakeFetchTransport : IReplicationTransport
     // Первые N фетчей — сетевой сбой (HttpClientException), затем обычные исходы.
     public int FailuresBeforeSuccess { get; set; }
 
-    public static FetchResult BodyResult(byte[] body, long modMs, string sha) =>
-        new(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"", "application/x-test",
-            new Dictionary<string, string>(), TombstoneUnixMs: null);
+    // Число фактических fetch-вызовов (проверка ретраев по бэкоффу).
+    public int FetchCallCount { get; private set; }
 
-    public Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
+    public static FetchOutcome BodyResult(byte[] body, long modMs, string sha) =>
+        new FetchOutcome.Fetched(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"",
+            "application/x-test", new Dictionary<string, string>());
+
+    public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
     {
+        FetchCallCount++;
         if (FailuresBeforeSuccess > 0)
         {
             FailuresBeforeSuccess--;
-            throw new System.Net.Http.HttpRequestException("источник offline (тест)");
+            return Task.FromResult(Result<FetchOutcome>.Failed(
+                new PeerRejectedException("источник offline (тест)")));
         }
         if (Outcomes.Count == 0)
         {
             var defaultBody = "default"u8.ToArray();
-            return Task.FromResult(BodyResult(defaultBody, 1, Sha(defaultBody)));
+            return Task.FromResult(Result<FetchOutcome>.Success(BodyResult(defaultBody, 1, Sha(defaultBody))));
         }
         var outcome = Outcomes.Dequeue();
         return Task.FromResult(outcome switch
         {
             Exception ex => throw ex,
-            long tomb => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), tomb),
-            null => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), null),
-            FetchResult r => r,
+            long tomb => Result<FetchOutcome>.Success(new FetchOutcome.Tombstone(tomb)),
+            null => Result<FetchOutcome>.Success(new FetchOutcome.KeyNotFound()),
+            FetchOutcome r => Result<FetchOutcome>.Success(r),
             _ => throw new InvalidOperationException("неизвестный исход"),
         });
     }
@@ -102,16 +107,16 @@ public sealed class FakeFetchTransport : IReplicationTransport
     public static string Sha(byte[] body) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body)).ToLowerInvariant();
 
-    public Task<long?> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
+    public Task<Result<long>> SendNotificationsAsync(TargetRecord t, NotificationBatchRequest b, CancellationToken ct) =>
         throw new NotSupportedException("фетчер не рассылает");
 
-    public Task<ReplicationListingResponse> ListAsync(TargetRecord t, string bucket, string? marker, int maxKeys,
+    public Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord t, string bucket, string? marker, int maxKeys,
         CancellationToken ct) => throw new NotSupportedException("фетчер не листит");
 
-    public Task<IReadOnlyList<(string Name, long CreationUnixMs)>> ListingBucketsAsync(TargetRecord t,
+    public Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord t,
         CancellationToken ct) => throw new NotSupportedException("фетчер не листит");
 
-    public Task<PingResult> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
+    public Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct) =>
         throw new NotSupportedException("fetcher не пингует");
 }
 
@@ -120,6 +125,19 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
     private readonly ObjectFetcherFixture _fixture = new();
 
     private static byte[] Body(string content) => Encoding.UTF8.GetBytes(content);
+
+    // Тело, чей SHA-256 hex начинается с заданного символа (перебор суффикса):
+    // лексикографический порядок sha-hex — тай-брейк конфликта канона 07 §7.
+    private static byte[] BodyWithShaHexStarting(char hexChar)
+    {
+        for (var i = 0; i < 1_000_000; i++)
+        {
+            var body = Encoding.UTF8.GetBytes("conflict-body-" + i);
+            if (FakeFetchTransport.Sha(body)[0] == hexChar)
+                return body;
+        }
+        throw new InvalidOperationException("не подобрано тело с sha-префиксом " + hexChar);
+    }
 
     [Fact]
     public async Task FetchBody_AppliedWithSourceMetadata()
@@ -136,12 +154,119 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — применено с ИСХОДНЫМИ метаданными (xl-запись несёт modTime источника)
-        var state = _fixture.Store.ReadKeyState("b", "k");
-        state.Should().NotBeNull();
-        state!.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
+        var state = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found s0 ? s0.State
+            : throw new InvalidOperationException("запись не найдена после Apply");
+        state.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
         state.ContentSha256Hex.Should().Be(FakeFetchTransport.Sha(Body(content)));
         _fixture.Counters.AppliedCount.Should().Be(1);
         _fixture.Counters.FetchedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Fetch_ConflictApplied_IncrementsConflictAndApplied()
+    {
+        // Arrange — локальная запись с modTime=M и sha «aaa…» (запись несёт sha
+        // ИСТОЧНИКА); фетч приносит равный modTime и тело, чей РЕАЛЬНЫЙ sha-hex
+        // начинается с «f» — лексикографически БОЛЬШЕ «aaa…»: тай-брейк за incoming
+        // (07 §7), конфликтная победа incoming → применено. sha в fetch — реальный
+        // хэш тела: стор сверяет тело с заголовком (x-owns3-repl-sha256).
+        const string bucket = "bcfa";
+        _fixture.Store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var localSha = new string('a', 64);
+        await _fixture.Store.ApplyObjectAsync(bucket, "c", new MemoryStream(Body("local")),
+            5, new ReplicaObjectMetadata(DateTimeOffset.FromUnixTimeMilliseconds(1000), "e", localSha,
+                "text/plain", new Dictionary<string, string>()),
+            FakeFetchTransport.Sha(Body("local")), TestContext.Current.CancellationToken);
+        var incomingBody = BodyWithShaHexStarting('f');
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(
+            incomingBody, 1000, FakeFetchTransport.Sha(incomingBody)));
+        _fixture.Queue.TryEnqueue(new FetchTask(bucket, "c", 1000));
+        var fetcher = _fixture.Create();
+
+        // Act
+        using var cts = new CancellationTokenSource();
+        await fetcher.DrainAsync(cts.Token);
+
+        // Assert — ConflictApplied → конфликт И applied (ОБА счётчика — канон 07 §10,
+        // conflicts_total не занижается)
+        _fixture.Counters.ConflictCount.Should().Be(1);
+        _fixture.Counters.AppliedCount.Should().Be(1);
+        _fixture.Counters.FetchedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Fetch_ConflictSkipped_IncrementsConflictAndSkipped()
+    {
+        // Arrange — локальная запись с modTime=M и sha «fff…» (лексикографически больший);
+        // фетч приносит равный modTime и тело, чей РЕАЛЬНЫЙ sha-hex начинается с «0» —
+        // МЕНЬШЕ «fff…»: тай-брейк за локальную, конфликтный LocalWins → входящая
+        // не применена (тело фетчем получено, но skipped — чтения для применения нет)
+        const string bucket = "bcfs";
+        _fixture.Store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var localSha = new string('f', 64);
+        await _fixture.Store.ApplyObjectAsync(bucket, "s", new MemoryStream(Body("local")),
+            5, new ReplicaObjectMetadata(DateTimeOffset.FromUnixTimeMilliseconds(1000), "e", localSha,
+                "text/plain", new Dictionary<string, string>()),
+            FakeFetchTransport.Sha(Body("local")), TestContext.Current.CancellationToken);
+        var incomingBody = BodyWithShaHexStarting('0');
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(
+            incomingBody, 1000, FakeFetchTransport.Sha(incomingBody)));
+        _fixture.Queue.TryEnqueue(new FetchTask(bucket, "s", 1000));
+        var fetcher = _fixture.Create();
+
+        // Act
+        using var cts = new CancellationTokenSource();
+        await fetcher.DrainAsync(cts.Token);
+
+        // Assert — ConflictSkipped → конфликт И skipped (ОБА счётчика — канон 07 §10);
+        // локальная версия не перезаписана
+        _fixture.Counters.ConflictCount.Should().Be(1);
+        _fixture.Counters.SkippedCount.Should().Be(1);
+        _fixture.Counters.AppliedCount.Should().Be(0);
+        var kept = _fixture.Store.ReadKeyState(bucket, "s").Throw().Value is ReplicaKeyLookup.Found f
+            ? f.State
+            : throw new InvalidOperationException("локальная запись потеряна после ConflictSkipped");
+        kept.ContentSha256Hex.Should().Be(localSha);
+    }
+
+    [Fact]
+    public async Task Fetch_NonDomainExceptionInApply_Retried_WorkerSurvives()
+    {
+        // Arrange — ключ с ПОРЧЕННЫМ xl.meta (main+bkp): ReadKeyState при применении
+        // кидает XlIntegrityException — НЕдоменное летящее исключение вне Result-
+        // конвертации границы (ReplicaStore.ReadKeyState не ловит). Страховочный
+        // catch-all фетчера обязан конвертировать в повтор, воркер живёт.
+        _fixture.Store.ApplyBucketCreate("bni", DateTimeOffset.FromUnixTimeMilliseconds(100));
+        const string content = "poisoned";
+        var body = Body(content);
+        var objectDir = Path.Combine(_fixture.VolumeDir, "bni",
+            OwnS3.Storage.XlPathEncoder.EncodePath("k"));
+        Directory.CreateDirectory(objectDir);
+        File.WriteAllText(Path.Combine(objectDir, "xl.meta"), "broken");
+        File.WriteAllText(Path.Combine(objectDir, "xl.meta.bkp"), "broken");
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(body, 100,
+            FakeFetchTransport.Sha(body)));
+        _fixture.Queue.TryEnqueue(new FetchTask("bni", "k", 100));
+        var fetcher = _fixture.Create();
+
+        // Act — воркер: применение кидает XlIntegrityException → catch-all → повтор
+        using var cts = new CancellationTokenSource();
+        var run = fetcher.RunAsync(cts.Token);
+        var retried = false;
+        for (var i = 0; i < 100 && !retried; i++)
+        {
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+            retried = _fixture.Transport.FetchCallCount >= 2;
+        }
+
+        // Assert — воркер ЖИВ (не faulted), задача ушла в повтор по бэкоффу
+        // (fetch-вызовы ≥ 2); применение не прошло: xl.meta на диске остался битым
+        // (ReadKeyState на таком ключе бросает — потому ассерт по диску)
+        retried.Should().BeTrue("недоменное исключение — повтор по бэкоффу, не смерть воркера");
+        File.Exists(Path.Combine(objectDir, "xl.meta")).Should().BeTrue();
+        File.ReadAllText(Path.Combine(objectDir, "xl.meta")).Should().Be("broken");
+        cts.Cancel();
+        await run; // graceful stop — воркер жив (RunAsync не faulted)
     }
 
     [Fact]
@@ -161,12 +286,14 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         for (var i = 0; i < 100 && !applied; i++)
         {
             await Task.Delay(20, TestContext.Current.CancellationToken);
-            applied = _fixture.Store.ReadKeyState("b", "k") is not null;
+            applied = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found;
         }
 
         // Assert — локально применено ТОЛЬКО корректное тело (мисматч не прошёл до Commit)
         applied.Should().BeTrue("повтор после sha-мисматча применяет корректное тело");
-        _fixture.Store.ReadKeyState("b", "k")!.ContentSha256Hex
+        var state2 = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found s1 ? s1.State
+            : throw new InvalidOperationException("запись не найдена после повтора");
+        state2.ContentSha256Hex
             .Should().Be(FakeFetchTransport.Sha(Body("good")));
         cts.Cancel();
         await run;
@@ -190,7 +317,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — ключ удалён, tombstone записан (защита от воскрешения)
-        _fixture.Store.ReadKeyState("bt", "gone").Should().BeNull();
+        _fixture.Store.ReadKeyState("bt", "gone").Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         _fixture.Tombstones.GetDeleteTime("bt", "gone").Should().Be(5000);
         _fixture.Counters.AppliedCount.Should().Be(1);
     }
@@ -215,7 +342,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         }
         catch (OperationCanceledException)
         {
-            // бюджет истёк на ретраях — ожидаемо приoffline
+            // бюджет истёк на ретраях — ожидаемо при offline
         }
 
         // Assert — задача НЕ потеряна (HasUnapplied true — чистый маркер не ставить, R2)
@@ -225,7 +352,9 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         _fixture.Transport.FailuresBeforeSuccess = 0;
         using var runCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await fetcher.RunAsync(runCts.Token);
-        _fixture.Store.ReadKeyState("b", "drain")!.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var drainState = _fixture.Store.ReadKeyState("b", "drain").Throw().Value is ReplicaKeyLookup.Found s2 ? s2.State
+            : throw new InvalidOperationException("запись не найдена после ретрая");
+        drainState.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(100));
         fetcher.HasUnapplied.Should().BeFalse("после успешного ретрая незавершённой работы нет");
     }
 
@@ -242,7 +371,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — состояние приёмника не менялось, счётчики применения не инкремент
-        _fixture.Store.ReadKeyState("b", "k").Should().BeNull();
+        _fixture.Store.ReadKeyState("b", "k").Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         _fixture.Counters.AppliedCount.Should().Be(0);
         _fixture.Counters.FetchedCount.Should().Be(0);
     }
@@ -305,9 +434,9 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
 
         // Assert — пауза снята, ключ из очереди применён с исходным sha
         fetcher.Paused.Should().BeFalse();
-        var state = _fixture.Store.ReadKeyState("br", "resumed");
-        state.Should().NotBeNull();
-        state!.ContentSha256Hex.Should().Be(sha);
+        var state = _fixture.Store.ReadKeyState("br", "resumed").Throw().Value is ReplicaKeyLookup.Found s3 ? s3.State
+            : throw new InvalidOperationException("запись не найдена после resume");
+        state.ContentSha256Hex.Should().Be(sha);
         _fixture.Counters.AppliedCount.Should().BeGreaterThanOrEqualTo(1);
         cts.Cancel();
         await run;

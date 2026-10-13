@@ -10,11 +10,12 @@ namespace OwnS3.Storage;
 // не роняет один битый объект).
 internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
 {
-    public ListPage Walk(string bucket, ListQuery query)
+    public Result<ListPage> Walk(string bucket, ListQuery query)
     {
         var maxKeys = query.MaxKeys ?? 1000;
         if (maxKeys == 0)
-            return new ListPage([], [], IsTruncated: false, null, null, KeyCount: 0);
+            return Result<ListPage>.Success(
+                new ListPage([], [], IsTruncated: false, null, null, KeyCount: 0));
 
         // Маркер: V2 — continuation-token (декод) ?? start-after (токен выигрывает);
         // V1/Versions — marker (хендлер t36 кладёт туда key-marker)
@@ -29,7 +30,8 @@ internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
                 }
                 catch (FormatException)
                 {
-                    throw new XlInvalidArgumentException("Invalid continuation token");
+                    // Битый continuation-token — доменный 400 (конвенция 01 §4)
+                    return Result<ListPage>.Failed(new XlInvalidArgumentException("Invalid continuation token"));
                 }
             }
             else if (query.StartAfter is not null)
@@ -40,7 +42,11 @@ internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
 
         var prefix = query.Prefix ?? string.Empty;
         var delimiter = query.Delimiter;
-        var cursor = drive.EnumerateObjects(bucket);
+        // Кворумный отказ листинга EC — Failed (503-семантика, канон 06 §7)
+        var enumerated = drive.EnumerateObjects(bucket);
+        if (!enumerated.IsSuccess)
+            return Result<ListPage>.Failed(enumerated.Error!);
+        var cursor = enumerated.Value;
 
         var contents = new List<ListEntry>();
         var prefixes = new List<CommonPrefixEntry>();
@@ -139,8 +145,8 @@ internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
             else if (delimiter is not null)
                 nextMarker = lastEmitted;
         }
-        return new ListPage(contents, prefixes, truncated, nextMarker, nextToken,
-            contents.Count + prefixes.Count);
+        return Result<ListPage>.Success(new ListPage(contents, prefixes, truncated, nextMarker, nextToken,
+            contents.Count + prefixes.Count));
     }
 }
 

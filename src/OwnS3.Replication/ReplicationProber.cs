@@ -10,39 +10,30 @@ namespace OwnS3.Replication;
 public sealed class ReplicationProber(ReplicationTargets targets,
     IReplicationTransport transport, ReplicationOptions options)
 {
-    // Отчёт probe: active — ≥1 сосед в составе. null-возврат — targetName не из
-    // состава: маркер 400 для хендлера (глава 07 §2).
-    public async Task<ProbeReport?> ProbeAsync(string? targetName, CancellationToken ct)
+    // Отчёт probe: active — ≥1 сосед в составе. Failed(UnknownReplicationTargetException)
+    // — targetName не из состава: маркер 400 для хендлера (глава 07 §2).
+    public async Task<Result<ProbeReport>> ProbeAsync(string? targetName, CancellationToken ct)
     {
         var snapshot = targets.Snapshot;
         if (targetName is not null && snapshot.All(t => t.Name != targetName))
-            return null;
+            return Result<ProbeReport>.Failed(new UnknownReplicationTargetException(
+                $"цель probe не входит в состав targets: {targetName}"));
         IReadOnlyList<TargetRecord> selected = targetName is null
             ? snapshot
             : snapshot.Where(t => t.Name == targetName).ToList();
         var outcomes = await Task.WhenAll(selected.Select(t => PingQuietAsync(t, ct)));
-        return new ProbeReport(selected.Count > 0, outcomes);
+        return Result<ProbeReport>.Success(new ProbeReport(selected.Count > 0, outcomes));
     }
 
-    // Ветка ping одного соседа: гасит свои транспортные исключения (probe
-    // отвечает за все цели); внешняя отмена ct — проброс наверх.
+    // Ветка ping одного соседа: обрыв/таймаут пер-цели — исход false без rttMs
+    // (probe отвечает за все цели, глава 07 §2); внешняя отмена ct — проброс наверх.
     private async Task<ProbeOutcome> PingQuietAsync(TargetRecord target, CancellationToken ct)
     {
-        try
-        {
-            var result = await transport.PingAsync(target,
-                TimeSpan.FromMilliseconds(options.ProbeTimeoutMs), ct);
-            return new ProbeOutcome(target.Name, result.Reachable, result.RttMs);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            // Обрыв/таймаут пер-цели — исход false без rttMs (глава 07 §2)
-            return new ProbeOutcome(target.Name, false, null);
-        }
+        var ping = await transport.PingAsync(target,
+            TimeSpan.FromMilliseconds(options.ProbeTimeoutMs), ct);
+        return ping is { IsSuccess: true, Value: var p }
+            ? new ProbeOutcome(target.Name, p.Reachable, p.RttMs)
+            : new ProbeOutcome(target.Name, false, null);
     }
 }
 

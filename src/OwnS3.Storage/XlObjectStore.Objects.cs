@@ -7,115 +7,163 @@ namespace OwnS3.Storage;
 // SHA-256 сверка ДО передачи любых байтов клиенту.
 public sealed partial class XlObjectStore
 {
-    public async Task<PutResult> PutObjectAsync(string bucket, string key, Stream body, long contentLength,
+    public async Task<Result<PutResult>> PutObjectAsync(string bucket, string key, Stream body, long contentLength,
         ObjectUploadMetadata metadata, CancellationToken ct)
     {
         // 1. Бакет
-        EnsureBucket(bucket);
-        // 2. Staging драйва (versionId/dataDir — за драйвом, нормализация в WriteMeta)
-        using var staging = Drive.CreateStaging(bucket, key);
+        var ensured = EnsureBucket(bucket);
+        if (!ensured.IsSuccess)
+            return Result<PutResult>.Failed(ensured.Error!);
         try
         {
+            // 2. Staging драйва (versionId/dataDir — за драйвом, нормализация в WriteMeta)
+            // 3–6. Запись/коммит; экранированные броски драйва конвертируются на границе
+            // слоя операции: ключ не представим xl-путём (сегмент >255 байт, канон 04 §1)
+            // — доменный 400; кворумный отказ staging-пути EC (сет ключа без онлайн-дисков
+            // при бакет-глобальном кворуме EnsureBucket, multi-set) — доменный 503
+            using var staging = Drive.CreateStaging(bucket, key);
             // 3. Тело → part.1 (MD5+SHA-256 исходника, fsync — внутри драйва)
-            var digest = await Drive.WritePartAsync(staging, 1, body, contentLength, ct);
+            var digestResult = await Drive.WritePartAsync(staging, 1, body, contentLength, ct);
+            if (!digestResult.IsSuccess)
+                return Result<PutResult>.Failed(digestResult.Error!);
+            var digest = digestResult.Value;
             var record = new XlMetaRecord(Guid.Empty, contentLength, timeProvider.GetUtcNow(),
                 digest.ETagHex, metadata.ContentType, metadata.UserMetadata, EmptyHeaders, digest.Sha256Hex);
-            Drive.WriteMeta(staging, record);
+            var metaResult = Drive.WriteMeta(staging, record);
+            if (!metaResult.IsSuccess)
+                return Result<PutResult>.Failed(metaResult.Error!);
             // 4–6. Коммит + возврат (ETag HTTP-значение — в кавычках, P8)
             await Task.Yield(); // async-контракт при синхронном файловом IO (P4)
             return Drive.Commit(bucket, key, record, staging);
         }
-        finally
+        catch (Exception ex) when (ex is ObjectStoreException or XlInvalidArgumentException)
         {
-            // Staging удаляется при любом отказе — не ждёт чисток (спека §4.3 п.4);
-            // после успешного Commit каталога уже нет — Dispose безвреден
-            staging.Dispose();
+            return Result<PutResult>.Failed(ex);
         }
     }
 
     // Delete канона 04 §4 п.5 через drive; идемпотентность: повторный Delete
     // не находит запись — успех (гварды покрывают краш-остатки чтением bkp).
-    public Task DeleteObjectAsync(string bucket, string key, CancellationToken ct)
+    public async Task<Result> DeleteObjectAsync(string bucket, string key, CancellationToken ct)
     {
-        EnsureBucket(bucket);
-        var meta = Drive.TryReadMeta(bucket, key);
-        if (meta is null)
-            return Task.CompletedTask; // идемпотентность (канон 02 §1)
-        Drive.Delete(bucket, key, meta);
-        return Task.CompletedTask;
+        var ensured = EnsureBucket(bucket);
+        if (!ensured.IsSuccess)
+            return ensured;
+        var lookup = Drive.TryReadMeta(bucket, key);
+        if (!lookup.IsSuccess)
+            return lookup; // кворумный отказ — Failed
+        if (lookup.Value is not XlMetaLookup.Found found)
+            return Result.Success(); // идемпотентность (канон 02 §1)
+        return Drive.Delete(bucket, key, found.Record);
     }
 
     // Per-key исходы; quiet фильтрует App (Storage игнорирует).
-    public async Task<IReadOnlyList<DeletedKeyResult>> DeleteObjectsAsync(string bucket,
+    public async Task<Result<IReadOnlyList<DeletedKeyResult>>> DeleteObjectsAsync(string bucket,
         IReadOnlyList<string> keys, bool quiet, CancellationToken ct)
     {
-        EnsureBucket(bucket);
+        var ensured = EnsureBucket(bucket);
+        if (!ensured.IsSuccess)
+            return Result<IReadOnlyList<DeletedKeyResult>>.Failed(ensured.Error!);
         var results = new List<DeletedKeyResult>(keys.Count);
         foreach (var key in keys)
         {
-            try
+            var delete = await DeleteObjectAsync(bucket, key, ct);
+            if (delete.IsSuccess)
             {
-                await DeleteObjectAsync(bucket, key, ct);
                 results.Add(new DeletedKeyResult(key, Deleted: true, null, null));
             }
-            catch (ObjectStoreException ex)
+            else if (delete.Error is ObjectStoreException ex)
             {
                 results.Add(new DeletedKeyResult(key, Deleted: false, ex.Code.ToString(), ex.Message));
             }
+            else
+            {
+                // Отказ всей операции (не per-key доменный) — Failed
+                return Result<IReadOnlyList<DeletedKeyResult>>.Failed(delete.Error!);
+            }
         }
 
-        return results;
+        return Result<IReadOnlyList<DeletedKeyResult>>.Success(results);
     }
 
     // ── чтение (спека §4.4) ──
 
-    // Чтение записи объекта; отсутствие → NoSuchKey.
-    private XlMetaRecord ReadObjectMeta(string bucket, string key)
+    // Чтение записи объекта; отсутствие → NoSuchKey (преобразование
+    // Missing→NoSuchKey на уровне S3-операции, принцип 6 spec).
+    private Result<XlMetaRecord> ReadObjectMeta(string bucket, string key)
     {
-        EnsureBucket(bucket);
-        return Drive.TryReadMeta(bucket, key)
-            ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
+        var ensured = EnsureBucket(bucket);
+        if (!ensured.IsSuccess)
+            return Result<XlMetaRecord>.Failed(ensured.Error!);
+        var lookup = Drive.TryReadMeta(bucket, key);
+        if (!lookup.IsSuccess)
+            return Result<XlMetaRecord>.Failed(lookup.Error!);
+        return lookup.Value is XlMetaLookup.Found found
+            ? Result<XlMetaRecord>.Success(found.Record)
+            : Result<XlMetaRecord>.Failed(new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey));
     }
 
     // Доменное представление записи: ETag HTTP-значение — в кавычках (P8).
     private static ObjectMetadata ToMetadata(string key, XlMetaRecord record) =>
         new(key, '"' + record.ETag + '"', record.Size, record.ModTime, record.ContentType, record.UserMetadata);
 
-    public Task<ObjectContent> GetObjectAsync(string bucket, string key, ObjectReadOptions options,
+    public async Task<Result<ObjectContent>> GetObjectAsync(string bucket, string key, ObjectReadOptions options,
         CancellationToken ct)
     {
         // 1. Запись (с фолбэком bkp — drive)
-        var meta = ReadObjectMeta(bucket, key);
+        var metaResult = ReadObjectMeta(bucket, key);
+        if (!metaResult.IsSuccess)
+            return Result<ObjectContent>.Failed(metaResult.Error!);
+        var meta = metaResult.Value;
         // 2. Conditional (GET-семантика: If-Modified-Since применяется)
         var outcome = ConditionalEvaluator.Evaluate(options.Conditions, meta.ETag, meta.ModTime,
             ifModifiedSinceApplies: true);
         if (outcome == ConditionalOutcome.PreconditionFailed)
-            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+            return Result<ObjectContent>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed));
         if (outcome == ConditionalOutcome.NotModified)
-            return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
-        // 3. Range (заголовок условного диапазона не поддерживается — канон 02 §1)
-        var range = RangeResolver.Resolve(options.Range, meta.Size);
+            return Result<ObjectContent>.Success(
+                new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
+        // 3. Range (заголовок условного диапазона не поддерживается — канон 02 §1);
+        // 416 InvalidRange приходит как Failed (трансляция в HTTP — App)
+        var resolved = RangeResolver.Resolve(options.Range, meta.Size);
+        if (!resolved.IsSuccess)
+            return Result<ObjectContent>.Failed(resolved.Error!);
+        AppliedByteRange? range = resolved.Value;
         // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1)
-        Drive.VerifyFullChecksum(bucket, key, meta);
+        var verified = Drive.VerifyFullChecksum(bucket, key, meta);
+        if (!verified.IsSuccess)
+            return Result<ObjectContent>.Failed(verified.Error!);
         // 5. Тело: составной поток драйва (полный объект или срез Range)
-        Stream body = range is null
+        var opened = range is null
             ? Drive.OpenData(bucket, key, meta, 0, meta.Size)
             : Drive.OpenData(bucket, key, meta, range.Start, range.End - range.Start + 1);
-        return Task.FromResult(new ObjectContent(ToMetadata(key, meta), body, NotModified: false, Range: range));
+        if (!opened.IsSuccess)
+            return Result<ObjectContent>.Failed(opened.Error!);
+        return Result<ObjectContent>.Success(
+            new ObjectContent(ToMetadata(key, meta), opened.Value, NotModified: false, Range: range));
     }
 
-    public Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options,
+    public async Task<Result<ObjectContent>> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options,
         CancellationToken ct)
     {
         // Шаги 1–3 те же; данных не читает — сверка не выполняется (канон 04 §2)
-        var meta = ReadObjectMeta(bucket, key);
+        var metaResult = ReadObjectMeta(bucket, key);
+        if (!metaResult.IsSuccess)
+            return Result<ObjectContent>.Failed(metaResult.Error!);
+        var meta = metaResult.Value;
         var outcome = ConditionalEvaluator.Evaluate(options?.Conditions, meta.ETag, meta.ModTime,
             ifModifiedSinceApplies: true);
         if (outcome == ConditionalOutcome.PreconditionFailed)
-            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+            return Result<ObjectContent>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed));
         if (outcome == ConditionalOutcome.NotModified)
-            return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
-        var range = RangeResolver.Resolve(options?.Range, meta.Size);
-        return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: false, Range: range));
+            return Result<ObjectContent>.Success(
+                new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
+        var resolved = RangeResolver.Resolve(options?.Range, meta.Size);
+        if (!resolved.IsSuccess)
+            return Result<ObjectContent>.Failed(resolved.Error!);
+        return Result<ObjectContent>.Success(
+            new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: false, Range: resolved.Value));
     }
 }

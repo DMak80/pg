@@ -216,52 +216,73 @@ public sealed class ObjectFetcher
             return false;
         try
         {
-            var result = await _transport.FetchObjectAsync(_source, task.Bucket, task.Key, ct);
-            if (result.TombstoneUnixMs is long deleteTime)
+            var fetch = await _transport.FetchObjectAsync(_source, task.Bucket, task.Key, ct);
+            if (!fetch.IsSuccess)
+                return HandleFetchFailure(_source.Name, task, fetch.Error!); // Failed → повтор по бэкоффу (глава 07 §7)
+            switch (fetch.Value)
             {
-                // Tombstone-ответ: ключ удалён у источника (глава 07 §7)
-                _applier.ApplyDelete(task.Bucket, task.Key, deleteTime);
-                _counters.Applied(_source.Name);
-                return false;
-            }
-            if (result.Body is null)
-            {
-                // 404: ключ неизвестен — состояние приёмника не меняется
-                return false;
+                case FetchOutcome.Tombstone t:
+                {
+                    // Ключ удалён у источника — tombstone-применение (глава 07 §7);
+                    // отказ применения — повтор по бэкоффу
+                    var deleted = _applier.ApplyDelete(task.Bucket, task.Key, t.DeleteTimeUnixMs);
+                    if (!deleted.IsSuccess)
+                        return HandleFetchFailure(_source.Name, task, deleted.Error!);
+                    _counters.Applied(_source.Name);
+                    return false;
+                }
+                case FetchOutcome.KeyNotFound:
+                    // 404: ключ неизвестен — состояние приёмника не меняется (skip без повтора)
+                    return false;
+                case FetchOutcome.Fetched f:
+                {
+                    // 200-объект: применение с исходными метаданными; sha-сверка тела на лету —
+                    // внутри ApplyObjectAsync (expectedSha из заголовка); чтение тела — под
+                    // троттлингом MaxRateBytes (глава 07 §7; 0 — безлимит)
+                    await using (f.Body)
+                    {
+                        Stream body = _options.MaxRateBytes > 0
+                            ? new ThrottledStream(f.Body, _options.MaxRateBytes)
+                            : f.Body;
+                        var apply = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
+                            contentLength: f.ContentLength,
+                            new ReplicaObjectMetadata(
+                                DateTimeOffset.FromUnixTimeMilliseconds(f.ModTimeUnixMs),
+                                f.ETag.Trim('"'), f.ContentSha256, f.ContentType, f.UserMetadata),
+                            expectedSha256: f.ContentSha256, ct);
+                        if (!apply.IsSuccess)
+                            // checksum-mismatch и техотказы применения — повтор (глава 07 §7);
+                            // fetched НЕ инкрементируется — байт-в-байт как сегодня
+                            // (сегодня мисматч бросается из ApplyObjectAsync ДО строки счётчика)
+                            return HandleFetchFailure(_source.Name, task, apply.Error!);
+                        _counters.Fetched(_source.Name);
+                        // Инкременты — по исходу, семантика «как сегодня» (канон 07 §10):
+                        // пара ConflictApplied/ConflictSkipped несёт флаг конфликта ПОВЕРХ
+                        // исхода применения — конфликт сосуществует с applied/skipped
+                        switch (apply.Value)
+                        {
+                            case ReplicaApplyOutcome.Applied:
+                                _counters.Applied(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.Skipped:
+                                _counters.Skipped(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.ConflictApplied:
+                                _counters.Conflict(_source.Name);
+                                _counters.Applied(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.ConflictSkipped:
+                                _counters.Conflict(_source.Name);
+                                _counters.Skipped(_source.Name);
+                                break;
+                        }
+                    }
+
+                    return false;
+                }
             }
 
-            // 200-объект: применение с исходными метаданными; sha-сверка тела на лету —
-            // внутри ApplyObjectAsync (expectedSha из заголовка); чтение тела — под
-            // троттлингом MaxRateBytes (глава 07 §7; 0 — безлимит)
-            await using (result.Body)
-            {
-                // Троттлинг чтения тела MaxRateBytes байт/с (глава 07 §7; 0 — безлимит)
-                Stream body = _options.MaxRateBytes > 0
-                    ? new ThrottledStream(result.Body, _options.MaxRateBytes)
-                    : result.Body;
-                var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
-                    contentLength: result.ContentLength,
-                    new ReplicaObjectMetadata(
-                        DateTimeOffset.FromUnixTimeMilliseconds(result.ModTimeUnixMs),
-                        result.ETag.Trim('"'), result.ContentSha256, result.ContentType,
-                        result.UserMetadata),
-                    expectedSha256: result.ContentSha256, ct);
-                _counters.Fetched(_source.Name);
-                if (applyResult.Conflict)
-                    _counters.Conflict(_source.Name);
-                if (applyResult.Applied)
-                    _counters.Applied(_source.Name);
-                else
-                    _counters.Skipped(_source.Name);
-            }
-            return false;
-        }
-        catch (ReplicationChecksumMismatchException ex)
-        {
-            // sha тела ≠ заголовка — фетч-ошибка → повтор (глава 07 §6)
-            _logger.LogWarning(ex, "sha тела фетча {Source}/{Bucket}/{Key} не совпал — повтор",
-                _source.Name, task.Bucket, task.Key);
-            return true;
+            return false; // недостижимо (варианты закрыты)
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -269,10 +290,20 @@ public sealed class ObjectFetcher
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Фетч {Source}/{Bucket}/{Key} не удался — повтор по бэкоффу",
-                _source.Name, task.Bucket, task.Key);
-            return true;
+            // Страховочный catch-all — прецедент S3Middleware (демонтаж переходных catch
+            // не означает демонтаж страховки): недоменные техотказы IO/порчи (IOException
+            // чтения xl.meta, DirectoryNotFoundException ушедшего диска в staging-пути)
+            // конвертируются в повтор по бэкоффу, воркер продолжает цикл — не умирает молча
+            return HandleFetchFailure(_source.Name, task, ex);
         }
+    }
+
+    // Отказ фетча/применения: sha-мисматч и техотказы — повтор по бэкоффу (глава 07 §7).
+    private bool HandleFetchFailure(string sourceName, FetchTask task, Exception error)
+    {
+        _logger.LogWarning(error, "Фетч {Source}/{Bucket}/{Key} не удался — повтор по бэкоффу",
+            sourceName, task.Bucket, task.Key);
+        return true;
     }
 
 // Троттлинг-поток (глава 07 §7): пропускает байты не быстрее rateLimit байт/с —

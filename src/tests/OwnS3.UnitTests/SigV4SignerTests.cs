@@ -85,15 +85,16 @@ public class SigV4SignerTests
         var result = await transport.FetchObjectAsync(Target("peer-a"), "bucket", "key",
             TestContext.Current.CancellationToken);
 
-        // Assert — все заголовки спарсены, тело потоковое
-        result.Body.Should().NotBeNull();
-        result.ModTimeUnixMs.Should().Be(1760000000000);
-        result.ContentSha256.Should().Be("abc123");
-        result.ETag.Should().Be("\"etag1\"");
-        result.ContentType.Should().Be("application/x-test");
-        result.UserMetadata.Should().ContainKey("origin").WhoseValue.Should().Be("mesh-1");
-        result.TombstoneUnixMs.Should().BeNull();
-        result.Body!.Dispose();
+        // Assert — все заголовки спарсены, тело потоковое (вариант Fetched)
+        result.IsSuccess.Should().BeTrue();
+        var fetched = result.Value.Should().BeOfType<FetchOutcome.Fetched>().Which;
+        fetched.Body.Should().NotBeNull();
+        fetched.ModTimeUnixMs.Should().Be(1760000000000);
+        fetched.ContentSha256.Should().Be("abc123");
+        fetched.ETag.Should().Be("\"etag1\"");
+        fetched.ContentType.Should().Be("application/x-test");
+        fetched.UserMetadata.Should().ContainKey("origin").WhoseValue.Should().Be("mesh-1");
+        fetched.Body.Dispose();
     }
 
     [Fact]
@@ -115,9 +116,10 @@ public class SigV4SignerTests
         var result = await transport.FetchObjectAsync(Target("peer-a"), "b", "gone",
             TestContext.Current.CancellationToken);
 
-        // Assert — tombstone-время, тела нет
-        result.TombstoneUnixMs.Should().Be(1760001111000);
-        result.Body.Should().BeNull();
+        // Assert — tombstone-время, тела нет (вариант Tombstone)
+        result.IsSuccess.Should().BeTrue();
+        var tombstone = result.Value.Should().BeOfType<FetchOutcome.Tombstone>().Which;
+        tombstone.DeleteTimeUnixMs.Should().Be(1760001111000);
     }
 
     [Fact]
@@ -131,9 +133,9 @@ public class SigV4SignerTests
         var result = await transport.FetchObjectAsync(Target("peer-a"), "b", "none",
             TestContext.Current.CancellationToken);
 
-        // Assert — null-Body и null-Tombstone (состояние приёмника не меняется)
-        result.Body.Should().BeNull();
-        result.TombstoneUnixMs.Should().BeNull();
+        // Assert — терминальный Success KeyNotFound (состояние приёмника не меняется)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeOfType<FetchOutcome.KeyNotFound>();
     }
 
     [Fact]
@@ -153,15 +155,15 @@ public class SigV4SignerTests
             [new ReplicationEvent(1, ReplicationEventType.BucketCreate, "b", "", 1, "", 0, "", "mesh-a")]);
 
         // Act
-        var accepted = await transport.SendNotificationsAsync(Target("peer-a"), batch,
-            TestContext.Current.CancellationToken);
+        var accepted = (await transport.SendNotificationsAsync(Target("peer-a"), batch,
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert
         accepted.Should().Be(42);
     }
 
     [Fact]
-    public async Task SendNotifications_429_ReturnsNull()
+    public async Task SendNotifications_429_ReturnsFailed()
     {
         // Arrange — приёмный буфер переполнен
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.TooManyRequests));
@@ -172,8 +174,10 @@ public class SigV4SignerTests
         var accepted = await transport.SendNotificationsAsync(Target("peer-a"), batch,
             TestContext.Current.CancellationToken);
 
-        // Assert — null: вызывающий бэкоффит (глава 07 §8)
-        accepted.Should().BeNull();
+        // Assert — 429 → Failed(PeerRejectedException): вызывающий бэкоффит (глава 07 §8;
+        // семантика критерия 5 — «не приняли» = отказ)
+        (!accepted.IsSuccess).Should().BeTrue();
+        accepted.Error.Should().BeOfType<PeerRejectedException>();
     }
 
     [Fact]
@@ -192,7 +196,8 @@ public class SigV4SignerTests
         var transport = new ReplicationHttpClient(new HttpClient(handler) { BaseAddress = new Uri("http://neighbor:9000") });
 
         // Act
-        var buckets = await transport.ListingBucketsAsync(Target("peer-a"), TestContext.Current.CancellationToken);
+        var buckets = (await transport.ListingBucketsAsync(Target("peer-a"),
+            TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — состав бакетов соседа (backfill, глава 07 §9)
         buckets.Should().ContainSingle().Which.Name.Should().Be("b1");

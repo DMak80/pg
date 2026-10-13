@@ -53,7 +53,9 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
         try
         {
             pool.RefreshOnline();
-            var buckets = drive.ListBuckets();
+            // Финальная внутренняя идиома heal (не мост): кворумный отказ
+            // пробрасывается вызывающим → LogError, как сегодня
+            var buckets = drive.ListBuckets().Throw().Value;
             foreach (var bucket in buckets)
                 await HealBucketAsync(bucket.Name, ct);
             HealUploads();
@@ -71,18 +73,15 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
 
     private async Task HealBucketAsync(string bucket, CancellationToken ct)
     {
-        IXlObjectCursor cursor;
-        try
+        // Сет без read-кворума — heal этого бакета невозможен, не ошибка
+        var enumerated = drive.EnumerateObjects(bucket);
+        if (!enumerated.IsSuccess)
         {
-            cursor = drive.EnumerateObjects(bucket);
-        }
-        catch (ObjectStoreException)
-        {
-            // сет без read-кворума — heal этого бакета невозможен, не ошибка
             logger.LogWarning("EC heal: листинг {Bucket} недоступен (сет без кворума) — пропуск", bucket);
             return;
         }
 
+        var cursor = enumerated.Value;
         while (cursor.PeekKey is { } key)
         {
             ct.ThrowIfCancellationRequested();
@@ -101,9 +100,18 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
 
     private void HealObject(string bucket, string key)
     {
-        var meta = drive.TryReadMeta(bucket, key);
-        if (meta?.Ec is null)
-            return; // не в консенсусе (или битая) — чистки/heal не трогают
+        var lookup = drive.TryReadMeta(bucket, key);
+        if (!lookup.IsSuccess)
+        {
+            // Отказ драйва — пропуск объекта heal-прохода с логом (пер-объектные
+            // отказы проход гасит — прецедент catch в HealBucketAsync/HealObject)
+            logger.LogWarning(lookup.Error, "EC heal: мета {Bucket}/{Key} недоступна — объект пропущен", bucket, key);
+            return;
+        }
+
+        if (lookup.Value is not XlMetaLookup.Found found || found.Record.Ec is null)
+            return; // Missing — не в консенсусе; без Ec — не трогать: реконструкция нереализуема
+        var meta = found.Record;
         var ec = meta.Ec;
         var codec = new ReedSolomonCodec(ec.EcM, ec.EcN - ec.EcM);
         var set = pool.Sets[pool.PickSetIndex(bucket, key)];
@@ -390,21 +398,18 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                         continue;
 
                     // bitrot-хэши части — sidecar (реплицирован выше; носители сета)
-                    byte[][][] hashes;
-                    try
+                    var bitrot = ErasureXlDrive.ReadPartBitrot(
+                        multipartRoots.Select(r => Path.Combine(r.Root, relative)).ToList(),
+                        entry.PartNumber);
+                    if (!bitrot.IsSuccess)
                     {
-                        hashes = ErasureXlDrive.ReadPartBitrot(
-                            multipartRoots.Select(r => Path.Combine(r.Root, relative)).ToList(),
-                            entry.PartNumber);
-                    }
-                    catch (ObjectStoreException ex)
-                    {
-                        logger.LogWarning(ex,
+                        logger.LogWarning(bitrot.Error,
                             "EC heal: sidecar части {Part} {Relative} нигде нет — часть не реконструируется",
                             entry.PartNumber, relative);
                         continue;
                     }
 
+                    var hashes = bitrot.Value;
                     if (RestoreShardFile(codec, set, ec, disk,
                             d => Path.Combine(
                                 multipartRoots.First(r => r.Disk.Position == d.Position).Root,

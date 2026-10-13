@@ -10,7 +10,7 @@ public interface IOutcomeCounters
 {
     void Applied(string sourceName);    // каждое применённое событие (самодостаточные inbox'а И apply-ветка фетчера)
     void Skipped(string sourceName);    // LWW-предфильтр-skip inbox'а (вкл. дедуп-повторы) И skip-ветка фетчера
-    void Conflict(string sourceName);   // флаг конфликта LWW: компаратор предфильтра (inbox) И ReplicaApplyResult.Conflict (фетчер)
+    void Conflict(string sourceName);   // флаг конфликта LWW: компаратор предфильтра (inbox) И Conflict*-исходы применения (фетчер)
     void Fetched(string sourceName);    // успешный фетч тела объекта (только фетчер)
 }
 
@@ -58,15 +58,26 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
                             return null; // fetch-очередь полна — 429
                         break;
                     case ReplicationEventType.ObjectDelete:
-                        applier.ApplyDelete(e.Bucket, e.Key, e.ModTimeUnixMs);
+                        // мост t38 (постоянный): отказ применения — исключение из inbox.Handle
+                        // → хендлер грани → 503/400+XML соседу → повтор батча (at-least-once);
+                        // BucketNotEmpty уже закрыт RetryQueue'й аплайера (Success)
+                        var deleted = applier.ApplyDelete(e.Bucket, e.Key, e.ModTimeUnixMs);
+                        if (!deleted.IsSuccess)
+                            throw deleted.Error!;
                         counters.Applied(sourceName);
                         break;
                     case ReplicationEventType.BucketCreate:
-                        applier.ApplyBucketCreate(e.Bucket, e.ModTimeUnixMs);
+                        // мост t38 (постоянный): см. ObjectDelete
+                        var created = applier.ApplyBucketCreate(e.Bucket, e.ModTimeUnixMs);
+                        if (!created.IsSuccess)
+                            throw created.Error!;
                         counters.Applied(sourceName);
                         break;
                     case ReplicationEventType.BucketDelete:
-                        applier.ApplyBucketDelete(e.Bucket);
+                        // мост t38 (постоянный): см. ObjectDelete
+                        var removed = applier.ApplyBucketDelete(e.Bucket);
+                        if (!removed.IsSuccess)
+                            throw removed.Error!;
                         counters.Applied(sourceName);
                         break;
                     default:
@@ -83,7 +94,12 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
     // → событие закрыто без фетча (skip); старее/нет → fetch-очередь источника.
     private bool HandleObjectPut(string sourceName, ReplicationEvent e)
     {
-        var local = store.ReadKeyState(e.Bucket, e.Key);
+        // мост t38 (постоянный): отказ чтения состояния — исключение из Handle
+        // (хендлер → 503/400+XML соседу), поведение прежнее
+        var localLookup = store.ReadKeyState(e.Bucket, e.Key);
+        var local = localLookup.IsSuccess
+            ? localLookup.Value is ReplicaKeyLookup.Found f ? f.State : null
+            : throw localLookup.Error!;
         var tombstone = tombstones.GetDeleteTime(e.Bucket, e.Key);
         if (local is not null || tombstone is not null)
         {

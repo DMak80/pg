@@ -22,6 +22,16 @@ public abstract class OperationHandlerBase(IObjectStore store) : IOperationHandl
     public abstract S3Operation Operation { get; }
 
     public abstract Task HandleAsync(S3HandlerContext context, CancellationToken ct);
+
+    // Запись исхода Failed хендлера в HTTP-ответ — делегация единому helper
+    // транслятора (формат — канон 03 §5; HEAD — без тела; Resource — Request.Path,
+    // как в демонтированных middleware-ветках, НЕ Model.RawPath: RawTarget несёт
+    // путь «как прислал клиент», middleware писал частично декодированный Path —
+    // тело XML-ошибки меняется для %-кодированных путей, байт-в-байт важнее).
+    // Отмена записи — RequestAborted (тот же токен, что middleware передаёт хендлерам).
+    protected static Task WriteFailedAsync(S3HandlerContext context, Result result)
+        => S3ResultTranslator.WriteAsync(context.Context, result.Error!,
+            context.Request.RequestId, context.Request.HostId);
 }
 
 // Контекст хендлера: HTTP + протокольный контекст конвейера + ответные хелперы.
@@ -36,6 +46,11 @@ public sealed class S3HandlerContext
     }
 
     public RequestContext Request { get; }
+
+    // HttpContext хендлера — для WriteFailedAsync (S3ResultTranslator.WriteAsync
+    // принимает HttpContext: Response + Request.Path + RequestAborted).
+    public HttpContext Context => _http;
+
     public S3Route Route => Request.Route;
     public string Bucket => Route.Bucket ?? string.Empty;
     public string Key => Route.Key ?? string.Empty;

@@ -47,7 +47,12 @@ public sealed class VolumeCleanupService(IXlDrive drive, StorageModeInfo mode, O
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            await drive.RunCleanupAsync(ct);
+            var cleanup = await drive.RunCleanupAsync(ct);
+            if (!cleanup.IsSuccess)
+            {
+                logger.LogError(cleanup.Error, "Проход чистки данных упал");
+                return;
+            }
             UpdateDiskGauges();
         }
         catch (Exception ex)

@@ -37,7 +37,7 @@ public class XlObjectStoreBucketTests : IDisposable
         // Assert: каталог + bucket.json с createdAt фиксированного TimeProvider
         Directory.Exists(Path.Combine(_root, "b")).Should().BeTrue();
         File.Exists(Path.Combine(_root, ".owns3.sys", "buckets", "b", "bucket.json")).Should().BeTrue();
-        var listed = await _store.ListBucketsAsync(CancellationToken.None);
+        var listed = (await _store.ListBucketsAsync(CancellationToken.None)).Throw().Value;
         listed.Should().ContainSingle(e => e.Name == "b")
             .Which.CreationDate.Should().Be(TestVectors.FixedTime);
     }
@@ -49,22 +49,24 @@ public class XlObjectStoreBucketTests : IDisposable
         await _store.CreateBucketAsync("b", CancellationToken.None);
 
         // Act
-        var act = async () => await _store.CreateBucketAsync("b", CancellationToken.None);
+        var result = await _store.CreateBucketAsync("b", CancellationToken.None);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.BucketAlreadyOwnedByYou);
+        // Assert — доменный отказ: Failed с кодом
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.BucketAlreadyOwnedByYou);
     }
 
     [Fact]
     public async Task DeleteBucket_Missing_NoSuchBucket()
     {
-        // Arrange / Act
-        var act = async () => await _store.DeleteBucketAsync("b", CancellationToken.None);
+        // Act
+        var result = await _store.DeleteBucketAsync("b", CancellationToken.None);
 
-        // Assert
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchBucket);
+        // Assert — отсутствие бакета — доменный NoSuchBucket (Failed)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.NoSuchBucket);
     }
 
     [Fact]
@@ -94,11 +96,12 @@ public class XlObjectStoreBucketTests : IDisposable
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
 
         // Act
-        var act = async () => await _store.DeleteBucketAsync("b", CancellationToken.None);
+        var result = await _store.DeleteBucketAsync("b", CancellationToken.None);
 
-        // Assert: в поддереве есть xl.meta — бакет непуст
-        await act.Should().ThrowAsync<ObjectStoreException>()
-            .Where(ex => ex.Code == ObjectStoreErrorCode.BucketNotEmpty);
+        // Assert: в поддереве есть xl.meta — бакет непуст (Failed с кодом)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.BucketNotEmpty);
     }
 
     [Fact]
@@ -108,9 +111,9 @@ public class XlObjectStoreBucketTests : IDisposable
         await _store.CreateBucketAsync("b", CancellationToken.None);
 
         // Act / Assert: служебный каталог тома бакетом не является
-        (await _store.BucketExistsAsync("b", CancellationToken.None)).Should().BeTrue();
-        (await _store.BucketExistsAsync(".owns3.sys", CancellationToken.None)).Should().BeFalse();
-        (await _store.BucketExistsAsync("missing", CancellationToken.None)).Should().BeFalse();
+        (await _store.BucketExistsAsync("b", CancellationToken.None)).Value.Should().BeTrue();
+        (await _store.BucketExistsAsync(".owns3.sys", CancellationToken.None)).Value.Should().BeFalse();
+        (await _store.BucketExistsAsync("missing", CancellationToken.None)).Value.Should().BeFalse();
     }
 
     [Fact]
@@ -121,7 +124,7 @@ public class XlObjectStoreBucketTests : IDisposable
         await _store.CreateBucketAsync("a-bucket", CancellationToken.None);
 
         // Act
-        var buckets = await _store.ListBucketsAsync(CancellationToken.None);
+        var buckets = (await _store.ListBucketsAsync(CancellationToken.None)).Throw().Value;
 
         // Assert: сортировка по имени (Utf8ByteOrder), служебный каталог скрыт,
         // CreationDate каждого — из bucket.json (фиксированный TimeProvider)

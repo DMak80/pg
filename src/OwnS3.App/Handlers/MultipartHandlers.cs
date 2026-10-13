@@ -26,8 +26,11 @@ public static class MultipartHandlers
             var metadata = ObjectHandlers.UploadMetadata(context, contentTypeDefault: "application/octet-stream");
 
             // Act: инициатор — владелец загрузки в uploads.json (канон 05 §3)
-            var uploadId = await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata,
+            var uploadIdResult = await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata,
                 context.Request.Identity!.AccessKey, ct);
+            if (uploadIdResult.IsSuccess == false)
+                { await WriteFailedAsync(context, uploadIdResult); return; }
+            var uploadId = uploadIdResult.Value;
 
             // Respond: InitiateMultipartUploadResult
             await context.WriteXmlAsync(S3Xml.Serialize(new InitiateMultipartUploadResult
@@ -61,8 +64,11 @@ public static class MultipartHandlers
                 md5.Length > 0 ? md5 : null);
 
             // Act
-            var result = await Store.UploadPartAsync(context.Bucket, context.Key, uploadId, partNumber,
+            var resultResult = await Store.UploadPartAsync(context.Bucket, context.Key, uploadId, partNumber,
                 body, contentLength, ct);
+            if (resultResult.IsSuccess == false)
+                { await WriteFailedAsync(context, resultResult); return; }
+            var result = resultResult.Value;
 
             // Respond: 200 + ETag части
             context.Response.StatusCode = 200;
@@ -87,8 +93,11 @@ public static class MultipartHandlers
                 [.. manifest.Parts.Select(p => (p.PartNumber, p.ETag))]);
 
             // Act
-            var result = await Store.CompleteMultipartUploadAsync(context.Bucket, context.Key, uploadId,
+            var resultResult = await Store.CompleteMultipartUploadAsync(context.Bucket, context.Key, uploadId,
                 [.. manifest.Parts.Select(p => new PartEtag(p.PartNumber, p.ETag))], ct);
+            if (resultResult.IsSuccess == false)
+                { await WriteFailedAsync(context, resultResult); return; }
+            var result = resultResult.Value;
 
             // Событие репликации object-put собранного объекта (глава 07 §3)
             replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
@@ -113,7 +122,13 @@ public static class MultipartHandlers
             // Validate / Act: NoSuchUpload-исход — от Storage (глава 02)
             BucketHandlers.EnsureBucketName(context.Bucket);
             ObjectHandlers.EnsureObjectKey(context.Key);
-            await Store.AbortMultipartUploadAsync(context.Bucket, context.Key, RequiredQuery(context, "uploadId"), ct);
+            var aborted = await Store.AbortMultipartUploadAsync(context.Bucket, context.Key,
+                RequiredQuery(context, "uploadId"), ct);
+            if (!aborted.IsSuccess)
+            {
+                await WriteFailedAsync(context, aborted);
+                return;
+            }
 
             // Respond: 204 No Content
             context.Response.StatusCode = 204;
@@ -140,9 +155,12 @@ public static class MultipartHandlers
                 : UploadVisibility.AllUploads;
 
             // Act
-            var page = await Store.ListPartsAsync(context.Bucket, context.Key, uploadId,
+            var pageResult = await Store.ListPartsAsync(context.Bucket, context.Key, uploadId,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
                 marker == 0 ? null : marker, visibility, ct);
+            if (pageResult.IsSuccess == false)
+                { await WriteFailedAsync(context, pageResult); return; }
+            var page = pageResult.Value;
 
             // Respond: ListPartsResult (Initiator/Owner — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListPartsResult
@@ -185,10 +203,13 @@ public static class MultipartHandlers
                 : UploadVisibility.AllUploads;
 
             // Act
-            var page = await Store.ListMultipartUploadsAsync(context.Bucket, new UploadsQuery(
+            var pageResult = await Store.ListMultipartUploadsAsync(context.Bucket, new UploadsQuery(
                 prefix, delimiter, keyMarker, uploadIdMarker,
                 maxUploads == OperationValidation.DefaultPagingLimit ? null : maxUploads, encodingType,
                 visibility), ct);
+            if (pageResult.IsSuccess == false)
+                { await WriteFailedAsync(context, pageResult); return; }
+            var page = pageResult.Value;
 
             // Respond: ListMultipartUploadsResult (Owner/Initiator — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListMultipartUploadsResult

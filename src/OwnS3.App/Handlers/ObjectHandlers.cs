@@ -44,16 +44,14 @@ public static class ObjectHandlers
             // сверки целостности конвейера — тело дочитывается и при исключении
             // (drain-семантика t36: BadDigest/InvalidRequest/чанковая подпись
             // наблюдаются до проброса исхода Storage)
-            PutResult result;
-            try
-            {
-                result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
-            }
-            catch
+            var put = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+            if (!put.IsSuccess)
             {
                 await DrainBodyAsync(body, ct);
-                throw;
+                await WriteFailedAsync(context, put);
+                return;
             }
+            var result = put.Value;
 
             // Событие репликации object-put — после коммит-поинта, до ответа (глава 07 §3)
             replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
@@ -78,7 +76,10 @@ public static class ObjectHandlers
             var options = ReadOptions(context);
 
             // Act
-            var content = await Store.GetObjectAsync(context.Bucket, context.Key, options, ct);
+            var contentResult = await Store.GetObjectAsync(context.Bucket, context.Key, options, ct);
+            if (contentResult.IsSuccess == false)
+                { await WriteFailedAsync(context, contentResult); return; }
+            var content = contentResult.Value;
 
             // Respond: 304 без тела с ETag/Last-Modified; 206 + Content-Range при
             // применённом Range; иначе 200 (глава 02 §1)
@@ -125,7 +126,10 @@ public static class ObjectHandlers
             var options = ReadOptions(context);
 
             // Act
-            var content = await Store.HeadObjectAsync(context.Bucket, context.Key, options, ct);
+            var contentResult = await Store.HeadObjectAsync(context.Bucket, context.Key, options, ct);
+            if (contentResult.IsSuccess == false)
+                { await WriteFailedAsync(context, contentResult); return; }
+            var content = contentResult.Value;
 
             // Respond: те же исходы, что GetObject, без тела (глава 02 §1)
             var metadata = content.Metadata;
@@ -165,7 +169,12 @@ public static class ObjectHandlers
             // Validate / Act (идемпотентен — 204 и для отсутствующего)
             BucketHandlers.EnsureBucketName(context.Bucket);
             EnsureObjectKey(context.Key);
-            await Store.DeleteObjectAsync(context.Bucket, context.Key, ct);
+            var removed = await Store.DeleteObjectAsync(context.Bucket, context.Key, ct);
+            if (!removed.IsSuccess)
+            {
+                await WriteFailedAsync(context, removed);
+                return;
+            }
 
             // Событие + локальный tombstone — после delete-коммита (глава 07 §3/§7)
             replication.ClientObjectDeleted(context.Bucket, context.Key,
@@ -200,7 +209,10 @@ public static class ObjectHandlers
             OperationValidation.ValidateDeleteKeys(keys.Count);
 
             // Act
-            var results = await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct);
+            var resultsResult = await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct);
+            if (resultsResult.IsSuccess == false)
+                { await WriteFailedAsync(context, resultsResult); return; }
+            var results = resultsResult.Value;
 
             // Событие на каждый удалённый ключ + tombstones (глава 07 §3)
             var deletedAt = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
@@ -239,9 +251,12 @@ public static class ObjectHandlers
             var newMetadata = directive == "REPLACE" ? UploadMetadata(context, contentTypeDefault: null) : null;
 
             // Act
-            var result = await Store.CopyObjectAsync(new CopyRequest(
+            var resultResult = await Store.CopyObjectAsync(new CopyRequest(
                 sourceBucket, sourceKey, context.Bucket, context.Key,
                 directive == "REPLACE", newMetadata, CopyConditions(context)), ct);
+            if (resultResult.IsSuccess == false)
+                { await WriteFailedAsync(context, resultResult); return; }
+            var result = resultResult.Value;
 
             // Событие репликации object-put копии (глава 07 §3)
             replication.ObjectPut(context.Bucket, context.Key, result.LastModified.ToUnixTimeMilliseconds(),
@@ -277,19 +292,22 @@ public static class ObjectHandlers
             var conditions = ReadOptions(context).Conditions;
 
             // Act
-            var result = await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
+            var outcomeResult = await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
                 partNumberMarker == 0 ? null : partNumberMarker, conditions, ct);
+            if (outcomeResult.IsSuccess == false)
+                { await WriteFailedAsync(context, outcomeResult); return; }
+            var outcome = outcomeResult.Value;
 
             // Respond: Not-Modified → 304 без тела с ETag/Last-Modified (P10)
-            if (result.NotModifiedMetadata is { } nm)
+            if (outcome is GetAttributesOutcome.NotModified nm)
             {
                 context.Response.StatusCode = 304;
-                context.Response.Headers.ETag = nm.ETag;
-                context.Response.Headers.LastModified = nm.LastModified.ToString("R");
+                context.Response.Headers.ETag = nm.Metadata.ETag;
+                context.Response.Headers.LastModified = nm.Metadata.LastModified.ToString("R");
                 return;
             }
-            var attrs = result.Attributes!;
+            var attrs = ((GetAttributesOutcome.Full)outcome).Attributes;
 
             // GetObjectAttributesOutput — только запрошенные элементы
             var requested = new HashSet<string>(context.Http.Headers["x-amz-object-attributes"].ToString()

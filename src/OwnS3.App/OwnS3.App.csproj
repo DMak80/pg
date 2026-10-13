@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\OwnS3.Replication\OwnS3.Replication.csproj"/>
+        <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
     </ItemGroup>
 
 </Project>

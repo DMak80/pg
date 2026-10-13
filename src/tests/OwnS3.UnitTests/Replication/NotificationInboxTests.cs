@@ -30,9 +30,10 @@ public sealed class NotificationInboxFixture : IDisposable
         Applier = new ReplicaApplier(Store, Tombstones, new FixedTimeProvider(TestVectors.FixedTime));
     }
 
-    public NotificationInbox CreateInbox(ReplicaApplier? applier = null, int queueCapacity = 100) =>
+    public NotificationInbox CreateInbox(ReplicaApplier? applier = null, int queueCapacity = 100,
+        IReplicaStore? store = null) =>
         new(new FetchQueueRegistry(new ReplicationOptions { FetchQueueMax = queueCapacity }),
-            applier ?? Applier, Store, Tombstones, Counters);
+            applier ?? Applier, store ?? Store, Tombstones, Counters);
 
     public void Dispose()
     {
@@ -99,6 +100,51 @@ public class NotificationInboxTests : IClassFixture<NotificationInboxFixture>
         _fixture.Counters.SkippedCount.Should().Be(2);
     }
 
+    // Фейк-стор: ReadKeyState возвращает кворумный отказ — отказ применения Delete
+    // в inbox моделируется без порчи фикстурного тома.
+    private sealed class FailingReadStore(IReplicaStore inner) : IReplicaStore
+    {
+        public Task<Result> ApplyObjectAsync(string bucket, string key, Stream body, long contentLength,
+            ReplicaObjectMetadata metadata, string expectedSha256Hex, CancellationToken ct) =>
+            inner.ApplyObjectAsync(bucket, key, body, contentLength, metadata, expectedSha256Hex, ct);
+        public Result DeleteObject(string bucket, string key) => inner.DeleteObject(bucket, key);
+        public Result<ReplicaKeyLookup> ReadKeyState(string bucket, string key) =>
+            Result<ReplicaKeyLookup>.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
+        public Result<ReplicaListingPage> ListReplicationEntries(string bucket, string? marker, int maxKeys) =>
+            inner.ListReplicationEntries(bucket, marker, maxKeys);
+        public Result<(ObjectMetadata Metadata, Stream Body)> OpenObjectForReplication(string bucket, string key) =>
+            inner.OpenObjectForReplication(bucket, key);
+        public Result ApplyBucketCreate(string bucket, DateTimeOffset creationDate) =>
+            inner.ApplyBucketCreate(bucket, creationDate);
+        public Result ApplyBucketDelete(string bucket) => inner.ApplyBucketDelete(bucket);
+        public Result<IReadOnlyList<BucketEntry>> ListBuckets() => inner.ListBuckets();
+    }
+
+    [Fact]
+    public void Handle_ApplyDeleteFails_ThrowsOut_NoAck()
+    {
+        // Arrange — аплайер со стором, ReadKeyState которого отказывает (кворум):
+        // ApplyDelete вернёт Failed → мост бросает → Handle — исключение наружу
+        var failingStore = new FailingReadStore(_fixture.Store);
+        var failingApplier = new ReplicaApplier(failingStore, _fixture.Tombstones,
+            new FixedTimeProvider(TestVectors.FixedTime));
+        var inbox = _fixture.CreateInbox(applier: failingApplier, store: failingStore);
+        var batch = new NotificationBatchRequest("mesh-a",
+            [new ReplicationEvent(1, ReplicationEventType.ObjectDelete, "bfail", "gone", 200, "", 0, "", "mesh-a")]);
+
+        // Act — Handle бросает доменный отказ (не ACK)
+        var thrown = Assert.Throws<ObjectStoreException>(() => inbox.Handle("peer-a", batch));
+
+        // Assert — исключение уходит хендлеру (→ 503/400+XML соседу → повтор батча);
+        // событие НЕ засчитано применённым и НЕ ACK-нуто (Applied=0, lastAccepted не сдвинут)
+        thrown.Code.Should().Be(ObjectStoreErrorCode.InsufficientReadQuorum);
+        _fixture.Counters.AppliedCount.Should().Be(0);
+        // Повтор того же батча на ЗДОРОВОМ inbox'е применяется (at-least-once: событие не потеряно)
+        var healthy = _fixture.CreateInbox();
+        healthy.Handle("peer-a", batch).Should().Be(1);
+        _fixture.Counters.AppliedCount.Should().Be(1);
+    }
+
     [Fact]
     public void Handle_SelfSufficientApplied_IncrementsAppliedCounter()
     {
@@ -135,7 +181,9 @@ public class NotificationInboxTests : IClassFixture<NotificationInboxFixture>
         // Assert — counters.Skipped == 1; ключ не перезаписан
         accepted.Should().Be(1);
         _fixture.Counters.SkippedCount.Should().Be(1);
-        _fixture.Store.ReadKeyState(bucket, key)!.Size.Should().Be(body.Length);
+        // Assert — ключ не перезаписан (размер исходного тела)
+        var state = _fixture.Store.ReadKeyState(bucket, key).Throw().Value;
+        (state is ReplicaKeyLookup.Found f ? f.State.Size : -1).Should().Be(body.Length);
     }
 
     [Fact]

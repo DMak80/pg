@@ -23,8 +23,11 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+            var pageResult = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
                 prefix, delimiter, marker, null, null, maxKeys, encodingType, false, ListVariant.V1), ct);
+            if (pageResult.IsSuccess == false)
+                { await WriteFailedAsync(context, pageResult); return; }
+            var page = pageResult.Value;
 
             // Respond: ListBucketResult v1-вид
             await context.WriteXmlAsync(S3Xml.Serialize(new ListBucketResult
@@ -63,8 +66,11 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+            var pageResult = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
                 prefix, delimiter, null, startAfter, continuationToken, maxKeys, encodingType, fetchOwner, ListVariant.V2), ct);
+            if (pageResult.IsSuccess == false)
+                { await WriteFailedAsync(context, pageResult); return; }
+            var page = pageResult.Value;
 
             // Respond: ListBucketResult V2-вид (KeyCount, ContinuationToken)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListBucketResult
@@ -107,8 +113,11 @@ public static class ListHandlers
             OperationValidation.ParseEncodingType(encodingType);
 
             // Act
-            var page = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
+            var pageResult = await Store.ListObjectsAsync(context.Bucket, new ListQuery(
                 prefix, delimiter, keyMarker, null, null, maxKeys, encodingType, false, ListVariant.Versions), ct);
+            if (pageResult.IsSuccess == false)
+                { await WriteFailedAsync(context, pageResult); return; }
+            var page = pageResult.Value;
 
             // Respond: ListVersionsResult — unversioned-вид без VersionId/IsLatest
             await context.WriteXmlAsync(S3Xml.Serialize(new ListVersionsResult
