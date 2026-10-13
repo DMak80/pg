@@ -72,7 +72,10 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
 
         // Assert — применено, xl-запись несёт modTime источника (LWW-сходимость)
         result.Applied.Should().BeTrue();
-        Store.ReadKeyState("bap", "new")!.ModTime.Should().Be(SourceModTime);
+        var appliedState = Store.ReadKeyState("bap", "new").Throw().Value is ReplicaKeyLookup.Found ra
+            ? ra.State
+            : throw new InvalidOperationException("запись не найдена после Apply");
+        appliedState.ModTime.Should().Be(SourceModTime);
     }
 
     [Fact]
@@ -88,7 +91,7 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
 
         // Assert — skip: ключ не воскрешён, tombstone на месте
         result.Applied.Should().BeFalse();
-        Store.ReadKeyState(bucket, key).Should().BeNull();
+        Store.ReadKeyState(bucket, key).Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         Tombstones.GetDeleteTime(bucket, key).Should().NotBeNull();
     }
 
@@ -124,7 +127,10 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
 
         // Assert — skip: локальная версия не перезаписана
         result.Applied.Should().BeFalse();
-        Store.ReadKeyState(bucket, key)!.ModTime.Should().Be(newerMod);
+        var keptState = Store.ReadKeyState(bucket, key).Throw().Value is ReplicaKeyLookup.Found rb
+            ? rb.State
+            : throw new InvalidOperationException("запись не найдена после skip");
+        keptState.ModTime.Should().Be(newerMod);
     }
 
     [Fact]

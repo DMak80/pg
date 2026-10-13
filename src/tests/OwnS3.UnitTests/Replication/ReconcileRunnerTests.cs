@@ -189,7 +189,7 @@ public class ReconcileRunnerTests : IClassFixture<ReconcileRunnerFixture>
         await _fixture.Runner.RunForSourceAsync("peer-a", TestContext.Current.CancellationToken);
 
         // Assert — бакет создан с CreationDate соседа (только в сторону «у соседа есть»)
-        _fixture.Store.ListBuckets().Should().ContainSingle(b => b.Name == "new-bucket")
+        _fixture.Store.ListBuckets().Throw().Value.Should().ContainSingle(b => b.Name == "new-bucket")
             .Which.CreationDate.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
     }
 

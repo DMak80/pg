@@ -136,9 +136,9 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — применено с ИСХОДНЫМИ метаданными (xl-запись несёт modTime источника)
-        var state = _fixture.Store.ReadKeyState("b", "k");
-        state.Should().NotBeNull();
-        state!.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
+        var state = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found s0 ? s0.State
+            : throw new InvalidOperationException("запись не найдена после Apply");
+        state.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(1760000000000));
         state.ContentSha256Hex.Should().Be(FakeFetchTransport.Sha(Body(content)));
         _fixture.Counters.AppliedCount.Should().Be(1);
         _fixture.Counters.FetchedCount.Should().Be(1);
@@ -161,12 +161,14 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         for (var i = 0; i < 100 && !applied; i++)
         {
             await Task.Delay(20, TestContext.Current.CancellationToken);
-            applied = _fixture.Store.ReadKeyState("b", "k") is not null;
+            applied = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found;
         }
 
         // Assert — локально применено ТОЛЬКО корректное тело (мисматч не прошёл до Commit)
         applied.Should().BeTrue("повтор после sha-мисматча применяет корректное тело");
-        _fixture.Store.ReadKeyState("b", "k")!.ContentSha256Hex
+        var state2 = _fixture.Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found s1 ? s1.State
+            : throw new InvalidOperationException("запись не найдена после повтора");
+        state2.ContentSha256Hex
             .Should().Be(FakeFetchTransport.Sha(Body("good")));
         cts.Cancel();
         await run;
@@ -190,7 +192,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — ключ удалён, tombstone записан (защита от воскрешения)
-        _fixture.Store.ReadKeyState("bt", "gone").Should().BeNull();
+        _fixture.Store.ReadKeyState("bt", "gone").Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         _fixture.Tombstones.GetDeleteTime("bt", "gone").Should().Be(5000);
         _fixture.Counters.AppliedCount.Should().Be(1);
     }
@@ -225,7 +227,9 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         _fixture.Transport.FailuresBeforeSuccess = 0;
         using var runCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await fetcher.RunAsync(runCts.Token);
-        _fixture.Store.ReadKeyState("b", "drain")!.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(100));
+        var drainState = _fixture.Store.ReadKeyState("b", "drain").Throw().Value is ReplicaKeyLookup.Found s2 ? s2.State
+            : throw new InvalidOperationException("запись не найдена после ретрая");
+        drainState.ModTime.Should().Be(DateTimeOffset.FromUnixTimeMilliseconds(100));
         fetcher.HasUnapplied.Should().BeFalse("после успешного ретрая незавершённой работы нет");
     }
 
@@ -242,7 +246,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         await fetcher.DrainAsync(cts.Token);
 
         // Assert — состояние приёмника не менялось, счётчики применения не инкремент
-        _fixture.Store.ReadKeyState("b", "k").Should().BeNull();
+        _fixture.Store.ReadKeyState("b", "k").Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         _fixture.Counters.AppliedCount.Should().Be(0);
         _fixture.Counters.FetchedCount.Should().Be(0);
     }
@@ -305,9 +309,9 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
 
         // Assert — пауза снята, ключ из очереди применён с исходным sha
         fetcher.Paused.Should().BeFalse();
-        var state = _fixture.Store.ReadKeyState("br", "resumed");
-        state.Should().NotBeNull();
-        state!.ContentSha256Hex.Should().Be(sha);
+        var state = _fixture.Store.ReadKeyState("br", "resumed").Throw().Value is ReplicaKeyLookup.Found s3 ? s3.State
+            : throw new InvalidOperationException("запись не найдена после resume");
+        state.ContentSha256Hex.Should().Be(sha);
         _fixture.Counters.AppliedCount.Should().BeGreaterThanOrEqualTo(1);
         cts.Cancel();
         await run;

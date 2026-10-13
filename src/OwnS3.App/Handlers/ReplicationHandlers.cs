@@ -54,25 +54,31 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
     // | 404 (ключ неизвестен — состояние приёмника не меняется).
     public async Task HandleObjectFetchAsync(HttpContext context, string bucket, string key)
     {
-        var state = store.ReadKeyState(bucket, key);
-        if (state is not null)
+        var stateResult = store.ReadKeyState(bucket, key);
+        if (!stateResult.IsSuccess)
+            stateResult.Throw(); // мост t38: техотказ чтения — как сегодня (middleware → 503/400 + XML); демонтаж в Task 7
+        if (stateResult.Value is ReplicaKeyLookup.Found found)
         {
             var opened = store.OpenObjectForReplication(bucket, key);
+            // мост t38: Failed (вкл. NoSuchKey-гонку удаления, кворумные Insufficient*)
+            // пробрасывается как сегодня — middleware-ветки отдают 404/503 + XML (03 §5);
+            // демонтаж в задаче App-финала (Step 7.3.5) — единый helper записи тех же ответов
+            var (metadata, body) = opened.Throw().Value;
             context.Response.StatusCode = StatusCodes.Status200OK;
             context.Response.Headers["x-owns3-repl-modtime"] =
-                opened.Metadata.LastModified.ToUnixTimeMilliseconds().ToString();
-            context.Response.Headers["x-owns3-repl-sha256"] = state.ContentSha256Hex;
-            context.Response.Headers["x-owns3-repl-etag"] = opened.Metadata.ETag;
+                metadata.LastModified.ToUnixTimeMilliseconds().ToString();
+            context.Response.Headers["x-owns3-repl-sha256"] = found.State.ContentSha256Hex;
+            context.Response.Headers["x-owns3-repl-etag"] = metadata.ETag;
             context.Response.Headers["x-owns3-repl-origin"] = hostId;
-            if (!string.IsNullOrEmpty(opened.Metadata.ContentType))
-                context.Response.ContentType = opened.Metadata.ContentType;
-            foreach (var (name, value) in opened.Metadata.UserMetadata)
+            if (!string.IsNullOrEmpty(metadata.ContentType))
+                context.Response.ContentType = metadata.ContentType;
+            foreach (var (name, value) in metadata.UserMetadata)
                 context.Response.Headers[$"x-amz-meta-{name}"] = value;
             // Явная длина: потоковая отдача без Content-Length → chunked →
             // приёмник не знает длину для xl-коммита (глава 07 §6)
-            context.Response.ContentLength = opened.Metadata.Size;
-            await opened.Body.CopyToAsync(context.Response.Body, context.RequestAborted);
-            opened.Body.Dispose();
+            context.Response.ContentLength = metadata.Size;
+            await body.CopyToAsync(context.Response.Body, context.RequestAborted);
+            body.Dispose();
             return;
         }
         var tombstone = tombstones.GetDeleteTime(bucket, key);
@@ -95,7 +101,8 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
         if (string.IsNullOrEmpty(bucket))
         {
             // Листинг без bucket — состав бакетов (backfill reconcile, глава 07 §6/§9)
-            var buckets = store.ListBuckets()
+            // мост t38: кворумный отказ листинга — Throw() (middleware → 503 + XML), демонтаж в Task 7
+            var buckets = store.ListBuckets().Throw().Value
                 .Select(b => new BucketEntryDto(b.Name, b.CreationDate.ToUnixTimeMilliseconds())).ToList();
             context.Response.StatusCode = StatusCodes.Status200OK;
             await context.Response.WriteAsJsonAsync(new ReplicationBucketsResponse(buckets), Json,
@@ -106,11 +113,12 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
         var maxKeys = 1000;
         if (int.TryParse(context.Request.Query["max-keys"].FirstOrDefault(), out var requested))
             maxKeys = Math.Clamp(requested, 1, 1000);
-        var entries = store.ListReplicationEntries(bucket, string.IsNullOrEmpty(marker) ? null : marker,
-            maxKeys, out var nextMarker);
+        // мост t38: кворумный отказ листинга — Throw() (middleware → 503 + XML), демонтаж в Task 7
+        var page = store.ListReplicationEntries(bucket, string.IsNullOrEmpty(marker) ? null : marker,
+            maxKeys).Throw().Value;
         context.Response.StatusCode = StatusCodes.Status200OK;
-        await context.Response.WriteAsJsonAsync(new ReplicationListingResponse(entries, nextMarker),
-            Json, context.RequestAborted);
+        await context.Response.WriteAsJsonAsync(
+            new ReplicationListingResponse(page.Entries, page.NextMarker), Json, context.RequestAborted);
     }
 
     // GET /replication/ping (глава 07 §6): 200 без тела — активная проба линка;

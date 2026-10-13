@@ -60,24 +60,26 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
             meta.ContentSha256Hex, TestContext.Current.CancellationToken);
 
         // Assert — xl-запись несёт ИСХОДНЫЕ modTime/etag/sha/userMeta (LWW-сходимость)
-        var state = Store.ReadKeyState("b", "k");
-        state.Should().NotBeNull();
-        state!.ModTime.Should().Be(SourceModTime);
+        var state = Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found f0 ? f0.State
+            : throw new InvalidOperationException("запись не найдена после Apply");
+        state.ModTime.Should().Be(SourceModTime);
         state.ContentSha256Hex.Should().Be(meta.ContentSha256Hex);
         state.Size.Should().Be(payload.Length);
-        var opened = Store.OpenObjectForReplication("b", "k");
-        using (opened.Body)
+        var (metadata, body) = Store.OpenObjectForReplication("b", "k").Throw().Value;
+        using (body)
         {
-            opened.Metadata.ContentType.Should().Be("application/x-test");
-            opened.Metadata.UserMetadata.Should().ContainKey("origin").WhoseValue.Should().Be("mesh-1");
-            using var reader = new StreamReader(opened.Body);
+            metadata.ContentType.Should().Be("application/x-test");
+            metadata.UserMetadata.Should().ContainKey("origin").WhoseValue.Should().Be("mesh-1");
+            using var reader = new StreamReader(body);
             (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("replica-body");
         }
 
         // Повторное применение идемпотентно (LWW-идемпотентность реплики)
         await Store.ApplyObjectAsync("b", "k", new MemoryStream(payload), payload.Length, meta,
             meta.ContentSha256Hex, TestContext.Current.CancellationToken);
-        Store.ReadKeyState("b", "k").Should().BeEquivalentTo(state);
+        var state2 = Store.ReadKeyState("b", "k").Throw().Value is ReplicaKeyLookup.Found f1 ? f1.State
+            : throw new InvalidOperationException("запись не найдена после повтора");
+        state2.Should().BeEquivalentTo(state);
     }
 
     [Fact]
@@ -88,12 +90,15 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
         var meta = MetaOf(payload);
 
         // Act
-        var act = () => Store.ApplyObjectAsync("b", "bad", new MemoryStream(payload), payload.Length,
+        var result = await Store.ApplyObjectAsync("b", "bad", new MemoryStream(payload), payload.Length,
             meta, "deadbeef", TestContext.Current.CancellationToken);
 
-        // Assert — исключение ДО коммита, ключа нет, staging снесён (tmp пуст)
-        await act.Should().ThrowAsync<ReplicationChecksumMismatchException>();
-        Store.ReadKeyState("b", "bad").Should().BeNull();
+        // Assert — мисматч — Failed ДО коммита, ключа нет, staging снесён (tmp пуст)
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ReplicationChecksumMismatchException>();
+        var state = Store.ReadKeyState("b", "bad");
+        state.IsSuccess.Should().BeTrue();
+        state.Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         Directory.Exists(Path.Combine(Root, ".owns3.sys", "tmp")).Should().BeTrue();
         Directory.EnumerateFileSystemEntries(Path.Combine(Root, ".owns3.sys", "tmp")).Should().BeEmpty();
     }
@@ -110,21 +115,22 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
                 meta.ContentSha256Hex, TestContext.Current.CancellationToken);
 
         // Act — страница по maxKeys=2 от начала
-        var page1 = Store.ListReplicationEntries(bucket, null, 2, out var nextMarker);
+        var page1 = Store.ListReplicationEntries(bucket, null, 2).Throw().Value;
+        var nextMarker = page1.NextMarker;
 
         // Assert — первая страница в Utf8-порядке, nextMarker — последний отданный
-        page1.Select(e => e.Key).Should().ContainInOrder("a", "m");
-        page1[0].ModTime.Should().Be(SourceModTime);
-        page1[0].ContentSha256Hex.Should().Be(meta.ContentSha256Hex);
-        page1[0].Size.Should().Be(payload.Length);
+        page1.Entries.Select(e => e.Key).Should().ContainInOrder("a", "m");
+        page1.Entries[0].ModTime.Should().Be(SourceModTime);
+        page1.Entries[0].ContentSha256Hex.Should().Be(meta.ContentSha256Hex);
+        page1.Entries[0].Size.Should().Be(payload.Length);
         nextMarker.Should().Be("m");
 
         // Act — вторая страница от маркера
-        var page2 = Store.ListReplicationEntries(bucket, nextMarker, 2, out var next2);
+        var page2 = Store.ListReplicationEntries(bucket, nextMarker, 2).Throw().Value;
 
         // Assert — остаток без повторов; конец листинга — null-маркер
-        page2.Select(e => e.Key).Should().ContainInOrder("z");
-        next2.Should().BeNull();
+        page2.Entries.Select(e => e.Key).Should().ContainInOrder("z");
+        page2.NextMarker.Should().BeNull();
     }
 
     [Fact]
@@ -155,13 +161,24 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
 
         // Act — удаление пустого; удаление непустого
         Store.ApplyBucketDelete("bempty");
-        var act = () => Store.ApplyBucketDelete("bfull");
+        var result = Store.ApplyBucketDelete("bfull");
 
-        // Assert — пустой удалён (и повтор идемпотентен), непустой — BucketNotEmpty
+        // Assert — пустой удалён (и повтор идемпотентен), непустой — Failed(BucketNotEmpty)
         fixture.Drive.BucketExists("bempty").Throw().Value.Should().BeFalse();
         Store.ApplyBucketDelete("bempty");
-        act.Should().Throw<ObjectStoreException>()
-            .Where(e => e.Code == ObjectStoreErrorCode.BucketNotEmpty);
+        (!result.IsSuccess).Should().BeTrue();
+        result.Error.Should().BeOfType<ObjectStoreException>()
+            .Which.Code.Should().Be(ObjectStoreErrorCode.BucketNotEmpty);
+    }
+
+    [Fact]
+    public void ReadKeyState_ОтсутствующийКлюч_TерминальныйSuccessMissing()
+    {
+        // Act
+        var lookup = Store.ReadKeyState("b", "no-such-repl-key");
+        // Assert — «записи нет» — терминальный Success (конвенция 01 §4)
+        lookup.IsSuccess.Should().BeTrue();
+        lookup.Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
     }
 
     [Fact]
@@ -176,7 +193,9 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
         Store.DeleteObject("b", "tbd");
         Store.DeleteObject("b", "tbd");
 
-        // Assert — ключа нет (идемпотентность 204-семантики Delete)
-        Store.ReadKeyState("b", "tbd").Should().BeNull();
+        // Assert — ключа нет (идемпотентность 204-семантики Delete; Missing — Success)
+        var state = Store.ReadKeyState("b", "tbd");
+        state.IsSuccess.Should().BeTrue();
+        state.Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
     }
 }

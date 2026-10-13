@@ -135,7 +135,9 @@ public class NotificationInboxTests : IClassFixture<NotificationInboxFixture>
         // Assert — counters.Skipped == 1; ключ не перезаписан
         accepted.Should().Be(1);
         _fixture.Counters.SkippedCount.Should().Be(1);
-        _fixture.Store.ReadKeyState(bucket, key)!.Size.Should().Be(body.Length);
+        // Assert — ключ не перезаписан (размер исходного тела)
+        var state = _fixture.Store.ReadKeyState(bucket, key).Throw().Value;
+        (state is ReplicaKeyLookup.Found f ? f.State.Size : -1).Should().Be(body.Length);
     }
 
     [Fact]

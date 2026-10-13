@@ -148,8 +148,9 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
         }
         var prefix = context.Request.Query["prefix"].FirstOrDefault() ?? string.Empty;
         var marker = context.Request.Query["marker"].FirstOrDefault();
-        var entries = store.ListReplicationEntries(bucket, marker, maxKeys: 1000, out var nextMarker);
-        var filtered = entries.Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal)).ToList();
+        // мост t38: кворумный отказ листинга — Throw() (middleware → 503 + XML), демонтаж в Task 7
+        var page = store.ListReplicationEntries(bucket, marker, maxKeys: 1000).Throw().Value;
+        var filtered = page.Entries.Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal)).ToList();
         var hash = OwnS3.Replication.SyncReportHash.Compute(filtered.Select(e => (e.Key, e.ModTime.ToUnixTimeMilliseconds())));
         var report = new
         {
@@ -163,7 +164,7 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
             count = filtered.Count,
             totalSize = filtered.Sum(e => e.Size),
             aggregateHash = hash,
-            nextMarker,
+            nextMarker = page.NextMarker,
         };
         context.Response.StatusCode = StatusCodes.Status200OK;
         await context.Response.WriteAsJsonAsync(report, Json, context.RequestAborted);

@@ -16,6 +16,12 @@ public sealed class ReplicaApplier : IDisposable
     // bucket, key, обе версии (время/ша входящая, время/ша локальная) — только лог.
     public event Action<string, string, long, string, long, string>? ConflictDetected;
 
+    // мост t38: демонтаж в задаче перевода ReplicaApplier
+    private static ReplicaKeyState? UnwrapKeyState(Result<ReplicaKeyLookup> lookup)
+        => lookup.IsSuccess
+            ? lookup.Value is ReplicaKeyLookup.Found f ? f.State : null
+            : throw lookup.Error!;
+
     private const int RetryQueueMax = 256;
     private static readonly TimeSpan RetryBase = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan RetryMax = TimeSpan.FromSeconds(60);
@@ -64,7 +70,7 @@ public sealed class ReplicaApplier : IDisposable
     private async Task<ReplicaApplyResult> ApplyObjectCoreAsync(string bucket, string key, Stream body,
         long contentLength, ReplicaObjectMetadata metadata, string expectedSha256, CancellationToken ct)
     {
-        var local = _store.ReadKeyState(bucket, key);
+        var local = UnwrapKeyState(_store.ReadKeyState(bucket, key)); // мост t38: демонтаж в задаче перевода ReplicaApplier
         var tombstone = _tombstones.GetDeleteTime(bucket, key);
         long localMod;
         string localSha;
@@ -95,7 +101,10 @@ public sealed class ReplicaApplier : IDisposable
 
         async Task<ReplicaApplyResult> ApplyAsync(bool conflict)
         {
-            await _store.ApplyObjectAsync(bucket, key, body, contentLength, metadata, expectedSha256, ct);
+            // мост t38: демонтаж в задаче перевода ReplicaApplier (Task-сигнатура —
+            // скобочная форма; мисматч продолжает лететь исключением до Task 6)
+            (await _store.ApplyObjectAsync(bucket, key, body, contentLength, metadata, expectedSha256, ct))
+                .Throw();
             _tombstones.Remove(bucket, key); // запись жива — негативное знание снято
             return new ReplicaApplyResult(Applied: true, Conflict: conflict);
         }
@@ -109,10 +118,10 @@ public sealed class ReplicaApplier : IDisposable
         _applyGate.Wait();
         try
         {
-            var local = _store.ReadKeyState(bucket, key);
+            var local = UnwrapKeyState(_store.ReadKeyState(bucket, key)); // мост t38: демонтаж в задаче перевода ReplicaApplier
             if (local is not null && local.ModTime.ToUnixTimeMilliseconds() > deleteTimeUnixMs)
                 return; // локальная новее — skip
-            _store.DeleteObject(bucket, key);
+            _store.DeleteObject(bucket, key).Throw(); // мост t38: демонтаж в задаче перевода ReplicaApplier
             _tombstones.Put(bucket, key, deleteTimeUnixMs);
         }
         finally
@@ -127,7 +136,8 @@ public sealed class ReplicaApplier : IDisposable
         _applyGate.Wait();
         try
         {
-            _store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(creationDateUnixMs));
+            _store.ApplyBucketCreate(bucket, DateTimeOffset.FromUnixTimeMilliseconds(creationDateUnixMs))
+                .Throw(); // мост t38: демонтаж в задаче перевода ReplicaApplier
         }
         finally
         {
@@ -143,11 +153,13 @@ public sealed class ReplicaApplier : IDisposable
         _applyGate.Wait();
         try
         {
-            _store.ApplyBucketDelete(bucket);
-        }
-        catch (ObjectStoreException ex) when (ex.Code == ObjectStoreErrorCode.BucketNotEmpty)
-        {
-            EnqueueBucketRetry(bucket, nextAttempt: 0);
+            var delete = _store.ApplyBucketDelete(bucket);
+            if (delete.IsSuccess)
+                return;
+            if (delete.Error is ObjectStoreException { Code: ObjectStoreErrorCode.BucketNotEmpty })
+                EnqueueBucketRetry(bucket, nextAttempt: 0);
+            else
+                delete.Throw(); // мост t38: прочие отказы — прежний путь исключения (демонтаж в Task 6)
         }
         finally
         {
@@ -181,21 +193,20 @@ public sealed class ReplicaApplier : IDisposable
         }
         foreach (var (bucket, attempt) in ready)
         {
+            _applyGate.Wait();
             try
             {
-                _applyGate.Wait();
-                try
-                {
-                    _store.ApplyBucketDelete(bucket);
-                }
-                finally
-                {
-                    _applyGate.Release();
-                }
+                var delete = _store.ApplyBucketDelete(bucket);
+                if (delete.IsSuccess)
+                    continue;
+                if (delete.Error is ObjectStoreException { Code: ObjectStoreErrorCode.BucketNotEmpty })
+                    EnqueueBucketRetry(bucket, attempt + 1);
+                else
+                    delete.Throw(); // мост t38: прочие отказы — прежний путь исключения (демонтаж в Task 6)
             }
-            catch (ObjectStoreException ex) when (ex.Code == ObjectStoreErrorCode.BucketNotEmpty)
+            finally
             {
-                EnqueueBucketRetry(bucket, attempt + 1);
+                _applyGate.Release();
             }
         }
     }

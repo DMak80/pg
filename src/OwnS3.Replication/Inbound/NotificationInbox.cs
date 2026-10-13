@@ -83,7 +83,12 @@ public sealed class NotificationInbox(FetchQueueRegistry queues, OwnS3.Replicati
     // → событие закрыто без фетча (skip); старее/нет → fetch-очередь источника.
     private bool HandleObjectPut(string sourceName, ReplicationEvent e)
     {
-        var local = store.ReadKeyState(e.Bucket, e.Key);
+        // мост t38: демонтаж в задаче перевода ReplicaApplier (Failed — Throw(),
+        // поведение прежнее)
+        var localLookup = store.ReadKeyState(e.Bucket, e.Key);
+        var local = localLookup.IsSuccess
+            ? localLookup.Value is ReplicaKeyLookup.Found f ? f.State : null
+            : throw localLookup.Error!;
         var tombstone = tombstones.GetDeleteTime(e.Bucket, e.Key);
         if (local is not null || tombstone is not null)
         {
