@@ -4,9 +4,44 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
+using OwnS3.Protocol.PeerAuth;
 using Xunit;
 
 namespace OwnS3.IntegrationTests.E2e.Replication;
+
+/// <summary>
+/// PeerAuth-материал mesh-контура (t39, spec фаза 5): CA + серт/приватный ключ
+/// per-node, генерация — PeerCertificateAuthority в коде теста. Имена сертификатов
+/// os3m-pk{i} — имена записей targets/Credential исходящих запросов (endpoint
+/// задаётся advertised отдельно — внутренний URL узла). IdentityOf/TrustOf —
+/// флаги узлов для сценариев mixed/no-trust (null — у всех).
+/// </summary>
+public sealed record MeshPeerAuthMaterial(
+    string CaJson,
+    IReadOnlyList<(PeerCertificate Cert, string CertJson, string PrivatePem)> Nodes,
+    Func<int, bool>? IdentityOf = null,
+    Func<int, bool>? TrustOf = null)
+{
+    /// <summary>Генерация материала на nodes узлов (CA + ECDSA P-256 серты, срок —
+    /// от настоящего времени: fail-fast загрузки хоста сверяет срок с системными
+    /// часами). Сертовые имена os3m-pk{i} стабильны по индексу.</summary>
+    public static MeshPeerAuthMaterial Create(int nodes, string caName)
+    {
+        var (caJson, caPem) = PeerCertificateAuthority.CreateCa(caName);
+        var ca = PeerTrustAnchor.FromJson(caJson);
+        var now = DateTimeOffset.UtcNow;
+        var items = new List<(PeerCertificate, string, string)>();
+        for (var i = 0; i < nodes; i++)
+        {
+            var (cert, pem) = PeerCertificateAuthority.IssueServer($"os3m-pk{i}", ca, caPem, now);
+            items.Add((cert, cert.ToJson(), pem));
+        }
+        return new MeshPeerAuthMaterial(caJson, items);
+    }
+
+    /// <summary>Серт-имя узла i (= имя записи targets у соседей, = Credential исходящих).</summary>
+    public string CertNameOf(int i) => Nodes[i].Cert.Name;
+}
 
 /// <summary>
 /// Mesh-контур docker-E2E ownS3 (t35, глава 07; план Task 16): сеть
@@ -95,10 +130,13 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     /// <summary>Подъём mesh-контура: сборка образа (общий сборщик) → сеть → N узлов
     /// (том + динамический порт + wait /healthz ≤30 с). fullMeshTargets — env-seed
     /// полного mesh (каждый знает всех); false — соседей нет (состав через
-    /// PUT /admin/replication/targets сценарием). Retry старта ×3 (полное удаление попытки).</summary>
+    /// PUT /admin/replication/targets сценарием). peerAuth — PeerAuth-материал t39:
+    /// узлы получают OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA/_ADVERTISED_ENDPOINT
+    /// env-значениями (advertised считает окружение — runId сценарию до старта не
+    /// виден). Retry старта ×3 (полное удаление попытки).</summary>
     public static async Task<OwnS3MeshE2eEnvironment> StartAsync(string slug, int nodes,
         bool fullMeshTargets = true, Func<int, ContainerBuilder, ContainerBuilder>? configureNode = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, MeshPeerAuthMaterial? peerAuth = null)
     {
         if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
             throw new InvalidOperationException(
@@ -172,6 +210,20 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                             index++;
                         }
                     }
+                    // PeerAuth-режим узла (t39, глава 07 §2/§11): identity/trust/
+                    // advertised — материал env КАЖДОГО старта (персиста на томе нет),
+                    // env-ЗНАЧЕНИЯМИ без монтирования файлов; advertised — внутренний
+                    // URL узла для join. Флаги узлов — сценарию (mixed/no-trust).
+                    if (peerAuth is not null)
+                    {
+                        if (peerAuth.IdentityOf?.Invoke(i) ?? true)
+                            builder = builder
+                                .WithEnvironment("OWNS3_REPLICATION_CERT", peerAuth.Nodes[i].CertJson)
+                                .WithEnvironment("OWNS3_REPLICATION_PRIVATE_KEY", peerAuth.Nodes[i].PrivatePem)
+                                .WithEnvironment("OWNS3_REPLICATION_ADVERTISED_ENDPOINT", $"http://{containerName}:9000");
+                        if (peerAuth.TrustOf?.Invoke(i) ?? true)
+                            builder = builder.WithEnvironment("OWNS3_REPLICATION_TRUST_CA", peerAuth.CaJson);
+                    }
                     // ContainerBuilder иммутабелен: перехватываем возвращённый builder
                     builder = configureNode?.Invoke(i, builder) ?? builder;
                     var container = builder
@@ -222,9 +274,10 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
     /// teardown — DisposeAsync при любом исходе.</summary>
     public static async Task RunScenarioAsync(string slug, int nodes,
         Func<OwnS3MeshE2eEnvironment, Task> body, bool fullMeshTargets = true,
-        Func<int, ContainerBuilder, ContainerBuilder>? configureNode = null, CancellationToken ct = default)
+        Func<int, ContainerBuilder, ContainerBuilder>? configureNode = null, CancellationToken ct = default,
+        MeshPeerAuthMaterial? peerAuth = null)
     {
-        var fx = await StartAsync(slug, nodes, fullMeshTargets, configureNode, ct);
+        var fx = await StartAsync(slug, nodes, fullMeshTargets, configureNode, ct, peerAuth);
         try
         {
             await body(fx);
