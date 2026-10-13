@@ -290,6 +290,88 @@ public sealed class ReplicationScenarios(ReplicationAppFactory factory) : IClass
         list.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task Ping_ValidNeighborSignature_200EmptyBody()
+    {
+        // Act — GET /replication/ping подписью соседа (accessKey peer-a = ReplicationCreds)
+        var response = await ReplicationClient.SendSignedAsync("GET", "/replication/ping",
+            credentials: ReplicationCreds);
+
+        // Assert — 200, пустое тело (глава 07 §6)
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Ping_PolicyIsolation_403()
+    {
+        // Act / Assert — read-only/read-write/admin на ping-грани → 403 (A13)
+        foreach (var creds in new[] { OwnS3TestClient.Reader(), OwnS3TestClient.Writer(), OwnS3TestClient.Admin() })
+            (await Client.SendSignedAsync("GET", "/replication/ping", credentials: creds))
+                .StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        // Act / Assert — replication-ключ, НЕ числящийся соседом → 403 (глава 07 §6)
+        (await ReplicationClient.SendSignedAsync("GET", "/replication/ping",
+            credentials: OrphanReplicationCreds)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Ping_NonGetMethods_400_UnknownPath_400()
+    {
+        // Act — POST/PUT ping + GET неизвестного пути грани (регресс маршрутизации)
+        var post = await ReplicationClient.SendSignedAsync("POST", "/replication/ping",
+            payloadString: PayloadHash(string.Empty), credentials: ReplicationCreds);
+        var put = await ReplicationClient.SendSignedAsync("PUT", "/replication/ping",
+            payloadString: PayloadHash(string.Empty), credentials: ReplicationCreds);
+        var unknown = await ReplicationClient.SendSignedAsync("GET", "/replication/no-such",
+            credentials: ReplicationCreds);
+
+        // Assert — 400 InvalidArgument по существующему правилу грани (глава 07 §6)
+        post.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        put.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        unknown.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Ping_ReceiverPurity_StatusCountersUnchanged()
+    {
+        // Arrange — стабильный срез статуса: счётчики/курсоры/fetch-очереди
+        // (время-зависимые deliveryLagSeconds/fetchLagSeconds исключены)
+        async Task<string> StableNeighborsAsync()
+        {
+            var response = await Client.SendSignedAsync("GET", "/admin/replication/status",
+                credentials: OwnS3TestClient.Admin());
+            var json = JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+            return System.Text.Json.JsonSerializer.Serialize(json.GetProperty("neighbors")
+                .EnumerateArray().Select(n => new
+                {
+                    name = n.GetProperty("name").GetString(),
+                    acceptedSeqNo = n.GetProperty("acceptedSeqNo").GetInt64(),
+                    queueDepth = n.GetProperty("queueDepth").GetInt64(),
+                    fetchQueueDepth = n.GetProperty("fetchQueueDepth").GetInt64(),
+                    fetchPaused = n.GetProperty("fetchPaused").GetBoolean(),
+                    reconcileRunning = n.GetProperty("reconcileRunning").GetBoolean(),
+                    counters = n.GetProperty("counters").EnumerateObject()
+                        .ToDictionary(p => p.Name, p => p.Value.GetRawText()),
+                }));
+        }
+
+        // Act — серия ping-запросов к узлу-приёмнику (принцип 3: ping бесплатен)
+        var before = await StableNeighborsAsync();
+        for (var i = 0; i < 10; i++)
+        {
+            var ping = await ReplicationClient.SendSignedAsync("GET", "/replication/ping",
+                credentials: ReplicationCreds);
+            ping.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        // Assert — состояние приёмника байт-в-байт то же: срезы до/после идентичны
+        var after = await StableNeighborsAsync();
+        after.Should().Be(before);
+    }
+
     private static string PayloadHash(string body) =>
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(body)))
             .ToLowerInvariant();

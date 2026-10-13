@@ -204,6 +204,8 @@ public sealed class S3Middleware(
                     }
                     else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/listing")
                         await replicationHandlers.HandleListingAsync(context);
+                    else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/ping")
+                        await replicationHandlers.HandlePingAsync(context);
                     else
                         await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
                             Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
