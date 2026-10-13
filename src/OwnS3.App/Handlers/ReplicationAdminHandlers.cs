@@ -6,6 +6,7 @@ using OwnS3.Protocol.Auth;
 using OwnS3.Replication.Inbound;
 using OwnS3.Replication.Outbox;
 using OwnS3.Replication.Reconcile;
+using OwnS3.Replication.Transport;
 
 // Явная квалификация SyncReportHash ниже (namespace OwnS3.Replication).
 using OwnS3.Storage;
@@ -116,9 +117,9 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
     public async Task HandleProbeAsync(HttpContext context)
     {
         var targetName = context.Request.Query["target"].FirstOrDefault();
-        var report = await prober.ProbeAsync(string.IsNullOrEmpty(targetName) ? null : targetName,
+        var probe = await prober.ProbeAsync(string.IsNullOrEmpty(targetName) ? null : targetName,
             context.RequestAborted);
-        if (report is null)
+        if (!probe.IsSuccess && probe.Error is UnknownReplicationTargetException)
         {
             // Имя не из состава — 400 с пояснением (глава 07 §2)
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -126,6 +127,8 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
                 new { error = $"unknown replication target: {targetName}" }, context.RequestAborted);
             return;
         }
+        probe.Throw(); // прочие отказы — прежний путь (catch-all → 500); демонтаж в Task 7
+        var report = probe.Value;
         context.Response.StatusCode = StatusCodes.Status200OK;
         await context.Response.WriteAsJsonAsync(
             new ProbeResponse(report.Active,

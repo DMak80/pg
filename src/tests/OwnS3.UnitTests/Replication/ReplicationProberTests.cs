@@ -79,11 +79,10 @@ public class ReplicationProberTests : IDisposable
         transport.Results["peer-b"] = new PingResult(true, 7);
 
         // Act
-        var report = await prober.ProbeAsync(null, TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync(null, TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — active=true, оба reachable, rttMs прокинуты из транспорта
-        report.Should().NotBeNull();
-        report!.Active.Should().BeTrue();
+        report.Active.Should().BeTrue();
         report.Targets.Should().HaveCount(2);
         report.Targets.Should().Contain(o => o.Name == "peer-a" && o.Reachable && o.RttMs == 4);
         report.Targets.Should().Contain(o => o.Name == "peer-b" && o.Reachable && o.RttMs == 7);
@@ -97,10 +96,10 @@ public class ReplicationProberTests : IDisposable
         transport.Results["peer-a"] = new PingResult(false, 12);
 
         // Act
-        var report = await prober.ProbeAsync(null, TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync(null, TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — reachable=false, rttMs присутствует («отвечает, но не пускает»)
-        report!.Targets.Single().Reachable.Should().BeFalse();
+        report.Targets.Single().Reachable.Should().BeFalse();
         report.Targets.Single().RttMs.Should().Be(12);
     }
 
@@ -112,10 +111,10 @@ public class ReplicationProberTests : IDisposable
         transport.Throwers.Add("peer-a");
 
         // Act
-        var report = await prober.ProbeAsync(null, TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync(null, TestContext.Current.CancellationToken)).Throw().Value;
 
-        // Assert — исключение погашено веткой: reachable=false, rttMs отсутствует
-        report!.Targets.Single().Reachable.Should().BeFalse();
+        // Assert — отказ транспорта погашен исходом: reachable=false, rttMs отсутствует
+        report.Targets.Single().Reachable.Should().BeFalse();
         report.Targets.Single().RttMs.Should().BeNull();
     }
 
@@ -126,24 +125,25 @@ public class ReplicationProberTests : IDisposable
         var (prober, _) = Prober(names: ["peer-a", "peer-b", "peer-c"]);
 
         // Act
-        var report = await prober.ProbeAsync("peer-b", TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync("peer-b", TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — ровно один исход, ровно запрошенный сосед
-        report!.Targets.Should().ContainSingle(o => o.Name == "peer-b");
+        report.Targets.Should().ContainSingle(o => o.Name == "peer-b");
         report.Active.Should().BeTrue();
     }
 
     [Fact]
-    public async Task UnknownTargetName_NullMarkerFor400()
+    public async Task UnknownTargetName_FailedUnknownTarget()
     {
         // Arrange — имя вне состава
         var (prober, _) = Prober(names: ["peer-a"]);
 
         // Act
-        var report = await prober.ProbeAsync("ghost", TestContext.Current.CancellationToken);
+        var probe = await prober.ProbeAsync("ghost", TestContext.Current.CancellationToken);
 
-        // Assert — null-маркер: хендлер отвечает 400 (глава 07 §2)
-        report.Should().BeNull();
+        // Assert — Failed(UnknownReplicationTargetException): хендлер отвечает 400 (глава 07 §2)
+        (!probe.IsSuccess).Should().BeTrue();
+        probe.Error.Should().BeOfType<UnknownReplicationTargetException>();
     }
 
     [Fact]
@@ -153,10 +153,10 @@ public class ReplicationProberTests : IDisposable
         var (prober, _) = Prober();
 
         // Act
-        var report = await prober.ProbeAsync(null, TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync(null, TestContext.Current.CancellationToken)).Throw().Value;
 
         // Assert — осмысленный «соседей нет»: active=false, пустой список
-        report!.Active.Should().BeFalse();
+        report.Active.Should().BeFalse();
         report.Targets.Should().BeEmpty();
     }
 
@@ -169,12 +169,12 @@ public class ReplicationProberTests : IDisposable
         var sw = Stopwatch.StartNew();
 
         // Act
-        var report = await prober.ProbeAsync(null, TestContext.Current.CancellationToken);
+        var report = (await prober.ProbeAsync(null, TestContext.Current.CancellationToken)).Throw().Value;
         sw.Stop();
 
         // Assert — параллельность: ответ probe ≈ max per-target, не sum
         // (3×200 мс последовательно = 600 мс; бюджет с запасом на планировщик)
-        report!.Targets.Should().HaveCount(3);
+        report.Targets.Should().HaveCount(3);
         sw.ElapsedMilliseconds.Should().BeLessThan(500,
             "пинги идут параллельно: задержка ответа = max, не sum (глава 07 §2)");
     }

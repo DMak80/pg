@@ -70,8 +70,9 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync("bap", "new", new MemoryStream(Body("v1")),
             2, MetaOf("v1"), Sha256Hex("v1"), TestContext.Current.CancellationToken);
 
-        // Assert — применено, xl-запись несёт modTime источника (LWW-сходимость)
-        result.Applied.Should().BeTrue();
+        // Assert — применено (Applied), xl-запись несёт modTime источника (LWW-сходимость)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Applied);
         var appliedState = Store.ReadKeyState("bap", "new").Throw().Value is ReplicaKeyLookup.Found ra
             ? ra.State
             : throw new InvalidOperationException("запись не найдена после Apply");
@@ -89,8 +90,9 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("stale")),
             5, MetaOf("stale"), Sha256Hex("stale"), TestContext.Current.CancellationToken);
 
-        // Assert — skip: ключ не воскрешён, tombstone на месте
-        result.Applied.Should().BeFalse();
+        // Assert — skip (Skipped): ключ не воскрешён, tombstone на месте
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Skipped);
         Store.ReadKeyState(bucket, key).Value.Should().BeOfType<ReplicaKeyLookup.Missing>();
         Tombstones.GetDeleteTime(bucket, key).Should().NotBeNull();
     }
@@ -106,8 +108,9 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("fresh")),
             5, MetaOf("fresh"), Sha256Hex("fresh"), TestContext.Current.CancellationToken);
 
-        // Assert — применён, tombstone снят (запись жива — негативное знание снято)
-        result.Applied.Should().BeTrue();
+        // Assert — применён (Applied), tombstone снят (запись жива — негативное знание снято)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Applied);
         Store.ReadKeyState(bucket, key).Should().NotBeNull();
         Tombstones.GetDeleteTime(bucket, key).Should().BeNull();
     }
@@ -125,8 +128,9 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         var result = await Applier.ApplyObjectAsync(bucket, key, new MemoryStream(Body("incoming-old")),
             12, MetaOf("incoming-old"), Sha256Hex("incoming-old"), TestContext.Current.CancellationToken);
 
-        // Assert — skip: локальная версия не перезаписана
-        result.Applied.Should().BeFalse();
+        // Assert — skip (Skipped): локальная версия не перезаписана
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.Skipped);
         var keptState = Store.ReadKeyState(bucket, key).Throw().Value is ReplicaKeyLookup.Found rb
             ? rb.State
             : throw new InvalidOperationException("запись не найдена после skip");
@@ -150,9 +154,10 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
             13, MetaOf("incoming-body", sha: incomingSha), Sha256Hex("incoming-body"),
             TestContext.Current.CancellationToken);
 
-        // Assert — флаг Conflict в результате СВОЕГО вызова + событие с обеими версиями (только лог)
-        result.Conflict.Should().BeTrue();
-        result.Applied.Should().BeTrue();
+        // Assert — ConflictApplied в результате СВОЕГО вызова (конфликт И применено —
+        // канон 07 §10) + событие с обеими версиями (только лог)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(ReplicaApplyOutcome.ConflictApplied);
         raised.Key.Should().Be(key);
         raised.InSha.Should().Be(incomingSha);
         raised.LocalSha.Should().Be(shaA);

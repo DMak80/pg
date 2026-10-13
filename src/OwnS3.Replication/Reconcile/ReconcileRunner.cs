@@ -86,10 +86,14 @@ public sealed class ReconcileRunner(ReplicationTargets targets, IReplicaStore st
             backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, TimeSpan.FromSeconds(60).Ticks));
         }
 
-        // Backfill состава бакетов (§9): у соседа есть — у нас нет → create с CreationDate соседа
+        // Backfill состава бакетов (§9): у соседа есть — у нас нет → create с CreationDate
+        // соседа; отказ create не роняет проход (прецедент ретрай-механики §9)
         foreach (var (name, creationUnixMs) in neighborBuckets)
         {
-            applier.ApplyBucketCreate(name, creationUnixMs);
+            var created = applier.ApplyBucketCreate(name, creationUnixMs);
+            if (!created.IsSuccess)
+                logger.LogWarning(created.Error, "Reconcile {Source}: create бакета {Bucket} не удалён",
+                    sourceName, name);
         }
 
         var processed = 0L;

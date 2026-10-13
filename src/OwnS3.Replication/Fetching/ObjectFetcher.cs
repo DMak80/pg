@@ -222,10 +222,15 @@ public sealed class ObjectFetcher
             switch (fetch.Value)
             {
                 case FetchOutcome.Tombstone t:
-                    // Ключ удалён у источника — tombstone-применение (глава 07 §7)
-                    _applier.ApplyDelete(task.Bucket, task.Key, t.DeleteTimeUnixMs);
+                {
+                    // Ключ удалён у источника — tombstone-применение (глава 07 §7);
+                    // отказ применения — повтор по бэкоффу
+                    var deleted = _applier.ApplyDelete(task.Bucket, task.Key, t.DeleteTimeUnixMs);
+                    if (!deleted.IsSuccess)
+                        return HandleFetchFailure(_source.Name, task, deleted.Error!);
                     _counters.Applied(_source.Name);
                     return false;
+                }
                 case FetchOutcome.KeyNotFound:
                     // 404: ключ неизвестен — состояние приёмника не меняется (skip без повтора)
                     return false;
@@ -239,21 +244,38 @@ public sealed class ObjectFetcher
                         Stream body = _options.MaxRateBytes > 0
                             ? new ThrottledStream(f.Body, _options.MaxRateBytes)
                             : f.Body;
-                        var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
+                        var apply = await _applier.ApplyObjectAsync(task.Bucket, task.Key, body,
                             contentLength: f.ContentLength,
                             new ReplicaObjectMetadata(
                                 DateTimeOffset.FromUnixTimeMilliseconds(f.ModTimeUnixMs),
                                 f.ETag.Trim('"'), f.ContentSha256, f.ContentType, f.UserMetadata),
                             expectedSha256: f.ContentSha256, ct);
-                        // счётчики исходов — по результату СВОЕГО применения (перевод аплаера —
-                        // следующая задача; здесь мост: applyResult — прежний тип до Task 6)
+                        if (!apply.IsSuccess)
+                            // checksum-mismatch и техотказы применения — повтор (глава 07 §7);
+                            // fetched НЕ инкрементируется — байт-в-байт как сегодня
+                            // (сегодня мисматч бросается из ApplyObjectAsync ДО строки счётчика)
+                            return HandleFetchFailure(_source.Name, task, apply.Error!);
                         _counters.Fetched(_source.Name);
-                        if (applyResult.Conflict)
-                            _counters.Conflict(_source.Name);
-                        if (applyResult.Applied)
-                            _counters.Applied(_source.Name);
-                        else
-                            _counters.Skipped(_source.Name);
+                        // Инкременты — по исходу, семантика «как сегодня» (канон 07 §10):
+                        // пара ConflictApplied/ConflictSkipped несёт флаг конфликта ПОВЕРХ
+                        // исхода применения — конфликт сосуществует с applied/skipped
+                        switch (apply.Value)
+                        {
+                            case ReplicaApplyOutcome.Applied:
+                                _counters.Applied(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.Skipped:
+                                _counters.Skipped(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.ConflictApplied:
+                                _counters.Conflict(_source.Name);
+                                _counters.Applied(_source.Name);
+                                break;
+                            case ReplicaApplyOutcome.ConflictSkipped:
+                                _counters.Conflict(_source.Name);
+                                _counters.Skipped(_source.Name);
+                                break;
+                        }
                     }
 
                     return false;
@@ -262,19 +284,9 @@ public sealed class ObjectFetcher
 
             return false; // недостижимо (варианты закрыты)
         }
-        catch (ReplicationChecksumMismatchException ex)
-        {
-            // мост t38: аплаер ещё бросает (до Task 6) — маршрутизуем в единый helper повтора
-            return HandleFetchFailure(_source.Name, task, ex);
-        }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw; // graceful stop — не ошибка фетча
-        }
-        catch (Exception ex)
-        {
-            // мост t38: техотказ применения/чтения тела (до Task 6) — повтор
-            return HandleFetchFailure(_source.Name, task, ex);
         }
     }
 
