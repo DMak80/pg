@@ -261,7 +261,9 @@ public sealed class ReplicationHttpClient : IReplicationTransport
             ("x-amz-date", amzDate),
             ("x-amz-content-sha256", payloadHashValue),
         };
-        var (authorization, _, _) = SigV4Signer.Sign(target.SecretKey, target.AccessKey, method.Method, path,
+        // legacy-ветка: креды цели обязательны (валидация состава, глава 07 §2);
+        // key-цели сюда не доходят — ветвление схемы подписи по Auth (t39, глава 07 §6).
+        var (authorization, _, _) = SigV4Signer.Sign(target.SecretKey!, target.AccessKey!, method.Method, path,
             query, headers, payloadHashValue, at);
         // URI строкой: UriBuilder{Path=...} сбрасывает нестандартный порт (80/443)
         var uriText = $"{endpoint.AbsoluteUri.TrimEnd('/')}{path}{(string.IsNullOrEmpty(query) ? "" : $"?{query}")}";

@@ -53,7 +53,8 @@ public sealed class ReplicationAdminHandlers(OwnS3.Replication.ReplicationTarget
         try
         {
             targets.Replace(request.Targets
-                .Select(t => new OwnS3.Replication.TargetRecord(t.Name, t.Endpoint, t.AccessKey, t.SecretKey))
+                .Select(t => new OwnS3.Replication.TargetRecord(t.Name, t.Endpoint,
+                    OwnS3.Replication.TargetRecord.AuthLegacy, t.AccessKey, t.SecretKey))
                 .ToList());
         }
         catch (ArgumentException ex)
