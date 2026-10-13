@@ -158,8 +158,10 @@ join-запрос) подписываются вместо SigV4:
 
 1. `POST /admin/replication/join` тело `{"endpoint":
    "http://peer:9000"}` — права admin/root (глава 05 §7), прочим —
-   403. Нет identity (§4.6) или не задан advertised endpoint → **400**
-   с пояснением. Исполнение синхронное (как probe, не 202).
+   403. Нет identity, trust-anchor или advertised endpoint (§4.6) →
+   **400** с пояснением (fail-fast: без trust-anchor инициатор не
+   сможет проверить сертификат ответа соседа — §4.4 п.4). Исполнение
+   синхронное (как probe, не 202).
 2. Инициатор → сосед: `POST /replication/join` (replication-грань)
    с телом `{"advertisedEndpoint": "<…>"}`, заголовками подписи
    §4.2 и `X-OwnS3-Peer-Certificate: <base64 сертификата>`.
@@ -248,7 +250,7 @@ join-запрос) подписываются вместо SigV4:
 | `src/OwnS3.App/Pipeline/S3Middleware.cs` | replication-ветка: дискриминация `Authorization` (`OWNS3-PEER-*` → peer-конвейер, §4.3) + маршрут `POST /replication/join`; admin-ветка: `POST /admin/replication/join`, `DELETE /admin/replication/targets/{name}`, `GET|DELETE /admin/replication/denylist[/{name}]` |
 | `src/OwnS3.App/Handlers/ReplicationHandlers.cs` | `HandleJoinAsync` (входящий join → `JoinPeerService`) |
 | `src/OwnS3.App/Handlers/ReplicationAdminHandlers.cs` | `HandleJoinTriggerAsync`, `HandleDeleteTargetAsync`, `HandleDenyListAsync`, `HandleDenyRemoveAsync` |
-| `src/OwnS3.App/Program.cs` | env-переменные §4.6, DI (`IdentityStore`, `DenyList`, `JoinPeerService`) |
+| `src/OwnS3.App/Program.cs` | env-переменные §4.6, DI (`DenyList`, `JoinPeerService`; `PeerIdentity` — результат fail-fast-блока загрузчика, без персиста) |
 | `src/OwnS3.Pki` (новый проект) | CLI §4.6; включён в `src/PgWorker.slnx` |
 
 ### 4.8. Arch-first правки (фаза 0, до кода)
@@ -320,8 +322,9 @@ teardown — `docs/e2e-isolation.md`, `docs/e2e-launch.md`); ключи/CA
    seqNo)` по имени).
 4. сосуществование: mesh из legacy-ноды и key-нод — доставка в обе
    стороны (регресс миграции).
-5. trust-anchor не задан → join 403; ручной PUT targets с
-   publicKey-записью работает без CA.
+5. trust-anchor не задан у инициатора → admin-join **400**, у соседя →
+   join-грань **403** (§4.4); ручной PUT targets с publicKey-записью
+   работает без CA.
 
 ### Фаза 6 — полные прогоны
 
