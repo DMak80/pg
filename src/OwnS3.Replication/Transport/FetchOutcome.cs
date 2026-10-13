@@ -2,7 +2,7 @@ namespace OwnS3.Replication.Transport;
 
 // Исход фетча реплики (глава 07 §6) — терминальные варианты одного исхода
 // (конвенция главы 01 §4): объект | tombstone | ключ неизвестен; транспортный
-// отказ — Result.Failed (не вариант значения). DTO FetchResult демонтируется.
+// отказ — Result.Failed (не вариант значения); отдельный DTO-дискриминатор не нужен.
 public abstract record FetchOutcome
 {
     /// <summary>200-объект: тело + заголовки x-owns3-repl-*/x-amz-meta-*.</summary>

@@ -1,7 +1,7 @@
 namespace OwnS3.Replication.Lww;
 
 // Исход LWW-применения реплики (глава 07 §7/§10) — терминальные Success-варианты;
-// двухбулевый ReplicaApplyResult(Applied, Conflict) демонтируется. Четыре значения
+// двухбулевый результат (Applied, Conflict) демонтируется. Четыре значения
 // кодируют ровно то, что сегодня несут два bool (Applied, Conflict): пара
 // ConflictApplied/ConflictSkipped выражает флаг конфликта канона 07 §10 ПОВЕРХ
 // исхода применения — у фетчика конфликт сосуществует с applied/skipped,

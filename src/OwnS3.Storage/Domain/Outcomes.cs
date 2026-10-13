@@ -23,8 +23,8 @@ public abstract record ReplicaKeyLookup
 }
 
 /// <summary>Исход GetObjectAttributes (глава 02): полные атрибуты |
-/// Not-Modified (Metadata несёт ETag/LastModified для заголовков 304).
-/// DTO ObjectAttributesResult демонтируется.</summary>
+/// Not-Modified (Metadata несёт ETag/LastModified для заголовков 304);
+/// отдельный DTO-дискриминатор не нужен.</summary>
 public abstract record GetAttributesOutcome
 {
     public sealed record NotModified(ObjectMetadata Metadata) : GetAttributesOutcome;

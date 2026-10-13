@@ -10,7 +10,7 @@ public interface IOutcomeCounters
 {
     void Applied(string sourceName);    // каждое применённое событие (самодостаточные inbox'а И apply-ветка фетчера)
     void Skipped(string sourceName);    // LWW-предфильтр-skip inbox'а (вкл. дедуп-повторы) И skip-ветка фетчера
-    void Conflict(string sourceName);   // флаг конфликта LWW: компаратор предфильтра (inbox) И ReplicaApplyResult.Conflict (фетчер)
+    void Conflict(string sourceName);   // флаг конфликта LWW: компаратор предфильтра (inbox) И Conflict*-исходы применения (фетчер)
     void Fetched(string sourceName);    // успешный фетч тела объекта (только фетчер)
 }
 
