@@ -59,27 +59,48 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
 
     // ── жизненный цикл тома ──
 
-    public void Initialize() => volume.Initialize();
+    public Result Initialize()
+    {
+        volume.Initialize();
+        return Result.Success();
+    }
 
-    public Task RunCleanupAsync(CancellationToken ct) => volume.RunCleanupAsync(ct);
+    // Отказ чистки (IO) — Failed (конвенция 01 §4); отмена по внешнему ct — не исход.
+    public async Task<Result> RunCleanupAsync(CancellationToken ct)
+    {
+        try
+        {
+            await volume.RunCleanupAsync(ct);
+            return Result.Success();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // graceful stop — не исход операции
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
+        }
+    }
 
     public bool CheckHealth() => volume.CheckHealth();
 
     // ── бакеты ──
 
-    public bool BucketExists(string bucket) =>
+    public Result<bool> BucketExists(string bucket) =>
         bucket != ".owns3.sys" && Directory.Exists(BucketRoot(bucket));
 
-    public void CreateBucket(string bucket, DateTimeOffset? creationDate = null)
+    public Result CreateBucket(string bucket, DateTimeOffset? creationDate = null)
     {
         Directory.CreateDirectory(BucketRoot(bucket));
         _bucketMeta.CreateBucketMeta(bucket, creationDate);
+        return Result.Success();
     }
 
-    public void DeleteBucket(string bucket)
+    public Result DeleteBucket(string bucket)
     {
         if (Directory.EnumerateFiles(BucketRoot(bucket), "xl.meta", SearchOption.AllDirectories).Any())
-            throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+            return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty));
         // Живые multipart-загрузки бакета блокируют удаление (канон 02 §1/§5):
         // активная запись = запись с существующим каталогом загрузки (М2)
         if (Directory.Exists(volume.MultipartDir))
@@ -98,16 +119,17 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
 
                 if (uploads.Any(e => e.Bucket == bucket
                         && Directory.Exists(MultipartJournals.UploadDirPath(keyDir, e.UploadId))))
-                    throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+                    return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty));
             }
 
         volume.MoveToTrash(BucketRoot(bucket));
         var metaDir = Path.Combine(volume.BucketsMetaDir, bucket);
         if (Directory.Exists(metaDir))
             volume.MoveToTrash(metaDir);
+        return Result.Success();
     }
 
-    public IReadOnlyList<BucketEntry> ListBuckets()
+    public Result<IReadOnlyList<BucketEntry>> ListBuckets()
     {
         var names = Directory.EnumerateDirectories(volume.Root)
             .Select(Path.GetFileName)
@@ -115,26 +137,27 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             .Select(name => name!)
             .ToList();
         names.Sort(Utf8ByteOrder.Compare);
-        return names
+        return Result<IReadOnlyList<BucketEntry>>.Success(names
             .Select(name => new BucketEntry(name, _bucketMeta.TryReadCreationDate(name)
                 ?? DateTimeOffset.FromUnixTimeMilliseconds(0)))
-            .ToList();
+            .ToList());
     }
 
     // ── объекты ──
 
-    public XlMetaRecord? TryReadMeta(string bucket, string key)
+    public Result<XlMetaLookup> TryReadMeta(string bucket, string key)
     {
         try
         {
             var meta = XlMetaFile.Read(ObjectDir(bucket, key), out var fromBackup);
             if (fromBackup)
                 logger?.LogWarning("xl.meta объекта {Bucket}/{Key} прочитан из страховочной копии", bucket, key);
-            return meta;
+            return Result<XlMetaLookup>.Success(new XlMetaLookup.Found(meta));
         }
         catch (FileNotFoundException)
         {
-            return null;
+            // «записи нет» — терминальный Success (конвенция 01 §4)
+            return Result<XlMetaLookup>.Success(new XlMetaLookup.Missing());
         }
     }
 
@@ -147,7 +170,7 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
         return new SingleObjectStaging { StagingDir = stagingDir, DataDir = dataDir };
     }
 
-    public async Task<PartDigest> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
+    public async Task<Result<PartDigest>> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct)
     {
         if (staging is SingleUploadPartStaging upload)
@@ -155,33 +178,35 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             // часть загрузки: тело → уникальный tmp в каталоге загрузки
             upload.TmpPath = Path.Combine(upload.UploadDir, MultipartJournals.PartTmpFileNameUnique(partNumber));
             var (uploadEtag, _) = await CopyBodyToFileAsync(body, upload.TmpPath, contentLength, withSha: false, ct);
-            return new PartDigest(uploadEtag, string.Empty, contentLength);
+            return Result<PartDigest>.Success(new PartDigest(uploadEtag, string.Empty, contentLength));
         }
 
         var objectStaging = RequireObjectStaging(staging);
         var (etag, sha256) = await CopyBodyToFileAsync(
             body, Path.Combine(objectStaging.DataDir, MultipartJournals.PartFileName(partNumber)),
             contentLength, withSha: true, ct);
-        return new PartDigest(etag, sha256, contentLength);
+        return Result<PartDigest>.Success(new PartDigest(etag, sha256, contentLength));
     }
 
-    public void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta)
+    public Result CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta)
     {
         var objectStaging = RequireObjectStaging(staging);
         foreach (var (_, partPath, _) in EnumerateDataParts(ObjectDir(srcBucket, srcKey), srcMeta.DataDirName))
             CopyPart(partPath, Path.Combine(objectStaging.DataDir, Path.GetFileName(partPath)));
+        return Result.Success();
     }
 
-    public void WriteMeta(IXlStaging staging, XlMetaRecord record)
+    public Result WriteMeta(IXlStaging staging, XlMetaRecord record)
     {
         var objectStaging = RequireObjectStaging(staging);
         // нормализация: versionId записи = имя dataDir staging (P1)
         XlMetaFile.Write(objectStaging.StagingDir, record with { VersionId = objectStaging.VersionId });
+        return Result.Success();
     }
 
     // Коммит-схема канона 04 §4: новый ключ — один rename; перезапись —
     // rename dataDir → атомарная замена xl.meta (КОММИТ) → старый dataDir в .trash.
-    public PutResult Commit(string bucket, string key, XlMetaRecord record, IXlStaging staging)
+    public Result<PutResult> Commit(string bucket, string key, XlMetaRecord record, IXlStaging staging)
     {
         var objectStaging = RequireObjectStaging(staging);
         record = record with { VersionId = objectStaging.VersionId }; // P1: dataDir = versionId
@@ -213,17 +238,26 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
                 "fsync каталога объекта не выполняется (только BCL, приказ пользователя): {Target}", target);
         }
 
-        return new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
+        return Result<PutResult>.Success(
+            new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256));
     }
 
-    public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
+    // Конкурентное удаление (FileNotFoundException) и IO-отказы — Failed.
+    public Result<Stream> OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
     {
-        var partPaths = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
-            .Select(p => p.Path).ToList();
-        return new MultipartBodyStream(partPaths, offset, length);
+        try
+        {
+            var partPaths = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
+                .Select(p => p.Path).ToList();
+            return Result<Stream>.Success(new MultipartBodyStream(partPaths, offset, length));
+        }
+        catch (Exception ex)
+        {
+            return Result<Stream>.Failed(ex);
+        }
     }
 
-    public void VerifyFullChecksum(string bucket, string key, XlMetaRecord meta)
+    public Result VerifyFullChecksum(string bucket, string key, XlMetaRecord meta)
     {
         var partPaths = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
             .Select(p => p.Path).ToList();
@@ -245,11 +279,12 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
         if (actual != meta.ContentSha256)
             throw new XlIntegrityException(
                 $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual}");
+        return Result.Success();
     }
 
     // Delete канона 04 §4 п.5: xl.meta и dataDir — в .trash ПО ОТДЕЛЬНОСТИ;
     // опустевший каталог объекта удаляется, каталоги-префиксы с подобъектами остаются.
-    public void Delete(string bucket, string key, XlMetaRecord meta)
+    public Result Delete(string bucket, string key, XlMetaRecord meta)
     {
         var target = ObjectDir(bucket, key);
         var metaPath = Path.Combine(target, "xl.meta");
@@ -263,53 +298,78 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             volume.MoveToTrash(dataDir);
         if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
             Directory.Delete(target, recursive: true); // записей в поддереве нет
+        return Result.Success();
     }
 
-    public IReadOnlyList<(int Number, long Size)> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
-        EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
-            .Select(p => (p.Number, p.Size))
-            .ToList();
+    public Result<IReadOnlyList<(int Number, long Size)>> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
+        Result<IReadOnlyList<(int Number, long Size)>>.Success(
+            EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
+                .Select(p => (p.Number, p.Size))
+                .ToList());
 
     // ── листинги ──
 
-    public IXlObjectCursor EnumerateObjects(string bucket) =>
-        new SingleObjectCursor(volume, bucket);
+    public Result<IXlObjectCursor> EnumerateObjects(string bucket) =>
+        Result<IXlObjectCursor>.Success(new SingleObjectCursor(volume, bucket));
 
     // ── multipart-журналы ──
 
-    public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key) =>
-        MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(KeyDir(bucket, key)));
+    public Result<List<MultipartJournals.UploadJournalEntry>> ReadUploads(string bucket, string key) =>
+        Result<List<MultipartJournals.UploadJournalEntry>>.Success(
+            MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(KeyDir(bucket, key))));
 
-    public void WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads) =>
+    public Result WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads)
+    {
         MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(KeyDir(bucket, key)), uploads);
+        return Result.Success();
+    }
 
-    public IReadOnlyList<string> ListUploadKeyDirs() =>
-        Directory.Exists(volume.MultipartDir)
-            ? Directory.EnumerateDirectories(volume.MultipartDir).ToList()
-            : [];
+    public Result<IReadOnlyList<string>> ListUploadKeyDirs() =>
+        Result<IReadOnlyList<string>>.Success(
+            Directory.Exists(volume.MultipartDir)
+                ? Directory.EnumerateDirectories(volume.MultipartDir).ToList()
+                : []);
 
-    public List<MultipartJournals.UploadJournalEntry> ReadUploadsByKeyDir(string keyDirPath) =>
-        MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDirPath));
+    public Result<List<MultipartJournals.UploadJournalEntry>> ReadUploadsByKeyDir(string keyDirPath) =>
+        Result<List<MultipartJournals.UploadJournalEntry>>.Success(
+            MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDirPath)));
 
     public bool UploadDirExists(string bucket, string key, string uploadId) =>
         Directory.Exists(MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId));
 
-    public void CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord)
+    public Result CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord)
     {
         var uploadDir = MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId);
         Directory.CreateDirectory(uploadDir);
         XlMetaFile.Write(uploadDir, uploadRecord);
+        return Result.Success();
     }
 
-    public XlMetaRecord ReadUploadMeta(string bucket, string key, string uploadId) =>
-        XlMetaFile.Read(MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId), out _);
+    public Result<XlMetaRecord> ReadUploadMeta(string bucket, string key, string uploadId)
+    {
+        var uploadDir = MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId);
+        if (!Directory.Exists(uploadDir))
+            return Result<XlMetaRecord>.Failed(new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
+        try
+        {
+            return Result<XlMetaRecord>.Success(XlMetaFile.Read(uploadDir, out _));
+        }
+        catch (FileNotFoundException)
+        {
+            return Result<XlMetaRecord>.Failed(new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
+        }
+    }
 
-    public void TrashUpload(string bucket, string key, string uploadId) =>
+    public Result TrashUpload(string bucket, string key, string uploadId)
+    {
         volume.MoveToTrash(MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId));
+        return Result.Success();
+    }
 
-    public List<MultipartJournals.PartJournalEntry> ReadParts(string bucket, string key, string uploadId) =>
-        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(
-            MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId)));
+    public Result<List<MultipartJournals.PartJournalEntry>> ReadParts(string bucket, string key, string uploadId) =>
+        Result<List<MultipartJournals.PartJournalEntry>>.Success(
+            MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(
+                MultipartJournals.UploadDirPath(KeyDir(bucket, key), uploadId))));
 
     public IXlStaging CreateUploadStaging(string bucket, string key, string uploadId) =>
         new SingleUploadPartStaging
@@ -319,7 +379,7 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
 
     // Коммит части (UploadPart): rename + upsert parts.json — согласованная
     // пара под _commitLock (М3).
-    public void CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime)
+    public Result CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime)
     {
         var upload = RequireUploadStaging(staging);
         if (upload.TmpPath is null)
@@ -339,12 +399,13 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
         }
 
         upload.TmpPath = null; // закоммичен — Dispose не удаляет
+        return Result.Success();
     }
 
     // Complete (канон 04 §5 шаги 3–9): attempt → перенос частей rename'ами →
     // composite ETag + SHA-256 → КОММИТ xl.meta → зачистка. newRecord — шаблон
     // с метаданными загрузки; versionId/size/etag/sha заполняются здесь.
-    public CompleteResult CommitMultipart(string bucket, string key, string uploadId,
+    public Result<CompleteResult> CommitMultipart(string bucket, string key, string uploadId,
         IReadOnlyList<PartEtag> manifest, XlMetaRecord newRecord)
     {
         var keyDir = KeyDir(bucket, key);
@@ -356,7 +417,8 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             var currentUploads = MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir));
             if (currentUploads.All(e => e.UploadId != uploadId || e.Bucket != bucket || e.Key != key)
                 || !Directory.Exists(uploadDir))
-                throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+                return Result<CompleteResult>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
             // Попытка (М7): attempt.json — dataDir текущей сборки (идемпотентность
             // повтора); не-Guid маркер = битый/несовпадающий — трактуется как
             // отсутствующий (новая попытка; старый недособранный dataDir — orphan
@@ -377,7 +439,8 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
                     continue;
                 var src = Path.Combine(uploadDir, MultipartJournals.PartFileName(number));
                 if (!File.Exists(src))
-                    throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+                    return Result<CompleteResult>.Failed(
+                        new ObjectStoreException(ObjectStoreErrorCode.InvalidPart));
                 File.Move(src, dest);
             }
 
@@ -426,7 +489,8 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
             uploads.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
             MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
             volume.MoveToTrash(uploadDir);
-            return new CompleteResult('"' + compositeEtag + '"', record.ModTime, record.Size, record.ContentSha256);
+            return Result<CompleteResult>.Success(
+                new CompleteResult('"' + compositeEtag + '"', record.ModTime, record.Size, record.ContentSha256));
         }
     }
 

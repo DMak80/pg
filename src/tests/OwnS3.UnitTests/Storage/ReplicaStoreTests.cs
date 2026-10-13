@@ -139,7 +139,7 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
         Store.ApplyBucketCreate("bf", t2);
 
         // Assert — CreationDate осталась первой (идемпотентность)
-        fixture.Drive.ListBuckets().Single(e => e.Name == "bf").CreationDate.Should().Be(t1);
+        fixture.Drive.ListBuckets().Throw().Value.Single(e => e.Name == "bf").CreationDate.Should().Be(t1);
     }
 
     [Fact]
@@ -158,7 +158,7 @@ public class ReplicaStoreTests(ReplicaStoreFixture fixture) : IClassFixture<Repl
         var act = () => Store.ApplyBucketDelete("bfull");
 
         // Assert — пустой удалён (и повтор идемпотентен), непустой — BucketNotEmpty
-        fixture.Drive.BucketExists("bempty").Should().BeFalse();
+        fixture.Drive.BucketExists("bempty").Throw().Value.Should().BeFalse();
         Store.ApplyBucketDelete("bempty");
         act.Should().Throw<ObjectStoreException>()
             .Where(e => e.Code == ObjectStoreErrorCode.BucketNotEmpty);

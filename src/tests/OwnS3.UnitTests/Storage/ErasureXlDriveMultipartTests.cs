@@ -53,15 +53,15 @@ public class ErasureXlDriveMultipartTests : IDisposable
     private async Task UploadPartAsync(string key, string uploadId, int number, byte[] body)
     {
         using var staging = _drive.CreateUploadStaging("b", key, uploadId);
-        var digest = await _drive.WritePartAsync(staging, number, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, number, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         _drive.CommitUploadPart(staging, number, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
     }
 
     private async Task<CompleteResult> CompleteAsync(string key, string uploadId, IReadOnlyList<PartEtag> manifest) =>
         await Task.Run(() => _drive.CommitMultipart("b", key, uploadId, manifest,
             new XlMetaRecord(Guid.Empty, 0, DateTimeOffset.UnixEpoch, "", "text/plain",
-                new Dictionary<string, string>(), new Dictionary<string, string>(), "")));
+                new Dictionary<string, string>(), new Dictionary<string, string>(), "")).Throw().Value);
 
     private static byte[] RandomBytes(int len, int seed = 31)
     {
@@ -92,19 +92,19 @@ public class ErasureXlDriveMultipartTests : IDisposable
 
         // Assert: чтение равно исходнику; многочастевой объект: dataDir содержит
         // part.1/part.2 шардовые; xl.meta v2 с bitrot-хэшами обеих частей
-        var meta = _drive.TryReadMeta("b", "mp");
-        meta.Should().NotBeNull();
-        meta!.Ec!.Parts.Should().HaveCount(2);
+        var meta = _drive.TryReadMeta("b", "mp").Throw().Value is XlMetaLookup.Found fmp ? fmp.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
+        meta.Ec!.Parts.Should().HaveCount(2);
         meta.Ec.Parts[0].SourceSize.Should().Be(partSize);
         meta.Ec.Parts[1].SourceSize.Should().Be(partSize + 12345);
-        using var body = _drive.OpenData("b", "mp", meta, 0, meta.Size);
+        using var body = _drive.OpenData("b", "mp", meta, 0, meta.Size).Throw().Value;
         using var target = new MemoryStream();
         body.CopyTo(target);
         target.ToArray().Should().Equal(part1.Concat(part2).ToArray());
         complete.ETag.Should().StartWith("\"2-");
         // каталог загрузки удалён
         _drive.UploadDirExists("b", "mp", uploadId).Should().BeFalse();
-        _drive.ReadUploads("b", "mp").Should().BeEmpty();
+        _drive.ReadUploads("b", "mp").Throw().Value.Should().BeEmpty();
     }
 
     [Fact]
@@ -133,8 +133,8 @@ public class ErasureXlDriveMultipartTests : IDisposable
 
         // Act
         using var staging = _drive.CreateUploadStaging("b", "etag", uploadId);
-        var digest = await _drive.WritePartAsync(staging, 3, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 3, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
 
         // Assert — ETag/size исходного тела
         digest.ETagHex.Should().Be(Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body))
@@ -155,13 +155,14 @@ public class ErasureXlDriveMultipartTests : IDisposable
 
         // Act — первый Complete и повтор
         var first = await CompleteAsync("retry", uploadId, [new PartEtag(1, '"' + etag + '"')]);
-        var meta1 = _drive.TryReadMeta("b", "retry");
+        var meta1 = _drive.TryReadMeta("b", "retry").Throw().Value is XlMetaLookup.Found f1 ? f1.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
         var second = await AssertCompleteRetryAsync("retry", uploadId, etag, first);
 
         // Assert — повтор Complete того же результата (attempt-маркер сохранён
         // до зачистки; после зачистки повтор — NoSuchUpload, как в single)
         second.Should().BeNull();
-        meta1!.VersionId.Should().NotBe(Guid.Empty);
+        meta1.VersionId.Should().NotBe(Guid.Empty);
     }
 
     [Fact]
@@ -178,7 +179,7 @@ public class ErasureXlDriveMultipartTests : IDisposable
         File.Delete(journal0);
 
         // Act
-        var uploads = _drive.ReadUploads("b", "union");
+        var uploads = _drive.ReadUploads("b", "union").Throw().Value;
 
         // Assert: загрузка видна — отсутствие файла ≠ «мнение: пусто»,
         // носители сета сливаются union'ом
@@ -200,7 +201,7 @@ public class ErasureXlDriveMultipartTests : IDisposable
         // Act: механика CreateMultipartUpload поверх (ReadUploads → add →
         // WriteUploads на все онлайн-диски) — union база не теряет id1
         var id2 = Guid.NewGuid().ToString("N");
-        var merged = _drive.ReadUploads("b", "keep");
+        var merged = _drive.ReadUploads("b", "keep").Throw().Value;
         merged.Add(new MultipartJournals.UploadJournalEntry(id2, "b", "keep",
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "root"));
         _drive.WriteUploads("b", "keep", merged);
@@ -238,8 +239,9 @@ public class ErasureXlDriveMultipartTests : IDisposable
         await CompleteAsync("attempt", uploadId, [new PartEtag(1, '"' + etag + '"')]);
 
         // Assert: объект собран в dataDir attempt-маркера (новый не сгенерирован)
-        var meta = _drive.TryReadMeta("b", "attempt");
-        meta!.VersionId.ToString("N").Should().Be(attemptDataDir,
+        var meta = _drive.TryReadMeta("b", "attempt").Throw().Value is XlMetaLookup.Found fa ? fa.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
+        meta.VersionId.ToString("N").Should().Be(attemptDataDir,
             "повтор использует attempt любого носителя сета — иначе перенесённое не находилось бы");
     }
 
@@ -269,8 +271,9 @@ public class ErasureXlDriveMultipartTests : IDisposable
 
         // Assert: объект == НОВОЕ тело (устаревший перенос не скипнулся
         // при новом sidecar — SHA/шарды согласованы)
-        var meta = _drive.TryReadMeta("b", "reupload");
-        using var stream = _drive.OpenData("b", "reupload", meta!, 0, meta!.Size);
+        var meta = _drive.TryReadMeta("b", "reupload").Throw().Value is XlMetaLookup.Found fr ? fr.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
+        using var stream = _drive.OpenData("b", "reupload", meta, 0, meta.Size).Throw().Value;
         using var target = new MemoryStream();
         await stream.CopyToAsync(target, TestContext.Current.CancellationToken);
         target.ToArray().Should().Equal(body2);
@@ -309,9 +312,9 @@ public class ErasureXlDriveMultipartTests : IDisposable
         await CompleteAsync("retry-transfer", uploadId, [new PartEtag(1, '"' + etag + '"')]);
 
         // Assert — объект закоммичен и читается исходником
-        var meta = _drive.TryReadMeta("b", "retry-transfer");
-        meta.Should().NotBeNull();
-        using var stream = _drive.OpenData("b", "retry-transfer", meta!, 0, meta!.Size);
+        var meta = _drive.TryReadMeta("b", "retry-transfer").Throw().Value is XlMetaLookup.Found ft ? ft.Record
+            : throw new InvalidOperationException("запись не найдена после Complete");
+        using var stream = _drive.OpenData("b", "retry-transfer", meta, 0, meta.Size).Throw().Value;
         using var target = new MemoryStream();
         await stream.CopyToAsync(target, TestContext.Current.CancellationToken);
         target.ToArray().Should().Equal(body);
@@ -360,7 +363,7 @@ public class ErasureXlDriveMultipartTests : IDisposable
         await UploadPartAsync("abort", uploadId, 1, RandomBytes(5 * 1024 * 1024, 8));
 
         // Act
-        var uploads = _drive.ReadUploads("b", "abort");
+        var uploads = _drive.ReadUploads("b", "abort").Throw().Value;
         uploads.RemoveAll(e => e.UploadId == uploadId);
         _drive.WriteUploads("b", "abort", uploads);
         _drive.TrashUpload("b", "abort", uploadId);
@@ -385,7 +388,7 @@ public class ErasureXlDriveMultipartTests : IDisposable
         _pool.RefreshOnline();
 
         // Act
-        var parts = _drive.ReadParts("b", "listparts", uploadId);
+        var parts = _drive.ReadParts("b", "listparts", uploadId).Throw().Value;
 
         // Assert
         parts.Should().ContainSingle().Which.PartNumber.Should().Be(1);
@@ -398,11 +401,11 @@ public class ErasureXlDriveMultipartTests : IDisposable
         // uploads.json нет — I/O-сбой WriteUploads после CreateDirectory);
         // реплики журнала живы на остальных дисках сета
         var uploadId = await CreateUploadAsync("gate");
-        var keyDirPath = _drive.ListUploadKeyDirs().Single();
+        var keyDirPath = _drive.ListUploadKeyDirs().Throw().Value.Single();
         File.Delete(Path.Combine(keyDirPath, "uploads.json"));
 
         // Act: журнал читается с первого носителя, где реплика есть и валидна
-        var uploads = _drive.ReadUploadsByKeyDir(keyDirPath);
+        var uploads = _drive.ReadUploadsByKeyDir(keyDirPath).Throw().Value;
 
         // Assert: живая загрузка видна — гейт DeleteBucket/листинги не слепы
         uploads.Should().Contain(u => u.UploadId == uploadId);
@@ -427,12 +430,12 @@ public class ErasureXlDriveMultipartTests : IDisposable
         // DirectoryNotFoundException (500), итог решает кворум CommitUploadPart
         using var staging = _drive.CreateUploadStaging("b", "phantom", uploadId);
         var body = RandomBytes(1024, 11);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         _drive.CommitUploadPart(staging, 1, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
 
         // Assert: часть зафиксирована журналом частей
-        _drive.ReadParts("b", "phantom", uploadId)
+        _drive.ReadParts("b", "phantom", uploadId).Throw().Value
             .Should().ContainSingle().Which.PartNumber.Should().Be(1);
     }
 }

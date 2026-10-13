@@ -10,6 +10,12 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
     private static readonly IReadOnlyDictionary<string, string> EmptyHeaders =
         new Dictionary<string, string>();
 
+    // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
+    private static XlMetaRecord? UnwrapMeta(Result<XlMetaLookup> lookup)
+        => lookup.IsSuccess
+            ? lookup.Value is XlMetaLookup.Found f ? f.Record : null
+            : throw lookup.Error!;
+
     public async Task ApplyObjectAsync(string bucket, string key, Stream body, long contentLength,
         ReplicaObjectMetadata metadata, string expectedSha256Hex, CancellationToken ct)
     {
@@ -18,7 +24,7 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
         await Task.Yield(); // async-контракт при синхронном файловом IO (P4 t37)
         try
         {
-            var digest = await drive.WritePartAsync(staging, 1, body, contentLength, ct);
+            var digest = (await drive.WritePartAsync(staging, 1, body, contentLength, ct)).Throw().Value; // мост t38
             if (!string.Equals(digest.Sha256Hex, expectedSha256Hex, StringComparison.OrdinalIgnoreCase))
                 throw new ReplicationChecksumMismatchException(
                     $"sha тела реплики не совпал с ожидаемым: bucket={bucket}, key={key}");
@@ -26,8 +32,8 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
             var record = new XlMetaRecord(Guid.Empty, contentLength, metadata.ModTime,
                 metadata.ETagHex, metadata.ContentType, metadata.UserMetadata, EmptyHeaders,
                 metadata.ContentSha256Hex);
-            drive.WriteMeta(staging, record);
-            drive.Commit(bucket, key, record, staging);
+            drive.WriteMeta(staging, record).Throw(); // мост t38
+            drive.Commit(bucket, key, record, staging).Throw(); // мост t38
         }
         finally
         {
@@ -39,15 +45,15 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
     public void DeleteObject(string bucket, string key)
     {
         // Идемпотентно: ключа нет — 204-семантика Delete, ничего не делаем
-        var meta = drive.TryReadMeta(bucket, key);
+        var meta = UnwrapMeta(drive.TryReadMeta(bucket, key)); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         if (meta is null)
             return;
-        drive.Delete(bucket, key, meta);
+        drive.Delete(bucket, key, meta).Throw(); // мост t38
     }
 
     public ReplicaKeyState? ReadKeyState(string bucket, string key)
     {
-        var meta = drive.TryReadMeta(bucket, key);
+        var meta = UnwrapMeta(drive.TryReadMeta(bucket, key)); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         return meta is null ? null : new ReplicaKeyState(meta.ModTime, meta.ContentSha256, meta.Size);
     }
 
@@ -56,9 +62,9 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
     {
         var entries = new List<ReplicationListEntry>();
         nextMarker = null;
-        if (!drive.BucketExists(bucket))
+        if (!drive.BucketExists(bucket).Throw().Value) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             return entries;
-        var cursor = drive.EnumerateObjects(bucket);
+        var cursor = drive.EnumerateObjects(bucket).Throw().Value; // мост t38
         while (entries.Count < maxKeys && cursor.PeekKey is not null)
         {
             var key = cursor.PeekKey;
@@ -80,36 +86,38 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
 
     public (ObjectMetadata Metadata, Stream Body) OpenObjectForReplication(string bucket, string key)
     {
-        var meta = drive.TryReadMeta(bucket, key)
+        var meta = UnwrapMeta(drive.TryReadMeta(bucket, key)) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
         var metadata = new ObjectMetadata(key, '"' + meta.ETag + '"', meta.Size, meta.ModTime,
             meta.ContentType, meta.UserMetadata);
-        return (metadata, drive.OpenData(bucket, key, meta, 0, meta.Size));
+        return (metadata, drive.OpenData(bucket, key, meta, 0, meta.Size).Throw().Value); // мост t38
     }
 
     public void ApplyBucketCreate(string bucket, DateTimeOffset creationDate)
     {
         // Идемпотентно: есть → skip (первая CreationDate сохраняется)
-        if (drive.BucketExists(bucket))
+        if (drive.BucketExists(bucket).Throw().Value) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             return;
-        drive.CreateBucket(bucket, creationDate);
+        drive.CreateBucket(bucket, creationDate).Throw(); // мост t38
     }
 
     public void ApplyBucketDelete(string bucket)
     {
         // Идемпотентно: нет бакета — уже удалён; непустой — DeleteBucket кинет BucketNotEmpty
-        if (!drive.BucketExists(bucket))
+        if (!drive.BucketExists(bucket).Throw().Value) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             return;
-        drive.DeleteBucket(bucket);
+        drive.DeleteBucket(bucket).Throw(); // мост t38
     }
 
-    public IReadOnlyList<BucketEntry> ListBuckets() => drive.ListBuckets();
+    public IReadOnlyList<BucketEntry> ListBuckets() =>
+        drive.ListBuckets().Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
 
     // Реплика объекта может прийти раньше события bucket-create (дыра/порядок
     // доставки): бакет создаётся по месту с CreationDate = modTime объекта.
     private void EnsureBucket(string bucket)
     {
-        if (!drive.BucketExists(bucket))
-            drive.CreateBucket(bucket, time.GetUtcNow());
+        // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
+        if (!drive.BucketExists(bucket).Throw().Value)
+            drive.CreateBucket(bucket, time.GetUtcNow()).Throw();
     }
 }

@@ -15,10 +15,17 @@ public sealed partial class XlObjectStore(IXlDrive drive, TimeProvider timeProvi
     // Логгер объекта (warning битых журналов, fromBackup и т.п.).
     private readonly ILogger<XlObjectStore> _logger = logger;
 
-    // Отсутствие бакета — доменный исход NoSuchBucket.
+    // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
+    private static XlMetaRecord? UnwrapMeta(Result<XlMetaLookup> lookup)
+        => lookup.IsSuccess
+            ? lookup.Value is XlMetaLookup.Found f ? f.Record : null
+            : throw lookup.Error!;
+
+    // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
+    // (кворумный отказ BucketExists бросается, как сегодня)
     internal void EnsureBucket(string bucket)
     {
-        if (!Drive.BucketExists(bucket))
+        if (!Drive.BucketExists(bucket).Throw().Value)
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchBucket);
     }
 }

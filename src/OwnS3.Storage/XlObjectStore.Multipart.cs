@@ -27,7 +27,7 @@ public sealed partial class XlObjectStore
         var now = timeProvider.GetUtcNow();
         var record = new XlMetaRecord(Guid.Parse(uploadId), 0, now, "",
             metadata.ContentType, metadata.UserMetadata, EmptyHeaders, ""); // М4
-        Drive.CreateUploadDir(bucket, key, uploadId, record);
+        Drive.CreateUploadDir(bucket, key, uploadId, record).Throw(); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         lock (_journalLock)
         {
             // Битый журнал ключа — как у остальных операций (М2/спека §4.1):
@@ -35,7 +35,7 @@ public sealed partial class XlObjectStore
             var uploads = ReadUploadsOrThrow(bucket, key);
             uploads.Add(new MultipartJournals.UploadJournalEntry(uploadId, bucket, key,
                 now.ToUnixTimeMilliseconds(), initiatorAccessKey));
-            Drive.WriteUploads(bucket, key, uploads);
+            Drive.WriteUploads(bucket, key, uploads).Throw(); // мост t38
         }
 
         return Task.FromResult(uploadId);
@@ -55,8 +55,8 @@ public sealed partial class XlObjectStore
             if (!Drive.UploadDirExists(bucket, key, uploadId))
                 throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload); // М2: призрачная запись
             uploads.Remove(entry);
-            Drive.WriteUploads(bucket, key, uploads);
-            Drive.TrashUpload(bucket, key, uploadId);
+            Drive.WriteUploads(bucket, key, uploads).Throw(); // мост t38
+            Drive.TrashUpload(bucket, key, uploadId).Throw(); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         }
 
         return Task.CompletedTask;
@@ -67,7 +67,7 @@ public sealed partial class XlObjectStore
     {
         try
         {
-            return Drive.ReadUploads(bucket, key);
+            return Drive.ReadUploads(bucket, key).Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         }
         catch (JsonException ex)
         {
@@ -105,7 +105,7 @@ public sealed partial class XlObjectStore
         PartDigest digest;
         try
         {
-            digest = await Drive.WritePartAsync(staging, partNumber, body, contentLength, ct);
+            digest = (await Drive.WritePartAsync(staging, partNumber, body, contentLength, ct)).Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         }
         catch
         {
@@ -117,7 +117,7 @@ public sealed partial class XlObjectStore
         await Task.Yield(); // async-контракт при синхронном файловом IO (P4 t37)
         try
         {
-            Drive.CommitUploadPart(staging, partNumber, digest.ETagHex, digest.Length, modTime);
+            Drive.CommitUploadPart(staging, partNumber, digest.ETagHex, digest.Length, modTime).Throw(); // мост t38
         }
         catch (JsonException ex)
         {
@@ -135,7 +135,7 @@ public sealed partial class XlObjectStore
     {
         try
         {
-            return Drive.ReadParts(bucket, key, uploadId);
+            return Drive.ReadParts(bucket, key, uploadId).Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         }
         catch (JsonException ex)
         {
@@ -156,11 +156,11 @@ public sealed partial class XlObjectStore
         var journal = ReadPartsOrThrow(bucket, key, uploadId);
         ValidateManifestAgainstJournal(parts, journal);
         // Шаблон записи: метаданные загрузки; versionId/size/etag/sha — драйв
-        var uploadMeta = Drive.ReadUploadMeta(bucket, key, uploadId);
+        var uploadMeta = Drive.ReadUploadMeta(bucket, key, uploadId).Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         var newRecord = new XlMetaRecord(Guid.Empty, 0, timeProvider.GetUtcNow(), "",
             uploadMeta.ContentType, uploadMeta.UserMetadata, EmptyHeaders, "");
         await Task.Yield(); // async-контракт при синхронном файловом IO
-        return Drive.CommitMultipart(bucket, key, uploadId, parts, newRecord);
+        return Drive.CommitMultipart(bucket, key, uploadId, parts, newRecord).Throw().Value; // мост t38
     }
 
     // Сверка манифеста Complete с parts.json (канон 02 §5): каждая пара манифеста —
@@ -216,11 +216,11 @@ public sealed partial class XlObjectStore
     {
         EnsureBucket(bucket);
         var all = new List<MultipartJournals.UploadJournalEntry>();
-        foreach (var keyDirPath in Drive.ListUploadKeyDirs())
+        foreach (var keyDirPath in Drive.ListUploadKeyDirs().Throw().Value) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         {
             try
             {
-                all.AddRange(Drive.ReadUploadsByKeyDir(keyDirPath)
+                all.AddRange(Drive.ReadUploadsByKeyDir(keyDirPath).Throw().Value // мост t38
                     .Where(e => e.Bucket == bucket));
             }
             catch (JsonException ex)

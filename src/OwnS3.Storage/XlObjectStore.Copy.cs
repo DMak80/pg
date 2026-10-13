@@ -10,7 +10,7 @@ public sealed partial class XlObjectStore
     {
         // 1. Источник (bkp-фолбэк tolerated — warning внутри драйва)
         EnsureBucket(request.SourceBucket);
-        var src = Drive.TryReadMeta(request.SourceBucket, request.SourceKey)
+        var src = UnwrapMeta(Drive.TryReadMeta(request.SourceBucket, request.SourceKey)) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
         // 2. Conditional источника: copy — не GET/HEAD (If-Modified-Since не
         // применяется); NotModified ИЛИ PreconditionFailed → 412
@@ -27,7 +27,7 @@ public sealed partial class XlObjectStore
         using var staging = Drive.CreateStaging(request.DestBucket, request.DestKey);
         try
         {
-            Drive.CopyPartsToStaging(staging, request.SourceBucket, request.SourceKey, src);
+            Drive.CopyPartsToStaging(staging, request.SourceBucket, request.SourceKey, src).Throw(); // мост t38
             // 5. xl.meta: метаданные по директиве; etag/sha256/Size наследованы;
             //    versionId/modTime новые (versionId нормализует драйв)
             var (contentType, userMetadata) = request.ReplaceMetadata && request.NewMetadata is not null
@@ -35,9 +35,9 @@ public sealed partial class XlObjectStore
                 : (src.ContentType, src.UserMetadata);
             var record = new XlMetaRecord(Guid.Empty, src.Size, timeProvider.GetUtcNow(), src.ETag,
                 contentType, userMetadata, EmptyHeaders, src.ContentSha256);
-            Drive.WriteMeta(staging, record);
+            Drive.WriteMeta(staging, record).Throw(); // мост t38
             await Task.Yield(); // async-контракт при синхронном файловом IO
-            return Drive.Commit(request.DestBucket, request.DestKey, record, staging);
+            return Drive.Commit(request.DestBucket, request.DestKey, record, staging).Throw().Value; // мост t38
         }
         finally
         {
@@ -53,7 +53,7 @@ public sealed partial class XlObjectStore
     {
         // 1. Запись
         EnsureBucket(bucket);
-        var meta = Drive.TryReadMeta(bucket, key)
+        var meta = UnwrapMeta(Drive.TryReadMeta(bucket, key)) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
         // 2. Conditional (GET-семантика): 412 / 304-обёртка с метаданными (философия §5.3)
         var outcome = ConditionalEvaluator.Evaluate(conditions, meta.ETag, meta.ModTime,
@@ -65,7 +65,7 @@ public sealed partial class XlObjectStore
         // 3. Атрибуты: ETag В КАВЫЧКАХ (P8 — хендлер ставит значение в HTTP-заголовок);
         //    LastModified — modTime записи; части — исходные размеры из драйва
         //    (канон 02 §5 GetObjectAttributes; простой PUT — part.1, М8)
-        var dataParts = Drive.EnumerateParts(bucket, key, meta);
+        var dataParts = Drive.EnumerateParts(bucket, key, meta).Throw().Value; // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         var marker = partNumberMarker ?? 0;
         var limit = maxParts ?? 1000;
         // max-parts=0: пустой список частей без усечения (конвенция ListWalker t37)

@@ -402,7 +402,7 @@ try
 {
     _ = app.Services.GetRequiredService<StorageModeInfo>(); // парсинг/валидации режима
     drive = app.Services.GetRequiredService<IXlDrive>();
-    drive.Initialize();
+    drive.Initialize().Throw(); // мост t38 (постоянный): fail-fast по отказу тома — как сегодня
 }
 catch (Exception ex)
 {

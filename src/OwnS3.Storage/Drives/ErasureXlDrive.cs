@@ -101,10 +101,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // ── жизненный цикл тома ──
 
-    public void Initialize()
+    public Result Initialize()
     {
         _pool.Initialize();
         _ = _pool.StartOnlineTicker();
+        return Result.Success();
     }
 
     public void RefreshOnline() => _pool.RefreshOnline();
@@ -118,7 +119,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var setDisks = _pool.Sets[setIndex];
         var versionId = Guid.NewGuid();
         var stagingGuid = Guid.NewGuid().ToString("N");
-        var distribution = ReadDistribution(setDisks);
+        // Недостижимо после EnsureBucket (BucketExists при пустом сете отказывает
+        // раньше) — мост-идиома: доменный отказ пробрасывается, как сегодня
+        var distribution = ReadDistribution(setDisks).Throw().Value;
         var stagingDirs = new Dictionary<ErasureDisk, string>();
         foreach (var disk in setDisks)
         {
@@ -141,18 +144,18 @@ public sealed partial class ErasureXlDrive : IXlDrive
     }
 
     // Distribution формата тома (общая для всех сетов; читается с первого валидного).
-    private int[] ReadDistribution(IReadOnlyList<ErasureDisk> setDisks)
+    private Result<int[]> ReadDistribution(IReadOnlyList<ErasureDisk> setDisks)
     {
         foreach (var disk in setDisks.Where(d => d.Online))
         {
             var info = ErasureVolumeInfo.Read(disk.Root);
-            return info.Distribution;
+            return Result<int[]>.Success(info.Distribution);
         }
 
-        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+        return Result<int[]>.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
     }
 
-    private async Task<PartDigest> WriteObjectPartAsync(IXlStaging staging, int partNumber, Stream body,
+    private async Task<Result<PartDigest>> WriteObjectPartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct)
     {
         var erasureStaging = RequireErasureStaging(staging);
@@ -160,7 +163,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var online = erasureStaging.SetDisks.Where(d => d.Online).ToList();
         var k = codec.DataShards;
         if (online.Count < k)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+            return Result<PartDigest>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
 
         // шард j блока → диск distribution[j]; офлайн-позиция — шард не пишется
         // (канон 06 §8 п.1: потоки только каждого ОНЛАЙН-диска; недостающий шард
@@ -183,7 +187,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             await writer.WriteAsync(body, contentLength, ct);
             var result = await writer.CompleteAsync();
             erasureStaging.PartResults[partNumber] = result;
-            return new PartDigest(result.ETagHex, result.Sha256Hex, result.SourceLength);
+            return Result<PartDigest>.Success(new PartDigest(result.ETagHex, result.Sha256Hex, result.SourceLength));
         }
         finally
         {
@@ -192,7 +196,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
     }
 
-    public void WriteMeta(IXlStaging staging, XlMetaRecord record)
+    public Result WriteMeta(IXlStaging staging, XlMetaRecord record)
     {
         var erasureStaging = RequireErasureStaging(staging);
         // v2 per-disk: одинаковая запись, кроме EcIndex (позиция диска в сете)
@@ -206,12 +210,14 @@ public sealed partial class ErasureXlDrive : IXlDrive
             XlMetaFile.Write(stagingDir, diskRecord);
             erasureStaging.DiskRecords[disk] = diskRecord;
         }
+
+        return Result.Success();
     }
 
     // Коммит: по-дисковые rename staging → bucket-дерево (схема 04 §4 на каждом
     // диске независимо), успехов ≥ writeQuorum; меньше — откат staging в .trash/
     // на всех дисках + InsufficientWriteQuorum.
-    public PutResult Commit(string bucket, string key, XlMetaRecord record, IXlStaging staging)
+    public Result<PutResult> Commit(string bucket, string key, XlMetaRecord record, IXlStaging staging)
     {
         var erasureStaging = RequireErasureStaging(staging);
         var k = _pool.Topology.SetSize - erasureStaging.Parity;
@@ -242,7 +248,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 foreach (var (disk, stagingDir) in erasureStaging.StagingDirs)
                     if (Directory.Exists(stagingDir))
                         MoveToTrash(disk, stagingDir);
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+                return Result<PutResult>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
             }
 
             // кворум достигнут: старые dataDir успешных дисков → .trash/ (после коммита)
@@ -256,7 +263,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
             }
 
-            return new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
+            return Result<PutResult>.Success(
+                new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256));
         }
     }
 
@@ -297,23 +305,35 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // Чистки per-disk (канон 06 §10): на каждом онлайн-диске — возрастные
     // .trash/orphan (1 ч), брошенные загрузки (24 ч), фантом-записи (локальная
-    // кворумная сверка отсутствия с онлайн-корнями сета).
-    public Task RunCleanupAsync(CancellationToken ct)
+    // кворумная сверка отсутствия с онлайн-корнями сета). IO-отказ — Failed;
+    // отмена по внешнему ct — не исход (проброс).
+    public async Task<Result> RunCleanupAsync(CancellationToken ct)
     {
-        foreach (var set in _pool.Sets)
+        try
         {
-            var peerRoots = set.Where(d => d.Online).Select(d => d.Root).ToList();
-            var k = _pool.Topology.SetSize - _defaultParity;
-            foreach (var disk in set.Where(d => d.Online))
+            foreach (var set in _pool.Sets)
             {
-                var janitor = new XlDiskJanitor(disk.Root, _timeProvider, _logger);
-                janitor.CleanAged();
-                janitor.CleanupAbandonedUploads();
-                janitor.CleanPhantoms(peerRoots, k);
+                var peerRoots = set.Where(d => d.Online).Select(d => d.Root).ToList();
+                var k = _pool.Topology.SetSize - _defaultParity;
+                foreach (var disk in set.Where(d => d.Online))
+                {
+                    var janitor = new XlDiskJanitor(disk.Root, _timeProvider, _logger);
+                    janitor.CleanAged();
+                    janitor.CleanupAbandonedUploads();
+                    janitor.CleanPhantoms(peerRoots, k);
+                }
             }
-        }
 
-        return Task.CompletedTask;
+            return Result.Success();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // graceful stop — не исход операции
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
+        }
     }
 
     // Формат пула валиден + touch-проба записи на каждом онлайн-диске (канон
@@ -344,24 +364,25 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // ── бакеты: на дисках ВСЕХ сетов (канон 06 §8) ──
 
-    public bool BucketExists(string bucket)
+    public Result<bool> BucketExists(string bucket)
     {
         if (bucket == ".owns3.sys")
-            return false;
+            return Result<bool>.Success(false);
         // Бакет живёт на всех сетах: мнение любого сета с read-кворумом
         // достаточно. НЕТ сетов с read-кворумом → кворумная недоступность
         // (503 InsufficientReadQuorum, не «бакета нет» — канон 06 §7)
         var threshold = ErasureQuorum.Read(
             _pool.Topology.SetSize - _defaultParity, _defaultParity);
         if (_pool.Sets.All(set => set.Count(d => d.Online) < threshold))
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
-        return _pool.Sets
+            return Result<bool>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
+        return Result<bool>.Success(_pool.Sets
             .Where(set => set.Count(d => d.Online) >= threshold)
             .SelectMany(set => set)
-            .Any(disk => Directory.Exists(Path.Combine(disk.Root, bucket)));
+            .Any(disk => Directory.Exists(Path.Combine(disk.Root, bucket))));
     }
 
-    public void CreateBucket(string bucket, DateTimeOffset? creationDate = null)
+    public Result CreateBucket(string bucket, DateTimeOffset? creationDate = null)
     {
         // каталоги + bucket.json на дисках всех сетов, кворум ≥ writeQuorum каждого сета
         // (createdAt — CreationDate реплики t35, глава 07, по образцу single: одна дата на все диски)
@@ -391,11 +412,13 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
 
             if (successes < writeQuorum)
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+                return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
         }
+
+        return Result.Success();
     }
 
-    public void DeleteBucket(string bucket)
+    public Result DeleteBucket(string bucket)
     {
         // emptiness по всем сетам (объекты/живые загрузки), trash per-disk
         foreach (var set in _pool.Sets)
@@ -406,7 +429,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 if (!Directory.Exists(bucketRoot))
                     continue;
                 if (Directory.EnumerateFiles(bucketRoot, "xl.meta", SearchOption.AllDirectories).Any())
-                    throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+                    return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty));
             }
         }
 
@@ -414,12 +437,12 @@ public sealed partial class ErasureXlDrive : IXlDrive
         // активная запись = запись с существующим каталогом загрузки (М2);
         // журналы реплицированы на диски сета — ListUploadKeyDirs отдаёт один
         // keyDir на ключ
-        foreach (var keyDirPath in ListUploadKeyDirs())
+        foreach (var keyDirPath in ListUploadKeyDirs().Throw().Value)
         {
             List<MultipartJournals.UploadJournalEntry> uploads;
             try
             {
-                uploads = ReadUploadsByKeyDir(keyDirPath);
+                uploads = ReadUploadsByKeyDir(keyDirPath).Throw().Value;
             }
             catch (JsonException ex)
             {
@@ -432,7 +455,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
 
             if (uploads.Any(e => e.Bucket == bucket && UploadDirExists(e.Bucket, e.Key, e.UploadId)))
-                throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+                return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty));
         }
 
         // Кворум ≥ writeQuorum КАЖДОГО сета (канон 06 §8 — как CreateBucket):
@@ -444,7 +467,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
         foreach (var set in _pool.Sets)
         {
             if (set.Count(d => d.Online) < deleteQuorum)
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+                return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
         }
 
         foreach (var disk in _pool.Disks.Where(d => d.Online))
@@ -456,9 +479,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
             if (Directory.Exists(metaDir))
                 MoveToTrash(disk, metaDir);
         }
+
+        return Result.Success();
     }
 
-    public IReadOnlyList<BucketEntry> ListBuckets()
+    public Result<IReadOnlyList<BucketEntry>> ListBuckets()
     {
         // консенсус по любому сету с read-кворумом (канон 06 §8); все сеты < k → 503
         var threshold = _pool.Topology.SetSize - _defaultParity;
@@ -474,10 +499,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 .Distinct()
                 .ToList();
             names.Sort(Utf8ByteOrder.Compare);
-            return names.Select(TryReadBucketCreation).ToList();
+            return Result<IReadOnlyList<BucketEntry>>.Success(names.Select(TryReadBucketCreation).ToList());
         }
 
-        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+        return Result<IReadOnlyList<BucketEntry>>.Failed(
+            new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
     }
 
     // CreationDate из bucket.json первого успешного чтения (файла нет → epoch).
@@ -505,7 +531,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
         return new BucketEntry(name, DateTimeOffset.FromUnixTimeMilliseconds(0));
     }
-    public XlMetaRecord? TryReadMeta(string bucket, string key)
+    public Result<XlMetaLookup> TryReadMeta(string bucket, string key)
     {
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
         var online = set.Where(d => d.Online).ToList();
@@ -513,7 +539,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
         // чтения; больший порог консервативно-безопасен, канон 06 §7)
         var threshold = _pool.Topology.SetSize - _defaultParity;
         if (online.Count < threshold)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+            return Result<XlMetaLookup>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
 
         // консенсус: мажоритарный versionId (порог ≥ k); битые записи не считаются
         var records = new List<XlMetaRecord>();
@@ -535,14 +562,15 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
 
         if (records.Count == 0)
-            return null; // объекта нет при кворумном онлайне
+            return Result<XlMetaLookup>.Success(new XlMetaLookup.Missing()); // «записи нет» — терминальный Success при кворумном онлайне
 
         var majority = records.GroupBy(r => r.VersionId)
             .OrderByDescending(g => g.Count())
             .First();
         if (majority.Count() < threshold)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
-        return majority.First();
+            return Result<XlMetaLookup>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
+        return Result<XlMetaLookup>.Success(new XlMetaLookup.Found(majority.First()));
     }
     // Copy: перенос частей источника в staging цели (канон 06 §8). Шардовые
     // part.N копируются побайтово с позиций dist сета источника на те же
@@ -551,7 +579,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
     // сета) или шард-источник недоступен (офлайн/файла нет) — часть
     // перекодируется: реконструкция исходного потока и шардирование с
     // раскладкой staging.
-    public void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta)
+    public Result CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey, XlMetaRecord srcMeta)
     {
         var erasureStaging = RequireErasureStaging(staging);
         ArgumentNullException.ThrowIfNull(srcMeta.Ec, nameof(srcMeta));
@@ -605,15 +633,23 @@ public sealed partial class ErasureXlDrive : IXlDrive
             if (!transferred)
             {
                 // перекодирование: реконструированный поток части → шардирование staging
-                using var decoded = OpenData(srcBucket, srcKey, srcMeta, partOffset, bitrot.SourceSize);
-                WriteObjectPartAsync(erasureStaging, partNumber, decoded, bitrot.SourceSize, CancellationToken.None)
+                var opened = OpenData(srcBucket, srcKey, srcMeta, partOffset, bitrot.SourceSize);
+                if (!opened.IsSuccess)
+                    return Result.Failed(opened.Error!);
+                using var decoded = opened.Value;
+                var written = WriteObjectPartAsync(erasureStaging, partNumber, decoded, bitrot.SourceSize,
+                        CancellationToken.None)
                     .ConfigureAwait(false).GetAwaiter().GetResult();
+                if (!written.IsSuccess)
+                    return Result.Failed(written.Error!);
             }
 
             partOffset += bitrot.SourceSize;
         }
+
+        return Result.Success();
     }
-    public Stream OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
+    public Result<Stream> OpenData(string bucket, string key, XlMetaRecord meta, long offset, long length)
     {
         ArgumentNullException.ThrowIfNull(meta.Ec, nameof(meta));
 
@@ -644,7 +680,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     // консервативен по default k): живых источников части < k объекта →
                     // кворумная недоступность 503, не 500 InternalError от ридера
                     if (currentReaders.Count(r => r is not null) < ec.EcM)
-                        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+                        return Result<Stream>.Failed(
+                            new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
 
                     shardStreams.AddRange(currentReaders.Where(r => r is not null)!);
                     windows.Add(new ErasureBlockReader(codec, currentReaders, result,
@@ -655,18 +692,18 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 partStart = partEnd;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // 503-путь (и любой сбой сборки окна): уже открытые шард-потоки этой и
-            // предыдущих частей никто не закроет — поток-обёртка не создана
+            // Сбой сборки окна: уже открытые шард-потоки этой и предыдущих частей
+            // никто не закроет — поток-обёртка не создана; отказ — Failed (01 §4)
             foreach (var stream in currentReaders)
                 stream?.Dispose();
             foreach (var stream in shardStreams)
                 stream.Dispose();
-            throw;
+            return Result<Stream>.Failed(ex);
         }
 
-        return new ErasureObjectStream(windows, shardStreams);
+        return Result<Stream>.Success(new ErasureObjectStream(windows, shardStreams));
     }
 
     // Шард-потоки части N по позициям EcDist записи: поток j — с диска
@@ -687,13 +724,16 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
         return readers;
     }
-    public void VerifyFullChecksum(string bucket, string key, XlMetaRecord meta)
+    public Result VerifyFullChecksum(string bucket, string key, XlMetaRecord meta)
     {
         string actual;
         using (var sha = System.Security.Cryptography.IncrementalHash
                    .CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
         {
-            using var body = OpenData(bucket, key, meta, 0, meta.Size);
+            var opened = OpenData(bucket, key, meta, 0, meta.Size);
+            if (!opened.IsSuccess)
+                return Result.Failed(opened.Error!);
+            using var body = opened.Value;
             var buffer = new byte[64 * 1024];
             int read;
             while ((read = body.Read(buffer, 0, buffer.Length)) > 0)
@@ -704,11 +744,12 @@ public sealed partial class ErasureXlDrive : IXlDrive
         if (actual != meta.ContentSha256)
             throw new XlIntegrityException(
                 $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual} (реконструкция)");
+        return Result.Success();
     }
     // Delete: трэш ФАЙЛОВ записи (мета+данные) в .trash/ на каждом диске сета
     // (кворум ≥ writeQuorum; недоступные диски выравниваются при возврате: живое-
     // в-консенсусе доливается heal; фантом-записи чистятся по порогу — канон 06 §8).
-    public void Delete(string bucket, string key, XlMetaRecord meta)
+    public Result Delete(string bucket, string key, XlMetaRecord meta)
     {
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
         var k = meta.Ec?.EcM ?? (byte)(_pool.Topology.SetSize - _defaultParity);
@@ -748,25 +789,27 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
 
         if (successes < writeQuorum)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+            return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
+        return Result.Success();
     }
-    public IReadOnlyList<(int Number, long Size)> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
+    public Result<IReadOnlyList<(int Number, long Size)>> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
         meta.Ec?.Parts.Select((part, index) => (index + 1, part.SourceSize)).ToList()
         ?? throw new XlIntegrityException($"запись {bucket}/{key} без EC-полей в EC-томе");
     // Листинг объектов: предусловие — во ВСЕХ сетах онлайн ≥ k (канон 06 §7:
     // неполный листинг опаснее недоступности); merge DirectoryCursor-курсоров
     // корней бакета онлайн-дисков всех сетов (куча по PeekKey), дедуп по ключу,
     // мета — с первого диска нахождения (битая — следующий диск сета).
-    public IXlObjectCursor EnumerateObjects(string bucket)
+    public Result<IXlObjectCursor> EnumerateObjects(string bucket)
     {
         var threshold = _pool.Topology.SetSize - _defaultParity;
         foreach (var set in _pool.Sets)
         {
             if (set.Count(d => d.Online) < threshold)
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+                return Result<IXlObjectCursor>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
         }
 
-        return new ErasureObjectCursor(_pool, bucket);
+        return Result<IXlObjectCursor>.Success(new ErasureObjectCursor(_pool, bucket));
     }
 
     // Курсор ключей бакета поверх всех сетов: k-way merge по PeekKey (Utf8ByteOrder),
@@ -853,7 +896,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
     private static string KeyDirName(string bucket, string key) =>
         MultipartJournals.KeyDir(string.Empty, bucket, key).Trim('/');
 
-    public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key)
+    public Result<List<MultipartJournals.UploadJournalEntry>> ReadUploads(string bucket, string key)
     {
         // Журнал реплицирован на диски сета, но НЕДО-реплицирован при отказах:
         // ReadList отсутствие файла трактует как [] — первый опрошенный диск
@@ -893,11 +936,12 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
 
         if (opinion)
-            return [.. merged.Values];
-        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+            return Result<List<MultipartJournals.UploadJournalEntry>>.Success([.. merged.Values]);
+        return Result<List<MultipartJournals.UploadJournalEntry>>.Failed(
+            new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum));
     }
 
-    public void WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads)
+    public Result WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads)
     {
         lock (JournalLock)
         {
@@ -908,9 +952,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
             }
         }
+
+        return Result.Success();
     }
 
-    public IReadOnlyList<string> ListUploadKeyDirs()
+    public Result<IReadOnlyList<string>> ListUploadKeyDirs()
     {
         // один keyDir на ключ: журналы реплицированы на диски сета — ключ
         // представляем первым онлайн-диском, где каталог существует (дедуп по
@@ -928,10 +974,10 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     result.Add(dir);
             }
         }
-        return result;
+        return Result<IReadOnlyList<string>>.Success(result);
     }
 
-    public List<MultipartJournals.UploadJournalEntry> ReadUploadsByKeyDir(string keyDirPath)
+    public Result<List<MultipartJournals.UploadJournalEntry>> ReadUploadsByKeyDir(string keyDirPath)
     {
         // keyDir мог доехать не до всех носителей (I/O-сбой WriteUploads после
         // CreateDirectory): журнал читаем с первого носителя, где файл есть и
@@ -946,21 +992,22 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 continue;
             try
             {
-                return MultipartJournals.ReadUploads(jsonPath);
+                return Result<List<MultipartJournals.UploadJournalEntry>>.Success(
+                    MultipartJournals.ReadUploads(jsonPath));
             }
             catch (JsonException)
             {
                 // битая реплика — следующая может быть валидной
             }
         }
-        return [];
+        return Result<List<MultipartJournals.UploadJournalEntry>>.Success([]);
     }
 
     public bool UploadDirExists(string bucket, string key, string uploadId) =>
         SetOf(bucket, key).Any(disk => disk.Online
             && Directory.Exists(UploadDirOnDisk(disk, bucket, key, uploadId)));
 
-    public void CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord)
+    public Result CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord)
     {
         // xl.meta загрузки — v1 (не объект); каталоги на всех онлайн-дисках сета
         lock (JournalLock)
@@ -972,21 +1019,32 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 XlMetaFile.Write(uploadDir, uploadRecord);
             }
         }
+
+        return Result.Success();
     }
 
-    public XlMetaRecord ReadUploadMeta(string bucket, string key, string uploadId)
+    public Result<XlMetaRecord> ReadUploadMeta(string bucket, string key, string uploadId)
     {
         foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
         {
             var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
-            if (Directory.Exists(uploadDir))
-                return XlMetaFile.Read(uploadDir, out _);
+            if (!Directory.Exists(uploadDir))
+                continue;
+            try
+            {
+                return Result<XlMetaRecord>.Success(XlMetaFile.Read(uploadDir, out _));
+            }
+            catch (FileNotFoundException)
+            {
+                return Result<XlMetaRecord>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
+            }
         }
 
-        throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+        return Result<XlMetaRecord>.Failed(new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
     }
 
-    public void TrashUpload(string bucket, string key, string uploadId)
+    public Result TrashUpload(string bucket, string key, string uploadId)
     {
         lock (JournalLock)
         {
@@ -997,18 +1055,22 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     MoveToTrash(disk, uploadDir);
             }
         }
+
+        return Result.Success();
     }
 
-    public List<MultipartJournals.PartJournalEntry> ReadParts(string bucket, string key, string uploadId)
+    public Result<List<MultipartJournals.PartJournalEntry>> ReadParts(string bucket, string key, string uploadId)
     {
         foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
         {
             var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
             if (Directory.Exists(uploadDir))
-                return MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+                return Result<List<MultipartJournals.PartJournalEntry>>.Success(
+                    MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir)));
         }
 
-        throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+        return Result<List<MultipartJournals.PartJournalEntry>>.Failed(
+            new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
     }
 
     // Staging части ВНУТРИ загрузки: шардирование пишет part.N прямо в
@@ -1039,10 +1101,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
             PartResults = new Dictionary<int, ErasurePartResult>(),
             Parity = _defaultParity,
             SetDisks = SetOf(bucket, key),
-            Distribution = ReadDistribution(SetOf(bucket, key)),
+            // Недостижимо после EnsureBucket — мост-идиома (см. CreateStaging)
+            Distribution = ReadDistribution(SetOf(bucket, key)).Throw().Value,
         };
 
-    public async Task<PartDigest> WriteUploadPartAsync(IXlStaging staging, int partNumber, Stream body,
+    public async Task<Result<PartDigest>> WriteUploadPartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct)
     {
         // тот же путь шардирования, но потоки — сразу в каталоги загрузки
@@ -1116,7 +1179,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             await writer.WriteAsync(body, contentLength, ct);
             var result = await writer.CompleteAsync();
             upload.PartResults[partNumber] = result;
-            return new PartDigest(result.ETagHex, result.Sha256Hex, result.SourceLength);
+            return Result<PartDigest>.Success(new PartDigest(result.ETagHex, result.Sha256Hex, result.SourceLength));
         }
         finally
         {
@@ -1125,7 +1188,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
     }
 
-    public void CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime)
+    public Result CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime)
     {
         var upload = staging as ErasureUploadStaging
             ?? throw new ArgumentException("требуется EC upload-staging", nameof(staging));
@@ -1159,13 +1222,14 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
 
         if (successes < writeQuorum)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+            return Result.Failed(new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
+        return Result.Success();
     }
 
     // Complete: attempt.json → по-дисковые rename частей uploadDir/part.N →
     // dataDir/part.N → xl.meta v2 (per-disk EcIndex) → кворумный коммит → зачистка.
     // Composite ETag — из журнала; SHA-256 — проходом ErasureBlockReader по частям.
-    public CompleteResult CommitMultipart(string bucket, string key, string uploadId,
+    public Result<CompleteResult> CommitMultipart(string bucket, string key, string uploadId,
         IReadOnlyList<PartEtag> manifest, XlMetaRecord newRecord)
     {
         lock (_commitLock)
@@ -1173,14 +1237,18 @@ public sealed partial class ErasureXlDrive : IXlDrive
             var set = SetOf(bucket, key);
             // resolve под локом (повтор после зачистки — NoSuchUpload)
             var uploads = ReadUploads(bucket, key);
-            if (uploads.All(e => e.UploadId != uploadId) || !UploadDirExists(bucket, key, uploadId))
-                throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+            if (!uploads.IsSuccess)
+                return Result<CompleteResult>.Failed(uploads.Error!);
+            if (uploads.Value.All(e => e.UploadId != uploadId) || !UploadDirExists(bucket, key, uploadId))
+                return Result<CompleteResult>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload));
 
             // attempt.json — dataDir текущей сборки (идемпотентность повтора, 04 §5)
             var online = set.Where(d => d.Online).ToList();
             var writeQuorum0 = ErasureQuorum.Write(_pool.Topology.SetSize - _defaultParity, _defaultParity);
             if (online.Count < writeQuorum0)
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+                return Result<CompleteResult>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
             // attempt — с ПЕРВОГО НОСИТЕЛЯ сета (частичный WriteAttempt при I/O-сбое:
             // повтор Complete с другим первым диском обязан получить ТОТ ЖЕ dataDir —
             // иначе перенесённые части не находятся и загрузка не Completable);
@@ -1230,7 +1298,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
             // composite ETag из журнала
             var journal = ReadParts(bucket, key, uploadId);
-            var journalByNumber = journal.ToDictionary(p => p.PartNumber);
+            if (!journal.IsSuccess)
+                return Result<CompleteResult>.Failed(journal.Error!);
+            var journalByNumber = journal.Value.ToDictionary(p => p.PartNumber);
             var concat = string.Concat(manifest.Select(p => journalByNumber[p.PartNumber].ETag));
             var compositeEtag = manifest.Count + "-" + Convert.ToHexString(
                 System.Security.Cryptography.MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
@@ -1242,6 +1312,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
             // опустошается до кворумного коммита. Отсутствие шард-носителя части
             // на отдельном диске — деградация (кворум ниже), не фатально.
             var distribution = ReadDistribution(SetOf(bucket, key));
+            if (!distribution.IsSuccess)
+                return Result<CompleteResult>.Failed(distribution.Error!);
             var parity = _defaultParity;
             var codec = CodecFor(parity);
             foreach (var disk in online)
@@ -1278,7 +1350,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 var carriers = online.Count(d => File.Exists(Path.Combine(
                     ObjectDirOnDisk(d, bucket, key), attemptDataDir, $"part.{number}")));
                 if (carriers < kShards)
-                    throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+                    return Result<CompleteResult>.Failed(
+                        new ObjectStoreException(ObjectStoreErrorCode.InvalidPart));
             }
 
             // bitrot-хэши частей (sidecar остаётся в uploadDir до зачистки):
@@ -1296,7 +1369,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                         for (var j = 0; j < codec.TotalShards; j++)
                         {
                             var disk = online
-                                .FirstOrDefault(d => d.PositionInSet == distribution[j]);
+                                .FirstOrDefault(d => d.PositionInSet == distribution.Value[j]);
                             if (disk is null)
                                 continue;
                             var path = Path.Combine(ObjectDirOnDisk(disk, bucket, key), attemptDataDir, $"part.{number}");
@@ -1304,8 +1377,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
                                 readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                         }
 
-                        var hashes = ReadPartBitrot(
+                        var bitrot = ReadPartBitrot(
                             online.Select(d => UploadDirOnDisk(d, bucket, key, uploadId)).ToList(), number);
+                        if (!bitrot.IsSuccess)
+                            return Result<CompleteResult>.Failed(bitrot.Error!);
+                        var hashes = bitrot.Value;
                         var partResult = new ErasurePartResult(string.Empty, string.Empty,
                             journalByNumber[number].Size,
                             hashes.Length > 0 ? hashes[0].Length : 0, hashes);
@@ -1347,7 +1423,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     var objectDir = ObjectDirOnDisk(disk, bucket, key);
                     var diskRecord = record with
                     {
-                        Ec = BuildEcInfo(partResults, distribution, disk.PositionInSet, parity),
+                        Ec = BuildEcInfo(partResults, distribution.Value, disk.PositionInSet, parity),
                     };
                     string? oldDataDir = null;
                     var oldMetaPath = Path.Combine(objectDir, "xl.meta");
@@ -1370,15 +1446,19 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
 
             if (committed < writeQuorum)
-                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+                return Result<CompleteResult>.Failed(
+                    new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum));
 
             // зачистка: журнал + каталог загрузки
             var updated = ReadUploads(bucket, key);
-            updated.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
-            WriteUploads(bucket, key, updated);
+            if (!updated.IsSuccess)
+                return Result<CompleteResult>.Failed(updated.Error!);
+            updated.Value.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
+            WriteUploads(bucket, key, updated.Value);
             TrashUpload(bucket, key, uploadId);
             // ETag — quoted (формат PutResult коммит-пути Put/Complete)
-            return new CompleteResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
+            return Result<CompleteResult>.Success(
+                new CompleteResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256));
         }
     }
 
@@ -1407,7 +1487,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // sidecar части с первого диска-носителя файла (диски сета; рассинхрон
     // носителей после отказов выравнивается heal); нигде нет — InvalidPart.
-    internal static byte[][][] ReadPartBitrot(IReadOnlyList<string> uploadDirs, int partNumber)
+    internal static Result<byte[][][]> ReadPartBitrot(IReadOnlyList<string> uploadDirs, int partNumber)
     {
         byte[]? data = null;
         foreach (var uploadDir in uploadDirs)
@@ -1421,11 +1501,12 @@ public sealed partial class ErasureXlDrive : IXlDrive
         }
 
         if (data is null || data.Length < 8)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+            return Result<byte[][][]>.Failed(new ObjectStoreException(ObjectStoreErrorCode.InvalidPart));
         var ecN = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
         var blockCount = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4, 4));
         if (8 + (long)ecN * blockCount * 32 != data.Length)
-            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart); // битый sidecar
+            return Result<byte[][][]>.Failed(
+                new ObjectStoreException(ObjectStoreErrorCode.InvalidPart)); // битый sidecar
         var hashes = new byte[ecN][][];
         var offset = 8;
         for (var shard = 0; shard < ecN; shard++)
@@ -1438,11 +1519,11 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
         }
 
-        return hashes;
+        return Result<byte[][][]>.Success(hashes);
     }
 
     // Перегрузка IXlDrive.WritePartAsync направляет upload-staging на шардирование в загрузку.
-    public Task<PartDigest> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
+    public Task<Result<PartDigest>> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct) =>
         staging is ErasureUploadStaging
             ? WriteUploadPartAsync(staging, partNumber, body, contentLength, ct)

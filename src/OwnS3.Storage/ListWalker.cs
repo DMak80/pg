@@ -40,7 +40,9 @@ internal sealed class ListWalker(IXlDrive drive, ILogger? logger = null)
 
         var prefix = query.Prefix ?? string.Empty;
         var delimiter = query.Delimiter;
-        var cursor = drive.EnumerateObjects(bucket);
+        // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
+        // (кворумный отказ EnumerateObjects бросается, как сегодня)
+        var cursor = drive.EnumerateObjects(bucket).Throw().Value;
 
         var contents = new List<ListEntry>();
         var prefixes = new List<CommonPrefixEntry>();

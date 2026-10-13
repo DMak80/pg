@@ -17,13 +17,13 @@ public sealed partial class XlObjectStore
         try
         {
             // 3. Тело → part.1 (MD5+SHA-256 исходника, fsync — внутри драйва)
-            var digest = await Drive.WritePartAsync(staging, 1, body, contentLength, ct);
+            var digest = (await Drive.WritePartAsync(staging, 1, body, contentLength, ct)).Throw().Value; // мост t38
             var record = new XlMetaRecord(Guid.Empty, contentLength, timeProvider.GetUtcNow(),
                 digest.ETagHex, metadata.ContentType, metadata.UserMetadata, EmptyHeaders, digest.Sha256Hex);
-            Drive.WriteMeta(staging, record);
+            Drive.WriteMeta(staging, record).Throw(); // мост t38
             // 4–6. Коммит + возврат (ETag HTTP-значение — в кавычках, P8)
             await Task.Yield(); // async-контракт при синхронном файловом IO (P4)
-            return Drive.Commit(bucket, key, record, staging);
+            return Drive.Commit(bucket, key, record, staging).Throw().Value; // мост t38
         }
         finally
         {
@@ -38,10 +38,10 @@ public sealed partial class XlObjectStore
     public Task DeleteObjectAsync(string bucket, string key, CancellationToken ct)
     {
         EnsureBucket(bucket);
-        var meta = Drive.TryReadMeta(bucket, key);
+        var meta = UnwrapMeta(Drive.TryReadMeta(bucket, key)); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         if (meta is null)
             return Task.CompletedTask; // идемпотентность (канон 02 §1)
-        Drive.Delete(bucket, key, meta);
+        Drive.Delete(bucket, key, meta).Throw(); // мост t38
         return Task.CompletedTask;
     }
 
@@ -73,7 +73,7 @@ public sealed partial class XlObjectStore
     private XlMetaRecord ReadObjectMeta(string bucket, string key)
     {
         EnsureBucket(bucket);
-        return Drive.TryReadMeta(bucket, key)
+        return UnwrapMeta(Drive.TryReadMeta(bucket, key)) // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
             ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
     }
 
@@ -96,11 +96,11 @@ public sealed partial class XlObjectStore
         // 3. Range (заголовок условного диапазона не поддерживается — канон 02 §1)
         var range = RangeResolver.Resolve(options.Range, meta.Size);
         // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1)
-        Drive.VerifyFullChecksum(bucket, key, meta);
+        Drive.VerifyFullChecksum(bucket, key, meta).Throw(); // мост t38: демонтаж в задаче перевода IObjectStore/IReplicaStore
         // 5. Тело: составной поток драйва (полный объект или срез Range)
         Stream body = range is null
-            ? Drive.OpenData(bucket, key, meta, 0, meta.Size)
-            : Drive.OpenData(bucket, key, meta, range.Start, range.End - range.Start + 1);
+            ? Drive.OpenData(bucket, key, meta, 0, meta.Size).Throw().Value // мост t38
+            : Drive.OpenData(bucket, key, meta, range.Start, range.End - range.Start + 1).Throw().Value; // мост t38
         return Task.FromResult(new ObjectContent(ToMetadata(key, meta), body, NotModified: false, Range: range));
     }
 

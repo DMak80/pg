@@ -44,8 +44,8 @@ public class ErasureCleanupTests : IDisposable
         var body = new byte[len];
         new Random(seed).NextBytes(body);
         using var staging = _drive.CreateStaging("b", key);
-        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
-            CancellationToken.None);
+        var digest = (await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None)).Throw().Value;
         var record = new XlMetaRecord(Guid.Empty, body.LongLength, DateTimeOffset.UnixEpoch,
             digest.ETagHex, "text/plain", new Dictionary<string, string>(), new Dictionary<string, string>(),
             digest.Sha256Hex);

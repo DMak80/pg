@@ -198,6 +198,6 @@ public class ReplicaApplierTests : IClassFixture<ReplicaApplierFixture>
         Applier.RetryTick();
 
         // Assert — бакет удалён отложенным ретраем (до тика он был жив)
-        _fixture.Drive.BucketExists(bucket).Should().BeFalse();
+        _fixture.Drive.BucketExists(bucket).Throw().Value.Should().BeFalse();
     }
 }
