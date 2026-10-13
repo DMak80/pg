@@ -191,7 +191,7 @@ public sealed class JoinPeerService(
     // верифицируется ключом сертификата; конфликт имени (другой ключ) → 409;
     // успех/идемпотентность → запись + подписанный ответ.
     public Result<JoinAccept> HandleIncoming(S3RequestModel model, string certificateBase64,
-        string advertisedEndpoint)
+        string peerAdvertisedEndpoint)
     {
         // trust-anchor не задан → ручной режим состава; identity не задан →
         // нечем подписать ответ. Оба случая — отказ (403 на replication-грани).
@@ -263,12 +263,16 @@ public sealed class JoinPeerService(
                 $"join отклонён: имя {cert.Name} числится с другим публичным ключом"));
         }
 
-        // Успех/идемпотентность: merge + персист + горячая замена (глава 07 §2).
-        targets.AddOrReplace(new TargetRecord(cert.Name, advertisedEndpoint, TargetRecord.AuthKey,
+        // Успех/идемпотентность: merge + персист + горячая замена (глава 07 §2);
+        // endpoint пира — его advertised из join-запроса.
+        targets.AddOrReplace(new TargetRecord(cert.Name, peerAdvertisedEndpoint, TargetRecord.AuthKey,
             PublicKeyPem: cert.PublicKeyPem));
 
-        // Ответ: тело собирается ОДИН раз и подписывается как есть (spec §4.4 п.3).
-        var accept = new JoinAccept(identity.Name, advertisedEndpoint,
+        // Ответ: тело собирается ОДИН раз и подписывается как есть (spec §4.4 п.3 —
+        // «advertisedEndpoint» в ответе — СВОЙ advertised соседа, поле ctor из env).
+        // Null advertised у приёмника — вне специфицированных сценариев (оркестратор
+        // ставит env всем узлам): инициатор откажет такую запись валидацией endpoint.
+        var accept = new JoinAccept(identity.Name, advertisedEndpoint ?? string.Empty,
             Convert.ToBase64String(Encoding.UTF8.GetBytes(identity.CertificateJson)), string.Empty);
         var body = JsonSerializer.Serialize(
             new JoinResponseBody(accept.Name, accept.AdvertisedEndpoint, accept.CertificateBase64),
@@ -276,7 +280,7 @@ public sealed class JoinPeerService(
         var signature = Convert.ToBase64String(identity.Key.SignData(Encoding.UTF8.GetBytes(body),
             HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
         logger.LogInformation("join: пир {Name} ({Endpoint}) принят в состав (auth=key)",
-            cert.Name, advertisedEndpoint);
+            cert.Name, peerAdvertisedEndpoint);
         return Result<JoinAccept>.Success(accept with { SignatureBase64 = signature });
     }
 
