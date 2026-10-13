@@ -288,6 +288,14 @@ public sealed class ObjectFetcher
         {
             throw; // graceful stop — не ошибка фетча
         }
+        catch (Exception ex)
+        {
+            // Страховочный catch-all — прецедент S3Middleware (демонтаж переходных catch
+            // не означает демонтаж страховки): недоменные техотказы IO/порчи (IOException
+            // чтения xl.meta, DirectoryNotFoundException ушедшего диска в staging-пути)
+            // конвертируются в повтор по бэкоффу, воркер продолжает цикл — не умирает молча
+            return HandleFetchFailure(_source.Name, task, ex);
+        }
     }
 
     // Отказ фетча/применения: sha-мисматч и техотказы — повтор по бэкоффу (глава 07 §7).

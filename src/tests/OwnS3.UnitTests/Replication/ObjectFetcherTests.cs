@@ -72,12 +72,16 @@ public sealed class FakeFetchTransport : IReplicationTransport
     // Первые N фетчей — сетевой сбой (HttpClientException), затем обычные исходы.
     public int FailuresBeforeSuccess { get; set; }
 
+    // Число фактических fetch-вызовов (проверка ретраев по бэкоффу).
+    public int FetchCallCount { get; private set; }
+
     public static FetchOutcome BodyResult(byte[] body, long modMs, string sha) =>
         new FetchOutcome.Fetched(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"",
             "application/x-test", new Dictionary<string, string>());
 
     public Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
     {
+        FetchCallCount++;
         if (FailuresBeforeSuccess > 0)
         {
             FailuresBeforeSuccess--;
@@ -226,6 +230,46 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
     }
 
     [Fact]
+    public async Task Fetch_NonDomainExceptionInApply_Retried_WorkerSurvives()
+    {
+        // Arrange — ключ с ПОРЧЕННЫМ xl.meta (main+bkp): ReadKeyState при применении
+        // кидает XlIntegrityException — НЕдоменное летящее исключение вне Result-
+        // конвертации границы (ReplicaStore.ReadKeyState не ловит). Страховочный
+        // catch-all фетчера обязан конвертировать в повтор, воркер живёт.
+        _fixture.Store.ApplyBucketCreate("bni", DateTimeOffset.FromUnixTimeMilliseconds(100));
+        const string content = "poisoned";
+        var body = Body(content);
+        var objectDir = Path.Combine(_fixture.VolumeDir, "bni",
+            OwnS3.Storage.XlPathEncoder.EncodePath("k"));
+        Directory.CreateDirectory(objectDir);
+        File.WriteAllText(Path.Combine(objectDir, "xl.meta"), "broken");
+        File.WriteAllText(Path.Combine(objectDir, "xl.meta.bkp"), "broken");
+        _fixture.Transport.Outcomes.Enqueue(FakeFetchTransport.BodyResult(body, 100,
+            FakeFetchTransport.Sha(body)));
+        _fixture.Queue.TryEnqueue(new FetchTask("bni", "k", 100));
+        var fetcher = _fixture.Create();
+
+        // Act — воркер: применение кидает XlIntegrityException → catch-all → повтор
+        using var cts = new CancellationTokenSource();
+        var run = fetcher.RunAsync(cts.Token);
+        var retried = false;
+        for (var i = 0; i < 100 && !retried; i++)
+        {
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+            retried = _fixture.Transport.FetchCallCount >= 2;
+        }
+
+        // Assert — воркер ЖИВ (не faulted), задача ушла в повтор по бэкоффу
+        // (fetch-вызовы ≥ 2); применение не прошло: xl.meta на диске остался битым
+        // (ReadKeyState на таком ключе бросает — потому ассерт по диску)
+        retried.Should().BeTrue("недоменное исключение — повтор по бэкоффу, не смерть воркера");
+        File.Exists(Path.Combine(objectDir, "xl.meta")).Should().BeTrue();
+        File.ReadAllText(Path.Combine(objectDir, "xl.meta")).Should().Be("broken");
+        cts.Cancel();
+        await run; // graceful stop — воркер жив (RunAsync не faulted)
+    }
+
+    [Fact]
     public async Task FetchChecksumMismatch_RequeuedNotApplied()
     {
         // Arrange — sha заголовка не совпадает с телом (повтор), затем корректное тело
@@ -298,7 +342,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         }
         catch (OperationCanceledException)
         {
-            // бюджет истёк на ретраях — ожидаемо приoffline
+            // бюджет истёк на ретраях — ожидаемо при offline
         }
 
         // Assert — задача НЕ потеряна (HasUnapplied true — чистый маркер не ставить, R2)

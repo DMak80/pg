@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using OwnS3.Replication.Cursors;
 using OwnS3.Storage;
 
@@ -25,6 +27,7 @@ public sealed class ReplicaApplier : IDisposable
     private readonly IReplicaStore _store;
     private readonly TombstoneStore _tombstones;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<ReplicaApplier> _logger;
     // Сериализация применений (глава 07 §7, R4): фетчер (долгий staging-коммит) и
     // inbox (ApplyDelete из батча) конкурируют — без взаимного исключения DELETE,
     // приземлившийся между ReadKeyState и Commit, воскрешает старую версию и стирает
@@ -34,11 +37,13 @@ public sealed class ReplicaApplier : IDisposable
     private readonly object _retryLock = new();
     private readonly ITimer? _retryTimer;
 
-    public ReplicaApplier(IReplicaStore store, TombstoneStore tombstones, TimeProvider timeProvider)
+    public ReplicaApplier(IReplicaStore store, TombstoneStore tombstones, TimeProvider timeProvider,
+        ILogger<ReplicaApplier>? logger = null)
     {
         _store = store;
         _tombstones = tombstones;
         _timeProvider = timeProvider;
+        _logger = logger ?? NullLogger<ReplicaApplier>.Instance;
         // Повторы отложенных бакетных удалений раз в секунду (глава 07 §7);
         // тесты зовут RetryTick вручную — таймер здесь для прод-исполнения
         _retryTimer = timeProvider.CreateTimer(static self => ((ReplicaApplier)self!).RetryTick(), this,
@@ -217,8 +222,16 @@ public sealed class ReplicaApplier : IDisposable
                 if (delete.IsSuccess)
                     continue;
                 if (delete.Error is ObjectStoreException { Code: ObjectStoreErrorCode.BucketNotEmpty })
+                {
                     EnqueueBucketRetry(bucket, attempt + 1); // BucketNotEmpty — бэкофф-повтор
+                    continue;
+                }
 
+                // Прочие отказы (кворум, IO) — повторная постановка (тик вернётся по
+                // бэкоффу) + лог: ретрай не теряется тихо
+                _logger.LogWarning(delete.Error,
+                    "Отложенное удаление бакета {Bucket} не удалось — повторная постановка", bucket);
+                EnqueueBucketRetry(bucket, attempt + 1);
             }
             finally
             {
