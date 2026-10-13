@@ -17,6 +17,7 @@ public sealed class ReplicationOptions
     public int TombstoneRetentionHours { get; set; } = 168;                 // retention tombstones (§7)
     public int ReconcileIntervalSeconds { get; set; } = 60;                 // период reconcile (§9)
     public int FetchQueueMax { get; set; } = 10000;                         // ёмкость fetch-очереди на источник (§7)
+    public int ProbeTimeoutMs { get; set; } = 2000;                        // per-target таймаут ping-пробы (§2)
 }
 
 // Seed-запись соседа из env (OWNS3_REPLICATION_TARGETS__<i>__*).
