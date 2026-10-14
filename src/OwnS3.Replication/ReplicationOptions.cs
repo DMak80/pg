@@ -18,7 +18,34 @@ public sealed class ReplicationOptions
     public int ReconcileIntervalSeconds { get; set; } = 60;                 // период reconcile (§9)
     public int FetchQueueMax { get; set; } = 10000;                         // ёмкость fetch-очереди на источник (§7)
     public int ProbeTimeoutMs { get; set; } = 2000;                        // per-target таймаут ping-пробы (§2)
+
+    // Материал identity (t39, глава 07 §2/§11): env каждого старта, на томе не
+    // персистится; null — секции нет, peer-схема не активна (НЕ ошибка).
+    public PeerIdentityOptions? Identity { get; set; }
+
+    // Trust-anchor CA (глава 07 §2): опционален; null — join-ручной режим состава.
+    public PeerTrustCaOptions? TrustCa { get; set; }
+
+    // scheme://host:port себя для join (глава 07 §2); null — join недоступен.
+    public string? AdvertisedEndpoint { get; set; }
 }
 
 // Seed-запись соседа из env (OWNS3_REPLICATION_TARGETS__<i>__*).
 public sealed record TargetOptions(string Name, string Endpoint, string AccessKey, string SecretKey);
+
+// Identity-материал (глава 07 §2/§11): значение или путь — прецедент TLS
+// (глава 05 §4). Секции OWNS3:Replication:Identity:*.
+public sealed class PeerIdentityOptions
+{
+    public string? Certificate { get; set; }        // OWNS3_REPLICATION_CERT
+    public string? CertificatePath { get; set; }    // OWNS3_REPLICATION_CERT_PATH
+    public string? PrivateKeyPem { get; set; }      // OWNS3_REPLICATION_PRIVATE_KEY
+    public string? PrivateKeyPath { get; set; }     // OWNS3_REPLICATION_PRIVATE_KEY_PATH
+}
+
+// Trust-anchor CA `{"name","publicKeyPem"}` (глава 07 §2). Секции OWNS3:Replication:TrustCa:*.
+public sealed class PeerTrustCaOptions
+{
+    public string? Certificate { get; set; }        // OWNS3_REPLICATION_TRUST_CA
+    public string? CertificatePath { get; set; }    // OWNS3_REPLICATION_TRUST_CA_PATH
+}

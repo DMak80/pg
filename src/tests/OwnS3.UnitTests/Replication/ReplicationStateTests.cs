@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using OwnS3.Replication;
 
 namespace OwnS3.UnitTests.Replication;
@@ -73,5 +74,47 @@ public class ReplicationStateTests : IClassFixture<ReplicationStateFixture>
         // Act / Assert — битый маркер = грязный старт (глава 07 §7)
         var state = new ReplicationState(StatePath);
         state.WasCleanShutdown().Should().BeFalse();
+    }
+
+    [Fact]
+    public void ConcurrentMarking_NoCrash_FileConsistent()
+    {
+        // Arrange — MarkDirty (ExecuteAsync старта) и MarkCleanAndPersist (StopAsync)
+        // при быстрой остановке заходят concurrently: tmp+Move без сериализации
+        // ронял второй File.Move с FileNotFoundException
+        Directory.CreateDirectory(_fixture.Dir);
+        var state = new ReplicationState(StatePath);
+        var errors = new ConcurrentQueue<Exception>();
+
+        // Act — 200 пар конкурентных записей с барьером старта (максимальный нахлёст)
+        using var barrier = new Barrier(2);
+        var worker = (Func<int> mark) =>
+        {
+            for (var i = 0; i < 200; i++)
+            {
+                try
+                {
+                    mark();
+                }
+                catch (Exception ex)
+                {
+                    errors.Enqueue(ex);
+                }
+                barrier.SignalAndWait(TimeSpan.FromSeconds(5));
+            }
+        };
+        var threads = new[]
+        {
+            new Thread(() => worker(() => { state.MarkDirty(); return 0; })),
+            new Thread(() => worker(() => { state.MarkCleanAndPersist(); return 0; })),
+        };
+        foreach (var thread in threads) thread.Start();
+        foreach (var thread in threads) thread.Join(TimeSpan.FromSeconds(30));
+
+        // Assert — ни одного исключения; файл читается (последний завершённый
+        // Move победил — clean или dirty, оба валидны)
+        errors.Should().BeEmpty();
+        var read = () => new ReplicationState(StatePath).WasCleanShutdown();
+        read.Should().NotThrow();
     }
 }

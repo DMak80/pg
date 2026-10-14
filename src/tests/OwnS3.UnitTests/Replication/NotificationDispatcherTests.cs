@@ -32,7 +32,7 @@ public sealed class NotificationDispatcherFixture : IDisposable
     // Journal передаётся тестом (ЕДИНСТВЕННЫЙ инстанс на каталог — как в DI прода).
     internal NotificationDispatcher Create(OutboxJournal journal, TargetCursors cursors,
         TargetRecord? target = null, int window = 64) =>
-        new(target ?? new TargetRecord("peer-a", "http://peer-a:9000", "ak", "sk"),
+        new(target ?? new TargetRecord("peer-a", "http://peer-a:9000", TargetRecord.AuthLegacy, "ak", "sk"),
             journal, cursors, Transport,
             new ReplicationOptions { InflightWindow = window, BackoffMaxSec = 60 }, Metrics,
             "test-host", TimeProvider.System, NullLogger<NotificationDispatcher>.Instance,

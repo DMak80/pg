@@ -5,6 +5,8 @@ using OwnS3.App.Access;
 using OwnS3.App.Routing;
 using OwnS3.Protocol.Auth;
 using OwnS3.Protocol.Errors;
+using OwnS3.Protocol.PeerAuth;
+using OwnS3.Protocol.Requests;
 using OwnS3.Protocol.Xml;
 using OwnS3.Storage;
 using Shared.Metrics;
@@ -65,15 +67,24 @@ public sealed class S3Middleware(
                 if (context.Request.Path.StartsWithSegments("/admin"))
                 {
                     // Mesh-репликация (t35, глава 07 §2/§10): те же права admin/root;
-                    // replication-ключ на админ-грани → 403 (A13-зеркало)
+                    // replication-ключ на админ-грани → 403 (A13-зеркало).
+                    // Маршрутизация (t39): ресурсы списком + хвостовые сегменты
+                    // targets/{name} и denylist/{name} (DELETE) — остальное 400.
                     if (context.Request.Path.StartsWithSegments("/admin/replication"))
                     {
-                        var replAdminPath = context.Request.Path.Value;
+                        var replAdminPath = context.Request.Path.Value ?? string.Empty;
+                        var replAdminSegments = replAdminPath.Length > "/admin/replication/".Length
+                            ? replAdminPath["/admin/replication/".Length..].Split('/')
+                            : [];
                         var isAdminRepl = replAdminPath is "/admin/replication/targets"
                             or "/admin/replication/status"
                             or "/admin/replication/reconcile"
                             or "/admin/replication/sync-report"
-                            or "/admin/replication/probe";
+                            or "/admin/replication/probe"
+                            or "/admin/replication/join"
+                            or "/admin/replication/denylist"
+                            || (HttpMethods.IsDelete(method)
+                                && replAdminSegments is ["targets", _] or ["denylist", _]);
                         if (!isAdminRepl)
                         {
                             await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
@@ -101,6 +112,15 @@ public sealed class S3Middleware(
                         }
                         if (HttpMethods.IsPut(method) && replAdminPath == "/admin/replication/targets")
                             await replicationAdminHandlers.HandlePutTargetsAsync(context);
+                        else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/join")
+                            await replicationAdminHandlers.HandleJoinTriggerAsync(context);
+                        else if (HttpMethods.IsDelete(method) && replAdminSegments is ["targets", var targetName])
+                            await replicationAdminHandlers.HandleDeleteTargetAsync(context, targetName,
+                                context.Request.Query["revoke"] == "true");
+                        else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/denylist")
+                            await replicationAdminHandlers.HandleDenyListAsync(context);
+                        else if (HttpMethods.IsDelete(method) && replAdminSegments is ["denylist", var denyName])
+                            await replicationAdminHandlers.HandleDenyRemoveAsync(context, denyName);
                         else if (HttpMethods.IsGet(method) && replAdminPath == "/admin/replication/status")
                             await replicationAdminHandlers.HandleStatusAsync(context);
                         else if (HttpMethods.IsPost(method) && replAdminPath == "/admin/replication/reconcile")
@@ -157,14 +177,78 @@ public sealed class S3Middleware(
                 }
 
                 // Шаг 2.4: replication-грань /replication/* (t35, глава 07 §6) — до роутинга
-                // 21 операций: аутентификация SigV4 тем же конвейером (S3Operation.None),
+                // 21 операций. Две схемы аутентификации (t39, глава 07 §6) — выбор по
+                // префиксу заголовка Authorization: OWNS3-PEER-* → peer-конвейер (ниже),
+                // AWS4-HMAC-SHA256 → существующий SigV4-конвейер (S3Operation.None),
                 // политика строго AccessPolicy.Replication (иначе 403 AccessDenied, включая
                 // admin/root — A13), sourceName — по accessKey подписи из targets
-                // (не числится соседом → 403, A13), затем диспетчеризация четырёх операций.
+                // (не числится соседом → 403, A13), затем диспетчеризация операций.
                 if (context.Request.Path.StartsWithSegments("/replication"))
                 {
                     operationLabel = "replication";
                     var replModel = S3ModelFactory.Create(context);
+
+                    // Peer-конвейер (t39, глава 07 §6): схема OWNS3-PEER-ECC-P256-SHA256
+                    // для key-записей — ДО S3Authenticator; SigV4-ветка ниже не тронута.
+                    var replAuthorization = context.Request.Headers.Authorization.ToString();
+                    if (replAuthorization.StartsWith("OWNS3-PEER-", StringComparison.Ordinal))
+                    {
+                        // Join-под-ветка (глава 07 §2): единственный запрос грани от ещё
+                        // не числящегося пира — до-join аутентификация по сертификату.
+                        if (HttpMethods.IsPost(method) && context.Request.Path.Value == "/replication/join")
+                        {
+                            await replicationHandlers.HandleJoinAsync(context, requestId, options.Value.HostId);
+                            return;
+                        }
+
+                        // Имя пира из Credential; null при любом malformed → 400
+                        // AuthorizationHeaderMalformed (маппинг здесь — Protocol без
+                        // Result-сигнатур, глава 07 §6).
+                        var peerName = PeerRequestVerifier.CredentialOf(replModel);
+                        if (peerName is null)
+                        {
+                            await WriteErrorAsync(context, new S3Error(S3ErrorCode.AuthorizationHeaderMalformed,
+                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        // Резолв по составу: записи нет / не key → 403 AccessDenied
+                        // («не числится соседом», зеркало SigV4-ветки).
+                        if (!replicationHandlers.TryResolvePeer(peerName, out var peerTarget))
+                        {
+                            await WriteErrorAsync(context, new S3Error(S3ErrorCode.AccessDenied,
+                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        // Верификация подписи публичным ключом key-записи (ECDsa P-256);
+                        // PEM валидирован при вставке в состав — битый после ручной правки
+                        // targets.json → отказ идентификации (403), не 500.
+                        using var peerKey = System.Security.Cryptography.ECDsa.Create();
+                        try
+                        {
+                            peerKey.ImportFromPem(peerTarget.PublicKeyPem!);
+                        }
+                        catch (Exception)
+                        {
+                            await WriteErrorAsync(context, new S3Error(S3ErrorCode.AccessDenied,
+                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        var peerVerify = new PeerRequestVerifier(timeProvider).Verify(replModel, peerKey);
+                        if (peerVerify is not PeerVerifyResult.Ok peerOk)
+                        {
+                            // Каталог кодов подписи (глава 03 §5): SignatureDoesNotMatch/
+                            // RequestTimeTooSkewed/…; прочее — AccessDenied.
+                            var peerCode = peerVerify is PeerVerifyResult.Fail peerFail
+                                ? peerFail.Code
+                                : S3ErrorCode.AccessDenied;
+                            await WriteErrorAsync(context, new S3Error(peerCode,
+                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                            return;
+                        }
+                        await DispatchReplicationAsync(context, replModel, peerOk.PeerName, requestId);
+                        return;
+                    }
+
                     var replAuthenticator = new S3Authenticator(
                         new SigV4HeaderVerifier(timeProvider), new PresignedRequestVerifier(timeProvider), registry);
                     var replOutcome = replAuthenticator.Authenticate(context, replModel, S3Operation.None);
@@ -189,32 +273,7 @@ public sealed class S3Middleware(
                         return;
                     }
 
-                    if (HttpMethods.IsPost(method) && context.Request.Path.Value == "/replication/notifications")
-                        await replicationHandlers.HandleNotificationsAsync(context, sourceName,
-                            requestId, options.Value.HostId);
-                    else if (HttpMethods.IsGet(method) && context.Request.Path.StartsWithSegments("/replication/object"))
-                    {
-                        // Парсинг {bucket}/{key} — от под-пути грани (префикс /replication/object срезается)
-                        var replSubPath = context.Request.Path.Value!["/replication/object".Length..];
-                        var replPath = OwnS3.Protocol.Requests.S3PathParser.Parse(replSubPath);
-                        if (replPath.Bucket is null || replPath.Key is null)
-                        {
-                            await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
-                                Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
-                                MessageOverride: "bucket and key required"));
-                            return;
-                        }
-                        await replicationHandlers.HandleObjectFetchAsync(context, replPath.Bucket, replPath.Key,
-                            requestId, options.Value.HostId);
-                    }
-                    else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/listing")
-                        await replicationHandlers.HandleListingAsync(context, requestId, options.Value.HostId);
-                    else if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/replication/ping")
-                        await replicationHandlers.HandlePingAsync(context);
-                    else
-                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
-                            Resource: replModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
-                            MessageOverride: "Unknown replication resource"));
+                    await DispatchReplicationAsync(context, replModel, sourceName, requestId);
                     return;
                 }
 
@@ -298,6 +357,37 @@ public sealed class S3Middleware(
                 "s3 request: requestId={RequestId} operation={Operation} bucket={Bucket} key={Key} method={Method} status={Status} durationMs={DurationMs}",
                 requestId, operationLabel, bucket ?? string.Empty, key ?? string.Empty, method,
                 context.Response.StatusCode, stopwatch.Elapsed.TotalMilliseconds);
+        }
+
+        // Диспетчеризация операций replication-грани (общая для SigV4- и peer-веток,
+        // глава 07 §6): notifications/object/listing/ping; неизвестный путь — 400.
+        async Task DispatchReplicationAsync(HttpContext ctx, S3RequestModel model, string sourceName, string reqId)
+        {
+            if (HttpMethods.IsPost(method) && ctx.Request.Path.Value == "/replication/notifications")
+                await replicationHandlers.HandleNotificationsAsync(ctx, sourceName, reqId, options.Value.HostId);
+            else if (HttpMethods.IsGet(method) && ctx.Request.Path.StartsWithSegments("/replication/object"))
+            {
+                // Парсинг {bucket}/{key} — от под-пути грани (префикс /replication/object срезается)
+                var replSubPath = ctx.Request.Path.Value!["/replication/object".Length..];
+                var replPath = OwnS3.Protocol.Requests.S3PathParser.Parse(replSubPath);
+                if (replPath.Bucket is null || replPath.Key is null)
+                {
+                    await WriteErrorAsync(ctx, new S3Error(S3ErrorCode.InvalidArgument,
+                        Resource: model.RawPath, RequestId: reqId, HostId: options.Value.HostId,
+                        MessageOverride: "bucket and key required"));
+                    return;
+                }
+                await replicationHandlers.HandleObjectFetchAsync(ctx, replPath.Bucket, replPath.Key,
+                    reqId, options.Value.HostId);
+            }
+            else if (HttpMethods.IsGet(method) && ctx.Request.Path.Value == "/replication/listing")
+                await replicationHandlers.HandleListingAsync(ctx, reqId, options.Value.HostId);
+            else if (HttpMethods.IsGet(method) && ctx.Request.Path.Value == "/replication/ping")
+                await replicationHandlers.HandlePingAsync(ctx);
+            else
+                await WriteErrorAsync(ctx, new S3Error(S3ErrorCode.InvalidArgument,
+                    Resource: model.RawPath, RequestId: reqId, HostId: options.Value.HostId,
+                    MessageOverride: "Unknown replication resource"));
         }
     }
 

@@ -84,12 +84,19 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
 
 ## 2. Состав mesh и его изменение (R6)
 
-- **Сосед (target)** — запись
-  `TargetRecord {name, endpoint, accessKey, secretKey}`:
-  `endpoint` — `scheme://host:port`, advertised (multi-host/гео);
-  креды — per-соседние, политика `replication` на соседе (§6, глава
-  05 §3). Состав симметричен: сосед — и получатель наших уведомлений,
-  и источник для наших фетчей.
+- **Сосед (target)** — запись двух видов (поле `auth`):
+  - `legacy` — `{name, endpoint, accessKey, secretKey}`: симметричная
+    SigV4-идентификация (прежняя механика §6); формат без поля `auth`
+    (старый targets.json) читается как `legacy` — обратная
+    совместимость дискового формата;
+  - `key` — `{name, endpoint, publicKeyPem}`: асимметричная
+    идентификация — исходящие запросы к соседу подписываются приватным
+    ключом identity (§6, схема OWNS3-PEER), входящие от него
+    верифицируются `publicKeyPem` записи.
+  `endpoint` — `scheme://host:port`, advertised. Валидация состава:
+  имена уникальны; `legacy` — пара кредов и уникальность accessKey
+  среди legacy-записей; `key` — валидный PEM публичного ключа ECDSA
+  P-256.
 - **Источник истины состава — файл тома**
   `.owns3.sys/replication/targets.json` — JSON camelCase,
   `[{name, endpoint, accessKey, secretKey}]`; персист атомарно
@@ -138,12 +145,65 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
     per-target, не sum (параллельность).
 - Оркестратор трека s3 управляет составом живого пула именно через эту
   грань; ownS3 сам без etcd (глава 01).
-- **Идентификация соседа-источника на приёмнике — по accessKey
-  подписи** запроса к replication-грани (§6): креды пер-соседние, имя
-  источника (`sourceName`) — запись `TargetRecord.Name` приёмника, чей
-  accessKey совпал с подписью. Заголовок уведомлений `originHostId`
+- **Идентификация соседа-источника на приёмнике**: `legacy` — по
+  accessKey подписи запроса к replication-грани (креды пер-соседние,
+  §6); `key` — по имени из сертификата/записи (§6, схема OWNS3-PEER).
+  Имя источника (`sourceName`) в обоих случаях — запись
+  `TargetRecord.Name` приёмника. Заголовок уведомлений `originHostId`
   (env `OWNS3_HOST_ID`, глава 05 §4) — **диагностика конфликтов**,
   НЕ ключ идентификации.
+- **Identity сервера** — пара ключей ECDSA P-256 + мини-сертификат
+  `{name, publicKeyPem, issuedAtUnixMs, expiresAtUnixMs, caName,
+  signature}` (подпись CA — ECDSA P-256 over SHA-256 канонической
+  строки `name\npublicKeyPem\nissuedAtUnixMs\nexpiresAtUnixMs\ncaName`,
+  формат P1363 base64; `expiresAtUnixMs ≤ 0` — бессрочный).
+  **Материал инсталляции**: env `OWNS3_REPLICATION_CERT`/`_PATH` +
+  `OWNS3_REPLICATION_PRIVATE_KEY`/`_PATH` (значение/путь — прецедент
+  TLS-материала, глава 05 §4), читается при каждом старте, на томе не
+  персистится; сервер ключи НЕ генерирует — выпуск CLI `OwnS3.Pki` у
+  владельца инсталляции (оркестратора), замена = redeploy с новым env.
+  Fail-fast старта: сертификат парсится, ключ соответствует публичному
+  ключу сертификата, `expiresAt` не истёк.
+  `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` — scheme://host:port себя
+  для join.
+- **Trust-anchor (опциональный, per-install)** — публичный ключ CA
+  `{"name","publicKeyPem"}` (env `OWNS3_REPLICATION_TRUST_CA`/`_PATH`);
+  сертификат валиден ⟺ `caName` совпадает ∧ подпись CA верна ∧ не истёк.
+- **Join-протокол** (двусторонний handshake, оркестратор трека s3 зовёт
+  `POST /admin/replication/join` телом `{"endpoint"}` на каждой паре
+  «новый ↔ существующий»; права admin/root, исполнение синхронное).
+  Нет identity, trust-anchor или advertised endpoint (§11) → **400 с
+  пояснением** (fail-fast: без trust-anchor инициатор не сможет
+  проверить сертификат ответа соседа). Инициатор шлёт
+  `POST /replication/join` телом `{"advertisedEndpoint"}` на
+  replication-грань соседа — подпись §6, заголовок
+  `X-OwnS3-Peer-Certificate: <base64 сертификата>`.
+  Сосед: trust-anchor не задан → **403** (ручной режим состава);
+  сертификат невалиден (CA/истёк/deny-list — имя ИЛИ публичный ключ) →
+  **403**; имя числится с тем же ключом → идемпотентное обновление
+  endpoint, **200**; с другим ключом → **409**; успех → запись
+  `{name, endpoint: advertisedEndpoint, auth: key, publicKeyPem}` в
+  targets (merge + персист, горячая замена по `TargetsChanged`) и ответ
+  **200** `{"name","advertisedEndpoint","certificate"}` с заголовком
+  `X-OwnS3-Peer-Signature` (подпись тела приватным ключом соседа).
+  Инициатор проверяет сертификат соседа против СВОЕГО trust-anchor и
+  подпись тела — валидно → добавляет запись соседа в свои targets →
+  админ-ответ 200 `{"joined":true,"peer"}`; отказ соседа 403/409
+  проксируется тем же кодом; невалидный ответ/транспорт → **502**.
+  Join не ставит событий репликации (анти-петля) и не меняет курсоры;
+  дальше — штатная механика «добавленный сосед» (курсор −1 +
+  reconcile-забор).
+- **Удаление и deny-list**: `DELETE /admin/replication/targets/{name}`
+  → **202** (удаление из targets, курсор сохраняется — возврат соседа
+  продолжится с места); `?revoke=true` — дополнительно запись
+  `{name, publicKeyPem, revokedAtUnixMs}` в
+  `.owns3.sys/replication/denylist.json` (персист tmp+rename; для
+  legacy-записи → **400**); неизвестное имя → **404**.
+  `GET /admin/replication/denylist` — список;
+  `DELETE /admin/replication/denylist/{name}` → **202** — снятие
+  отзыва. Deny-list локален (не реплицируется): отлучение по всей
+  mesh — оркестратор зовёт delete с revoke на каждом сервере (той же
+  оркестрацией, что и join).
 
 ## 3. События репликации
 
@@ -237,6 +297,33 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
 SigV4 (заголовочная подпись, глава 03 §1; TLS — существующая опция
 per-install, глава 03 §6). Пути `/replication/*` — отдельный класс
 служебных путей рядом с `/admin/*` (изоляция в S3Middleware App).
+Грань принимает две схемы аутентификации: `AWS4-HMAC-SHA256`
+(legacy-записи, конвейер без изменений) и `OWNS3-PEER-ECC-P256-SHA256`
+(key-записи, §2) — выбор по префиксу заголовка `Authorization`.
+
+- **Схема OWNS3-PEER-ECC-P256-SHA256** (key-соседи): заголовки
+  `x-owns3-peer-date`, `x-owns3-peer-content-sha256` (hex SHA-256 тела);
+  `Authorization: OWNS3-PEER-ECC-P256-SHA256 Credential=<peerName>,
+  SignedHeaders=host;x-owns3-peer-date;x-owns3-peer-content-sha256,
+  Signature=<base64 P1363>`; канонический запрос — канонизация SigV4
+  (глава 03 §1, тот же строитель); string-to-sign
+  `OWNS3-PEER-ECC-P256-SHA256\n<x-owns3-peer-date>\n<hex-sha256(canonical request)>`;
+  подпись — ECDSA P-256 приватным ключом identity отправителя.
+  Исходы (каталог главы 03 §5): неверная подпись → 403
+  `SignatureDoesNotMatch`; clock skew ±15 мин → 403
+  `RequestTimeTooSkewed`; malformed Authorization → 400
+  `AuthorizationHeaderMalformed`; peer не числится соседом (или запись
+  не key) → 403 `AccessDenied`. Резолв: `peerName` из Credential →
+  запись targets с этим именем и `auth=key` → верификация ключом
+  записи; `sourceName` = имя записи. Клиентская S3-грань эту схему не
+  принимает (400 `InvalidRequest`, глава 03 §1).
+- **`POST /replication/join`** (единственный запрос грани от ещё не
+  числящегося пира): до-join аутентификация по сертификату заголовка
+  `X-OwnS3-Peer-Certificate` — trust-anchor не задан → 403;
+  CA/истёк/deny-list (имя или ключ) → 403; подпись запроса
+  верифицируется публичным ключом сертификата; тело
+  `{"advertisedEndpoint"}`; конфликты и ответ — §2 (409/идемпотентность/
+  200 + `X-OwnS3-Peer-Signature`).
 
 - **Аутентификация/авторизация**: подпись проверяется штатным
   SigV4-конвейером; accessKey подписи ищется в targets приёмника —
@@ -256,6 +343,7 @@ per-install, глава 03 §6). Пути `/replication/*` — отдельны�
 | фетч объекта | `GET /replication/object/{bucket}/{key+}` | Актуальное состояние ключа (принцип 6): **200** + поток тела (без S3-лимита 5 ГБ — грань служебная) + заголовки `x-owns3-repl-modtime` (unix-мс), `x-owns3-repl-sha256`, `x-owns3-repl-etag`, `x-owns3-repl-origin` (HostId источника), `Content-Type`, `x-amz-meta-*` \| **200** + заголовок `x-owns3-repl-tombstone: <deleteTimeUnixMs>` без тела (ключ удалён, tombstone-знание живо) \| **404** (ключа нет, tombstone-знание истекло — приёмник состояние не меняет). SHA-256 тела приёмник сверяет на лету с `x-owns3-repl-sha256` — расхождение = фетч-ошибка → повтор |
 | листинг | `GET /replication/listing?bucket=&marker=&max-keys=` | Постраничный листинг ключей бакета — источник для reconcile/backfill (§9): **200** `{entries:[{key, modTimeUnixMs, contentSha256, size}], nextMarker}`; порядок — байтовый UTF-8 (Utf8ByteOrder), пагинация по маркеру; `max-keys` дефолт 1000, потолок 1000. **Без `bucket` (или пустой)** — `{buckets:[{name, creationDateUnixMs}]}` — состав бакетов для backfill (§9) |
 | ping | `GET /replication/ping` | Активная проба линка (источник — админ-trigger `POST /admin/replication/probe`, §2): **200, тело отсутствует**. Полный конвейер грани без изъятий: SigV4-подпись, политика строго `replication` (глава 05 §3, прочие — 403 `AccessDenied`), accessKey подписи обязан числиться соседом приёмника (резолв `sourceName`, §2). Приёмник ничего не пишет и не применяет: дедуп, fetch-очереди, курсоры, tombstones, счётчики применения ping-ом не затрагиваются (состояние байт-в-байт то же). Прочие методы — **400 `InvalidArgument`** («Unknown replication resource») |
+| join | `POST /replication/join` — JSON `{advertisedEndpoint}` + заголовок `X-OwnS3-Peer-Certificate` | До-join аутентификация по сертификату (§2/§6); ответ 200 `{name, advertisedEndpoint, certificate}` + `X-OwnS3-Peer-Signature`; 403/409/400 — по §2 |
 
 ## 7. Приёмник: fetch-очередь, LWW, tombstones, место на диске
 
@@ -480,7 +568,7 @@ bucket (§6) — недостающие бакеты создаются с Creat
 
 **Статус** — `GET /admin/replication/status` (глава 05 §7): `active`,
 `outbox {bytes, budgetBytes, budgetExceeded, lastSeqNo}` и по каждому
-соседу `{name, online, acceptedSeqNo, queueDepth, deliveryLagSeconds,
+соседу `{name, auth, online, acceptedSeqNo, queueDepth, deliveryLagSeconds,
 fetchQueueDepth, fetchLagSeconds, fetchPaused, reconcileRunning,
 reconcilePosition, counters {notifiedAccepted, notifiedBackoff,
 notifiedRetry, fetched, applied, skipped, conflict}}`.
@@ -488,7 +576,9 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 **Лог-события**: LWW-конфликты (ключ, обе версии modTime/sha, origin);
 пауза/резюм фетчей по месту; принудительный тримминг журнала (потери
 уведомлений); отложенные бакетные удаления; budget-exceeded; грязная
-остановка → стартовый reconcile; запуск/завершение reconcile.
+остановка → стартовый reconcile; запуск/завершение reconcile; join
+(обе стороны: имя/endpoint пира), удаление соседа, отзыв (deny-list)
+и снятие отзыва.
 
 **Сквозные измерения в E2E** (не рантайм-метрики узлов): end-to-end
 латентность репликации и время восстановления связи после срастания
@@ -505,6 +595,7 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 ```
 .owns3.sys/replication/
 ├── targets.json                    ← состав mesh (§2)
+├── denylist.json                   ← локальный deny-list отзыва (§2)
 ├── state.json                      ← маркер чистого завершения (§7)
 ├── outbox/seg-<startSeqNo>.log     ← журнал доставки (§4)
 ├── cursors/<name>.json             ← watermark приёма per-target (§5)
@@ -532,7 +623,15 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 | `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | период reconcile (§9) | **60** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | ёмкость fetch-очереди на источник (§7) | **10000** |
 | `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` | per-target таймаут ping-пробы линков (§2) | **2000** |
+| `OWNS3_REPLICATION_CERT` / `OWNS3_REPLICATION_CERT_PATH` | сертификат пира (JSON, значение/путь — прецедент TLS, глава 05 §4); секция `OwnS3:Replication:Identity:Certificate`/`CertificatePath` | нет — peer-схема не активна |
+| `OWNS3_REPLICATION_PRIVATE_KEY` / `OWNS3_REPLICATION_PRIVATE_KEY_PATH` | приватный ключ identity (PEM); секция `OwnS3:Replication:Identity:PrivateKeyPem`/`PrivateKeyPath` | нет |
+| `OWNS3_REPLICATION_TRUST_CA` / `OWNS3_REPLICATION_TRUST_CA_PATH` | trust-anchor CA `{"name","publicKeyPem"}`; секция `OwnS3:Replication:TrustCa:Certificate`/`CertificatePath` | нет — join-ручной режим |
+| `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` | `scheme://host:port` себя для join; секция `OwnS3:Replication:AdvertisedEndpoint` | нет |
 | `OWNS3_HOST_ID` | originHostId уведомлений — диагностика (§2; глава 05 §4) | имя контейнера |
+
+Identity/trust/advertised — материал env каждого старта (как TLS,
+глава 05 §4), на томе не живёт; на томе из репликационного состояния
+добавляется только `denylist.json`.
 
 **Исполнение в App** (глава 01 §3 — App стыкует): события в 7 хендлерах
 после коммит-поинта (§3); replication-грань и админ-грань в
@@ -573,9 +672,11 @@ stop (drain → flush курсоров → маркер clean). Путь зап�
 - **Доставка — логическая**: приёмник пишет своим режимом хранения
   (single/EC независимо от режима источника); реплицируются объект как
   данные+метаданные, не xl-раскладка.
-- **Один trust-домен**: peer-креды per-install (targets.json — секрет
-  на локальном томе — допускается по прецеденту главы 05 §2);
-  enterprise-IAM/mTLS-pKI — вне (roadmap-паттерн).
+- **Один trust-домен**: peer-креды per-install (targets.json — секрет на
+  локальном томе — допускается по прецеденту главы 05 §2) ИЛИ
+  асимметричные ключи с опциональным CA per-install (§2: legacy/key);
+  ротация ключей/CA и CRL — вне (roadmap-паттерн); enterprise-IAM/mTLS
+  — вне.
 - **Existing-регресс**: соседей нет → поведение байт-в-байт как
   single: события не ставятся, каталог `replication/` не создаётся,
   грань `/replication/*` отвечает 403/404 по §6, метрики репликации

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
 using OwnS3.Replication;
 
@@ -43,8 +44,8 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
         // Assert — seed переносится в targets.json, репликация активна
         File.Exists(TargetsPath).Should().BeTrue();
         targets.Active.Should().BeTrue();
-        targets.Snapshot.Should().ContainSingle()
-            .Which.Should().BeEquivalentTo(new TargetRecord(SeedA.Name, SeedA.Endpoint, SeedA.AccessKey, SeedA.SecretKey));
+        targets.Snapshot.Should().ContainSingle().Which.Should().BeEquivalentTo(
+            new TargetRecord(SeedA.Name, SeedA.Endpoint, TargetRecord.AuthLegacy, SeedA.AccessKey, SeedA.SecretKey));
     }
 
     [Fact]
@@ -84,8 +85,8 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
         targets.TargetsChanged += snapshot => changed = snapshot;
         var replacement = new List<TargetRecord>
         {
-            new("peer-b", "http://peer-b:9000", "ak-b", "sk-b"),
-            new("peer-c", "http://peer-c:9000", "ak-c", "sk-c"),
+            new("peer-b", "http://peer-b:9000", TargetRecord.AuthLegacy, "ak-b", "sk-b"),
+            new("peer-c", "http://peer-c:9000", TargetRecord.AuthLegacy, "ak-c", "sk-c"),
         };
 
         // Act
@@ -106,8 +107,8 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
         var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
         var withDuplicateKey = new List<TargetRecord>
         {
-            new("peer-a", "http://a:9000", "shared-key", "s1"),
-            new("peer-b", "http://b:9000", "shared-key", "s2"),
+            new("peer-a", "http://a:9000", TargetRecord.AuthLegacy, "shared-key", "s1"),
+            new("peer-b", "http://b:9000", TargetRecord.AuthLegacy, "shared-key", "s2"),
         };
 
         // Act
@@ -127,7 +128,7 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
         var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
         var withBadEndpoint = new List<TargetRecord>
         {
-            new("peer-x", endpoint, "ak", "sk"),
+            new("peer-x", endpoint, TargetRecord.AuthLegacy, "ak", "sk"),
         };
 
         // Act
@@ -144,8 +145,8 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
         var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
         var withDuplicate = new List<TargetRecord>
         {
-            new("peer-a", "http://a:9000", "ak-a", "sk-a"),
-            new("peer-a", "http://b:9000", "ak-b", "sk-b"),
+            new("peer-a", "http://a:9000", TargetRecord.AuthLegacy, "ak-a", "sk-a"),
+            new("peer-a", "http://b:9000", TargetRecord.AuthLegacy, "ak-b", "sk-b"),
         };
 
         // Act
@@ -153,5 +154,191 @@ public class ReplicationTargetsTests : IClassFixture<ReplicationTargetsFixture>,
 
         // Assert — имена соседей уникальны (глава 07 §2)
         act.Should().Throw<ArgumentException>();
+    }
+
+    // ── t39: записи двух видов (auth legacy|key, глава 07 §2) ──
+
+    [Fact]
+    public void Load_OldFormatFile_ReadsAsLegacy()
+    {
+        // Arrange — старый targets.json (4 поля, без auth)
+        Directory.CreateDirectory(_fixture.Dir);
+        File.WriteAllText(TargetsPath,
+            """[{"name":"peer-a","endpoint":"http://peer-a:9000","accessKey":"ak-a","secretKey":"sk-a"}]""");
+
+        // Act
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+
+        // Assert — читается как legacy, креды на месте (обратная совместимость формата)
+        var record = targets.Snapshot.Should().ContainSingle().Which;
+        record.Auth.Should().Be(TargetRecord.AuthLegacy);
+        record.AccessKey.Should().Be("ak-a");
+        record.SecretKey.Should().Be("sk-a");
+    }
+
+    [Fact]
+    public void Replace_KeyRecord_PersistsAuthAndPem()
+    {
+        // Arrange — key-запись с валидным PEM публичного ключа ECDSA P-256
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var pem = ECDsa.Create(ECCurve.NamedCurves.nistP256).ExportSubjectPublicKeyInfoPem();
+        var keyTarget = new TargetRecord("peer-k", "http://peer-k:9000", TargetRecord.AuthKey, PublicKeyPem: pem);
+
+        // Act
+        targets.Replace([keyTarget]);
+
+        // Assert — файл перечитан Load'ом: auth и PEM на месте, кредов нет
+        var reloaded = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var record = reloaded.Snapshot.Should().ContainSingle().Which;
+        record.Auth.Should().Be(TargetRecord.AuthKey);
+        record.PublicKeyPem.Should().Be(pem);
+        record.AccessKey.Should().BeNull();
+        record.SecretKey.Should().BeNull();
+    }
+
+    [Fact]
+    public void Replace_KeyRecord_InvalidPem_Throws()
+    {
+        // Arrange — key-запись с мусорным PEM
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var bad = new TargetRecord("peer-k", "http://k:9000", TargetRecord.AuthKey, PublicKeyPem: "not-a-pem");
+
+        // Act
+        var act = () => targets.Replace([bad]);
+
+        // Assert — key-запись требует валидный PEM (глава 07 §2)
+        act.Should().Throw<ArgumentException>().WithMessage("*peer-k*");
+    }
+
+    [Fact]
+    public void Replace_KeyRecord_MissingPublicKey_Throws()
+    {
+        // Arrange — key-запись без publicKeyPem
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var bad = new TargetRecord("peer-k", "http://k:9000", TargetRecord.AuthKey);
+
+        // Act
+        var act = () => targets.Replace([bad]);
+
+        // Assert
+        act.Should().Throw<ArgumentException>().WithMessage("*peer-k*");
+    }
+
+    [Fact]
+    public void Replace_LegacyRecord_MissingCreds_Throws()
+    {
+        // Arrange — legacy-запись без пары кредов
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var bad = new TargetRecord("peer-a", "http://a:9000", TargetRecord.AuthLegacy);
+
+        // Act
+        var act = () => targets.Replace([bad]);
+
+        // Assert — legacy требует пару accessKey/secretKey (глава 07 §2)
+        act.Should().Throw<ArgumentException>().WithMessage("*peer-a*");
+    }
+
+    [Fact]
+    public void Replace_MixedList_AccessKeyUniqueAmongLegacyOnly()
+    {
+        // Arrange — две key-записи с пустым accessKey (дедуп их не касается)
+        var targets = ReplicationTargets.Load(_fixture.Dir, [], NullLogger<ReplicationTargets>.Instance);
+        var pem1 = ECDsa.Create(ECCurve.NamedCurves.nistP256).ExportSubjectPublicKeyInfoPem();
+        var pem2 = ECDsa.Create(ECCurve.NamedCurves.nistP256).ExportSubjectPublicKeyInfoPem();
+        var keys = new List<TargetRecord>
+        {
+            new("k1", "http://k1:9000", TargetRecord.AuthKey, PublicKeyPem: pem1),
+            new("k2", "http://k2:9000", TargetRecord.AuthKey, PublicKeyPem: pem2),
+        };
+
+        // Act / Assert — key-записи проходят без accessKey
+        var actKeys = () => targets.Replace(keys);
+        actKeys.Should().NotThrow();
+
+        // Arrange — дубль accessKey среди legacy — отказ (идентификатор источника)
+        var legacies = new List<TargetRecord>
+        {
+            new("l1", "http://l1:9000", TargetRecord.AuthLegacy, "shared", "s1"),
+            new("l2", "http://l2:9000", TargetRecord.AuthLegacy, "shared", "s2"),
+        };
+
+        // Act / Assert
+        var actLegacy = () => targets.Replace(legacies);
+        actLegacy.Should().Throw<ArgumentException>().WithMessage("*shared*");
+    }
+
+    [Fact]
+    public void AddOrReplace_NewTarget_PersistsAndRaisesChanged()
+    {
+        // Arrange — активный контур с peer-a; приёмник события замены состава
+        var targets = ReplicationTargets.Load(_fixture.Dir, [SeedA], NullLogger<ReplicationTargets>.Instance);
+        IReadOnlyList<TargetRecord>? changed = null;
+        targets.TargetsChanged += snapshot => changed = snapshot;
+        var pem = ECDsa.Create(ECCurve.NamedCurves.nistP256).ExportSubjectPublicKeyInfoPem();
+
+        // Act — добавление key-соседа (join, глава 07 §2)
+        targets.AddOrReplace(new TargetRecord("peer-k", "http://peer-k:9000", TargetRecord.AuthKey,
+            PublicKeyPem: pem));
+
+        // Assert — снапшот дополнен, событие поднято, файл перечитан Load'ом
+        targets.Snapshot.Should().HaveCount(2);
+        changed.Should().NotBeNull().And.HaveCount(2);
+        var reloaded = ReplicationTargets.Load(_fixture.Dir, [SeedA], NullLogger<ReplicationTargets>.Instance);
+        reloaded.Snapshot.Should().Contain(t => t.Name == "peer-k" && t.Auth == TargetRecord.AuthKey);
+    }
+
+    [Fact]
+    public void AddOrReplace_ExistingName_ReplacesEndpointAndKey()
+    {
+        // Arrange — контур с peer-a (legacy)
+        var targets = ReplicationTargets.Load(_fixture.Dir, [SeedA], NullLogger<ReplicationTargets>.Instance);
+        var pem = ECDsa.Create(ECCurve.NamedCurves.nistP256).ExportSubjectPublicKeyInfoPem();
+
+        // Act — вторая запись тем же именем
+        targets.AddOrReplace(new TargetRecord("peer-a", "http://peer-a-new:9000", TargetRecord.AuthKey,
+            PublicKeyPem: pem));
+
+        // Assert — запись заменена (не дубль), endpoint и вид обновлены
+        targets.Snapshot.Should().ContainSingle();
+        targets.Snapshot[0].Endpoint.Should().Be("http://peer-a-new:9000");
+        targets.Snapshot[0].Auth.Should().Be(TargetRecord.AuthKey);
+    }
+
+    [Fact]
+    public void Remove_Existing_TrueAndGone()
+    {
+        // Arrange — соседи peer-a/peer-b; у peer-b курсор приёма на диске
+        var targets = ReplicationTargets.Load(_fixture.Dir, [SeedA, SeedB],
+            NullLogger<ReplicationTargets>.Instance);
+        var cursorsDir = Path.Combine(_fixture.Dir, "cursors");
+        Directory.CreateDirectory(cursorsDir);
+        var cursorFile = Path.Combine(cursorsDir, "peer-b.json");
+        File.WriteAllText(cursorFile, """{"acceptedSeqNo":42,"mode":"tail"}""");
+
+        // Act
+        var removed = targets.Remove("peer-b");
+
+        // Assert — удалён из снапшота и файла; курсор соседа жив
+        // (возврат соседа продолжится с места, глава 07 §2)
+        removed.Should().BeTrue();
+        targets.Snapshot.Select(t => t.Name).Should().ContainSingle().Which.Should().Be("peer-a");
+        var reloaded = ReplicationTargets.Load(_fixture.Dir, [SeedA], NullLogger<ReplicationTargets>.Instance);
+        reloaded.Snapshot.Select(t => t.Name).Should().NotContain("peer-b");
+        File.Exists(cursorFile).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Remove_Unknown_False()
+    {
+        // Arrange — контур с peer-a
+        var targets = ReplicationTargets.Load(_fixture.Dir, [SeedA], NullLogger<ReplicationTargets>.Instance);
+        var before = File.ReadAllText(TargetsPath);
+
+        // Act
+        var removed = targets.Remove("no-such");
+
+        // Assert — false, персист не менялся
+        removed.Should().BeFalse();
+        File.ReadAllText(TargetsPath).Should().Be(before);
     }
 }

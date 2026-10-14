@@ -55,6 +55,15 @@ foreach (var (env, key) in new[]
              ("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS", "OwnS3:Replication:ReconcileIntervalSeconds"),
              ("OWNS3_REPLICATION_FETCH_QUEUE_MAX", "OwnS3:Replication:FetchQueueMax"),
              ("OWNS3_REPLICATION_PROBE_TIMEOUT_MS", "OwnS3:Replication:ProbeTimeoutMs"),
+             // PeerAuth-материал (t39, глава 07 §11): identity/trust/advertised — env
+             // каждого старта (прецедент TLS-материала), на томе не персистится.
+             ("OWNS3_REPLICATION_CERT", "OwnS3:Replication:Identity:Certificate"),
+             ("OWNS3_REPLICATION_CERT_PATH", "OwnS3:Replication:Identity:CertificatePath"),
+             ("OWNS3_REPLICATION_PRIVATE_KEY", "OwnS3:Replication:Identity:PrivateKeyPem"),
+             ("OWNS3_REPLICATION_PRIVATE_KEY_PATH", "OwnS3:Replication:Identity:PrivateKeyPath"),
+             ("OWNS3_REPLICATION_TRUST_CA", "OwnS3:Replication:TrustCa:Certificate"),
+             ("OWNS3_REPLICATION_TRUST_CA_PATH", "OwnS3:Replication:TrustCa:CertificatePath"),
+             ("OWNS3_REPLICATION_ADVERTISED_ENDPOINT", "OwnS3:Replication:AdvertisedEndpoint"),
          })
 {
     var value = Environment.GetEnvironmentVariable(env);
@@ -220,13 +229,30 @@ builder.Services.AddSingleton<OwnS3.Replication.IReplicationEventSink>(sp =>
         sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
         sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
         sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
+// PeerAuth-контур (t39, глава 07 §2): identity/trust — материал env каждого старта;
+// значение вычисляет fail-fast-блок ПОСЛЕ Build (замыкание, как tlsCert) — до того
+// обе стороны join/peer-подписи исходящих неактивны (null = Existing-регресс).
+OwnS3.Replication.PeerIdentity? peerIdentity = null;
+OwnS3.Protocol.PeerAuth.PeerTrustAnchor? peerTrust = null;
+// DenyList — локальный список отзыва (.owns3.sys/replication/denylist.json, глава 07 §2):
+// каталог создаётся при первой записи — identity без соседей каталог не трогает.
+builder.Services.AddSingleton(sp => new OwnS3.Replication.DenyList(
+    Path.Combine(ReplicationSysDir(sp), "denylist.json"), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new OwnS3.Replication.JoinPeerService(
+    peerIdentity, peerTrust,
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    sp.GetRequiredService<OwnS3.Replication.DenyList>(),
+    new HttpClient(), sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<OwnS3.Replication.JoinPeerService>>(),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.AdvertisedEndpoint));
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
-    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>()));
+    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>(),
+    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>()));
 
 // Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
 // (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.
@@ -235,6 +261,7 @@ builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationProber(
     ReplicationTransportFactory(sp),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value));
 // Админ-грань mesh-репликации (задача 14): targets/status/reconcile/sync-report/probe
+// (+ t39: join/delete/denylist)
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
@@ -244,7 +271,10 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationAdminHandl
     sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
-    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>()));
+    sp.GetRequiredService<OwnS3.Replication.ReplicationProber>(),
+    sp.GetRequiredService<OwnS3.Replication.DenyList>(),
+    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>(),
+    sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationAdminHandlers>>()));
 
 // Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
 // обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —
@@ -385,6 +415,29 @@ catch (Exception ex)
     Environment.Exit(1);
 }
 
+// PeerAuth-материал (t39, глава 07 §2/§11): identity/trust — env каждого старта
+// (персиста на томе нет); fail-fast ДО прослушивания — секция задана частично/
+// с битым материалом = отказ старта, не задана → null (Existing-регресс).
+// Механика отказа: LogCritical + проброс исключения — unhandled исключение даёт
+// тот же отказ старта (хост не поднимается, процесс с ненулевым кодом), при
+// этом остаётся тестируемым из WAF-хоста (прецедент FailFastScenarios: отказ
+// старта всплывает исключением из CreateClient; Environment.Exit здесь убил бы
+// тестовый процесс).
+try
+{
+    var replicationOptions = app.Services.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value;
+    peerIdentity = replicationOptions.Identity is null
+        ? null
+        : OwnS3.Replication.PeerIdentityLoader.Load(replicationOptions.Identity);
+    peerTrust = OwnS3.Replication.PeerIdentityLoader.LoadTrustAnchor(replicationOptions.TrustCa);
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex,
+        "OwnS3:Replication: невалидный identity/trust-материал — отказ старта (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA)");
+    throw;
+}
+
 app.Urls.Clear();
 app.Urls.Add($"{(tlsCert is null ? "http" : "https")}://*:{options.Server.Port}");
 
@@ -412,6 +465,22 @@ catch (Exception ex)
     Environment.Exit(1);
 }
 
+// DenyList (t39, глава 07 §2): НЕМЕДЛЕННЫЙ резолв ПОСЛЕ валидации конфигурации/тома
+// (выше) — битый denylist.json = отказ старта с точной атрибуцией, а не ленивый
+// резолв на первом HTTP-запросе (каждый запрос — 500). Механика отказа — как у
+// PeerAuth-материала выше: LogCritical + проброс (тестируемо из WAF-хоста,
+// Environment.Exit здесь убил бы тестовый процесс).
+try
+{
+    _ = app.Services.GetRequiredService<OwnS3.Replication.DenyList>();
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex,
+        "OwnS3:Replication: невалидный deny-list (.owns3.sys/replication/denylist.json) — отказ старта");
+    throw;
+}
+
 // EC-режим: инструменты OwnS3EcMetrics создаются конструктором (observable-gauge
 // + счётчики heal), класс никто не инжектит — без явного инстанса серии не
 // экспортировались бы. Meter в DI — только при включённых метриках (05 §5).
@@ -433,10 +502,12 @@ static string ReplicationSysDir(IServiceProvider sp) => Path.Combine(
     sp.GetRequiredService<StorageModeInfo>().DataRoots[0], ".owns3.sys", "replication");
 
 // Исходящий транспорт mesh (глава 07 §6): HttpClient per-цель строит ReplicationHttpClient
-// (таймаут 10 с, подпись SigV4Signer кредами цели).
-static OwnS3.Replication.Transport.IReplicationTransport ReplicationTransportFactory(IServiceProvider sp) =>
+// (таймаут 10 с, подпись SigV4Signer кредами цели; t39 — peer-подпись key-записей
+// при заданном identity; замыкание на peerIdentity — значение заполнено fail-fast-блоком
+// до первого ленивого резолва лямбд DI).
+OwnS3.Replication.Transport.IReplicationTransport ReplicationTransportFactory(IServiceProvider sp) =>
     new OwnS3.Replication.Transport.ReplicationHttpClient(new HttpClient(),
-        sp.GetRequiredService<TimeProvider>());
+        sp.GetRequiredService<TimeProvider>(), peerIdentity);
 
 /// <summary>Маркер для WebApplicationFactory интеграционных тестов.</summary>
 public partial class Program;

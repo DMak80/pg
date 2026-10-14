@@ -221,7 +221,7 @@ public class SigV4SignerTests
     }
 
     private static TargetRecord Target(string name) =>
-        new(name, "http://neighbor:9000", AccessKey, SecretKey);
+        new(name, "http://neighbor:9000", TargetRecord.AuthLegacy, AccessKey, SecretKey);
 
     private static S3RequestModel BuildRequestModel(string path, string query, string authorization,
         string amzDate, string payloadHash) =>

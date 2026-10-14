@@ -3,12 +3,14 @@ using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using OwnS3.Protocol.Auth;
+using OwnS3.Protocol.PeerAuth;
 
 namespace OwnS3.Replication.Transport;
 
-// Реализация IReplicationTransport поверх HttpClient (t35, глава 07 §6): подпись
-// всех запросов SigV4Signer'ом с accessKey/secretKey цели; таймаут запроса 10 с;
-// тело фетча — потоковым (HttpCompletionOption.ResponseHeadersRead).
+// Реализация IReplicationTransport поверх HttpClient (t35/t39, глава 07 §6): схема
+// подписи — по виду записи цели. legacy — SigV4Signer с accessKey/secretKey цели;
+// key — peer-подпись приватным ключом identity (схема OWNS3-PEER-ECC-P256-SHA256).
+// Таймаут запроса 10 с; тело фетча — потоковым (ResponseHeadersRead).
 public sealed class ReplicationHttpClient : IReplicationTransport
 {
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
@@ -17,11 +19,14 @@ public sealed class ReplicationHttpClient : IReplicationTransport
 
     private readonly HttpClient _http;
     private readonly TimeProvider _timeProvider;
+    private readonly PeerIdentity? _identity;
 
-    public ReplicationHttpClient(HttpClient http, TimeProvider? timeProvider = null)
+    public ReplicationHttpClient(HttpClient http, TimeProvider? timeProvider = null,
+        PeerIdentity? identity = null)
     {
         _http = http;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _identity = identity;
         if (_http.Timeout == default || _http.Timeout > RequestTimeout)
             _http.Timeout = RequestTimeout;
     }
@@ -29,6 +34,15 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     public async Task<Result<long>> SendNotificationsAsync(TargetRecord target, NotificationBatchRequest batch,
         CancellationToken ct)
     {
+        // Ключ-сосед без identity: исходящая peer-подпись невозможна — терминальный
+        // отказ транспорта (бэкофф вызывающего), НЕ исключение сквозь границу.
+        // Пре-чек обязателен ДО BuildRequest: здесь BuildRequest вызывается ВНЕ
+        // try — throw вылетел бы из метода и уронил цикл нотификатора
+        // (NotificationDispatcher зовёт transport без catch), нарушение
+        // Result-контракта (глава 07 §11, конвенция 01 §4).
+        if (target.Auth == TargetRecord.AuthKey && _identity is null)
+            return Result<long>.Failed(new PeerRejectedException(
+                $"нет identity для key-записи {target.Name} (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)"));
         var payload = JsonSerializer.SerializeToUtf8Bytes(batch, ReplicationTransportJson.Options);
         var payloadHash = SigV4Core.HexSha256(payload);
         using var request = BuildRequest(target, HttpMethod.Post, "/replication/notifications", "",
@@ -60,6 +74,10 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     public async Task<Result<FetchOutcome>> FetchObjectAsync(TargetRecord target, string bucket, string key,
         CancellationToken ct)
     {
+        // Пре-чек «key без identity» — ДО BuildRequest (см. SendNotificationsAsync).
+        if (target.Auth == TargetRecord.AuthKey && _identity is null)
+            return Result<FetchOutcome>.Failed(new PeerRejectedException(
+                $"нет identity для key-записи {target.Name} (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)"));
         var path = $"/replication/object/{EscapeKeyPath(bucket)}/{EscapeKeyPath(key)}";
         using var request = BuildRequest(target, HttpMethod.Get, path, "", payload: null, payloadHash: null);
         HttpResponseMessage response;
@@ -129,6 +147,10 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     public async Task<Result<ReplicationListingResponse>> ListAsync(TargetRecord target, string bucket, string? marker,
         int maxKeys, CancellationToken ct)
     {
+        // Пре-чек «key без identity» — ДО BuildRequest (см. SendNotificationsAsync).
+        if (target.Auth == TargetRecord.AuthKey && _identity is null)
+            return Result<ReplicationListingResponse>.Failed(new PeerRejectedException(
+                $"нет identity для key-записи {target.Name} (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)"));
         var query = BuildListingQuery(bucket, marker, maxKeys);
         byte[] payload;
         try
@@ -154,6 +176,11 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     public async Task<Result<IReadOnlyList<(string Name, long CreationUnixMs)>>> ListingBucketsAsync(TargetRecord target,
         CancellationToken ct)
     {
+        // Пре-чек «key без identity» — ДО BuildRequest (см. SendNotificationsAsync).
+        if (target.Auth == TargetRecord.AuthKey && _identity is null)
+            return Result<IReadOnlyList<(string Name, long CreationUnixMs)>>.Failed(
+                new PeerRejectedException(
+                    $"нет identity для key-записи {target.Name} (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)"));
         byte[] payload;
         try
         {
@@ -182,6 +209,10 @@ public sealed class ReplicationHttpClient : IReplicationTransport
     // таймаут — linked CTS поверх общего таймаута HttpClient 10 с (глава 07 §2).
     public async Task<Result<PingResult>> PingAsync(TargetRecord target, TimeSpan timeout, CancellationToken ct)
     {
+        // Пре-чек «key без identity» — ДО BuildRequest (см. SendNotificationsAsync).
+        if (target.Auth == TargetRecord.AuthKey && _identity is null)
+            return Result<PingResult>.Failed(new PeerRejectedException(
+                $"нет identity для key-записи {target.Name} (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)"));
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         var sw = Stopwatch.StartNew();
@@ -254,15 +285,40 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         var payloadHashValue = payloadHash ?? SigV4Core.EmptySha256; // GET без тела
         var endpoint = new Uri(target.Endpoint);
         var at = _timeProvider.GetUtcNow();
-        var amzDate = at.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
-        var headers = new List<(string Name, string Value)>
+        List<(string Name, string Value)> headers;
+        string authorization;
+        if (target.Auth == TargetRecord.AuthKey)
         {
-            ("host", endpoint.Authority),
-            ("x-amz-date", amzDate),
-            ("x-amz-content-sha256", payloadHashValue),
-        };
-        var (authorization, _, _) = SigV4Signer.Sign(target.SecretKey, target.AccessKey, method.Method, path,
-            query, headers, payloadHashValue, at);
+            // Схема OWNS3-PEER-ECC-P256-SHA256 для key-записей (t39, глава 07 §6):
+            // подпись приватным ключом identity; identity != null гарантировано
+            // пре-чеками всех публичных методов, throw — страховка будущих точек
+            // вызова BuildRequest.
+            var peerIdentity = _identity ?? throw new InvalidOperationException(
+                $"key-запись {target.Name} без identity (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY)");
+            var peerDate = at.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+            headers =
+            [
+                ("host", endpoint.Authority),
+                ("x-owns3-peer-date", peerDate),
+                ("x-owns3-peer-content-sha256", payloadHashValue),
+            ];
+            (authorization, _, _) = PeerRequestSigner.Sign(peerIdentity.Key, peerIdentity.Name,
+                method.Method, path, query, headers, payloadHashValue, at);
+        }
+        else
+        {
+            // legacy: SigV4-подпись кредами цели — прежняя механика байт-в-байт
+            // (креды обязательны по валидации состава, глава 07 §2).
+            var amzDate = at.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+            headers =
+            [
+                ("host", endpoint.Authority),
+                ("x-amz-date", amzDate),
+                ("x-amz-content-sha256", payloadHashValue),
+            ];
+            (authorization, _, _) = SigV4Signer.Sign(target.SecretKey!, target.AccessKey!, method.Method,
+                path, query, headers, payloadHashValue, at);
+        }
         // URI строкой: UriBuilder{Path=...} сбрасывает нестандартный порт (80/443)
         var uriText = $"{endpoint.AbsoluteUri.TrimEnd('/')}{path}{(string.IsNullOrEmpty(query) ? "" : $"?{query}")}";
         var request = new HttpRequestMessage(method, new Uri(uriText));

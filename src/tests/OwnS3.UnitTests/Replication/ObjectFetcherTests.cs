@@ -46,7 +46,7 @@ public sealed class ObjectFetcherFixture : IDisposable
     public ObjectFetcher Create(long freeDisk = long.MaxValue, long minDisk = 0, int pollMs = 5)
     {
         SetFreeDisk(freeDisk);
-        return new ObjectFetcher(new TargetRecord("peer-a", "http://peer-a:9000", "ak", "sk"),
+        return new ObjectFetcher(new TargetRecord("peer-a", "http://peer-a:9000", TargetRecord.AuthLegacy, "ak", "sk"),
             Queue, Transport, Applier, Counters,
             () => Interlocked.Read(ref _freeDisk),
             new ReplicationOptions { DiskFreeMinBytes = minDisk, Parallelism = 1, BackoffMaxSec = 60 },
@@ -448,7 +448,7 @@ public class ObjectFetcherTests : IClassFixture<ObjectFetcherFixture>
         // Arrange — 3 фетч-задачи (по ключу на задачу, у транспорта свой исход на каждую)
         var fetcher = _fixture.Create();
         var queue = new FetchQueue(10);
-        var fetcherWithQueue = new ObjectFetcher(new TargetRecord("peer-a", "http://a:9000", "ak", "sk"),
+        var fetcherWithQueue = new ObjectFetcher(new TargetRecord("peer-a", "http://a:9000", TargetRecord.AuthLegacy, "ak", "sk"),
             queue, _fixture.Transport, _fixture.Applier, _fixture.Counters, () => long.MaxValue,
             new ReplicationOptions { DiskFreeMinBytes = 0 }, TimeProvider.System,
             NullLogger<ObjectFetcher>.Instance, _fixture.Metrics);
