@@ -40,6 +40,28 @@ public sealed class JoinConflictException(string message) : Exception(message);
 /// маркер 502 (глава 07 §2: состав не менялся).</summary>
 public sealed class JoinBadGatewayException(string message) : Exception(message);
 
+// ── owns3-denylist-replace: ошибки входящей перезаписи deny-list
+// (глава 07 §2/§6, конвенция 01 §4) ──
+
+/// <summary>Перезапись deny-list отказана — маркер 403: конфигурация (ручной
+/// режим состава), доверие (CA/истёк/deny-list вызывающего) или подпись запроса.
+/// ErrorCode — исходный код каталога подписи для отказов верификации; грань
+/// отдаст errorCode ?? AccessDenied (AuthorizationHeaderMalformed → 400).</summary>
+public sealed class DenyReplaceRefusedException(string message, S3ErrorCode? errorCode = null)
+    : Exception(message)
+{
+    public S3ErrorCode? ErrorCode { get; } = errorCode;
+}
+
+/// <summary>Тело перезаписи malformed/невалидно (не-JSON, нет entries, пустые
+/// поля, битый PEM, дубли имён/ключей) — маркер 400 JSON {error}; список
+/// не менялся.</summary>
+public sealed class DenyReplaceBadRequestException(string message) : Exception(message);
+
+/// <summary>Исход входящей перезаписи: применённый состав (число записей —
+/// лог/тесты, глава 07 §10).</summary>
+public sealed record DenyListReplaced(int Count);
+
 /// <summary>Исход исходящей стороны JoinAsync: сосед добавлен в состав.</summary>
 public sealed record PeerJoined(string Name, string Endpoint, string PublicKeyPem);
 
