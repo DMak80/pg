@@ -62,6 +62,24 @@ public static class S3ProcessCommon
     public static string NodeUsageKey(string cluster, string node)
         => $"/s3/clusters/{cluster}/nodes/{node}/usage";
 
+    // Декларации mesh (arch/23 §2): граф репликации и отзыв ключей кластера.
+    public static string LinksKey(string cluster)
+        => $"/s3/clusters/{cluster}/links";
+
+    public static string DenyListKey(string cluster)
+        => $"/s3/clusters/{cluster}/denylist";
+
+    // PKI репликации per-cluster (arch/23 §2/§6): CA, сертификат оркестратора,
+    // материал инстанса (ленивый выпуск, txn put-if-absent).
+    public static string ClusterPkiCaKey(string cluster)
+        => $"/s3/clusters/{cluster}/pki/ca";
+
+    public static string OrchestratorPkiKey(string cluster)
+        => $"/s3/clusters/{cluster}/pki/orchestrator";
+
+    public static string NodePkiKey(string cluster, string node)
+        => $"/s3/clusters/{cluster}/nodes/{node}/pki";
+
     public static string PortAllocKey(string cluster)
         => $"/s3worker/portalloc/{cluster}";
 

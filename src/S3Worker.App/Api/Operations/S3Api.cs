@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using S3Worker.Provisioning.Processes;
 using Shared.Core;
 using Shared.Etcd.Client;
 
@@ -172,6 +173,14 @@ public static class S3ApiHelpers
         => $"/s3/clusters/{cluster}/nodes/{node}/{leaf}";
 
     public static string RotationKey(string cluster) => $"/s3worker/rotations/{cluster}";
+
+    // Ключи mesh-деклараций и PKI — делегирование S3ProcessCommon (одна точка
+    // истины формата с процессами; arch/23 §2).
+    public static string LinksKey(string cluster) => S3ProcessCommon.LinksKey(cluster);
+
+    public static string DenyListKey(string cluster) => S3ProcessCommon.DenyListKey(cluster);
+
+    public static string NodePkiKey(string cluster, string node) => S3ProcessCommon.NodePkiKey(cluster, node);
 
     // Failover-вызов: первый успешный endpoint выигрывает.
     public static async Task<Result<T>> CallAsync<T>(

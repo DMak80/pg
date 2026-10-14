@@ -94,7 +94,7 @@ public class RemoveNodeProcessTests
             new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.ToRemove, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
-            null, null);
+            null, null, null);
 
         // Act
         var result = await process.TickAsync(single, TestContext.Current.CancellationToken);
@@ -143,7 +143,7 @@ public class RemoveNodeProcessTests
             new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
-            null, null);
+            null, null, null);
 
         // Act
         var result = await process.TickAsync(snap, TestContext.Current.CancellationToken);

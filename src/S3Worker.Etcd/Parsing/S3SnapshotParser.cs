@@ -26,6 +26,8 @@ public static class S3SnapshotParser
         public readonly string Name = name;
         public string? ConfigRaw;
         public string? Endpoints;
+        public string? LinksRaw;
+        public string? DenyListRaw;
         public readonly Dictionary<string, NodeAcc> Nodes = [];
         public readonly List<string> UnknownKeys = [];
     }
@@ -64,9 +66,25 @@ public static class S3SnapshotParser
                     acc.Endpoints = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
+                // Граф репликации / отзыв ключей (arch/23 §2): декларации в модель;
+                // битые значения — parseError кластера (BuildCluster).
+                case "links" when segments.Length == 5:
+                    acc.LinksRaw = kv.Value;
+                    break;
+
+                case "denylist" when segments.Length == 5:
+                    acc.DenyListRaw = kv.Value;
+                    break;
+
+                // pki-материал кластера (arch/23 §2/§6): ключ известный (не
+                // unknownKeys), значение в модель не разбирается — PkiStore читает
+                // его отдельным GET по месту (spec §5.1: pki не в снапшоте тика).
+                case "pki" when segments.Length == 6 && segments[5] is "ca" or "orchestrator":
+                    break;
+
                 case "nodes" when segments.Length == 7
                     && segments[5].Length > 0
-                    && segments[6] is "placement" or "resources" or "state" or "placed_on" or "usage":
+                    && segments[6] is "placement" or "resources" or "state" or "placed_on" or "usage" or "pki":
                 {
                     var node = GetOrAdd(acc.Nodes, segments[5], static name => new NodeAcc(name));
                     switch (segments[6])
@@ -86,6 +104,8 @@ public static class S3SnapshotParser
                         case "usage":
                             node.UsageRaw = kv.Value;
                             break;
+                        case "pki":
+                            break; // материал PKI инстанса — PkiStore (известный ключ, значение не разбирается)
                     }
 
                     break;
@@ -110,20 +130,114 @@ public static class S3SnapshotParser
 
     private static S3ClusterSnapshot BuildCluster(ClusterAcc acc)
     {
-        // Битый config — parseError кластера (config → null: классификатор
-        // трактует отсутствие как Skip, тик не падает — arch/23 §9).
-        string? clusterError = null;
+        // Битые ключи кластера (config/links/denylist) — parseError кластера
+        // (значение → null: тик не падает, битая часть не применяется — arch/23 §9).
+        var errors = new List<string>();
         var config = ParseConfig(acc.ConfigRaw);
         if (acc.ConfigRaw is not null && config is null)
-            clusterError = $"/s3/clusters/{acc.Name}/config: битый JSON config";
+            errors.Add("/config: битый JSON config");
 
-        // Ноды по номеру node<k> (Ordinal — однозначность в пределах 1..9).
+        var links = ParseLinks(acc.LinksRaw, errors);
+        var denyList = ParseDenyList(acc.DenyListRaw, errors);
+
+        // Ноды по имени (Ordinal — детерминированный порядок).
         var nodes = acc.Nodes
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
             .Select(pair => BuildNode(acc.Name, pair.Value))
             .ToList();
 
-        return new S3ClusterSnapshot(acc.Name, config, nodes, acc.Endpoints, clusterError);
+        return new S3ClusterSnapshot(
+            acc.Name, config, nodes, acc.Endpoints, links, denyList,
+            errors.Count > 0
+                ? $"/s3/clusters/{acc.Name}{string.Join("; ", errors)}"
+                : null);
+    }
+
+    // links → [{a,b},…]: массив объектов со строковыми a/b; отсутствие ключа —
+    // null (нет декларации); битое значение (не-JSON/не-массив/не-строки) — null
+    // + parseError (§9: тик не падает).
+    private static IReadOnlyList<S3ReplicationLink>? ParseLinks(string? raw, List<string> errors)
+    {
+        if (raw is null)
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                errors.Add("/links: битый JSON links");
+                return null;
+            }
+
+            var links = new List<S3ReplicationLink>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object
+                    || !TryReadString(item, "a", out var a)
+                    || !TryReadString(item, "b", out var b))
+                {
+                    errors.Add("/links: битый JSON links");
+                    return null;
+                }
+
+                links.Add(new S3ReplicationLink(a, b));
+            }
+
+            return links;
+        }
+        catch (JsonException)
+        {
+            errors.Add("/links: битый JSON links");
+            return null;
+        }
+    }
+
+    // denylist → ["I",…]: массив строк; семантика null — как у links.
+    private static IReadOnlyList<string>? ParseDenyList(string? raw, List<string> errors)
+    {
+        if (raw is null)
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                errors.Add("/denylist: битый JSON denylist");
+                return null;
+            }
+
+            var names = new List<string>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                {
+                    errors.Add("/denylist: битый JSON denylist");
+                    return null;
+                }
+
+                names.Add(item.GetString()!);
+            }
+
+            return names;
+        }
+        catch (JsonException)
+        {
+            errors.Add("/denylist: битый JSON denylist");
+            return null;
+        }
+    }
+
+    // Строковое поле объекта (не-строка/нет поля — false: битое значение).
+    private static bool TryReadString(JsonElement element, string field, out string value)
+    {
+        if (element.TryGetProperty(field, out var v) && v.ValueKind == JsonValueKind.String)
+        {
+            value = v.GetString()!;
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
     }
 
     private static S3NodeSnapshot BuildNode(string cluster, NodeAcc node)

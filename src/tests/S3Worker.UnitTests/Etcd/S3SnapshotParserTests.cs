@@ -222,4 +222,123 @@ public class S3SnapshotParserTests
         cluster.Config.Should().BeNull();
         cluster.ParseError.Should().BeNull();
     }
+
+    [Fact]
+    public void Parse_LinksDenyListPki_CanonicalValues()
+    {
+        // Arrange — канонические примеры arch/23 §2.1: частичный граф links,
+        // denylist ["west1"], pki-ключи (сертификат — экранированная JSON-строка).
+        var nodePki = """{"certificate":"{\"name\":\"east1\",\"publicKeyPem\":\"-----BEGIN PUBLIC KEY-----…\",\"issuedAtUnixMs\":1760156800000,\"expiresAtUnixMs\":0,\"caName\":\"backups\",\"signature\":\"…\"}","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}""";
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/backups/config",
+                """{"platform":"owns3","nodes":0,"secret_profile":"backups-main","created_unix":1760156800}"""),
+            Kv("/s3/clusters/backups/links",
+                """[{"a":"east1","b":"east2"},{"a":"east1","b":"west1"}]"""),
+            Kv("/s3/clusters/backups/denylist", """["west1"]"""),
+            Kv("/s3/clusters/backups/nodes/east1/pki", nodePki),
+            Kv("/s3/clusters/backups/pki/ca",
+                """{"name":"backups","publicKeyPem":"-----BEGIN PUBLIC KEY-----…","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}"""),
+            Kv("/s3/clusters/backups/pki/orchestrator",
+                """{"certificate":"{\"name\":\"orchestrator\",\"publicKeyPem\":\"-----BEGIN PUBLIC KEY-----…\",\"issuedAtUnixMs\":1760156800000,\"expiresAtUnixMs\":0,\"caName\":\"backups\",\"signature\":\"…\"}","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}"""),
+        };
+
+        // Act
+        var snap = S3SnapshotParser.Parse(kvs).Value;
+        var cluster = snap.Clusters.Single();
+
+        // Assert — модель по канону; config nodes=0 читается; pki в unknownKeys НЕ попал
+        cluster.Config!.Nodes.Should().Be(0);
+        cluster.Links.Should().BeEquivalentTo(new[]
+        {
+            new S3ReplicationLink("east1", "east2"),
+            new S3ReplicationLink("east1", "west1"),
+        });
+        cluster.DenyList.Should().BeEquivalentTo("west1");
+        cluster.ParseError.Should().BeNull();
+        snap.UnknownKeys.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_EmptyLinksAndDenyList_EmptyDeclarations()
+    {
+        // Arrange — пустой граф/отзыв: валидная декларация (полный разрыв/нет отзывов)
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c/links", "[]"),
+            Kv("/s3/clusters/c/denylist", "[]"),
+        };
+
+        // Act
+        var cluster = S3SnapshotParser.Parse(kvs).Value.Clusters.Single();
+
+        // Assert — пустые (не null): ключ есть, декларация «нет связей/отзывов»
+        cluster.Links.Should().NotBeNull().And.BeEmpty();
+        cluster.DenyList.Should().NotBeNull().And.BeEmpty();
+        cluster.ParseError.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_BrokenLinksAndDenyList_ParseError_NullValues_NoThrow()
+    {
+        // Arrange — битые значения (ручная правка etcd, arch/23 §9)
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"secret_profile":"p","created_unix":1}"""),
+            Kv("/s3/clusters/c/links", "{not json"),
+            Kv("/s3/clusters/c/denylist", """["ok", 42]"""),
+        };
+
+        // Act
+        var result = S3SnapshotParser.Parse(kvs);
+
+        // Assert — Success c ParseError; Links/DenyList null; тик (парсер) не падает
+        result.IsSuccess.Should().BeTrue();
+        var cluster = result.Value.Clusters.Single();
+        cluster.Links.Should().BeNull();
+        cluster.DenyList.Should().BeNull();
+        cluster.ParseError.Should().Contain("/links: битый JSON");
+        cluster.ParseError.Should().Contain("/denylist: битый JSON");
+        cluster.Config.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Parse_MalformedLinksItems_ParseError()
+    {
+        // Arrange — массив не из пар / не-строковые поля (битое значение)
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c/links", """[{"a":"x"},{"a":"x","b":5}]"""),
+        };
+
+        // Act
+        var cluster = S3SnapshotParser.Parse(kvs).Value.Clusters.Single();
+
+        // Assert
+        cluster.Links.Should().BeNull();
+        cluster.ParseError.Should().Contain("/links: битый JSON");
+    }
+
+    [Fact]
+    public void Parse_PkiKeys_NotUnknown_RealUnknownKey_IsUnknown()
+    {
+        // Arrange — pki-ключи (кластерные и лист ноды) известны; реально
+        // неизвестный ключ — по-прежнему unknownKeys
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c/pki/ca", """{"name":"c","publicKeyPem":"p","private_key_pem":"k"}"""),
+            Kv("/s3/clusters/c/pki/orchestrator", """{"certificate":"{}","private_key_pem":"k"}"""),
+            Kv("/s3/clusters/c/nodes/n1/pki", """{"certificate":"{}","private_key_pem":"k"}"""),
+            Kv("/s3/clusters/c/whatever-t33", "x"),
+        };
+
+        // Act
+        var snap = S3SnapshotParser.Parse(kvs).Value;
+        var cluster = snap.Clusters.Single();
+
+        // Assert — pki не в unknownKeys; неизвестный — в unknownKeys; тик цел
+        snap.UnknownKeys.Should().BeEquivalentTo("/s3/clusters/c/whatever-t33");
+        cluster.ParseError.Should().BeNull();
+        cluster.Nodes.Should().ContainSingle(n => n.Node == "n1");
+    }
 }
