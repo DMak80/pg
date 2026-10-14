@@ -27,10 +27,17 @@ public sealed record S3ProvisioningOptions(
     string? AdvertisedHost,
     string OwnS3Image,
     string Bucket,
-    string? ContourNetwork = null)
+    string? ContourNetwork = null,
+
+    /// <summary>Период зонда F (arch/24 §8): гейт по checked_unix ключа connectivity.</summary>
+    int SyncIntervalSec = 60,
+
+    /// <summary>Бюджет страниц сверки на сторону пары (spec §3.3; 20 = 20 000 объектов).</summary>
+    int SyncMaxPages = 20)
 {
     public static S3ProvisioningOptions Default { get; } =
-        new(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups");
+        new(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups",
+            SyncIntervalSec: 60, SyncMaxPages: 20);
 }
 
 /// <summary>
@@ -85,6 +92,19 @@ public static class S3ProcessCommon
 
     public static string RotationKey(string cluster)
         => $"/s3worker/rotations/{cluster}";
+
+    /// <summary>Заявка внепланового зонда (arch/23 §8, t33): put-if-absent API,
+    /// del зонда по исполнении прогона.</summary>
+    public static string ProbeRequestKey(string cluster)
+        => $"/s3worker/probes/{cluster}";
+
+    /// <summary>Ключ наблюдения связности (arch/23 §3, t33): ping-матрица настроенных линков.</summary>
+    public static string ConnectivityKey(string cluster)
+        => $"/s3/clusters/{cluster}/connectivity";
+
+    /// <summary>Ключ наблюдения синхронности (arch/23 §3, t33): сверка пар/лаги/вердикты.</summary>
+    public static string SyncKey(string cluster)
+        => $"/s3/clusters/{cluster}/sync";
 
     public static string WorkKey(string cluster)
         => $"/s3worker/work/{cluster}";
@@ -367,5 +387,174 @@ public static class S3ProcessCommon
         }
 
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    /// <summary>Пара сверки зонда (arch/23 §3, t33): from/to — Ordinal-нормализованные
+    /// стороны неориентированной пары; lag_bytes — объём недоставленного (missing&gt;0),
+    /// lag_objects — fetch-очередь приёмника (&gt;0); null — поле не пишется.</summary>
+    public sealed record SyncPairValue(string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);
+
+    // Опции записи канонических JSON: кириллица диагностики остаётся читаемой
+    // (канон arch/23 §3 — «probe_error":"…таймаут"; экранирование \u043B
+    // взломало бы строгий канон; значения — etcd, не HTML-контекст).
+    private static readonly System.Text.Encodings.Web.JavaScriptEncoder CanonicalEncoder =
+        System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+
+    /// <summary>Канонический JSON connectivity (arch/23 §3): порядок полей канона;
+    /// узлы и targets — Ordinal; probe_error — только при непустом.</summary>
+    public static string SerializeConnectivity(string state, long checkedUnix,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> links, string? probeError = null)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Encoder = CanonicalEncoder }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("state", state);
+            writer.WriteNumber("checked_unix", checkedUnix);
+            writer.WriteStartObject("links");
+            foreach (var (node, targets) in links.OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(node);
+                writer.WriteStartObject();
+                foreach (var (target, outcome) in targets.OrderBy(p => p.Key, StringComparer.Ordinal))
+                    writer.WriteString(target, outcome);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndObject();
+            if (!string.IsNullOrEmpty(probeError))
+                writer.WriteString("probe_error", probeError);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    /// <summary>Канонический JSON sync (arch/23 §3): порядок полей канона; пары —
+    /// (From,To) Ordinal; lag_bytes пишется при missing&gt;0, lag_objects — при &gt;0;
+    /// last_error — только при непустом.</summary>
+    public static string SerializeSync(string state, long checkedUnix,
+        IReadOnlyList<SyncPairValue> pairs, string? lastError = null)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions { Encoder = CanonicalEncoder }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("state", state);
+            writer.WriteNumber("checked_unix", checkedUnix);
+            writer.WriteStartArray("pairs");
+            foreach (var pair in pairs.OrderBy(p => (p.From, p.To), TupleComparer.Instance))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("from", pair.From);
+                writer.WriteString("to", pair.To);
+                writer.WriteNumber("missing", pair.Missing);
+                writer.WriteNumber("extra", pair.Extra);
+                if (pair.LagBytes is { } lagBytes && pair.Missing > 0)
+                    writer.WriteNumber("lag_bytes", lagBytes);
+                if (pair.LagObjects is { } lagObjects && lagObjects > 0)
+                    writer.WriteNumber("lag_objects", lagObjects);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            if (!string.IsNullOrEmpty(lastError))
+                writer.WriteString("last_error", lastError);
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // Компаратор Ordinal-пар (детерминизм записей между прогонами).
+    private sealed class TupleComparer : IComparer<(string, string)>
+    {
+        public static readonly TupleComparer Instance = new();
+
+        public int Compare((string, string) x, (string, string) y)
+        {
+            var byFrom = string.CompareOrdinal(x.Item1, y.Item1);
+            return byFrom != 0 ? byFrom : string.CompareOrdinal(x.Item2, y.Item2);
+        }
+    }
+
+    /// <summary>Прошлое значение connectivity/sync — checked_unix для гейта:
+    /// битый JSON/нет поля/не-объект → null (гейт «ключа нет» — прогон перепишет).</summary>
+    public static long? ParseCheckedUnix(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("checked_unix", out var v)
+                && v.ValueKind == JsonValueKind.Number
+                && v.TryGetInt64(out var unix)
+                ? unix
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Прошлые расхождения пар для прогресс-критерия: (from,to) → missing+extra
+    /// прошлого прогона; пары без числовых missing/extra не попадают; отсутствие/битость → null.</summary>
+    public static IReadOnlyDictionary<(string From, string To), long>? ParseSyncDiscrepancies(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("pairs", out var pairs)
+                || pairs.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var discrepancies = new Dictionary<(string From, string To), long>();
+            foreach (var pair in pairs.EnumerateArray())
+            {
+                if (pair.ValueKind != JsonValueKind.Object
+                    || !TryReadStringField(pair, "from", out var from)
+                    || !TryReadStringField(pair, "to", out var to)
+                    || !TryReadLongField(pair, "missing", out var missing)
+                    || !TryReadLongField(pair, "extra", out var extra))
+                    continue; // неполная/нечисловая пара — пропускается
+                discrepancies[(from, to)] = missing + extra;
+            }
+
+            return discrepancies;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TryReadStringField(JsonElement element, string name, out string value)
+    {
+        if (element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String)
+        {
+            value = v.GetString()!;
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool TryReadLongField(JsonElement element, string name, out long value)
+    {
+        if (element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l))
+        {
+            value = l;
+            return true;
+        }
+
+        value = 0;
+        return false;
     }
 }

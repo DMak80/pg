@@ -33,6 +33,7 @@ public class DeprovisioningProcessTests
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node2/state", S3NodeStates.Running);
         etcd.Seed($"/s3/clusters/{cluster}/endpoints", "h1:18000,h2:18001");
         etcd.Seed($"{Prefix}/portalloc/{cluster}", """{"node1":{"host":"h1","s3":18000},"node2":{"host":"h2","s3":18001}}""");
+        etcd.Seed(S3ProcessCommon.ProbeRequestKey(cluster), """{"requested_unix":1760156800,"requested_by":"e2e-op"}""");
         driver.Nodes[$"{cluster}/node1"] = new Fakes.FakeS3Driver.NodeFact("h1", 18000);
         driver.Nodes[$"{cluster}/node2"] = new Fakes.FakeS3Driver.NodeFact("h2", 18001);
         await claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
@@ -68,6 +69,7 @@ public class DeprovisioningProcessTests
             .Should().BeEmpty();
         etcd.Store.Keys.Should().NotContain($"{Prefix}/portalloc/demo");
         etcd.Store.Keys.Should().NotContain($"{Prefix}/rotations/demo");
+        etcd.Store.ContainsKey(S3ProcessCommon.ProbeRequestKey("demo")).Should().BeFalse(); // заявка зонда t33 снесена X3
         driver.Removed.Should().Contain(["demo/node1", "demo/node2"]);
         etcd.Store.Keys.Where(k => k.StartsWith($"{Prefix}/claims/", StringComparison.Ordinal))
             .Should().NotContain($"{Prefix}/claims/demo");
