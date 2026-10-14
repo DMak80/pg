@@ -245,6 +245,13 @@ builder.Services.AddSingleton(sp => new OwnS3.Replication.JoinPeerService(
     new HttpClient(), sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<OwnS3.Replication.JoinPeerService>>(),
     sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.AdvertisedEndpoint));
+// Входящая перезапись deny-list (глава 07 §2): тот же identity/trust-материал,
+// что join (до-join контур replication-грани).
+builder.Services.AddSingleton(sp => new OwnS3.Replication.DenyListReplaceService(
+    peerIdentity, peerTrust,
+    sp.GetRequiredService<OwnS3.Replication.DenyList>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<OwnS3.Replication.DenyListReplaceService>>()));
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),
@@ -252,7 +259,8 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
     sp.GetRequiredService<ILogger<OwnS3.App.Handlers.ReplicationHandlers>>(),
-    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>()));
+    sp.GetRequiredService<OwnS3.Replication.JoinPeerService>(),
+    sp.GetRequiredService<OwnS3.Replication.DenyListReplaceService>()));
 
 // Активная проба линков mesh (глава 07 §2): ping соседей исходящим транспортом
 // (креды/маршрут notifier'а) мимо outbox; прав админ-грани достаточно.

@@ -313,6 +313,111 @@ public sealed class PeerAuthScenarios
             peerAuth: auth with { TrustOf = _ => false });
     }
 
+    // ── 6. полная перезапись deny-list (PUT /replication/denylist, глава 07 §2) ──
+
+    [Fact]
+    public async Task DenyReplaceFull_BlocksJoinThenEmptyListAllows()
+    {
+        DockerTrait.SkipIfUnavailable();
+        // 2 ноды с identity+CA; вызывающий перезаписи — сертификат узла-0
+        // (оркестратор, не обязан числиться соседом узла-1). Очистку списка
+        // выполняет узел-1 СВОИМ сертификатом: после первой перезаписи узел-0
+        // отозван на узле-1 — по §4.2 п.5 отозванный не переписывает список
+        // (иначе 403); узел-1 не отозван у самого себя, серт того же CA.
+        var auth = MeshPeerAuthMaterial.Create(2, "os3m-denyfull-ca");
+        await OwnS3MeshE2eEnvironment.RunScenarioAsync("denyfull", 2, async env =>
+        {
+            var ct = TestContext.Current.CancellationToken;
+            using var orchestratorKey = ECDsa.Create();
+            orchestratorKey.ImportFromPem(auth.Nodes[0].PrivatePem);
+            var orchestratorCert = Convert.ToBase64String(Encoding.UTF8.GetBytes(auth.Nodes[0].CertJson));
+            using var node1Key = ECDsa.Create();
+            node1Key.ImportFromPem(auth.Nodes[1].PrivatePem);
+            var node1Cert = Convert.ToBase64String(Encoding.UTF8.GetBytes(auth.Nodes[1].CertJson));
+
+            // Act — перезапись на узле-1 списка, содержащего узел-0
+            using var put = await SendEdgeDenyReplaceAsync(env, 1, orchestratorKey,
+                auth.CertNameOf(0), orchestratorCert,
+                [(auth.CertNameOf(0), auth.Nodes[0].Cert.PublicKeyPem)], ct);
+
+            // Assert — 202; admin-грань узла-1 видит запись (имя + ключ)
+            put.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            (await AdminDenyListAsync(env, 1, ct)).EnumerateArray().Should().ContainSingle(e =>
+                e.GetProperty("name").GetString() == auth.CertNameOf(0)
+                && e.GetProperty("publicKeyPem").GetString() == auth.Nodes[0].Cert.PublicKeyPem
+                && e.GetProperty("revokedAtUnixMs").GetInt64() > 0);
+
+            // Assert — join узла-0 → узла-1 отказан (deny-list решает будущие join)
+            using (var denied = await AdminJoinAsync(env, 0, env.NodeInternalUrl(1), ct))
+                denied.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+            // Act — перезапись пустым списком (снятие всех отзывов одним вызовом);
+            // вызывающий — узел-1 (узел-0 отозван и получил бы 403)
+            using var clear = await SendEdgeDenyReplaceAsync(env, 1, node1Key,
+                auth.CertNameOf(1), node1Cert, [], ct);
+
+            // Assert — 202; список пуст; join снова проходит
+            clear.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            (await AdminDenyListAsync(env, 1, ct)).GetArrayLength().Should().Be(0);
+            using (var rejoined = await AdminJoinAsync(env, 0, env.NodeInternalUrl(1), ct))
+                rejoined.StatusCode.Should().Be(HttpStatusCode.OK);
+        }, fullMeshTargets: false, ct: TestContext.Current.CancellationToken, peerAuth: auth);
+    }
+
+    [Fact]
+    public async Task DenyReplace_DoesNotBreakActiveLinks()
+    {
+        DockerTrait.SkipIfUnavailable();
+        // 3 ноды: join (0,1) и (0,2); перезапись на узле-0 списка без узла-1
+        // (и с узлом-2) — действующие линки продолжают доставлять
+        var auth = MeshPeerAuthMaterial.Create(3, "os3m-denyactive-ca");
+        await OwnS3MeshE2eEnvironment.RunScenarioAsync("denyactive", 3, async env =>
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var bucket = $"da-{env.RunTag}";
+            await MeshClients.CreateBucketAsync(env, 0, bucket, ct);
+
+            // Arrange — активная mesh 0→1, 0→2; k1 доставлен обоим
+            foreach (var b in new[] { 1, 2 })
+            {
+                using var join = await AdminJoinAsync(env, 0, env.NodeInternalUrl(b), ct);
+                join.StatusCode.Should().Be(HttpStatusCode.OK, $"join пары (0,{b})");
+            }
+            var k1 = "denyactive-k1"u8.ToArray();
+            await MeshClients.PutObjectAsync(env, 0, bucket, "k1", k1, ct);
+            await MeshClients.PollUntilAsync(async () =>
+                    await MeshClients.GetObjectOrNullAsync(env, 1, bucket, "k1", ct) is { } on1
+                        && on1.SequenceEqual(k1)
+                        && await MeshClients.GetObjectOrNullAsync(env, 2, bucket, "k1", ct) is { } on2
+                        && on2.SequenceEqual(k1),
+                "k1 до узлов 1 и 2 до перезаписи");
+
+            // Act — перезапись deny-list узла-0: список БЕЗ узла-1 (линк с ним —
+            // действующий) и С узлом-2 (даже отозванный в списке — линк жив)
+            using var orchestratorKey = ECDsa.Create();
+            orchestratorKey.ImportFromPem(auth.Nodes[0].PrivatePem);
+            using var put = await SendEdgeDenyReplaceAsync(env, 0, orchestratorKey,
+                auth.CertNameOf(0), Convert.ToBase64String(Encoding.UTF8.GetBytes(auth.Nodes[0].CertJson)),
+                [(auth.CertNameOf(2), auth.Nodes[2].Cert.PublicKeyPem)], ct);
+
+            // Assert — 202; доставка продолжает работать по обоим линкам (критерий 7)
+            put.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            var k2 = "denyactive-k2"u8.ToArray();
+            await MeshClients.PutObjectAsync(env, 0, bucket, "k2", k2, ct);
+            await MeshClients.PollUntilAsync(async () =>
+                    await MeshClients.GetObjectOrNullAsync(env, 1, bucket, "k2", ct) is { } on1
+                        && on1.SequenceEqual(k2),
+                "k2 до узла-1 после перезаписи (список без него — линк не тронут)");
+            await MeshClients.PollUntilAsync(async () =>
+                    await MeshClients.GetObjectOrNullAsync(env, 2, bucket, "k2", ct) is { } on2
+                        && on2.SequenceEqual(k2),
+                "k2 до узла-2 после перезаписи (узел в списке — действующий линк всё равно жив)");
+
+            // Assert — состав targets узла-0 не тронут перезаписью (оба соседа на месте)
+            (await StatusNeighborsAsync(env, 0, ct)).EnumerateArray().Should().HaveCount(2);
+        }, fullMeshTargets: false, ct: TestContext.Current.CancellationToken, peerAuth: auth);
+    }
+
     // ── хелперы admin-грани (root SigV4) и peer-грани ──
 
     /// <summary>POST /admin/replication/join инициатору (тело {"endpoint"} — §4.4 п.1).</summary>
@@ -407,6 +512,45 @@ public sealed class PeerAuthScenarios
         // Act — запрос на replication-грань
         using var request = new HttpRequestMessage(HttpMethod.Post,
             $"{env.NodeHostUrl(node)}/replication/join");
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        request.Headers.TryAddWithoutValidation("x-owns3-peer-date", peerDate);
+        request.Headers.TryAddWithoutValidation("x-owns3-peer-content-sha256", payloadHash);
+        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        request.Headers.TryAddWithoutValidation("X-OwnS3-Peer-Certificate", certificateBase64);
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        return await http.SendAsync(request, ct);
+    }
+
+    /// <summary>Прямой PUT /replication/denylist на replication-грань узла с хоста
+    /// (peer-подпись §4.2 вручную — по образцу SendEdgeJoinAsync; вызывающий —
+    /// сертификат из материала mesh, подписанный CA, не обязан числиться соседом;
+    /// дата — настоящее время контейнера).</summary>
+    private static async Task<HttpResponseMessage> SendEdgeDenyReplaceAsync(OwnS3MeshE2eEnvironment env,
+        int node, ECDsa signingKey, string credential, string certificateBase64,
+        IReadOnlyList<(string Name, string PublicKeyPem)> entries, CancellationToken ct)
+    {
+        // Arrange — тело и заголовки схемы OWNS3-PEER (§4.2)
+        var body = JsonSerializer.Serialize(new
+        {
+            entries = entries.Select(e => new { name = e.Name, publicKeyPem = e.PublicKeyPem }).ToList(),
+        });
+        var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(body)))
+            .ToLowerInvariant();
+        var at = DateTimeOffset.UtcNow;
+        var peerDate = at.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
+        var host = new Uri(env.NodeHostUrl(node)).Authority;
+        var (authorization, _, _) = PeerRequestSigner.Sign(signingKey, credential, "PUT",
+            "/replication/denylist", "",
+            new List<(string, string)>
+            {
+                ("host", host),
+                ("x-owns3-peer-date", peerDate),
+                ("x-owns3-peer-content-sha256", payloadHash),
+            }, payloadHash, at);
+
+        // Act — запрос на replication-грань
+        using var request = new HttpRequestMessage(HttpMethod.Put,
+            $"{env.NodeHostUrl(node)}/replication/denylist");
         request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
         request.Headers.TryAddWithoutValidation("x-owns3-peer-date", peerDate);
         request.Headers.TryAddWithoutValidation("x-owns3-peer-content-sha256", payloadHash);
