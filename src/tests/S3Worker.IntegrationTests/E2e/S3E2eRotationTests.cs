@@ -14,7 +14,8 @@ namespace S3Worker.IntegrationTests.E2e;
 // совпадает с env воркера (docker-env инспекция, сравнение в коде БЕЗ печати),
 // после смены env воркера и повторной заявки ноды пересозданы с НОВЫМИ
 // root-кредами (новая пара — 200, старая — 403);
-// 9 — sync-probe 202-заглушка: ключей connectivity/sync в домене не появляется.
+// 9 — sync-probe (t33): POST → 202 + заявка /s3worker/probes/<C>, тик зонда
+// исполняет её (пустой меш — links {} OK / SYNCED без пар) и сносит заявку.
 // Гейт: PGW_TEST_DOCKER=1.
 public class S3E2eRotationTests
 {

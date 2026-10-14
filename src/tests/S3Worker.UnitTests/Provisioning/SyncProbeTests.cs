@@ -360,6 +360,50 @@ public class SyncProbeTests
         sync.Should().Contain("\"extra\":1");
     }
 
+    [Fact]
+    public async Task Сверка_НезависимыеБюджетыСторон_ПараСверена()
+    {
+        // Arrange: SyncMaxPages=4; прет-чек израсходовал по 2 страницы на сторону,
+        // from-листинг — 2 страницы (бюджет стороны исчерпан почти полностью),
+        // to-листинг — 1 страница. Счётчики СТОРОН независимы (spec §3.3):
+        // to стартует со своего pagesTo, а не от страниц from.
+        var rig = Rig.New(syncMaxPages: 4);
+        SeedPortAlloc(rig.Etcd, "east1", "east2");
+        SeedMirrorProbe(rig.NodeClient);
+        rig.NodeClient.SyncReportPages[18001] = new Dictionary<string, OwnS3SyncReportPage>
+        {
+            [""] = Rig.Page(1, "k1", 100, "k1", 100, 10, "h1", "m1"),
+            ["m1"] = Rig.Page(3, "k1", 100, "k3", 300, 60, "h2f", null),
+        };
+        rig.NodeClient.SyncReportPages[18002] = new Dictionary<string, OwnS3SyncReportPage>
+        {
+            [""] = Rig.Page(1, "k1", 100, "k1", 100, 10, "h1", "m1"),
+            ["m1"] = Rig.Page(1, "k1", 100, "k1", 100, 10, "h2t", null),
+        };
+        // from: две страницы (3 записи); to: одна (2 записи, одна общая + лишняя).
+        rig.NodeClient.ListingPages[18001] = new Dictionary<string, OwnS3ListPage>
+        {
+            [""] = new OwnS3ListPage([new OwnS3ListEntry("k1", 100, 10), new OwnS3ListEntry("k2", 200, 20)], "L1"),
+            ["L1"] = new OwnS3ListPage([new OwnS3ListEntry("k3", 300, 30)], null),
+        };
+        rig.NodeClient.ListingPages[18002] = new Dictionary<string, OwnS3ListPage>
+        {
+            [""] = new OwnS3ListPage([new OwnS3ListEntry("k1", 100, 10), new OwnS3ListEntry("k9", 900, 90)], null),
+        };
+
+        // Act
+        var result = await rig.Probe.TickAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: пара СВЕРЕНА (to-сторона не была обрезана страницами from):
+        // missing 2 (k2,k3), extra 1 (k9), lag_bytes 50; last_error нет — строгий
+        // канон (при общем счётчике to получил бы бюджет-отказ и pairs []).
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var now = rig.Clock.Utc.ToUnixTimeSeconds();
+        rig.Etcd.Store["/s3/clusters/demo/sync"].Value.Should().Be(
+            "{\"state\":\"LAGGING\",\"checked_unix\":" + now +
+            ",\"pairs\":[{\"from\":\"east1\",\"to\":\"east2\",\"missing\":2,\"extra\":1,\"lag_bytes\":50}]}");
+    }
+
     // ==================== 4. Вердикты (§8.1.4) ====================
 
     [Fact]

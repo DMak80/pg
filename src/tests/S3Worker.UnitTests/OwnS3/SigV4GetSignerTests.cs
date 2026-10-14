@@ -170,6 +170,40 @@ public class SigV4GetSignerTests
         result.Should().BeOfType<SigV4Result.Fail>().Which.Code.Should().Be(S3ErrorCode.SignatureDoesNotMatch);
     }
 
+    // AAA: маркер с !'()* — Uri.EscapeDataString их НЕ кодирует, серверный
+    // EncodeValue кодирует (%21%27%28%29%2A): roundtrip обязан сходиться
+    // (иначе sync-report навсегда SignatureDoesNotMatch для таких страниц).
+    [Fact]
+    public void SignRequest_МаркерССпецсимволамиRFC3986_ПроходитВерификатор()
+    {
+        // Arrange: query через CanonicalQuery (per-символьное кодирование,
+        // семантически равно серверному UriEncoding.EncodeValue).
+        var query = SigV4GetSigner.CanonicalQuery(("bucket", "b"), ("marker", "m!'()*"));
+        query.Should().Be("bucket=b&marker=m%21%27%28%29%2A");
+        var signed = SigV4GetSigner.SignRequest(
+            "GET", "/admin/replication/sync-report", "h:1", AccessKey, SecretKey,
+            canonicalQuery: query, now: DateTimeOffset.UtcNow);
+        var model = new S3RequestModel
+        {
+            Method = "GET",
+            RawPath = "/admin/replication/sync-report",
+            RawQuery = query,
+            Headers = S3HeaderCollection.FromPairs(
+                ("Authorization", signed.Authorization),
+                ("host", "h:1"),
+                ("x-amz-date", signed.AmzDate),
+                ("x-amz-content-sha256", signed.ContentSha256)),
+            Host = "h:1",
+            OpenBody = () => new MemoryStream(),
+        };
+
+        // Act: серверный верификатор — FormDecode + EncodeQuery согласованы.
+        var result = new SigV4HeaderVerifier(TimeProvider.System).Verify(model, _ => SecretKey);
+
+        // Assert
+        result.Should().BeOfType<SigV4Result.Ok>();
+    }
+
     // AAA: CanonicalQuery — сортировка Ordinal, null/пустые значения не шлются,
     // спецсимволы кодируются RFC 3986 (совместимость с EncodeQuery сервера).
     [Fact]

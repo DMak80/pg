@@ -90,7 +90,27 @@ public static class SigV4GetSigner
         => string.Join("&", pairs
             .Where(p => !string.IsNullOrEmpty(p.Value))
             .OrderBy(p => p.Name, StringComparer.Ordinal)
-            .Select(p => $"{Uri.EscapeDataString(p.Name)}={Uri.EscapeDataString(p.Value!)}"));
+            .Select(p => $"{EncodeValue(p.Name)}={EncodeValue(p.Value!)}"));
+
+    // Кодирование значения query — семантически равно серверному
+    // UriEncoding.EncodeValue (owns3/03 §1): unreserved (A-Za-z0-9 -._~) не
+    // кодируются, прочее — %XX верхнего регистра (UTF-8 побайтово, посимвольно —
+    // как на сервере). Uri.EscapeDataString не годится: символы ! ' ( ) * он
+    // оставляет как есть — marker с ними даёт SignatureDoesNotMatch.
+    private static string EncodeValue(string value)
+    {
+        var builder = new StringBuilder(value.Length + 8);
+        foreach (var ch in value)
+        {
+            if (char.IsAsciiLetterOrDigit(ch) || ch is '-' or '.' or '_' or '~')
+                builder.Append(ch);
+            else
+                foreach (var b in Encoding.UTF8.GetBytes(ch.ToString()))
+                    builder.Append('%').Append(b.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return builder.ToString();
+    }
 
     public static byte[] SigningKey(string secretKey, string date, string region)
     {

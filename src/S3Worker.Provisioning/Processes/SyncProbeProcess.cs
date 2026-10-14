@@ -324,27 +324,18 @@ public sealed class SyncProbeProcess(
             break; // расхождение (первая неравная страница ИЛИ одна кончилась, другая нет)
         }
 
-        // Количественный diff: полные постраничные листинги обеих сторон (в те же
-        // счётчики бюджета пары).
+        // Количественный diff: полные постраничные листинги обеих сторон, бюджет
+        // SyncMaxPages НА СТОРОНУ (pagesFrom/pagesTo независимо — spec §3.3);
+        // отказ листинга любой стороны → пара не сверена.
         var fromListing = await FullListingAsync(
             fromHost, fromAddr.S3Port, creds, warnings, ct, pagesFrom);
-        if (fromListing.Failure is not null)
-        {
-            return new PairOutcome(0, 0, null, 0,
-                fromListing.Failure.StartsWith("листинг пары", StringComparison.Ordinal)
-                    ? fromListing.Failure
-                    : $"пара {from}↔{to}: листинг {from} недоступен");
-        }
+        if (fromListing.Failure is not ListingFailure.None)
+            return new PairOutcome(0, 0, null, 0, ListingFailureText(fromListing.Failure, from, to));
 
         var toListing = await FullListingAsync(
-            toHost, toAddr.S3Port, creds, warnings, ct, fromListing.Pages);
-        if (toListing.Failure is not null)
-        {
-            return new PairOutcome(0, 0, null, 0,
-                toListing.Failure.StartsWith("листинг пары", StringComparison.Ordinal)
-                    ? toListing.Failure
-                    : $"пара {from}↔{to}: листинг {to} недоступен");
-        }
+            toHost, toAddr.S3Port, creds, warnings, ct, pagesTo);
+        if (toListing.Failure is not ListingFailure.None)
+            return new PairOutcome(0, 0, null, 0, ListingFailureText(toListing.Failure, from, to));
 
         var fromMap = fromListing.Map;
         var toMap = toListing.Map;
@@ -392,9 +383,24 @@ public sealed class SyncProbeProcess(
     private sealed record PairOutcome(
         long Missing, long Extra, long? LagBytes, long LagObjects, string? Failure);
 
+    // Вид отказа листинга стороны (структурированно: текст с именами пары
+    // формирует ComparePairAsync единым форматом spec §3.3).
+    private enum ListingFailure
+    {
+        None,
+        Budget,
+        Transport,
+    }
+
+    // Единый формат диагностики несвёрнутой пары (spec §3.3).
+    private static string ListingFailureText(ListingFailure failure, string from, string to)
+        => failure == ListingFailure.Budget
+            ? $"листинг пары {from}↔{to} превышает бюджет страниц"
+            : $"пара {from}↔{to}: листинг недоступен";
+
     // Полный постраничный листинг стороны (diff): словарь (key, modTime) → size,
-    // счётчик страниц стороны и Failure (бюджет/отказ). Бюджет — те же счётчики пары.
-    private async Task<(Dictionary<(string Key, long Mod), long> Map, int Pages, string? Failure)> FullListingAsync(
+    // счётчик страниц СВОЕЙ стороны (бюджет на сторону — независим) и вид отказа.
+    private async Task<(Dictionary<(string Key, long Mod), long> Map, int Pages, ListingFailure Failure)> FullListingAsync(
         string host, int port, OwnS3NodeSecrets creds, List<string> warnings, CancellationToken ct,
         int pagesTaken)
     {
@@ -404,7 +410,7 @@ public sealed class SyncProbeProcess(
         while (true)
         {
             if (pages >= options.SyncMaxPages)
-                return (map, pages, "листинг пары превышает бюджет страниц");
+                return (map, pages, ListingFailure.Budget);
 
             progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с
             var page = await nodeClient.ListObjectEntriesAsync(host, port, creds, options.Bucket, token, ct);
@@ -412,14 +418,14 @@ public sealed class SyncProbeProcess(
             if (!page.IsSuccess)
             {
                 warnings.Add($"листинг {host}:{port}: {page.Error!.Message} — транзиент");
-                return (map, pages, page.Error!.Message);
+                return (map, pages, ListingFailure.Transport);
             }
 
             foreach (var entry in page.Value!.Entries)
                 map[(entry.Key, entry.ModTimeUnixMs)] = entry.Size;
             token = page.Value.NextContinuationToken;
             if (token is null)
-                return (map, pages, null);
+                return (map, pages, ListingFailure.None);
         }
     }
 

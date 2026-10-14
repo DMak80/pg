@@ -383,6 +383,9 @@ internal static class Fakes
         public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ProbeReport> ProbeByPort = [];
         public readonly Dictionary<int, Dictionary<string, S3Worker.Core.OwnS3.OwnS3SyncReportPage>> SyncReportPages = [];
         public readonly Dictionary<int, IReadOnlyList<S3Worker.Core.OwnS3.OwnS3ListEntry>> Listings = [];
+        // Многостраничный листинг (ключ "" = первая страница, токен-цепочка —
+        // для тестов независимых бюджетов сторон).
+        public readonly Dictionary<int, Dictionary<string, S3Worker.Core.OwnS3.OwnS3ListPage>> ListingPages = [];
         public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ReplicationStatus> StatusResultByPort = []; // статус с Neighbors (per-инстанс)
         public readonly List<(string Op, int Port, string? Arg)> ProbeCalls = [];
 
@@ -411,8 +414,11 @@ internal static class Fakes
             string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string bucket, string? continuationToken, CancellationToken ct)
         {
             ProbeCalls.Add(("listing", port, continuationToken));
-            // Одна страница (NextContinuationToken=null) — многостраничный diff
-            // юнит-тестами покрывается цепочкой sync-report.
+            // Многостраничный листинг по токен-цепочке (если задан), иначе —
+            // одна страница (NextContinuationToken=null).
+            if (ListingPages.TryGetValue(port, out var pages)
+                && pages.TryGetValue(continuationToken ?? "", out var page))
+                return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Success(page));
             return Task.FromResult(Listings.TryGetValue(port, out var entries)
                 ? Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Success(new(entries, null))
                 : Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Failed(
