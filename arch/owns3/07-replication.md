@@ -201,9 +201,21 @@ docker-хостах (гео), full-mesh active-active. Клиент пишет �
   legacy-записи → **400**); неизвестное имя → **404**.
   `GET /admin/replication/denylist` — список;
   `DELETE /admin/replication/denylist/{name}` → **202** — снятие
-  отзыва. Deny-list локален (не реплицируется): отлучение по всей
-  mesh — оркестратор зовёт delete с revoke на каждом сервере (той же
-  оркестрацией, что и join).
+  отзыва.
+- **Полная перезапись deny-list**: `PUT /replication/denylist` —
+  идемпотентная замена всего списка; тело
+  `{entries:[{name, publicKeyPem}]}`, `revokedAtUnixMs` каждой записи
+  ставит сервер (момент применения перезаписи); пустой `entries` —
+  снятие всех отзывов. Валидация тела: непустые `name`/`publicKeyPem`,
+  валидный PEM публичного ключа ECDSA P-256, уникальность имён и
+  ключей; невалидное → **400** (список не менялся); успех → **202**,
+  персист tmp+rename + горячая замена в памяти — следующие join
+  видят новый список. Вызов — до-join контур §6 (сертификат
+  вызывающего, как у join): доверяем ⟺ сертификат подписан CA
+  trust-anchor ∧ имя/ключ вызывающего не в deny-list; иначе **403**.
+  Deny-list локален (не реплицируется): отлучение/перезапись по всей
+  mesh — оркестратор зовёт revoke-удаление или `PUT` на каждом
+  сервере (той же оркестрацией, что и join).
 
 ## 3. События репликации
 
@@ -317,13 +329,24 @@ per-install, глава 03 §6). Пути `/replication/*` — отдельны�
   запись targets с этим именем и `auth=key` → верификация ключом
   записи; `sourceName` = имя записи. Клиентская S3-грань эту схему не
   принимает (400 `InvalidRequest`, глава 03 §1).
-- **`POST /replication/join`** (единственный запрос грани от ещё не
-  числящегося пира): до-join аутентификация по сертификату заголовка
+- **`POST /replication/join`** (запрос грани от ещё не числящегося
+  пира; до-join контур — как и `PUT /replication/denylist`):
+  до-join аутентификация по сертификату заголовка
   `X-OwnS3-Peer-Certificate` — trust-anchor не задан → 403;
   CA/истёк/deny-list (имя или ключ) → 403; подпись запроса
   верифицируется публичным ключом сертификата; тело
   `{"advertisedEndpoint"}`; конфликты и ответ — §2 (409/идемпотентность/
   200 + `X-OwnS3-Peer-Signature`).
+- **`PUT /replication/denylist`** (до-join контур, вызывающий —
+  оркестратор, не обязан числиться соседом): аутентификация та же,
+  что у join — сертификат заголовка `X-OwnS3-Peer-Certificate`,
+  подпись запроса OWNS3-PEER публичным ключом сертификата; доверие ⟺
+  сертификат валиден против trust-anchor ∧ имя/ключ вызывающего не в
+  deny-list; trust-anchor не задан → 403 (ручной режим состава);
+  отказ доверия/подписи → 403; malformed Authorization → 400. Тело
+  `{entries:[{name, publicKeyPem}]}` (§2): malformed/невалидный
+  состав → 400; успех → 202. Существующие линки, курсоры и состав
+  targets не затрагиваются — deny-list решает только будущие join.
 
 - **Аутентификация/авторизация**: подпись проверяется штатным
   SigV4-конвейером; accessKey подписи ищется в targets приёмника —
@@ -344,6 +367,7 @@ per-install, глава 03 §6). Пути `/replication/*` — отдельны�
 | листинг | `GET /replication/listing?bucket=&marker=&max-keys=` | Постраничный листинг ключей бакета — источник для reconcile/backfill (§9): **200** `{entries:[{key, modTimeUnixMs, contentSha256, size}], nextMarker}`; порядок — байтовый UTF-8 (Utf8ByteOrder), пагинация по маркеру; `max-keys` дефолт 1000, потолок 1000. **Без `bucket` (или пустой)** — `{buckets:[{name, creationDateUnixMs}]}` — состав бакетов для backfill (§9) |
 | ping | `GET /replication/ping` | Активная проба линка (источник — админ-trigger `POST /admin/replication/probe`, §2): **200, тело отсутствует**. Полный конвейер грани без изъятий: SigV4-подпись, политика строго `replication` (глава 05 §3, прочие — 403 `AccessDenied`), accessKey подписи обязан числиться соседом приёмника (резолв `sourceName`, §2). Приёмник ничего не пишет и не применяет: дедуп, fetch-очереди, курсоры, tombstones, счётчики применения ping-ом не затрагиваются (состояние байт-в-байт то же). Прочие методы — **400 `InvalidArgument`** («Unknown replication resource») |
 | join | `POST /replication/join` — JSON `{advertisedEndpoint}` + заголовок `X-OwnS3-Peer-Certificate` | До-join аутентификация по сертификату (§2/§6); ответ 200 `{name, advertisedEndpoint, certificate}` + `X-OwnS3-Peer-Signature`; 403/409/400 — по §2 |
+| denylist replace | `PUT /replication/denylist` — JSON `{entries:[{name, publicKeyPem}]}` + заголовок `X-OwnS3-Peer-Certificate` | До-join аутентификация по сертификату (§2/§6): доверие ⟺ подписан trust-anchor ∧ не отозван; идемпотентная полная перезапись локального deny-list (`revokedAtUnixMs` ставит сервер); **202**; malformed/невалидный состав → **400**; отказ доверия → **403** |
 
 ## 7. Приёмник: fetch-очередь, LWW, tombstones, место на диске
 
@@ -577,8 +601,8 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 пауза/резюм фетчей по месту; принудительный тримминг журнала (потери
 уведомлений); отложенные бакетные удаления; budget-exceeded; грязная
 остановка → стартовый reconcile; запуск/завершение reconcile; join
-(обе стороны: имя/endpoint пира), удаление соседа, отзыв (deny-list)
-и снятие отзыва.
+(обе стороны: имя/endpoint пира), удаление соседа, отзыв (deny-list),
+снятие отзыва и полная перезапись deny-list (число записей).
 
 **Сквозные измерения в E2E** (не рантайм-метрики узлов): end-to-end
 латентность репликации и время восстановления связи после срастания
