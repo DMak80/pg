@@ -162,6 +162,12 @@ public sealed class ThresholdsOptions
 
     /// <summary>Период сбора usage (GET /admin/storage ноды → nodes/node&lt;k&gt;/usage).</summary>
     public int HealthIntervalSec { get; set; } = 15;
+
+    /// <summary>Период зонда F (arch/24 §8): гейт по checked_unix ключа connectivity.</summary>
+    public int SyncIntervalSec { get; set; } = 60;
+
+    /// <summary>Бюджет страниц сверки на сторону пары (spec §3.3; 20 = 20 000 объектов).</summary>
+    public int SyncMaxPages { get; set; } = 20;
 }
 
 /// <summary>Параллелизм обработки кластеров тика.</summary>

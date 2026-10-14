@@ -37,6 +37,7 @@ internal sealed class S3ClusterProcesses(
     AddNodeProcess addNode,
     RemoveNodeProcess removeNode,
     MeshGovernanceProcess mesh,
+    SyncProbeProcess syncProbe,
     SecretRotator rotator,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
@@ -123,9 +124,9 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Active:
-                    // Active-ветка (arch/24 §5): живая заявка ротации —
-                    // ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E не идут — дисциплина
-                    // «одно пересоздание за тик»); иначе надзор (C) →
+                    // Active-ветка (arch/24 §5, C → D → E → G → F): живая заявка
+                    // ротации — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E не идут —
+                    // дисциплина «одно пересоздание за тик»); иначе надзор (C) →
                     // add-node (D) → remove-node (E).
                     await RunClusterOpAsync(cluster, "active", async () =>
                     {
@@ -144,9 +145,15 @@ internal sealed class S3ClusterProcesses(
                         var removed = await removeNode.TickAsync(snap, ct);
                         if (!removed.IsSuccess)
                             return removed;
-                        // Доводка состава (arch/24 §5 G — после E, до F t33);
-                        // ошибки G не прерывают ветку (per-процессная дисциплина).
-                        return await mesh.TickAsync(snap, ct);
+                        // Доводка состава (arch/24 §5 G) — до F: зонд видит
+                        // состав mesh доведённым тика; ошибка G прерывает
+                        // ветку до F (ранний return — заявка зонда живёт).
+                        var meshed = await mesh.TickAsync(snap, ct);
+                        if (!meshed.IsSuccess)
+                            return meshed;
+                        // Зонд F — последний в Active-ветке (arch/24 §5):
+                        // пишет connectivity/sync (arch/23 §3).
+                        return await syncProbe.TickAsync(snap, ct);
                     }, ct);
                     break;
 
