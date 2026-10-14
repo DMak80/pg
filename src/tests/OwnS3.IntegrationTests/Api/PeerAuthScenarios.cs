@@ -569,6 +569,30 @@ public sealed class PeerAuthScenarios : IClassFixture<PeerAuthAppFactory>
     }
 
     [Fact]
+    public async Task JoinIncoming_MalformedAuthorization_400()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; мусорная структура OWNS3-PEER-Authorization
+        // (валидный префикс схемы) на join-маршруте, сертификат/тело — валидные
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/replication/join");
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(
+            JsonSerializer.Serialize(new { advertisedEndpoint = "http://peer-x:9000" }, Json)));
+        request.Headers.TryAddWithoutValidation("Authorization", "OWNS3-PEER-мусор");
+        request.Headers.TryAddWithoutValidation("X-OwnS3-Peer-Certificate",
+            CertBase64Of(PeerAuthMaterial.PeerXCert));
+
+        // Act
+        var response = await client.Http.SendAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert — 400 AuthorizationHeaderMalformed (spec §4.2/глава 07 §6; выровнено
+        // с peer-веткой middleware), XML-формат грани
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AuthorizationHeaderMalformed");
+    }
+
+    [Fact]
     public async Task JoinIncoming_InvalidAdvertisedEndpoint_400()
     {
         // Arrange — СОБСТВЕННАЯ фабрика; мусорный advertisedEndpoint в теле join
@@ -1024,10 +1048,14 @@ public sealed class PeerAuthFailFastScenarios
     [Fact]
     public void FailFast_BrokenDenyListFile_RefusesStart()
     {
-        // Arrange — том с битым denylist.json (повреждён вручную)
+        // Arrange — СУЩЕСТВУЮЩАЯ инсталляция: том с валидным volume.json (инициализирован
+        // прошлым стартом) и битым вручную denylist.json; DenyList резолвится fail-fast
+        // ПОСЛЕ storage-блока — том проходит валидацию хранения, отказ даёт deny-list
         var volumeDir = Path.Combine(Path.GetTempPath(), "owns3-peer-waf-" + Guid.NewGuid().ToString("N"));
         var replDir = Path.Combine(volumeDir, ".owns3.sys", "replication");
         Directory.CreateDirectory(replDir);
+        File.WriteAllText(Path.Combine(volumeDir, ".owns3.sys", "volume.json"),
+            """{"magic":"OWNS3-VOL","formatVersion":1,"volumeId":"t39-failfast","mode":"XL Single"}""");
         File.WriteAllText(Path.Combine(replDir, "denylist.json"), "{битый json");
         try
         {

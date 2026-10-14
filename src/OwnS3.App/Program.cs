@@ -430,15 +430,11 @@ try
         ? null
         : OwnS3.Replication.PeerIdentityLoader.Load(replicationOptions.Identity);
     peerTrust = OwnS3.Replication.PeerIdentityLoader.LoadTrustAnchor(replicationOptions.TrustCa);
-    // DenyList — НЕМЕДЛЕННЫЙ резолв (заявленный «битый denylist.json → fail-fast»):
-    // ленивая DI-лямбда резолвилась бы на первом HTTP-запросе — InvalidOperationException
-    // валил бы каждый запрос 500-ми вместо отказа старта (файл повреждён вручную).
-    _ = app.Services.GetRequiredService<OwnS3.Replication.DenyList>();
 }
 catch (Exception ex)
 {
     app.Logger.LogCritical(ex,
-        "OwnS3:Replication: невалидный identity/trust-материал или deny-list — отказ старта (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA)");
+        "OwnS3:Replication: невалидный identity/trust-материал — отказ старта (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA)");
     throw;
 }
 
@@ -467,6 +463,22 @@ catch (Exception ex)
     app.Logger.LogCritical(ex, "Конфигурация/том ownS3 (DataDir={DataDir}) невалидны — отказ старта",
         options.DataDir);
     Environment.Exit(1);
+}
+
+// DenyList (t39, глава 07 §2): НЕМЕДЛЕННЫЙ резолв ПОСЛЕ валидации конфигурации/тома
+// (выше) — битый denylist.json = отказ старта с точной атрибуцией, а не ленивый
+// резолв на первом HTTP-запросе (каждый запрос — 500). Механика отказа — как у
+// PeerAuth-материала выше: LogCritical + проброс (тестируемо из WAF-хоста,
+// Environment.Exit здесь убил бы тестовый процесс).
+try
+{
+    _ = app.Services.GetRequiredService<OwnS3.Replication.DenyList>();
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex,
+        "OwnS3:Replication: невалидный deny-list (.owns3.sys/replication/denylist.json) — отказ старта");
+    throw;
 }
 
 // EC-режим: инструменты OwnS3EcMetrics создаются конструктором (observable-gauge

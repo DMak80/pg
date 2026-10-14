@@ -261,8 +261,13 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
                 // Отказ проверки подписи запроса — код каталога подписи (глава 07 §6:
                 // SignatureDoesNotMatch/RequestTimeTooSkewed/…, XML-ответ); прочие причины
                 // отказа (trust/CA/deny) — AccessDenied в том же XML-формате грани.
+                // Исключение — malformed Authorization: по каталогу §4.2/§6 это 400
+                // (peer-ветка middleware отдаёт именно 400) — выравнивание веток грани.
                 var code = refused.ErrorCode ?? OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied;
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.StatusCode =
+                    code == OwnS3.Protocol.Errors.S3ErrorCode.AuthorizationHeaderMalformed
+                        ? StatusCodes.Status400BadRequest
+                        : StatusCodes.Status403Forbidden;
                 context.Response.ContentType = "application/xml";
                 await context.Response.WriteAsync(OwnS3.Protocol.Xml.S3ErrorXmlWriter.Write(
                     new OwnS3.Protocol.Xml.S3Error(code, Resource: context.Request.Path,
