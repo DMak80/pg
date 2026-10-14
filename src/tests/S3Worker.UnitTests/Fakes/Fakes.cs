@@ -346,6 +346,10 @@ internal static class Fakes
             string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
         {
             MeshCalls.Add(("status", host, port, null));
+            // Зонд-ветка t33: пер-порт статус с Neighbors (счётчики доставки);
+            // NeighborNames-ветка G не тронута.
+            if (StatusResultByPort.TryGetValue(port, out var withNeighbors))
+                return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(withNeighbors));
             return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(
                 StatusByPort.TryGetValue(port, out var perPort) ? perPort : Status));
         }
@@ -371,6 +375,48 @@ internal static class Fakes
             MeshCalls.Add(("denylist", host, port, string.Join(",", entries.Select(e => e.Name))));
             LastDenyEntries = entries;
             return Task.FromResult(Result<bool>.Success(DenyListPushed));
+        }
+
+        // Зонд F (t33): программируемые probe/sync-report/listing по S3-порту
+        // ноды + журнал вызовов (защёлки assertions). Ключ маркера "" = null
+        // (первая страница; string? нельзя TKey — notnull-ограничение).
+        public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ProbeReport> ProbeByPort = [];
+        public readonly Dictionary<int, Dictionary<string, S3Worker.Core.OwnS3.OwnS3SyncReportPage>> SyncReportPages = [];
+        public readonly Dictionary<int, IReadOnlyList<S3Worker.Core.OwnS3.OwnS3ListEntry>> Listings = [];
+        public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ReplicationStatus> StatusResultByPort = []; // статус с Neighbors (per-инстанс)
+        public readonly List<(string Op, int Port, string? Arg)> ProbeCalls = [];
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3ProbeReport>> ProbeAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
+        {
+            ProbeCalls.Add(("probe", port, null));
+            return Task.FromResult(ProbeByPort.TryGetValue(port, out var report)
+                ? Result<S3Worker.Core.OwnS3.OwnS3ProbeReport>.Success(report)
+                : Result<S3Worker.Core.OwnS3.OwnS3ProbeReport>.Failed(
+                    new ApplicationException("probe не запрограммирован")));
+        }
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>> GetSyncReportPageAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string bucket, string? marker, CancellationToken ct)
+        {
+            ProbeCalls.Add(("sync-report", port, marker));
+            return Task.FromResult(
+                SyncReportPages.TryGetValue(port, out var pages) && pages.TryGetValue(marker ?? "", out var page)
+                    ? Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>.Success(page)
+                    : Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>.Failed(
+                        new ApplicationException("страница sync-report не запрограммирована")));
+        }
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3ListPage>> ListObjectEntriesAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string bucket, string? continuationToken, CancellationToken ct)
+        {
+            ProbeCalls.Add(("listing", port, continuationToken));
+            // Одна страница (NextContinuationToken=null) — многостраничный diff
+            // юнит-тестами покрывается цепочкой sync-report.
+            return Task.FromResult(Listings.TryGetValue(port, out var entries)
+                ? Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Success(new(entries, null))
+                : Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Failed(
+                    new ApplicationException("листинг не запрограммирован")));
         }
     }
 }

@@ -4,10 +4,12 @@ using System.Text;
 namespace S3Worker.Core.OwnS3;
 
 /// <summary>
-/// Клиентская SigV4-подпись GET-запроса без payload (админ-грань ownS3
-/// /admin/storage — owns3/05 §7; то же ядро, что OwnS3.Protocol SigV4Core,
+/// Клиентская SigV4-подпись запроса без payload (админ-грань ownS3
+/// /admin/storage — owns3/05 §7; админ-грань репликации arch/24 §5 G/зонд
+/// arch/24 §5 F; то же ядро, что OwnS3.Protocol SigV4Core,
 /// но сторона клиента — без ссылки воркера на серверный протокол).
-/// Canonical request: GET / canonical URI / пустой query /
+/// Canonical request: METHOD / canonical URI / canonical query (пустая,
+/// либо CanonicalQuery для GET с query — sync-report) /
 /// host;x-amz-content-sha256;x-amz-date / payload — UNSIGNED-PAYLOAD
 /// (эталонный клиент ownS3, owns3/05 §7; пустой hex-хэш тела сервером
 /// тоже принимается, но эталон — unsigned).
@@ -36,7 +38,10 @@ public static class SigV4GetSigner
     /// <summary>Подпись произвольного метода (POST/DELETE/PUT — админ-грань
     /// репликации arch/24 §5 G, spec §5.1): canonical request строится с фактическим
     /// методом; payload — UNSIGNED-PAYLOAD (эталонный клиент ownS3, owns3/05 §7).
-    /// Отдельное имя (не перегрузка Sign) — устранение неоднозначности с GET-версией.</summary>
+    /// Отдельное имя (не перегрузка Sign) — устранение неоднозначности с GET-версией.
+    /// canonicalQuery — уже канонизованная query-строка (без ведущего '?';
+    /// CanonicalQuery), входит в подпись третьей строкой canonical request —
+    /// серверный CanonicalRequestBuilder включает RawQuery (owns3/03 §1).</summary>
     public static SignedGet SignRequest(
         string method,
         string uriPath,
@@ -44,7 +49,8 @@ public static class SigV4GetSigner
         string accessKey,
         string secretKey,
         string region = "us-east-1",
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        string? canonicalQuery = null)
     {
         var instant = now ?? DateTimeOffset.UtcNow;
         var amzDate = instant.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
@@ -56,7 +62,7 @@ public static class SigV4GetSigner
         // терминатор заголовков) \n signedHeaders \n payloadHash.
         var canonicalUri = UriEncodingPath(uriPath);
         var canonicalRequest =
-            $"{method.ToUpperInvariant()}\n{canonicalUri}\n\n" +
+            $"{method.ToUpperInvariant()}\n{canonicalUri}\n{canonicalQuery ?? ""}\n" +
             $"host:{hostHeader}\n" +
             $"x-amz-content-sha256:{payloadHash}\n" +
             $"x-amz-date:{amzDate}\n" +
@@ -77,6 +83,14 @@ public static class SigV4GetSigner
     }
 
     public static string HexSha256(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
+    // Каноническая query (RFC 3986, пары отсортированы по имени Ordinal):
+    // точка совместимости с CanonicalRequestBuilder сервера (значения null/пусто не шлются).
+    public static string CanonicalQuery(params (string Name, string? Value)[] pairs)
+        => string.Join("&", pairs
+            .Where(p => !string.IsNullOrEmpty(p.Value))
+            .OrderBy(p => p.Name, StringComparer.Ordinal)
+            .Select(p => $"{Uri.EscapeDataString(p.Name)}={Uri.EscapeDataString(p.Value!)}"));
 
     public static byte[] SigningKey(string secretKey, string date, string region)
     {
