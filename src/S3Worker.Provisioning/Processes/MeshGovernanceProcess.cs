@@ -55,7 +55,7 @@ public sealed class MeshGovernanceProcess(
         // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
-            return Fail(cluster, addresses.Error!, "portalloc", ct);
+            return Fail(cluster, addresses.Error!, "portalloc");
 
         var running = snap.Nodes
             .Where(n => n.State == S3NodeStates.Running)
@@ -73,10 +73,14 @@ public sealed class MeshGovernanceProcess(
         if (denyError)
             warnings.Add("denylist: битый JSON — отзовы не применяются");
 
+        // DenyList-декларация (битая — пустая: не применяется, arch/23 §9) —
+        // общая для deny-доведения и сверки состава.
+        var denySet = denyError ? [] : snap.DenyList ?? [];
+
         // PKI: ленивый выпуск CA+оркестратора (перед deny-доведением).
         var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
         if (!clusterPki.IsSuccess)
-            return Fail(cluster, clusterPki.Error!, "pki", ct);
+            return Fail(cluster, clusterPki.Error!, "pki");
         var orchestrator = clusterPki.Value.Orchestrator;
 
         // Шаг 1: deny-доведение — всем RUNNING сразу (идемпотентно).
@@ -84,7 +88,7 @@ public sealed class MeshGovernanceProcess(
         if (!denyError)
         {
             var denyPush = await PushDenyListAsync(
-                cluster, snap, running, addresses.Value, nodeSecrets!, orchestrator, warnings, ct);
+                cluster, denySet, running, addresses.Value, nodeSecrets!, orchestrator, warnings, ct);
             if (!denyPush.IsSuccess)
                 return denyPush.Error!;
             denyPushed = denyPush.Value;
@@ -98,7 +102,6 @@ public sealed class MeshGovernanceProcess(
         if (!linksError)
         {
             var links = snap.Links ?? [];
-            var denySet = denyError ? [] : snap.DenyList ?? [];
             var existing = snap.Nodes.Select(n => n.Node).ToHashSet(StringComparer.Ordinal);
 
             // Желаемые и фактические составы RUNNING-инстансов.
@@ -165,14 +168,11 @@ public sealed class MeshGovernanceProcess(
     // (имени нет в pki — пропуск + warning); недоступный инстанс — transient
     // (тик повторит всем), etcd-отказ — Failed.
     private async Task<Result<bool>> PushDenyListAsync(
-        string cluster, S3ClusterSnapshot snap, HashSet<string> running,
+        string cluster, IReadOnlyList<string> denyList, HashSet<string> running,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         OwnS3NodeSecrets nodeSecrets, IssuedPkiMaterial orchestrator,
         List<string> warnings, CancellationToken ct)
     {
-        var denyList = snap.ParseError?.Contains("/denylist: битый JSON", StringComparison.Ordinal) == true
-            ? []
-            : snap.DenyList ?? [];
         var entries = new List<(string Name, string PublicKeyPem)>();
         foreach (var name in denyList.OrderBy(n => n, StringComparer.Ordinal))
         {
@@ -180,7 +180,7 @@ public sealed class MeshGovernanceProcess(
             if (!material.IsSuccess)
             {
                 // etcd/битость — не транзиент состава; journal-before-выход.
-                var denyPkiFail = Fail(cluster, material.Error!, "deny-pki", ct);
+                var denyPkiFail = Fail(cluster, material.Error!, "deny-pki");
                 return Result<bool>.Failed(denyPkiFail.Error!);
             }
             if (material.Value is not { } issued)
@@ -310,7 +310,9 @@ public sealed class MeshGovernanceProcess(
             : Result<string>.Failed(written.Error!);
     }
 
-    private Result Fail(string cluster, Exception error, string phase, CancellationToken ct)
+    // Journal-запись отказа + Failed (запись — лучшее усилие, CancellationToken.None:
+    // last_error должен доехать даже при остановке host'а — образец ProvisioningProcess.Fail).
+    private Result Fail(string cluster, Exception error, string phase)
     {
         journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();

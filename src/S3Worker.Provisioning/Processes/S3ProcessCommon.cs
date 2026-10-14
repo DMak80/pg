@@ -299,7 +299,8 @@ public static class S3ProcessCommon
         return (cpu, mem);
     }
 
-    // Формат arch/23 §8: {"node<k>":{"host":"h","s3":18001}}.
+    // Формат arch/23 §8: {"<I>":{"host":"h","s3":18001}} — имена инстансов
+    // произвольные (arch/23 §2).
     public static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
     {
         var addresses = new Dictionary<string, NodeAddress>();

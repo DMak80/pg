@@ -999,9 +999,17 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
 
+        // Top-level Labels сервиса (arch/24 §2: перечисление объектов кластера —
+        // по префиксу + label; ListServiceRecordsAsync читает Spec.Labels —
+        // сервисный уровень; ContainerSpec.Labels остаются для контейнеров тасков).
+        var serviceLabels = new Dictionary<string, string>();
+        if (spec.Template.LabelKey is { Length: > 0 } svcLabelKey && spec.Template.Label is { Length: > 0 } svcLabel)
+            serviceLabels[svcLabelKey] = svcLabel;
+
         return new Dictionary<string, object?>
         {
             ["Name"] = spec.Name,
+            ["Labels"] = serviceLabels,
             ["TaskTemplate"] = taskTemplate,
             ["Endpoint"] = endpoint,
         };

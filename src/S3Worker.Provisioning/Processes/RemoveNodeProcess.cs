@@ -73,7 +73,7 @@ public sealed class RemoveNodeProcess(
 
         // Снос контейнера + volume по placed_on (portalloc-адрес; при утрате
         // записи — лестница E9 у надзора; здесь объект сносим на всех хостах —
-        // 404 = ок, уникальность имён s3w-<C>-node<k> глобальна).
+        // 404 = ок, имена s3w-<C>-<I> глобально уникальны).
         var removed = await driver.RemoveNodeAsync(cluster, node.Node, removeVolume: true, ct);
         if (!removed.IsSuccess)
             return Fail(cluster, node.Node, removed.Error!, "remove-node");
