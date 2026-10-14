@@ -7,8 +7,9 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// AddNode (arch/24 §5 D): заявка nodes/node&lt;max+1&gt;/state=NOT_INITIALIZED у
-/// Active-кластера → mini-A (placement + portalloc довыделение под locks —
+/// AddNode (arch/24 §5 D): заявка nodes/&lt;I&gt;/state=NOT_INITIALIZED у
+/// Active-кластера (имя инстанса &lt;I&gt; — из тела запроса, arch/24 §1.1) →
+/// mini-A (placement + portalloc довыделение под locks —
 /// та же механика P1; volume + контейнер + state=PROVISIONING; health →
 /// RUNNING; bucket) + завершающее окно: RMW endpoints + актуализация
 /// config.nodes до фактического состава (txn по mod_revision, spec §2.2).
@@ -24,6 +25,8 @@ public sealed class AddNodeProcess(
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
     SecretProfileStore secrets,
+    PkiStore pki,
+    InstanceEnvComposer envComposer,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null)
@@ -94,10 +97,22 @@ public sealed class AddNodeProcess(
         var placedOn = await PutAsync(S3ProcessCommon.NodePlacedOnKey(cluster, node.Node), address.Host, ct);
         if (!placedOn.IsSuccess)
             return Fail(cluster, node.Node, placedOn.Error!, "placed-on");
-        var env = new Dictionary<string, string>(nodeSecrets!.ToContainerEnv())
-        {
-            ["OWNS3_DATA_DIR"] = "/data",
-        };
+
+        // PKI (arch/23 §6): CA кластера уже есть у живого кластера —
+        // EnsureClusterPkiAsync идемпотентен; материал инстанса — put-if-absent
+        // (повторное создание с тем же именем — новый выпуск, §3.2).
+        var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
+        if (!clusterPki.IsSuccess)
+            return Fail(cluster, node.Node, clusterPki.Error!, "pki");
+        var nodePki = await pki.EnsureNodePkiAsync(cluster, node.Node, clusterPki.Value.Ca, ct);
+        if (!nodePki.IsSuccess)
+            return Fail(cluster, node.Node, nodePki.Error!, "pki");
+
+        // env инстанса — единая точка сборки (§3.6); включение в mesh — G по
+        // links (вызова в D нет — Active-G подхватит, arch/24 §5 D).
+        var env = envComposer.Compose(
+            nodeSecrets!, nodePki.Value, clusterPki.Value.Ca.Ca,
+            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}");
         var resources = S3ProcessCommon.ParseResources(node.Resources);
         var ensured = await driver.EnsureNodeAsync(
             new S3NodeSpec(cluster, node.Node, address.Host, address.S3Port, options.OwnS3Image, env,
@@ -118,7 +133,7 @@ public sealed class AddNodeProcess(
         if (!running.IsSuccess)
             return Fail(cluster, node.Node, running.Error!, "running");
         var bucket = await nodeClient.EnsureBucketAsync(
-            probeHost, address.S3Port, nodeSecrets, options.Bucket, ct);
+            probeHost, address.S3Port, nodeSecrets!, options.Bucket, ct);
         if (!bucket.IsSuccess)
             return Fail(cluster, node.Node, bucket.Error!, "ensure-bucket");
 

@@ -49,12 +49,11 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    nodes = 2,
                     secretProfile = S3E2eEnvironment.ProfileName,
-                    placements = new object[]
+                    instances = new object[]
                     {
-                        new { dockerHost = "local" },
-                        new { dockerHost = "local" },
+                        new { name = "east1", placement = new { dockerHost = "local" } },
+                        new { name = "east2", placement = new { dockerHost = "local" } },
                     },
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct);
@@ -62,7 +61,7 @@ public class S3E2eLifecycleTests
             created.StatusCode.Should().Be(HttpStatusCode.Created, createdBody);
 
             // [PHASE] wait-provision: обе ноды RUNNING + контейнеры живы (≤ 100 c + тики).
-            await WaitClusterActiveAsync(fx, cluster, ct, "node1", "node2");
+            await WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
             // Assert 1: config — канонический JSON Active (state снят, nodes=2).
             var config = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
@@ -77,7 +76,7 @@ public class S3E2eLifecycleTests
             }
 
             // Assert 2: placed_on = local (placement-селектор резолвнут).
-            foreach (var node in new[] { "node1", "node2" })
+            foreach (var node in new[] { "east1", "east2" })
             {
                 (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                     $"/s3/clusters/{cluster}/nodes/{node}/placed_on", ct)).Value!.Value
@@ -105,7 +104,7 @@ public class S3E2eLifecycleTests
             }
 
             // Assert 4: контейнеры + тома данных нод существуют.
-            foreach (var node in new[] { "node1", "node2" })
+            foreach (var node in new[] { "east1", "east2" })
             {
                 (await fx.ContainerAliveAsync($"s3w-{cluster}-{node}"))
                     .Should().BeTrue($"контейнер s3w-{cluster}-{node} поднят воркером");
@@ -128,7 +127,7 @@ public class S3E2eLifecycleTests
 
             // Act 6: DELETE → 202 → демонтаж воркером (канон самоочистки:
             // ноды/тома снимает воркер, teardown фикстуры ассертит чистоту).
-            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1", "node2");
+            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2");
         }
         catch
         {
@@ -167,13 +166,12 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    nodes = 1,
                     secretProfile = S3E2eEnvironment.ProfileName,
-                    placements = new object[] { new { dockerHost = "local" } },
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct);
             created.StatusCode.Should().Be(HttpStatusCode.Created);
-            await WaitClusterActiveAsync(fx, cluster, ct, "node1");
+            await WaitClusterActiveAsync(fx, cluster, ct, "east1");
 
             var allocBefore = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3worker/portalloc/{cluster}", ct)).Value!.Value;
@@ -181,7 +179,7 @@ public class S3E2eLifecycleTests
                 $"/s3/clusters/{cluster}/endpoints", ct)).Value!.Value;
             var configBefore = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/config", ct)).Value!;
-            var containerIdBefore = await fx.ContainerIdAsync($"s3w-{cluster}-node1");
+            var containerIdBefore = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
             containerIdBefore.Should().NotBeEmpty();
 
             // Act: 3 последовательных тика воркера (ScanIntervalSec=1 + запас
@@ -198,11 +196,11 @@ public class S3E2eLifecycleTests
             configAfter.Value.Should().Be(configBefore.Value, "config каноничен — перезаписи нет");
             configAfter.ModRevision.Should().Be(configBefore.ModRevision,
                 "после снятия state новых записей config нет (идемпотентность)");
-            (await fx.ContainerIdAsync($"s3w-{cluster}-node1")).Should().Be(containerIdBefore,
+            (await fx.ContainerIdAsync($"s3w-{cluster}-east1")).Should().Be(containerIdBefore,
                 "тики Active не пересоздают контейнер");
 
             // Act: DELETE → 202 → демонтаж воркером (канон самоочистки).
-            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1");
+            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
         }
         catch
         {
@@ -212,9 +210,9 @@ public class S3E2eLifecycleTests
     }
 
     // Сценарий 3 AddNode (spec §5.2, arch/23 §2.2): Active N=2 → POST /nodes →
-    // 201 → node3 RUNNING ≤ бюджета; endpoints RMW — 3 адреса, прежние на
-    // месте; config.nodes актуализирован до 3; volume node3 есть, bucket
-    // на node3 создан.
+    // 201 → west1 RUNNING ≤ бюджета; endpoints RMW — 3 адреса, прежние на
+    // месте; config.nodes актуализирован до 3; volume west1 есть, bucket
+    // на west1 создан.
     [Fact]
     public async Task AddNode_GrowsClusterToThreeNodes()
     {
@@ -240,34 +238,33 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    nodes = 2,
                     secretProfile = S3E2eEnvironment.ProfileName,
-                    placements = new object[]
+                    instances = new object[]
                     {
-                        new { dockerHost = "local" },
-                        new { dockerHost = "local" },
+                        new { name = "east1", placement = new { dockerHost = "local" } },
+                        new { name = "east2", placement = new { dockerHost = "local" } },
                     },
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct);
             created.StatusCode.Should().Be(HttpStatusCode.Created);
-            await WaitClusterActiveAsync(fx, cluster, ct, "node1", "node2");
+            await WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
             var endpointsBefore = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/endpoints", ct)).Value!.Value;
 
-            // Act: add-node node3 → 201 (ответ {cluster,node}).
+            // Act: add-node west1 → 201 (ответ {cluster,node}).
             using var added = await api.PostAsJsonAsync(
                 $"/api/s3/clusters/{cluster}/nodes",
-                new { placement = new { dockerHost = "local" } }, ct);
+                new { name = "west1", placement = new { dockerHost = "local" } }, ct);
             var addedBody = await added.Content.ReadAsStringAsync(ct);
             added.StatusCode.Should().Be(HttpStatusCode.Created, addedBody);
 
-            // [PHASE] wait-add: конвергенция D — node3 RUNNING + endpoints 3
+            // [PHASE] wait-add: конвергенция D — west1 RUNNING + endpoints 3
             // адреса + config.nodes=3 (финал D: RMW endpoints, потом config).
             await fx.WaitPhaseAsync("add-converged", async () =>
             {
                 var state = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
-                    $"/s3/clusters/{cluster}/nodes/node3/state", ct)).Value?.Value;
-                if (state != "RUNNING" || !await fx.ContainerAliveAsync($"s3w-{cluster}-node3"))
+                    $"/s3/clusters/{cluster}/nodes/west1/state", ct)).Value?.Value;
+                if (state != "RUNNING" || !await fx.ContainerAliveAsync($"s3w-{cluster}-west1"))
                     return false;
                 var endpoints = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                     $"/s3/clusters/{cluster}/endpoints", ct)).Value?.Value;
@@ -295,24 +292,24 @@ public class S3E2eLifecycleTests
                 doc.RootElement.TryGetProperty("state", out _).Should().BeFalse();
             }
 
-            // Assert 3: volume node3 существует; bucket создан и на node3
-            // (порт node3 — из portalloc: {"node3":{"host":…,"s3":p}}).
-            (await fx.VolumeExistsAsync($"s3w-{cluster}-node3-data"))
-                .Should().BeTrue("том данных node3 создан воркером");
+            // Assert 3: volume west1 существует; bucket создан и на west1
+            // (порт west1 — из portalloc: {"west1":{"host":…,"s3":p}}).
+            (await fx.VolumeExistsAsync($"s3w-{cluster}-west1-data"))
+                .Should().BeTrue("том данных west1 создан воркером");
             var alloc = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3worker/portalloc/{cluster}", ct)).Value!.Value;
             int node3Port;
             using (var allocDoc = JsonDocument.Parse(alloc))
             {
-                node3Port = allocDoc.RootElement.GetProperty("node3")
+                node3Port = allocDoc.RootElement.GetProperty("west1")
                     .GetProperty("s3").GetInt32();
             }
 
             (await ListBucketsWithRootAsync(node3Port, ct))
-                .Should().Contain(S3E2eEnvironment.BucketName, "bucket на node3 создан");
+                .Should().Contain(S3E2eEnvironment.BucketName, "bucket на west1 создан");
 
             // Act 4: DELETE → 202 → демонтаж воркером (канон самоочистки).
-            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1", "node2", "node3");
+            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2", "west1");
         }
         catch
         {

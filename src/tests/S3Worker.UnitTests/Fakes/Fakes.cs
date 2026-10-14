@@ -290,7 +290,9 @@ internal static class Fakes
     }
 
     /// <summary>Клиент ownS3-ноды-дублёр: health-флаг, usage-факт, бакеты в памяти;
-    /// флаг сбоя — транзиент-ветки процессов.</summary>
+    /// флаг сбоя — транзиент-ветки процессов. Mesh-расширения (arch/24 §5 G):
+    /// программируемые исходы status/join/delete/denylist + журнал вызовов
+    /// (защёлки assertions).</summary>
     internal sealed class FakeNodeClient : S3Worker.Core.OwnS3.IOwnS3NodeClient
     {
         public bool Health { get; set; } = true;
@@ -300,6 +302,25 @@ internal static class Fakes
         public S3Worker.Core.OwnS3.OwnS3NodeUsage Usage { get; set; } = new(1, 2);
 
         public readonly HashSet<(string Host, int Port, string Bucket)> Buckets = [];
+
+        // Mesh: программируемые факты/исходы (StatusByPort — per-инстанс, ключ = S3-порт).
+        public S3Worker.Core.OwnS3.OwnS3ReplicationStatus Status { get; set; } =
+            new(false, Array.Empty<string>());
+
+        public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ReplicationStatus> StatusByPort = [];
+
+        public S3Worker.Core.OwnS3.OwnS3JoinOutcome JoinOutcome { get; set; } =
+            new(S3Worker.Core.OwnS3.OwnS3JoinKind.Joined);
+
+        public bool DeleteTargetResult { get; set; } = true;
+
+        public bool DenyListPushed { get; set; } = true;
+
+        // Журнал вызовов mesh-методов (кто, куда, что).
+        public readonly List<(string Op, string Host, int Port, string? Arg)> MeshCalls = [];
+
+        // Последнее тело deny-перезаписи (entries последнего PUT).
+        public IReadOnlyList<(string Name, string PublicKeyPem)>? LastDenyEntries { get; private set; }
 
         public Task<Result<bool>> HealthAsync(string host, int port, CancellationToken ct)
             => Task.FromResult(Result<bool>.Success(Health));
@@ -320,5 +341,36 @@ internal static class Fakes
             => Task.FromResult(UsageFault
                 ? Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Failed(new ApplicationException("грань usage недоступна"))
                 : Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Success(Usage));
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>> GetReplicationStatusAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
+        {
+            MeshCalls.Add(("status", host, port, null));
+            return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(
+                StatusByPort.TryGetValue(port, out var perPort) ? perPort : Status));
+        }
+
+        public Task<Result<S3Worker.Core.OwnS3.OwnS3JoinOutcome>> AdminJoinAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string endpoint, CancellationToken ct)
+        {
+            MeshCalls.Add(("join", host, port, endpoint));
+            return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3JoinOutcome>.Success(JoinOutcome));
+        }
+
+        public Task<Result<bool>> DeleteTargetAsync(
+            string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, string name, CancellationToken ct)
+        {
+            MeshCalls.Add(("delete-target", host, port, name));
+            return Task.FromResult(Result<bool>.Success(DeleteTargetResult));
+        }
+
+        public Task<Result<bool>> PutDenyListAsync(
+            string host, int port, IReadOnlyList<(string Name, string PublicKeyPem)> entries,
+            S3Worker.Core.OwnS3.IssuedPkiMaterial orchestrator, CancellationToken ct)
+        {
+            MeshCalls.Add(("denylist", host, port, string.Join(",", entries.Select(e => e.Name))));
+            LastDenyEntries = entries;
+            return Task.FromResult(Result<bool>.Success(DenyListPushed));
+        }
     }
 }

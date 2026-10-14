@@ -40,14 +40,14 @@ public class S3E2eRotationTests
         try
         {
             await S3E2eScaleTests.WaitWorkerAsync(fx, api, ct);
-            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, nodes: 2, ct);
-            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "node1", "node2");
+            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1", "east2");
+            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
             // Baseline: env нод несёт root-пару воркера (сравнение В КОДЕ —
             // значения в лог не печатаются).
-            var id1Before = await fx.ContainerIdAsync($"s3w-{cluster}-node1");
-            var id2Before = await fx.ContainerIdAsync($"s3w-{cluster}-node2");
-            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-node1"))["OWNS3_ROOT_USER"]
+            var id1Before = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
+            var id2Before = await fx.ContainerIdAsync($"s3w-{cluster}-east2");
+            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
                 .Should().Be(S3E2eEnvironment.RootUser, "ноды созданы с env профиля воркера");
 
             // Act 1: заявка ротации с НЕИЗМЕНЁННЫМИ секретами (env нод уже
@@ -69,11 +69,11 @@ public class S3E2eRotationTests
 
             // Assert 1: ноды НЕ пересозданы (env уже правильный), env нод ==
             // env воркера, ноды живы.
-            (await fx.ContainerIdAsync($"s3w-{cluster}-node1")).Should().Be(id1Before,
+            (await fx.ContainerIdAsync($"s3w-{cluster}-east1")).Should().Be(id1Before,
                 "env нод уже на профиле — matches no-op без пересозданий");
-            (await fx.ContainerIdAsync($"s3w-{cluster}-node2")).Should().Be(id2Before,
+            (await fx.ContainerIdAsync($"s3w-{cluster}-east2")).Should().Be(id2Before,
                 "env нод уже на профиле — matches no-op без пересозданий");
-            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-node1"))["OWNS3_ROOT_USER"]
+            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
                 .Should().Be(S3E2eEnvironment.RootUser);
 
             // Act 2: смена значений — оператор обновляет env и перезапускает
@@ -99,8 +99,8 @@ public class S3E2eRotationTests
             using var rotated2 = await api.PostAsync(
                 $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
             rotated2.StatusCode.Should().Be(HttpStatusCode.Created);
-            var id1Mid = await fx.ContainerIdAsync($"s3w-{cluster}-node1");
-            var id2Mid = await fx.ContainerIdAsync($"s3w-{cluster}-node2");
+            var id1Mid = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
+            var id2Mid = await fx.ContainerIdAsync($"s3w-{cluster}-east2");
             await fx.WaitPhaseAsync("wait-rotation2", async () =>
             {
                 if (await GetOrNullAsync(fx, $"/s3worker/rotations/{cluster}", ct) is not null)
@@ -108,12 +108,12 @@ public class S3E2eRotationTests
                 var work = await GetOrNullAsync(fx, $"/s3worker/work/{cluster}", ct);
                 if (work is not null && !work.Contains("\"phase\":\"done\""))
                     return false;
-                return await fx.ContainerIdAsync($"s3w-{cluster}-node1") != id1Mid
-                    && await fx.ContainerIdAsync($"s3w-{cluster}-node2") != id2Mid
+                return await fx.ContainerIdAsync($"s3w-{cluster}-east1") != id1Mid
+                    && await fx.ContainerIdAsync($"s3w-{cluster}-east2") != id2Mid
                     && await S3E2eScaleTests.GetOrNullAsync(fx,
-                            $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "RUNNING"
+                            $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING"
                     && await S3E2eScaleTests.GetOrNullAsync(fx,
-                            $"/s3/clusters/{cluster}/nodes/node2/state", ct) == "RUNNING";
+                            $"/s3/clusters/{cluster}/nodes/east2/state", ct) == "RUNNING";
             }, TimeSpan.FromSeconds(90), ct);
 
             // Assert 2: ноды с НОВЫМИ root-кредами — GetBucketLocation НОВОЙ
@@ -131,7 +131,7 @@ public class S3E2eRotationTests
             }
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
-            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1", "node2");
+            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2");
         }
         catch
         {
@@ -162,8 +162,8 @@ public class S3E2eRotationTests
         try
         {
             await S3E2eScaleTests.WaitWorkerAsync(fx, api, ct);
-            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, nodes: 1, ct);
-            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "node1");
+            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1");
+            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1");
 
             // Act: sync-probe → 202 (заглушка t33).
             using var probed = await api.PostAsync(
@@ -180,7 +180,7 @@ public class S3E2eRotationTests
                 .Should().BeEmpty("sync-probe — 202-заглушка, ключей не пишет");
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
-            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1");
+            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
         }
         catch
         {

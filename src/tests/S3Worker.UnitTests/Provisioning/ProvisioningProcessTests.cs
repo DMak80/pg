@@ -55,11 +55,27 @@ public class ProvisioningProcessTests
                 new PortAllocLock(Prefix, ["http://etcd:2379"], rig.Etcd, TimeProvider.System, "inst-1"),
                 new PortAllocIndex(rig.Etcd, ["http://etcd:2379"],
                     Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
-                rig.Secrets, rig.NodeClient,
+                rig.Secrets, NewPki(rig), new InstanceEnvComposer(),
+                NewMesh(rig), rig.NodeClient,
                 new S3ProvisioningOptions(portFrom, 18999, 100, 90, 15, advertised, "owns3:dev", Bucket),
                 rig.BootWait);
             return rig;
         }
+    }
+
+    // PKI-стор и процесс G на тех же фейках (rig-зависимые).
+    private static PkiStore NewPki(Rig rig)
+        => new(rig.Etcd, ["http://etcd:2379"], TimeProvider.System);
+
+    private static MeshGovernanceProcess NewMesh(Rig rig)
+    {
+        var meter = new System.Diagnostics.Metrics.Meter("S3Worker-tests");
+        return new MeshGovernanceProcess(
+            rig.Etcd, ["http://etcd:2379"], rig.Claims,
+            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
+            rig.Secrets, NewPki(rig), rig.NodeClient,
+            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", Bucket),
+            meter);
     }
 
     // Заявка: NOT_INITIALIZED, 2 ноды, plain-селекторы h1/h2, ресурсы.
@@ -77,6 +93,81 @@ public class ProvisioningProcessTests
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null),
         ],
         null, null);
+
+    // AAA: P2 — PKI-выпуск (pki/ca, pki/orchestrator, nodes/<I>/pki в FakeEtcd)
+    // и env контейнера с репликационным материалом (spec §3.6, §8.1.3–8.1.4).
+    [Fact]
+    public async Task P2_PKIКлючиВEtcd_EnvСРепликацией()
+    {
+        // Arrange: заявка N=2, здоровье обеих нод живое.
+        var rig = Rig.New();
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        rig.NodeClient.Health = true;
+
+        // Act
+        var result = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: ключи PKI в etcd; env обеспеченной ноды несёт OWNS3_REPLICATION_*
+        // (значениями, не путями).
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Keys.Should().Contain("/s3/clusters/demo/pki/ca");
+        rig.Etcd.Store.Keys.Should().Contain("/s3/clusters/demo/pki/orchestrator");
+        rig.Etcd.Store.Keys.Should().Contain("/s3/clusters/demo/nodes/node1/pki");
+        rig.Etcd.Store.Keys.Should().Contain("/s3/clusters/demo/nodes/node2/pki");
+        var env = rig.Driver.Ensured.Should().NotBeEmpty().And.Subject.First().Env;
+        env["OWNS3_REPLICATION_CERT"].Should().NotBeEmpty();
+        env["OWNS3_REPLICATION_PRIVATE_KEY"].Should().Contain("BEGIN PRIVATE KEY");
+        env["OWNS3_REPLICATION_TRUST_CA"].Should().Contain("publicKeyPem");
+        env["OWNS3_REPLICATION_ADVERTISED_ENDPOINT"].Should().StartWith("http://").And.Contain(":");
+    }
+
+    // AAA: повторный provisioning — PKI-материал тот же (идемпотентность if-absent).
+    [Fact]
+    public async Task ПовторныйProvisioning_PKIМатериалТотЖе()
+    {
+        // Arrange: HappyPath-тиком pki выпущен.
+        var rig = Rig.New();
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+        var caBefore = rig.Etcd.Store["/s3/clusters/demo/pki/ca"].Value;
+        var nodePkiBefore = rig.Etcd.Store["/s3/clusters/demo/nodes/node1/pki"].Value;
+
+        // Act: повторный тик (заявка снова NOT_INITIALIZED — эмуляция).
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        var second = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: материал не перевыпущен (значения идентичны).
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store["/s3/clusters/demo/pki/ca"].Value.Should().Be(caBefore);
+        rig.Etcd.Store["/s3/clusters/demo/nodes/node1/pki"].Value.Should().Be(nodePkiBefore);
+    }
+
+    // AAA: 0-инстансовый provisioning — P1–P4 без docker-мутаций, endpoints НЕ
+    // пишется, config nodes=0 без state (arch/23 §2, arch/24 §5 A).
+    [Fact]
+    public async Task ProvisioningНольИнстансов_EndpointsНеПишется()
+    {
+        // Arrange: заявка с nodes=0 и без инстансных ключей.
+        var rig = Rig.New();
+        rig.Etcd.Seed("/s3/clusters/empty/config",
+            "{\"platform\":\"owns3\",\"nodes\":0,\"secret_profile\":\"" + Profile + "\",\"created_unix\":1760156800,\"state\":\"NOT_INITIALIZED\"}");
+        await rig.Claims.TryClaimClusterAsync("empty", TestContext.Current.CancellationToken);
+        var snap = new S3ClusterSnapshot("empty",
+            new S3ClusterConfig("owns3", 0, Profile, 1760156800, S3NodeStates.NotInitialized),
+            [], null);
+
+        // Act
+        var result = await rig.Process.RunAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: Active без docker-мутаций; endpoints отсутствует; config без state.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Etcd.Store.Keys.Should().NotContain("/s3/clusters/empty/endpoints");
+        var config = rig.Etcd.Store["/s3/clusters/empty/config"].Value;
+        config.Should().Contain("\"nodes\":0").And.NotContain("state");
+    }
 
     private static async Task SeedDeclarationAsync(Fakes.FakeEtcd etcd, string cluster, string state)
     {
@@ -208,7 +299,8 @@ public class ProvisioningProcessTests
             new PortAllocLock(Prefix, ["http://etcd:2379"], rig.Etcd, TimeProvider.System, "inst-1"),
             new PortAllocIndex(rig.Etcd, ["http://etcd:2379"],
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
-            rig.Secrets, rig.NodeClient,
+            rig.Secrets, NewPki(rig), new InstanceEnvComposer(),
+            NewMesh(rig), rig.NodeClient,
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", Bucket),
             rig.BootWait);
         await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);

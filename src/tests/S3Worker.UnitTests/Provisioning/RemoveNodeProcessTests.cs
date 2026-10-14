@@ -94,7 +94,7 @@ public class RemoveNodeProcessTests
             new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.ToRemove, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
-            null, null);
+            null, null, null);
 
         // Act
         var result = await process.TickAsync(single, TestContext.Current.CancellationToken);
@@ -106,6 +106,28 @@ public class RemoveNodeProcessTests
         var journal = await new WorkJournal(Prefix, etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
         journal.Value!.Phase.Should().Be("rejected");
+    }
+
+    // AAA: вывод инстанса чистит pki-ключ (имя освобождается — §3.2) и имя из
+    // denylist кластера (иначе deny-доведение потеряет publicKeyPem — §3.4).
+    [Fact]
+    public async Task Вывод_ЧиститPki_ИДенайлист()
+    {
+        // Arrange: node2 заявлен TO_REMOVE; в etcd pki node2 и denylist с node2.
+        var (process, etcd, driver, claims) = NewRig();
+        await SeedAsync(etcd, claims);
+        etcd.Seed("/s3/clusters/demo/nodes/node2/pki",
+            """{"certificate":"{}","private_key_pem":"k"}""");
+        etcd.Seed("/s3/clusters/demo/denylist", """["node2"]""");
+
+        // Act
+        var result = await process.TickAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: pki-ключ удалён; denylist пуст (node2 убран); остальное нетронуто.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        etcd.Store.Keys.Should().NotContain("/s3/clusters/demo/nodes/node2/pki");
+        etcd.Store["/s3/clusters/demo/denylist"].Value.Should().Be("[]");
+        etcd.Store.Keys.Should().Contain("/s3/clusters/demo/nodes/node1/state");
     }
 
     // AAA: гвард «мёртвые остальные»: живых RUNNING кроме выводимой нет → отказ.
@@ -143,7 +165,7 @@ public class RemoveNodeProcessTests
             new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
-            null, null);
+            null, null, null);
 
         // Act
         var result = await process.TickAsync(snap, TestContext.Current.CancellationToken);

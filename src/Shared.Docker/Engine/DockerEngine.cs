@@ -46,7 +46,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     c.Id,
                     (c.Names ?? []).Select(n => n.StartsWith("/", StringComparison.Ordinal) ? n[1..] : n).ToArray(),
                     c.State ?? string.Empty,
-                    c.Image ?? string.Empty))
+                    c.Image ?? string.Empty,
+                    c.Labels))
                 .ToList();
         });
     }
@@ -200,18 +201,43 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     // POST /volumes/create; 409 «volume already exists» = успех (идемпотентность).
     public async Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        => await EnsureVolumeAsync(name, labelKey: null!, label: null!, ct);
+
+    // POST /volumes/create с label-атрибуцией (s3worker=<C> — точный листинг
+    // сирот X2: имена инстансов произвольные, arch/24 §2); 409 «already
+    // exists» = успех (идемпотентность).
+    public async Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
             try
             {
-                await SendAsync(HttpMethod.Post, "/volumes/create",
-                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+                var payload = new Dictionary<string, object?> { ["Name"] = name };
+                if (labelKey is { Length: > 0 })
+                    payload["Labels"] = new Dictionary<string, string> { [labelKey] = label };
+                await SendAsync(HttpMethod.Post, "/volumes/create", payload, ct);
             }
             catch (DockerHttpException e) when (e.StatusCode == 409)
             {
                 // volume с таким именем уже есть — идемпотентность
             }
         });
+
+    // GET /volumes → имена по префиксу (локальная фильтрация StartsWith —
+    // docker-фильтр name подстрочный; образец ListServicesAsync).
+    public async Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+        => await Result<IReadOnlyList<string>>.FromAsync(async () =>
+        {
+            var volumes = await GetAsync<VolumeListDto>("/volumes", ct);
+            return (IReadOnlyList<string>)(volumes?.Volumes ?? [])
+                .Select(v => v.Name)
+                .Where(n => n.StartsWith(namePrefix, StringComparison.Ordinal))
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToList();
+        });
+
+    private sealed record VolumeListDto(List<VolumeDto>? Volumes);
+
+    private sealed record VolumeDto(string Name);
 
     // DELETE /volumes/{name}; 404 = успех (идемпотентность демонтажа X1).
     public async Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)
@@ -413,6 +439,27 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     && (namePrefix.Length == 0 || name.StartsWith(namePrefix, StringComparison.Ordinal)))
                 .Select(name => name!)
                 .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+        });
+    }
+
+    // Имена + label'ы сервисов по префиксу (архив: label s3worker=<C> — точность
+    // перечисления объектов кластера, arch/24 §2; docker-фильтр name — подстрочный,
+    // строгий StartsWith дублируется на клиенте, образец ListServicesAsync).
+    public async Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(
+        string namePrefix, CancellationToken ct)
+    {
+        var query = namePrefix.Length > 0
+            ? "?filters=" + Uri.EscapeDataString("{\"name\":[\"" + namePrefix + "\"]}")
+            : string.Empty;
+        return await Result<IReadOnlyList<DockerService>>.FromAsync(async () =>
+        {
+            var services = await GetAsync<List<ServiceDto>>("/services" + query, ct) ?? [];
+            return (IReadOnlyList<DockerService>)services
+                .Select(s2 => new DockerService(s2.Spec?.Name ?? string.Empty, s2.Spec?.Labels))
+                .Where(s2 => s2.Name.Length > 0
+                    && (namePrefix.Length == 0 || s2.Name.StartsWith(namePrefix, StringComparison.Ordinal)))
+                .OrderBy(s2 => s2.Name, StringComparer.Ordinal)
                 .ToList();
         });
     }
@@ -952,9 +999,17 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
 
+        // Top-level Labels сервиса (arch/24 §2: перечисление объектов кластера —
+        // по префиксу + label; ListServiceRecordsAsync читает Spec.Labels —
+        // сервисный уровень; ContainerSpec.Labels остаются для контейнеров тасков).
+        var serviceLabels = new Dictionary<string, string>();
+        if (spec.Template.LabelKey is { Length: > 0 } svcLabelKey && spec.Template.Label is { Length: > 0 } svcLabel)
+            serviceLabels[svcLabelKey] = svcLabel;
+
         return new Dictionary<string, object?>
         {
             ["Name"] = spec.Name,
+            ["Labels"] = serviceLabels,
             ["TaskTemplate"] = taskTemplate,
             ["Endpoint"] = endpoint,
         };
@@ -1080,6 +1135,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("State")] public string? State { get; set; }
 
         [JsonPropertyName("Ports")] public List<PortDto>? Ports { get; set; }
+
+        [JsonPropertyName("Labels")] public Dictionary<string, string>? Labels { get; set; }
     }
 
     private sealed class PortDto
@@ -1199,6 +1256,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private sealed class ServiceSpecDto
     {
         [JsonPropertyName("Name")] public string? Name { get; set; }
+
+        [JsonPropertyName("Labels")] public Dictionary<string, string>? Labels { get; set; }
     }
 
     private sealed class EndpointDto

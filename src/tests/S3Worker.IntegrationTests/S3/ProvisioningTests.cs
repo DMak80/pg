@@ -61,6 +61,22 @@ public class ProvisioningTests(S3ClusterFixture fx)
         var config = await fx.GetAsync($"/s3/clusters/{cluster}/config");
         config.Should().NotContain("state").And.Contain("\"platform\":\"owns3\"");
         (await fx.GetAsync($"/s3worker/work/{cluster}")).Should().Contain("done");
+
+        // PKI per-cluster (arch/23 §6): ключи ca/orchestrator/инстанса в etcd.
+        (await fx.GetAsync($"/s3/clusters/{cluster}/pki/ca")).Should().Contain("publicKeyPem");
+        (await fx.GetAsync($"/s3/clusters/{cluster}/pki/orchestrator")).Should().Contain("certificate");
+        (await fx.GetAsync($"/s3/clusters/{cluster}/nodes/node1/pki")).Should().Contain("certificate");
+
+        // Репликационный материал в env живого контейнера (docker inspect env,
+        // §3.6): сертификат/ключ/trust-anchor значениями + advertised-endpoint.
+        var env = await fx.Driver.NodeEnvAsync(cluster, "node1", TestContext.Current.CancellationToken);
+        env.IsSuccess.Should().BeTrue(env.Error?.Message);
+        env.Value.Should().NotBeNull();
+        env.Value!["OWNS3_REPLICATION_CERT"].Should().Contain("publicKeyPem");
+        env.Value["OWNS3_REPLICATION_PRIVATE_KEY"].Should().Contain("BEGIN PRIVATE KEY");
+        env.Value["OWNS3_REPLICATION_TRUST_CA"].Should().Contain("publicKeyPem");
+        env.Value["OWNS3_REPLICATION_ADVERTISED_ENDPOINT"]
+            .Should().Be($"http://{S3ClusterFixture.AdvertisedHost}:{address.S3Port}");
     }
 
     [Fact]

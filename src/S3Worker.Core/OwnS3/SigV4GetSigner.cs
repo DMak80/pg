@@ -23,9 +23,22 @@ public static class SigV4GetSigner
         string AmzDate,
         string ContentSha256);
 
-    /// <summary>Подпись GET: URI-путь (без query), host:port, креды, регион,
-    /// время UTC (по умолчанию — сейчас).</summary>
+    /// <summary>Подпись GET (историческая сигнатура админ-грани; совместимость).</summary>
     public static SignedGet Sign(
+        string uriPath,
+        string hostHeader,
+        string accessKey,
+        string secretKey,
+        string region = "us-east-1",
+        DateTimeOffset? now = null)
+        => SignRequest("GET", uriPath, hostHeader, accessKey, secretKey, region, now);
+
+    /// <summary>Подпись произвольного метода (POST/DELETE/PUT — админ-грань
+    /// репликации arch/24 §5 G, spec §5.1): canonical request строится с фактическим
+    /// методом; payload — UNSIGNED-PAYLOAD (эталонный клиент ownS3, owns3/05 §7).
+    /// Отдельное имя (не перегрузка Sign) — устранение неоднозначности с GET-версией.</summary>
+    public static SignedGet SignRequest(
+        string method,
         string uriPath,
         string hostHeader,
         string accessKey,
@@ -38,12 +51,12 @@ public static class SigV4GetSigner
         var date = amzDate[..8];
         const string payloadHash = UnsignedPayload;
 
-        // Canonical request: method \n canonicalURI \n canonicalQuery \n
+        // Canonical request: METHOD \n canonicalURI \n canonicalQuery \n
         // canonicalHeaders (каждая строка с \n, блок завершается пустой строкой —
         // терминатор заголовков) \n signedHeaders \n payloadHash.
         var canonicalUri = UriEncodingPath(uriPath);
         var canonicalRequest =
-            $"GET\n{canonicalUri}\n\n" +
+            $"{method.ToUpperInvariant()}\n{canonicalUri}\n\n" +
             $"host:{hostHeader}\n" +
             $"x-amz-content-sha256:{payloadHash}\n" +
             $"x-amz-date:{amzDate}\n" +

@@ -1,6 +1,10 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
+using OwnS3.Protocol.PeerAuth;
+using OwnS3.Protocol.Requests;
 using S3Worker.Core.OwnS3;
 using Xunit;
 
@@ -21,12 +25,16 @@ public class OwnS3NodeClientTests
     {
         public readonly List<(string Method, string Url, string? Authorization)> Requests = [];
 
+        public readonly List<string> Bodies = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Requests.Add((
                 request.Method.Method,
                 request.RequestUri!.ToString(),
                 request.Headers.TryGetValues("Authorization", out var a) ? a.First() : null));
+            if (request.Content is not null)
+                Bodies.Add(await request.Content.ReadAsStringAsync(ct));
             return responder(request);
         }
     }
@@ -236,5 +244,214 @@ public class OwnS3NodeClientTests
 
         // Assert
         client.Timeout.Should().Be(TimeSpan.FromSeconds(7.5));
+    }
+
+    // ============ mesh-расширения (arch/24 §5 G, spec §5.1/§8.1.6) ============
+
+    // AAA: status 200 → active + имена соседей; SigV4-подпись присутствует.
+    [Fact]
+    public async Task ReplicationStatus_200_ParsesNeighbors()
+    {
+        // Arrange
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"active":true,"outbox":{"bytes":1},"neighbors":[{"name":"east2","auth":"key","online":true}]}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.GetReplicationStatusAsync("h1", 9000, Creds(), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        result.Value.Active.Should().BeTrue();
+        result.Value.NeighborNames.Should().BeEquivalentTo("east2");
+        handler.Requests.Should().ContainSingle()
+            .Which.Authorization.Should().StartWith("AWS4-HMAC-SHA256");
+    }
+
+    // AAA: status 502 → Failed (транзиент тика).
+    [Fact]
+    public async Task ReplicationStatus_502_Failed()
+    {
+        // Arrange
+        var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)));
+
+        // Act
+        var result = await client.GetReplicationStatusAsync("h1", 9000, Creds(), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    // AAA: join 200 → Joined с именем пира из тела; 409 → Conflict; 403 → Refused;
+    // 502 → Transient (G различает исходы, §3.5).
+    [Theory]
+    [InlineData(200, OwnS3JoinKind.Joined, "east2")]
+    [InlineData(409, OwnS3JoinKind.Conflict, null)]
+    [InlineData(403, OwnS3JoinKind.Refused, null)]
+    [InlineData(502, OwnS3JoinKind.Transient, null)]
+    public async Task AdminJoin_MapsStatusesToOutcomes(int status, OwnS3JoinKind kind, string? peer)
+    {
+        // Arrange: 200 отдаёт {"joined":true,"peer":"east2"}.
+        var handler = new StubHandler(_ => new HttpResponseMessage((HttpStatusCode)status)
+        {
+            Content = new StringContent("""{"joined":true,"peer":"east2"}""", Encoding.UTF8, "application/json"),
+        });
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.AdminJoinAsync("h1", 9000, Creds(), "http://b:9000", TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Kind.Should().Be(kind);
+        result.Value.PeerName.Should().Be(peer);
+        // Тело — {"endpoint": …} camelCase (ownS3-парсер регистрочувствителен —
+        // PascalCase даёт 400 malformed, регресс E2E); метод POST.
+        handler.Requests.Should().ContainSingle()
+            .Which.Method.Should().Be("POST");
+        handler.Bodies.Should().ContainSingle().Which.Should().Be(
+            "{\"endpoint\":\"http://b:9000\"}");
+    }
+
+    // AAA: join — транспортный отказ → Transient (не исключение наружу).
+    [Fact]
+    public async Task AdminJoin_Transport_Transient()
+    {
+        // Arrange: handler рвёт соединение.
+        var handler = new StubHandler(_ => throw new HttpRequestException("connection refused"));
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.AdminJoinAsync("h1", 9000, Creds(), "http://b:9000", TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Kind.Should().Be(OwnS3JoinKind.Transient);
+    }
+
+    // AAA: delete-target 202 → true; 404 → false (идемпотентность); 500 → Failed.
+    [Theory]
+    [InlineData(202, true)]
+    [InlineData(404, false)]
+    public async Task DeleteTarget_MapsStatuses(int status, bool removed)
+    {
+        // Arrange
+        var handler = new StubHandler(_ => new HttpResponseMessage((HttpStatusCode)status));
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.DeleteTargetAsync("h1", 9000, Creds(), "east2", TestContext.Current.CancellationToken);
+
+        // Assert: Success с removed-фактом (404 — идемпотентный «уже нет»).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(removed);
+        handler.Requests.Should().ContainSingle()
+            .Which.Url.Should().Contain("/admin/replication/targets/east2");
+    }
+
+    [Fact]
+    public async Task DeleteTarget_500_Failed()
+    {
+        // Arrange
+        var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)));
+
+        // Act
+        var result = await client.DeleteTargetAsync("h1", 9000, Creds(), "east2", TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    // AAA: deny-перезапись 202 → true; 403 → false (trust не принят — transient);
+    // 400 → Failed. Тело — {"entries":[{name,publicKeyPem}]}, подпись OWNS3-PEER.
+    [Theory]
+    [InlineData(202, true)]
+    [InlineData(403, false)]
+    public async Task PutDenyList_MapsStatuses(int status, bool pushed)
+    {
+        // Arrange
+        var handler = new StubHandler(_ => new HttpResponseMessage((HttpStatusCode)status));
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.PutDenyListAsync(
+            "h1", 9000, [("west1", "-----BEGIN PUBLIC KEY-----x")], Orchestrator(), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(pushed);
+        var request = handler.Requests.Should().ContainSingle().Which;
+        request.Method.Should().Be("PUT");
+        request.Url.Should().Contain("/replication/denylist");
+        request.Authorization.Should().StartWith("OWNS3-PEER-ECC-P256-SHA256");
+    }
+
+    [Fact]
+    public async Task PutDenyList_400_Failed()
+    {
+        // Arrange
+        var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)));
+
+        // Act
+        var result = await client.PutDenyListAsync(
+            "h1", 9000, [("west1", "-----BEGIN PUBLIC KEY-----x")], Orchestrator(), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    // AAA: подпись PUT /replication/denylist проходит PeerRequestVerifier ownS3
+    // (совместимость контуров, spec §8.1.6) — модель по образцу тестов JoinPeerService.
+    [Fact]
+    public void PutDenyList_Signature_PassesOwnS3PeerVerifier()
+    {
+        // Arrange: материал оркестратора (PEM-ключ ↔ сертификат согласованы).
+        var orchestrator = Orchestrator();
+        var body = """{"entries":[{"name":"west1","publicKeyPem":"-----BEGIN PUBLIC KEY-----x"}]}"""u8.ToArray();
+        var at = new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero);
+
+        // Act: построение запроса (внутренняя точка подписи) → модель грани.
+        using var request = OwnS3NodeClient.BuildPeerSignedRequest(
+            HttpMethod.Put, "neighbor", 9000, "/replication/denylist", body, orchestrator, at);
+        var model = new S3RequestModel
+        {
+            Method = "PUT",
+            RawPath = "/replication/denylist",
+            RawQuery = "",
+            Headers = S3HeaderCollection.FromPairs(
+                ("Authorization", Header(request, "Authorization")),
+                ("x-owns3-peer-date", Header(request, "x-owns3-peer-date")),
+                ("x-owns3-peer-content-sha256", Header(request, "x-owns3-peer-content-sha256")),
+                ("host", Header(request, "host"))),
+            Host = Header(request, "host"),
+            OpenBody = () => new MemoryStream(body),
+        };
+        using var key = ECDsa.Create();
+        key.ImportFromPem(orchestrator.PrivateKeyPem);
+        var time = new FixedTimeProvider { Utc = at };
+        var verify = new PeerRequestVerifier(time).Verify(model, key);
+
+        // Assert: Ok с Credential=имя оркестратора (взаимная совместимость).
+        var ok = verify.Should().BeOfType<PeerVerifyResult.Ok>().Which;
+        ok.PeerName.Should().Be(orchestrator.Certificate.Name);
+    }
+
+    private static string Header(HttpRequestMessage request, string name)
+        => request.Headers.TryGetValues(name, out var values) ? values.First() : throw new InvalidOperationException(name);
+
+    // Материал оркестратора: CA → сертификат orchestrator (PEM-ключ реальный).
+    private static IssuedPkiMaterial Orchestrator()
+    {
+        var (caJson, caPem) = PeerCertificateAuthority.CreateCa("backups");
+        using var doc = System.Text.Json.JsonDocument.Parse(caJson);
+        var anchor = new PeerTrustAnchor(
+            "backups", doc.RootElement.GetProperty("publicKeyPem").GetString()!);
+        var (cert, keyPem) = PeerCertificateAuthority.IssueServer(
+            "orchestrator", anchor, caPem, DateTimeOffset.UtcNow, expiresDays: 0);
+        return new IssuedPkiMaterial(cert, cert.ToJson(), keyPem);
     }
 }

@@ -28,7 +28,11 @@ public sealed record S3NodeResources(string? Cpu, string? Mem, string? Disk);
 /// маппинг из camelCase-грани GET /admin/storage делает надзор (C).</summary>
 public sealed record S3NodeUsage(long UsedBytes, long TotalBytes, long UpdatedUnix);
 
-/// <summary>Снапшот ноды node&lt;k&gt;: декларации + статусы; ParseError — битый
+/// <summary>Пара графа репликации (arch/23 §2 links): связь {A,B} — неориентированная
+/// (зеркальный дубль ≡ одна связь; реализуется join-механикой ownS3 двусторонне).</summary>
+public sealed record S3ReplicationLink(string A, string B);
+
+/// <summary>Снапшот ноды: декларации + статусы; ParseError — битый
 /// JSON одного из ключей ноды (кластер жив).</summary>
 public sealed record S3NodeSnapshot(
     string Node,
@@ -39,13 +43,18 @@ public sealed record S3NodeSnapshot(
     S3NodeUsage? Usage,
     string? ParseError);
 
-/// <summary>Снапшот кластера /s3/clusters/&lt;C&gt;/; ParseError — битый config.</summary>
+/// <summary>Снапшот кластера /s3/clusters/&lt;C&gt;/; ParseError — битый config,
+/// links или denylist. Links/DenyList null = ключа нет ИЛИ битое значение
+/// (битость — в ParseError); pki-материал в снапшот НЕ входит (spec §5.1:
+/// чтение отдельным стором при выпуске env, не в снапшот тика).</summary>
 public sealed record S3ClusterSnapshot(
     string Cluster,
     S3ClusterConfig? Config,
     IReadOnlyList<S3NodeSnapshot> Nodes,
     string? Endpoints,
-    string? ParseError);
+    IReadOnlyList<S3ReplicationLink>? Links = null,
+    IReadOnlyList<string>? DenyList = null,
+    string? ParseError = null);
 
 /// <summary>Итог разбора префикса /s3/: кластеры + неизвестные ключи
 /// (счётчик unknownKeys — метрика spec §9).</summary>

@@ -39,6 +39,8 @@ public class NodeSupervisorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
                 rig.NodeClient, secrets,
+                new PkiStore(rig.Etcd, ["http://etcd:2379"], rig.Clock),
+                new InstanceEnvComposer(),
                 new S3ProvisioningOptions(18000, 18999, 100, nodeDeadSec, healthIntervalSec, null, "owns3:dev", "pgworker-backups"),
                 new PortAllocHealer(
                     rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
@@ -72,7 +74,7 @@ public class NodeSupervisorTests
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
-            null, null);
+            null, null, null);
     }
 
     // AAA: контейнер снесён (inspect → null) → пересоздание на том же placed_on,
@@ -141,7 +143,7 @@ public class NodeSupervisorTests
                 new S3NodeSnapshot("node2", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),
             ],
-            null, null);
+            null, null, null);
 
         // Act
         var result = await rig.Supervisor.TickAsync(snap, TestContext.Current.CancellationToken);

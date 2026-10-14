@@ -321,6 +321,36 @@ public class DockerEngineTests
         handler.Requests.Single().Url.Should().Contain("filters=");
     }
 
+    // ListServiceRecordsAsync (t40, arch/24 §2): labels сервисов парсятся из
+    // Spec.Labels; filters-запрос — валидный JSON {"name":["…"]} (регресс
+    // рассыпавшихся кавычек: невалидный filters → 400 Engine API → отказ X2).
+    [Fact]
+    public async Task ListServiceRecords_ParsesLabels_QueryIsValidJsonFilter()
+    {
+        // Arrange — ответ GET /services: сервис кластера с label s3worker=c1
+        var handler = new FakeHandler(_ => Json(
+            """
+            [{"ID":"svc-1","Spec":{"Name":"s3w-c1-east1","Labels":{"s3worker":"c1"}},"Endpoint":{"Ports":[]}}]
+            """));
+        var engine = NewEngine(handler);
+
+        // Act
+        var result = await engine.ListServiceRecordsAsync("s3w-c1-", CancellationToken.None);
+
+        // Assert: запись с именем и label'ом; query — валидный JSON-фильтр
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        result.Value.Should().ContainSingle();
+        result.Value[0].Name.Should().Be("s3w-c1-east1");
+        result.Value[0].Labels!["s3worker"].Should().Be("c1");
+        var url = handler.Requests.Single().Url;
+        url.Should().StartWith("/v1.44/services?filters=");
+        var filters = Uri.UnescapeDataString(url[("/v1.44/services?filters=".Length)..]);
+        filters.Should().Be("""{"name":["s3w-c1-"]}""",
+            "валидный JSON-фильтр name (рассыпавшиеся кавычки → 400 invalid filter на реальном Engine API)");
+        using var doc = JsonDocument.Parse(filters); // и парсится как JSON
+        doc.RootElement.GetProperty("name")[0].GetString().Should().Be("s3w-c1-");
+    }
+
     // t32 (arch/23 §4): placement-селекторы swarm_labels — парсинг node.Spec.Labels
     // из GET /nodes; у ноды без labels — пустой словарь (не null).
     [Fact]

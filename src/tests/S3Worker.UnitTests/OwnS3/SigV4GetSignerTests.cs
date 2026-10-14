@@ -66,5 +66,44 @@ public class SigV4GetSignerTests
         first.Authorization.Should().NotBe(second.Authorization);
     }
 
+    // AAA: обобщение до произвольного метода (arch/24 §5 G) — METHOD входит в
+    // canonical request первой строкой; POST/DELETE дают разные подписи, GET-
+    // сигнатура не меняется (регрессия).
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("DELETE")]
+    [InlineData("PUT")]
+    public void Sign_МетодВCanonicalRequest(string method)
+    {
+        // Arrange: двойная реализация для фактического метода.
+        const string path = "/admin/replication/join";
+        const string hostHeader = "h1:9000";
+        const string amzDate = "20260115T103000Z";
+        const string date = "20260115";
+        const string payloadHash = SigV4GetSigner.UnsignedPayload;
+        var canonicalRequest =
+            $"{method}\n{path}\n\nhost:{hostHeader}\n" +
+            $"x-amz-content-sha256:{payloadHash}\nx-amz-date:{amzDate}\n" +
+            "\n" +
+            "host;x-amz-content-sha256;x-amz-date\n" + payloadHash;
+        var scope = $"{date}/us-east-1/s3/aws4_request";
+        var stringToSign =
+            $"AWS4-HMAC-SHA256\n{amzDate}\n{scope}\n" +
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))).ToLowerInvariant();
+        var key = Hmac(Encoding.UTF8.GetBytes("AWS4" + SecretKey), Encoding.UTF8.GetBytes(date));
+        key = Hmac(key, Encoding.UTF8.GetBytes("us-east-1"));
+        key = Hmac(key, Encoding.UTF8.GetBytes("s3"));
+        key = Hmac(key, Encoding.UTF8.GetBytes("aws4_request"));
+        var expectedSignature = Convert.ToHexString(Hmac(key, Encoding.UTF8.GetBytes(stringToSign))).ToLowerInvariant();
+
+        // Act
+        var signed = SigV4GetSigner.SignRequest(method, path, hostHeader, AccessKey, SecretKey, "us-east-1", FixedTime);
+
+        // Assert: подпись построена с фактическим методом.
+        signed.Authorization.Should().Contain($"Signature={expectedSignature}");
+        signed.Authorization.Should().NotBe(
+            SigV4GetSigner.SignRequest("GET", path, hostHeader, AccessKey, SecretKey, "us-east-1", FixedTime).Authorization);
+    }
+
     private static byte[] Hmac(byte[] key, byte[] data) => HMACSHA256.HashData(key, data);
 }

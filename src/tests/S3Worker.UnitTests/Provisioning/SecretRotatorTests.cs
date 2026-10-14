@@ -40,6 +40,8 @@ public class SecretRotatorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
                 rig.Secrets,
+                new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
+                new InstanceEnvComposer(),
                 new Fakes.FakeNodeClient(),
                 new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
             return rig;
@@ -112,6 +114,8 @@ public class SecretRotatorTests
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
             rig.Secrets,
+            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
+            new InstanceEnvComposer(),
             new Fakes.FakeNodeClient(),
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
@@ -198,7 +202,10 @@ public class SecretRotatorTests
         rig.Rotator = new SecretRotator(
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
-            rig.Secrets, nodes,
+            rig.Secrets,
+            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
+            new InstanceEnvComposer(),
+            nodes,
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
         await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
@@ -272,6 +279,8 @@ public class SecretRotatorTests
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
             rig.Secrets,
+            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
+            new InstanceEnvComposer(),
             new Fakes.FakeNodeClient(),
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync(envUser: NewUser);
@@ -313,6 +322,8 @@ public class SecretRotatorTests
             rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
             new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
             rig.Secrets,
+            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
+            new InstanceEnvComposer(),
             new Fakes.FakeNodeClient(),
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();

@@ -28,11 +28,21 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
     Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct);
     Task<Result> EnsureVolumeAsync(string name, CancellationToken ct);
+
+    // Листинг имён томов по префиксу (GET /volumes, локальная фильтрация
+    // StartsWith — docker-фильтр name подстрочный): сироты X2 — имена инстансов
+    // произвольные, перебор детерминированных имён невозможен (arch/24 §2).
+    Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct);
+    Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct);
     Task<Result> DeleteVolumeAsync(string name, CancellationToken ct);
     Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct);
     Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct);
     Task<Result> RemoveServiceAsync(string name, CancellationToken ct);
     Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct);
+
+    // Имена + label'ы сервисов по префиксу (label s3worker=<C> — точность
+    // перечисления объектов кластера, arch/24 §2).
+    Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct);
     Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct);
     Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct);
     Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct);
@@ -45,8 +55,16 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, int containerPort, CancellationToken ct);
 }
 
-// Контейнер из /containers/json (Names — с ведущим "/").
-public sealed record DockerContainer(string Id, string[] Names, string State, string Image);
+// Контейнер из /containers/json (Names — с ведущим "/"; Labels — label'ы
+// контейнера, напр. s3worker=<C> — точность перечисления объектов кластера,
+// arch/24 §2; null — ответ без labels, фейк-движки).
+public sealed record DockerContainer(
+    string Id, string[] Names, string State, string Image,
+    IReadOnlyDictionary<string, string>? Labels = null);
+
+// Swarm-сервис из /services: имя + label'ы спеки (перечисление объектов
+// кластера по префиксу + label, arch/24 §2).
+public sealed record DockerService(string Name, IReadOnlyDictionary<string, string>? Labels);
 
 // Инспект контейнера GET /containers/<id>/json: hostname, сетевые алиасы, env
 // и host-биндинги — вход матчинга усыновления (spec §3.1); Running/ExitCode —

@@ -32,7 +32,7 @@ public sealed class PortAllocIndex(
             if (cluster == exceptCluster)
                 continue;
 
-            // Формат arch/23 §8: {"node<k>":{"host":"h","s3":18001}}.
+            // Формат arch/23 §8: {"<I>":{"host":"h","s3":18001}}.
             // Фильтр catch — все формы чужого мусора: JsonException (битый JSON),
             // KeyNotFoundException (нет обязательного поля), InvalidOperationException
             // (поле не того типа).

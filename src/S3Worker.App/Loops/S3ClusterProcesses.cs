@@ -36,6 +36,7 @@ internal sealed class S3ClusterProcesses(
     NodeSupervisor supervisor,
     AddNodeProcess addNode,
     RemoveNodeProcess removeNode,
+    MeshGovernanceProcess mesh,
     SecretRotator rotator,
     Meter meter,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
@@ -140,7 +141,12 @@ internal sealed class S3ClusterProcesses(
                         var added = await addNode.TickAsync(snap, ct);
                         if (!added.IsSuccess)
                             return added;
-                        return await removeNode.TickAsync(snap, ct);
+                        var removed = await removeNode.TickAsync(snap, ct);
+                        if (!removed.IsSuccess)
+                            return removed;
+                        // Доводка состава (arch/24 §5 G — после E, до F t33);
+                        // ошибки G не прерывают ветку (per-процессная дисциплина).
+                        return await mesh.TickAsync(snap, ct);
                     }, ct);
                     break;
 

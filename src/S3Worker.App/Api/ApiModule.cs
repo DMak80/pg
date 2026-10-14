@@ -41,7 +41,7 @@ public static class ApiModule
                         {
                             ["profiles"] = profile.Names,
                         }),
-                    S3ClusterAlreadyExistsException => Results.Problem(
+                    S3ClusterAlreadyExistsException or S3NodeAlreadyExistsException => Results.Problem(
                         statusCode: StatusCodes.Status409Conflict,
                         title: "Cluster already exists",
                         detail: result.Error.Message),
@@ -102,7 +102,7 @@ public static class ApiModule
                     S3ClusterNotFoundException => Results.Problem(
                         statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
                         detail: result.Error.Message),
-                    S3ClusterNotActiveException or S3LastNodeException => Results.Problem(
+                    S3ClusterNotActiveException or S3LastNodeException or S3NodeAlreadyExistsException => Results.Problem(
                         statusCode: StatusCodes.Status409Conflict, title: "Add node rejected",
                         detail: result.Error.Message),
                     _ => Results.Problem(
@@ -198,6 +198,92 @@ public static class ApiModule
             await handler.HandleAsync(cluster, ct);
             var response = Results.Accepted();
             metrics.Track("sync-probe", GetStatusCode(response));
+            return response;
+        });
+
+        // PUT /api/s3/clusters/{cluster}/links — 202 / 400 / 404 / 503 (409 не
+        // производится: гварды состояния кластера нет — spec §3.7/arch/24 §1.1).
+        endpoints.MapPut("/api/s3/clusters/{cluster}/links", async (
+            string cluster, PutLinksRequest request, PutLinksHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, request, ct);
+            IResult response;
+            if (result.IsSuccess)
+                response = Results.Accepted();
+            else
+            {
+                response = result.Error switch
+                {
+                    S3InvalidLinksException validation => Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest,
+                        title: "Invalid links",
+                        detail: result.Error.Message,
+                        extensions: new Dictionary<string, object?>
+                        {
+                            ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                        }),
+                    S3ClusterNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                        detail: result.Error.Message),
+                    _ => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                        detail: result.Error!.Message),
+                };
+            }
+
+            metrics.Track("put-links", GetStatusCode(response));
+            return response;
+        });
+
+        // POST /api/s3/clusters/{cluster}/nodes/{node}/deny — 202 / 204 (already) /
+        // 404 / 503 (отзыв ключа; доводка — процесс G).
+        endpoints.MapPost("/api/s3/clusters/{cluster}/nodes/{node}/deny", async (
+            string cluster, string node, DenyHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, node, ct);
+            IResult response;
+            if (result.IsSuccess)
+                response = result.Value ? Results.Accepted() : Results.NoContent();
+            else
+            {
+                response = result.Error switch
+                {
+                    S3NodeNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Node not found",
+                        detail: result.Error.Message),
+                    _ => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                        detail: result.Error!.Message),
+                };
+            }
+
+            metrics.Track("deny-node", GetStatusCode(response));
+            return response;
+        });
+
+        // POST /api/s3/clusters/{cluster}/nodes/{node}/allow — 202 / 204 (already) /
+        // 404 / 503 (снятие отзыва).
+        endpoints.MapPost("/api/s3/clusters/{cluster}/nodes/{node}/allow", async (
+            string cluster, string node, AllowHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, node, ct);
+            IResult response;
+            if (result.IsSuccess)
+                response = result.Value ? Results.Accepted() : Results.NoContent();
+            else
+            {
+                response = result.Error switch
+                {
+                    S3NodeNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Node not found",
+                        detail: result.Error.Message),
+                    _ => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                        detail: result.Error!.Message),
+                };
+            }
+
+            metrics.Track("allow-node", GetStatusCode(response));
             return response;
         });
 

@@ -36,12 +36,30 @@ public class ClusterDriverTests
 
         public IReadOnlyList<string> Services { get; set; } = [];
 
+        public IReadOnlyList<Shared.Docker.DockerService> ServiceRecords { get; set; } = [];
+
         public HashSet<string> Volumes { get; } = new(StringComparer.Ordinal);
 
         public readonly List<string> DeletedContainers = [];
         public readonly List<string> DeletedVolumes = [];
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        // Листинг по префиксу (сироты X2 — arch/24 §2); label-атрибут запоминается.
+        public string? LastVolumeLabelKey { get; private set; }
+        public string? LastVolumeLabel { get; private set; }
+
+        public Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(
+                Volumes.Where(v => v.StartsWith(namePrefix, StringComparison.Ordinal))
+                    .OrderBy(v => v, StringComparer.Ordinal).ToList()));
+
+        public Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
+        {
+            LastVolumeLabelKey = labelKey;
+            LastVolumeLabel = label;
+            return EnsureVolumeAsync(name, ct);
+        }
 
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
         {
@@ -67,8 +85,14 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        public readonly List<string> StartedContainers = [];
+
         public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
-            => Task.FromResult(Result.Success());
+        {
+            StartedContainers.Add(idOrName);
+            ContainerRunning = true;
+            return Task.FromResult(Result.Success());
+        }
 
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
             => Task.FromResult(Result.Success());
@@ -140,7 +164,11 @@ public class ClusterDriverTests
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+        public Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerService>>.Success(
+            ServiceRecords.Where(s => s.Name.StartsWith(namePrefix, StringComparison.Ordinal)).ToList()));
+
+    public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(
                 Services.Where(s => s.StartsWith(namePrefix, StringComparison.Ordinal)).ToList()));
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => throw NotUsed();
@@ -174,6 +202,11 @@ public class ClusterDriverTests
     private static S3NodeSpec Spec(string cluster = "c1", string node = "node1", int port = 18001)
         => new(cluster, node, "h1", port, "owns3:dev", SampleEnv, 1m, 1024L);
 
+    // Контейнер с label s3worker=<C> (EnsureNode ставит всегда — arch/24 §2).
+    private static DockerContainer Container(string name, string cluster = "c1", string state = "running")
+        => new(Guid.NewGuid().ToString("N"), [name], state, "owns3:dev",
+            new Dictionary<string, string> { ["s3worker"] = cluster });
+
     // AAA: Plain — ensure ноды: имя s3w-<C>-node<k>, порт 9000→host, env, том,
     // unless-stopped, label s3worker, лимиты.
     [Fact]
@@ -200,6 +233,8 @@ public class ClusterDriverTests
         engine.CreatedSpec.MemoryBytes.Should().Be(1024L);
         engine.CreatedSpec.Network.Should().BeNull();
         engine.Volumes.Should().Contain("s3w-c1-node1-data");
+        engine.LastVolumeLabelKey.Should().Be("s3worker");
+        engine.LastVolumeLabel.Should().Be("c1");
     }
 
     // AAA: Plain — contour-сеть стенда/E2E доезжает до NetworkMode контейнера.
@@ -232,6 +267,49 @@ public class ClusterDriverTests
         // Assert — create не вызван (CreatedSpec остался null).
         result.IsSuccess.Should().BeTrue();
         engine.CreatedSpec.Should().BeNull();
+    }
+
+    // AAA: Plain — идемпотентность по ФАКТУ (arch/24 §5 A): существующий,
+    // но НЕ запущенный контейнер (гонка create/start, takeover-якорь) —
+    // доводится стартом, не пересоздаётся.
+    [Fact]
+    public async Task Plain_EnsureNode_ExistingNotStarted_Starts()
+    {
+        // Arrange — контейнер существует в состоянии created (не running).
+        var engine = new StubEngine
+        {
+            Containers = [new DockerContainer("id1", ["s3w-c1-node1"], "created", "owns3:dev")],
+            ContainerRunning = false,
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(), contourNetwork: null, CancellationToken.None);
+
+        // Assert — create не вызван (объект не пересоздавался), но старт доведён.
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().BeNull();
+        engine.StartedContainers.Should().Contain("s3w-c1-node1");
+    }
+
+    // AAA: Plain — существующий RUNNING — без старта (прежняя семантика skip).
+    [Fact]
+    public async Task Plain_EnsureNode_ExistingRunning_NoStart()
+    {
+        // Arrange
+        var engine = new StubEngine
+        {
+            Containers = [new DockerContainer("id1", ["s3w-c1-node1"], "running", "owns3:dev")],
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(), contourNetwork: null, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().BeNull();
+        engine.StartedContainers.Should().BeEmpty();
     }
 
     // AAA: Plain — remove с томом: RemoveContainer + DeleteVolume.
@@ -316,13 +394,13 @@ public class ClusterDriverTests
     [Fact]
     public async Task Plain_ListNodeObjects_ContainersAndVolumes()
     {
-        // Arrange — контейнер node1 + тома node1/node2 существуют.
+        // Arrange — контейнер east1 с label кластера + тома east1/east2.
         var engine = new StubEngine
         {
-            Containers = [new DockerContainer("id1", ["s3w-c1-node1"], "running", "owns3:dev")],
+            Containers = [Container("s3w-c1-east1")],
         };
-        await engine.EnsureVolumeAsync("s3w-c1-node1-data", CancellationToken.None);
-        await engine.EnsureVolumeAsync("s3w-c1-node2-data", CancellationToken.None);
+        await engine.EnsureVolumeAsync("s3w-c1-east1-data", CancellationToken.None);
+        await engine.EnsureVolumeAsync("s3w-c1-east2-data", CancellationToken.None);
         var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
 
         // Act
@@ -330,7 +408,32 @@ public class ClusterDriverTests
 
         // Assert — и контейнер, и оба тома в перечне.
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeEquivalentTo(["s3w-c1-node1", "s3w-c1-node1-data", "s3w-c1-node2-data"]);
+        result.Value.Should().BeEquivalentTo(["s3w-c1-east1", "s3w-c1-east1-data", "s3w-c1-east2-data"]);
+    }
+
+    // AAA: Plain — label-точность перечисления (arch/24 §2): объект с подходящим
+    // префиксом, но без label / с чужим label — НЕ попадает в снос X2.
+    [Fact]
+    public async Task Plain_ListNodeObjects_LabelFilter_ExcludesForeign()
+    {
+        // Arrange: свой (label c1), без label, чужой (label c2).
+        var engine = new StubEngine
+        {
+            Containers =
+            [
+                Container("s3w-c1-east1", "c1"),
+                new DockerContainer(Guid.NewGuid().ToString("N"), ["s3w-c1-ghost"], "running", "owns3:dev"),
+                Container("s3w-c1-alien", "c2"),
+            ],
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.ListNodeObjectsAsync("c1", CancellationToken.None);
+
+        // Assert: только свой (ghost/alien — посторонние, arch/24 §2).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEquivalentTo(["s3w-c1-east1"]);
     }
 
     // AAA: Plain — сироты X2 multi-host: сирота-том на другом хосте (утраченный
@@ -355,16 +458,16 @@ public class ClusterDriverTests
         result.Value.Should().BeEquivalentTo(["s3w-c1-node2-data"]);
     }
 
-    // AAA: Swarm — сироты: сервисы по префиксу + сирота-том на другой swarm-ноде
-    // (утраченный контейнер) — объединение инспекций всех движков (как в сносе).
+    // AAA: Swarm — сироты: сервисы по префиксу + label (arch/24 §2) + сирота-том
+    // на другой swarm-ноде — объединение инспекций всех движков (как в сносе).
     [Fact]
     public async Task Swarm_ListNodeObjects_OrphanVolumeOnOtherNode()
     {
-        // Arrange — менеджер + две swarm-ноды; том node3 только на второй ноде.
+        // Arrange — менеджер + две swarm-ноды; том west1 только на второй ноде.
         var manager = new StubEngine();
         var n1 = new StubEngine();
         var n2 = new StubEngine();
-        await n2.EnsureVolumeAsync("s3w-c1-node3-data", CancellationToken.None);
+        await n2.EnsureVolumeAsync("s3w-c1-west1-data", CancellationToken.None);
         var driver = new SwarmClusterDriver(
             "fake://manager",
             new RoutingFactory([manager, n1, n2]),
@@ -375,7 +478,30 @@ public class ClusterDriverTests
 
         // Assert — сирота-том второй ноды в перечне.
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeEquivalentTo(["s3w-c1-node3-data"]);
+        result.Value.Should().BeEquivalentTo(["s3w-c1-west1-data"]);
+    }
+
+    // AAA: Swarm — label-точность перечня сервисов (arch/24 §2).
+    [Fact]
+    public async Task Swarm_ListNodeObjects_LabelFilter()
+    {
+        // Arrange: сервисы c1 (свой), c2 (чужой label).
+        var manager = new StubEngine
+        {
+            ServiceRecords =
+            [
+                new DockerService("s3w-c1-east1", new Dictionary<string, string> { ["s3worker"] = "c1" }),
+                new DockerService("s3w-c1-alien", new Dictionary<string, string> { ["s3worker"] = "c2" }),
+            ],
+        };
+        var driver = new SwarmClusterDriver("fake://manager", new StubFactory(manager));
+
+        // Act
+        var result = await driver.ListNodeObjectsAsync("c1", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEquivalentTo(["s3w-c1-east1"]);
     }
 
     // AAA: Plain — placement-атрибуты (arch/23 §4): Name из Hosts, UsedSlots по

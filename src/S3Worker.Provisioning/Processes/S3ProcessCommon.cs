@@ -62,6 +62,24 @@ public static class S3ProcessCommon
     public static string NodeUsageKey(string cluster, string node)
         => $"/s3/clusters/{cluster}/nodes/{node}/usage";
 
+    // Декларации mesh (arch/23 §2): граф репликации и отзыв ключей кластера.
+    public static string LinksKey(string cluster)
+        => $"/s3/clusters/{cluster}/links";
+
+    public static string DenyListKey(string cluster)
+        => $"/s3/clusters/{cluster}/denylist";
+
+    // PKI репликации per-cluster (arch/23 §2/§6): CA, сертификат оркестратора,
+    // материал инстанса (ленивый выпуск, txn put-if-absent).
+    public static string ClusterPkiCaKey(string cluster)
+        => $"/s3/clusters/{cluster}/pki/ca";
+
+    public static string OrchestratorPkiKey(string cluster)
+        => $"/s3/clusters/{cluster}/pki/orchestrator";
+
+    public static string NodePkiKey(string cluster, string node)
+        => $"/s3/clusters/{cluster}/nodes/{node}/pki";
+
     public static string PortAllocKey(string cluster)
         => $"/s3worker/portalloc/{cluster}";
 
@@ -281,7 +299,8 @@ public static class S3ProcessCommon
         return (cpu, mem);
     }
 
-    // Формат arch/23 §8: {"node<k>":{"host":"h","s3":18001}}.
+    // Формат arch/23 §8: {"<I>":{"host":"h","s3":18001}} — имена инстансов
+    // произвольные (arch/23 §2).
     public static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
     {
         var addresses = new Dictionary<string, NodeAddress>();
@@ -291,6 +310,42 @@ public static class S3ProcessCommon
                 node.Value.GetProperty("host").GetString()!,
                 node.Value.GetProperty("s3").GetInt32());
         return addresses;
+    }
+
+    // Канонический JSON links (arch/23 §2.1): [{"a":…,"b":…},…] в порядке запроса.
+    public static string LinksJson(IReadOnlyList<(string A, string B)> links)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var (a, b) in links)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("a", a);
+                writer.WriteString("b", b);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // Канонический JSON denylist (arch/23 §2.1): ["<I>",…] в Ordinal-порядке.
+    public static string DenyListJson(IReadOnlyCollection<string> names)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
+                writer.WriteStringValue(name);
+            writer.WriteEndArray();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     public static string SerializePortAlloc(IReadOnlyDictionary<string, NodeAddress> addresses)

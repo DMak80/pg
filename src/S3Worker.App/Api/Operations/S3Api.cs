@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using S3Worker.Provisioning.Processes;
 using Shared.Core;
 using Shared.Etcd.Client;
 
@@ -22,8 +23,9 @@ public sealed class S3ClusterNotFoundException(string cluster)
 public sealed class S3ClusterNotActiveException(string cluster, string state)
     : Exception($"S3-кластер {cluster} не Active (state={state}) — операция отклонена");
 
-// Валидация: 400 с errors по полям.
-public sealed class S3ValidationException(IReadOnlyList<ValidationError> errors)
+// Валидация: 400 с errors по полям (базовый для производных 400-исключений,
+// напр. S3InvalidLinksException).
+public class S3ValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры некорректны")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
@@ -43,6 +45,14 @@ public sealed class S3ClusterAlreadyExistsException(string name)
 // Нода кластера не найдена — 404.
 public sealed class S3NodeNotFoundException(string cluster, string node)
     : Exception($"нода {node} S3-кластера {cluster} не найдена");
+
+// Коллизия имени инстанса — 409 (txn NotExists проигран).
+public sealed class S3NodeAlreadyExistsException(string cluster, string node)
+    : Exception($"инстанс {node} S3-кластера {cluster} уже существует");
+
+// Невалидный граф links (400; ошибки — по полям, S3ValidationException-паттерн).
+public sealed class S3InvalidLinksException(IReadOnlyList<ValidationError> errors)
+    : S3ValidationException(errors);
 
 // Предел состава: 9 нод / последняя нода — 409.
 public sealed class S3LastNodeException(string message) : Exception(message);
@@ -104,17 +114,32 @@ public sealed record S3ResourcesDto(
     [property: JsonPropertyName("memGi")] int? MemGi,
     [property: JsonPropertyName("diskGi")] int? DiskGi);
 
+// Заявка инстанса при создании кластера (arch/24 §1.1): имя произвольное
+// (паттерн кластера, не orchestrator), placement обязателен, resources —
+// per-instance с fallback на общий resources кластера.
+public sealed record S3InstanceDto(
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("placement")] S3PlacementDto? Placement,
+    [property: JsonPropertyName("resources")] S3ResourcesDto? Resources);
+
 public sealed record CreateS3ClusterRequest(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("platform")] string? Platform,
-    [property: JsonPropertyName("nodes")] int? Nodes,
     [property: JsonPropertyName("secretProfile")] string? SecretProfile,
-    [property: JsonPropertyName("placements")] IReadOnlyList<S3PlacementDto>? Placements,
+    [property: JsonPropertyName("instances")] IReadOnlyList<S3InstanceDto>? Instances,
     [property: JsonPropertyName("resources")] S3ResourcesDto? Resources);
 
 public sealed record AddNodeRequest(
+    [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("placement")] S3PlacementDto? Placement,
     [property: JsonPropertyName("resources")] S3ResourcesDto? Resources);
+
+public sealed record PutLinksRequest(
+    [property: JsonPropertyName("links")] IReadOnlyList<S3LinkDto>? Links);
+
+public sealed record S3LinkDto(
+    [property: JsonPropertyName("a")] string? A,
+    [property: JsonPropertyName("b")] string? B);
 
 public sealed record UpdateResourcesRequest(
     [property: JsonPropertyName("cpu")] decimal? Cpu,
@@ -130,15 +155,22 @@ public record ValidationError(string Field, string Message);
 public static partial class S3Limits
 {
     public const string Platform = "owns3";
-    public const int MinNodes = 1;
+    public const int MinNodes = 0;
     public const int MaxNodes = 9;
     public const decimal MinCpu = 0.01m;
     public const decimal MaxCpu = 64m;
     public const int MinGiB = 1;
     public const int MaxGiB = 65536;
 
+    // Резерв имени инстанса (сертификат оркестратора PKI — arch/23 §6).
+    public const string ReservedInstanceName = "orchestrator";
+
     [System.Text.RegularExpressions.GeneratedRegex(@"^[a-z][a-z0-9_]{0,62}$")]
     public static partial System.Text.RegularExpressions.Regex ClusterPattern();
+
+    // Паттерн имени инстанса — тот же, что у кластера (arch/23 §2: произвольные
+    // имена того же паттерна); переиспользование генератора.
+    public static System.Text.RegularExpressions.Regex InstanceNamePattern() => ClusterPattern();
 
     public static string CanonicalCpu(decimal cpu)
         => cpu.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -173,6 +205,14 @@ public static class S3ApiHelpers
 
     public static string RotationKey(string cluster) => $"/s3worker/rotations/{cluster}";
 
+    // Ключи mesh-деклараций и PKI — делегирование S3ProcessCommon (одна точка
+    // истины формата с процессами; arch/23 §2).
+    public static string LinksKey(string cluster) => S3ProcessCommon.LinksKey(cluster);
+
+    public static string DenyListKey(string cluster) => S3ProcessCommon.DenyListKey(cluster);
+
+    public static string NodePkiKey(string cluster, string node) => S3ProcessCommon.NodePkiKey(cluster, node);
+
     // Failover-вызов: первый успешный endpoint выигрывает.
     public static async Task<Result<T>> CallAsync<T>(
         string[] endpoints, Func<string, Task<Result<T>>> call)
@@ -195,7 +235,8 @@ public static class S3ApiHelpers
         IEtcdGateway gateway, string[] endpoints, string cluster, CancellationToken ct)
         => CallAsync(endpoints, endpoint => gateway.GetAsync(endpoint, ConfigKey(cluster), ct));
 
-    // Фактический состав нод кластера: имена node<k> из Range nodes/.
+    // Фактический состав инстансов кластера: имена — второй сегмент с конца
+    // ключей nodes/<I>/* (произвольные имена; старые node<k> — валидные имена).
     public static async Task<Result<IReadOnlyList<string>>> ListNodeNamesAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, CancellationToken ct)
     {
@@ -205,7 +246,7 @@ public static class S3ApiHelpers
             return Result<IReadOnlyList<string>>.Failed(range.Error!);
         var names = range.Value
             .Select(kv => kv.Key.Split('/')[^2])
-            .Where(n => n.StartsWith("node", StringComparison.Ordinal))
+            .Where(n => n.Length > 0)
             .Distinct()
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
