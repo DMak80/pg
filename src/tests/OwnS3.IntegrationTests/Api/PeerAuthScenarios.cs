@@ -1119,6 +1119,46 @@ public sealed class PeerAuthScenarios : IClassFixture<PeerAuthAppFactory>
             .Should().Contain("AccessDenied");
     }
 
+    [Fact]
+    public async Task DenyReplace_SigV4Admin_403AccessDenied()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; admin-креды SigV4 (кейс списка не меняет)
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act — PUT /replication/denylist по SigV4 от admin (A13: политика грани
+        // строго replication)
+        var response = await client.SendSignedAsync("PUT", "/replication/denylist",
+            payloadString: PayloadHash(DenyBody()), body: Encoding.UTF8.GetBytes(DenyBody()),
+            credentials: OwnS3TestClient.Admin());
+
+        // Assert — 403 AccessDenied (критерий 8)
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AccessDenied");
+    }
+
+    [Fact]
+    public async Task DenyReplace_ReplicationKeyNeighbor_400InvalidArgument()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; состав с legacy-соседом peer-a
+        // (replication-креды числятся в targets)
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        await EnsureKeyTargetOnAsync(client);
+
+        // Act — PUT по SigV4 репликационным ключом числящегося соседа (PUT не
+        // входит в пост-join диспетчеризацию грани)
+        var response = await client.SendSignedAsync("PUT", "/replication/denylist",
+            payloadString: PayloadHash(DenyBody()), body: Encoding.UTF8.GetBytes(DenyBody()),
+            credentials: ReplicationCreds);
+
+        // Assert — 400 InvalidArgument «Unknown replication resource» (критерий 8)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("InvalidArgument");
+    }
+
     // ── хелперы «на указанном клиенте» (собственные фабрики кейсов) ──
 
     private static Task<HttpResponseMessage> SendJoinOnAsync(OwnS3TestClient client,
