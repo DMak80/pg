@@ -11,7 +11,13 @@ docker/swarm-хостам) и mesh-репликацией между нодам�
 контракта не является.
 
 Имена: кластер `<C>` — `^[a-z][a-z0-9_]{0,62}$` (как pg/kafka/valkey; без
-дефиса); ноды `node1..nodeN` (имя генерирует панель, `node<max+1>`, ≤ 9).
+дефиса); инстансы `<I>` — уникальные произвольные имена того же паттерна
+(задаёт панель; генерация `node<k>` НЕ используется), ≤ 9; кластер может
+иметь **0 и более инстансов** (декларация без развёртывания валидна). Имя
+инстанса = ключ etcd (`nodes/<I>/…`) = имя docker-объектов
+(`s3w-<C>-<I>…`, arch/24 §2) = имя target/коммуникации репликации
+(`TargetRecord.Name`, [owns3/07-replication.md](owns3/07-replication.md)
+§2). Имя `orchestrator` зарезервировано (сертификат оркестратора PKI, §6).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -28,13 +34,18 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 | Ключ | Формат значения | Пишет | Примечание |
 |---|---|---|---|
-| `config` | JSON `{"platform":"owns3","nodes":N,"secret_profile":"<имя>","created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, актуализирует `nodes` при изменении состава (D/E), txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` — единственное значение `"owns3"` (фиксируется при создании навсегда; точка расширения контракта); `nodes` — плановое число нод при создании (заявка панели), после D/E — поддерживается воркером равным фактическому составу, 1..9 (структурный предел; операционная рекомендация 2–3 — гео-минимум и бюджет R1); `secret_profile` — имя per-install env-профиля кредов нод (§6; секреты вне etcd) |
-| `nodes/node<k>/placement` | JSON-селектор атрибутов хоста: `{"docker_host":"h1"}` (plain) \| `{"swarm_node":"n1"}` \| `{"swarm_labels":{"geo":"dc1",...}}` \| комбинация атрибутов | панель через API воркера | явная привязка ноды; модель «хост = набор атрибутов» (§4); привязка = предикат равенства по всем указанным атрибутам; изменение привязки живой ноды — только выводом/перевозом ноды (перепривязка на месте не допускается: данные тома привязаны к хосту) |
-| `nodes/node<k>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"200Gi"}` | панель через API воркера (мутация ресурсов) | форматы — канон pg ([adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) §9.3; kafka — §10.3): cpu — десятичные ядра 0.01..64, mem/disk — целые GiB, в etcd `"<n>Gi"`; cpu/mem — лимиты контейнера; `disk` — целевой объём volume данных ноды (декларация: создание volume и операционная квота-наблюдение; жёсткого enforcement-примитива у docker-volume нет — занятость наблюдается `usage` и алертами панели t34) |
-| `nodes/node<k>/state` | строка `NOT_INITIALIZED`\|`PROVISIONING`\|`RUNNING`\|`UNREACHABLE`\|`REMOVING`\|`TO_REMOVE` | `NOT_INITIALIZED`/`TO_REMOVE` — **только панель** (заявка / one-way маркер демонтажа ноды); остальные — воркер | жизненный цикл ноды — семантика kafka/valkey; `UNREACHABLE` ставит надзор по health-пробам (платформенные health-грани — §5) |
-| `nodes/node<k>/placed_on` | строка — имя docker-хоста `"h1"` | воркер (при резолвции placement) | фактическое размещение после резолвции селектора (§4); переживает rebuild (том ноды живёт на этом хосте) |
-| `nodes/node<k>/usage` | JSON `{"used_bytes":N,"total_bytes":N,"updated_unix":T}` | воркер (надзор, периодически) | занятость диска ноды из платформенной админ-грани/метрик; кормит квота-наблюдение `resources.disk` и панельные алерты (t34) |
-| `endpoints` | строка `"h1:p1,h2:p2,..."` | воркер (после подъёма; RMW при изменении состава) | клиентские адреса пула (advertised host + S3-порт из `/s3worker/portalloc/<C>`) — **точка дискавери клиентов** (t36) |
+| `config` | JSON `{"platform":"owns3","nodes":N,"secret_profile":"<имя>","created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, актуализирует `nodes` при изменении состава (D/E), txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` — единственное значение `"owns3"` (фиксируется при создании навсегда; точка расширения контракта); `nodes` — число инстансов заявки при создании (0..9 — кластер без инстансов валиден), после D/E — поддерживается воркером равным фактическому составу (структурный предел 0..9; вывод последнего инстанса запрещён — arch/24 §5 E, 0 достигается только созданием; операционная рекомендация 2–3 — гео-минимум и бюджет R1); `secret_profile` — имя per-install env-профиля кредов нод (§6; секреты клиентской грани — вне etcd) |
+| `nodes/<I>/placement` | JSON-селектор атрибутов хоста: `{"docker_host":"h1"}` (plain) \| `{"swarm_node":"n1"}` \| `{"swarm_labels":{"geo":"dc1",...}}` \| комбинация атрибутов | панель через API воркера | явная привязка инстанса; модель «хост = набор атрибутов» (§4); привязка = предикат равенства по всем указанным атрибутам; изменение привязки живого инстанса — только выводом/перевозом инстанса (перепривязка на месте не допускается: данные тома привязаны к хосту) |
+| `nodes/<I>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"200Gi"}` | панель через API воркера (мутация ресурсов) | форматы — канон pg ([adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) §9.3; kafka — §10.3): cpu — десятичные ядра 0.01..64, mem/disk — целые GiB, в etcd `"<n>Gi"`; cpu/mem — лимиты контейнера; `disk` — целевой объём volume данных инстанса (декларация: создание volume и операционная квота-наблюдение; жёсткого enforcement-примитива у docker-volume нет — занятость наблюдается `usage` и алертами панели t34) |
+| `nodes/<I>/state` | строка `NOT_INITIALIZED`\|`PROVISIONING`\|`RUNNING`\|`UNREACHABLE`\|`REMOVING`\|`TO_REMOVE` | `NOT_INITIALIZED`/`TO_REMOVE` — **только панель** (заявка / one-way маркер демонтажа инстанса); остальные — воркер | жизненный цикл инстанса — семантика kafka/valkey; `UNREACHABLE` ставит надзор по health-пробам (платформенные health-грани — §5) |
+| `nodes/<I>/placed_on` | строка — имя docker-хоста `"h1"` | воркер (при резолвции placement) | фактическое размещение после резолвции селектора (§4); переживает rebuild (том инстанса живёт на этом хосте) |
+| `nodes/<I>/usage` | JSON `{"used_bytes":N,"total_bytes":N,"updated_unix":T}` | воркер (надзор, периодически) | занятость диска инстанса из платформенной админ-грани/метрик; кормит квота-наблюдение `resources.disk` и панельные алерты (t34) |
+| `nodes/<I>/pki` | JSON `{"certificate":"<PeerCertificate JSON, owns3/07 §2>","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}` | воркер (ленивый выпуск, txn put-if-absent) | материал инстанса репликационного PKI (§6): сертификат выпущен CA кластера, имя = `<I>`; **переживает provision/переезд контейнера** (контейнер пересоздаётся с тем же сертификатом); удаляется вместе с инстансом (E) |
+| `links` | JSON `[{"a":"<I1>","b":"<I2>"},…]` | панель через API воркера (замена целиком) | **граф репликации** — произвольный набор связей (пар) между инстансами; full-mesh НЕ инвариант (частичный/незеркальный состав нормален: полнота и симметричность состава соседей у разных инстансов не контролируются — настройка состава зона оркестратора, зонд t33 сверяет только настроенные линки); связь пары реализуется join-механикой двусторонне (owns3/07 §2); применяет воркер (процесс G, arch/24 §5): join недостающих пар, снос лишних target-записей; валидация API: имена существуют, `a≠b`, уникальность пар |
+| `denylist` | JSON `["<I1>",…]` | панель через API воркера (deny/allow инстанса) | **отзыв ключей** кластера — источник истины в etcd; операция «инстанс в deny-list» = отзыв его ключа: join с ним невозможен (owns3/07 §2 deny-list), существующие связи с ним сносятся воркером (G); список доводится воркером до ВСЕХ инстансов кластера (`PUT /replication/denylist`, owns3/07 §2/§6); валидация API: имена существуют |
+| `pki/ca` | JSON `{"name":"<C>","publicKeyPem":"-----BEGIN PUBLIC KEY-----…","private_key_pem":"-----BEGIN PRIVATE KEY-----…"}` | воркер (ленивый выпуск при первом инстансе/deny, txn put-if-absent) | **CA кластера** репликации — ECDSA P-256 (механика owns3/07 §2: PeerCertificateAuthority); `publicKeyPem` — trust-anchor, передаётся каждому инстансу (`OWNS3_REPLICATION_TRUST_CA`); приватный ключ CA — только воркеру (выпуск сертификатов); ротация CA — вне (roadmap) |
+| `pki/orchestrator` | JSON `{"certificate":"<PeerCertificate JSON>","private_key_pem":"…"}` | воркер (ленивый выпуск вместе с CA) | сертификат оркестратора (имя `orchestrator`, CA кластера) — подпись до-join запросов воркера (`PUT /replication/denylist`, owns3/07 §6) |
+| `endpoints` | строка `"h1:p1,h2:p2,..."` | воркер (после подъёма; RMW при изменении состава) | клиентские адреса пула (advertised host + S3-порт из `/s3worker/portalloc/<C>`) — **точка дискавери клиентов** (t36); существует ⟺ ≥1 инстанс |
 
 Неизвестные ключи внутри `/s3/` — не ошибка: лог + счётчик `unknownKeys`
 читателя (как pg/kafka/valkey; система развивается, парсеры не падают).
@@ -59,12 +70,45 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 `config` с заявкой удаления: то же + `"state":"TO_REMOVE"`.
 
+`config` кластера без инстансов (декларация без развёртывания; provisioning
+проходит без docker-мутаций):
+
+```json
+{"platform":"owns3","nodes":0,
+ "secret_profile":"backups-main",
+ "created_unix":1760156800}
+```
+
 `placement` — plain: `{"docker_host":"h1"}`; swarm: `{"swarm_node":"n1"}` и
 `{"swarm_labels":{"geo":"dc1"}}` (комбинация атрибутов — конъюнкция, §4).
 
 `resources`: `{"cpu":"2","mem":"4Gi","disk":"200Gi"}`.
 
 `state`: `"RUNNING"`; `placed_on`: `"h1"`.
+
+`nodes/<I>/pki` (значение — сертификат как экранированная JSON-строка):
+
+```json
+{"certificate":"{\"name\":\"east1\",\"publicKeyPem\":\"-----BEGIN PUBLIC KEY-----…\",\"issuedAtUnixMs\":1760156800000,\"expiresAtUnixMs\":0,\"caName\":\"backups\",\"signature\":\"…\"}",
+ "private_key_pem":"-----BEGIN PRIVATE KEY-----…"}
+```
+
+`links` (частичный граф из трёх инстансов: east1↔east2, east1↔west1, связи
+east2↔west1 нет):
+
+```json
+[{"a":"east1","b":"east2"},{"a":"east1","b":"west1"}]
+```
+
+`denylist`: `["west1"]`.
+
+`pki/ca`:
+
+```json
+{"name":"backups",
+ "publicKeyPem":"-----BEGIN PUBLIC KEY-----…",
+ "private_key_pem":"-----BEGIN PRIVATE KEY-----…"}
+```
 
 `usage`:
 
@@ -140,38 +184,41 @@ health-ключа нет: состояние живости несёт `state`, 
   кластера — на разных хостах/площадках» и панельную индикацию совпадений
   (t34).
 
-## 5. Платформа нод
+## 5. Платформа инстансов
 
 - **owns3** — единственная платформа пула: образ `owns3:dev` (правила
   E2E-образов: сборка .NET на хосте, publish-COPY, в registry не
-  кладётся); нода — ownS3 single-drive (`OWNS3_DATA_DIR=/data`); bucket
-  per-install ([19-backups.md](19-backups.md) §5) на каждой ноде
-  (CreateBucket admin-кредом, идемпотентно);
-  mesh-синхронизация — внутренняя механика ownS3 (конфиг per-install —
-  R6 `docs/owns3-replication-requirements.md`; реализация и глава
-  канона `arch/owns3/07-replication.md` — t35): до неё кластеры с N≥2
-  декларативно валидны, но синхронизации нет (статусы `sync` это
-  отразят). Health — `/healthz`
+  кладётся); инстанс — ownS3 single-drive (`OWNS3_DATA_DIR=/data`);
+  bucket per-install ([19-backups.md](19-backups.md) §5) на каждом
+  инстансе (CreateBucket admin-кредом, идемпотентно);
+  mesh-репликация — внутренняя механика ownS3
+  ([owns3/07-replication.md](owns3/07-replication.md); конфиг per-install
+  — R6 `docs/owns3-replication-requirements.md`): состав mesh инстансов
+  кластера доводит S3Worker по декларации `links` (PKI — §6; процесс
+  G — [24-s3worker.md](24-s3worker.md) §5). Health — `/healthz`
   ([owns3/05-access-config.md](owns3/05-access-config.md) §5);
   занятость диска — админ-грань `GET /admin/storage` (там же).
   Удаления ownS3 — физические (versioning отсутствует): ретенция
   arch/19 §4 работает напрямую, чистки версий не требуется.
 - **Общее**: S3-порт контейнера 9000 → host-порт из portalloc; bucket
-  per-install — единое имя на всех нодах кластера (клиент с одним
-  комплектом кредов работает с любой нодой); создание/поддержание bucket —
-  обязанность оркестратора (идемпотентно).
+  per-install — единое имя на всех инстансах кластера (клиент с одним
+  комплектом кредов работает с любым инстансом); создание/поддержание
+  bucket — обязанность оркестратора (идемпотентно).
 
 ## 6. Секреты (контрактная часть)
 
-- Креды нод — per-install env-профили воркера, вне etcd и git (направление
-  [14-pgworker.md](14-pgworker.md) §4 / [19-backups.md](19-backups.md) §7):
-  профиль = имя + root-пара + опциональные статические access keys
-  (read-write для записи бэкапов, read-only для панели — симметрия
-  действующего стенда, [owns3/05-access-config.md](owns3/05-access-config.md)
-  §6).
+Два независимых контура секретов кластера: **клиентская S3-грань** —
+per-install env-профили (ниже); **PKI репликации** — per-cluster в etcd
+(подраздел «PKI репликации»): PKI репликации клиентские креды НЕ заменяет.
+
+- Креды нод (клиентская S3-грань) — per-install env-профили воркера, вне
+  etcd и git (направление [14-pgworker.md](14-pgworker.md) §4 /
+  [19-backups.md](19-backups.md) §7): профиль = имя + root-пара +
+  опциональные статические access keys (read-write для записи бэкапов,
+  read-only для панели — симметрия действующего стенда,
+  [owns3/05-access-config.md](owns3/05-access-config.md) §6).
 - Кластер ссылается на профиль полем `config.secret_profile`; профиль един
-  на все ноды кластера (клиент пишет в любую ноду одним ключом;
-  mesh-настройка — один комплект).
+  на все инстансы кластера (клиент пишет в любой инстанс одним ключом).
 - Формат env — по прецеденту `OWNS3_ACCESS_KEYS__<i>__*` (owns3/05 §2);
   имена переменных профиля:
   - `S3W_NODE_SECRETS__<PROFILE>__ROOT_USER`,
@@ -180,14 +227,43 @@ health-ключа нет: состояние живости несёт `state`, 
     `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__SECRETKEY`,
     `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__POLICY`
     (`read-write`\|`read-only`).
-- В ноды передаётся env контейнера:
+- В инстансы передаётся env контейнера:
   `OWNS3_ROOT_USER`/`OWNS3_ROOT_PASSWORD` + `OWNS3_ACCESS_KEYS__<i>__*`.
 - Отсутствие/неполнота профиля — отказ фазы provisioning с диагностикой
   (валидация API — 422 по факту env воркера).
 - Ротация — заявка `/s3worker/rotations/<C>` (§8): rolling-пересоздание
-  нод с новым env профиля; поддержка рестарт-семантики платформ: ownS3 —
-  переконфигурация env + рестарт
+  инстансов с новым env профиля; поддержка рестарт-семантики платформ:
+  ownS3 — переконфигурация env + рестарт
   ([owns3/05-access-config.md](owns3/05-access-config.md) §2).
+
+### PKI репликации (per-cluster, etcd)
+
+- **CA кластера и выданные им сертификаты инстансов генерирует S3Worker и
+  хранит в etcd** (ключи §2: `pki/ca`, `pki/orchestrator`,
+  `nodes/<I>/pki`) — ключи переживают provision/переезд контейнера:
+  контейнер пересоздаётся с тем же сертификатом (том и env пересоздаются,
+  материал в etcd). Криптомеханика — канон owns3/07 §2 (ECDSA P-256,
+  peer-сертификаты + trust-anchor CA + join): `CreateCa`/`IssueServer`
+  библиотеки peer-PKI ownS3.
+- Выпуск — лениво, по мере надобности (первый инстанс / deny-доведение),
+  txn put-if-absent: CA (имя = `<C>`), сертификат оркестратора (имя
+  `orchestrator`, для до-join контура `PUT /replication/denylist`,
+  owns3/07 §6), сертификаты инстансов (имя = `<I>`). Сертификаты —
+  **бессрочные** (`expiresAtUnixMs=0`): отзыва через deny-list достаточно,
+  плановая ротация ключей/CA — вне (roadmap, owns3/07 §12).
+- В инстансы передаётся env контейнера (значения, не пути — прецедент
+  owns3/07 §11): `OWNS3_REPLICATION_CERT` (JSON сертификата инстанса),
+  `OWNS3_REPLICATION_PRIVATE_KEY` (PEM),
+  `OWNS3_REPLICATION_TRUST_CA` (trust-anchor JSON `pki/ca`:
+  `{"name","publicKeyPem"}`),
+  `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` (`scheme://host:port` —
+  advertised host + S3-порт инстанса из `/s3worker/portalloc/<C>`).
+- Состав mesh НЕ передаётся env (env-seed — legacy-only, owns3/07 §2):
+  доводка состава — админ-гранью/join (процесс G, arch/24 §5).
+- Приватные ключи CA/инстансов читает только воркер (панель управление
+  ключами не показывает — полностью скрыто бэком, t34); deny-list кластера
+  (§2) — операция отзыва: имя = ключ инстанса в
+  `PUT /replication/denylist` всех инстансов.
 
 ## 7. Клиентская грань пула (границы для t36)
 
@@ -212,7 +288,7 @@ health-ключа нет: состояние живости несёт `state`, 
 | `/s3worker/leader` | lease TTL 15 с | лидер singleton-процессов |
 | `/s3worker/claims/<C>` | lease TTL 15 с | пер-кластерный клэйм (exclusivity обработки одним инстансом) |
 | `/s3worker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` — сохранение накопленных треков S6 ([17-synchronization-principles.md](17-synchronization-principles.md)) |
-| `/s3worker/portalloc/<C>` | обычный | `{"node<k>":{"host":"h","s3":18001}}` — закрепление S3-портов, переживает rebuild |
+| `/s3worker/portalloc/<C>` | обычный | `{"<I>":{"host":"h","s3":18001}}` — закрепление S3-портов за инстансами, переживает rebuild |
 | `/s3worker/locks/portalloc` | lease TTL 15 с | глобальный portalloc-клэйм (t90-паттерн: взаимоисключение секции довыделения портов; txn `version==0` + put-with-lease) |
 | `/s3worker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/s3worker/api/<id>` | lease TTL 15 с | дискавери API воркера: `{"url","instance","since_unix","cert_thumbprint"?}` — ставит сам инстанс; читает панель |
@@ -224,8 +300,8 @@ health-ключа нет: состояние живости несёт `state`, 
 `portalloc`:
 
 ```json
-{"node1":{"host":"h1","s3":18001},
- "node2":{"host":"h2","s3":18002}}
+{"east1":{"host":"h1","s3":18001},
+ "east2":{"host":"h2","s3":18002}}
 ```
 
 ## 9. Панель (проекция — t34)
