@@ -128,12 +128,15 @@ east2↔west1 нет):
 
 | Ключ | Формат | Кто пишет |
 |---|---|---|
-| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — PUT-пробы межнодовых линков (health-проба недоступность записи не доказывает: детект недоступности строится на PUT-таймауте и переборе — R3 `docs/owns3-replication-requirements.md`; параллель MinIO — факт 8 `docs/s3-replication.md`) |
-| `/s3/clusters/<C>/sync` | JSON `{"state":"SYNCED"\|"LAGGING"\|"DIVERGED","checked_unix":T,"pairs":[{"from":"node1","to":"node2","missing":N,"extra":N,"lag_bytes"?,"lag_objects"?}...],"last_error"?}` | зонд t33: сверка содержимого bucket между нодами (list/хвосты; штатные метрики репликации лаг данных не отражают — факт 7 `docs/s3-replication.md`; админ-грань ownS3 «стартовая позиция/хвост префикса per-target» — R5 `docs/owns3-replication-requirements.md`) |
+| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — активные репликационные ping-пробы: зонд опрашивает `POST /admin/replication/probe` ([owns3/07-replication.md](owns3/07-replication.md) §2/§6) каждой ноды — параллельный ping её соседей исходящим репликационным транспортом; матрица `links` — только НАСТРОЕННЫЕ линки (targets каждой ноды; полнота меша и зеркальность состава НЕ контролируются — настройка состава — зона оркестратора G, не зонда); ping-ок = «канал жив» — отдельно от доставки (лаг/очередь статуса) и сверки данных (sync-половина): в `connectivity` ложится только линк; линков не настроено — OK с пустой матрицей, отсутствие репликации отражает sync-агрегат (PUT-пробы связность ownS3 не детектируют: путь записи без синхронных взаимодействий с соседями — PUT всегда 0 с, [owns3/07-replication.md](owns3/07-replication.md) §1) |
+| `/s3/clusters/<C>/sync` | JSON `{"state":"SYNCED"\|"LAGGING"\|"DIVERGED","checked_unix":T,"pairs":[{"from":"node1","to":"node2","missing":N,"extra":N,"lag_bytes"?,"lag_objects"?}...],"last_error"?}` | зонд t33: сверка содержимого bucket между нодами — пары по настроенным линкам (объединение targets, как у connectivity; `from`/`to` — упорядоченная пара по Ordinal); элемент сверки — `(key, modTimeUnixMs)`: `missing` — элементы from, отсутствующие у to (нет ключа или другая версия), `extra` — наоборот; листинги/хвосты (штатные метрики репликации лаг данных не отражают — факт 7 `docs/s3-replication.md`; админ-грань ownS3 sync-report — R5 `docs/owns3-replication-requirements.md`) |
 
-`state`-агрегаты: connectivity `DOWN` — нет ни одного живого линка записи;
-`DEGRADED` — часть линков offline; sync `LAGGING` — догон известен и
-мал/растёт; `DIVERGED` — устойчивое расхождение/дыра (алерты панели — t34).
+`state`-агрегаты (по настроенным линкам): connectivity `DOWN` — нет живых
+среди настроенных линков при непустом их составе; `DEGRADED` — часть
+настроенных линков offline; пустой состав настроенных линков — `OK` с пустой
+матрицей; sync `LAGGING` — догон известен и мал/растёт; `DIVERGED` —
+устойчивое расхождение/дыра (алерты панели — t34: расхождение, отставание,
+нода вне контура — по `nodes/*/state`).
 
 Форматы толерантны к расширению полей: парсеры панели читают известные
 поля, новые не ломают чтение.
@@ -142,8 +145,8 @@ east2↔west1 нет):
 health-ключа нет: состояние живости несёт `state`, детальная телеметрия —
 метрики [18-metrics.md](18-metrics.md).
 
-`connectivity` OK-кластера из 3 нод (линки симметричны, проба в обе
-стороны):
+`connectivity` OK-кластера из 3 нод (full-mesh: строка ноды — исходы её
+probe по собственным targets; линки симметричны):
 
 ```json
 {"state":"OK","checked_unix":1760156900,
@@ -293,6 +296,7 @@ per-install env-профили (ниже); **PKI репликации** — per-
 | `/s3worker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/s3worker/api/<id>` | lease TTL 15 с | дискавери API воркера: `{"url","instance","since_unix","cert_thumbprint"?}` — ставит сам инстанс; читает панель |
 | `/s3worker/rotations/<C>` | обычный | заявка ротации секретов профиля кластера `{"requested_unix","requested_by"}` (панель через API воркера — клэйм-txn; del воркером по завершении) |
+| `/s3worker/probes/<C>` | обычный | заявка внепланового зонда синхронности/связности `{"requested_unix","requested_by"}` (панель через API воркера — клэйм-txn put-if-absent; del зонда F по исполнении, [24-s3worker.md](24-s3worker.md) §5 F) |
 
 Панель читает из `/s3worker/` только `api/` и `rotations/` (t34);
 остальные ключи — координационные, вне панельного контракта.
