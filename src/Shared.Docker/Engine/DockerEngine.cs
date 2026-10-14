@@ -450,7 +450,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         string namePrefix, CancellationToken ct)
     {
         var query = namePrefix.Length > 0
-            ? "?filters=" + Uri.EscapeDataString("\"name:[\"" + namePrefix + "\"]\"}")
+            ? "?filters=" + Uri.EscapeDataString("{\"name\":[\"" + namePrefix + "\"]}")
             : string.Empty;
         return await Result<IReadOnlyList<DockerService>>.FromAsync(async () =>
         {
