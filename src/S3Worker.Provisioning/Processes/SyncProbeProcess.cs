@@ -29,7 +29,8 @@ public sealed class SyncProbeProcess(
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
     TimeProvider clock,
-    Meter meter)
+    Meter meter,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     public const string Op = "sync-probe";
 
@@ -117,6 +118,7 @@ public sealed class SyncProbeProcess(
                 continue;
             }
 
+            progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с — watchdog не должен увидеть зависание
             var probe = await nodeClient.ProbeAsync(
                 options.AdvertisedHost ?? addr.Host, addr.S3Port, creds, ct);
             if (!probe.IsSuccess)
@@ -289,8 +291,10 @@ public sealed class SyncProbeProcess(
                     $"листинг пары {from}↔{to} превышает бюджет страниц");
             }
 
+            progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с
             var fromPageResult = await nodeClient.GetSyncReportPageAsync(
                 fromHost, fromAddr.S3Port, creds, options.Bucket, marker, ct);
+            progress?.Mark();
             var toPageResult = await nodeClient.GetSyncReportPageAsync(
                 toHost, toAddr.S3Port, creds, options.Bucket, marker, ct);
             pagesFrom++;
@@ -369,6 +373,7 @@ public sealed class SyncProbeProcess(
             }
             else
             {
+                progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с
                 var status = await nodeClient.GetReplicationStatusAsync(toHost, toAddr.S3Port, creds, ct);
                 if (status.IsSuccess)
                     statusCache[to] = status.Value!.Neighbors;
@@ -401,6 +406,7 @@ public sealed class SyncProbeProcess(
             if (pages >= options.SyncMaxPages)
                 return (map, pages, "листинг пары превышает бюджет страниц");
 
+            progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с
             var page = await nodeClient.ListObjectEntriesAsync(host, port, creds, options.Bucket, token, ct);
             pages++;
             if (!page.IsSuccess)

@@ -40,6 +40,7 @@ internal sealed class S3ClusterProcesses(
     SyncProbeProcess syncProbe,
     SecretRotator rotator,
     Meter meter,
+    Shared.Core.Hosting.ILoopProgress progress,
     ILogger<S3ClusterProcesses> logger) : IS3ClusterProcesses
 {
     // Счётчик unknownKeys (spec §9): домен развивается — читатель не падает
@@ -136,23 +137,34 @@ internal sealed class S3ClusterProcesses(
                         if (rotating.IsSuccess && rotating.Value is not null)
                             return await rotator.TickAsync(snap, ct);
 
+                        // Прогресс-отметки ветки (ILoopProgress): каждая стадия
+                        // с молчащей нодой легитимно длится до ~15-22 с (последо-
+                        // вательные 7.5-с таймауты граней, без внутренних ретраев —
+                        // поллинг-инвариант); без отметок watchdog примет живой
+                        // тик за зависание (порог 30 c) и уронит воркер.
+                        progress.Mark();
                         var supervised = await supervisor.TickAsync(snap, ct);
                         if (!supervised.IsSuccess)
                             return supervised;
+                        progress.Mark();
                         var added = await addNode.TickAsync(snap, ct);
                         if (!added.IsSuccess)
                             return added;
+                        progress.Mark();
                         var removed = await removeNode.TickAsync(snap, ct);
                         if (!removed.IsSuccess)
                             return removed;
                         // Доводка состава (arch/24 §5 G) — до F: зонд видит
                         // состав mesh доведённым тика; ошибка G прерывает
                         // ветку до F (ранний return — заявка зонда живёт).
+                        progress.Mark();
                         var meshed = await mesh.TickAsync(snap, ct);
                         if (!meshed.IsSuccess)
                             return meshed;
                         // Зонд F — последний в Active-ветке (arch/24 §5):
-                        // пишет connectivity/sync (arch/23 §3).
+                        // пишет connectivity/sync (arch/23 §3); долгие фазы
+                        // отмечает сам (перед каждым вызовом грани).
+                        progress.Mark();
                         return await syncProbe.TickAsync(snap, ct);
                     }, ct);
                     break;

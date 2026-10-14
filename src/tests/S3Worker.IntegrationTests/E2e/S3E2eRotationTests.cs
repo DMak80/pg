@@ -142,10 +142,11 @@ public class S3E2eRotationTests
         }
     }
 
-    // Сценарий 9 sync-probe (spec §5.9, F-заглушка): POST → 202 always;
-    // через 2 тика в домене нет ключей connectivity/sync.
+    // Сценарий 9 sync-probe (arch/24 §1.1, t33): POST → 202 + заявка
+    // /s3worker/probes/&lt;C&gt;; тик зонда исполняет её (для кластера без линков —
+    // пустая матрица OK / SYNCED без пар) и сносит заявку.
     [Fact]
-    public async Task SyncProbe_Returns202AndWritesNothing()
+    public async Task SyncProbe_ЗаявкаИсполнена_КлючиПустогоМеша()
     {
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
@@ -165,19 +166,18 @@ public class S3E2eRotationTests
             await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1");
             await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1");
 
-            // Act: sync-probe → 202 (заглушка t33).
+            // Act: sync-probe → 202 (заявка put-if-absent, t33).
             using var probed = await api.PostAsync(
                 $"/api/s3/clusters/{cluster}/sync-probe", content: null, ct);
             probed.StatusCode.Should().Be(HttpStatusCode.Accepted);
 
-            // Assert: 2 тика воркера — ключей connectivity/sync нет.
-            await Task.Delay(TimeSpan.FromSeconds(2.5), ct);
-            var domain = await fx.Gateway.RangeAsync(fx.EtcdEndpoint,
-                $"/s3/clusters/{cluster}/", ct);
-            domain.Value.Where(kv =>
-                    kv.Key.Contains("connectivity", StringComparison.Ordinal)
-                    || kv.Key.Contains("/sync", StringComparison.Ordinal))
-                .Should().BeEmpty("sync-probe — 202-заглушка, ключей не пишет");
+            // Assert: тик зонда исполнил заявку — ключи канона пустого меша
+            // (links {} = OK; pairs [] = SYNCED), заявка снесена.
+            await fx.WaitPhaseAsync("sync-probed", async () =>
+                await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/connectivity", ct) is not null
+                && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/sync", ct) is not null
+                && await GetOrNullAsync(fx, $"/s3worker/probes/{cluster}", ct) is null,
+                TimeSpan.FromSeconds(60), ct);
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
             await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");

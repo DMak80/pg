@@ -243,7 +243,8 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SyncProb
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
