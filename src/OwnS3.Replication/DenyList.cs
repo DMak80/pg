@@ -80,6 +80,59 @@ public sealed class DenyList(string filePath, TimeProvider timeProvider)
         }
     }
 
+    // Полная перезапись deny-list (PUT /replication/denylist, глава 07 §2):
+    // идемпотентная замена всего списка; валидация ДО персиста — невалидный состав
+    // бросает ArgumentException, снапшот не тронут (прецедент ReplicationTargets.Replace);
+    // каждая запись получает revokedAtUnixMs = момент применения перезаписи.
+    public void Replace(IReadOnlyList<(string Name, string PublicKeyPem)> entries)
+    {
+        ValidateEntries(entries);
+        lock (_lock)
+        {
+            var now = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+            _entries.Clear();
+            foreach (var (name, publicKeyPem) in entries)
+                _entries[name] = new DenyEntry(name, publicKeyPem, now);
+            Persist();
+        }
+    }
+
+    // Валидация записей перезаписи (глава 07 §2): непустые name/publicKeyPem, PEM
+    // публичного ключа ECDSA P-256, уникальность имён и ключей (образец
+    // ReplicationTargets.Validate — текст ошибок по-русски, имя параметра entries).
+    private static void ValidateEntries(IReadOnlyList<(string Name, string PublicKeyPem)> entries)
+    {
+        var nameDuplicates = DuplicatesOf(entries.Select(e => e.Name).ToList());
+        if (nameDuplicates.Count > 0)
+            throw new ArgumentException(
+                $"Дубликаты имён записей deny-list: {string.Join(",", nameDuplicates)}", nameof(entries));
+        var keyDuplicates = DuplicatesOf(entries.Select(e => e.PublicKeyPem).ToList());
+        if (keyDuplicates.Count > 0)
+            throw new ArgumentException(
+                $"Дубликаты публичных ключей deny-list: {string.Join(",", keyDuplicates)}", nameof(entries));
+        foreach (var (name, publicKeyPem) in entries)
+        {
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(publicKeyPem))
+                throw new ArgumentException(
+                    $"Запись deny-list {name}: name и publicKeyPem обязательны", nameof(entries));
+            try
+            {
+                using var key = System.Security.Cryptography.ECDsa.Create();
+                key.ImportFromPem(publicKeyPem); // SUBJECT PUBLIC KEY ECDSA P-256
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException(
+                    $"Запись deny-list {name}: невалидный PEM публичного ключа ECDSA P-256 — {ex.Message}",
+                    nameof(entries));
+            }
+        }
+    }
+
+    private static List<string> DuplicatesOf(List<string> values) =>
+        values.GroupBy(v => v, StringComparer.Ordinal).Where(g => g.Count() > 1)
+            .Select(g => g.Key).ToList();
+
     // Текущий список отзывов (снапшот для GET admin-грани).
     public IReadOnlyList<DenyEntry> Snapshot
     {
