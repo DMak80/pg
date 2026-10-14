@@ -9,8 +9,8 @@ namespace S3Worker.IntegrationTests.Api;
 // WAF-мутации S3-домена (arch/24 §1.1, spec §8.2): create c instances[] 0..9
 // (201/409/400/422), add-node с именем из запроса (201/409/404), delete-node
 // (202/204/404/409 гвард последнего), PUT links (202/400/404), deny/allow
-// (202/204/404), rotations 201/200/404, sync-probe 202 (ключи t33 НЕ появляются),
-// метрика операций API, секретность ответов.
+// (202/204/404), rotations 201/200/404, метрика операций API, секретность
+// ответов. sync-probe (t33) — SyncProbeApiTests.
 [Collection(S3ApiCollection.Name)]
 public class ClusterMutationsApiTests(S3ApiFixture fx)
 {
@@ -387,26 +387,6 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
         var ticket = await fx.Etcd.Gateway.GetAsync(
             fx.Etcd.Endpoint, $"/s3worker/rotations/{cluster}", TestContext.Current.CancellationToken);
         ticket.Value!.Value.Should().Contain("\"requested_by\"");
-    }
-
-    [Fact]
-    public async Task SyncProbe_202_КлючиТ33НеПоявляются()
-    {
-        // Arrange
-        var cluster = Cluster("sync");
-        await CreateClusterAsync(cluster);
-        using var client = Client;
-
-        // Act
-        using var response = await client.PostAsync($"/api/s3/clusters/{cluster}/sync-probe",
-            null, TestContext.Current.CancellationToken);
-
-        // Assert: 202 always; ключи connectivity/sync НЕ появились (заглушка t33).
-        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
-        var range = await fx.Etcd.Gateway.RangeAsync(
-            fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/", TestContext.Current.CancellationToken);
-        range.Value.Select(kv => kv.Key.Split('/')[^1]).Where(leaf =>
-            leaf is "connectivity" or "sync").Should().BeEmpty();
     }
 
     // Эмуляция воркера, дошедшего до Active: канонический config без state

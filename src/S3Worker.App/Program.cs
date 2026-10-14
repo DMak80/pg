@@ -101,7 +101,10 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PostRotation
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
-builder.Services.AddSingleton<S3Worker.App.Api.Operations.SyncProbeHandler>();
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SyncProbeHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 // Граф репликации и отзыв ключей (arch/24 §1.1, t40): put-links, deny/allow.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PutLinksHandler(
     sp.GetRequiredService<IEtcdGateway>(),
