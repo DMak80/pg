@@ -220,12 +220,13 @@ public class S3E2eMeshTests
             // Доведение denylist (не тот же факт, что снос связей: deny-перезапись
             // и delete-пара — разные операции тика): ручной join честен после того,
             // как отзыва достоверно на приёмнике.
+            // Доведение denylist — всем RUNNING КРОМЕ отозванного (arch/24 §5 G п.1:
+            // отозванному собственный список не шлётся, изоляция — записи у соседей);
+            // факт отзыва на приёмнике доказывает ручной join ниже (403).
             await fx.WaitPhaseAsync("denylist-pushed", async () =>
             {
                 var d1 = await ReplicationDenyListOrNullAsync(fx, PortOf(ports, "east1"), ct);
-                var d2 = await ReplicationDenyListOrNullAsync(fx, PortOf(ports, "east2"), ct);
-                return d1 is not null && NamesOf(d1.Value).Contains("east2")
-                    && d2 is not null && NamesOf(d2.Value).Contains("east2");
+                return d1 is not null && NamesOf(d1.Value).Contains("east2");
             }, TimeSpan.FromSeconds(30), ct);
 
             var manualJoin = await AdminJoinAsync(fx, PortOf(ports, "east2"), PortOf(ports, "east1"), ct);

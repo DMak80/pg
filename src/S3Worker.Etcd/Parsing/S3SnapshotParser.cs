@@ -7,8 +7,8 @@ namespace S3Worker.Etcd.Parsing;
 
 // Парсер контроль-плейна /s3/clusters/ в доменную модель S3Worker (arch/23 §2;
 // порт стиля ValkeySnapshotParser). Чистая функция Kv[] → модель: битые значения
-// не бросают исключений, а попадают в parseError-поля; неизвестные ключи
-// (в т.ч. connectivity/sync — t33) — в unknownKeys (arch/23 §2/§9).
+// не бросают исключений, а попадают в parseError-поля; неизвестные ключи —
+// в unknownKeys (arch/23 §2/§9).
 public static class S3SnapshotParser
 {
     private sealed class NodeAcc(string name)
@@ -66,6 +66,13 @@ public static class S3SnapshotParser
                     acc.Endpoints = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
+                // Ключи наблюдения зонда F (arch/23 §3): известные листы — не
+                // unknownKeys, в снапшот тика не входят (зонд читает их напрямую
+                // при гейте/прогрессе).
+                case "connectivity" when segments.Length == 5:
+                case "sync" when segments.Length == 5:
+                    break;
+
                 // Граф репликации / отзыв ключей (arch/23 §2): декларации в модель;
                 // битые значения — parseError кластера (BuildCluster).
                 case "links" when segments.Length == 5:
@@ -113,7 +120,7 @@ public static class S3SnapshotParser
 
                 default:
                     // система развивается — неизвестный ключ не ошибка (arch/23 §2):
-                    // connectivity/sync (t33) и прочие — имя в unknownKeys (счётчик).
+                    // имя в unknownKeys (счётчик).
                     acc.UnknownKeys.Add(kv.Key);
                     unknown.Add(kv.Key);
                     break;

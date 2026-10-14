@@ -190,13 +190,31 @@ public static class ApiModule
             return response;
         });
 
-        // POST /api/s3/clusters/{cluster}/sync-probe — 202-заглушка; исполнение
-        // зонда синхронности mesh — t33.
+        // POST /api/s3/clusters/{cluster}/sync-probe — 202 (заявка /s3worker/probes/<C>,
+        // put-if-absent; already → 202 идемпотентно) / 404 / 409 / 503.
         endpoints.MapPost("/api/s3/clusters/{cluster}/sync-probe", async (
-            string cluster, SyncProbeHandler handler, CancellationToken ct) =>
+            string cluster, HttpRequest http, SyncProbeHandler handler, CancellationToken ct) =>
         {
-            await handler.HandleAsync(cluster, ct);
-            var response = Results.Accepted();
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            IResult response;
+            if (result.IsSuccess)
+                response = Results.Accepted();
+            else
+            {
+                response = result.Error switch
+                {
+                    S3ClusterNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                        detail: result.Error.Message),
+                    S3ClusterNotActiveException => Results.Problem(
+                        statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                        detail: result.Error.Message),
+                    _ => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                        detail: result.Error!.Message),
+                };
+            }
+
             metrics.Track("sync-probe", GetStatusCode(response));
             return response;
         });

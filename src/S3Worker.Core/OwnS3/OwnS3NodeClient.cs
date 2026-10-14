@@ -13,9 +13,42 @@ namespace S3Worker.Core.OwnS3;
 /// (owns3/05 §7 после Task 1: camelCase, null-поля → Failed — транзиент).</summary>
 public sealed record OwnS3NodeUsage(long UsedBytes, long TotalBytes);
 
-/// <summary>Состав mesh инстанса из GET /admin/replication/status (owns3/07 §10):
-/// G нужны только имена соседей-таргетов (состав, не счётчики — spec §3.5).</summary>
-public sealed record OwnS3ReplicationStatus(bool Active, IReadOnlyList<string> NeighborNames);
+/// <summary>Состав mesh из GET /admin/replication/status (owns3/07 §10):
+/// G — имена соседей (NeighborNames, проекция Neighbors); зонд F — per-neighbor
+/// счётчики доставки (fetchQueueDepth и др.). Neighbors=[] по умолчанию —
+/// обратная совместимость существующих вызовов (init-свойство, т.к. дефолт []
+/// у позиционного параметра запрещён компилятором — CS1736).</summary>
+public sealed record OwnS3ReplicationStatus(bool Active, IReadOnlyList<string> NeighborNames)
+{
+    public IReadOnlyList<OwnS3ReplicationNeighbor> Neighbors { get; init; } = [];
+}
+
+/// <summary>Один сосед из GET /admin/replication/status (owns3/07 §10):
+/// зонд F (t33) — fetch-очередь доставки (lag_objects); остальные счётчики —
+/// для будущего наблюдения. Null-поля грани → дефолты (0/false/null).</summary>
+public sealed record OwnS3ReplicationNeighbor(
+    string Name, long FetchQueueDepth, double? FetchLagSeconds, bool FetchPaused, bool ReconcileRunning);
+
+/// <summary>Ответ POST /admin/replication/probe (owns3/07 §2): активность
+/// репликации и живость настроенных линков (пинг соседей — не-мутирующий).</summary>
+public sealed record OwnS3ProbeReport(bool Active, IReadOnlyList<OwnS3ProbeTarget> Targets);
+
+/// <summary>Строка probe-отчёта (owns3/07 §2): rttMs присутствует только при
+/// полученном ответе пира (null — таймаут/не отвечал).</summary>
+public sealed record OwnS3ProbeTarget(string Name, bool Reachable, long? RttMs = null);
+
+/// <summary>Страница GET /admin/replication/sync-report (owns3/07 §10): свёртка
+/// листинга страницы (XOR FNV-1a пар (key, modTimeUnixMs)); nextMarker null/пусто — конец.</summary>
+public sealed record OwnS3SyncReportPage(
+    int Count, string? FirstKey, long FirstModTime, string? LastKey, long LastModTime,
+    long TotalSize, string AggregateHash, string? NextMarker);
+
+/// <summary>Запись листинга S3-грани ListObjectsV2: элемент сверки зонда —
+/// (Key, ModTimeUnixMs) — та же пара, что в свёртке sync-report.</summary>
+public sealed record OwnS3ListEntry(string Key, long ModTimeUnixMs, long Size);
+
+/// <summary>Страница ListObjectsV2: nextContinuationToken null/пусто — конец листинга.</summary>
+public sealed record OwnS3ListPage(IReadOnlyList<OwnS3ListEntry> Entries, string? NextContinuationToken);
 
 /// <summary>Исходы admin-join (arch/24 §5 G): Joined — готово (имя пира из ответа);
 /// Conflict — имя числится с другим ключом (409); Refused — отказ (403, в т.ч.
@@ -74,6 +107,20 @@ public interface IOwnS3NodeClient
     Task<Result<bool>> PutDenyListAsync(
         string host, int port, IReadOnlyList<(string Name, string PublicKeyPem)> entries,
         IssuedPkiMaterial orchestrator, CancellationToken ct);
+
+    // POST /admin/replication/probe (без target — все соседи; owns3/07 §2):
+    // 200 → отчёт пинга настроенных линков; транспорт/не-2xx → Failed
+    // (транзиент — нода «не опрошена», зонд t33 §3.6.1).
+    Task<Result<OwnS3ProbeReport>> ProbeAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct);
+
+    // GET /admin/replication/sync-report?bucket=&marker= (owns3/07 §10):
+    // 200 → страница свёртки листинга; nextMarker null/пусто — конец;
+    // не-2xx/транспорт/битый JSON → Failed (транзиент).
+    Task<Result<OwnS3SyncReportPage>> GetSyncReportPageAsync(string host, int port, OwnS3NodeSecrets creds, string bucket, string? marker, CancellationToken ct);
+
+    // ListObjectsV2 (AWSSDK, root-креды, по образцу EnsureBucketAsync):
+    // страница записей (key, modTimeUnixMs, size); отказ листинга → Failed.
+    Task<Result<OwnS3ListPage>> ListObjectEntriesAsync(string host, int port, OwnS3NodeSecrets creds, string bucket, string? continuationToken, CancellationToken ct);
 }
 
 /// <summary>Реализация: именованный HttpClient (Program: "owns3-node",
@@ -220,14 +267,29 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
             var root = doc.RootElement;
             var active = root.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.True;
             var neighbors = new List<string>();
+            var details = new List<OwnS3ReplicationNeighbor>();
             if (root.TryGetProperty("neighbors", out var list) && list.ValueKind == JsonValueKind.Array)
             {
                 foreach (var n in list.EnumerateArray())
+                {
                     if (n.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
-                        neighbors.Add(name.GetString()!);
+                    {
+                        var neighborName = name.GetString()!;
+                        neighbors.Add(neighborName);
+                        // Per-neighbor счётчики (owns3/07 §10): null/нет поля → дефолты
+                        // (0/false/null) — толерантность к старым инстансам.
+                        details.Add(new OwnS3ReplicationNeighbor(
+                            neighborName,
+                            LongOr(n, "fetchQueueDepth", 0),
+                            DoubleOrNull(n, "fetchLagSeconds"),
+                            BoolOr(n, "fetchPaused", false),
+                            BoolOr(n, "reconcileRunning", false)));
+                    }
+                }
             }
 
-            return Result<OwnS3ReplicationStatus>.Success(new OwnS3ReplicationStatus(active, neighbors));
+            return Result<OwnS3ReplicationStatus>.Success(
+                new OwnS3ReplicationStatus(active, neighbors) { Neighbors = details });
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -238,6 +300,130 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         {
             return Result<OwnS3ReplicationStatus>.Failed(
                 new ApplicationException($"replication-status {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    // POST /admin/replication/probe (owns3/07 §2, зонд t33 §3.6.1): пинг настроенных
+    // линков ноды — синхронный отчёт (probe не меняет состояние). Отказ опроса —
+    // Failed (транзиент: нода «не опрошена», реконструкции нет).
+    public async Task<Result<OwnS3ProbeReport>> ProbeAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct)
+    {
+        try
+        {
+            using var request = SignAdmin("POST", host, port, "/admin/replication/probe", creds, Array.Empty<byte>());
+            using var response = await http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+                return FailedHttp<OwnS3ProbeReport>("probe", host, port, response);
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var active = root.TryGetProperty("active", out var act) && act.ValueKind == JsonValueKind.True;
+            var targets = new List<OwnS3ProbeTarget>();
+            if (root.TryGetProperty("targets", out var list) && list.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in list.EnumerateArray())
+                {
+                    // rttMs может отсутствовать/null (пир не ответил) → null.
+                    long? rtt = t.TryGetProperty("rttMs", out var rttEl) && rttEl.ValueKind == JsonValueKind.Number
+                        ? rttEl.GetInt64()
+                        : null;
+                    if (t.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String
+                        && t.TryGetProperty("reachable", out var reachable)
+                        && (reachable.ValueKind == JsonValueKind.True || reachable.ValueKind == JsonValueKind.False))
+                        targets.Add(new OwnS3ProbeTarget(name.GetString()!, reachable.GetBoolean(), rtt));
+                }
+            }
+
+            return Result<OwnS3ProbeReport>.Success(new OwnS3ProbeReport(active, targets));
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<OwnS3ProbeReport>.Failed(new ApplicationException($"probe {host}:{port}: таймаут"));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            return Result<OwnS3ProbeReport>.Failed(new ApplicationException($"probe {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    // GET /admin/replication/sync-report?bucket=&marker= (owns3/07 §10, зонд t33 §3.6.2):
+    // страница свёртки листинга. Query канонизуется и входит в подпись
+    // (серверный CanonicalRequestBuilder включает RawQuery — без этого SignatureDoesNotMatch).
+    public async Task<Result<OwnS3SyncReportPage>> GetSyncReportPageAsync(
+        string host, int port, OwnS3NodeSecrets creds, string bucket, string? marker, CancellationToken ct)
+    {
+        try
+        {
+            // Значения null/пусто не шлются (первая страница — без marker).
+            var query = SigV4GetSigner.CanonicalQuery(
+                ("bucket", bucket), ("marker", string.IsNullOrEmpty(marker) ? null : marker));
+            using var request = SignAdmin("GET", host, port, "/admin/replication/sync-report", creds, canonicalQuery: query);
+            using var response = await http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+                return FailedHttp<OwnS3SyncReportPage>("sync-report", host, port, response);
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var nextMarker = StrOrNull(root, "nextMarker");
+            return Result<OwnS3SyncReportPage>.Success(new OwnS3SyncReportPage(
+                (int)LongOr(root, "count", 0),
+                StrOrNull(root, "firstKey"),
+                LongOr(root, "firstModTime", 0),
+                StrOrNull(root, "lastKey"),
+                LongOr(root, "lastModTime", 0),
+                LongOr(root, "totalSize", 0),
+                StrOrNull(root, "aggregateHash") ?? "",
+                string.IsNullOrEmpty(nextMarker) ? null : nextMarker)); // null/пусто — конец листинга
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<OwnS3SyncReportPage>.Failed(new ApplicationException($"sync-report {host}:{port}: таймаут"));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            return Result<OwnS3SyncReportPage>.Failed(new ApplicationException($"sync-report {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    // ListObjectsV2 (зонд t33 §3.6.3): полный постраничный листинг bucket'а для
+    // количественного diff при расхождении свёрток. Per-node клиент — как EnsureBucketAsync
+    // (ForcePathStyle, retries off, таймаут 7.5 c — поллинг-инвариант).
+    public async Task<Result<OwnS3ListPage>> ListObjectEntriesAsync(
+        string host, int port, OwnS3NodeSecrets creds, string bucket, string? continuationToken, CancellationToken ct)
+    {
+        try
+        {
+            using var s3 = NewS3Client(host, port, creds);
+            var response = await s3.ListObjectsV2Async(new Amazon.S3.Model.ListObjectsV2Request
+            {
+                BucketName = bucket,
+                ContinuationToken = continuationToken, // null допустим — первая страница
+                MaxKeys = 1000,
+            }, ct);
+            return Result<OwnS3ListPage>.Success(new OwnS3ListPage(
+                response.S3Objects
+                    // LastModified AWSSDK — DateTime (UTC): → unix-мс элемента сверки.
+                    .Select(o => new OwnS3ListEntry(o.Key,
+                        new DateTimeOffset(o.LastModified.ToUniversalTime(), TimeSpan.Zero).ToUnixTimeMilliseconds(),
+                        o.Size))
+                    .ToList(),
+                string.IsNullOrEmpty(response.NextContinuationToken) ? null : response.NextContinuationToken));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            return Result<OwnS3ListPage>.Failed(new ApplicationException(
+                $"listing {host}:{port}/{bucket}: {ex.Message}", ex));
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<OwnS3ListPage>.Failed(new ApplicationException($"listing {host}:{port}/{bucket}: таймаут"));
+        }
+        catch (Exception ex)
+        {
+            return Result<OwnS3ListPage>.Failed(new ApplicationException(
+                $"listing {host}:{port}/{bucket}: {ex.Message}", ex));
         }
     }
 
@@ -401,21 +587,42 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
     };
 
     // SigV4-подпись админ-грани root-кредом профиля (метод/путь/тело — общий путь).
+    // canonicalQuery — канонизованная query GET (sync-report); подписывается
+    // и ставится в URL (сервер подписывает RawQuery).
     private static HttpRequestMessage SignAdmin(
-        string method, string host, int port, string path, OwnS3NodeSecrets creds, byte[]? body = null)
+        string method, string host, int port, string path, OwnS3NodeSecrets creds,
+        byte[]? body = null, string? canonicalQuery = null)
     {
+        var url = string.IsNullOrEmpty(canonicalQuery) ? path : $"{path}?{canonicalQuery}";
         var request = body is null
-            ? new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{path}")
-            : new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{path}")
+            ? new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{url}")
+            : new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{url}")
             {
                 Content = new ByteArrayContent(body),
             };
-        var signed = SigV4GetSigner.SignRequest(method, path, $"{host}:{port}", creds.RootUser, creds.RootPassword);
+        var signed = SigV4GetSigner.SignRequest(method, path, $"{host}:{port}", creds.RootUser, creds.RootPassword,
+            canonicalQuery: canonicalQuery);
         request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
         request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
         request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);
         return request;
     }
+
+    // JSON-хелперы толерантного парсинга граней (null/нет поля → дефолт).
+    private static long LongOr(JsonElement element, string name, long fallback)
+        => element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : fallback;
+
+    private static double? DoubleOrNull(JsonElement element, string name)
+        => element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+
+    private static bool BoolOr(JsonElement element, string name, bool fallback)
+        => element.TryGetProperty(name, out var v)
+            && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False)
+            ? v.GetBoolean()
+            : fallback;
+
+    private static string? StrOrNull(JsonElement element, string name)
+        => element.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     // Не-2xx админ-грани → Failed с кодом (транзиент для тика).
     private static Result<T> FailedHttp<T>(string op, string host, int port, HttpResponseMessage response)

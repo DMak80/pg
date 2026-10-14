@@ -110,9 +110,9 @@ public class S3SnapshotParserTests
     }
 
     [Fact]
-    public void Parse_UnknownKeys_Listed_ClusterIntact()
+    public void Parse_ConnectivitySync_НеUnknown_КластерЦел()
     {
-        // Arrange — ключи t33 (connectivity/sync) и вовсе неизвестный
+        // Arrange — ключи наблюдения зонда t33 (arch/23 §3) и вовсе неизвестный
         var kvs = new[]
         {
             Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"secret_profile":"p","created_unix":1}"""),
@@ -123,11 +123,11 @@ public class S3SnapshotParserTests
 
         // Act
         var snap = S3SnapshotParser.Parse(kvs).Value;
-
-        // Assert — в UnknownKeys, кластер не пострадал
-        snap.UnknownKeys.Should().BeEquivalentTo(
-            "/s3/clusters/c/connectivity", "/s3/clusters/c/sync", "/s3/whatever");
         var cluster = snap.Clusters.Single();
+
+        // Assert — connectivity/sync — известные листы (НЕ unknownKeys, счётчик 0);
+        // снапшот кластера строится; прочий неизвестный — по-прежнему unknownKeys
+        snap.UnknownKeys.Should().BeEquivalentTo("/s3/whatever");
         cluster.Config!.Platform.Should().Be("owns3");
         cluster.ParseError.Should().BeNull();
     }

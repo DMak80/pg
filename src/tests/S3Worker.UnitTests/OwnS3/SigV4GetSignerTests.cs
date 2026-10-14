@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
+using OwnS3.Protocol.Auth;
+using OwnS3.Protocol.Errors;
+using OwnS3.Protocol.Requests;
 using S3Worker.Core.OwnS3;
 using Xunit;
 
@@ -103,6 +106,115 @@ public class SigV4GetSignerTests
         signed.Authorization.Should().Contain($"Signature={expectedSignature}");
         signed.Authorization.Should().NotBe(
             SigV4GetSigner.SignRequest("GET", path, hostHeader, AccessKey, SecretKey, "us-east-1", FixedTime).Authorization);
+    }
+
+    // AAA: подпись с canonical query проходит серверный SigV4HeaderVerifier
+    // (roundtrip — CanonicalRequestBuilder включает RawQuery в подпись; sync-report
+    // с marker требует канонизации query, spec t33 §3.6).
+    [Fact]
+    public void SignRequest_СCanonicalQuery_ПроходитСерверныйВерификатор()
+    {
+        // Arrange: подпись с query; на проводе — та же закодированная строка.
+        const string query = "bucket=b&marker=m%2Fnext";
+        var signed = SigV4GetSigner.SignRequest(
+            "GET", "/admin/replication/sync-report", "h:1", AccessKey, SecretKey,
+            canonicalQuery: query, now: DateTimeOffset.UtcNow);
+        var model = new S3RequestModel
+        {
+            Method = "GET",
+            RawPath = "/admin/replication/sync-report",
+            RawQuery = query,
+            Headers = S3HeaderCollection.FromPairs(
+                ("Authorization", signed.Authorization),
+                ("host", "h:1"),
+                ("x-amz-date", signed.AmzDate),
+                ("x-amz-content-sha256", signed.ContentSha256)),
+            Host = "h:1",
+            OpenBody = () => new MemoryStream(),
+        };
+
+        // Act: серверный верификатор (время — системное; skew ±15 мин покрывает подпись).
+        var result = new SigV4HeaderVerifier(TimeProvider.System).Verify(model, _ => SecretKey);
+
+        // Assert: Ok — подпись согласована с серверной канонизацией query.
+        result.Should().BeOfType<SigV4Result.Ok>();
+    }
+
+    // AAA: подпись БЕЗ query на запросе С query → SignatureDoesNotMatch
+    // (сервер включает RawQuery в canonical request — расхождение строк).
+    [Fact]
+    public void SignRequest_БезQueryНаЗапросеСQuery_SignatureDoesNotMatch()
+    {
+        // Arrange: подпись с пустой query, запрос несёт marker.
+        var signed = SigV4GetSigner.SignRequest(
+            "GET", "/admin/replication/sync-report", "h:1", AccessKey, SecretKey,
+            now: DateTimeOffset.UtcNow);
+        var model = new S3RequestModel
+        {
+            Method = "GET",
+            RawPath = "/admin/replication/sync-report",
+            RawQuery = "bucket=b&marker=m/next",
+            Headers = S3HeaderCollection.FromPairs(
+                ("Authorization", signed.Authorization),
+                ("host", "h:1"),
+                ("x-amz-date", signed.AmzDate),
+                ("x-amz-content-sha256", signed.ContentSha256)),
+            Host = "h:1",
+            OpenBody = () => new MemoryStream(),
+        };
+
+        // Act
+        var result = new SigV4HeaderVerifier(TimeProvider.System).Verify(model, _ => SecretKey);
+
+        // Assert
+        result.Should().BeOfType<SigV4Result.Fail>().Which.Code.Should().Be(S3ErrorCode.SignatureDoesNotMatch);
+    }
+
+    // AAA: маркер с !'()* — Uri.EscapeDataString их НЕ кодирует, серверный
+    // EncodeValue кодирует (%21%27%28%29%2A): roundtrip обязан сходиться
+    // (иначе sync-report навсегда SignatureDoesNotMatch для таких страниц).
+    [Fact]
+    public void SignRequest_МаркерССпецсимволамиRFC3986_ПроходитВерификатор()
+    {
+        // Arrange: query через CanonicalQuery (per-символьное кодирование,
+        // семантически равно серверному UriEncoding.EncodeValue).
+        var query = SigV4GetSigner.CanonicalQuery(("bucket", "b"), ("marker", "m!'()*"));
+        query.Should().Be("bucket=b&marker=m%21%27%28%29%2A");
+        var signed = SigV4GetSigner.SignRequest(
+            "GET", "/admin/replication/sync-report", "h:1", AccessKey, SecretKey,
+            canonicalQuery: query, now: DateTimeOffset.UtcNow);
+        var model = new S3RequestModel
+        {
+            Method = "GET",
+            RawPath = "/admin/replication/sync-report",
+            RawQuery = query,
+            Headers = S3HeaderCollection.FromPairs(
+                ("Authorization", signed.Authorization),
+                ("host", "h:1"),
+                ("x-amz-date", signed.AmzDate),
+                ("x-amz-content-sha256", signed.ContentSha256)),
+            Host = "h:1",
+            OpenBody = () => new MemoryStream(),
+        };
+
+        // Act: серверный верификатор — FormDecode + EncodeQuery согласованы.
+        var result = new SigV4HeaderVerifier(TimeProvider.System).Verify(model, _ => SecretKey);
+
+        // Assert
+        result.Should().BeOfType<SigV4Result.Ok>();
+    }
+
+    // AAA: CanonicalQuery — сортировка Ordinal, null/пустые значения не шлются,
+    // спецсимволы кодируются RFC 3986 (совместимость с EncodeQuery сервера).
+    [Fact]
+    public void CanonicalQuery_СортировкаИФильтрПустых()
+    {
+        // Arrange: пары в неупорядоченном виде, часть — пустые/null.
+        var query = SigV4GetSigner.CanonicalQuery(
+            ("marker", "m/next"), ("bucket", "b"), ("prefix", ""), ("empty", null));
+
+        // Assert: bucket первым (Ordinal), prefix/empty отфильтрованы, '/' закодирован.
+        query.Should().Be("bucket=b&marker=m%2Fnext");
     }
 
     private static byte[] Hmac(byte[] key, byte[] data) => HMACSHA256.HashData(key, data);

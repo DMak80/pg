@@ -440,6 +440,167 @@ public class OwnS3NodeClientTests
         ok.PeerName.Should().Be(orchestrator.Certificate.Name);
     }
 
+    // ============ расширения зонда t33 (arch/24 §5 F, spec §3.6) ============
+
+    // AAA: probe 200 → парсинг camelCase-отчёта; rttMs отсутствует у непинганутого
+    // пира → null (owns3/07 §2 — rttMs только при полученном ответе).
+    [Fact]
+    public async Task Probe_ПарсингОтвета()
+    {
+        // Arrange
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"active":true,"targets":[{"name":"east2","reachable":true,"rttMs":12},{"name":"west1","reachable":false}]}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.ProbeAsync("h1", 9000, Creds(), TestContext.Current.CancellationToken);
+
+        // Assert: обе строки на месте, у offline-пира rttMs = null; POST на грань.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        result.Value.Active.Should().BeTrue();
+        result.Value.Targets.Should().HaveCount(2);
+        result.Value.Targets[0].Name.Should().Be("east2");
+        result.Value.Targets[0].Reachable.Should().BeTrue();
+        result.Value.Targets[0].RttMs.Should().Be(12);
+        result.Value.Targets[1].Reachable.Should().BeFalse();
+        result.Value.Targets[1].RttMs.Should().BeNull();
+        handler.Requests.Should().ContainSingle()
+            .Which.Should().Match<(string Method, string Url, string? Authorization)>(r =>
+                r.Method == "POST" && r.Url.Contains("/admin/replication/probe"));
+    }
+
+    // AAA: probe 500 → Failed с диагностикой «probe» (транзиент — нода не опрошена).
+    [Fact]
+    public async Task Probe_НеОтветилаНода_Failed()
+    {
+        // Arrange
+        var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)));
+
+        // Act
+        var result = await client.ProbeAsync("h1", 9000, Creds(), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("probe");
+    }
+
+    // AAA: sync-report 200 → страница с nextMarker; пустой/отсутствующий nextMarker
+    // → null (конец листинга); query фактического запроса несёт bucket/marker.
+    [Fact]
+    public async Task SyncReport_СтраницаИКонец()
+    {
+        // Arrange: первая страница отдаёт nextMarker:"k2", вторая — без него.
+        var call = 0;
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                ++call == 1
+                    ? """{"bucket":"b","prefix":"","marker":null,"firstKey":"k1","firstModTime":100,"lastKey":"k2","lastModTime":200,"count":2,"totalSize":30,"aggregateHash":"abc","nextMarker":"k2"}"""
+                    : """{"bucket":"b","prefix":"","marker":"k2","firstKey":"k3","firstModTime":300,"lastKey":"k3","lastModTime":300,"count":1,"totalSize":5,"aggregateHash":"def","nextMarker":""}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = NewClient(handler);
+
+        // Act: первая страница (marker=null) и вторая (marker="k2").
+        var first = await client.GetSyncReportPageAsync("h1", 9000, Creds(), "b", null, TestContext.Current.CancellationToken);
+        var second = await client.GetSyncReportPageAsync("h1", 9000, Creds(), "b", "k2", TestContext.Current.CancellationToken);
+
+        // Assert: поля страниц разобраны; конец — NextMarker=null; query на проводе.
+        first.IsSuccess.Should().BeTrue(first.Error?.Message);
+        first.Value.Count.Should().Be(2);
+        first.Value.FirstKey.Should().Be("k1");
+        first.Value.FirstModTime.Should().Be(100);
+        first.Value.LastKey.Should().Be("k2");
+        first.Value.LastModTime.Should().Be(200);
+        first.Value.TotalSize.Should().Be(30);
+        first.Value.AggregateHash.Should().Be("abc");
+        first.Value.NextMarker.Should().Be("k2");
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        second.Value.NextMarker.Should().BeNull(); // ""/отсутствует → конец
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[0].Url.Should().Contain("/admin/replication/sync-report?bucket=b");
+        handler.Requests[1].Url.Should().Contain("bucket=b");
+        handler.Requests[1].Url.Should().Contain("marker=k2");
+    }
+
+    // AAA: sync-report 503 → Failed (транзиент свёртки — пара не сверена).
+    [Fact]
+    public async Task SyncReport_НеДостигнут_Failed()
+    {
+        // Arrange
+        var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+
+        // Act
+        var result = await client.GetSyncReportPageAsync("h1", 9000, Creds(), "b", null, TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    // AAA: ListObjectsV2 по loopback (AWSSDK строит свой HttpClient): страница
+    // записей (key, modTimeUnixMs, size) + продолжение; финальная страница — без токена.
+    [Fact]
+    public async Task ListEntries_СтраницаИКонец()
+    {
+        // Arrange: XML ListObjectsV2 — первая страница с NextContinuationToken, вторая без.
+        var expectedModMs = new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var call = 0;
+        using var server = new LoopbackServer(_ => new(200, ++call == 1
+            ? """<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name><IsTruncated>true</IsTruncated><Contents><Key>k1</Key><LastModified>2026-10-14T12:00:00.000Z</LastModified><ETag>&quot;e1&quot;</ETag><Size>10</Size></Contents><Contents><Key>k2</Key><LastModified>2026-10-14T12:00:00.000Z</LastModified><ETag>&quot;e2&quot;</ETag><Size>20</Size></Contents><NextContinuationToken>tok</NextContinuationToken></ListBucketResult>"""
+            : """<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name><IsTruncated>false</IsTruncated><Contents><Key>k3</Key><LastModified>2026-10-14T12:00:00.000Z</LastModified><ETag>&quot;e3&quot;</ETag><Size>30</Size></Contents></ListBucketResult>""")).Start();
+        var client = new OwnS3NodeClient(new HttpClient { Timeout = TimeSpan.FromSeconds(7.5) });
+        var port = new Uri(server.Url).Port;
+
+        // Act: первая страница и продолжение.
+        var first = await client.ListObjectEntriesAsync("127.0.0.1", port, Creds(), "b", null, TestContext.Current.CancellationToken);
+        var second = await client.ListObjectEntriesAsync("127.0.0.1", port, Creds(), "b", first.Value.NextContinuationToken, TestContext.Current.CancellationToken);
+
+        // Assert: записи с (key, unixMs, size); конец — NextContinuationToken=null.
+        first.IsSuccess.Should().BeTrue(first.Error?.Message);
+        first.Value.Entries.Should().BeEquivalentTo(new[]
+        {
+            new OwnS3ListEntry("k1", expectedModMs, 10),
+            new OwnS3ListEntry("k2", expectedModMs, 20),
+        });
+        first.Value.NextContinuationToken.Should().Be("tok");
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        second.Value.Entries.Should().HaveCount(1);
+        second.Value.NextContinuationToken.Should().BeNull();
+    }
+
+    // AAA: status 200 c per-neighbor счётчиками → Neighbors разобраны, NeighborNames —
+    // те же имена в порядке ответа (совместимость G: проекция сохраняется).
+    [Fact]
+    public async Task ReplicationStatus_PerNeighborИNeighborNames()
+    {
+        // Arrange: два соседа с разными fetchQueueDepth.
+        var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """{"active":true,"neighbors":[{"name":"east2","fetchQueueDepth":5},{"name":"west1","fetchQueueDepth":0,"fetchLagSeconds":1.5,"fetchPaused":true,"reconcileRunning":false}]}""",
+                Encoding.UTF8, "application/json"),
+        });
+        var client = NewClient(handler);
+
+        // Act
+        var result = await client.GetReplicationStatusAsync("h1", 9000, Creds(), TestContext.Current.CancellationToken);
+
+        // Assert: Neighbors по порядку ответа, поля по умолчанию/факту.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        result.Value.Neighbors.Should().HaveCount(2);
+        result.Value.NeighborNames.Should().Equal("east2", "west1"); // порядок ответа
+        result.Value.Neighbors[0].FetchQueueDepth.Should().Be(5);
+        result.Value.Neighbors[0].FetchLagSeconds.Should().BeNull();
+        result.Value.Neighbors[0].FetchPaused.Should().BeFalse();
+        result.Value.Neighbors[1].FetchQueueDepth.Should().Be(0);
+        result.Value.Neighbors[1].FetchLagSeconds.Should().Be(1.5);
+        result.Value.Neighbors[1].FetchPaused.Should().BeTrue();
+    }
+
     private static string Header(HttpRequestMessage request, string name)
         => request.Headers.TryGetValues(name, out var values) ? values.First() : throw new InvalidOperationException(name);
 

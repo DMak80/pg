@@ -88,7 +88,7 @@ public sealed class DeprovisioningProcess(
         if (!portAllocDel.IsSuccess)
             return Fail(cluster, portAllocDel.Error!, "delete-portalloc");
 
-        // X3: etcd после docker — домен + координация (work/rotations).
+        // X3: etcd после docker — домен + координация (work/rotations/probes).
         var domainDel = await DeletePrefixAsync(S3ProcessCommon.ClusterPrefix(cluster), ct);
         if (!domainDel.IsSuccess)
             return Fail(cluster, domainDel.Error!, "delete-domain");
@@ -96,6 +96,7 @@ public sealed class DeprovisioningProcess(
                  {
                      S3ProcessCommon.WorkKey(cluster),
                      S3ProcessCommon.RotationKey(cluster),
+                     S3ProcessCommon.ProbeRequestKey(cluster),
                  })
         {
             var del = await DeleteKeyAsync(key, ct);

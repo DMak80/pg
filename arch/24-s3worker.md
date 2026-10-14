@@ -117,7 +117,7 @@ critical-алерт, t34).
 | `POST /api/s3/clusters/{c}/nodes/{n}/deny` | отзыв ключа инстанса: имя в `denylist` кластера → 202 (доводка G: `PUT /replication/denylist` всем инстансам, связи с ним сносятся) |
 | `POST /api/s3/clusters/{c}/nodes/{n}/allow` | снятие отзыва (имя из `denylist`) → 202 |
 | `POST /api/s3/clusters/{c}/rotations` | заявка ротации секретов профиля кластера (`/s3worker/rotations/<C>`, клэйм-txn — §9.8-паттерн) |
-| `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202; результат — ключи arch/23 §3) — реализация t33, эндпоинт канонизируется сейчас |
+| `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202 — заявка `/s3worker/probes/<C>` put-if-absent, already → 202 идемпотентно; исполняет зонд F, результат — ключи arch/23 §3) — реализация t33 |
 
 **Валидация** (сервер — источник истины): `name` кластера — паттерн
 arch/23; `platform` — единственное значение `owns3`; инстансы — 0..9
@@ -358,14 +358,32 @@ portalloc (`AdvertisedHost` §2). Пределы: full-mesh не инвариа�
 нормален; зеркальность пары обеспечивает join-механика ownS3).
 Диагностика — journal-фазы (`op=mesh-governance`) и метрики §7.
 
-### F. SyncProbeProcess (контракт — t33, каркас канонизируется)
+### F. SyncProbeProcess (реализация — t33)
 
-Периодический и по-командный (§1.1 `sync-probe`) зонд: PUT-пробы
-межнодовых линков (connectivity) и сверка листингов bucket между нодами
-(sync) — форматы и state-агрегаты arch/23 §3. Источник истины о
-синхронности — собственный зонд: штатные метрики репликации лаг данных не
-отражают (факт 7 `docs/s3-replication.md`); S3-операции зонда —
-per-попыточный таймаут + пульс (§6).
+Периодический (гейт `SyncIntervalSec` по `checked_unix`, §8) и
+по-командный (заявка `/s3worker/probes/<C>` из `POST …/sync-probe` §1.1 —
+не эксклюзивная ветка: исполняется ближайшим тиком любого держателя
+клэйма, заявка сносится по исполнении) зонд; все операции — под клэймом
+`<C>`, journal (`op=sync-probe`), идемпотентен. Две независимые половины:
+
+- **connectivity** — ping-матрица настроенных линков: `POST
+  /admin/replication/probe` каждой RUNNING-ноды (owns3/07 §2/§6 — состав
+  её targets и живость каждого линка параллельным ping исходящим
+  репликационным транспортом); только настроенные линки, полнота меша и
+  зеркальность состава не контролируются (зона G); ping-ок = «канал жив»,
+  отдельно от доставки и сверки данных; PUT-пробы не используются (путь
+  записи ownS3 без синхронных взаимодействий с соседями — owns3/07 §1).
+- **sync** — сверка содержимого bucket между нодами по настроенным парам
+  (объединение targets, как у connectivity): постраничная сверка
+  sync-report (порядко-независимая свёртка, owns3/07 §10) → при
+  расхождении страницы — количественный diff листингов S3-грани
+  (`missing`/`extra`/`lag_bytes`, элемент сверки — `(key, modTime)`);
+  лаг доставки — статус приёмника (fetch-очередь, `lag_objects`).
+
+Форматы и state-агрегаты — arch/23 §3. Источник истины о синхронности —
+собственный зонд: штатные метрики репликации лаг данных не отражают (факт
+7 `docs/s3-replication.md`); S3-операции зонда — per-попыточный таймаут +
+пульс (§6).
 
 ## 6. Надёжность
 
@@ -404,7 +422,9 @@ per-попыточный таймаут + пульс (§6).
 (`s3worker_*` в Meter-именах). Телеметрия самих нод — метрики ownS3
 (owns3/05 §5); scrape-механика — вне канона. Диагностика фаз —
 `/s3worker/work/<C>` и `nodes/<I>/state`; операции доводки G — счётчики
-`mesh_*` (join/удаления/deny-перезаписи: accepted/conflict/cleaned).
+`mesh_*` (join/удаления/deny-перезаписи: accepted/conflict/cleaned);
+операции зонда F — счётчики `sync_probe_*` (прогоны по исходам, линки
+ok/offline, пары synced/lagging/diverged).
 
 ## 8. Конфигурация (appsettings + env)
 
@@ -416,7 +436,8 @@ S3Worker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                   PortRange{From,To}, Images{OwnS3="owns3:dev"},
                   Tls, Ssh, ContourNetwork, AdvertisedHost }
 S3Worker:Loops { ScanIntervalSec=5, KeepaliveSec=5, Watchdog{...} }
-S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15 }
+S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15,
+                      SyncIntervalSec=60 }   # SyncIntervalSec — период зонда F (§5 F)
 S3Worker:Parallelism { MaxClusters=4 }
 S3Worker:Api { AdvertiseUrl, EnableSeedEndpoint=false, Tls{...} }   # mTLS-грань, §1.1
 # env-секреты S3W_*: S3W_API_TLS_{CERT,KEY,CLIENT_CA}, S3W_DOCKER_TLS_{CA,CERT,KEY},

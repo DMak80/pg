@@ -101,7 +101,10 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PostRotation
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
-builder.Services.AddSingleton<S3Worker.App.Api.Operations.SyncProbeHandler>();
+builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SyncProbeHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 // Граф репликации и отзыв ключей (arch/24 §1.1, t40): put-links, deny/allow.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PutLinksHandler(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -230,6 +233,18 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.MeshGove
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+// Процесс F — зонд связности/синхронности (arch/24 §5 F, t33).
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SyncProbeProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
@@ -377,7 +392,9 @@ static S3Worker.Provisioning.Processes.S3ProvisioningOptions ToProvisioningOptio
     opts.Docker.AdvertisedHost,
     opts.Docker.Images.OwnS3,
     opts.Bucket,
-    opts.Docker.ContourNetwork);
+    opts.Docker.ContourNetwork,
+    opts.Thresholds.SyncIntervalSec,
+    opts.Thresholds.SyncMaxPages);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)

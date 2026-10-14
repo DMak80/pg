@@ -251,10 +251,36 @@ public sealed class PostRotationHandler(IEtcdGateway gateway, string[] endpoints
         [property: System.Text.Json.Serialization.JsonPropertyName("requested_by")] string RequestedBy);
 }
 
-// POST /api/s3/clusters/{c}/sync-probe — 202-заглушка; исполнение зонда
-// синхронности mesh — t33.
-public sealed class SyncProbeHandler
+// POST /api/s3/clusters/{c}/sync-probe: 202-заявка /s3worker/probes/<C>
+// put-if-absent (arch/24 §1.1, arch/23 §8); already → 202 идемпотентно
+// (заявка первого заявителя не перезаписывается); кластера нет → 404;
+// state=NOT_INITIALIZED/TO_REMOVE → 409; результат — ключи arch/23 §3
+// (исполняет зонд F ближайшим тиком держателя клэйма).
+public sealed class SyncProbeHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)
 {
-    public Task<Result<bool>> HandleAsync(string cluster, CancellationToken ct)
-        => Task.FromResult(Result<bool>.Success(true));
+    public async Task<Result<bool>> HandleAsync(string cluster, string requestedBy, CancellationToken ct)
+    {
+        var config = await S3ApiHelpers.GetConfigAsync(gateway, endpoints, cluster, ct);
+        if (!config.IsSuccess)
+            return Result<bool>.Failed(config.Error!);
+        if (config.Value is null)
+            return Result<bool>.Failed(new S3ClusterNotFoundException(cluster));
+        if (config.Value.Value.Contains("\"state\"", StringComparison.Ordinal))
+            return Result<bool>.Failed(new S3ClusterNotActiveException(cluster, "NOT_INITIALIZED/TO_REMOVE"));
+
+        var key = S3ProcessCommon.ProbeRequestKey(cluster);
+        var value = System.Text.Json.JsonSerializer.Serialize(
+            new ProbeRequest(time.GetUtcNow().ToUnixTimeSeconds(), requestedBy));
+        var txn = await S3ApiHelpers.CallAsync(endpoints, endpoint => gateway.TxnAsync(
+            endpoint,
+            TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, value, null)]),
+            ct));
+        if (!txn.IsSuccess)
+            return Result<bool>.Failed(txn.Error!);
+        return Result<bool>.Success(txn.Value.Succeeded); // true → заявка поставлена; false → уже жива
+    }
+
+    private sealed record ProbeRequest(
+        [property: System.Text.Json.Serialization.JsonPropertyName("requested_unix")] long RequestedUnix,
+        [property: System.Text.Json.Serialization.JsonPropertyName("requested_by")] string RequestedBy);
 }

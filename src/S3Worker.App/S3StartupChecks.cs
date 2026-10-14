@@ -36,7 +36,9 @@ internal static partial class S3StartupChecks
         => o.Thresholds.NodeBootSec > 0
            && o.Thresholds.NodeBootSec <= 100
            && o.Thresholds.NodeDeadSec > 0
-           && o.Thresholds.HealthIntervalSec > 0;
+           && o.Thresholds.HealthIntervalSec > 0
+           && o.Thresholds.SyncIntervalSec > 0
+           && o.Thresholds.SyncMaxPages > 0;
 
     // Bucket per-install (arch/19 §5): непустое имя S3-бакета.
     public static bool Bucket(S3WorkerOptions o)
