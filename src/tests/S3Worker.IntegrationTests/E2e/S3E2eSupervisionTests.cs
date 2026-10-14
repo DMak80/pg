@@ -32,8 +32,8 @@ public class S3E2eSupervisionTests
         try
         {
             await S3E2eScaleTests.WaitWorkerAsync(fx, api, ct);
-            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, nodes: 1, ct);
-            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "node1");
+            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1");
+            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1");
 
             // Arrange: тест-объект в bucket ноды (volume переживёт пересоздание).
             var endpointsValue = await S3E2eScaleTests.GetOrNullAsync(fx,
@@ -43,52 +43,52 @@ public class S3E2eSupervisionTests
             await PutTestObjectAsync(probePort, ct);
 
             var placedOn = await S3E2eScaleTests.GetOrNullAsync(fx,
-                $"/s3/clusters/{cluster}/nodes/node1/placed_on", ct);
+                $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct);
             placedOn.Should().Be("local");
 
             // Act 1: kill ноды → тик надзора пересоздаёт на том же placed_on
             // (PROVISIONING → RUNNING), volume сохранён — тест-объект читается.
-            await fx.RunDockerAsync(["rm", "-f", $"s3w-{cluster}-node1"], ct);
+            await fx.RunDockerAsync(["rm", "-f", $"s3w-{cluster}-east1"], ct);
             await fx.WaitPhaseAsync("wait-rebuild", async () =>
-                await fx.ContainerAliveAsync($"s3w-{cluster}-node1")
+                await fx.ContainerAliveAsync($"s3w-{cluster}-east1")
                 && await S3E2eScaleTests.GetOrNullAsync(fx,
-                        $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "RUNNING",
+                        $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING",
                 TimeSpan.FromSeconds(60), ct);
 
             (await S3E2eScaleTests.GetOrNullAsync(fx,
-                    $"/s3/clusters/{cluster}/nodes/node1/placed_on", ct))
+                    $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct))
                 .Should().Be(placedOn, "пересоздание — на том же placed_on (том ноды живёт на хосте)");
             (await ListTestObjectsAsync(probePort, ct)).Should().Contain("s3w-e2e-supervise",
                 "тест-объект пережил пересоздание ноды (volume сохранён)");
 
             // Act 2: pause → health молчит → UNREACHABLE по NodeDeadSec=15
             // (ждать ≤ 40 c); деструктива нет: контейнер существует, volume есть.
-            await fx.RunDockerAsync(["pause", $"s3w-{cluster}-node1"], ct);
+            await fx.RunDockerAsync(["pause", $"s3w-{cluster}-east1"], ct);
             await fx.WaitPhaseAsync("wait-unreachable", async () =>
                 await S3E2eScaleTests.GetOrNullAsync(fx,
-                    $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "UNREACHABLE",
+                    $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "UNREACHABLE",
                 TimeSpan.FromSeconds(40), ct);
-            (await fx.ContainerAliveAsync($"s3w-{cluster}-node1")).Should().BeTrue(
+            (await fx.ContainerAliveAsync($"s3w-{cluster}-east1")).Should().BeTrue(
                 "UNREACHABLE — без деструктива: контейнер жив (paused)");
-            (await fx.VolumeExistsAsync($"s3w-{cluster}-node1-data")).Should().BeTrue(
+            (await fx.VolumeExistsAsync($"s3w-{cluster}-east1-data")).Should().BeTrue(
                 "UNREACHABLE — без деструктива: volume на месте");
 
             // Act 3: unpause → health отвечает → RUNNING возвращается.
-            await fx.RunDockerAsync(["unpause", $"s3w-{cluster}-node1"], ct);
+            await fx.RunDockerAsync(["unpause", $"s3w-{cluster}-east1"], ct);
             await fx.WaitPhaseAsync("wait-recovered", async () =>
                 await S3E2eScaleTests.GetOrNullAsync(fx,
-                    $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "RUNNING",
+                    $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING",
                 TimeSpan.FromSeconds(40), ct);
 
             // Act 4: usage-ключ кормится тиками надзора живой ноды
             // (HealthIntervalSec=3): updated_unix растёт, used/total > 0
             // (при UNREACHABLE usage заморожен — грань Task 2 пишется по живым).
             var usageBefore = await S3E2eScaleTests.GetOrNullAsync(fx,
-                $"/s3/clusters/{cluster}/nodes/node1/usage", ct);
+                $"/s3/clusters/{cluster}/nodes/east1/usage", ct);
             await fx.WaitPhaseAsync("wait-usage-update", async () =>
             {
                 var usage = await S3E2eScaleTests.GetOrNullAsync(fx,
-                    $"/s3/clusters/{cluster}/nodes/node1/usage", ct);
+                    $"/s3/clusters/{cluster}/nodes/east1/usage", ct);
                 if (usage is null || usage == usageBefore)
                     return false;
                 using var doc = JsonDocument.Parse(usage);
@@ -98,7 +98,7 @@ public class S3E2eSupervisionTests
             }, TimeSpan.FromSeconds(20), ct);
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
-            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1");
+            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
         }
         catch
         {

@@ -246,7 +246,10 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
     {
         try
         {
-            var body = JsonSerializer.SerializeToUtf8Bytes(new JoinRequestBody(endpoint));
+            // camelCase-тело (контракт ownS3-грани, owns3/07 §2): парсер ownS3
+            // регистрочувствителен — PascalCase по умолчанию даёт 400 malformed.
+            var body = JsonSerializer.SerializeToUtf8Bytes(
+                new JoinRequestBody(endpoint), AdminJoinJson);
             using var request = SignAdmin("POST", host, port, "/admin/replication/join", creds, body);
             using var response = await http.SendAsync(request, ct);
             return response.StatusCode switch
@@ -390,6 +393,12 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
 
     // Тело admin-join-запроса {"endpoint": "<b-advertised>"}.
     private sealed record JoinRequestBody(string Endpoint);
+
+    // camelCase-сериализация тел админ-грани (контракт owns3/07 §2).
+    private static readonly JsonSerializerOptions AdminJoinJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     // SigV4-подпись админ-грани root-кредом профиля (метод/путь/тело — общий путь).
     private static HttpRequestMessage SignAdmin(

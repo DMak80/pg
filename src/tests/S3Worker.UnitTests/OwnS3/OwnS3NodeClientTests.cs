@@ -25,12 +25,16 @@ public class OwnS3NodeClientTests
     {
         public readonly List<(string Method, string Url, string? Authorization)> Requests = [];
 
+        public readonly List<string> Bodies = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Requests.Add((
                 request.Method.Method,
                 request.RequestUri!.ToString(),
                 request.Headers.TryGetValues("Authorization", out var a) ? a.First() : null));
+            if (request.Content is not null)
+                Bodies.Add(await request.Content.ReadAsStringAsync(ct));
             return responder(request);
         }
     }
@@ -305,9 +309,12 @@ public class OwnS3NodeClientTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Kind.Should().Be(kind);
         result.Value.PeerName.Should().Be(peer);
-        // Тело — {"endpoint": …}; метод POST.
+        // Тело — {"endpoint": …} camelCase (ownS3-парсер регистрочувствителен —
+        // PascalCase даёт 400 malformed, регресс E2E); метод POST.
         handler.Requests.Should().ContainSingle()
             .Which.Method.Should().Be("POST");
+        handler.Bodies.Should().ContainSingle().Which.Should().Be(
+            "{\"endpoint\":\"http://b:9000\"}");
     }
 
     // AAA: join — транспортный отказ → Transient (не исключение наружу).

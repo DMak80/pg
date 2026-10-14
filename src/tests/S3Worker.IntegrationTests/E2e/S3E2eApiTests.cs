@@ -40,10 +40,14 @@ public class S3E2eApiTests
                 .Should().Be(HttpStatusCode.BadRequest, "name: верхний регистр/дефис вне канона");
             (await CreateCodeAsync(api, platform: "pg", ct: ct))
                 .Should().Be(HttpStatusCode.BadRequest, "platform — только owns3");
-            (await CreateCodeAsync(api, nodes: 0, ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "nodes вне 1..9 (мин)");
-            (await CreateCodeAsync(api, placements: Array.Empty<object>(), ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "placement пуст — размещать некуда");
+            (await CreateCodeAsync(api, instances: Enumerable.Range(0, 10)
+                    .Select(i => (object)new { name = $"n{i}", placement = new { dockerHost = "local" } })
+                    .ToArray(), ct: ct))
+                .Should().Be(HttpStatusCode.BadRequest, "instances вне 0..9 (макс)");
+            (await CreateCodeAsync(api, instances: new object[] { new { name = "east1" } }, ct: ct))
+                .Should().Be(HttpStatusCode.BadRequest, "placement отсутствует — размещать некуда");
+            (await CreateCodeAsync(api, instances: new object[] { new { name = "orchestrator", placement = new { dockerHost = "local" } } }, ct: ct))
+                .Should().Be(HttpStatusCode.BadRequest, "резерв orchestrator (PKI оркестратора)");
             (await CreateCodeAsync(api, cpu: 99m, ct: ct))
                 .Should().Be(HttpStatusCode.BadRequest, "cpu вне 0.01..64 (макс)");
 
@@ -52,18 +56,18 @@ public class S3E2eApiTests
             alien.StatusCode.Should().Be(HttpStatusCode.NotFound, "кластера нет");
             using var alienNode = await api.PostAsJsonAsync(
                 "/api/s3/clusters/no-such-cluster/nodes",
-                new { placement = new { dockerHost = "local" } }, ct);
+                new { name = "east1", placement = new { dockerHost = "local" } }, ct);
             alienNode.StatusCode.Should().Be(HttpStatusCode.NotFound, "add-node на чужое имя");
 
             // Arrange: живой кластер N=1 до Active (для 409/200-веток).
-            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, nodes: 1, ct);
-            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "node1");
+            await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1");
+            await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1");
 
             // Assert 3: 409 — create-повтор на живом имени и delete последней ноды.
             (await CreateCodeAsync(api, name: cluster, ct: ct))
                 .Should().Be(HttpStatusCode.Conflict, "дубль живого имени");
             using var lastNode = await api.DeleteAsync(
-                $"/api/s3/clusters/{cluster}/nodes/node1", ct);
+                $"/api/s3/clusters/{cluster}/nodes/east1", ct);
             lastNode.StatusCode.Should().Be(HttpStatusCode.Conflict,
                 "последняя нода кластера N=1 невыводима");
 
@@ -97,7 +101,7 @@ public class S3E2eApiTests
 
             // Финал: заявка ротации жива — кластер сносится delete'ом
             // (ротация-заявка умирает вместе с координацией X2/X3).
-            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1");
+            await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
         }
         catch
         {
@@ -108,13 +112,12 @@ public class S3E2eApiTests
         }
     }
 
-    // POST create c переопределяемыми полями (валидационные кейсы).
+    // POST create c переопределяемыми полями (валидационные кейсы, instances[]).
     private static async Task<HttpStatusCode> CreateCodeAsync(
         HttpClient api,
         string? name = null,
         string? platform = null,
-        int? nodes = null,
-        object[]? placements = null,
+        object[]? instances = null,
         decimal? cpu = null,
         CancellationToken ct = default)
     {
@@ -123,9 +126,8 @@ public class S3E2eApiTests
             {
                 name = name ?? $"val{Guid.NewGuid().ToString("N")[..8]}",
                 platform = platform ?? "owns3",
-                nodes = nodes ?? 1,
                 secretProfile = S3E2eEnvironment.ProfileName,
-                placements = placements ?? new object[] { new { dockerHost = "local" } },
+                instances = instances ?? new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
                 resources = new { cpu = cpu ?? 0.5m, memGi = 1, diskGi = 5 },
             }, ct);
         return response.StatusCode;

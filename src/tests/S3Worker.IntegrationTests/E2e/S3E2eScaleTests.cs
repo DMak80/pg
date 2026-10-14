@@ -15,9 +15,9 @@ namespace S3Worker.IntegrationTests.E2e;
 public class S3E2eScaleTests
 {
     // Сценарий 4 RemoveNode (spec §5.2, arch/23 §2.2): Active N=2 → DELETE
-    // nodes/node2 → 202 → снос контейнера+volume node2, del ключей ноды,
-    // portalloc без node2, endpoints = 1 адрес, config.nodes = 1. Докомплект
-    // гвардов: delete последней ноды → 409; повтор delete node2 → 404.
+    // nodes/east2 → 202 → снос контейнера+volume east2, del ключей ноды,
+    // portalloc без east2, endpoints = 1 адрес, config.nodes = 1. Докомплект
+    // гвардов: delete последней ноды → 409; повтор delete east2 → 404.
     [Fact]
     public async Task RemoveNode_ShrinksClusterWithGuards()
     {
@@ -36,26 +36,26 @@ public class S3E2eScaleTests
         try
         {
             await WaitWorkerAsync(fx, api, ct);
-            await CreateClusterAsync(fx, api, cluster, nodes: 2, ct);
-            await WaitClusterActiveAsync(fx, cluster, ct, "node1", "node2");
+            await CreateClusterAsync(fx, api, cluster, ct, "east1", "east2");
+            await WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
-            // Act: заявка вывода node2 → 202 (TO_REMOVE поставлен синхронно).
+            // Act: заявка вывода east2 → 202 (TO_REMOVE поставлен синхронно).
             using var removed = await api.DeleteAsync(
-                $"/api/s3/clusters/{cluster}/nodes/node2", ct);
+                $"/api/s3/clusters/{cluster}/nodes/east2", ct);
             var removedBody = await removed.Content.ReadAsStringAsync(ct);
             removed.StatusCode.Should().Be(HttpStatusCode.Accepted, removedBody);
 
             // [PHASE] wait-remove: E-процесс довёл демонтаж до конца.
             await fx.WaitPhaseAsync("wait-remove", async () =>
             {
-                if (await fx.ContainerAliveAsync($"s3w-{cluster}-node2")
-                    || await fx.VolumeExistsAsync($"s3w-{cluster}-node2-data"))
+                if (await fx.ContainerAliveAsync($"s3w-{cluster}-east2")
+                    || await fx.VolumeExistsAsync($"s3w-{cluster}-east2-data"))
                     return false;
                 if (await GetOrNullAsync(fx,
-                        $"/s3/clusters/{cluster}/nodes/node2/state", ct) is not null)
+                        $"/s3/clusters/{cluster}/nodes/east2/state", ct) is not null)
                     return false;
                 var alloc = await GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct);
-                if (alloc is null || Json(alloc).TryGetProperty("node2", out _))
+                if (alloc is null || Json(alloc).TryGetProperty("east2", out _))
                     return false;
                 var current = await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct);
                 if (EndpointsOf(current).Length != 1)
@@ -64,24 +64,24 @@ public class S3E2eScaleTests
                            $"/s3/clusters/{cluster}/config", ct)) == 1;
             }, TimeSpan.FromSeconds(60), ct);
 
-            // Assert 1: endpoints = 1 адрес — прежний node1 (advertised).
+            // Assert 1: endpoints = 1 адрес — прежний east1 (advertised).
             var endpoints = await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct);
             endpoints.Should().NotBeNull("endpoints после E-финала актуальны");
             endpoints!.Split(',')[0].Should().StartWith("host.docker.internal:");
 
             // Assert 2: гварды — delete последней ноды → 409 (arch/23 §2: 1..9).
             using var lastNode = await api.DeleteAsync(
-                $"/api/s3/clusters/{cluster}/nodes/node1", ct);
+                $"/api/s3/clusters/{cluster}/nodes/east1", ct);
             lastNode.StatusCode.Should().Be(HttpStatusCode.Conflict,
                 "последняя нода кластера невыводима");
 
-            // Assert 3: докомплект — повтор delete уже снесённой node2 → 404.
+            // Assert 3: докомплект — повтор delete уже снесённой east2 → 404.
             using var again = await api.DeleteAsync(
-                $"/api/s3/clusters/{cluster}/nodes/node2", ct);
-            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "ноды node2 больше нет");
+                $"/api/s3/clusters/{cluster}/nodes/east2", ct);
+            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "ноды east2 больше нет");
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
-            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "node1");
+            await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
         }
         catch
         {
@@ -114,8 +114,8 @@ public class S3E2eScaleTests
         try
         {
             await WaitWorkerAsync(fx, api, ct);
-            await CreateClusterAsync(fx, api, cluster, nodes: 2, ct);
-            await WaitClusterActiveAsync(fx, cluster, ct, "node1", "node2");
+            await CreateClusterAsync(fx, api, cluster, ct, "east1", "east2");
+            await WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
             // Act: заявка демонтажа → 202 (config.state=TO_REMOVE синхронно).
             using var deleted = await api.DeleteAsync($"/api/s3/clusters/{cluster}", ct);
@@ -135,10 +135,10 @@ public class S3E2eScaleTests
                     && await GetOrNullAsync(fx, $"/s3worker/rotations/{cluster}", ct) is null
                     && await GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct) is null
                     && await GetOrNullAsync(fx, $"/s3worker/claims/{cluster}", ct) is null
-                    && !await fx.ContainerAliveAsync($"s3w-{cluster}-node1")
-                    && !await fx.ContainerAliveAsync($"s3w-{cluster}-node2")
-                    && !await fx.VolumeExistsAsync($"s3w-{cluster}-node1-data")
-                    && !await fx.VolumeExistsAsync($"s3w-{cluster}-node2-data");
+                    && !await fx.ContainerAliveAsync($"s3w-{cluster}-east1")
+                    && !await fx.ContainerAliveAsync($"s3w-{cluster}-east2")
+                    && !await fx.VolumeExistsAsync($"s3w-{cluster}-east1-data")
+                    && !await fx.VolumeExistsAsync($"s3w-{cluster}-east2-data");
             }, TimeSpan.FromSeconds(60), ct);
 
             // Assert: повтор DELETE → 404 (кластера нет).
@@ -170,18 +170,26 @@ public class S3E2eScaleTests
             }
         }, TimeSpan.FromSeconds(30), ct);
 
+    // create c instances[] (arch/24 §1.1): имена инстансов — из списка
+    // (произвольные, паттерн кластера; дефолт east1/east2 — 2 инстанса).
     internal static async Task CreateClusterAsync(
-        S3E2eEnvironment fx, HttpClient api, string cluster, int nodes, CancellationToken ct)
+        S3E2eEnvironment fx, HttpClient api, string cluster, CancellationToken ct,
+        params string[] instances)
     {
+        if (instances.Length == 0)
+            instances = ["east1", "east2"];
         using var created = await api.PostAsJsonAsync("/api/s3/clusters",
             new
             {
                 name = cluster,
                 platform = "owns3",
-                nodes,
                 secretProfile = S3E2eEnvironment.ProfileName,
-                placements = Enumerable.Range(0, nodes)
-                    .Select(_ => (object)new { dockerHost = "local" }).ToArray(),
+                instances = instances
+                    .Select(name => (object)new
+                    {
+                        name,
+                        placement = new { dockerHost = "local" },
+                    }).ToArray(),
                 resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
             }, ct);
         var body = await created.Content.ReadAsStringAsync(ct);

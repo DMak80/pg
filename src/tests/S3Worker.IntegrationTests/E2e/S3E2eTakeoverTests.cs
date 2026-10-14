@@ -7,7 +7,7 @@ using Xunit;
 namespace S3Worker.IntegrationTests.E2e;
 
 // Takeover-E2E S3Worker (spec §11 сценарий 7, arch/17): kill ДЕРЖАТЕЛЯ клэйма
-// посреди provisioning (P2: ноды PROVISIONING, контейнер node1 есть) —
+// посреди provisioning (P2: ноды PROVISIONING, контейнер east1 есть) —
 // выживший инстанс пере-захватывает клэйм (TTL ≤ 15 с) и доигрывает
 // provisioning до Active (endpoints/config финальны), без двойного
 // контроллера (клэйм один — instance выжившего). Держатель резолвится по
@@ -54,15 +54,15 @@ public class S3E2eTakeoverTests
                 }
             }, TimeSpan.FromSeconds(30), ct);
 
-            await S3E2eScaleTests.CreateClusterAsync(fx, api1, cluster, nodes: 2, ct);
+            await S3E2eScaleTests.CreateClusterAsync(fx, api1, cluster, ct, "east1", "east2");
 
             // A3: якорь «посередине» provisioning — P2: journal add/provision
-            // в полёте, node1 PROVISIONING, контейнер node1 существует; клэйм
+            // в полёте, east1 PROVISIONING, контейнер east1 существует; клэйм
             // ещё у жертвы (work.instance = не-выживший гарантируем на kill).
             await fx.WaitPhaseAsync("takeover-mid-provision", async () =>
                 await GetOrNullAsync(fx,
-                    $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "PROVISIONING"
-                && await fx.ContainerAliveAsync($"s3w-{cluster}-node1")
+                    $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "PROVISIONING"
+                && await fx.ContainerAliveAsync($"s3w-{cluster}-east1")
                 && await GetOrNullAsync(fx, $"/s3worker/claims/{cluster}", ct) is not null,
                 TimeSpan.FromSeconds(60), ct);
 
@@ -102,8 +102,8 @@ public class S3E2eTakeoverTests
             // config канонический без state.
             await fx.WaitPhaseAsync("takeover-finish", async () =>
                 (await RangeAsync(fx, "/s3worker/api/", ct)).Count == 1
-                && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/node1/state", ct) == "RUNNING"
-                && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/node2/state", ct) == "RUNNING"
+                && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING"
+                && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east2/state", ct) == "RUNNING"
                 && S3E2eScaleTests.EndpointsOf(
                         await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct)).Length == 2
                 && await JsonConfigWithoutStateAsync(fx, cluster, ct),
@@ -136,10 +136,10 @@ public class S3E2eTakeoverTests
             await fx.WaitPhaseAsync("takeover-wait-clean", async () =>
                 (await fx.Gateway.RangeAsync(fx.EtcdEndpoint,
                     $"/s3/clusters/{cluster}/", ct)).Value.Count == 0
-                && !await fx.ContainerAliveAsync($"s3w-{cluster}-node1")
-                && !await fx.ContainerAliveAsync($"s3w-{cluster}-node2")
-                && !await fx.VolumeExistsAsync($"s3w-{cluster}-node1-data")
-                && !await fx.VolumeExistsAsync($"s3w-{cluster}-node2-data"),
+                && !await fx.ContainerAliveAsync($"s3w-{cluster}-east1")
+                && !await fx.ContainerAliveAsync($"s3w-{cluster}-east2")
+                && !await fx.VolumeExistsAsync($"s3w-{cluster}-east1-data")
+                && !await fx.VolumeExistsAsync($"s3w-{cluster}-east2-data"),
                 TimeSpan.FromSeconds(60), ct);
 
             Console.WriteLine($"[PHASE] takeover-done: holder={holderName} убит, survivor={survivorName} доиграл provisioning и демонтаж");
