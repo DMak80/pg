@@ -212,10 +212,17 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         PortAllocLock portLock, PortAllocIndex portIndex) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex, Options);
 
+    public PkiStore NewPki() => new(Gateway, [Endpoint], TimeProvider.System);
+
+    public MeshGovernanceProcess NewMesh(ClaimStore claims, WorkJournal journal) =>
+        new(Gateway, [Endpoint], claims, journal, SecretStore, NewPki(), NodeClient, Options,
+            new System.Diagnostics.Metrics.Meter("S3Worker-tests"));
+
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex,
-            SecretStore, NodeClient, Options, new BootWaitBudget(TimeProvider.System));
+            SecretStore, NewPki(), new InstanceEnvComposer(),
+            NewMesh(claims, journal), NodeClient, Options, new BootWaitBudget(TimeProvider.System));
 
     public DeprovisioningProcess NewDeprovisioning(ClaimStore claims, WorkJournal journal) =>
         new(Gateway, [Endpoint], Driver, claims, journal, new BootWaitBudget(TimeProvider.System));
@@ -223,6 +230,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
     public NodeSupervisor NewSupervisor(ClaimStore claims, WorkJournal journal,
         PortAllocHealer healer, int nodeDeadSec = 90) =>
         new(Gateway, [Endpoint], Driver, claims, journal, NodeClient, SecretStore,
+            NewPki(), new InstanceEnvComposer(),
             Options with { NodeDeadSec = nodeDeadSec }, healer);
 
     // Сид заявки кластера (config NOT_INITIALIZED + placement/resources + state).

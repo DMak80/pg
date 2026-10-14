@@ -27,6 +27,9 @@ public sealed class ProvisioningProcess(
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
     SecretProfileStore secrets,
+    PkiStore pki,
+    InstanceEnvComposer envComposer,
+    MeshGovernanceProcess mesh,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
     BootWaitBudget bootWait,
@@ -102,18 +105,32 @@ public sealed class ProvisioningProcess(
         if (!bucket.IsSuccess)
             return Fail(cluster, bucket.Error!, "ensure-buckets");
 
-        // P4: mesh-синхронность — t35 (no-op до t35).
-        // TODO(t35): зонды синхронности mesh.
+        // P4: доводка mesh по links (та же механика, что G — arch/24 §5).
+        // Расхождение состава — НЕ отказ provisioning'а: отказ P4 (join/delete
+        // недоступен) пишется journal waiting-mesh, а P5 продолжает — endpoints/
+        // config не зависят от состава targets; mesh додоводит Active-тиками G.
+        var meshTick = await mesh.TickAsync(snap, ct);
+        if (!meshTick.IsSuccess)
+        {
+            var waiting = await journal.WritePhaseAsync(
+                cluster, Op, "waiting-mesh", claims.InstanceId, meshTick.Error!.Message, ct);
+            if (!waiting.IsSuccess)
+                return waiting;
+        }
 
         // Гонка TO_REMOVE перед финальным окном — безопасный выход.
         if (await IsRemovedAsync(cluster, ct))
             return await FinishAsync(cluster, "aborted-state-changed", ct);
 
-        // P5: endpoints + config без state (txn по mod_revision) + снапшот «после».
+        // P5: endpoints (advertised host:port; 0 инстансов — ключ НЕ пишется,
+        // arch/23 §2: endpoints существует ⟺ ≥1 инстанс) + config без state.
         var endpoints = BuildEndpoints(snap, planned.Value);
-        var endpointsPut = await PutAsync(S3ProcessCommon.EndpointsKey(cluster), endpoints, ct);
-        if (!endpointsPut.IsSuccess)
-            return Fail(cluster, endpointsPut.Error!, "put-endpoints");
+        if (endpoints.Length > 0)
+        {
+            var endpointsPut = await PutAsync(S3ProcessCommon.EndpointsKey(cluster), endpoints, ct);
+            if (!endpointsPut.IsSuccess)
+                return Fail(cluster, endpointsPut.Error!, "put-endpoints");
+        }
 
         var committed = await CommitConfigAsync(snap, ct);
         if (!committed.IsSuccess)
@@ -273,11 +290,19 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
+            // PKI лениво при первом использовании (arch/23 §6): пара CA+оркестратор,
+            // затем материал инстанса — txn put-if-absent, идемпотентно на тиках.
+            var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
+            if (!clusterPki.IsSuccess)
+                return Fail(cluster, clusterPki.Error!, "pki");
+            var nodePki = await pki.EnsureNodePkiAsync(cluster, node.Node, clusterPki.Value.Ca, ct);
+            if (!nodePki.IsSuccess)
+                return Fail(cluster, nodePki.Error!, "pki");
+
             var addr = addresses[node.Node];
-            var env = new Dictionary<string, string>(nodeSecrets.ToContainerEnv())
-            {
-                ["OWNS3_DATA_DIR"] = "/data",
-            };
+            var env = envComposer.Compose(
+                nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
+                $"http://{options.AdvertisedHost ?? addr.Host}:{addr.S3Port}");
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(
                 new S3NodeSpec(

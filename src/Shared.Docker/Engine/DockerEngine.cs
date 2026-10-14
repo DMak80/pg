@@ -200,18 +200,43 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     // POST /volumes/create; 409 «volume already exists» = успех (идемпотентность).
     public async Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        => await EnsureVolumeAsync(name, labelKey: null!, label: null!, ct);
+
+    // POST /volumes/create с label-атрибуцией (s3worker=<C> — точный листинг
+    // сирот X2: имена инстансов произвольные, arch/24 §2); 409 «already
+    // exists» = успех (идемпотентность).
+    public async Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
             try
             {
-                await SendAsync(HttpMethod.Post, "/volumes/create",
-                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+                var payload = new Dictionary<string, object?> { ["Name"] = name };
+                if (labelKey is { Length: > 0 })
+                    payload["Labels"] = new Dictionary<string, string> { [labelKey] = label };
+                await SendAsync(HttpMethod.Post, "/volumes/create", payload, ct);
             }
             catch (DockerHttpException e) when (e.StatusCode == 409)
             {
                 // volume с таким именем уже есть — идемпотентность
             }
         });
+
+    // GET /volumes → имена по префиксу (локальная фильтрация StartsWith —
+    // docker-фильтр name подстрочный; образец ListServicesAsync).
+    public async Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+        => await Result<IReadOnlyList<string>>.FromAsync(async () =>
+        {
+            var volumes = await GetAsync<VolumeListDto>("/volumes", ct);
+            return (IReadOnlyList<string>)(volumes?.Volumes ?? [])
+                .Select(v => v.Name)
+                .Where(n => n.StartsWith(namePrefix, StringComparison.Ordinal))
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToList();
+        });
+
+    private sealed record VolumeListDto(List<VolumeDto>? Volumes);
+
+    private sealed record VolumeDto(string Name);
 
     // DELETE /volumes/{name}; 404 = успех (идемпотентность демонтажа X1).
     public async Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)

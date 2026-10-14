@@ -311,6 +311,42 @@ public static class S3ProcessCommon
         return addresses;
     }
 
+    // Канонический JSON links (arch/23 §2.1): [{"a":…,"b":…},…] в порядке запроса.
+    public static string LinksJson(IReadOnlyList<(string A, string B)> links)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var (a, b) in links)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("a", a);
+                writer.WriteString("b", b);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    // Канонический JSON denylist (arch/23 §2.1): ["<I>",…] в Ordinal-порядке.
+    public static string DenyListJson(IReadOnlyCollection<string> names)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
+                writer.WriteStringValue(name);
+            writer.WriteEndArray();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
     public static string SerializePortAlloc(IReadOnlyDictionary<string, NodeAddress> addresses)
     {
         using var buffer = new MemoryStream();

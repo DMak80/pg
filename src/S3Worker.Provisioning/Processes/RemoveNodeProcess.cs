@@ -78,7 +78,8 @@ public sealed class RemoveNodeProcess(
         if (!removed.IsSuccess)
             return Fail(cluster, node.Node, removed.Error!, "remove-node");
 
-        // del ключей ноды.
+        // del ключей ноды (включая pki — имя освобождается; повторное создание
+        // инстанса с тем же именем — новый выпуск, arch/23 §6).
         foreach (var key in new[]
                  {
                      S3ProcessCommon.NodePlacementKey(cluster, node.Node),
@@ -86,12 +87,19 @@ public sealed class RemoveNodeProcess(
                      S3ProcessCommon.NodeStateKey(cluster, node.Node),
                      S3ProcessCommon.NodePlacedOnKey(cluster, node.Node),
                      S3ProcessCommon.NodeUsageKey(cluster, node.Node),
+                     S3ProcessCommon.NodePkiKey(cluster, node.Node),
                  })
         {
             var del = await DeleteKeyAsync(key, ct);
             if (!del.IsSuccess)
                 return Fail(cluster, node.Node, del.Error!, $"delete {key}");
         }
+
+        // Имя — из denylist кластера (иначе deny-доведение потеряет publicKeyPem —
+        // §3.4): read → remove → put txn по mod_revision; имени нет — no-op.
+        var denyRemoved = await RemoveFromDenyListAsync(cluster, node.Node, ct);
+        if (!denyRemoved.IsSuccess)
+            return Fail(cluster, node.Node, denyRemoved.Error!, "denylist-remove");
 
         // Исключение из portalloc (RMW под locks/portalloc).
         var alloc = await RemoveFromPortAllocAsync(snap, node.Node, ct);
@@ -137,6 +145,52 @@ public sealed class RemoveNodeProcess(
         return written.IsSuccess
             ? Result.Failed(new ApplicationException($"remove-node {cluster}/{node}: {reason}"))
             : written;
+    }
+
+    // Имя из denylist кластера: read → remove → txn по mod_revision (не NotExists:
+    // ключ может уже существовать с другими именами); имени нет в списке — no-op.
+    private async Task<Result> RemoveFromDenyListAsync(string cluster, string node, CancellationToken ct)
+    {
+        var key = S3ProcessCommon.DenyListKey(cluster);
+        var current = await S3ProcessCommon.GetWithFailoverAsync(gateway, endpoints, key, ct);
+        if (!current.IsSuccess)
+            return current.Error!;
+        if (current.Value is not { } kv)
+            return Result.Success(); // denylist нет — отзывать нечего
+
+        var names = DenyListNames(kv.Value);
+        if (!names.Remove(node))
+            return Result.Success(); // имени нет — no-op
+
+        var txn = await TxnAsync(
+            TxnRequest.Of(
+                [TxnCompare.ModRevisionEqual(key, (long)kv.ModRevision)],
+                [new TxnOp.Put(key, S3ProcessCommon.DenyListJson(names), null)]),
+            ct);
+        if (!txn.IsSuccess)
+            return txn.Error!;
+        return txn.Value.Succeeded
+            ? Result.Success()
+            : Result.Failed(new ApplicationException($"{key} изменился под нами — ретрай тиком"));
+    }
+
+    // Разбор denylist (битое значение — пустой список: перезапись восстановит).
+    private static HashSet<string> DenyListNames(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? doc.RootElement.EnumerateArray()
+                    .Where(e => e.ValueKind == System.Text.Json.JsonValueKind.String)
+                    .Select(e => e.GetString()!)
+                    .ToHashSet(StringComparer.Ordinal)
+                : [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
     }
 
     // Исключение ноды из portalloc: под глобальным клэймом (t91), put-if-... —

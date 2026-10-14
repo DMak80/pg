@@ -85,10 +85,6 @@ public sealed class PlainClusterDriver(
     // Label-ключ контейнеров s3w-домена (arch/23 §2: label "s3worker").
     internal const string LabelKey = "s3worker";
 
-    // Число нод кластера ограничено 1..9 (arch/23 §2) — перебор детерминированных
-    // имён томов в ListNodeObjectsAsync.
-    private const int MaxNodes = 9;
-
     public int S3ContainerPort => S3ContainerPortConst;
 
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
@@ -149,8 +145,10 @@ public sealed class PlainClusterDriver(
             if (existing.Value.Any(c => c.Names.Contains(name)))
                 return;
 
-            // Том данных: данные объектов bucket'а переживают пересоздание ноды.
-            var volume = await engine.EnsureVolumeAsync(volumeName, ct);
+            // Том данных: данные объектов bucket'а переживают пересоздание ноды;
+            // label s3worker=<C> — атрибуция листинга сирот (имена инстансов
+            // произвольные — arch/24 §2).
+            var volume = await engine.EnsureVolumeAsync(volumeName, LabelKey, spec.Cluster, ct);
             if (!volume.IsSuccess)
                 throw volume.Error!;
 
@@ -268,30 +266,20 @@ public sealed class PlainClusterDriver(
                     .Where(n => n.StartsWith(prefix, StringComparison.Ordinal)));
             }
 
-            // Тома данных: детерминированные имена node1..node9 (предел arch/23 §2);
-            // VolumeExistsAsync дешевле листинга, которого движок не несёт.
-            foreach (var (node, engine) in NodeEnginesByVolume())
+            // Тома данных: листинг по префиксу (имена инстансов произвольные —
+            // перебор детерминированных имён невозможен, arch/24 §2); том
+            // нод-локален, сирота-том может остаться на ЛЮБОМ хосте —
+            // объединение листингов всех движков.
+            foreach (var engine in _engines.Values)
             {
-                var exists = await engine.VolumeExistsAsync(VolumeName(cluster, node), ct);
-                if (!exists.IsSuccess)
-                    throw exists.Error!;
-                if (exists.Value)
-                    names.Add(VolumeName(cluster, node));
+                var volumes = await engine.ListVolumesAsync(prefix, ct);
+                if (!volumes.IsSuccess)
+                    throw volumes.Error!;
+                names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)));
             }
 
             return (IReadOnlyList<string>)names.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
         });
-    }
-
-    // Том нод-локален, но размещение plain-таблица не отслеживает: сирота-том
-    // (утраченный контейнер) может остаться на ЛЮБОМ хосте — существование
-    // проверяется на всех движках (объединение инспекций); имена томов
-    // детерминированы node1..node9 (предел arch/23 §2).
-    private IEnumerable<(string Node, IDockerEngine Engine)> NodeEnginesByVolume()
-    {
-        foreach (var engine in _engines.Values)
-            for (var k = 1; k <= MaxNodes; k++)
-                yield return ($"node{k}", engine);
     }
 
     internal static string NodeName(string cluster, string nodeName)
@@ -352,8 +340,10 @@ public sealed class SwarmClusterDriver(
                 throw new ApplicationException($"swarm-нода с Hostname={spec.Host} не найдена");
 
             // Идемпотентность: 409 already-exists — успех (движок); сверка/замена —
-            // решение процессов (надзор C/ротация R).
-            var volume = await _engine.EnsureVolumeAsync(PlainClusterDriver.VolumeName(spec.Cluster, spec.NodeName), ct);
+            // решение процессов (надзор C/ротация R); label s3worker=<C> — атрибуция.
+            var volume = await _engine.EnsureVolumeAsync(
+                PlainClusterDriver.VolumeName(spec.Cluster, spec.NodeName),
+                PlainClusterDriver.LabelKey, spec.Cluster, ct);
             if (!volume.IsSuccess)
                 throw volume.Error!;
 
@@ -433,27 +423,18 @@ public sealed class SwarmClusterDriver(
             return services;
 
         var names = new List<string>(services.Value);
-        foreach (var (node, engine) in NodeEnginesByVolume())
+        // Тома данных: листинг по префиксу на всех движках (имена инстансов
+        // произвольные — arch/24 §2; сирота-том может остаться на любой ноде).
+        foreach (var engine in _nodeEngines.Values.Append(_engine))
         {
-            var exists = await engine.VolumeExistsAsync(PlainClusterDriver.VolumeName(cluster, node), ct);
-            if (!exists.IsSuccess)
-                return Result<IReadOnlyList<string>>.Failed(exists.Error!);
-            if (exists.Value)
-                names.Add(PlainClusterDriver.VolumeName(cluster, node));
+            var volumes = await engine.ListVolumesAsync($"s3w-{cluster}-", ct);
+            if (!volumes.IsSuccess)
+                return Result<IReadOnlyList<string>>.Failed(volumes.Error!);
+            names.AddRange(volumes.Value.Where(v => v.EndsWith("-data", StringComparison.Ordinal)));
         }
 
         return Result<IReadOnlyList<string>>.Success(
             names.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList());
-    }
-
-    // Том нод-локален, сирота-том (утраченный контейнер) может остаться на
-    // любой swarm-ноде или менеджере — существование проверяется на всех
-    // движках (объединение инспекций, как в RemoveNodeAsync); имена детерминированы.
-    private IEnumerable<(string Node, IDockerEngine Engine)> NodeEnginesByVolume()
-    {
-        foreach (var engine in _nodeEngines.Values.Append(_engine))
-            for (var k = 1; k <= 9; k++)
-                yield return ($"node{k}", engine);
     }
 
     private static readonly IReadOnlyDictionary<string, string> EmptyLabels =

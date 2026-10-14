@@ -39,6 +39,8 @@ public class NodeSupervisorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
                 rig.NodeClient, secrets,
+                new PkiStore(rig.Etcd, ["http://etcd:2379"], rig.Clock),
+                new InstanceEnvComposer(),
                 new S3ProvisioningOptions(18000, 18999, 100, nodeDeadSec, healthIntervalSec, null, "owns3:dev", "pgworker-backups"),
                 new PortAllocHealer(
                     rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,

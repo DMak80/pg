@@ -23,6 +23,8 @@ public sealed class SecretRotator(
     ClaimStore claims,
     WorkJournal journal,
     SecretProfileStore secrets,
+    PkiStore pki,
+    InstanceEnvComposer envComposer,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options)
 {
@@ -97,10 +99,21 @@ public sealed class SecretRotator(
             var address = await ResolveAddressAsync(cluster, node.Node, ct);
             if (!address.IsSuccess)
                 return address.Error!;
-            var env = new Dictionary<string, string>(nodeSecrets!.ToContainerEnv())
-            {
-                ["OWNS3_DATA_DIR"] = "/data",
-            };
+
+            // PKI-материал переиспользуется из etcd (ключи переживают
+            // пересоздание, arch/24 §4); отказ — отложенный тик (диагностика).
+            var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
+            if (!clusterPki.IsSuccess)
+                return await journal.WritePhaseAsync(
+                    cluster, Op, "waiting-pki", claims.InstanceId, clusterPki.Error!.Message, ct);
+            var nodePki = await pki.EnsureNodePkiAsync(cluster, node.Node, clusterPki.Value.Ca, ct);
+            if (!nodePki.IsSuccess)
+                return await journal.WritePhaseAsync(
+                    cluster, Op, "waiting-pki", claims.InstanceId, nodePki.Error!.Message, ct);
+
+            var env = envComposer.Compose(
+                nodeSecrets!, nodePki.Value, clusterPki.Value.Ca.Ca,
+                $"http://{options.AdvertisedHost ?? address.Value.Host}:{address.Value.S3Port}");
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(
                 new S3NodeSpec(

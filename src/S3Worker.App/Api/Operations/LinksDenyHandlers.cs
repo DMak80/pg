@@ -164,41 +164,12 @@ public static class S3LinksValidator
         return errors;
     }
 
-    // Канонический JSON arch/23 §2.1: [{"a":…,"b":…},…] в порядке запроса.
+    // Канонические JSON — одна точка с процессами (S3ProcessCommon, arch/23 §2.1).
     public static string CanonicalJson(IReadOnlyList<S3LinkDto> links)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartArray();
-            foreach (var link in links)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("a", link.A);
-                writer.WriteString("b", link.B);
-                writer.WriteEndObject();
-            }
+        => S3ProcessCommon.LinksJson(links.Select(l => (l.A!, l.B!)).ToList());
 
-            writer.WriteEndArray();
-        }
-
-        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
-    }
-
-    // Канонический JSON denylist arch/23 §2.1: ["<I>",…] в Ordinal-порядке.
     public static string DenyListJson(IReadOnlyList<string> names)
-    {
-        using var buffer = new MemoryStream();
-        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartArray();
-            foreach (var name in names.OrderBy(n => n, StringComparer.Ordinal))
-                writer.WriteStringValue(name);
-            writer.WriteEndArray();
-        }
-
-        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
-    }
+        => S3ProcessCommon.DenyListJson(names);
 
     // Компаратор канонических пар (a,b) без реверса.
     private sealed class OrdinalTupleComparer : IEqualityComparer<(string A, string B)>

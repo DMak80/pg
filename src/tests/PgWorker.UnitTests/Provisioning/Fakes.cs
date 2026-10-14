@@ -270,6 +270,12 @@ internal sealed class FakeContainerEngine : IDockerEngine
     public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
     public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => Task.FromResult(Result.Success());
     public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(true));
+    public Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
+
+    public Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
+        => Task.FromResult(Result.Success());
+
     public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
     public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
     public Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct) => Task.FromResult(Result.Success());

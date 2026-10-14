@@ -43,6 +43,22 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
+        // Листинг по префиксу (сироты X2 — arch/24 §2); label-атрибут запоминается.
+        public string? LastVolumeLabelKey { get; private set; }
+        public string? LastVolumeLabel { get; private set; }
+
+        public Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(
+                Volumes.Where(v => v.StartsWith(namePrefix, StringComparison.Ordinal))
+                    .OrderBy(v => v, StringComparer.Ordinal).ToList()));
+
+        public Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
+        {
+            LastVolumeLabelKey = labelKey;
+            LastVolumeLabel = label;
+            return EnsureVolumeAsync(name, ct);
+        }
+
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
         {
             Volumes.Add(name);
@@ -200,6 +216,8 @@ public class ClusterDriverTests
         engine.CreatedSpec.MemoryBytes.Should().Be(1024L);
         engine.CreatedSpec.Network.Should().BeNull();
         engine.Volumes.Should().Contain("s3w-c1-node1-data");
+        engine.LastVolumeLabelKey.Should().Be("s3worker");
+        engine.LastVolumeLabel.Should().Be("c1");
     }
 
     // AAA: Plain — contour-сеть стенда/E2E доезжает до NetworkMode контейнера.

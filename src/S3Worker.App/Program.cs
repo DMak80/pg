@@ -213,6 +213,23 @@ builder.Services.AddSingleton(ToProvisioningOptions(
 // done/aborted-state-changed выводит из provisioning, демонтаж начинается с нуля.
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.BootWaitBudget(
     sp.GetRequiredService<TimeProvider>()));
+// PKI репликации per-cluster + единая сборка env инстанса (arch/24 §4/§5, t40);
+// процесс G — доводка состава mesh (arch/24 §5 G).
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.PkiStore(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<S3Worker.Provisioning.InstanceEnvComposer>();
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.MeshGovernanceProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
+    sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
@@ -222,6 +239,9 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.Provisio
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
+    sp.GetRequiredService<S3Worker.Provisioning.Processes.MeshGovernanceProcess>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.BootWaitBudget>(),
@@ -243,6 +263,8 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.NodeSupe
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocHealer>()));
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.DeprovisioningProcess(
@@ -262,6 +284,8 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.AddNodeP
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
@@ -281,6 +305,8 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRo
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value)));
 builder.Services.AddSingleton<IS3ClusterProcesses, S3ClusterProcesses>();

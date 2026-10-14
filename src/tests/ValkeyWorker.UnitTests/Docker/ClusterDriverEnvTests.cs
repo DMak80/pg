@@ -81,6 +81,12 @@ public class ClusterDriverEnvTests
         public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => throw NotUsed();
+    public Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
+
+    public Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct)
+        => Task.FromResult(Result.Success());
+
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => throw NotUsed();

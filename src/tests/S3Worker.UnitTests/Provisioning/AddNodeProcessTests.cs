@@ -40,7 +40,8 @@ public class AddNodeProcessTests
             new PortAllocLock(Prefix, ["http://etcd:2379"], etcd, TimeProvider.System, "inst-1"),
             new PortAllocIndex(etcd, ["http://etcd:2379"],
                 Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
-            secrets, nodeClient,
+            secrets, new PkiStore(etcd, ["http://etcd:2379"], TimeProvider.System), new InstanceEnvComposer(),
+            nodeClient,
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         return (process, etcd, driver, nodeClient, claims);
     }
@@ -116,6 +117,42 @@ public class AddNodeProcessTests
         // Assert: config не переписан (mod_revision тот же).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         etcd.Store["/s3/clusters/demo/config"].ModRevision.Should().Be(modRevisionBefore);
+    }
+
+    // AAA: mini-A — env инстанса собирается композером (OWNS3_REPLICATION_*),
+    // имя берётся из декларации (не node<k>).
+    [Fact]
+    public async Task AddNode_EnvСРепликацией_ИмяИзДекларации()
+    {
+        // Arrange: заявка node3 (имя произвольное «west1») на Active-кластере.
+        var (process, etcd, driver, nodeClient, claims) = NewRig();
+        await SeedAsync(etcd, claims);
+        etcd.Seed("/s3/clusters/demo/nodes/west1/state", S3NodeStates.NotInitialized);
+        etcd.Seed("/s3/clusters/demo/nodes/west1/placement", """{"docker_host":"h1"}""");
+        etcd.Seed("/s3/clusters/demo/nodes/west1/resources", """{"cpu":"1","mem":"1Gi","disk":"5Gi"}""");
+        await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        nodeClient.Health = true;
+        var snap = new S3ClusterSnapshot("demo",
+            new S3ClusterConfig("owns3", 3, "backups-main", 1760156800, null),
+            [
+                new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
+                    new S3NodeResources("1", "1Gi", "5Gi"), null, null),
+                new S3NodeSnapshot("node2", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
+                    new S3NodeResources("1", "1Gi", "5Gi"), null, null),
+                new S3NodeSnapshot("west1", S3NodeStates.NotInitialized, null, new S3NodePlacement("h1", null, null),
+                    new S3NodeResources("1", "1Gi", "5Gi"), null, null),
+            ],
+            null, null, null);
+
+        // Act
+        var result = await process.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: контейнер west1 с PKI-материалом в env; pki-ключ записан.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var ensured = driver.Ensured.Should().ContainSingle(e => e.NodeName == "west1").Subject;
+        ensured.Env.Keys.Should().Contain("OWNS3_REPLICATION_CERT");
+        ensured.Env.Keys.Should().Contain("OWNS3_REPLICATION_TRUST_CA");
+        etcd.Store.Keys.Should().Contain("/s3/clusters/demo/nodes/west1/pki");
     }
 
     // AAA: без клэйма — никаких docker-мутаций.

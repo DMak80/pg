@@ -28,6 +28,12 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
     Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct);
     Task<Result> EnsureVolumeAsync(string name, CancellationToken ct);
+
+    // Листинг имён томов по префиксу (GET /volumes, локальная фильтрация
+    // StartsWith — docker-фильтр name подстрочный): сироты X2 — имена инстансов
+    // произвольные, перебор детерминированных имён невозможен (arch/24 §2).
+    Task<Result<IReadOnlyList<string>>> ListVolumesAsync(string namePrefix, CancellationToken ct);
+    Task<Result> EnsureVolumeAsync(string name, string labelKey, string label, CancellationToken ct);
     Task<Result> DeleteVolumeAsync(string name, CancellationToken ct);
     Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct);
     Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct);

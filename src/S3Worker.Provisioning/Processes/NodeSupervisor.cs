@@ -28,6 +28,8 @@ public sealed class NodeSupervisor(
     WorkJournal journal,
     IOwnS3NodeClient nodeClient,
     SecretProfileStore secrets,
+    PkiStore pki,
+    InstanceEnvComposer envComposer,
     S3ProvisioningOptions options,
     PortAllocHealer healer,
     TimeProvider? clock = null) // clock — тестовый порог NodeDeadSec (FixedTimeProvider)
@@ -314,10 +316,29 @@ public sealed class NodeSupervisor(
         if (!removed.IsSuccess)
             return removed;
 
-        var env = new Dictionary<string, string>(nodeSecrets.ToContainerEnv())
+        // PKI-материал из etcd (Ensure* идемпотентен — «ключи переживают
+        // пересоздание», §3.6: тот же сертификат); отказ — как отказ профиля:
+        // пересоздание отложено (diagnostic, без деструктива).
+        var clusterPki = await pki.EnsureClusterPkiAsync(cluster, ct);
+        if (!clusterPki.IsSuccess)
         {
-            ["OWNS3_DATA_DIR"] = "/data",
-        };
+            return await journal.WriteSupervisionAsync(
+                cluster, claims.InstanceId,
+                (await journal.ReadUnreachableAsync(cluster, ct)).Value ?? new Dictionary<string, long>(),
+                $"pki {cluster}: {clusterPki.Error!.Message} — пересоздание {node} отложено", ct);
+        }
+        var nodePki = await pki.EnsureNodePkiAsync(cluster, node, clusterPki.Value.Ca, ct);
+        if (!nodePki.IsSuccess)
+        {
+            return await journal.WriteSupervisionAsync(
+                cluster, claims.InstanceId,
+                (await journal.ReadUnreachableAsync(cluster, ct)).Value ?? new Dictionary<string, long>(),
+                $"pki {cluster}/{node}: {nodePki.Error!.Message} — пересоздание отложено", ct);
+        }
+
+        var env = envComposer.Compose(
+            nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
+            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}");
         var ensured = await driver.EnsureNodeAsync(
             new S3NodeSpec(
                 cluster, node, address.Host, address.S3Port, options.OwnS3Image, env,
