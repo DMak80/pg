@@ -233,20 +233,23 @@ public sealed class S3ClusterFixture : IAsyncLifetime
             NewPki(), new InstanceEnvComposer(),
             Options with { NodeDeadSec = nodeDeadSec }, healer);
 
-    // Сид заявки кластера (config NOT_INITIALIZED + placement/resources + state).
-    public async Task SeedClusterAsync(string cluster, int nodes = 1)
+    // Сид заявки кластера (config NOT_INITIALIZED + instances[] с именами —
+    // arch/24 §1.1: placement/resources/state на каждый инстанс).
+    public async Task SeedClusterAsync(string cluster, params string[] instances)
     {
         var ct = TestContext.Current.CancellationToken;
+        if (instances.Length == 0)
+            instances = ["node1"];
         await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/config",
-            $$"""{"platform":"owns3","nodes":{{nodes}},"secret_profile":"backups-main","created_unix":1756500000,"state":"NOT_INITIALIZED"}""",
+            $$"""{"platform":"owns3","nodes":{{instances.Length}},"secret_profile":"backups-main","created_unix":1756500000,"state":"NOT_INITIALIZED"}""",
             lease: null, ct);
-        for (var k = 1; k <= nodes; k++)
+        foreach (var instance in instances)
         {
-            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/node{k}/state",
+            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/{instance}/state",
                 "NOT_INITIALIZED", lease: null, ct);
-            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/node{k}/placement",
+            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/{instance}/placement",
                 $$"""{"docker_host":"{{DockerHost}}"}""", lease: null, ct);
-            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/node{k}/resources",
+            await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/{instance}/resources",
                 """{"cpu":"1","mem":"1Gi","disk":"5Gi"}""", lease: null, ct);
         }
     }
