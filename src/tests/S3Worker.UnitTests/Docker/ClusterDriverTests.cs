@@ -83,8 +83,14 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        public readonly List<string> StartedContainers = [];
+
         public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
-            => Task.FromResult(Result.Success());
+        {
+            StartedContainers.Add(idOrName);
+            ContainerRunning = true;
+            return Task.FromResult(Result.Success());
+        }
 
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
             => Task.FromResult(Result.Success());
@@ -250,6 +256,49 @@ public class ClusterDriverTests
         // Assert — create не вызван (CreatedSpec остался null).
         result.IsSuccess.Should().BeTrue();
         engine.CreatedSpec.Should().BeNull();
+    }
+
+    // AAA: Plain — идемпотентность по ФАКТУ (arch/24 §5 A): существующий,
+    // но НЕ запущенный контейнер (гонка create/start, takeover-якорь) —
+    // доводится стартом, не пересоздаётся.
+    [Fact]
+    public async Task Plain_EnsureNode_ExistingNotStarted_Starts()
+    {
+        // Arrange — контейнер существует в состоянии created (не running).
+        var engine = new StubEngine
+        {
+            Containers = [new DockerContainer("id1", ["s3w-c1-node1"], "created", "owns3:dev")],
+            ContainerRunning = false,
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(), contourNetwork: null, CancellationToken.None);
+
+        // Assert — create не вызван (объект не пересоздавался), но старт доведён.
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().BeNull();
+        engine.StartedContainers.Should().Contain("s3w-c1-node1");
+    }
+
+    // AAA: Plain — существующий RUNNING — без старта (прежняя семантика skip).
+    [Fact]
+    public async Task Plain_EnsureNode_ExistingRunning_NoStart()
+    {
+        // Arrange
+        var engine = new StubEngine
+        {
+            Containers = [new DockerContainer("id1", ["s3w-c1-node1"], "running", "owns3:dev")],
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(), contourNetwork: null, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().BeNull();
+        engine.StartedContainers.Should().BeEmpty();
     }
 
     // AAA: Plain — remove с томом: RemoveContainer + DeleteVolume.

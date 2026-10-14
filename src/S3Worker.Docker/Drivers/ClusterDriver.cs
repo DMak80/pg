@@ -137,13 +137,26 @@ public sealed class PlainClusterDriver(
             var name = NodeName(spec.Cluster, spec.NodeName);
             var volumeName = VolumeName(spec.Cluster, spec.NodeName);
 
-            // Идемпотентность: существующий контейнер не пересоздаётся (надзор C /
-            // ротация R сверяют env/лимиты отдельно и меняют через remove+ensure).
+            // Идемпотентность по ФАКТУ (arch/24 §5 A «перепроверяет факт»):
+            // существующий контейнер не пересоздаётся (надзор C / ротация R сверяют
+            // env/лимиты отдельно и меняют через remove+ensure); существующий,
+            // но НЕ запущенный (гонка create/start при takeover-якоре, останов) —
+            // доводится стартом, иначе P2.5 ждёт health от мёртвого объекта.
             var existing = await engine.ListContainersAsync(name, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
-            if (existing.Value.Any(c => c.Names.Contains(name)))
+            var existingContainer = existing.Value.FirstOrDefault(c => c.Names.Contains(name));
+            if (existingContainer is not null)
+            {
+                if (!string.Equals(existingContainer.State, "running", StringComparison.OrdinalIgnoreCase))
+                {
+                    var startedExisting = await engine.StartContainerAsync(name, ct);
+                    if (!startedExisting.IsSuccess)
+                        throw startedExisting.Error!;
+                }
+
                 return;
+            }
 
             // Том данных: данные объектов bucket'а переживают пересоздание ноды;
             // label s3worker=<C> — атрибуция листинга сирот (имена инстансов
