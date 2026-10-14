@@ -4,26 +4,30 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Api;
 
-// Валидатор создания S3-кластера (spec §6): граничные кейсы лимитов.
+// Валидаторы API S3-домена (arch/24 §1.1, spec §8.1.2): создание с instances[]
+// (имена/резерв/дубли/placement), add-node, links (существование, a≠b,
+// уникальность пар с точностью до зеркальности).
 public class S3ValidationTests
 {
+    private static S3InstanceDto Instance(string name, S3ResourcesDto? resources = null)
+        => new(name, new S3PlacementDto("h1", null, null), resources);
+
     private static CreateS3ClusterRequest Valid(
-        string? name = "demo", string? platform = "owns3", int? nodes = 3,
-        int? placements = null, decimal? cpu = 1m, int? memGi = 1, int? diskGi = 10,
+        string? name = "demo", string? platform = "owns3",
+        IReadOnlyList<S3InstanceDto>? instances = null, decimal? cpu = 1m, int? memGi = 1, int? diskGi = 10,
         string? secretProfile = "backups-main") => new(
-        name, platform, nodes, secretProfile,
-        Enumerable.Range(0, placements ?? nodes ?? 3)
-            .Select(_ => new S3PlacementDto("h1", null, null)).ToList(),
-        new S3ResourcesDto(cpu, memGi, diskGi));
+        name, platform, secretProfile, instances, new S3ResourcesDto(cpu, memGi, diskGi));
 
     [Fact]
     public void ВалиднаяЗаявка_БезОшибок()
     {
-        // Arrange + Act
-        var errors = S3ClusterValidator.Validate(Valid());
+        // Arrange + Act: 0 инстансов и 2 именованных — обе декларации валидны.
+        var empty = S3ClusterValidator.Validate(Valid(instances: []));
+        var two = S3ClusterValidator.Validate(Valid(instances: [Instance("east1"), Instance("east2")]));
 
-        // Assert
-        errors.Should().BeEmpty();
+        // Assert: 0..9 — валидно (arch/23 §2).
+        empty.Should().BeEmpty();
+        two.Should().BeEmpty();
     }
 
     [Fact]
@@ -51,15 +55,56 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Nodes_Границы()
+    public void Instances_Больше9_Отклонён()
     {
-        // Arrange: 1/9 ок, 0/10 нет.
-        S3ClusterValidator.Validate(Valid(nodes: 1)).Should().BeEmpty();
-        S3ClusterValidator.Validate(Valid(nodes: 9)).Should().BeEmpty();
+        // Arrange: 10 инстансов — структурный предел 0..9.
+        var instances = Enumerable.Range(0, 10).Select(i => Instance($"n{i}")).ToList();
 
-        // Act + Assert
-        S3ClusterValidator.Validate(Valid(nodes: 0)).Should().Contain(e => e.Field == "nodes");
-        S3ClusterValidator.Validate(Valid(nodes: 10)).Should().Contain(e => e.Field == "nodes");
+        // Act
+        var errors = S3ClusterValidator.Validate(Valid(instances: instances));
+
+        // Assert
+        errors.Should().Contain(e => e.Field == "instances");
+    }
+
+    [Fact]
+    public void InstanceName_ПаттернРезервДубль()
+    {
+        // Arrange: паттерн-нарушение; резерв orchestrator; дубль имени в теле.
+        var badPattern = S3ClusterValidator.Validate(Valid(instances: [Instance("9bad")]));
+        var reserved = S3ClusterValidator.Validate(Valid(instances: [Instance("orchestrator")]));
+        var duplicate = S3ClusterValidator.Validate(Valid(instances: [Instance("east1"), Instance("east1")]));
+
+        // Assert: все — 400 (коллизия с существующим в etcd — 409, интеграционно).
+        badPattern.Should().Contain(e => e.Field == "instances[0].name");
+        reserved.Should().Contain(e => e.Field == "instances[0].name");
+        duplicate.Should().Contain(e => e.Field == "instances[1].name");
+    }
+
+    [Fact]
+    public void InstancePlacement_ОбязателенКаждому()
+    {
+        // Arrange: у второго инстанса пустой placement.
+        var instances = new[] { Instance("east1"), new S3InstanceDto("east2", new S3PlacementDto(null, null, null), null) };
+
+        // Act
+        var errors = S3ClusterValidator.Validate(Valid(instances: instances));
+
+        // Assert
+        errors.Should().Contain(e => e.Field == "instances[1].placement");
+    }
+
+    [Fact]
+    public void InstanceResources_PerInstance_Границы()
+    {
+        // Arrange: per-instance cpu вне диапазона (fallback общий валиден).
+        var instances = new[] { Instance("east1", new S3ResourcesDto(100m, 1, 10)) };
+
+        // Act
+        var errors = S3ClusterValidator.Validate(Valid(instances: instances));
+
+        // Assert: поле с префиксом инстанса.
+        errors.Should().Contain(e => e.Field == "instances[0].cpu");
     }
 
     [Fact]
@@ -86,21 +131,6 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Placements_ЧислоИНепустота()
-    {
-        // Arrange: 2 из nodes=3 → 400; пустой placement → 400.
-        var few = S3ClusterValidator.Validate(Valid(placements: 2));
-        var empty = S3ClusterValidator.Validate(new CreateS3ClusterRequest(
-            "demo", "owns3", 1, "backups-main",
-            [new S3PlacementDto(null, null, null)],
-            new S3ResourcesDto(1m, 1, 10)));
-
-        // Assert
-        few.Should().Contain(e => e.Field == "placements");
-        empty.Should().Contain(e => e.Field == "placements");
-    }
-
-    [Fact]
     public void ПрофильНеЗадан_Ошибка()
     {
         // Arrange + Act
@@ -108,5 +138,54 @@ public class S3ValidationTests
 
         // Assert: 400 здесь; отсутствующий профиль — 422 в хендлере.
         errors.Should().Contain(e => e.Field == "secretProfile");
+    }
+
+    // ============ links (чистый валидатор, §8.1.2) ============
+
+    private static readonly string[] Names = ["east1", "east2", "west1"];
+
+    [Fact]
+    public void Links_ВалидныйГраф_БезОшибок()
+    {
+        // Arrange + Act: частичный граф — полнота/симметричность не контролируются.
+        var errors = S3LinksValidator.Validate(
+            [new S3LinkDto("east1", "east2"), new S3LinkDto("east1", "west1")], Names);
+
+        // Assert
+        errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Links_НесуществующееИмя_400()
+    {
+        // Arrange + Act
+        var errors = S3LinksValidator.Validate([new S3LinkDto("east1", "ghost")], Names);
+
+        // Assert
+        errors.Should().Contain(e => e.Field == "links[0].b");
+    }
+
+    [Fact]
+    public void Links_AРавноB_400()
+    {
+        // Arrange + Act
+        var errors = S3LinksValidator.Validate([new S3LinkDto("east1", "east1")], Names);
+
+        // Assert
+        errors.Should().Contain(e => e.Field == "links[0]");
+    }
+
+    [Fact]
+    public void Links_ДубльПары_400()
+    {
+        // Arrange + Act: прямой и зеркальный дубли — обе 400.
+        var straight = S3LinksValidator.Validate(
+            [new S3LinkDto("east1", "east2"), new S3LinkDto("east1", "east2")], Names);
+        var mirrored = S3LinksValidator.Validate(
+            [new S3LinkDto("east1", "east2"), new S3LinkDto("east2", "east1")], Names);
+
+        // Assert: {a,b} ≡ {b,a} — одна связь (arch/23 §2).
+        straight.Should().Contain(e => e.Field == "links[1]");
+        mirrored.Should().Contain(e => e.Field == "links[1]");
     }
 }
