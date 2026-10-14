@@ -430,11 +430,15 @@ try
         ? null
         : OwnS3.Replication.PeerIdentityLoader.Load(replicationOptions.Identity);
     peerTrust = OwnS3.Replication.PeerIdentityLoader.LoadTrustAnchor(replicationOptions.TrustCa);
+    // DenyList — НЕМЕДЛЕННЫЙ резолв (заявленный «битый denylist.json → fail-fast»):
+    // ленивая DI-лямбда резолвилась бы на первом HTTP-запросе — InvalidOperationException
+    // валил бы каждый запрос 500-ми вместо отказа старта (файл повреждён вручную).
+    _ = app.Services.GetRequiredService<OwnS3.Replication.DenyList>();
 }
 catch (Exception ex)
 {
     app.Logger.LogCritical(ex,
-        "OwnS3:Replication: невалидный identity/trust-материал — отказ старта (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA)");
+        "OwnS3:Replication: невалидный identity/trust-материал или deny-list — отказ старта (env OWNS3_REPLICATION_CERT/_PRIVATE_KEY/_TRUST_CA)");
     throw;
 }
 

@@ -35,6 +35,19 @@ public sealed class JoinPeerService(
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
     };
 
+    // Транспорт join-контура с капом таймаута (по образцу ReplicationHttpClient):
+    // дефолтные 100 с HttpClient держали бы синхронный admin-join на «зависшем»
+    // соседе; отмена по таймауту — TaskCanceledException при НЕ отменённом внешнем
+    // ct → 502 (spec §4.4 п.4), внешняя отмена (graceful stop) — проброс.
+    private readonly HttpClient _http = CapRequestTimeout(http);
+
+    private static HttpClient CapRequestTimeout(HttpClient http)
+    {
+        if (http.Timeout == default || http.Timeout > ReplicationHttpClient.RequestTimeout)
+            http.Timeout = ReplicationHttpClient.RequestTimeout;
+        return http;
+    }
+
     // Тела join-запроса/ответа (стабильная сериализация camelCase — ответ
     // подписывается как есть, инициатор проверяет подпись по сырому телу).
     private sealed record JoinRequestBody(string AdvertisedEndpoint);
@@ -59,10 +72,16 @@ public sealed class JoinPeerService(
             return Result<PeerJoined>.Failed(new JoinBadConfigurationException(
                 "join недоступен: не задан advertised endpoint " +
                 "(env OWNS3_REPLICATION_ADVERTISED_ENDPOINT)"));
+        // Endpoint из админ-тела — до запроса соседа (spec §4.4 п.1): невалидный —
+        // 400-конфигурация, а не UriFormatException сквозь Result-границу (500).
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var neighbor)
+            || neighbor.Scheme is not ("http" or "https")
+            || string.IsNullOrEmpty(neighbor.Host))
+            return Result<PeerJoined>.Failed(new JoinBadConfigurationException(
+                $"join недоступен: невалидный endpoint соседа «{endpoint}» (ожидалось scheme://host:port)"));
 
         var body = JsonSerializer.SerializeToUtf8Bytes(new JoinRequestBody(advertisedEndpoint), Json);
         var payloadHash = SigV4Core.HexSha256(body);
-        var neighbor = new Uri(endpoint);
         var at = timeProvider.GetUtcNow();
         var peerDate = at.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture);
         var (authorization, _, _) = PeerRequestSigner.Sign(identity.Key, identity.Name,
@@ -87,7 +106,7 @@ public sealed class JoinPeerService(
         HttpResponseMessage response;
         try
         {
-            response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -175,8 +194,21 @@ public sealed class JoinPeerService(
 
             // Состав — merge + персист + горячая замена (глава 07 §2); дальше —
             // штатная механика «добавленный сосед» (курсор −1 + reconcile-забор).
-            targets.AddOrReplace(new TargetRecord(parsed.Name, parsed.AdvertisedEndpoint,
-                TargetRecord.AuthKey, PublicKeyPem: peerCert.PublicKeyPem));
+            // AddOrReplace валидирует состав ДО персиста (бросок ArgumentException —
+            // снапшот не тронут): невалидный advertised из ОТВЕТА соседа (его вина —
+            // сосед без своего advertised отвечает «») → 502, состав не менялся
+            // (spec §4.4 п.4), а не ArgumentException сквозь Result-границу (500).
+            try
+            {
+                targets.AddOrReplace(new TargetRecord(parsed.Name, parsed.AdvertisedEndpoint,
+                    TargetRecord.AuthKey, PublicKeyPem: peerCert.PublicKeyPem));
+            }
+            catch (ArgumentException ex)
+            {
+                return Result<PeerJoined>.Failed(new JoinBadGatewayException(
+                    $"join к {endpoint}: сосед вернул невалидную запись (advertised " +
+                    $"«{parsed.AdvertisedEndpoint}») — {ex.Message}"));
+            }
             logger.LogInformation(
                 "join: сосед {Name} ({Endpoint}) добавлен в состав (auth=key)",
                 parsed.Name, parsed.AdvertisedEndpoint);

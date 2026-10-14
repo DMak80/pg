@@ -37,14 +37,24 @@ public static class PeerCertificateAuthority
     }
 
     // Сертификат валиден ⟺ caName совпадает ∧ подпись CA верна ∧ не истёк (глава 07 §2).
+    // Тотальна на атакуемом входе: битый PEM trust-anchor / не-base64 подпись — не
+    // исключение сквозь Result-границу (join-грань отдала бы 500), а «невалиден»
+    // (403/502 по месту вызова, spec §4.4 п.3/п.4).
     public static bool Verify(PeerCertificate cert, PeerTrustAnchor trust, DateTimeOffset now)
     {
         if (!string.Equals(cert.CaName, trust.Name, StringComparison.Ordinal)) return false;
         if (cert.IsExpired(now)) return false;
-        using var caKey = ECDsa.Create();
-        caKey.ImportFromPem(trust.PublicKeyPem);
-        return caKey.VerifyData(Encoding.UTF8.GetBytes(cert.CanonicalForm()),
-            Convert.FromBase64String(cert.Signature), HashAlgorithmName.SHA256,
-            DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        try
+        {
+            using var caKey = ECDsa.Create();
+            caKey.ImportFromPem(trust.PublicKeyPem);
+            return caKey.VerifyData(Encoding.UTF8.GetBytes(cert.CanonicalForm()),
+                Convert.FromBase64String(cert.Signature), HashAlgorithmName.SHA256,
+                DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        }
+        catch (Exception)
+        {
+            return false; // FormatException/ArgumentException — сертификат просто невалиден
+        }
     }
 }

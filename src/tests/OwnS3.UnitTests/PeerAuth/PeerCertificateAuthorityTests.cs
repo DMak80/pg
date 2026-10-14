@@ -95,6 +95,38 @@ public class PeerCertificateAuthorityTests
     }
 
     [Fact]
+    public void Verify_GarbageBase64Signature_False()
+    {
+        // Arrange — валидный серт с НЕ-base64 подписью (атакуемый вход join-грани)
+        var (caJson, caPrivatePem) = PeerCertificateAuthority.CreateCa("owns3-ca");
+        var ca = PeerTrustAnchor.FromJson(caJson);
+        var (cert, _) = PeerCertificateAuthority.IssueServer("owns3-n1", ca, caPrivatePem, At);
+        var garbageSignature = cert with { Signature = "###" };
+
+        // Act — верификация; FormatException не должен лететь сквозь Result-границу
+        var valid = PeerCertificateAuthority.Verify(garbageSignature, ca, At);
+
+        // Assert — «невалиден» (false), без исключения
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Verify_BrokenTrustPem_False()
+    {
+        // Arrange — trust-anchor с битым PEM публичного ключа (ArgumentException при импорте)
+        var (caJson, caPrivatePem) = PeerCertificateAuthority.CreateCa("owns3-ca");
+        var ca = PeerTrustAnchor.FromJson(caJson);
+        var (cert, _) = PeerCertificateAuthority.IssueServer("owns3-n1", ca, caPrivatePem, At);
+        var brokenTrust = ca with { PublicKeyPem = "не-pem" };
+
+        // Act — верификация против битого якоря
+        var valid = PeerCertificateAuthority.Verify(cert, brokenTrust, At);
+
+        // Assert — «невалиден» (false), без исключения
+        valid.Should().BeFalse();
+    }
+
+    [Fact]
     public void Signature_P1363_64Bytes()
     {
         // Arrange — серт от CA

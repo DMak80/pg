@@ -568,6 +568,23 @@ public sealed class PeerAuthScenarios : IClassFixture<PeerAuthAppFactory>
             .Should().Contain("X-OwnS3-Peer-Certificate");
     }
 
+    [Fact]
+    public async Task JoinIncoming_InvalidAdvertisedEndpoint_400()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; мусорный advertisedEndpoint в теле join
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act — join с невалидным advertisedEndpoint
+        var response = await SendJoinOnAsync(client, "не-uri");
+
+        // Assert — 400 до записи в состав (иначе ArgumentException из
+        // AddOrReplace → 500, spec §4.4 п.3)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("advertisedEndpoint");
+    }
+
     // ── join-trigger, исходящая сторона (POST /admin/replication/join, фейк-сосед) ──
 
     [Fact]
@@ -640,6 +657,43 @@ public sealed class PeerAuthScenarios : IClassFixture<PeerAuthAppFactory>
         // Act / Assert — невалидная подпись ответа → 502 (состав не менялся)
         var response = await AdminJoinAsync(client, "http://fake-neighbor:9000");
         response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+    }
+
+    [Fact]
+    public async Task JoinTrigger_InvalidEndpoint_400()
+    {
+        // Arrange — фабрика с фейк-соседом; мусорный endpoint в админ-теле
+        using var factory = new PeerAuthTriggerFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await AdminJoinAsync(client, "не-uri");
+
+        // Assert — 400-конфигурация (не UriFormatException → 500); сосед НЕ вызывался
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("error");
+        factory.Handler.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task JoinTrigger_PeerEmptyAdvertised_502()
+    {
+        // Arrange — фейк-сосед: валидный 200 (серт + подпись), но advertisedEndpoint
+        // пуст — сосед без своего OWNS3_REPLICATION_ADVERTISED_ENDPOINT
+        using var factory = new PeerAuthTriggerFactory(_ =>
+            JoinOkResponse(PeerAuthMaterial.TriggerCert, PeerAuthMaterial.TriggerKey,
+                "peer-trigger", string.Empty));
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await AdminJoinAsync(client, "http://fake-neighbor:9000");
+
+        // Assert — 502 (вина соседа, spec §4.4 п.4); состав не менялся
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        var neighbors = await NeighborsOfAsync(client);
+        neighbors.EnumerateArray()
+            .Any(n => n.GetProperty("name").GetString() == "peer-trigger").Should().BeFalse();
     }
 
     [Fact]
@@ -967,6 +1021,31 @@ public sealed class PeerAuthFailFastScenarios
         act.Should().Throw<InvalidOperationException>();
     }
 
+    [Fact]
+    public void FailFast_BrokenDenyListFile_RefusesStart()
+    {
+        // Arrange — том с битым denylist.json (повреждён вручную)
+        var volumeDir = Path.Combine(Path.GetTempPath(), "owns3-peer-waf-" + Guid.NewGuid().ToString("N"));
+        var replDir = Path.Combine(volumeDir, ".owns3.sys", "replication");
+        Directory.CreateDirectory(replDir);
+        File.WriteAllText(Path.Combine(replDir, "denylist.json"), "{битый json");
+        try
+        {
+            using var factory = new DenyListBrokenAppFactory(volumeDir);
+
+            // Act + Assert — CreateClient() бросает (отказ старта, прецедент
+            // FailFastScenarios), а не InvalidOperationException на каждый запрос
+            var act = () => factory.CreateClient();
+            act.Should().Throw<InvalidOperationException>();
+        }
+        finally
+        {
+            // Teardown: temp-том удаляется при любом исходе
+            if (Directory.Exists(volumeDir))
+                Directory.Delete(volumeDir, recursive: true);
+        }
+    }
+
     private sealed class PeerAuthBrokenIdentityAppFactory : WebApplicationFactory<Program>
     {
         private readonly string _volumeDir =
@@ -1000,6 +1079,22 @@ public sealed class PeerAuthFailFastScenarios
                     // хост мог ещё держать файлы — том в temp, ОС уберёт
                 }
             }
+        }
+    }
+
+    // Фабрика fail-fast битого deny-list: том (с заранее записанным битым
+    // denylist.json) задаёт кейс; PeerAuth-материал не задаётся (не влияет).
+    private sealed class DenyListBrokenAppFactory(string volumeDir) : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OwnS3:DataDir"] = volumeDir,
+                ["OwnS3:Root:User"] = "root",
+                ["OwnS3:Root:Password"] = "rootpassword",
+            }));
         }
     }
 }

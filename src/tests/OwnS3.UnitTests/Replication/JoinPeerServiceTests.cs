@@ -77,9 +77,9 @@ public class JoinPeerServiceTests : IDisposable
 
     private static JoinPeerService Service(PeerIdentity? identity, PeerTrustAnchor? trust,
         ReplicationTargets targets, DenyList deny, FakeHandler? handler = null,
-        string? advertised = AdvertisedSelf, TimeProvider? tp = null) =>
+        string? advertised = AdvertisedSelf, TimeProvider? tp = null, HttpClient? http = null) =>
         new(identity, trust, targets, deny,
-            new HttpClient(handler ?? new FakeHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK))),
+            http ?? new HttpClient(handler ?? new FakeHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK))),
             tp ?? new FixedTimeProvider(At),
             NullLogger<JoinPeerService>.Instance, advertised);
 
@@ -326,6 +326,85 @@ public class JoinPeerServiceTests : IDisposable
 
         // Assert — 502
         result.Error.Should().BeOfType<JoinBadGatewayException>();
+    }
+
+    [Fact]
+    public async Task JoinAsync_InvalidEndpoint_400config()
+    {
+        // Arrange — мусорный endpoint из админ-тела (Uri.TryCreate не проходит)
+        var (ca, caPem) = NewCa();
+        var me = MakeIdentity("mesh-a", ca, caPem);
+        var tp = new FixedTimeProvider(At);
+        var (targets, deny) = NewState(tp);
+        var handler = new FakeHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
+        var service = Service(me, ca, targets, deny, handler, tp: tp);
+
+        // Act
+        var result = await service.JoinAsync("не-uri", TestContext.Current.CancellationToken);
+
+        // Assert — Failed(JoinBadConfigurationException) (400-конфигурация, не 500);
+        // HTTP не зовётся
+        result.Error.Should().BeOfType<JoinBadConfigurationException>();
+        handler.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task JoinAsync_PeerAdvertisedInvalid_502_CompositionUnchanged()
+    {
+        // Arrange — валидный 200 соседа, но advertisedEndpoint в ответе невалиден
+        // (сосед без своего OWNS3_REPLICATION_ADVERTISED_ENDPOINT)
+        var (ca, caPem) = NewCa();
+        var me = MakeIdentity("mesh-a", ca, caPem);
+        var peer = MakeIdentity("peer-b", ca, caPem);
+        var tp = new FixedTimeProvider(At);
+        var (targets, deny) = NewState(tp);
+        var handler = new FakeHandler((_, _) => JoinOkResponse(peer.Certificate, peer.Key,
+            "peer-b", "не-uri"));
+        var service = Service(me, ca, targets, deny, handler, tp: tp);
+
+        // Act
+        var result = await service.JoinAsync("http://neighbor:9000", TestContext.Current.CancellationToken);
+
+        // Assert — 502 (вина соседа); состав не менялся (Validate бросает до персиста)
+        result.Error.Should().BeOfType<JoinBadGatewayException>();
+        targets.Snapshot.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task JoinAsync_TransportTimeoutCancellation_502()
+    {
+        // Arrange — фейк кидает TaskCanceledException (таймаут транспорта) при
+        // НЕ отменённом внешнем ct
+        var (ca, caPem) = NewCa();
+        var me = MakeIdentity("mesh-a", ca, caPem);
+        var tp = new FixedTimeProvider(At);
+        var (targets, deny) = NewState(tp);
+        var handler = new FakeHandler((_, _) => throw new TaskCanceledException("timeout"));
+        var service = Service(me, ca, targets, deny, handler, tp: tp);
+
+        // Act
+        var result = await service.JoinAsync("http://neighbor:9000", TestContext.Current.CancellationToken);
+
+        // Assert — 502 (не проброс): таймаут — исход операции, а не graceful stop
+        result.Error.Should().BeOfType<JoinBadGatewayException>();
+    }
+
+    [Fact]
+    public void Service_CapsDefaultHttpClientTimeout_At10s()
+    {
+        // Arrange — HttpClient с дефолтным таймаутом 100 с
+        using var http = new HttpClient();
+        var (ca, caPem) = NewCa();
+        var me = MakeIdentity("mesh-a", ca, caPem);
+        var tp = new FixedTimeProvider(At);
+        var (targets, deny) = NewState(tp);
+
+        // Act — сервис конструируется с этим HttpClient (кап — самим сервисом,
+        // по образцу ReplicationHttpClient)
+        _ = Service(me, ca, targets, deny, tp: tp, http: http);
+
+        // Assert — таймаут капнут 10 с: «зависший» сосед не держит admin-join 100 с
+        http.Timeout.Should().Be(TimeSpan.FromSeconds(10));
     }
 
     [Fact]

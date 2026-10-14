@@ -197,6 +197,23 @@ public class PeerIdentityLoaderTests : IDisposable
     }
 
     [Fact]
+    public void LoadTrustAnchor_BrokenPemKey_Throws()
+    {
+        // Arrange — trust-anchor с битым PEM публичного ключа (Verify бы «проглотил»,
+        // но старт с неработающим якорем — fail-fast, а не mesh, отказывающий каждому join)
+        var broken = new PeerTrustAnchor("owns3-ca", "не-pem");
+
+        // Act
+        var act = () => PeerIdentityLoader.LoadTrustAnchor(new PeerTrustCaOptions
+        {
+            Certificate = broken.ToJson(),
+        });
+
+        // Assert — отказ старта (InvalidOperationException)
+        act.Should().Throw<InvalidOperationException>().WithMessage("*PEM*не импортируется*");
+    }
+
+    [Fact]
     public void Load_NameFromCertificate()
     {
         // Arrange — материал с именем из сертификата

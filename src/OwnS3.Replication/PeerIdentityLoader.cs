@@ -76,21 +76,35 @@ public static class PeerIdentityLoader
     }
 
     // Trust-anchor инсталляции; null — не задан (join-ручной режим состава).
+    // PEM публичного ключа валидируется импортом: битый якорь — отказ старта
+    // (fail-fast), а не «тихий» mesh, отказывающий каждому join.
     public static PeerTrustAnchor? LoadTrustAnchor(PeerTrustCaOptions? o)
     {
         if (o is null || (string.IsNullOrWhiteSpace(o.Certificate)
                           && string.IsNullOrWhiteSpace(o.CertificatePath)))
             return null;
         var json = ReadMaterial(o.Certificate, o.CertificatePath, "OWNS3_REPLICATION_TRUST_CA_PATH");
+        PeerTrustAnchor trust;
         try
         {
-            return PeerTrustAnchor.FromJson(json);
+            trust = PeerTrustAnchor.FromJson(json);
         }
         catch (Exception ex)
         {
             throw new InvalidOperationException(
                 $"OwnS3:Replication:TrustCa: trust-anchor не парсится — {ex.Message}", ex);
         }
+        try
+        {
+            using var key = ECDsa.Create();
+            key.ImportFromPem(trust.PublicKeyPem);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"OwnS3:Replication:TrustCa: PEM публичного ключа CA не импортируется — {ex.Message}", ex);
+        }
+        return trust;
     }
 
     // Значение приоритетнее пути (прецедент OwnS3Tls.Resolve); ошибка чтения файла — fail-fast.

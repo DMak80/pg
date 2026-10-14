@@ -15,6 +15,7 @@ public sealed class ReplicationState
     private sealed record StateFile(bool ShutdownClean);
 
     private readonly string _path;
+    private readonly object _lock = new();
 
     public ReplicationState(string path) => _path = path;
 
@@ -40,11 +41,19 @@ public sealed class ReplicationState
     // После drain + fsync-точки остановки (graceful stop).
     public void MarkCleanAndPersist() => Persist(true);
 
+    // Сериализовано локом: MarkDirty идёт из ExecuteAsync (фоновая задача старта),
+    // MarkCleanAndPersist — из StopAsync; при быстрой остановке (рестарт процесса,
+    // teardown тестового хоста) они заходят concurrently — tmp+Move без лока
+    // ронял второй File.Move с FileNotFoundException (состояние файла при этом
+    // остаётся консистентным: последний завершённый Move победил).
     private void Persist(bool clean)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var tmp = _path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(new StateFile(clean), JsonOptions));
-        File.Move(tmp, _path, overwrite: true);
+        lock (_lock)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            var tmp = _path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(new StateFile(clean), JsonOptions));
+            File.Move(tmp, _path, overwrite: true);
+        }
     }
 }

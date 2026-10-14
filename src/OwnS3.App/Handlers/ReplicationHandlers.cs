@@ -228,6 +228,18 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
             await context.Response.WriteAsJsonAsync(new { error = "malformed join body" }, context.RequestAborted);
             return;
         }
+        // Advertised пира — до записи в состав (валидация ReplicationTargets бросила
+        // бы ArgumentException из HandleIncoming → 500): мусорный URI из тела — 400.
+        if (!Uri.TryCreate(body.AdvertisedEndpoint, UriKind.Absolute, out var peerEndpoint)
+            || peerEndpoint.Scheme is not ("http" or "https")
+            || string.IsNullOrEmpty(peerEndpoint.Host))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(
+                new { error = $"invalid advertisedEndpoint «{body.AdvertisedEndpoint}» (ожидалось scheme://host:port)" },
+                context.RequestAborted);
+            return;
+        }
 
         var outcome = joinService.HandleIncoming(joinModel, certificateHeader, body.AdvertisedEndpoint);
         if (outcome.IsSuccess)
