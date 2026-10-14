@@ -303,9 +303,11 @@ internal static class Fakes
 
         public readonly HashSet<(string Host, int Port, string Bucket)> Buckets = [];
 
-        // Mesh: программируемые факты/исходы.
+        // Mesh: программируемые факты/исходы (StatusByPort — per-инстанс, ключ = S3-порт).
         public S3Worker.Core.OwnS3.OwnS3ReplicationStatus Status { get; set; } =
             new(false, Array.Empty<string>());
+
+        public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ReplicationStatus> StatusByPort = [];
 
         public S3Worker.Core.OwnS3.OwnS3JoinOutcome JoinOutcome { get; set; } =
             new(S3Worker.Core.OwnS3.OwnS3JoinKind.Joined);
@@ -344,7 +346,8 @@ internal static class Fakes
             string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
         {
             MeshCalls.Add(("status", host, port, null));
-            return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(Status));
+            return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(
+                StatusByPort.TryGetValue(port, out var perPort) ? perPort : Status));
         }
 
         public Task<Result<S3Worker.Core.OwnS3.OwnS3JoinOutcome>> AdminJoinAsync(
