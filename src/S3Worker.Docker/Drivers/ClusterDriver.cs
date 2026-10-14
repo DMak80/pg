@@ -31,9 +31,10 @@ public sealed record S3HostAttributes(string Name, int UsedSlots, IReadOnlyDicti
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов valkey с
 // упрощениями домена — arch/23 §2/§7): объекты — контейнер/сервис
-// s3w-<C>-node<k> с томом данных s3w-<C>-node<k>-data (/data); пер-кластерных
-// сетей нет (arch/24 §2). Идемпотентность: существующий объект сверяется по
-// имени и не пересоздаётся (решение о сверке/замене — у процессов);
+// s3w-<C>-<I> с томом данных s3w-<C>-<I>-data (/data), имя инстанса <I> —
+// произвольное из декларации (arch/23 §2); пер-кластерных сетей нет
+// (arch/24 §2). Идемпотентность: существующий объект сверяется по имени
+// и не пересоздаётся (решение о сверке/замене — у процессов);
 // 404 на удалении / 409 на создании — успех (движок).
 public interface IS3ClusterDriver
 {
@@ -275,7 +276,11 @@ public sealed class PlainClusterDriver(
                 var containers = await engine.ListContainersAsync(prefix, all: true, ct);
                 if (!containers.IsSuccess)
                     throw containers.Error!;
-                names.AddRange(containers.Value.SelectMany(c => c.Names)
+                // Точность перечисления (arch/24 §2): префикс + label s3worker=<C> —
+                // посторонний объект с подходящим именем не попадает в снос X2.
+                names.AddRange(containers.Value
+                    .Where(c => HasClusterLabel(c.Labels, cluster))
+                    .SelectMany(c => c.Names)
                     .Where(n => n.StartsWith(prefix, StringComparison.Ordinal)));
             }
 
@@ -294,6 +299,12 @@ public sealed class PlainClusterDriver(
             return (IReadOnlyList<string>)names.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
         });
     }
+
+    // Label-факт кластера (arch/24 §2): label s3worker=<C> присутствует и равен.
+    internal static bool HasClusterLabel(IReadOnlyDictionary<string, string>? labels, string cluster)
+        => labels is not null
+           && labels.TryGetValue(LabelKey, out var value)
+           && string.Equals(value, cluster, StringComparison.Ordinal);
 
     internal static string NodeName(string cluster, string nodeName)
         => $"s3w-{cluster}-{nodeName}";
@@ -428,14 +439,17 @@ public sealed class SwarmClusterDriver(
         string cluster, string node, CancellationToken ct)
         => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, node), ct);
 
-    // Объекты нод кластера в swarm — СЕРВИСЫ + тома данных (предел 1..9 нод).
+    // Объекты кластера в swarm — СЕРВИСЫ + тома данных (arch/24 §2: префикс +
+    // label s3worker=<C>; имена инстансов произвольные — перебор невозможен).
     public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
     {
-        var services = await _engine.ListServicesAsync($"s3w-{cluster}-", ct);
+        var services = await _engine.ListServiceRecordsAsync($"s3w-{cluster}-", ct);
         if (!services.IsSuccess)
-            return services;
+            return Result<IReadOnlyList<string>>.Failed(services.Error!);
 
-        var names = new List<string>(services.Value);
+        var names = new List<string>(services.Value
+            .Where(svc => PlainClusterDriver.HasClusterLabel(svc.Labels, cluster))
+            .Select(svc => svc.Name));
         // Тома данных: листинг по префиксу на всех движках (имена инстансов
         // произвольные — arch/24 §2; сирота-том может остаться на любой ноде).
         foreach (var engine in _nodeEngines.Values.Append(_engine))

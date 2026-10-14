@@ -202,7 +202,10 @@ public class BackupProcessTests
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
-        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+        public Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerService>>.Success([]));
+
+    public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
 
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct)

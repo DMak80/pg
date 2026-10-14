@@ -46,7 +46,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     c.Id,
                     (c.Names ?? []).Select(n => n.StartsWith("/", StringComparison.Ordinal) ? n[1..] : n).ToArray(),
                     c.State ?? string.Empty,
-                    c.Image ?? string.Empty))
+                    c.Image ?? string.Empty,
+                    c.Labels))
                 .ToList();
         });
     }
@@ -438,6 +439,27 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     && (namePrefix.Length == 0 || name.StartsWith(namePrefix, StringComparison.Ordinal)))
                 .Select(name => name!)
                 .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+        });
+    }
+
+    // Имена + label'ы сервисов по префиксу (архив: label s3worker=<C> — точность
+    // перечисления объектов кластера, arch/24 §2; docker-фильтр name — подстрочный,
+    // строгий StartsWith дублируется на клиенте, образец ListServicesAsync).
+    public async Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(
+        string namePrefix, CancellationToken ct)
+    {
+        var query = namePrefix.Length > 0
+            ? "?filters=" + Uri.EscapeDataString("\"name:[\"" + namePrefix + "\"]\"}")
+            : string.Empty;
+        return await Result<IReadOnlyList<DockerService>>.FromAsync(async () =>
+        {
+            var services = await GetAsync<List<ServiceDto>>("/services" + query, ct) ?? [];
+            return (IReadOnlyList<DockerService>)services
+                .Select(s2 => new DockerService(s2.Spec?.Name ?? string.Empty, s2.Spec?.Labels))
+                .Where(s2 => s2.Name.Length > 0
+                    && (namePrefix.Length == 0 || s2.Name.StartsWith(namePrefix, StringComparison.Ordinal)))
+                .OrderBy(s2 => s2.Name, StringComparer.Ordinal)
                 .ToList();
         });
     }
@@ -1105,6 +1127,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("State")] public string? State { get; set; }
 
         [JsonPropertyName("Ports")] public List<PortDto>? Ports { get; set; }
+
+        [JsonPropertyName("Labels")] public Dictionary<string, string>? Labels { get; set; }
     }
 
     private sealed class PortDto
@@ -1224,6 +1248,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private sealed class ServiceSpecDto
     {
         [JsonPropertyName("Name")] public string? Name { get; set; }
+
+        [JsonPropertyName("Labels")] public Dictionary<string, string>? Labels { get; set; }
     }
 
     private sealed class EndpointDto

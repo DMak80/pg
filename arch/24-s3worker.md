@@ -108,7 +108,7 @@ critical-алерт, t34).
 
 | Метод+путь | Назначение |
 |---|---|
-| `POST /api/s3/clusters` | создание кластера: клэйм-txn `version(config)==0` + пакет PUT (config c `nodes=len(instances)` + instances × {placement, resources, state=NOT_INITIALIZED}; 0 инстансов — только config); сбой — компенсация `del --prefix /s3/clusters/<C>/` (§9.1-образец) |
+| `POST /api/s3/clusters` | создание кластера: клэйм-txn `version(config)==0` + пакет PUT (config c `nodes=len(instances)` + instances × {placement, resources, state=NOT_INITIALIZED}; 0 инстансов — только config); запись — ОДНА атомарная txn: сбой midway частичного состояния не оставляет, компенсация не требуется |
 | `DELETE /api/s3/clusters/{c}` | перевод `config.state=TO_REMOVE` (RMW; already → 204 без записи) |
 | `POST /api/s3/clusters/{c}/nodes` | добавление инстанса с заданным именем (тело `{name, placement, resources}`): клэйм-txn `version(nodes/<I>/state)==0` + put `placement`/`resources`/`state=NOT_INITIALIZED` |
 | `DELETE /api/s3/clusters/{c}/nodes/{n}` | маркер демонтажа инстанса `nodes/<n>/state=TO_REMOVE` (one-way; гварды: не последний инстанс кластера — 0 инстансов валиден только декларацией при создании, вывод последнего → 409; путь к кластеру без инстансов — снос кластера целиком) |
@@ -326,8 +326,10 @@ X3 etcd: del --prefix /s3/clusters/<C>/ + del
 тик (идемпотентны, ретраи тиками; один инстанс/пара за тик — структурные
 операции не пачкой):
 
-1. **Deny-доведение**: для каждого RUNNING-инстанса — полная перезапись
-   `PUT /replication/denylist` (owns3/07 §2/§6) телом
+1. **Deny-доведение**: для каждого RUNNING-инстанса, КРОМЕ DenyList-имён
+   (отозванному собственный список отзывов не нужен — изоляцию обеспечивают
+   записи у его соседей и запрет будущих join его сертификата), — полная
+   перезапись `PUT /replication/denylist` (owns3/07 §2/§6) телом
    `{entries:[{name, publicKeyPem}]}` из `denylist` кластера (ключи — из
    `nodes/<I>/pki`); подпись до-join контура — сертификатом оркестратора
    (`pki/orchestrator`, схема OWNS3-PEER). Инстанс недоступен →

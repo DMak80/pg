@@ -56,9 +56,9 @@ public sealed class DeprovisioningProcess(
         }
 
         // X2: docker сначала — снос контейнеров и volumes на всех хостах
-        // (перечень объектов сироты+ноды; 404 = ок на каждом движке). Имена
-        // объектов сводятся к узлам: контейнер s3w-<C>-node<k> и том
-        // s3w-<C>-node<k>-data → узел node<k> (RemoveNodeAsync снимает оба,
+        // (перечень объектов сироты+инстанса; 404 = ок на каждом движке). Имена
+        // объектов сводятся к инстансам: контейнер s3w-<C>-<I> и том
+        // s3w-<C>-<I>-data → инстанс <I> (RemoveNodeAsync снимает оба,
         // идемпотентно по 404 для сироты).
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)

@@ -283,6 +283,9 @@ internal sealed class FakeContainerEngine : IDockerEngine
     public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<DockerSwarmNode>>.Success([]));
     public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => Task.FromResult(Result.Success());
     public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerService>>.Success([]));
+
     public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
     public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<DockerTask>>.Success([]));
     public Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct) => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(new HashSet<(string, int)>()));

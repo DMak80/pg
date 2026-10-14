@@ -223,9 +223,12 @@ public class MeshGovernanceTests
                 nodes: [("east1", S3NodeStates.Running), ("east2", S3NodeStates.Running), ("west1", S3NodeStates.Running)]),
             TestContext.Current.CancellationToken);
 
-        // Assert: denylist у обоих RUNNING (west1 — тоже RUNNING, получает список).
+        // Assert: denylist у RUNNING, КРОМЕ отозванного (arch/24 §5 G п.1):
+        // east1 и east2 получают перезапись, west1 (DenyList-имя) — нет.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        rig.NodeClient.MeshCalls.Count(c => c.Op == "denylist").Should().Be(3);
+        rig.NodeClient.MeshCalls.Count(c => c.Op == "denylist").Should().Be(2);
+        rig.NodeClient.MeshCalls.Where(c => c.Op == "denylist")
+            .Select(c => c.Port).Should().NotContain(18003);
         rig.NodeClient.LastDenyEntries.Should().NotBeNull();
         rig.NodeClient.LastDenyEntries.Should().ContainSingle()
             .Which.Name.Should().Be("west1");

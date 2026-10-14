@@ -7,8 +7,9 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// AddNode (arch/24 §5 D): заявка nodes/node&lt;max+1&gt;/state=NOT_INITIALIZED у
-/// Active-кластера → mini-A (placement + portalloc довыделение под locks —
+/// AddNode (arch/24 §5 D): заявка nodes/&lt;I&gt;/state=NOT_INITIALIZED у
+/// Active-кластера (имя инстанса &lt;I&gt; — из тела запроса, arch/24 §1.1) →
+/// mini-A (placement + portalloc довыделение под locks —
 /// та же механика P1; volume + контейнер + state=PROVISIONING; health →
 /// RUNNING; bucket) + завершающее окно: RMW endpoints + актуализация
 /// config.nodes до фактического состава (txn по mod_revision, spec §2.2).

@@ -167,7 +167,10 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+        public Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerService>>.Success([]));
+
+    public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
         {
             Calls.Add(("list-services", namePrefix));
             var matched = Services

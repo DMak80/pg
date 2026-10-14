@@ -55,7 +55,7 @@ public sealed class MeshGovernanceProcess(
         // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
-            return addresses.Error!;
+            return Fail(cluster, addresses.Error!, "portalloc", ct);
 
         var running = snap.Nodes
             .Where(n => n.State == S3NodeStates.Running)
@@ -178,7 +178,11 @@ public sealed class MeshGovernanceProcess(
         {
             var material = await pki.TryReadNodePkiAsync(cluster, name, ct);
             if (!material.IsSuccess)
-                return material.Error!; // etcd/битость — не транзиент состава
+            {
+                // etcd/битость — не транзиент состава; journal-before-выход.
+                var denyPkiFail = Fail(cluster, material.Error!, "deny-pki", ct);
+                return Result<bool>.Failed(denyPkiFail.Error!);
+            }
             if (material.Value is not { } issued)
             {
                 warnings.Add($"deny {name}: материала pki нет — имя пропущено");
@@ -191,6 +195,10 @@ public sealed class MeshGovernanceProcess(
         var pushedAny = false;
         foreach (var x in running.OrderBy(n => n, StringComparer.Ordinal))
         {
+            // DenyList-имя — перезапись не шлётся (arch/24 §5 G п.1): собственный
+            // список отзывов отозванному не нужен, изоляция — записи у соседей.
+            if (denyList.Contains(x, StringComparer.Ordinal))
+                continue;
             if (!addresses.TryGetValue(x, out var xAddress))
             {
                 warnings.Add($"deny {x}: адреса нет в portalloc — транзиент");

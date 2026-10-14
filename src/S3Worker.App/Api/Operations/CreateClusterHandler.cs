@@ -19,7 +19,8 @@ public sealed record S3ClusterCreatedDto(
 // Создание S3-кластера через API воркера: валидация (400) → профиль (422) →
 // клэйм-txn NotExists(config) + пакет (config c nodes=len(instances) +
 // instances × {placement, resources, state=NOT_INITIALIZED}; 0 инстансов —
-// только config; 409) → сбой midway — компенсация del --prefix (§9.1-образец).
+// только config; 409). Запись — ОДНА атомарная txn: сбой midway частичного
+// состояния не оставляет, компенсация не требуется (arch/24 §1.1).
 // Создание клэйм-lease НЕ берёт — это заявка.
 public sealed class CreateClusterHandler(
     IEtcdGateway gateway, string[] endpoints, SecretProfileStore secrets, TimeProvider time)

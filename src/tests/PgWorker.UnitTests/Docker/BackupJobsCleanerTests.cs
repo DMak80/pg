@@ -71,7 +71,10 @@ public class BackupJobsCleanerTests
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => throw NotSupported();
-        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyList<DockerService>>> ListServiceRecordsAsync(string namePrefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerService>>.Success([]));
+
+    public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
