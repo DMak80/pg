@@ -1,6 +1,11 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Amazon;
 using Amazon.S3;
+using OwnS3.Protocol.Auth;
+using OwnS3.Protocol.PeerAuth;
 
 namespace S3Worker.Core.OwnS3;
 
@@ -8,11 +13,31 @@ namespace S3Worker.Core.OwnS3;
 /// (owns3/05 §7 после Task 1: camelCase, null-поля → Failed — транзиент).</summary>
 public sealed record OwnS3NodeUsage(long UsedBytes, long TotalBytes);
 
+/// <summary>Состав mesh инстанса из GET /admin/replication/status (owns3/07 §10):
+/// G нужны только имена соседей-таргетов (состав, не счётчики — spec §3.5).</summary>
+public sealed record OwnS3ReplicationStatus(bool Active, IReadOnlyList<string> NeighborNames);
+
+/// <summary>Исходы admin-join (arch/24 §5 G): Joined — готово (имя пира из ответа);
+/// Conflict — имя числится с другим ключом (409); Refused — отказ (403, в т.ч.
+/// deny); Transient — прочие HTTP/транспорт/таймаут (ретрай тиком).</summary>
+public enum OwnS3JoinKind
+{
+    Joined,
+    Conflict,
+    Refused,
+    Transient,
+}
+
+public sealed record OwnS3JoinOutcome(OwnS3JoinKind Kind, string? PeerName = null);
+
 /// <summary>
 /// Грань ownS3-ноды для процессов S3Worker (arch/23 §5): health-проба
 /// (без подписи), существование/создание bucket'а (AWSSDK, root-креды
-/// профиля), занятость диска (SigV4 GET /admin/storage). Все таймауты —
-/// 7.5 с (поллинг-инвариант: половина окна watchdog); ретраи — дело тика.
+/// профиля), занятость диска (SigV4 GET /admin/storage); mesh-управление
+/// (arch/24 §5 G, spec §5.1): status/join/delete-target (SigV4 root-креды
+/// админ-грани) и deny-перезапись (до-join контур OWNS3-PEER сертификатом
+/// оркестратора — owns3/07 §6). Все таймауты — 7.5 с (поллинг-инвариант:
+/// половина окна watchdog); ретраи — дело тика.
 /// </summary>
 public interface IOwnS3NodeClient
 {
@@ -32,6 +57,23 @@ public interface IOwnS3NodeClient
     // SigV4 GET /admin/storage root-кредом → usedBytes/totalBytes;
     // null-поля/не-2xx → Failed (транзиент).
     Task<Result<OwnS3NodeUsage>> GetUsageAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct);
+
+    // SigV4 GET /admin/replication/status → active + имена соседей (состав targets).
+    Task<Result<OwnS3ReplicationStatus>> GetReplicationStatusAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct);
+
+    // SigV4 POST /admin/replication/join {"endpoint": …} → исход (§3.5 G).
+    Task<Result<OwnS3JoinOutcome>> AdminJoinAsync(string host, int port, OwnS3NodeSecrets creds, string endpoint, CancellationToken ct);
+
+    // SigV4 DELETE /admin/replication/targets/{name}: 202 → true; 404 → false
+    // (идемпотентность); прочее → Failed (транзиент).
+    Task<Result<bool>> DeleteTargetAsync(string host, int port, OwnS3NodeSecrets creds, string name, CancellationToken ct);
+
+    // PUT /replication/denylist (до-join контур, подпись OWNS3-PEER сертификатом
+    // оркестратора): 202 → true; 403 → false (trust не принят — transient тика);
+    // 400/транспорт → Failed.
+    Task<Result<bool>> PutDenyListAsync(
+        string host, int port, IReadOnlyList<(string Name, string PublicKeyPem)> entries,
+        IssuedPkiMaterial orchestrator, CancellationToken ct);
 }
 
 /// <summary>Реализация: именованный HttpClient (Program: "owns3-node",
@@ -162,6 +204,214 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
             return Result<OwnS3NodeUsage>.Failed(new ApplicationException($"usage {host}:{port}: {ex.Message}", ex));
         }
     }
+
+    public async Task<Result<OwnS3ReplicationStatus>> GetReplicationStatusAsync(
+        string host, int port, OwnS3NodeSecrets creds, CancellationToken ct)
+    {
+        try
+        {
+            using var request = SignAdmin("GET", host, port, "/admin/replication/status", creds);
+            using var response = await http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+                return FailedHttp<OwnS3ReplicationStatus>("replication-status", host, port, response);
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            var active = root.TryGetProperty("active", out var a) && a.ValueKind == JsonValueKind.True;
+            var neighbors = new List<string>();
+            if (root.TryGetProperty("neighbors", out var list) && list.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var n in list.EnumerateArray())
+                    if (n.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                        neighbors.Add(name.GetString()!);
+            }
+
+            return Result<OwnS3ReplicationStatus>.Success(new OwnS3ReplicationStatus(active, neighbors));
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<OwnS3ReplicationStatus>.Failed(
+                new ApplicationException($"replication-status {host}:{port}: таймаут"));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+        {
+            return Result<OwnS3ReplicationStatus>.Failed(
+                new ApplicationException($"replication-status {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    public async Task<Result<OwnS3JoinOutcome>> AdminJoinAsync(
+        string host, int port, OwnS3NodeSecrets creds, string endpoint, CancellationToken ct)
+    {
+        try
+        {
+            var body = JsonSerializer.SerializeToUtf8Bytes(new JoinRequestBody(endpoint));
+            using var request = SignAdmin("POST", host, port, "/admin/replication/join", creds, body);
+            using var response = await http.SendAsync(request, ct);
+            return response.StatusCode switch
+            {
+                HttpStatusCode.OK => Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(
+                    OwnS3JoinKind.Joined, await ReadPeerNameAsync(response, ct))),
+                HttpStatusCode.Conflict => Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(OwnS3JoinKind.Conflict)),
+                HttpStatusCode.Forbidden => Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(OwnS3JoinKind.Refused)),
+                _ => Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(OwnS3JoinKind.Transient)),
+            };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(OwnS3JoinKind.Transient));
+        }
+        catch (HttpRequestException)
+        {
+            return Result<OwnS3JoinOutcome>.Success(new OwnS3JoinOutcome(OwnS3JoinKind.Transient));
+        }
+    }
+
+    public async Task<Result<bool>> DeleteTargetAsync(
+        string host, int port, OwnS3NodeSecrets creds, string name, CancellationToken ct)
+    {
+        try
+        {
+            using var request = SignAdmin("DELETE", host, port, $"/admin/replication/targets/{Uri.EscapeDataString(name)}", creds);
+            using var response = await http.SendAsync(request, ct);
+            return response.StatusCode switch
+            {
+                HttpStatusCode.Accepted => Result<bool>.Success(true),
+                HttpStatusCode.NotFound => Result<bool>.Success(false), // идемпотентность
+                _ => FailedHttp<bool>("delete-target", host, port, response),
+            };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<bool>.Failed(new ApplicationException($"delete-target {host}:{port}: таймаут"));
+        }
+        catch (HttpRequestException ex)
+        {
+            return Result<bool>.Failed(new ApplicationException($"delete-target {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    public async Task<Result<bool>> PutDenyListAsync(
+        string host, int port, IReadOnlyList<(string Name, string PublicKeyPem)> entries,
+        IssuedPkiMaterial orchestrator, CancellationToken ct)
+    {
+        try
+        {
+            using var buffer = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WriteStartArray("entries");
+                foreach (var (name, publicKeyPem) in entries)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("name", name);
+                    writer.WriteString("publicKeyPem", publicKeyPem);
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            var body = buffer.ToArray();
+            using var request = BuildPeerSignedRequest(HttpMethod.Put, host, port, "/replication/denylist", body, orchestrator);
+            using var response = await http.SendAsync(request, ct);
+            return response.StatusCode switch
+            {
+                HttpStatusCode.Accepted => Result<bool>.Success(true),
+                HttpStatusCode.Forbidden => Result<bool>.Success(false), // trust не принят — transient тика
+                _ => FailedHttp<bool>("denylist", host, port, response),
+            };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Result<bool>.Failed(new ApplicationException($"denylist {host}:{port}: таймаут"));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or CryptographicException or FormatException)
+        {
+            return Result<bool>.Failed(new ApplicationException($"denylist {host}:{port}: {ex.Message}", ex));
+        }
+    }
+
+    // Имя пира из тела admin-join-ответа {"joined":true,"peer":"…"} (не критично:
+    // нечитаемое тело не ломает исход — G знает имя из links).
+    private static async Task<string?> ReadPeerNameAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return doc.RootElement.TryGetProperty("peer", out var peer) && peer.ValueKind == JsonValueKind.String
+                ? peer.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Построение до-join запроса OWNS3-PEER (owns3/07 §6, по образцу
+    /// JoinPeerService.JoinAsync): подпись приватным ключом оркестратора,
+    /// сертификат в заголовке X-OwnS3-Peer-Certificate. internal — точка
+    /// юнит-верификации совместимости PeerRequestVerifier (spec §8.1.6).
+    /// </summary>
+    internal static HttpRequestMessage BuildPeerSignedRequest(
+        HttpMethod method, string host, int port, string path, byte[] body,
+        IssuedPkiMaterial orchestrator, DateTimeOffset? at = null)
+    {
+        var payloadHash = SigV4Core.HexSha256(body);
+        var instant = at ?? DateTimeOffset.UtcNow;
+        var peerDate = instant.ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+        using var key = ECDsa.Create();
+        key.ImportFromPem(orchestrator.PrivateKeyPem);
+        var (authorization, _, _) = PeerRequestSigner.Sign(key, orchestrator.Certificate.Name,
+            method.Method, path, "",
+            [("host", $"{host}:{port}"),
+                ("x-owns3-peer-date", peerDate),
+                ("x-owns3-peer-content-sha256", payloadHash)],
+            payloadHash, instant);
+
+        var request = new HttpRequestMessage(method, $"http://{host}:{port}{path}")
+        {
+            Content = new ByteArrayContent(body),
+        };
+        request.Headers.TryAddWithoutValidation("host", $"{host}:{port}");
+        request.Headers.TryAddWithoutValidation("x-owns3-peer-date", peerDate);
+        request.Headers.TryAddWithoutValidation("x-owns3-peer-content-sha256", payloadHash);
+        request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        // Сертификат «на проводе» (owns3/07 §2): base64 от UTF-8 байтов JSON.
+        request.Headers.TryAddWithoutValidation("X-OwnS3-Peer-Certificate",
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(orchestrator.CertificateJson)));
+        return request;
+    }
+
+    // Тело admin-join-запроса {"endpoint": "<b-advertised>"}.
+    private sealed record JoinRequestBody(string Endpoint);
+
+    // SigV4-подпись админ-грани root-кредом профиля (метод/путь/тело — общий путь).
+    private static HttpRequestMessage SignAdmin(
+        string method, string host, int port, string path, OwnS3NodeSecrets creds, byte[]? body = null)
+    {
+        var request = body is null
+            ? new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{path}")
+            : new HttpRequestMessage(new HttpMethod(method), $"http://{host}:{port}{path}")
+            {
+                Content = new ByteArrayContent(body),
+            };
+        var signed = SigV4GetSigner.SignRequest(method, path, $"{host}:{port}", creds.RootUser, creds.RootPassword);
+        request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
+        request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);
+        return request;
+    }
+
+    // Не-2xx админ-грани → Failed с кодом (транзиент для тика).
+    private static Result<T> FailedHttp<T>(string op, string host, int port, HttpResponseMessage response)
+        => Result<T>.Failed(new ApplicationException(
+            $"{op} {host}:{port}: HTTP {(int)response.StatusCode}"));
 
     // per-node клиент: ForcePathStyle (адресные URL вида http://host:port/bucket),
     // retries off (ретраи — дело тика; таймауты 7.5 c поллинг-инварианта).

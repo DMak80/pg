@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using OwnS3.Protocol.PeerAuth;
+using S3Worker.Core.OwnS3;
 using S3Worker.Provisioning;
 using S3Worker.Provisioning.Processes;
 using Xunit;

@@ -1,19 +1,12 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using OwnS3.Protocol.PeerAuth;
+using S3Worker.Core.OwnS3;
 using S3Worker.Provisioning.Processes;
 using Shared.Core;
 using Shared.Etcd.Client;
 
 namespace S3Worker.Provisioning;
-
-/// <summary>Материал CA кластера (arch/23 §6): trust-anchor (name/publicKeyPem) +
-/// приватный ключ CA (выпуск сертификатов — только воркеру).</summary>
-public sealed record ClusterCaMaterial(PeerTrustAnchor Ca, string CaPrivateKeyPem);
-
-/// <summary>Выданный сертификат пира: распарсенный + исходный JSON (заголовок
-/// X-OwnS3-Peer-Certificate / env OWNS3_REPLICATION_CERT) + приватный ключ PEM.</summary>
-public sealed record IssuedPkiMaterial(PeerCertificate Certificate, string CertificateJson, string PrivateKeyPem);
 
 /// <summary>
 /// PKI репликации per-cluster в etcd (arch/23 §2/§6, spec §3.2): ленивый выпуск
