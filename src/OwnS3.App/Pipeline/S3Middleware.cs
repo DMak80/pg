@@ -201,6 +201,16 @@ public sealed class S3Middleware(
                             return;
                         }
 
+                        // Deny-replace-под-ветка (глава 07 §2/§6): PUT /replication/denylist —
+                        // второй до-join запрос грани: вызывающий — оркестратор, не обязан числиться
+                        // соседом; аутентификация по сертификату вызывающего (как у join), ДО
+                        // резолва пира по составу.
+                        if (HttpMethods.IsPut(method) && context.Request.Path.Value == "/replication/denylist")
+                        {
+                            await replicationHandlers.HandleDenyReplaceAsync(context, requestId, options.Value.HostId);
+                            return;
+                        }
+
                         // Имя пира из Credential; null при любом malformed → 400
                         // AuthorizationHeaderMalformed (маппинг здесь — Protocol без
                         // Result-сигнатур, глава 07 §6).

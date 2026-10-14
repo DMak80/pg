@@ -872,6 +872,253 @@ public sealed class PeerAuthScenarios : IClassFixture<PeerAuthAppFactory>
             .Should().NotContain(f => f.EndsWith("denylist.json", StringComparison.Ordinal));
     }
 
+    // ── PUT /replication/denylist: полная перезапись (глава 07 §2/§6) ──
+
+    // Тело перезаписи {entries:[{name, publicKeyPem}]} (camelCase).
+    private static string DenyBody(params (string Name, string PublicKeyPem)[] entries) =>
+        JsonSerializer.Serialize(new
+        {
+            entries = entries.Select(e => new { name = e.Name, publicKeyPem = e.PublicKeyPem }).ToList(),
+        }, Json);
+
+    // PUT /replication/denylist peer-подписью вызывающего; вызывающий по умолчанию —
+    // Own (сертификат подписан CA фабрики, не отозван; не обязан числиться соседом);
+    // certificate — подмена сертификата вызывающего (кейсы чужого CA).
+    private static Task<HttpResponseMessage> SendDenyReplaceOnAsync(OwnS3TestClient client,
+        string body, ECDsa? signingKey = null, PeerCertificate? certificate = null,
+        DateTimeOffset? at = null) =>
+        SendPeerOnAsync(client, "PUT", "/replication/denylist", body,
+            signingKey ?? PeerAuthMaterial.Own.Key, "owns3-own",
+            certificate is null ? CertBase64Of(PeerAuthMaterial.Own.Certificate) : CertBase64Of(certificate),
+            at);
+
+    [Fact]
+    public async Task DenyReplace_ValidCert_202_AdminListShowsNewEntries()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика (кейс меняет deny-list); список из двух записей
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        var body = DenyBody(
+            ("peer-x", PeerAuthMaterial.PeerXCert.PublicKeyPem),
+            ("peer-y", PeerAuthMaterial.PeerYCert.PublicKeyPem));
+
+        // Act — перезапись сертификатом owns3-own (подписан CA, не отозван)
+        var response = await SendDenyReplaceOnAsync(client, body);
+
+        // Assert — 202 без тела; состав заменён целиком с серверным revokedAtUnixMs
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().BeEmpty();
+        var list = await client.SendSignedAsync("GET", "/admin/replication/denylist",
+            credentials: OwnS3TestClient.Admin());
+        var entries = JsonDocument.Parse(
+            await list.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement
+            .GetProperty("entries");
+        entries.GetArrayLength().Should().Be(2);
+        entries.EnumerateArray().Should().Contain(e => e.GetProperty("name").GetString() == "peer-x"
+            && e.GetProperty("publicKeyPem").GetString() == PeerAuthMaterial.PeerXCert.PublicKeyPem
+            && e.GetProperty("revokedAtUnixMs").GetInt64() > 0);
+
+        // Assert — следующий join от отозванного имени → 403 (критерий 1)
+        (await SendJoinOnAsync(client, "http://peer-x:9000")).StatusCode
+            .Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task DenyReplace_EmptyEntries_202_AllowJoinAgain()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика: список с peer-x блокирует join
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        (await SendDenyReplaceOnAsync(client,
+            DenyBody(("peer-x", PeerAuthMaterial.PeerXCert.PublicKeyPem)))).StatusCode
+            .Should().Be(HttpStatusCode.Accepted);
+        (await SendJoinOnAsync(client, "http://peer-x:9000")).StatusCode
+            .Should().Be(HttpStatusCode.Forbidden);
+
+        // Act — перезапись пустым списком: снятие всех отзывов
+        var response = await SendDenyReplaceOnAsync(client, DenyBody());
+
+        // Assert — 202; список пуст; ранее отозванный пир проходит join (критерий 5)
+        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var cleared = await client.SendSignedAsync("GET", "/admin/replication/denylist",
+            credentials: OwnS3TestClient.Admin());
+        (await cleared.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("\"entries\":[]");
+        (await SendJoinOnAsync(client, "http://peer-x:9000")).StatusCode
+            .Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task DenyReplace_RevokedCaller_403_ListUnchanged()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика: список, содержащий самого вызывающего
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        var bodyWithOwn = DenyBody(("owns3-own", PeerAuthMaterial.Own.Certificate.PublicKeyPem));
+        (await SendDenyReplaceOnAsync(client, bodyWithOwn)).StatusCode
+            .Should().Be(HttpStatusCode.Accepted);
+
+        // Act — повторный вызов от отозванного вызывающего
+        var response = await SendDenyReplaceOnAsync(client,
+            DenyBody(("peer-x", PeerAuthMaterial.PeerXCert.PublicKeyPem)));
+
+        // Assert — 403; список не изменился (отозванный не переписывает список)
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AccessDenied");
+        var list = await client.SendSignedAsync("GET", "/admin/replication/denylist",
+            credentials: OwnS3TestClient.Admin());
+        var entries = JsonDocument.Parse(
+            await list.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement
+            .GetProperty("entries");
+        entries.GetArrayLength().Should().Be(1);
+        entries[0].GetProperty("name").GetString().Should().Be("owns3-own");
+    }
+
+    [Fact]
+    public async Task DenyReplace_CertNotFromTrustAnchor_403()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; вызывающий с сертификатом чужого CA (peer-y)
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await SendDenyReplaceOnAsync(client, DenyBody(),
+            certificate: PeerAuthMaterial.PeerYCert);
+
+        // Assert — 403 XML AccessDenied; список не менялся (критерий 3)
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AccessDenied");
+    }
+
+    [Fact]
+    public async Task DenyReplace_NoTrustAnchor_403_ManualMode()
+    {
+        // Arrange — фабрика без trust-anchor (ручной режим состава)
+        using var factory = new PeerAuthNoTrustAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await SendDenyReplaceOnAsync(client, DenyBody());
+
+        // Assert — 403 (как join; критерий 6)
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task DenyReplace_MissingCertHeader_400()
+    {
+        // Act — PUT без заголовка X-OwnS3-Peer-Certificate: прямой вызов
+        // SendPeerOnAsync с certificateBase64: null (общая фабрика: список не меняется)
+        var response = await SendPeerOnAsync(Client, "PUT", "/replication/denylist",
+            DenyBody(), PeerAuthMaterial.Own.Key, "owns3-own", null);
+
+        // Assert — 400 JSON с пояснением (как join)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("X-OwnS3-Peer-Certificate");
+    }
+
+    [Fact]
+    public async Task DenyReplace_MalformedBody_400_ListUntouched()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; действующий отзыв
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        (await SendDenyReplaceOnAsync(client,
+            DenyBody(("keep", PeerAuthMaterial.PeerXCert.PublicKeyPem)))).StatusCode
+            .Should().Be(HttpStatusCode.Accepted);
+
+        // Act — тело не-JSON
+        var response = await SendDenyReplaceOnAsync(client, "{мусор");
+
+        // Assert — 400 JSON; список прежний (критерий 4)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("error");
+        var list = await client.SendSignedAsync("GET", "/admin/replication/denylist",
+            credentials: OwnS3TestClient.Admin());
+        (await list.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("keep");
+    }
+
+    [Fact]
+    public async Task DenyReplace_InvalidEntries_400_ListUntouched()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; невалидный состав: дубли имён
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        var body = DenyBody(("dup", PeerAuthMaterial.PeerXCert.PublicKeyPem),
+            ("dup", PeerAuthMaterial.PeerYCert.PublicKeyPem));
+
+        // Act
+        var response = await SendDenyReplaceOnAsync(client, body);
+
+        // Assert — 400 с пояснением; список не менялся (валидация до персиста)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("error");
+    }
+
+    [Fact]
+    public async Task DenyReplace_BrokenPemEntry_400()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; запись с битым PEM
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        var body = DenyBody(("broken", "-----BEGIN PUBLIC KEY-----\nZZZ\n-----END PUBLIC KEY-----\n"));
+
+        // Act
+        var response = await SendDenyReplaceOnAsync(client, body);
+
+        // Assert — 400 с пояснением
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("error");
+    }
+
+    [Fact]
+    public async Task DenyReplace_MalformedAuthorization_400()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; мусорная структура OWNS3-PEER-Authorization
+        // (валидный префикс схемы) при валидном сертификате и теле
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/replication/denylist");
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(DenyBody()));
+        request.Headers.TryAddWithoutValidation("Authorization", "OWNS3-PEER-мусор");
+        request.Headers.TryAddWithoutValidation("X-OwnS3-Peer-Certificate",
+            CertBase64Of(PeerAuthMaterial.Own.Certificate));
+
+        // Act
+        var response = await client.Http.SendAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert — 400 AuthorizationHeaderMalformed XML (та же пара исходов, что join)
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AuthorizationHeaderMalformed");
+    }
+
+    [Fact]
+    public async Task DenyReplace_GarbageBody_UntrustedCert_403Not400()
+    {
+        // Arrange — СОБСТВЕННАЯ фабрика; мусорное тело + сертификат чужого CA:
+        // порядок проверок — доверие ДО тела (принцип 7, критерий 4)
+        using var factory = new PeerAuthAppFactory();
+        var client = new OwnS3TestClient(factory.CreateClient());
+
+        // Act
+        var response = await SendDenyReplaceOnAsync(client, "{мусор",
+            certificate: PeerAuthMaterial.PeerYCert);
+
+        // Assert — отказ доверия (403), не 400 тела
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
+            .Should().Contain("AccessDenied");
+    }
+
     // ── хелперы «на указанном клиенте» (собственные фабрики кейсов) ──
 
     private static Task<HttpResponseMessage> SendJoinOnAsync(OwnS3TestClient client,

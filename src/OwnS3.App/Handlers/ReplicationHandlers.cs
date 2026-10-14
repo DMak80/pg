@@ -16,7 +16,7 @@ namespace OwnS3.App.Handlers;
 // legacy-ветка, имя из Credential — key-ветка). Входящий join — HandleJoinAsync.
 public sealed class ReplicationHandlers(ReplicationTargets targets, NotificationInbox inbox,
     IReplicaStore store, TombstoneStore tombstones, string hostId, ILogger<ReplicationHandlers> logger,
-    JoinPeerService joinService)
+    JoinPeerService joinService, DenyListReplaceService denyReplaceService)
 {
 
     private static readonly JsonSerializerOptions Json = ReplicationTransportJson.Options;
@@ -278,6 +278,60 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
                 // Конфликт имени (другой публичный ключ) — 409 JSON (стиль join-контрактов).
                 context.Response.StatusCode = StatusCodes.Status409Conflict;
                 await context.Response.WriteAsJsonAsync(new { error = conflict.Message }, context.RequestAborted);
+                return;
+            default:
+                // Неожиданный тип отказа — прежний путь catch-all middleware (500 XML).
+                throw outcome.Error!;
+        }
+    }
+
+    // PUT /replication/denylist (глава 07 §2/§6): входящая полная перезапись
+    // deny-list — до-join аутентификация по сертификату X-OwnS3-Peer-Certificate
+    // и подписи запроса (DenyListReplaceService.HandleIncoming); успех → 202 без
+    // тела; отказ доверия/подписи → 403 XML кода каталога (malformed Authorization
+    // → 400 XML — та же пара исходов, что у join-ветки); malformed/невалидное
+    // тело → 400 JSON {error}; нет заголовка сертификата → 400 JSON.
+    public async Task HandleDenyReplaceAsync(HttpContext context, string requestId, string? errorHostId)
+    {
+        // Модель — та же сборка (верификатор читает только заголовки/путь; хэш
+        // тела — из заголовка схемы); тело читается целиком в память ДО сервиса.
+        var model = S3ModelFactory.Create(context);
+        var certificateHeader = context.Request.Headers["X-OwnS3-Peer-Certificate"].FirstOrDefault();
+        if (string.IsNullOrEmpty(certificateHeader))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(new { error = "X-OwnS3-Peer-Certificate header required" },
+                context.RequestAborted);
+            return;
+        }
+        using var buffer = new MemoryStream();
+        await context.Request.Body.CopyToAsync(buffer, context.RequestAborted);
+        var outcome = denyReplaceService.HandleIncoming(model, certificateHeader, buffer.ToArray());
+        if (outcome.IsSuccess)
+        {
+            context.Response.StatusCode = StatusCodes.Status202Accepted;
+            return;
+        }
+        switch (outcome.Error)
+        {
+            case DenyReplaceRefusedException refused:
+                // Отказ подписи — код каталога (SignatureDoesNotMatch/RequestTimeTooSkewed/…);
+                // прочие отказы доверия — AccessDenied; malformed Authorization — 400
+                // (выравнивание с join-веткой грани).
+                var code = refused.ErrorCode ?? OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied;
+                context.Response.StatusCode =
+                    code == OwnS3.Protocol.Errors.S3ErrorCode.AuthorizationHeaderMalformed
+                        ? StatusCodes.Status400BadRequest
+                        : StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/xml";
+                await context.Response.WriteAsync(OwnS3.Protocol.Xml.S3ErrorXmlWriter.Write(
+                    new OwnS3.Protocol.Xml.S3Error(code, Resource: context.Request.Path,
+                        RequestId: requestId, HostId: errorHostId, MessageOverride: refused.Message)),
+                    context.RequestAborted);
+                return;
+            case DenyReplaceBadRequestException bad:
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsJsonAsync(new { error = bad.Message }, context.RequestAborted);
                 return;
             default:
                 // Неожиданный тип отказа — прежний путь catch-all middleware (500 XML).
