@@ -64,7 +64,7 @@ public class BackupPoolResolverTests
         ctx.SecretKey.Should().Be("sk");
         ctx.WriteMaster.Should().Equal("http://h1:18001", "http://h2:18002");
         ctx.WriteReplica.Should().Equal("http://h2:18002");
-        ctx.ReadAll.Should().Equal("h1:18001", "h2:18002");
+        ctx.ReadAll.Should().Equal("http://h1:18001", "http://h2:18002");
     }
 
     // AAA: policy без s3 → null (не Failed — кластер без выбора, «молчание»).

@@ -27,12 +27,12 @@ internal static class RefresherTestHarness
         params string[] endpoints)
         => New(gateway, store, probes, null, endpoints);
 
-    // С стором MinIO-инвентаря (t08 — конструктор refresher'а): null → пустой стор.
+    // С стором S3-инвентаря (t08 — конструктор refresher'а): null → пустой стор.
     public static SnapshotRefresher New(
         FakeEtcdGateway gateway,
         ISnapshotStore store,
         SettableProbeStateStore? probes,
-        MinioInventoryStore? minio,
+        S3InventoryStore? s3,
         params string[] endpoints)
         => new(
             gateway,
@@ -40,7 +40,7 @@ internal static class RefresherTestHarness
             store,
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
-            minio ?? new MinioInventoryStore(),
+            s3 ?? new S3InventoryStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
@@ -513,44 +513,44 @@ public class SnapshotRefresherTests
         store.Current.PgWorkerWork.Should().ContainSingle().Which.Cluster.Should().Be("demo");
     }
 
-    // AAA (t08): успешный RefreshOnceAsync переносит store.Current в snapshot.MinioStorage
+    // AAA (t08): успешный RefreshOnceAsync переносит store.Current в snapshot.S3Storage
     // (по образцу WorkerHealth — готовым состоянием из стора).
     [Fact]
-    public async Task Refresh_Success_CarriesMinioInventoryIntoSnapshot()
+    public async Task Refresh_Success_CarriesS3InventoryIntoSnapshot()
     {
-        // Arrange — стор MinIO с готовым инвентарём (кластер demo, 152 байта)
-        var minio = new MinioInventoryStore();
-        minio.Replace(new MinioStorageInfo(
-            Configured: true, ["http://minio:9000"], "pgworker-backups", Health: null,
+        // Arrange — стор ownS3-инвентаря с готовым инвентарём (кластер demo, 152 байта)
+        var s3 = new S3InventoryStore();
+        s3.Replace(new S3StorageInfo(
+            Configured: true, ["http://s3:9000"], "pgworker-backups", Health: null,
             Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
             Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
             ConsecutiveFailures: 0, LastError: null));
         var store = new SnapshotStore();
-        var refresher = RefresherTestHarness.New(DemoGateway(), store, null, minio, "http://e1");
+        var refresher = RefresherTestHarness.New(DemoGateway(), store, null, s3, "http://e1");
 
         // Act
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
         // Assert — инвентарь в снапшоте
-        store.Current!.MinioStorage.Should().NotBeNull();
-        store.Current.MinioStorage!.UsedBytes.Should().Be(152);
-        store.Current.MinioStorage.UpdatedAtUnix.Should().Be(42);
+        store.Current!.S3Storage.Should().NotBeNull();
+        store.Current.S3Storage!.UsedBytes.Should().Be(152);
+        store.Current.S3Storage.UpdatedAtUnix.Should().Be(42);
     }
 
-    // AAA (t08): FailTick сохраняет прежний MinioStorage (инвентарь переживает отказ etcd).
+    // AAA (t08): FailTick сохраняет прежний S3Storage (инвентарь переживает отказ etcd).
     [Fact]
-    public async Task Refresh_FailTick_PreservesMinioInventory()
+    public async Task Refresh_FailTick_PreservesS3Inventory()
     {
         // Arrange — успешный тик с инвентарём, затем endpoints умирают
-        var minio = new MinioInventoryStore();
-        minio.Replace(new MinioStorageInfo(
-            Configured: true, ["http://minio:9000"], "pgworker-backups", Health: null,
+        var s3 = new S3InventoryStore();
+        s3.Replace(new S3StorageInfo(
+            Configured: true, ["http://s3:9000"], "pgworker-backups", Health: null,
             Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
             Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
             ConsecutiveFailures: 0, LastError: null));
         var store = new SnapshotStore();
         var gateway = DemoGateway();
-        var refresher = RefresherTestHarness.New(gateway, store, null, minio, "http://e1");
+        var refresher = RefresherTestHarness.New(gateway, store, null, s3, "http://e1");
         await refresher.RefreshOnceAsync(CancellationToken.None);
         gateway.StatusFailEndpoints.Add("http://e1");
 
@@ -559,7 +559,7 @@ public class SnapshotRefresherTests
 
         // Assert — инвентарь жив в снапшоте (Reachable=false)
         store.Current!.Etcd.Reachable.Should().BeFalse();
-        store.Current.MinioStorage.Should().NotBeNull();
-        store.Current.MinioStorage!.UsedBytes.Should().Be(152);
+        store.Current.S3Storage.Should().NotBeNull();
+        store.Current.S3Storage!.UsedBytes.Should().Be(152);
     }
 }

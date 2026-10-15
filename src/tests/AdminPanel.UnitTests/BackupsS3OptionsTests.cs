@@ -4,12 +4,12 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// MinioOptions.Endpoints (t36, 02 §2.5): запятая-список целей; пусто →
+// BackupsS3Options.Endpoints (t36, 02 §2.5): запятая-список целей; пусто →
 // [Endpoint]; оба пусты — грань выключена. Поведенческий перебор целей —
-// MinioS3ClientFailoverTests.
-public class MinioOptionsTests
+// S3StorageClientFailoverTests.
+public class BackupsS3OptionsTests
 {
-    private static MinioOptions.MinioS3Options S3(string endpoint = "", string endpoints = "")
+    private static BackupsS3Options.S3Options S3(string endpoint = "", string endpoints = "")
         => new() { Endpoint = endpoint, Endpoints = endpoints, Bucket = "b", AccessKey = "k", SecretKey = "s" };
 
     // AAA: Endpoints="a,b" → 2 цели в порядке списка.
@@ -45,7 +45,7 @@ public class MinioOptionsTests
     public void BothEmpty_NoTargets_GrainDisabled()
     {
         // Arrange
-        var options = new MinioOptions { S3 = S3() };
+        var options = new BackupsS3Options { S3 = S3() };
 
         // Act
         var targets = options.S3.TargetList();
@@ -60,7 +60,7 @@ public class MinioOptionsTests
     public void Endpoints_EnsureValid_Passes()
     {
         // Arrange
-        var options = new MinioOptions
+        var options = new BackupsS3Options
         {
             S3 = S3("http://a:9000", "http://a:9000,http://b:9000"),
         };

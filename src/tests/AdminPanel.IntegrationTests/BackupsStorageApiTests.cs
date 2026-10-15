@@ -48,13 +48,13 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
         // хост строится под замком до любого Services (см. EnsureBuilt)
         _factory.EnsureBuilt();
         // Arrange: хост без секции AdminPanel:Backups; один etcd-тик — снапшот
-        // собран, MinioStorage нет (тик loop ещё не двигали); тик loop — no-op.
+        // собран, S3Storage нет (тик loop ещё не двигали); тик loop — no-op.
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
-        _factory.Services.GetRequiredService<MinioInventoryStore>().Current
+        _factory.Services.GetRequiredService<S3InventoryStore>().Current
             .Should().BeNull("тик без конфигурации не пишет стор");
         using var client = await BackupsLogin.LoginAsync(_factory);
 
@@ -65,7 +65,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
             "/api/alerts", TestContext.Current.CancellationToken);
 
         // Assert: 200; configured=false; кластеров нет; штампа инвентаря нет;
-        // алерт backup-s3-unreachable отсутствует (MinioStorage null).
+        // алерт backup-s3-unreachable отсутствует (S3Storage null).
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
@@ -91,15 +91,15 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
 // (WARN) — рядом с live-инвентарём.
 [Collection("backups")]
 public class BackupsStorageInventoryApiTests(
-    EtcdContainerFixture etcd, MinioContainerFixture minio)
-    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+    EtcdContainerFixture etcd, S3NodeContainerFixture s3)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = minio.HostEndpoint,
-        MinioBucket = minio.Bucket,
+        MinioEndpoint = s3.HostEndpoint,
+        MinioBucket = s3.Bucket,
     };
 
     [Fact]
@@ -107,10 +107,10 @@ public class BackupsStorageInventoryApiTests(
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange: бэкап-ключи в etcd + сеяные объекты в своём MinIO; тики
-        // двигает тест: инвентарь (loop) → снапшот с MinioStorage (refresher).
+        // двигает тест: инвентарь (loop) → снапшот с S3Storage (refresher).
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
-        await minio.SeedObjectsAsync(
+        await s3.SeedObjectsAsync(
         [
             ("demo/s1/full/b1/base.tar", new string('a', 100)),
             ("demo/s1/full/b1/pg_wal/000000010000000000000001", new string('a', 16)),
@@ -119,7 +119,7 @@ public class BackupsStorageInventoryApiTests(
             ("ghost_shard/s9/full/b9/base.tar", new string('a', 50)),
             ("loose/file.bin", new string('a', 10)),
         ], TestContext.Current.CancellationToken);
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -141,7 +141,7 @@ public class BackupsStorageInventoryApiTests(
         health.GetProperty("clusterOk").GetBoolean().Should().BeTrue();
         dto.GetProperty("buckets")
             .EnumerateArray().Select(b => b.GetString())
-            .Should().Contain(minio.Bucket);
+            .Should().Contain(s3.Bucket);
 
         // Assert: дерево <C>/<X> — demo/s1 (136 = full 116 + wal 16 + history 4,
         // 1 сегмент WAL), сирота ghost_shard/s9 не скрыта; foreign-префикс loose.
@@ -213,15 +213,15 @@ public class BackupsStorageInventoryApiTests(
 // после 2 неудачных тиков подряд (ручной прогон RunOnceAsync — spec §5 фаза 2).
 [Collection("backups")]
 public class BackupsStorageMinioDownApiTests(
-    EtcdContainerFixture etcd, MinioContainerFixture minio)
-    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+    EtcdContainerFixture etcd, S3NodeContainerFixture s3)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = minio.HostEndpoint,
-        MinioBucket = minio.Bucket,
+        MinioEndpoint = s3.HostEndpoint,
+        MinioBucket = s3.Bucket,
     };
 
     [Fact]
@@ -231,10 +231,10 @@ public class BackupsStorageMinioDownApiTests(
         // Arrange: как AC2 — успешный первый тик (инвентарь + снапшот).
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
-        await minio.SeedObjectsAsync(
+        await s3.SeedObjectsAsync(
             [("demo/s1/full/b1/base.tar", new string('a', 100))],
             TestContext.Current.CancellationToken);
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -252,7 +252,7 @@ public class BackupsStorageMinioDownApiTests(
         }
 
         // Act: MinIO остановлен → два неудачных тика подряд → снапшот обновлён.
-        await minio.StopAsync(TestContext.Current.CancellationToken);
+        await s3.StopAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -282,7 +282,7 @@ public class BackupsStorageMinioDownApiTests(
         s3Alerts.Should().HaveCount(1, "порог — 2 тика подряд, алерт один");
         s3Alerts[0].GetProperty("severity").GetString().Should().Be("warning");
         s3Alerts[0].GetProperty("target").GetString()
-            .Should().Contain(minio.Bucket);
+            .Should().Contain(s3.Bucket);
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
@@ -305,19 +305,19 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
     [Fact]
     public void Options_Bind_FromConfiguration()
     {
-        // Arrange: хост с настройками MinIO-грани через UseSetting
+        // Arrange: хост с настройками S3-грани через UseSetting
         // (env-эквивалент AdminPanel__Backups__S3__*).
         _factory.EnsureBuilt();
 
         // Act
-        var options = _factory.Services.GetRequiredService<IOptions<MinioOptions>>().Value;
+        var options = _factory.Services.GetRequiredService<IOptions<BackupsS3Options>>().Value;
 
         // Assert: все листья доехали до [Config]-POCO, грань помечена настроенной.
         options.IsConfigured.Should().BeTrue();
         options.S3.Endpoint.Should().Be("http://localhost:59998");
         options.S3.Bucket.Should().Be("apm-bind-bucket");
-        options.S3.AccessKey.Should().Be(MinioContainerFixture.AccessKey);
-        options.S3.SecretKey.Should().Be(MinioContainerFixture.SecretKey);
+        options.S3.AccessKey.Should().Be(S3NodeContainerFixture.AccessKey);
+        options.S3.SecretKey.Should().Be(S3NodeContainerFixture.SecretKey);
         options.S3.PathStyle.Should().BeTrue();
         options.IntervalSec.Should().Be(60);
         options.TimeoutSec.Should().Be(5);
@@ -331,15 +331,15 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
 // ветка слияния); TtlLeftSec null у защищённых.
 [Collection("backups")]
 public class BackupsStorageOrphanProtectApiTests(
-    EtcdContainerFixture etcd, MinioContainerFixture minio)
-    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+    EtcdContainerFixture etcd, S3NodeContainerFixture s3)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = minio.HostEndpoint,
-        MinioBucket = minio.Bucket,
+        MinioEndpoint = s3.HostEndpoint,
+        MinioBucket = s3.Bucket,
     };
 
     [Fact]
@@ -356,7 +356,7 @@ public class BackupsStorageOrphanProtectApiTests(
             """{"set_unix":1757760000,"set_by":"panel"}""", TestContext.Current.CancellationToken);
         await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphan-deletes/g/s1",
             """{"requested_unix":1757760000,"requested_by":"operator"}""", TestContext.Current.CancellationToken);
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))

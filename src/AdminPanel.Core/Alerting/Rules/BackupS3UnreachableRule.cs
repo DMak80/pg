@@ -4,7 +4,7 @@ using Shared.Core.DI;
 namespace AdminPanel.Core.Alerting.Rules;
 
 // backup-s3-unreachable (warning, t08, каталог 03 §4): грань «Хранилище
-// бэкапов» настроена (Endpoint задан), но инвентарь-тик MinIO падал ≥ 2
+// бэкапов» настроена (Endpoint задан), но S3-инвентарь-тик падал ≥ 2
 // подряд — панель не видит содержимое bucket бэкапов. Инвентарь устаревает
 // (UpdatedAtUnix не растёт), etcd-часть грани (статусы/квота/сироты)
 // продолжает работать. Снимается первым успешным тиком (failures → 0).
@@ -21,22 +21,22 @@ public sealed class BackupS3UnreachableRule : IAlertRule
 
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
-        var minio = snapshot.MinioStorage;
-        if (minio is not { Configured: true } || minio.ConsecutiveFailures < Threshold)
+        var s3 = snapshot.S3Storage;
+        if (s3 is not { Configured: true } || s3.ConsecutiveFailures < Threshold)
             yield break; // грань выключена или порог не достигнут — молчание
 
         // t36: цель в заголовке — первая из списка (клиент перебирает с неё).
-        var target = $"{minio.Endpoints.FirstOrDefault() ?? ""}/{minio.Bucket}";
+        var target = $"{s3.Endpoints.FirstOrDefault() ?? ""}/{s3.Bucket}";
         yield return new Alert(
             $"{KindName}:{target}",
             AlertSeverity.Warning,
             KindName,
             target,
-            $"панель не может листить bucket бэкапов {minio.Bucket}: {minio.ConsecutiveFailures} подряд неудачных инвентарь-тиков ({minio.LastError})",
+            $"панель не может листить bucket бэкапов {s3.Bucket}: {s3.ConsecutiveFailures} подряд неудачных инвентарь-тиков ({s3.LastError})",
             new Dictionary<string, string>
             {
-                ["consecutiveFailures"] = minio.ConsecutiveFailures.ToString(),
-                ["bucket"] = minio.Bucket,
+                ["consecutiveFailures"] = s3.ConsecutiveFailures.ToString(),
+                ["bucket"] = s3.Bucket,
             },
             SinceUnix: null, // проставляет AlertEngine по стабильному id
             Hint: "панель не может листить bucket бэкапов: endpoints/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и MinIO; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",

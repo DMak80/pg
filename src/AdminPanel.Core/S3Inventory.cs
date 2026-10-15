@@ -10,9 +10,9 @@ namespace AdminPanel.Core;
 /// <summary>Один объект bucket'а для агрегации (ключ, размер, lastModified).</summary>
 public sealed record MinioObject(string Key, long SizeBytes, long LastModifiedUnix);
 
-public sealed partial record MinioInventory
+public sealed partial record S3Inventory
 {
-    public static MinioInventory Build(IReadOnlyList<MinioObject> objects)
+    public static S3Inventory Build(IReadOnlyList<MinioObject> objects)
     {
         long usedBytes = 0, objectCount = 0;
         var foreign = new SortedSet<string>(StringComparer.Ordinal);
@@ -74,7 +74,7 @@ public sealed partial record MinioInventory
         var clusters = shards
             .GroupBy(kv => kv.Key.Cluster, StringComparer.Ordinal)
             .OrderBy(g => g.Key, StringComparer.Ordinal)
-            .Select(g => new MinioClusterNode(
+            .Select(g => new S3ClusterNode(
                 g.Key,
                 g.Sum(kv => kv.Value.SizeBytes),
                 g.OrderBy(kv => kv.Key.Shard, StringComparer.Ordinal)
@@ -82,7 +82,7 @@ public sealed partial record MinioInventory
                     .ToList()))
             .ToList();
 
-        return new MinioInventory(
+        return new S3Inventory(
             clusters, usedBytes, objectCount,
             Buckets: [], foreign.ToList());
     }
@@ -115,16 +115,16 @@ public sealed partial record MinioInventory
         public long WalLastModifiedUnix;
         public string? WalLastSegment;
 
-        public MinioShardNode ToNode(string cluster, string shard) => new(
+        public S3ShardNode ToNode(string cluster, string shard) => new(
             cluster,
             shard,
             SizeBytes,
             Fulls.OrderBy(kv => kv.Key, StringComparer.Ordinal)
-                .Select(kv => new MinioFullNode(
+                .Select(kv => new S3FullNode(
                     kv.Key, kv.Value.SizeBytes, kv.Value.ObjectCount, kv.Value.LastModifiedUnix))
                 .ToList(),
             HasWal
-                ? new MinioWalNode(WalSegmentCount, WalHistoryCount, WalSizeBytes,
+                ? new S3WalNode(WalSegmentCount, WalHistoryCount, WalSizeBytes,
                     WalLastModifiedUnix, WalLastSegment)
                 : null);
     }

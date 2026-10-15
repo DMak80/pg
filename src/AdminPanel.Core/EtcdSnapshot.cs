@@ -19,7 +19,7 @@ public sealed record EtcdSnapshot(
     int UnknownKeyCount,
     BackupStorageInfo? BackupStorage = null,      // ключ /pgworker/backups/storage (t06)
     BackupOrphansInfo? BackupOrphans = null,      // ключ /pgworker/backups/orphans (t07)
-    MinioStorageInfo? MinioStorage = null,       // live-инвентарь MinIO (t08, adminpanel/02 §2.5)
+    S3StorageInfo? S3Storage = null,       // live-S3-инвентарь (t08, adminpanel/02 §2.5)
     WorkerApiCert? WorkerApiCert = null,         // целевой серт API PgWorker (adminpanel/02 §9.9)
     EtcdSnapshotExportInfo? EtcdSnapshots = null, // статус выгрузки etcd-снапшотов (t08, adminpanel/02 §2.3.1)
     IReadOnlyList<S3PoolInfo>? S3Pools = null);   // пулы /s3/clusters/ read-минимум (t36, adminpanel/02 §12)

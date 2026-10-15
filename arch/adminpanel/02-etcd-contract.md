@@ -175,7 +175,7 @@ pg/kafka-инстансов) пробит живые инстансы ValkeyWork
 | `POST /v3/cluster/member/list` | активный endpoint | `EtcdMember[]`: id, name, peerUrls, clientUrls; `IsLeader` по совпадению id со статусом leader |
 | `POST /v3/maintenance/alarm` | активный endpoint | `Alarm[]`: memberId, type (NOSPACE, CORRUPT, NOSPACE-потомки) |
 
-### 2.5. MinIO/S3 бэкапов — live-чтение панели (t08)
+### 2.5. S3 бэкапов — live-чтение панели (t08)
 
 Грань «Хранилище бэкапов» читает объектное хранилище бэкапов НАПРЯМУЮ (не через
 etcd): per-install креды — env `AdminPanel:Backups:S3:*` (arch/19 §7, в git их
@@ -193,7 +193,7 @@ ListBuckets; LiveOk — live-проба, 404/403 → фолбэк `GET /healthz`
 канонический ответ ownS3 на анонимный запрос вне `/healthz`/`/metrics`
 — arch/owns3/03/05 §5, 404 — несуществующий путь; фолбэк только по
 статусу ответа — мёртвый endpoint вторую пробу не крутит); ClusterOk —
-null вне MinIO-контура (404/403/нет ответа); пишущие/удаляющие операции —
+null вне ownS3-контура (404/403/нет ответа); пишущие/удаляющие операции —
 только воркер (arch/19 §4/§5). Инвентарь-тик 60 c (`IntervalSec`): ListBuckets +
 health + ОДИН полный list-v2 bucket → агрегаты дерева `<C>/<X>` в стор →
 снапшот `EtcdSnapshot.MinioStorage` (§3); построчные объекты — on-demand
@@ -221,7 +221,7 @@ sealed record EtcdSnapshot(
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
     IReadOnlyList<WorkJournalInfo> PgWorkerWork, // §2.3.1: журналы /pgworker/work/<C>
     IReadOnlyList<WorkerHealth> WorkerHealth, // §2.3.1: опрос /healthz живых инстансов
-    MinioStorageInfo? MinioStorage,   // §2.5: live-инвентарь MinIO (t08), null — грань не настроена
+    MinioStorageInfo? MinioStorage,   // §2.5: live-S3-инвентарь (t08), null — грань не настроена
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
@@ -254,7 +254,7 @@ sealed record WorkerHealth(
 
 enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
 
-// Live-инвентарь MinIO-грани «Хранилище бэкапов» (§2.5, t08): пишется
+// Live-инвентарь S3-грани «Хранилище бэкапов» (§2.5, t08): пишется
 // инвентарь-тиком в стор, вносится refresher'ом; null — грань не настроена.
 // t36: Endpoints — цели инвентаря списком (env Endpoints; одиночный Endpoint —
 // валидный частный случай, один элемент); ключей в DTO нет.

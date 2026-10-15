@@ -48,7 +48,7 @@ internal static class PanelHostBuilder
 }
 
 // Фабрика грани «Хранилище бэкапов» (t08, план Task 9, Решение 7): РЕАЛЬНЫЙ
-// SnapshotStore, SnapshotRefresher и MinioInventoryLoop из композиции Program
+// SnapshotStore, SnapshotRefresher и S3InventoryLoop из композиции Program
 // (никаких TestSnapshotStore/стабов гейтвея), но hosted-сервисы сняты — тики
 // двигает тест вручную (loop.RunOnceAsync → refresher.RefreshOnceAsync;
 // прецедент spec §3.10/§3.17 — InspectionEtcdApiTests). Конфиг — UseSetting:
@@ -66,14 +66,14 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     /// (AC1): секция AdminPanel:Backups не задаётся вовсе.</summary>
     public string? MinioEndpoint { get; set; }
 
-    /// <summary>Bucket фикстуры MinIO (apm-backups-{guid}).</summary>
+    /// <summary>Bucket фикстуры ownS3 (apm-backups-{guid}).</summary>
     public string MinioBucket { get; set; } = "";
 
     /// <summary>Стаб API воркера для прокси-мутаций (reliability t02: policy);
     /// null — реальный гейтвей (тесты прокси ставят свой TestWorkerApi).</summary>
     public TestWorkerApi? WorkerApi { get; set; }
 
-    /// <summary>Вариант AC1: хост без настроек MinIO-грани.</summary>
+    /// <summary>Вариант AC1: хост без настроек S3-грани.</summary>
     public static BackupsWebFactory WithoutMinio(string etcdEndpoint) => new()
     {
         EtcdEndpoint = etcdEndpoint,
@@ -109,8 +109,8 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
         {
             builder.UseSetting("AdminPanel:Backups:S3:Endpoint", MinioEndpoint);
             builder.UseSetting("AdminPanel:Backups:S3:Bucket", MinioBucket);
-            builder.UseSetting("AdminPanel:Backups:S3:AccessKey", MinioContainerFixture.AccessKey);
-            builder.UseSetting("AdminPanel:Backups:S3:SecretKey", MinioContainerFixture.SecretKey);
+            builder.UseSetting("AdminPanel:Backups:S3:AccessKey", S3NodeContainerFixture.AccessKey);
+            builder.UseSetting("AdminPanel:Backups:S3:SecretKey", S3NodeContainerFixture.SecretKey);
             builder.UseSetting("AdminPanel:Backups:S3:PathStyle", "true");
             builder.UseSetting("AdminPanel:Backups:IntervalSec", "60");
             builder.UseSetting("AdminPanel:Backups:TimeoutSec", "5");
@@ -120,7 +120,7 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
         {
             // hosted НЕ стартуют: снапшот/инвентарь — только ручные тики теста.
             // Сами сервисы разрешимы из Services: конкретные типы (SnapshotRefresher,
-            // MinioInventoryLoop) зарегистрированы отдельными дескрипторами,
+            // S3InventoryLoop) зарегистрированы отдельными дескрипторами,
             // RemoveAll снимает только пересылки IHostedService.
             services.RemoveAll<IHostedService>();
             if (WorkerApi is not null)

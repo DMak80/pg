@@ -87,7 +87,7 @@ public class BackupStorageQueryTests
 
     // ——— маппер configured=false — AAA ———
 
-    // AAA: снапшот без MinioStorage → DTO только Configured=false + причина
+    // AAA: снапшот без S3Storage → DTO только Configured=false + причина
     [Fact]
     public void MapStorage_NotConfigured_Stub()
     {
@@ -114,7 +114,7 @@ public class BackupStorageQueryTests
         // Arrange — demo/s1 (владелец есть), ghost-shard/s9 (сирота в реестре)
         var snapshot = TestSnapshots.Healthy(Now) with
         {
-            MinioStorage = Minio(
+            S3Storage = Minio(
                 ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])),
                 ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
             BackupStorage = new BackupStorageInfo(152, 1000, 15.2, BackupStorageState.Warn, 900),
@@ -153,7 +153,7 @@ public class BackupStorageQueryTests
         // Arrange — префиксы совпадают: ghost-shard/s9 в дереве и в реестре
         var snapshot = TestSnapshots.Healthy(Now) with
         {
-            MinioStorage = Minio(
+            S3Storage = Minio(
                 ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
             BackupOrphans = new BackupOrphansInfo(
                 [new BackupOrphanInfo("ghost-shard/s9", "shard", 50, NowUnix - 100, "OBSERVED")], NowUnix),
@@ -229,7 +229,7 @@ public class BackupStorageQueryTests
     public void MapShard_JoinsEtcdAndS3()
     {
         // Arrange — полный b1 с обеих сторон, restore PLANNED в фазе downloading
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
+        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
         var etcdCluster = new ClusterBackupsInfo(
             "demo", null, new Dictionary<string, long?>(),
             ShardsRestores: new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>
@@ -239,12 +239,12 @@ public class BackupStorageQueryTests
             },
             ShardsFulls: Fulls("s1", new BackupFullInfo(
                 "b1", "COMPLETED", null, 100, 200, 116, "OK", 201, null)));
-        var reconcile = MinioReconciler.Reconcile(
-            minio, [etcdCluster], [Cluster("demo", "s1")], null);
+        var reconcile = S3Reconciler.Reconcile(
+            s3, [etcdCluster], [Cluster("demo", "s1")], null);
 
         // Act
         var dto = BackupStorageMappers.MapShard(
-            "demo", "s1", minio.Clusters[0].Shards[0], etcdCluster, reconcile);
+            "demo", "s1", s3.Clusters[0].Shards[0], etcdCluster, reconcile);
 
         // Assert — джойн фактов + бейдж активного restore (без кнопок)
         var full = dto.Fulls.Should().ContainSingle().Subject;
@@ -263,28 +263,28 @@ public class BackupStorageQueryTests
 
     private static EtcdSnapshot SnapshotWithTree(BackupOrphansInfo? registry = null) => TestSnapshots.Healthy(Now) with
     {
-        MinioStorage = Minio(
+        S3Storage = Minio(
             ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])),
             ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
         BackupOrphans = registry,
     };
 
-    private static MinioStorageInfo Minio(params MinioClusterNode[] clusters) => new(
-        Configured: true, Endpoints: ["http://minio:9000"], Bucket: "pgworker-backups",
+    private static S3StorageInfo Minio(params S3ClusterNode[] clusters) => new(
+        Configured: true, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: ["pgworker-backups"],
         UsedBytes: clusters.Sum(c => c.SizeBytes), ObjectCount: 0,
         Clusters: clusters, ForeignPrefixes: [], UpdatedAtUnix: NowUnix,
         ConsecutiveFailures: 0, LastError: null);
 
-    private static MinioClusterNode ClusterNode(string cluster, params MinioShardNode[] shards) => new(
+    private static S3ClusterNode ClusterNode(string cluster, params S3ShardNode[] shards) => new(
         cluster, shards.Sum(s => s.SizeBytes), shards);
 
-    private static MinioShardNode ShardNode(
+    private static S3ShardNode ShardNode(
         string cluster, string shard, long size = 116,
-        MinioFullNode[]? fulls = null) => new(
+        S3FullNode[]? fulls = null) => new(
         cluster, shard, size, fulls ?? [], null);
 
-    private static MinioFullNode Full(string id) => new(id, 116, 2, 900);
+    private static S3FullNode Full(string id) => new(id, 116, 2, 900);
 
     private static ClusterInfo Cluster(string name, params string[] shards) => new(
         name, name, 1, null, ClusterState.Active,

@@ -10,11 +10,11 @@ namespace AdminPanel.UnitTests;
 // соединением → list-вызовы успешны со второй; обе отказывают → Failed
 // (грань недоступна этим тиком). Клиенты per-цели подменяются internal-швом
 // (фейк-подкласс AmazonS3Client — методы виртуальные).
-public class MinioS3ClientFailoverTests
+public class S3StorageClientFailoverTests
 {
-    private static MinioOptions Options() => new()
+    private static BackupsS3Options Options() => new()
     {
-        S3 = new MinioOptions.MinioS3Options
+        S3 = new BackupsS3Options.S3Options
         {
             Endpoint = "http://a:9000",
             Endpoints = "http://a:9000,http://b:9000",
@@ -23,7 +23,7 @@ public class MinioS3ClientFailoverTests
         TimeoutSec = 2,
     };
 
-    private static MinioS3Client Client(MinioOptions options, FakeTargetClient first, FakeTargetClient second)
+    private static S3StorageClient Client(BackupsS3Options options, FakeTargetClient first, FakeTargetClient second)
         => new(options, new NeverHttpClientFactory(),
             ep => ep == "http://a:9000" ? first : second);
 

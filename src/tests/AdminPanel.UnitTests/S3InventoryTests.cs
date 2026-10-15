@@ -6,7 +6,7 @@ namespace AdminPanel.UnitTests;
 
 // Агрегация list-v2 bucket в дерево <C>/<X> (t08, AC2): полные full/<id>/,
 // WAL-сегменты и .history, корни вне формы <C>/<X>/… — foreign-факты.
-public class MinioInventoryTests
+public class S3InventoryTests
 {
     // AAA: полный (2 объекта) + WAL (2 сегмента, 1 история) → дерево и суммы
     [Fact]
@@ -23,7 +23,7 @@ public class MinioInventoryTests
         };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — шард s1: полный 116 байт/2 объекта, WAL 36 = 2+1, суммы bucket
         inv.Clusters.Should().ContainSingle();
@@ -54,7 +54,7 @@ public class MinioInventoryTests
         var objects = new List<MinioObject> { new("loose/file.bin", 10, 500) };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — кластеров нет, «loose» в ForeignPrefixes, место посчитано
         inv.Clusters.Should().BeEmpty();
@@ -77,7 +77,7 @@ public class MinioInventoryTests
         };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — Ordinal-порядок, размеры по кластерам раздельно
         inv.Clusters.Select(c => c.Cluster).Should().Equal("a", "b");
@@ -101,7 +101,7 @@ public class MinioInventoryTests
         };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — full → 300, wal → 200
         var shard = inv.Clusters[0].Shards[0];
@@ -121,7 +121,7 @@ public class MinioInventoryTests
         };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — extra в размере шарда, в full/WAL не попал (без вердикта)
         var shard = inv.Clusters[0].Shards[0];
@@ -135,7 +135,7 @@ public class MinioInventoryTests
     [Fact]
     public void Build_DirectoryMarkers_Skipped()
     {
-        // Arrange — маркеры «папок» MinIO (консоль/mc) + один реальный объект
+        // Arrange — маркеры «папок» ownS3 (консоль/mc) + один реальный объект
         var objects = new List<MinioObject>
         {
             new("demo/", 0, 1),
@@ -145,7 +145,7 @@ public class MinioInventoryTests
         };
 
         // Act
-        var inv = MinioInventory.Build(objects);
+        var inv = S3Inventory.Build(objects);
 
         // Assert — маркеры не считаются ни объектами, ни foreign-корнями;
         // full ровно один, с Id «b1»

@@ -16,7 +16,7 @@ namespace AdminPanel.IntegrationTests;
 // в POST policy-API воркера ПОЛНЫМ телом (панель в etcd не пишет).
 [Collection("backups")]
 public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
-    IClassFixture<MinioContainerFixture>, IAsyncDisposable
+    IClassFixture<S3NodeContainerFixture>, IAsyncDisposable
 {
     private readonly TestWorkerApi _workerApi = new();
 
@@ -24,17 +24,17 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
 
     private readonly string _etcdEndpoint;
 
-    private readonly MinioContainerFixture _minio;
+    private readonly S3NodeContainerFixture _minio;
 
-    public BackupsPolicyPanelApiTests(EtcdContainerFixture etcd, MinioContainerFixture minio)
+    public BackupsPolicyPanelApiTests(EtcdContainerFixture etcd, S3NodeContainerFixture s3)
     {
         _etcdEndpoint = etcd.Endpoint;
-        _minio = minio;
+        _minio = s3;
         _factory = new BackupsWebFactory
         {
             EtcdEndpoint = etcd.Endpoint,
-            MinioEndpoint = minio.HostEndpoint,
-            MinioBucket = minio.Bucket,
+            MinioEndpoint = s3.HostEndpoint,
+            MinioBucket = s3.Bucket,
             WorkerApi = _workerApi,
         };
     }
@@ -83,8 +83,8 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
             ct);
         // Объект demo/s1 в S3 — кластер появляется в дереве инвентаря.
         await _minio.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
-        var minio = _factory.Services.GetRequiredService<MinioInventoryLoop>();
-        await minio.RunOnceAsync(ct);
+        var s3 = _factory.Services.GetRequiredService<S3InventoryLoop>();
+        await s3.RunOnceAsync(ct);
         (await _factory.Services.GetRequiredService<SnapshotRefresher>().RefreshOnceAsync(ct))
             .IsSuccess.Should().BeTrue();
         using var client = await BackupsLogin.LoginAsync(_factory);

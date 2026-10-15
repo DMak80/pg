@@ -8,17 +8,17 @@ using System.Text.Json;
 namespace AdminPanel.Probes.S3;
 
 /// <summary>Объект list-v2 (on-demand пагинация — ContinuationToken наружу).</summary>
-public sealed record MinioObjectInfo(string Key, long SizeBytes, long LastModifiedUnix);
+public sealed record S3ObjectInfo(string Key, long SizeBytes, long LastModifiedUnix);
 
 /// <summary>Страница list-v2.</summary>
-public sealed record S3Page(IReadOnlyList<MinioObjectInfo> Items, string? NextContinuationToken);
+public sealed record S3Page(IReadOnlyList<S3ObjectInfo> Items, string? NextContinuationToken);
 
 /// <summary>Read-only клиент MinIO/S3 панели (t08, adminpanel/02 §2.5): контракт
 /// уровня кода — только ListBuckets/ListObjectsV2 и публичные health-эндпоинты;
 /// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/19 §4/§5).
 /// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*;
 /// унификация etcd-каркаса — t08, 2026-09-14; MinIO-клиент выведен за её скоуп).</summary>
-public interface IMinioS3
+public interface IS3StorageClient
 {
     Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct);
 
@@ -28,18 +28,18 @@ public interface IMinioS3
         string? prefix, string? continuationToken, int maxKeys, CancellationToken ct);
 
     /// <summary>Health: ApiOk — ListBuckets прошёл (API жив + креды валидны),
-    /// LiveOk — GET /minio/health/live, 404/403 → фолбэк GET /healthz (канон
+    /// LiveOk — GET /s3/health/live, 404/403 → фолбэк GET /healthz (канон
     /// ownS3; HttpClient, без SigV4; 403 — канонический ответ ownS3 на
     /// анонимный запрос вне /healthz и /metrics); ClusterOk — GET
-    /// /minio/health/cluster, null — эндпоинт не отвечает/не поддерживается
-    /// (вкл. 404/403 — не MinIO-контур); drives-поля тела cluster парсятся
+    /// /s3/health/cluster, null — эндпоинт не отвечает/не поддерживается
+    /// (вкл. 404/403 — не ownS3-контур); drives-поля тела cluster парсятся
     /// толерантно (нет полей/битый JSON → Drives null).</summary>
-    Task<MinioHealth> GetHealthAsync(CancellationToken ct);
+    Task<S3Health> GetHealthAsync(CancellationToken ct);
 }
 
-public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
+public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
 {
-    public const string HealthHttpClientName = "minio-health";
+    public const string HealthHttpClientName = "s3-health";
 
     private readonly bool _configured;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -56,26 +56,26 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, AmazonS3Client> _targetClients = new();
 
     // Единственный ctor (DI): health-пробы идут через именованный HttpClient
-    // "minio-health" — фикс интеграции AC2/AC3 (t08): DI выбирал 1-арговый ctor
-    // (MinioOptions не резолвится) и клиент жил с _httpClientFactory = null,
+    // "s3-health" — фикс интеграции AC2/AC3 (t08): DI выбирал 1-арговый ctor
+    // (BackupsS3Options не резолвится) и клиент жил с _httpClientFactory = null,
     // health-пробы молча не выполнялись (LiveOk всегда false).
-    public MinioS3Client(IOptions<MinioOptions> options, IHttpClientFactory httpClientFactory)
+    public S3StorageClient(IOptions<BackupsS3Options> options, IHttpClientFactory httpClientFactory)
         : this(options.Value, httpClientFactory)
     {
     }
 
     // Юнит-шов (t36): подмена клиента per-цели — тесты перебора строят
     // фейк-подкласс AmazonS3Client (методы виртуальные) вместо транспорта.
-    internal MinioS3Client(
-        MinioOptions options, IHttpClientFactory httpClientFactory,
+    internal S3StorageClient(
+        BackupsS3Options options, IHttpClientFactory httpClientFactory,
         Func<string, AmazonS3Client> targetClientFactory)
         : this(options, httpClientFactory)
     {
         _targetClientFactory = targetClientFactory;
     }
 
-    // httpClientFactory — именованный HttpClient "minio-health" (без SigV4).
-    public MinioS3Client(MinioOptions options, IHttpClientFactory httpClientFactory)
+    // httpClientFactory — именованный HttpClient "s3-health" (без SigV4).
+    public S3StorageClient(BackupsS3Options options, IHttpClientFactory httpClientFactory)
     {
         _bucket = options.S3.Bucket;
         _httpClientFactory = httpClientFactory;
@@ -173,7 +173,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
                     MaxKeys = maxKeys,
                 }, ct);
                 var items = response.S3Objects
-                    .Select(o => new MinioObjectInfo(
+                    .Select(o => new S3ObjectInfo(
                         o.Key, o.Size,
                         new DateTimeOffset(o.LastModified.ToUniversalTime(), TimeSpan.Zero)
                             .ToUnixTimeSeconds()))
@@ -190,10 +190,10 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
         }, "S3 list-v2");
     }
 
-    public async Task<MinioHealth> GetHealthAsync(CancellationToken ct)
+    public async Task<S3Health> GetHealthAsync(CancellationToken ct)
     {
         var buckets = await ListBucketsAsync(ct);
-        var live = await ProbeHealthAsync("/minio/health/live", withDrives: false, ct);
+        var live = await ProbeHealthAsync("/s3/health/live", withDrives: false, ct);
         // ownS3-фолбэк: 404/403 = «хранилище не MinIO» (эндпоинт жив, путь
         // не поддерживается): 404 — несуществующий путь, 403 — канонический
         // ответ ownS3 на анонимный запрос вне /healthz и /metrics
@@ -203,16 +203,16 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
         // пробу не крутит.
         if (live.StatusCode is 404 or 403)
             live = await ProbeHealthAsync("/healthz", withDrives: false, ct);
-        var cluster = await ProbeHealthAsync("/minio/health/cluster", withDrives: true, ct);
+        var cluster = await ProbeHealthAsync("/s3/health/cluster", withDrives: true, ct);
 
         // 200 → true; 503 → false (degraded); нет ответа или 404/403
-        // (эндпоинт не поддерживается — не MinIO-контур) → null; drives
+        // (эндпоинт не поддерживается — не ownS3-контур) → null; drives
         // при 404/403 нет.
         bool? clusterOk = cluster.StatusCode is null or 404 or 403
             ? null
             : cluster.StatusCode == 200;
 
-        return new MinioHealth(
+        return new S3Health(
             buckets.IsSuccess,
             buckets.IsSuccess ? null : buckets.Error!.Message,
             live.StatusCode == 200,
@@ -225,7 +225,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     // t36: перебор целей с первого ответившего (list-семантика 02 §2.5) —
     // мёртвая первая цель не роняет live/cluster-грань; фолбэк live→healthz
     // остаётся пробой по статусу (мёртвый endpoint вторую пробу не крутит).
-    private async Task<(int? StatusCode, MinioDrives? Drives)> ProbeHealthAsync(
+    private async Task<(int? StatusCode, S3Drives? Drives)> ProbeHealthAsync(
         string relativePath, bool withDrives, CancellationToken ct)
     {
         foreach (var endpoint in _endpoints)
@@ -235,7 +235,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
                 var client = _httpClientFactory.CreateClient(HealthHttpClientName);
                 using var response = await client.GetAsync(
                     new Uri($"{endpoint}{relativePath}"), ct);
-                MinioDrives? drives = null;
+                S3Drives? drives = null;
                 if (withDrives)
                 {
                     var body = await response.Content.ReadAsStringAsync(ct);
@@ -253,7 +253,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
         return (null, null);
     }
 
-    private static MinioDrives? ParseDrives(string? body)
+    private static S3Drives? ParseDrives(string? body)
     {
         if (string.IsNullOrWhiteSpace(body))
             return null;
@@ -263,7 +263,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return null;
-            return new MinioDrives(
+            return new S3Drives(
                 OptionalLong(root, "healthyDrives"),
                 OptionalLong(root, "offlineDrives"),
                 OptionalLong(root, "healingDrives"),

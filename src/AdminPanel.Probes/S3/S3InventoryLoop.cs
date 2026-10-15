@@ -5,25 +5,25 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Probes.S3;
 
-// Фоновый инвентарь-тик MinIO (t08, adminpanel/02 §2.5, spec §4.3): раз в
+// Фоновый S3-инвентарь-тик (t08, adminpanel/02 §2.5, spec §4.3): раз в
 // IntervalSec — health + ListBuckets + ОДИН полный list-v2 bucket постранично →
-// MinioInventory.Build → атомарная замена в сторе (KV-тик refresher'а не
+// S3Inventory.Build → атомарная замена в сторе (KV-тик refresher'а не
 // блокируется). Сбой любого шага: ConsecutiveFailures +1, прежний инвентарь
 // живёт (устаревающий, штамп UpdatedAtUnix); успех — счётчик 0.
 // Пустой Endpoint — грань выключена: ExecuteAsync завершается сразу (AC1).
-public sealed class MinioInventoryLoop(
-    IMinioS3 client,
-    IMinioInventoryStore store,
-    IOptions<MinioOptions> options,
+public sealed class S3InventoryLoop(
+    IS3StorageClient client,
+    IS3InventoryStore store,
+    IOptions<BackupsS3Options> options,
     TimeProvider time,
-    ILogger<MinioInventoryLoop> logger) : BackgroundService
+    ILogger<S3InventoryLoop> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!options.Value.IsConfigured)
         {
             logger.LogInformation(
-                "AdminPanel:Backups:S3:Endpoint не задан — MinIO-грань выключена, инвентарь-тик не запускается");
+                "AdminPanel:Backups:S3:Endpoint не задан — S3-грань выключена, инвентарь-тик не запускается");
             return;
         }
 
@@ -57,10 +57,10 @@ public sealed class MinioInventoryLoop(
             return; // выключенная грань — no-op, клиент не зовётся (AC1)
 
         // Маркер configured до первого тика (Решение 4): API различает «не
-        // настроено» (MinioStorage null) и «настроено, инвентарь ещё собирается».
+        // настроено» (S3Storage null) и «настроено, инвентарь ещё собирается».
         if (store.Current is null)
         {
-            store.Replace(new MinioStorageInfo(
+            store.Replace(new S3StorageInfo(
                 Configured: true, config.S3.TargetList(), config.S3.Bucket,
                 Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                 Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
@@ -70,10 +70,10 @@ public sealed class MinioInventoryLoop(
         var at = time.GetUtcNow().ToUnixTimeSeconds();
 
         // (1) health — факт доступности на ЭТОТ тик: реальный клиент не бросает
-        // (пробы гасят исключения в MinioHealth); AC3: Health в сторе обновляется
+        // (пробы гасят исключения в S3Health); AC3: Health в сторе обновляется
         // КАЖДЫМ тиком — у остановленного MinIO apiOk/liveOk=false, при этом
         // инвентарь остаётся прежним (устаревающим, штамп не растёт).
-        MinioHealth health;
+        S3Health health;
         try
         {
             health = await client.GetHealthAsync(ct);
@@ -104,12 +104,12 @@ public sealed class MinioInventoryLoop(
             }
             while (token is not null);
 
-            var inventory = MinioInventory.Build(objects);
+            var inventory = S3Inventory.Build(objects);
             logger.LogInformation(
-                "AdminPanel:Backups: инвентарь MinIO обновлён — {Clusters} кластеров, {Bytes} байт, {Objects} объектов",
+                "AdminPanel:Backups: S3-инвентарь обновлён — {Clusters} кластеров, {Bytes} байт, {Objects} объектов",
                 inventory.Clusters.Count, inventory.UsedBytes, inventory.ObjectCount);
 
-            store.Replace(new MinioStorageInfo(
+            store.Replace(new S3StorageInfo(
                 Configured: true, config.S3.TargetList(), config.S3.Bucket,
                 health, buckets.Value, inventory.UsedBytes, inventory.ObjectCount,
                 inventory.Clusters, inventory.ForeignPrefixes, at,
@@ -124,15 +124,15 @@ public sealed class MinioInventoryLoop(
     // Сбойный тик: счётчик +1, Health — факт текущей пробы (AC3; null — проба
     // сама бросила), данные/штамп прежние (аналог FailTick refresher'а); маркер
     // Решения 4 (стор был пуст) остаётся с UpdatedAtUnix=0.
-    private void FailTick(string message, MinioHealth? health)
+    private void FailTick(string message, S3Health? health)
     {
         var previous = store.Current;
         logger.LogWarning(
-            "AdminPanel:Backups: инвентарь-тик MinIO не удался ({Failures} подряд): {Error}",
+            "AdminPanel:Backups: S3-инвентарь-тик не удался ({Failures} подряд): {Error}",
             (previous?.ConsecutiveFailures ?? 0) + 1, message);
         store.Replace(
             previous is null
-                ? new MinioStorageInfo(
+                ? new S3StorageInfo(
                     Configured: true, options.Value.S3.TargetList(), options.Value.S3.Bucket,
                     Health: health, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                     Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,

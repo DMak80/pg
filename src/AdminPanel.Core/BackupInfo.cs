@@ -49,7 +49,7 @@ public sealed record ClusterBackupsInfo(
     IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null,
     // t05: restore-заявки per-shard (вход правила restore-failed).
     IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null,
-    // t08: все etcd-полные per-shard — вход MinioReconciler; null = парсер t08
+    // t08: все etcd-полные per-shard — вход S3Reconciler; null = парсер t08
     // их не собрал.
     IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null,
     // reliability t02: последний/текущий дрилл per-shard (вход правил
@@ -106,7 +106,7 @@ public sealed record BackupWalReconcile(
     string? EtcdLastSegment, long? EtcdLastUnix,
     string? S3LastObject, long? S3LastModifiedUnix);
 
-/// <summary>Итог MinioReconciler.Reconcile — чистая функция над снапшотом.</summary>
+/// <summary>Итог S3Reconciler.Reconcile — чистая функция над снапшотом.</summary>
 public sealed record BackupReconcileInfo(
     IReadOnlyList<BackupFullReconcile> Fulls,
     IReadOnlyList<BackupOrphanPrefix> OrphanPrefixes,

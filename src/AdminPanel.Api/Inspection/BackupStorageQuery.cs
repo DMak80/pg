@@ -9,8 +9,8 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Api.Inspection;
 
 // Запросы грани «Хранилище бэкапов» (t08, arch/03 §1): сводка из снапшота +
-// сверка MinioReconciler; детали шарда (джойн etcd×S3); on-demand objects —
-// единственный прямой выход в MinIO на запрос. Креды S3 в DTO не отдаются
+// сверка S3Reconciler; детали шарда (джойн etcd×S3); on-demand objects —
+// единственный прямой выход в ownS3 на запрос. Креды S3 в DTO не отдаются
 // никогда (AC8): только endpoint/bucket.
 
 public sealed record BackupStorageQuery : IQuery<BackupStorageDto>;
@@ -44,7 +44,7 @@ public sealed record BackupObjectsQuery(string? Prefix, int? MaxKeys, string? Co
         var head = prefix.Split('/')[0];
         if (snapshot.Clusters.Any(c => c.Name == head))
             return true;
-        var tree = snapshot.MinioStorage?.Clusters;
+        var tree = snapshot.S3Storage?.Clusters;
         return tree is not null && tree.Any(c => c.Cluster == head);
     }
 
@@ -62,7 +62,7 @@ public sealed record BackupObjectsQuery(string? Prefix, int? MaxKeys, string? Co
 
 // ——— DTO (camelCase; S3-ключи AccessKey/SecretKey НЕ отдаются — AC8) ———
 
-public sealed record MinioHealthDto(
+public sealed record S3HealthDto(
     bool ApiOk, string? ApiError, bool LiveOk, bool? ClusterOk,
     long? HealthyDrives, long? OfflineDrives, long? HealingDrives, long? TotalDrives);
 
@@ -78,11 +78,11 @@ public sealed record BackupStorageDto(
     bool Configured, string? NotConfiguredReason,
     IReadOnlyList<string> Endpoints, // t36 (02 §2.5): цели инвентаря списком, без ключей
     string? Bucket,
-    MinioHealthDto? Health,
+    S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
     EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (t08, read-only карточка)
-    long? LiveUsedBytes,        // live-инвентарь (снапшот MinioStorage)
+    long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
     IReadOnlyList<BackupOrphanDto> Orphans, // реестр воркера + сверка панели, слитые
@@ -161,7 +161,7 @@ public sealed class InvalidBackupMaxKeysException(int? maxKeys)
 public sealed class BackupsStorageNotConfiguredException()
     : Exception("AdminPanel:Backups:S3:Endpoint не задан — грань «Хранилище бэкапов» выключена");
 
-// Транспортный сбой обращения к MinIO — 502.
+// Транспортный сбой обращения к ownS3 — 502.
 public sealed class BackupsS3UnavailableException(string message)
     : Exception(message);
 
@@ -171,8 +171,8 @@ public static class BackupStorageMappers
 {
     public static BackupStorageDto MapStorage(EtcdSnapshot snapshot, long orphanTtlSec, long nowUnix)
     {
-        var minio = snapshot.MinioStorage;
-        if (minio is null)
+        var s3 = snapshot.S3Storage;
+        if (s3 is null)
         {
             // AC1: грань не настроена — только configured + причина.
             return new BackupStorageDto(
@@ -184,28 +184,28 @@ public static class BackupStorageMappers
                 InventoryUpdatedUnix: 0, InventoryError: null);
         }
 
-        var reconcile = MinioReconciler.Reconcile(
-            minio, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
+        var reconcile = S3Reconciler.Reconcile(
+            s3, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
 
         return new BackupStorageDto(
             Configured: true,
             NotConfiguredReason: null,
-            Endpoints: minio.Endpoints,
-            Bucket: minio.Bucket,
-            Health: MapHealth(minio.Health),
-            Buckets: minio.Buckets,
+            Endpoints: s3.Endpoints,
+            Bucket: s3.Bucket,
+            Health: MapHealth(s3.Health),
+            Buckets: s3.Buckets,
             Etcd: MapEtcdStorage(snapshot.BackupStorage),
             EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
-            LiveUsedBytes: minio.UsedBytes,
-            Clusters: MapClusters(minio.Clusters, reconcile, snapshot.Backups),
-            ForeignPrefixes: minio.ForeignPrefixes,
+            LiveUsedBytes: s3.UsedBytes,
+            Clusters: MapClusters(s3.Clusters, reconcile, snapshot.Backups),
+            ForeignPrefixes: s3.ForeignPrefixes,
             Orphans: MergeOrphans(reconcile.OrphanPrefixes, snapshot.BackupOrphans, orphanTtlSec, nowUnix),
-            InventoryUpdatedUnix: minio.UpdatedAtUnix,
-            InventoryError: minio.LastError);
+            InventoryUpdatedUnix: s3.UpdatedAtUnix,
+            InventoryError: s3.LastError);
     }
 
-    public static MinioHealthDto? MapHealth(MinioHealth? health)
-        => health is null ? null : new MinioHealthDto(
+    public static S3HealthDto? MapHealth(S3Health? health)
+        => health is null ? null : new S3HealthDto(
             health.ApiOk, health.ApiError, health.LiveOk, health.ClusterOk,
             health.Drives?.HealthyDrives, health.Drives?.OfflineDrives,
             health.Drives?.HealingDrives, health.Drives?.TotalDrives);
@@ -223,7 +223,7 @@ public static class BackupStorageMappers
             export.LastSha256, export.SizeBytes, export.IntervalMin, export.Error);
 
     private static IReadOnlyList<BackupClusterStorageDto> MapClusters(
-        IReadOnlyList<MinioClusterNode> clusters, BackupReconcileInfo reconcile,
+        IReadOnlyList<S3ClusterNode> clusters, BackupReconcileInfo reconcile,
         IReadOnlyList<ClusterBackupsInfo> etcdBackups)
     {
         var s3OnlyByShard = reconcile.Fulls
@@ -324,7 +324,7 @@ public static class BackupStorageMappers
     // Детали шарда: джойн сверки per-full + WAL + активный restore.
     public static BackupShardStorageDto MapShard(
         string cluster, string shard,
-        MinioShardNode? s3Shard,
+        S3ShardNode? s3Shard,
         ClusterBackupsInfo? etcdCluster,
         BackupReconcileInfo reconcile)
     {
@@ -383,7 +383,7 @@ public static class BackupStorageMappers
 
 // ——— handlers ([InjectAsScoped], образец KafkaQuery) ———
 
-// Сводка грани: снапшот + MinioReconciler (чистая функция, без IO на запрос).
+// Сводка грани: снапшот + S3Reconciler (чистая функция, без IO на запрос).
 [InjectAsScoped]
 public sealed class BackupStorageQueryHandler(ISnapshotReader reader, IOptions<AlertsOptions> alertsOptions)
     : IQueryHandler<BackupStorageQuery, BackupStorageDto>
@@ -416,9 +416,9 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
             return ValueTask.FromResult(Result<BackupShardStorageDto>.Failed(
                 new InspectionModule.SnapshotNotReadyException()));
 
-        var minio = snapshot.MinioStorage;
+        var s3 = snapshot.S3Storage;
         var etcdCluster = snapshot.Backups.FirstOrDefault(c => c.Cluster == query.Cluster);
-        var s3Shard = minio?.Clusters.FirstOrDefault(c => c.Cluster == query.Cluster)
+        var s3Shard = s3?.Clusters.FirstOrDefault(c => c.Cluster == query.Cluster)
             ?.Shards.FirstOrDefault(s => s.Shard == query.Shard);
 
         // 404 — ШАРДА нет ни в etcd, ни в S3-дереве (spec §4.6): шард считается
@@ -436,21 +436,21 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
             return ValueTask.FromResult(Result<BackupShardStorageDto>.Failed(
                 new BackupShardNotFound(query.Cluster, query.Shard)));
 
-        var reconcile = minio is null
+        var reconcile = s3 is null
             ? new BackupReconcileInfo([], [], [])
-            : MinioReconciler.Reconcile(
-                minio, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
+            : S3Reconciler.Reconcile(
+                s3, snapshot.Backups, snapshot.Clusters, snapshot.BackupOrphans);
 
         return ValueTask.FromResult(Result<BackupShardStorageDto>.Success(
             BackupStorageMappers.MapShard(query.Cluster, query.Shard, s3Shard, etcdCluster, reconcile)));
     }
 }
 
-// On-demand list-v2: единственный прямой выход API в MinIO на запрос.
+// On-demand list-v2: единственный прямой выход API в ownS3 на запрос.
 [InjectAsScoped]
 public sealed class BackupObjectsQueryHandler(
-    IMinioS3 client,
-    IOptions<MinioOptions> options,
+    IS3StorageClient client,
+    IOptions<BackupsS3Options> options,
     ISnapshotReader reader) : IQueryHandler<BackupObjectsQuery, BackupObjectsPageDto>
 {
     public async ValueTask<Result<BackupObjectsPageDto>> Handle(

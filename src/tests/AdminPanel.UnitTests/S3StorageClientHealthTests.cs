@@ -5,14 +5,14 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Health-проба MinioS3Client на ownS3-контур (t41, arch/adminpanel/02 §2.5):
-// /minio/health/live 404 ИЛИ 403 → фолбэк GET /healthz (403 — канонический
+// Health-проба S3StorageClient на ownS3-контур (t41, arch/adminpanel/02 §2.5):
+// /s3/health/live 404 ИЛИ 403 → фолбэк GET /healthz (403 — канонический
 // ответ ownS3 на анонимный запрос вне /healthz и /metrics, arch/owns3/03/05;
-// 404 — несуществующий путь MinIO-контура); cluster 404/403 → null. S3-API
+// 404 — несуществующий путь ownS3-контура); cluster 404/403 → null. S3-API
 // (ListBuckets) не предмет кейсов — endpoint фиктивный (127.0.0.1:9,
 // connection refused), apiOk закономерно false; HTTP-пробы обслуживает
 // фейковая IHttpClientFactory.
-public class MinioS3ClientHealthTests
+public class S3StorageClientHealthTests
 {
     // Фейк-хендлер: absolutePath → (статус, тело); пути вне мапы — 404;
     // deadEndpoint — каждый запрос падает («нет ответа»). Requests копит
@@ -46,10 +46,10 @@ public class MinioS3ClientHealthTests
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
-    private static MinioS3Client Client(FakeS3Handler handler) => new(
-        new MinioOptions
+    private static S3StorageClient Client(FakeS3Handler handler) => new(
+        new BackupsS3Options
         {
-            S3 = new MinioOptions.MinioS3Options
+            S3 = new BackupsS3Options.S3Options
             {
                 // Фиктивный endpoint: S3-API недостижим мгновенно
                 // (connection refused) — apiOk=false вне предмета кейсов.
@@ -62,17 +62,17 @@ public class MinioS3ClientHealthTests
         },
         new FakeHttpClientFactory(handler));
 
-    // AAA (a): ownS3-маршрут — анонимная проба /minio/health/live = 403
+    // AAA (a): ownS3-маршрут — анонимная проба /s3/health/live = 403
     // (AccessDenied, arch/owns3/03), канонический /healthz = 200 → live
-    // доказан фолбэком; cluster 403 → null (вне MinIO-контура).
+    // доказан фолбэком; cluster 403 → null (вне ownS3-контура).
     [Fact]
     public async Task Health_OwnS3_403_Fallback200_LiveOk_ClusterNull()
     {
-        // Arrange — ownS3-контур: MinIO-пути отвечают 403, /healthz — 200
+        // Arrange — ownS3-контур: пути не-ownS3 отвечают 403, /healthz — 200
         var handler = new FakeS3Handler(new Dictionary<string, (HttpStatusCode, string)>
         {
-            ["/minio/health/live"] = (HttpStatusCode.Forbidden, ""),
-            ["/minio/health/cluster"] = (HttpStatusCode.Forbidden, ""),
+            ["/s3/health/live"] = (HttpStatusCode.Forbidden, ""),
+            ["/s3/health/cluster"] = (HttpStatusCode.Forbidden, ""),
             ["/healthz"] = (HttpStatusCode.OK, ""),
         });
 
@@ -85,7 +85,7 @@ public class MinioS3ClientHealthTests
         health.ClusterOk.Should().BeNull();
         health.Drives.Should().BeNull();
         handler.Requests.Should().Equal(
-            "/minio/health/live", "/healthz", "/minio/health/cluster");
+            "/s3/health/live", "/healthz", "/s3/health/cluster");
     }
 
     // AAA (b): второй статус-триггер фолбэка — 404 (несуществующий путь)
@@ -108,17 +108,17 @@ public class MinioS3ClientHealthTests
         health.Drives.Should().BeNull();
     }
 
-    // AAA (c): MinIO-контур — live/cluster 200 (+drives-тело) — прежнее
+    // AAA (c): ownS3-контур — live/cluster 200 (+drives-тело) — прежнее
     // поведение; вторая проба НЕ выполняется (ровно два запроса, /healthz
     // не запрашивался — ошибочный фолбэк поймал бы счётчик).
     [Fact]
     public async Task Health_Minio_Live200_NoFallback_ClusterWithDrives()
     {
-        // Arrange — живой MinIO-контур
+        // Arrange — живой ownS3-контур
         var handler = new FakeS3Handler(new Dictionary<string, (HttpStatusCode, string)>
         {
-            ["/minio/health/live"] = (HttpStatusCode.OK, ""),
-            ["/minio/health/cluster"] = (HttpStatusCode.OK,
+            ["/s3/health/live"] = (HttpStatusCode.OK, ""),
+            ["/s3/health/cluster"] = (HttpStatusCode.OK,
                 """{"healthyDrives":4,"offlineDrives":0,"healingDrives":0,"totalDrives":4}"""),
         });
 
@@ -131,7 +131,7 @@ public class MinioS3ClientHealthTests
         health.Drives.Should().NotBeNull();
         health.Drives!.TotalDrives.Should().Be(4);
         handler.Requests.Should().Equal(
-            "/minio/health/live", "/minio/health/cluster");
+            "/s3/health/live", "/s3/health/cluster");
     }
 
     // AAA (d): мёртвый endpoint — все пробы без ответа → liveOk=false,
@@ -150,7 +150,7 @@ public class MinioS3ClientHealthTests
         health.LiveOk.Should().BeFalse();
         health.ClusterOk.Should().BeNull();
         handler.Requests.Should().Equal(
-            "/minio/health/live", "/minio/health/cluster");
+            "/s3/health/live", "/s3/health/cluster");
     }
 
     // AAA: оба live-пути 404 → liveOk=false (down), clusterOk=null.

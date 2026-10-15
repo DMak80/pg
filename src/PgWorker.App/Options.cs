@@ -455,7 +455,7 @@ public sealed class SnapshotExportS3Options
 
     public string SecretKey { get; set; } = "";
 
-    /// <summary>Регион (опц.; MinIO/ownS3 не требуют — null).</summary>
+    /// <summary>Регион (опц.; ownS3 не требует — null).</summary>
     public string? Region { get; set; }
 
     /// <summary>Путь CA-bundle https-endpoint слепков (опц.; пусто — системное доверие).</summary>

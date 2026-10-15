@@ -36,7 +36,7 @@ public static class BackupsParser
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
-        // t08: все etcd-полные per-shard (вход MinioReconciler и деталей шарда).
+        // t08: все etcd-полные per-shard (вход S3Reconciler и деталей шарда).
         var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;

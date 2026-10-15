@@ -20,7 +20,7 @@ public sealed class SnapshotRefresher(
     ISnapshotStore store,
     IProbeStateStore probeStateStore,
     IWorkerHealthStore workerHealthStore,
-    IMinioInventoryStore minioStore,
+    IS3InventoryStore minioStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -175,9 +175,9 @@ public sealed class SnapshotRefresher(
             with
         {
             WorkerHealth = workerHealthStore.Current ?? [],
-            // t08: live-инвентарь MinIO — готовым состоянием из стора (по образцу
+            // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
-            MinioStorage = minioStore.Current,
+            S3Storage = minioStore.Current,
             // t36: проекция /s3/clusters/ — тем же тиком (02 §12); ошибки парсинга
             // домена — в общий перечень (симметрия прочих доменов).
             S3Pools = s3Pools,
@@ -260,7 +260,7 @@ public sealed class SnapshotRefresher(
             previous?.UnknownKeyCount ?? 0,
             previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
-            previous?.MinioStorage, // инвентарь MinIO переживает отказ etcd (t08, как WorkerHealth)
+            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (t08, как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
             previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик (t08)
 

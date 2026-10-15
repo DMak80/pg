@@ -11,7 +11,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции WAL-приёмника против живого PG + MinIO (t27 Ф2, docker, динамические
-// порты, guid-окружение OwnPostgres/OwnMinio, полный teardown при любом исходе).
+// порты, guid-окружение OwnPostgres/OwnS3, полный teardown при любом исходе).
 // AC1: restart_lsn ≤ доставленного в S3 хвоста; AC6: обрыв S3 → backpressure →
 // восстановление без дыр; рестарт — дозасылка от хвоста; segment-size mismatch —
 // permanent (код 3).
@@ -76,14 +76,14 @@ public class WalReceiverIntegrationTests
         }
     }
 
-    private static BackupS3 HostS3(OwnMinio minio) => new(minio.S3());
+    private static BackupS3 HostS3(OwnS3 minio) => new(minio.S3());
 
     /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты).</summary>
     private async Task<(CancellationTokenSource Cts, Task<int> Run)> StartCoreAsync(
-        OwnPostgres postgres, OwnMinio minio, string cluster, string shard)
+        OwnPostgres postgres, OwnS3 minio, string cluster, string shard)
     {
         var options = postgres.ReceiverOptions(
-            minio.HostEndpoint, cluster, shard, OwnMinio.AccessKey, OwnMinio.SecretKey);
+            minio.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         var s3 = HostS3(minio);
         var source = new PgWorker.WalReceiver.NpgsqlXLogSource(options);
         var slots = new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options);
@@ -131,7 +131,7 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-delivery", ct);
-        await using var minio = await OwnMinio.StartAsync("wal-it-delivery", ct);
+        await using var minio = await OwnS3.StartAsync("wal-it-delivery", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
         await using var s3 = HostS3(minio);
@@ -183,7 +183,7 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-restart", ct);
-        await using var minio = await OwnMinio.StartAsync("wal-it-restart", ct);
+        await using var minio = await OwnS3.StartAsync("wal-it-restart", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
         await using var s3 = HostS3(minio);
@@ -228,7 +228,7 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-s3down", ct);
-        await using var minio = await OwnMinio.StartAsync("wal-it-s3down", ct);
+        await using var minio = await OwnS3.StartAsync("wal-it-s3down", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
         await using var s3 = HostS3(minio);
@@ -299,13 +299,13 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-segsize", ct, initdbArgs: "--wal-segsize=32");
-        await using var minio = await OwnMinio.StartAsync("wal-it-segsize", ct);
+        await using var minio = await OwnS3.StartAsync("wal-it-segsize", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
 
         // Act — запуск приёмника: сверка wal_segment_size → permanent-выход
         var options = postgres.ReceiverOptions(
-            minio.HostEndpoint, cluster, shard, OwnMinio.AccessKey, OwnMinio.SecretKey);
+            minio.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         await using var s3 = HostS3(minio);
         var stdout = new StringWriter();
         var code = await PgWorker.WalReceiver.WalReceiverCore.RunAsync(

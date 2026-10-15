@@ -11,7 +11,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// S3-sink снапшотов etcd (t08): OwnEtcd + OwnMinio на Fact (своё окружение,
+// S3-sink снапшотов etcd (t08): OwnEtcd + OwnS3 на Fact (своё окружение,
 // динамические порты, teardown при любом исходе — e2e-isolation §1/§3).
 // Сценарии: экспорт после TakeAsync, каждый слепок новой парой, ретенция,
 // транзиент → FAILED → доводка, верификация разворачиваемости (etcdctl
@@ -20,14 +20,14 @@ namespace PgWorker.IntegrationTests.Backups;
 public class EtcdSnapshotSinkTests
 {
     // Прямой клиент-помощник для сида/чтения объектов (AWSSDK, не тестируемый код).
-    private static AmazonS3Client SeedClient(OwnMinio minio) => new(
-        new BasicAWSCredentials(OwnMinio.AccessKey, OwnMinio.SecretKey),
+    private static AmazonS3Client SeedClient(OwnS3 minio) => new(
+        new BasicAWSCredentials(OwnS3.AccessKey, OwnS3.SecretKey),
         new AmazonS3Config { ServiceURL = minio.HostEndpoint, ForcePathStyle = true });
 
-    private static S3ClientOptions BadS3Runtime(OwnMinio minio)
+    private static S3ClientOptions BadS3Runtime(OwnS3 minio)
         => minio.S3() with { Endpoint = $"http://localhost:{E2eFixture.FreePort()}" }; // закрытый порт — транзиент
 
-    private static async Task<EtcdSnapshotSink> SinkAsync(OwnEtcd etcd, OwnMinio minio, string instance,
+    private static async Task<EtcdSnapshotSink> SinkAsync(OwnEtcd etcd, OwnS3 minio, string instance,
         int retention = 28, CancellationToken ct = default)
     {
         var s3 = new BackupS3(minio.S3());
@@ -35,10 +35,10 @@ public class EtcdSnapshotSinkTests
     }
 
     // Чтение объекта bucket'a напрямую (проверка факта «реально лежит в S3»).
-    private static async Task<byte[]> GetObjectBytesAsync(OwnMinio minio, string key, CancellationToken ct)
+    private static async Task<byte[]> GetObjectBytesAsync(OwnS3 minio, string key, CancellationToken ct)
     {
         using var client = SeedClient(minio);
-        var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnMinio.Bucket, Key = key }, ct);
+        var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnS3.Bucket, Key = key }, ct);
         using var ms = new MemoryStream();
         await response.ResponseStream.CopyToAsync(ms, ct);
         return ms.ToArray();
@@ -55,7 +55,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — своё etcd + MinIO; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink1", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink1", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink1", ct);
         var dir = Directory.CreateTempSubdirectory("sink-export-").FullName;
         var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
@@ -100,7 +100,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — своё окружение; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink2", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink2", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink2", ct);
         var dir = Directory.CreateTempSubdirectory("sink-pairs-").FullName;
         var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
@@ -142,7 +142,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — sink с ретенцией 2; три снятия с паузами
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink3", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink3", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink3", ct);
         var dir = Directory.CreateTempSubdirectory("sink-retain-").FullName;
         var sink = await SinkAsync(etcdFx, minioFx, "inst-A", retention: 2, ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
@@ -163,7 +163,7 @@ public class EtcdSnapshotSinkTests
         using var client = SeedClient(minioFx);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "etcd/snapshot-20260101-000000.meta.json",
             ContentBody = """{"sha256":"x"}""",
         }, ct);
@@ -186,7 +186,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — sink на закрытый порт (S3 недоступен); SnapshotJob с ним
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink4", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink4", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink4", ct);
         var dir = Directory.CreateTempSubdirectory("sink-transient-").FullName;
         var badS3 = new BackupS3(BadS3Runtime(minioFx));
         var sink = new EtcdSnapshotSink(badS3, etcdFx.Gateway, [etcdFx.Endpoint], 28, 5, "inst-A", 360);
@@ -211,7 +211,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — слепок снят при недоступном S3 (FAILED-статус), затем живой sink
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink5", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink5", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink5", ct);
         var dir = Directory.CreateTempSubdirectory("sink-catchup-").FullName;
         var badS3 = new BackupS3(BadS3Runtime(minioFx));
         var brokenSink = new EtcdSnapshotSink(badS3, etcdFx.Gateway, [etcdFx.Endpoint], 28, 5, "inst-A", 360);
@@ -248,7 +248,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — экспорт слепка в S3; скачивание .db и .meta.json
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink6", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink6", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink6", ct);
         var dir = Directory.CreateTempSubdirectory("sink-verify-").FullName;
         var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
@@ -317,7 +317,7 @@ public class EtcdSnapshotSinkTests
         // Arrange — своё окружение; два sink'а с разными instance на тех же etcd+minio
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink7", ct);
-        await using var minioFx = await OwnMinio.StartAsync("sink7", ct);
+        await using var minioFx = await OwnS3.StartAsync("sink7", ct);
         var dirA = Directory.CreateTempSubdirectory("sink-takeover-a-").FullName;
         var dirB = Directory.CreateTempSubdirectory("sink-takeover-b-").FullName;
         var sinkA = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);

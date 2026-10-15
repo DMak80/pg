@@ -226,7 +226,7 @@ public static class InspectionModule
     }
 
     // GET /api/backups/* — грань «Хранилище бэкапов» (t08, arch/03 §1): сводка/
-    // детали — из снапшота; objects — on-demand list-v2 (единственный выход в MinIO).
+    // детали — из снапшота; objects — on-demand list-v2 (единственный выход в ownS3).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
     {
         // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной).

@@ -2,14 +2,14 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Probes.S3;
 
-// [Config]-POCO MinIO-грани «Хранилище бэкапов» (t08, spec §4.1, arch/01 §6):
+// [Config]-POCO S3-грани «Хранилище бэкапов» (t08, spec §4.1, arch/01 §6):
 // симметрия PgWorker:Backups:S3 (arch/19 §7). Пустой Endpoint — грань выключена
 // (тик не стартует, API configured=false, алерт молчит) — отдельного Enabled-
 // флага нет. Креды — только env поверх appsettings (AdminPanel__Backups__S3__*).
 [Config("AdminPanel:Backups")]
-public class MinioOptions
+public class BackupsS3Options
 {
-    public MinioS3Options S3 { get; set; } = new();
+    public S3Options S3 { get; set; } = new();
 
     // Период инвентарь-тика (полный list-v2 bucket).
     public int IntervalSec { get; set; } = 60;
@@ -44,7 +44,7 @@ public class MinioOptions
                 "AdminPanel:Backups:TimeoutSec <= 0 при заданном Endpoint");
     }
 
-    public sealed class MinioS3Options
+    public sealed class S3Options
     {
         // Пусто — грань выключена (переключатель грани, t08).
         public string Endpoint { get; set; } = "";

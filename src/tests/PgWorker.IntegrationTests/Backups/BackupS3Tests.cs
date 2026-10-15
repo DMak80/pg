@@ -7,7 +7,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// S3-листер против живого MinIO: у КАЖДОГО Fact своё окружение OwnMinio
+// S3-листер против живого MinIO: у КАЖДОГО Fact своё окружение OwnS3
 // (guid-имя pgw-em-*, динамический порт, свой bucket, own-only teardown с
 // ассертом чистоты — docs/e2e-isolation.md §1/§3): посев одного теста не виден
 // другому. Сценарии: list/пагинация/отсутствие префикса (t03 spec Ф2),
@@ -16,8 +16,8 @@ namespace PgWorker.IntegrationTests.Backups;
 public class BackupS3Tests
 {
     // Прямой клиент-помощник для сида объектов (AWSSDK, не тестируемый код).
-    private static AmazonS3Client SeedClient(OwnMinio minio) => new(
-        new BasicAWSCredentials(OwnMinio.AccessKey, OwnMinio.SecretKey),
+    private static AmazonS3Client SeedClient(OwnS3 minio) => new(
+        new BasicAWSCredentials(OwnS3.AccessKey, OwnS3.SecretKey),
         new AmazonS3Config { ServiceURL = minio.HostEndpoint, ForcePathStyle = true });
 
     [Fact]
@@ -25,7 +25,7 @@ public class BackupS3Tests
     {
         // Arrange — своё MinIO-окружение Fact'а (teardown при любом исходе)
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -41,7 +41,7 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение: bucket пуст, чужих посевов быть не может
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -57,23 +57,23 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + посев: свой шард, чужой шард, не-wal
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c1/shard1/wal/000000010000000000000001",
             ContentBody = "x",
         }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c1/shard2/wal/000000010000000000000001", // чужой шард
             ContentBody = "x",
         }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c1/shard1/full/20260910120000Z/base.tar", // не-wal
             ContentBody = "x",
         }, ct);
@@ -91,12 +91,12 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + 5 объектов, страница по 2 → 3 запроса
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         for (var i = 1; i <= 5; i++)
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = $"c2/shard1/wal/0000000100000000000000{i:x2}",
                 ContentBody = "x",
             }, ct);
@@ -114,11 +114,11 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + один объект
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         var put = await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c3/shard1/wal/000000010000000000000001",
             ContentBody = "x",
         }, ct);
@@ -139,17 +139,17 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + объект полного (тело 10 байт) и wal соседнего префикса
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c9/shard1/full/20260901/base.tar",
             ContentBody = "0123456789",
         }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c9/shard1/wal/000000010000000000000001",
             ContentBody = "x",
         }, ct);
@@ -170,17 +170,17 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + объекты в двух кластер-префиксах
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c10/shard1/full/20260901/base.tar",
             ContentBody = "x",
         }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c11/shard9/wal/000000010000000000000001",
             ContentBody = "x",
         }, ct);
@@ -202,12 +202,12 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + 5 объектов, страница по 2
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         for (var i = 1; i <= 5; i++)
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = $"c12/shard1/full/2026090{i}/base.tar",
                 ContentBody = "x",
             }, ct);
@@ -226,7 +226,7 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + два объекта под удаление
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         var keys = new[]
         {
@@ -236,7 +236,7 @@ public class BackupS3Tests
         foreach (var key in keys)
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = key,
                 ContentBody = "x",
             }, ct);
@@ -259,7 +259,7 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение, пустой список ключей
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act — delete без ключей
@@ -274,7 +274,7 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + 1002 объекта (два чанка: 1000+2)
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         var keys = new List<string>();
         for (var i = 0; i < 1002; i++)
@@ -283,7 +283,7 @@ public class BackupS3Tests
             keys.Add(key);
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = key,
                 ContentBody = "x",
             }, ct);
@@ -308,14 +308,14 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + набор full/<id>/pg_wal/ и соседние объекты
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
-        { BucketName = OwnMinio.Bucket, Key = "v1/shard1/full/20260911120000Z/pg_wal/000000010000000000000001", ContentBody = "x" }, ct);
+        { BucketName = OwnS3.Bucket, Key = "v1/shard1/full/20260911120000Z/pg_wal/000000010000000000000001", ContentBody = "x" }, ct);
         await client.PutObjectAsync(new PutObjectRequest
-        { BucketName = OwnMinio.Bucket, Key = "v1/shard1/wal/000000010000000000000001", ContentBody = "x" }, ct);
+        { BucketName = OwnS3.Bucket, Key = "v1/shard1/wal/000000010000000000000001", ContentBody = "x" }, ct);
         await client.PutObjectAsync(new PutObjectRequest
-        { BucketName = OwnMinio.Bucket, Key = "v1/shard1/full/20260911120000Z/PG_VERSION", ContentBody = "x" }, ct);
+        { BucketName = OwnS3.Bucket, Key = "v1/shard1/full/20260911120000Z/PG_VERSION", ContentBody = "x" }, ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -332,11 +332,11 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + 5 объектов, страница по 2
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         for (var i = 1; i <= 5; i++)
             await client.PutObjectAsync(new PutObjectRequest
-            { BucketName = OwnMinio.Bucket, Key = $"v2/shard1/wal/0000000100000000000000{i:x2}", ContentBody = "x" }, ct);
+            { BucketName = OwnS3.Bucket, Key = $"v2/shard1/wal/0000000100000000000000{i:x2}", ContentBody = "x" }, ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -352,10 +352,10 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + history-объект
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
-        { BucketName = OwnMinio.Bucket, Key = "v3/shard1/wal/00000002.history", ContentBody = "1\t0/2000000\n" }, ct);
+        { BucketName = OwnS3.Bucket, Key = "v3/shard1/wal/00000002.history", ContentBody = "1\t0/2000000\n" }, ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -372,7 +372,7 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение, объекта нет
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         await using var s3 = new BackupS3(minio.S3());
 
         // Act
@@ -390,17 +390,17 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + два полных в разных full/<id>/
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         foreach (var id in new[] { "20260911120000Z", "20260911090000Z" })
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = "c15/shard1/full/" + id + "/backup_manifest",
             }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c15/shard2/full/20260911000000Z/backup_manifest", // чужой шард
         }, ct);
         await using var s3 = new BackupS3(minio.S3());
@@ -419,12 +419,12 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + 3 полных, страница по 1
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         for (var i = 1; i <= 3; i++)
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = OwnMinio.Bucket,
+                BucketName = OwnS3.Bucket,
                 Key = $"c16/shard1/full/2026091100000{i}Z/backup_manifest",
             }, ct);
         await using var s3 = new BackupS3(minio.S3());
@@ -443,11 +443,11 @@ public class BackupS3Tests
     {
         // Arrange — своё окружение + backup_label-объект
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        await using var minio = await OwnS3.StartAsync("s3", ct);
         using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = OwnMinio.Bucket,
+            BucketName = OwnS3.Bucket,
             Key = "c17/shard1/full/b1/backup_label",
             ContentBody = "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n",
         }, ct);
@@ -469,7 +469,7 @@ public class BackupS3Tests
     {
         // Arrange — своё MinIO-окружение Fact'а
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3put", ct);
+        await using var minio = await OwnS3.StartAsync("s3put", ct);
         await using var s3 = new BackupS3(minio.S3());
         var data = new byte[] { 1, 2, 3, 4, 5 };
 
@@ -479,7 +479,7 @@ public class BackupS3Tests
         // Assert — прямой клиент читает те же байты
         put.IsSuccess.Should().BeTrue();
         using var client = SeedClient(minio);
-        var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnMinio.Bucket, Key = "etcd/snapshot-test.db" }, ct);
+        var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnS3.Bucket, Key = "etcd/snapshot-test.db" }, ct);
         using var ms = new MemoryStream();
         await response.ResponseStream.CopyToAsync(ms, ct);
         ms.ToArray().Should().Equal(data);
@@ -491,7 +491,7 @@ public class BackupS3Tests
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        await using var minio = await OwnMinio.StartAsync("s3bad", ct);
+        await using var minio = await OwnS3.StartAsync("s3bad", ct);
         await using var s3 = new BackupS3(minio.S3());
         // 64-символьная hex-строка нулей — валидная длина, неверное значение
         const string wrongSha = "0000000000000000000000000000000000000000000000000000000000000000";
