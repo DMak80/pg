@@ -23,22 +23,307 @@ namespace PgWorker.IntegrationTests.E2e;
 // AC6 — чтение с любой ноды (mc-mirror эмуляция mesh + стоп ноды → restore);
 // AC7 — слепки на отдельной паре (свой bucket) + fail-fast без пары;
 // AC8 — валидация policy-API по полям (400) + restore из source_pool чужого пула.
-public class E2eBackupPoolScenarios
+public abstract class E2eBackupPoolScenarios
 {
-    private const string Bucket = "pgworker-backups";
-    private const string SnapshotBucket = "pgworker-etcd-snapshots";
+    protected const string Bucket = "pgworker-backups";
+    protected const string SnapshotBucket = "pgworker-etcd-snapshots";
 
     // Пул E2E (etcd у Fact'а свой — имя может быть постоянным). Вторая нода —
     // alias в сети окружения (StartExtraS3NodeAsync("e2e-owns3-2")).
-    private const string Pool = "bkpool";
-    private const string Node2Alias = "e2e-owns3-2";
+    protected const string Pool = "bkpool";
+    protected const string Node2Alias = "e2e-owns3-2";
 
-    private E2eEnvironment Fx = null!;
-    private string Endpoint => Fx.EtcdEndpoint;
-    private EtcdGateway G => Fx.Gateway;
+    protected E2eEnvironment Fx = null!;
+    protected string Endpoint => Fx.EtcdEndpoint;
+    protected EtcdGateway G => Fx.Gateway;
 
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    protected static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
+    // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
+
+    protected static string PolicyKey(string cluster) => $"/pgworker/backups/{cluster}/policy";
+
+    // mTLS policy-API воркера: тело канона, ответ (status, body) — кейсы 400 AC8.
+    protected static async Task<(System.Net.HttpStatusCode Code, string Body)> PutPolicyApiAsync(
+        HttpClient api, HostInstance app, string cluster, string body, CancellationToken ct)
+    {
+        using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+        using var response = await api.PostAsync(
+            $"https://127.0.0.1:{app.ApiPort}/api/clusters/{cluster}/backups/policy",
+            content, ct);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(ct));
+    }
+
+    protected static string HostPort(string endpoint)
+        => endpoint.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/');
+
+    // Воркер с включённой подсистемой: пул — policy.s3 (etcd), bucket и env-профиль
+    // кредов — env (t36); образы e2e, ускоренный бэкофф, короткие пороги WAL.
+    protected Task<HostInstance> StartPoolHostAsync(string name, CancellationToken ct)
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        {
+            ["PgWorker__Backups__Enabled"] = "true",
+            ["PgWorker__Backups__S3__Bucket"] = Bucket,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
+            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
+            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
+            ["PgWorker__Backups__Retry__BaseSec"] = "2",
+            ["PgWorker__Backups__Retry__MaxSec"] = "4",
+            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
+            ["PgWorker__Backups__Wal__StaleSec"] = "600",
+            ["PgWorker__Backups__Wal__LagMaxSegments"] = "100000",
+            ["PgWorker__Backups__Restore__RecoveryTimeoutSec"] = "600",
+            ["PgWorker__Thresholds__PatroniBootSec"] = "120",
+        }, ct: ct);
+
+    protected async Task SeedClusterAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var config = $$"""
+            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
+            """;
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
+        }
+
+        for (var i = 0; i < 2; i++)
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
+                """{"state":"NOT_INITIALIZED"}""", null, ct);
+        }
+    }
+
+    // Policy кластера со списками записи (формат spec §5).
+    protected async Task PutPolicyAsync(string cluster, IReadOnlyList<string> master, IReadOnlyList<string> replica)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await G.PutAsync(Endpoint, PolicyKey(cluster),
+            $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\","
+            + $"\"write_master\":[{string.Join(",", master.Select(n => $"\"{n}\""))}],"
+            + $"\"write_replica\":[{string.Join(",", replica.Select(n => $"\"{n}\""))}]}}}}",
+            null, ct);
+    }
+
+    // Инспекция ноды пула по её endpoint: mc ls --recursive bucket/prefix.
+    protected Task<string> McLsOnNodeAsync(string hostPort, string prefix)
+        => Fx.RunMcAsync(
+            $"mc alias set t http://{hostPort} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+            + $" && mc ls --recursive t/{Bucket}/{prefix} || true",
+            TestContext.Current.CancellationToken);
+
+    // Имена объектов из листинга ноды (последний токен строки — путь).
+    protected async Task<IReadOnlyList<string>> McKeysOnNodeAsync(string hostPort, string prefix)
+    {
+        var listing = await McLsOnNodeAsync(hostPort, prefix);
+        return listing.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(l => l[(l.LastIndexOf(' ') + 1)..])
+            .ToList();
+    }
+
+    protected async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
+        => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
+            TestContext.Current.CancellationToken)).Value;
+
+    protected async Task<Kv?> GetOrNullAsync(string key)
+        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // Первый COMPLETED-полный шарда (ключ статуса).
+    protected async Task<Kv> WaitCompletedFullAsync(string cluster, CancellationToken ct)
+    {
+        Kv? done = null;
+        var completed = await E2eFixture.WaitForAsync(async () =>
+        {
+            done = (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
+            return done is not null;
+        }, TimeSpan.FromSeconds(300), ct);
+        completed.Should().BeTrue("полный обязан дойти до COMPLETED");
+        return done!;
+    }
+
+    protected async Task<bool> WaitBothWalAgentsAsync(string cluster, CancellationToken ct)
+        => await E2eFixture.WaitForAsync(async () =>
+        {
+            var ps = await Fx.RunDockerAsync(
+            [
+                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
+                "--format", "{{.Names}} {{.State}}",
+            ], ct);
+            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+        }, TimeSpan.FromSeconds(300), ct);
+
+    protected async Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
+        => await E2eFixture.WaitForAsync(async () =>
+        {
+            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+            if (config is null
+                || JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!
+                    .ContainsKey("state"))
+                return false;
+            var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
+            var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+            return dsn is not null && node is { Value: "RUNNING" };
+        }, TimeSpan.FromSeconds(360), ct);
+
+    protected static async Task ExecAsync(string adminDsn, string sql, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // WAL-нагрузка под admin/superuser (образец E2eWalStreamPromoteScenarios).
+    protected static async Task GenerateWalAsync(string adminDsn, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        await using (var create = new NpgsqlCommand(
+            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+            await create.ExecuteNonQueryAsync(ct);
+        for (var i = 0; i < 30; i++)
+        {
+            await using var insert = new NpgsqlCommand(
+                "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
+            await insert.ExecuteNonQueryAsync(ct);
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
+    }
+
+    protected static async Task BackgroundWalLoadAsync(string adminDsn, CancellationToken ct)
+    {
+        try
+        {
+            await using var conn = new NpgsqlConnection(adminDsn);
+            await conn.OpenAsync(ct);
+            await using (var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+                await create.ExecuteNonQueryAsync(ct);
+            while (!ct.IsCancellationRequested)
+            {
+                await using var insert = new NpgsqlCommand(
+                    "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 4)", conn);
+                await insert.ExecuteNonQueryAsync(ct);
+                await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+                await switchWal.ExecuteScalarAsync(ct);
+                await Task.Delay(15000, ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // штатная остановка нагрузки
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            // соединение могло умереть вместе со сценарием — не маскируем отмену
+        }
+    }
+
+    protected static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        for (var i = 0; i < count; i++)
+        {
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
+    }
+
+    // Published pg-порт мастера шарда из portalloc; резолв primary — пробы
+    // Patroni /primary (копия E2eWalStreamPromoteScenarios.MasterPgAsync).
+    protected async Task<(string Host, int Port, string Node)> MasterPgAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        string? primary = null;
+        var resolved = await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var (key, addr) in entries
+                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                         .OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        primary = key.Split('/')[1];
+                        return true;
+                    }
+                }
+                catch (Exception)
+                {
+                    // проба (рестарт/ещё не готова) — следующая нода
+                }
+            }
+
+            return false;
+        }, TimeSpan.FromSeconds(120), ct);
+        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        var entry = entries[$"{shard}/{primary}"];
+        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(), primary!);
+    }
+
+    // PUT PLANNED-заявки restore прямым ключом (прецедент E2eRestoreScenarios).
+    protected async Task<string> PutRestorePlannedAsync(
+        string cluster, string shard, string target, string? source = null,
+        CancellationToken ct = default)
+    {
+        var id = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-{shard}";
+        var op = new RestoreOperationState(id, RestoreStatus.Planned, "",
+            source ?? $"{cluster}/{shard}", target, $"{shard}a",
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "e2e");
+        await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id),
+            PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op), null, ct);
+        return id;
+    }
+
+    // Поллинг restore-ключа до терминального статуса (упрощённый образец).
+    protected async Task<Dictionary<string, JsonElement>> WaitRestoreAsync(
+        string cluster, string shard, string id, TimeSpan budget, CancellationToken ct)
+    {
+        Dictionary<string, JsonElement>? status = null;
+        var done = await E2eFixture.WaitForAsync(async () =>
+        {
+            var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
+            if (raw is null)
+                return false;
+            status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
+            return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
+        }, budget, ct);
+        if (!done || status!["state"].GetString() == "FAILED")
+            throw new ApplicationException(
+                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
+                + (status is null ? "ключа нет" : status["state"].GetString())
+                + (status is { } s && s.TryGetValue("error", out var err) ? $", error={err.GetString()}" : ""));
+        return status!;
+    }
+
+    protected async Task<Dictionary<string, JsonElement>> RestoreLatestAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
+        return await WaitRestoreAsync(cluster, shard, id, TimeSpan.FromSeconds(420), ct);
+    }
+}
+
+// AC1 (молчание без выбора пула → policy с s3 → COMPLETED (AC1)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
+{
     // ===== AC1 =====
 
     // AAA: policy без s3 → полный не планируется (ключей нет за окно);.policy
@@ -85,7 +370,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC2 (раскладка записи мастер/реплика по своим нодам (AC2)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
+{
     // ===== AC2 =====
 
     // AAA: пул из двух нод, write_master=[node1], write_replica=[node2]:
@@ -147,7 +438,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC3 (однонодовый пул: оба потока + restore (AC3)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
+{
     // ===== AC3 =====
 
     // AAA: однонодовый пул — оба агента пишут на node1, полный COMPLETED,
@@ -192,7 +489,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC4 (failover списка записи и исчерпание с маркером (AC4)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
+{
     // ===== AC4 =====
 
     // AAA: список записи [node1,node2] — стоп node1 → мастер-агент доезжает до
@@ -272,7 +575,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC5 (promote: агент пересоздан со списком мастера (AC5)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
+{
     // ===== AC5 =====
 
     // AAA: promote слейва (stop мастера → Patroni failover) → агент новой роли
@@ -326,7 +635,7 @@ public class E2eBackupPoolScenarios
                 if (chainStart is null)
                     return false;
                 var listed = await Fx.RunMcAsync(
-                    $"mc alias set t http://{ep1} minioadmin minioadmin >/dev/null"
+                    $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                     + $" && mc ls --recursive t/{Bucket}/{cluster}/shard1/wal/ || true");
                 var names = listed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(l => l[(l.LastIndexOf(' ') + 1)..]).ToList();
@@ -350,7 +659,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC6 (чтение с живой ноды после стопа (AC6)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
+{
     // ===== AC6 =====
 
     // AAA: данные писались на node1; mc mirror n1→n2 (эмуляция mesh-доставки);
@@ -386,8 +701,8 @@ public class E2eBackupPoolScenarios
             // Act — mirror содержимого bucket node1 → node2, затем стоп node1.
             var ep1 = HostPort(Fx.S3Endpoint);
             await Fx.RunMcAsync(
-                $"mc alias set s http://{ep1} minioadmin minioadmin >/dev/null"
-                + $" && mc alias set d http://{ep2} minioadmin minioadmin >/dev/null"
+                $"mc alias set s http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+                + $" && mc alias set d http://{ep2} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc mirror --overwrite s/{Bucket} d/{Bucket}", ct);
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
 
@@ -403,7 +718,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC7 (слепки на отдельной паре + fail-fast (AC7)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
+{
     // ===== AC7 =====
 
     // AAA: Enabled + полная пара → слепки уходят в СВОЙ bucket pgworker-etcd-
@@ -421,7 +742,7 @@ public class E2eBackupPoolScenarios
             // Arrange — bucket слепков на ownS3-ноды окружения (свой, не пуловый).
             var ep1 = HostPort(Fx.S3Endpoint);
             await Fx.RunMcAsync(
-                $"mc alias set t http://{ep1} minioadmin minioadmin >/dev/null"
+                $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc mb --ignore-existing t/{SnapshotBucket}", ct);
 
             // Act 1 — воркер со слепочной парой (localhost-вид: sink из процесса).
@@ -442,7 +763,7 @@ public class E2eBackupPoolScenarios
                 TimeSpan.FromSeconds(120), ct);
             ok.Should().BeTrue("слепочная пара обслуживает экспорт");
             var listing = await Fx.RunMcAsync(
-                $"mc alias set t http://{ep1} minioadmin minioadmin >/dev/null"
+                $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc ls --recursive t/{SnapshotBucket}/etcd/ || true", ct);
             listing.Should().Contain(".db").And.Contain(".meta.json",
                 "пара слепка — в СВОЁМ bucket с префиксом etcd/");
@@ -463,7 +784,13 @@ public class E2eBackupPoolScenarios
             throw;
         }
     }
+}
 
+// AC8 (policy-API 400 по полям + restore source_pool (AC8)) — отдельный класс: свой guid-контур; коллекции классов
+// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
+// контуров — канон docs/e2e-launch.md).
+public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
+{
     // ===== AC8 =====
 
     // AAA: policy-API — 400 по полям (пул не найден / TO_REMOVE / нода не в пуле /
@@ -520,11 +847,11 @@ public class E2eBackupPoolScenarios
             // (адрес появится при provisioning, API не отвечает 400 — spec §4.3).
             (code, _) = await PutPolicyApiAsync(api, app, cluster,
                 """{"full_max_age_sec":3600,"s3":{"pool":"claiming","write_master":["node1"],"write_replica":["node1"]}}""", ct);
-            ((int)code).Should().BeInRange(200, 299, "заявленная без portalloc нода не инвалидирует policy");
+            ((int)code).Should().BeInRange(200, 299, $"заявленная без portalloc нода не инвалидирует policy: {body}");
             // Возврат рабочей policy (замещение целиком).
             (code, _) = await PutPolicyApiAsync(api, app, cluster,
                 $$"""{"full_max_age_sec":3600,"s3":{{E2eEnvironment.PoolS3(Pool)}}}""", ct);
-            ((int)code).Should().BeInRange(200, 299, "валидная policy принимается");
+            ((int)code).Should().BeInRange(200, 299, $"валидная policy принимается: {body}");
 
             // Act 2 — DR: полный лежит в пуле «bkpool» (node1 жив); чтение DR-источника
             // задаётся source_pool. Сносим контур кластера и поднимаем заново
@@ -561,284 +888,5 @@ public class E2eBackupPoolScenarios
             Fx.MarkFailed();
             throw;
         }
-    }
-
-    // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
-
-    private static string PolicyKey(string cluster) => $"/pgworker/backups/{cluster}/policy";
-
-    // mTLS policy-API воркера: тело канона, ответ (status, body) — кейсы 400 AC8.
-    private static async Task<(System.Net.HttpStatusCode Code, string Body)> PutPolicyApiAsync(
-        HttpClient api, HostInstance app, string cluster, string body, CancellationToken ct)
-    {
-        using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
-        using var response = await api.PostAsync(
-            $"https://127.0.0.1:{app.ApiPort}/api/clusters/{cluster}/backups/policy",
-            content, ct);
-        return (response.StatusCode, await response.Content.ReadAsStringAsync(ct));
-    }
-
-    private static string HostPort(string endpoint)
-        => endpoint.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/');
-
-    // Воркер с включённой подсистемой: пул — policy.s3 (etcd), bucket и env-профиль
-    // кредов — env (t36); образы e2e, ускоренный бэкофф, короткие пороги WAL.
-    private Task<HostInstance> StartPoolHostAsync(string name, CancellationToken ct)
-        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
-        {
-            ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
-            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
-            ["PgWorker__Backups__Retry__BaseSec"] = "2",
-            ["PgWorker__Backups__Retry__MaxSec"] = "4",
-            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
-            ["PgWorker__Backups__Wal__StaleSec"] = "600",
-            ["PgWorker__Backups__Wal__LagMaxSegments"] = "100000",
-            ["PgWorker__Backups__Restore__RecoveryTimeoutSec"] = "600",
-            ["PgWorker__Thresholds__PatroniBootSec"] = "120",
-        }, ct: ct);
-
-    private async Task SeedClusterAsync(string cluster)
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var config = $$"""
-            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
-            """;
-        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
-        foreach (var shard in new[] { "shard1", "shard2" })
-        {
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
-        }
-
-        for (var i = 0; i < 2; i++)
-        {
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
-                """{"state":"NOT_INITIALIZED"}""", null, ct);
-        }
-    }
-
-    // Policy кластера со списками записи (формат spec §5).
-    private async Task PutPolicyAsync(string cluster, IReadOnlyList<string> master, IReadOnlyList<string> replica)
-    {
-        var ct = TestContext.Current.CancellationToken;
-        await G.PutAsync(Endpoint, PolicyKey(cluster),
-            $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\","
-            + $"\"write_master\":[{string.Join(",", master.Select(n => $"\"{n}\""))}],"
-            + $"\"write_replica\":[{string.Join(",", replica.Select(n => $"\"{n}\""))}]}}}}",
-            null, ct);
-    }
-
-    // Инспекция ноды пула по её endpoint: mc ls --recursive bucket/prefix.
-    private Task<string> McLsOnNodeAsync(string hostPort, string prefix)
-        => Fx.RunMcAsync(
-            $"mc alias set t http://{hostPort} minioadmin minioadmin >/dev/null"
-            + $" && mc ls --recursive t/{Bucket}/{prefix} || true",
-            TestContext.Current.CancellationToken);
-
-    // Имена объектов из листинга ноды (последний токен строки — путь).
-    private async Task<IReadOnlyList<string>> McKeysOnNodeAsync(string hostPort, string prefix)
-    {
-        var listing = await McLsOnNodeAsync(hostPort, prefix);
-        return listing.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(l => l[(l.LastIndexOf(' ') + 1)..])
-            .ToList();
-    }
-
-    private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
-        => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
-            TestContext.Current.CancellationToken)).Value;
-
-    private async Task<Kv?> GetOrNullAsync(string key)
-        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
-
-    // Первый COMPLETED-полный шарда (ключ статуса).
-    private async Task<Kv> WaitCompletedFullAsync(string cluster, CancellationToken ct)
-    {
-        Kv? done = null;
-        var completed = await E2eFixture.WaitForAsync(async () =>
-        {
-            done = (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
-            return done is not null;
-        }, TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("полный обязан дойти до COMPLETED");
-        return done!;
-    }
-
-    private async Task<bool> WaitBothWalAgentsAsync(string cluster, CancellationToken ct)
-        => await E2eFixture.WaitForAsync(async () =>
-        {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
-
-    private async Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
-        => await E2eFixture.WaitForAsync(async () =>
-        {
-            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
-            if (config is null
-                || JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!
-                    .ContainsKey("state"))
-                return false;
-            var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
-            var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-            return dsn is not null && node is { Value: "RUNNING" };
-        }, TimeSpan.FromSeconds(360), ct);
-
-    private static async Task ExecAsync(string adminDsn, string sql, CancellationToken ct)
-    {
-        await using var conn = new NpgsqlConnection(adminDsn);
-        await conn.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        await cmd.ExecuteNonQueryAsync(ct);
-    }
-
-    // WAL-нагрузка под admin/superuser (образец E2eWalStreamPromoteScenarios).
-    private static async Task GenerateWalAsync(string adminDsn, CancellationToken ct)
-    {
-        await using var conn = new NpgsqlConnection(adminDsn);
-        await conn.OpenAsync(ct);
-        await using (var create = new NpgsqlCommand(
-            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
-            await create.ExecuteNonQueryAsync(ct);
-        for (var i = 0; i < 30; i++)
-        {
-            await using var insert = new NpgsqlCommand(
-                "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
-            await insert.ExecuteNonQueryAsync(ct);
-            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
-            await switchWal.ExecuteScalarAsync(ct);
-        }
-    }
-
-    private static async Task BackgroundWalLoadAsync(string adminDsn, CancellationToken ct)
-    {
-        try
-        {
-            await using var conn = new NpgsqlConnection(adminDsn);
-            await conn.OpenAsync(ct);
-            await using (var create = new NpgsqlCommand(
-                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
-                await create.ExecuteNonQueryAsync(ct);
-            while (!ct.IsCancellationRequested)
-            {
-                await using var insert = new NpgsqlCommand(
-                    "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 4)", conn);
-                await insert.ExecuteNonQueryAsync(ct);
-                await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
-                await switchWal.ExecuteScalarAsync(ct);
-                await Task.Delay(15000, ct);
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // штатная остановка нагрузки
-        }
-        catch (Exception) when (ct.IsCancellationRequested)
-        {
-            // соединение могло умереть вместе со сценарием — не маскируем отмену
-        }
-    }
-
-    private static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
-    {
-        await using var conn = new NpgsqlConnection(adminDsn);
-        await conn.OpenAsync(ct);
-        for (var i = 0; i < count; i++)
-        {
-            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
-            await switchWal.ExecuteScalarAsync(ct);
-        }
-    }
-
-    // Published pg-порт мастера шарда из portalloc; резолв primary — пробы
-    // Patroni /primary (копия E2eWalStreamPromoteScenarios.MasterPgAsync).
-    private async Task<(string Host, int Port, string Node)> MasterPgAsync(
-        string cluster, string shard, CancellationToken ct)
-    {
-        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
-        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
-        string? primary = null;
-        var resolved = await E2eFixture.WaitForAsync(async () =>
-        {
-            foreach (var (key, addr) in entries
-                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
-                         .OrderBy(p => p.Key, StringComparer.Ordinal))
-            {
-                try
-                {
-                    using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
-                    if (response.IsSuccessStatusCode)
-                    {
-                        primary = key.Split('/')[1];
-                        return true;
-                    }
-                }
-                catch (Exception)
-                {
-                    // проба (рестарт/ещё не готова) — следующая нода
-                }
-            }
-
-            return false;
-        }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
-        var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(), primary!);
-    }
-
-    // PUT PLANNED-заявки restore прямым ключом (прецедент E2eRestoreScenarios).
-    private async Task<string> PutRestorePlannedAsync(
-        string cluster, string shard, string target, string? source = null,
-        CancellationToken ct = default)
-    {
-        var id = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-{shard}";
-        var op = new RestoreOperationState(id, RestoreStatus.Planned, "",
-            source ?? $"{cluster}/{shard}", target, $"{shard}a",
-            DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "e2e");
-        await G.PutAsync(Endpoint, PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id),
-            PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op), null, ct);
-        return id;
-    }
-
-    // Поллинг restore-ключа до терминального статуса (упрощённый образец).
-    private async Task<Dictionary<string, JsonElement>> WaitRestoreAsync(
-        string cluster, string shard, string id, TimeSpan budget, CancellationToken ct)
-    {
-        Dictionary<string, JsonElement>? status = null;
-        var done = await E2eFixture.WaitForAsync(async () =>
-        {
-            var raw = await GetOrNullAsync(PgWorker.Backups.BackupNames.RestoreKey(cluster, shard, id));
-            if (raw is null)
-                return false;
-            status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(raw.Value);
-            return status is not null && (status["state"].GetString() is "COMPLETED" or "FAILED");
-        }, budget, ct);
-        if (!done || status!["state"].GetString() == "FAILED")
-            throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
-                + (status is null ? "ключа нет" : status["state"].GetString())
-                + (status is { } s && s.TryGetValue("error", out var err) ? $", error={err.GetString()}" : ""));
-        return status!;
-    }
-
-    private async Task<Dictionary<string, JsonElement>> RestoreLatestAsync(
-        string cluster, string shard, CancellationToken ct)
-    {
-        var id = await PutRestorePlannedAsync(cluster, shard, "latest", ct: ct);
-        return await WaitRestoreAsync(cluster, shard, id, TimeSpan.FromSeconds(420), ct);
     }
 }
