@@ -124,31 +124,40 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
     // Цикл обслуживания: проход при старте и каждые 60 с (§8-а) + периодический
     // reconcile раз в ReconcileIntervalSeconds (§9 триггер 4); graceful по cancel.
-    // Эффективный период reconcile ограничен снизу гранулярностью цикла: env < 60
-    // фактически даёт 60 с (проверка срока — раз в проход обслуживания).
+    // Тик сжимается до reconcile-интервала, когда тот короче минуты (гранулярность
+    // проверки срока — §9): env-переопределение < 60 с срабатывает честно
+    // (тестовые контуры, например 10 с); проходы обслуживания остаются по
+    // расписанию 60 с.
     private async Task RunMaintenanceLoopAsync(CancellationToken ct)
     {
-        var timerPeriod = MaintenancePeriod;
-        var nextReconcile = timeProvider.GetUtcNow().AddSeconds(options.ReconcileIntervalSeconds);
+        var reconcileInterval = TimeSpan.FromSeconds(
+            Math.Clamp(options.ReconcileIntervalSeconds, 1, int.MaxValue));
+        var tick = reconcileInterval < MaintenancePeriod ? reconcileInterval : MaintenancePeriod;
+        var nextMaintenance = timeProvider.GetUtcNow();
+        var nextReconcile = timeProvider.GetUtcNow().Add(reconcileInterval);
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                try
+                if (timeProvider.GetUtcNow() >= nextMaintenance)
                 {
-                    await maintenance.RunMaintenancePassAsync(ct);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Проход обслуживания репликации не удался");
+                    nextMaintenance = timeProvider.GetUtcNow().Add(MaintenancePeriod);
+                    try
+                    {
+                        await maintenance.RunMaintenancePassAsync(ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Проход обслуживания репликации не удался");
+                    }
                 }
                 if (timeProvider.GetUtcNow() >= nextReconcile)
                 {
                     foreach (var neighbor in targets.Snapshot)
                         reconcile.Trigger(neighbor.Name, ct);
-                    nextReconcile = timeProvider.GetUtcNow().AddSeconds(options.ReconcileIntervalSeconds);
+                    nextReconcile = timeProvider.GetUtcNow().Add(reconcileInterval);
                 }
-                await Task.Delay(timerPeriod, ct);
+                await Task.Delay(tick, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
