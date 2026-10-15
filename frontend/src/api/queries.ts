@@ -60,6 +60,7 @@ import type {
   WorkersViewDto,
   OrphanDeleteAcceptedDto,
   ReliabilityDto,
+  S3PoolDto,
 } from './dto';
 
 export const queryKeys = {
@@ -506,6 +507,14 @@ export interface UpdateBackupsPolicyRequestDto {
   fullMaxAgeSec: number;
   verifyOnCreate: boolean;
   drillIntervalDays: number;
+  // t36 (02 §9.12): null — сброс секции (policy без s3 — выключение бэкапов).
+  s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
+}
+
+// GET /api/backups/s3-pools (t36, 02 §12): пулы /s3/clusters/ read-минимум
+// для Select модала «Пул бэкапов» (без ключей/секретов).
+export function fetchS3Pools(): Promise<S3PoolDto[]> {
+  return apiFetch<S3PoolDto[]>('/api/backups/s3-pools');
 }
 
 export function updateBackupsPolicy(

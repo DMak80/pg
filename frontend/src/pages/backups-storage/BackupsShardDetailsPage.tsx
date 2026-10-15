@@ -274,6 +274,8 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
         fullMaxAgeSec: policy?.fullMaxAgeSec ?? 86400,
         verifyOnCreate: policy?.verifyOnCreate ?? true,
         drillIntervalDays: drillDays === '' ? 1 : drillDays,
+        // t36: полный policy — s3 возвращаем как есть (сброс — только модалом).
+        s3: policy?.s3 ?? null,
       }),
     onSuccess: () => {
       notifications.show({

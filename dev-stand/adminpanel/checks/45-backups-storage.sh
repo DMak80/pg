@@ -79,4 +79,28 @@ api /api/backups/storage | jq -e '((tostring) | contains("SecretKey") or contain
   || { echo "❌ /api/backups/storage: в DTO просочились AccessKey/SecretKey"; exit 1; }
 echo "  секретов AccessKey/SecretKey в DTO нет"
 
+# t36 (arch/adminpanel/03 §3): пулы S3 read-минимум — модал «Пул бэкапов».
+# Пул «backups» сидится чеком 00-up.sh (S3Worker API); список пулов панели
+# несёт его с нодами, DTO без ключей.
+api /api/backups/s3-pools | jq -e 'any(.[]; .name == "backups" and (.nodes | length) >= 1)' >/dev/null \
+  || { echo "❌ /api/backups/s3-pools: пула backups нет (сид 00-up.sh?)"; exit 1; }
+api /api/backups/s3-pools | jq -e '((tostring) | contains("SecretKey") or contains("ACCESS_KEY") or contains("secret")) | not' >/dev/null \
+  || { echo "❌ /api/backups/s3-pools: просочились секреты"; exit 1; }
+echo "  s3-pools: пул backups с нодами, секретов в DTO нет"
+
+# Мутация секции s3 policy через панель (замещение целиком) + сброс.
+LOGIN_BODY='{"username":"admin","password":"admin"}'
+api_auth() { curl -fsS -b "$JAR" "$BASE$1"; }
+api_auth_put() { curl -fsS -b "$JAR" -o /dev/null -w '%{http_code}' -X PUT "$BASE$1" -H 'Content-Type: application/json' -d "$2"; }
+base_policy='{"retentionDays":1,"retentionWeeks":1,"retentionMonths":1,"fullMaxAgeSec":86400,"verifyOnCreate":true,"drillIntervalDays":1'
+code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy,"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}")"
+[ "$code" = "200" ] || { echo "❌ PUT policy c s3: $code (ожидался 200)"; exit 1; }
+api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3.pool == "backups")' >/dev/null \
+  || { echo "❌ policy.demo: секция s3 не записана"; exit 1; }
+code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy,"s3":null}")"
+[ "$code" = "200" ] || { echo "❌ PUT policy без s3 (сброс): $code"; exit 1; }
+api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3 == null)' >/dev/null \
+  || { echo "❌ policy.demo: сброс s3 не сработал"; exit 1; }
+echo "  policy s3: выбор пула и сброс через панель — ок"
+
 echo "✓ backups-storage зелёный"

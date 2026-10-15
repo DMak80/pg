@@ -2,6 +2,7 @@
 // дерево «Кластеры → шарды» с пометками сверки, блок сирот с защитой (t04) и
 // кнопками Hold/Unhold/Delete. Данные — снапшот (live-инвентарь MinIO вносится тиком).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { BackupsPoolModal } from './backups-storage/BackupsPoolModal';
 import {
   Alert,
   Badge,
@@ -18,7 +19,7 @@ import {
 import { useState } from 'react';
 import { Link } from 'react-router';
 import type { BackupStorageDto, EtcdSnapshotsDto, MinioHealthDto, BackupOrphanDto } from '../api/dto';
-import { backupsQueryKeys, fetchBackupsStorage, holdOrphan, unholdOrphan } from '../api/queries';
+import { backupsQueryKeys, fetchBackupsStorage, fetchS3Pools, holdOrphan, unholdOrphan } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatBytes, formatUnix, formatUnixAge } from '../utils/format';
@@ -29,6 +30,13 @@ export function BackupsStoragePage() {
   const query = useQuery({
     queryKey: backupsQueryKeys.storage,
     queryFn: fetchBackupsStorage,
+    refetchInterval: intervalMs,
+  });
+  // t36 (arch/adminpanel/03 §3): бейджи пула + модал «Пул бэкапов».
+  const [poolModalCluster, setPoolModalCluster] = useState<string | null>(null);
+  const poolsQuery = useQuery({
+    queryKey: ['backups', 's3-pools'],
+    queryFn: fetchS3Pools,
     refetchInterval: intervalMs,
   });
 
@@ -72,7 +80,16 @@ export function BackupsStoragePage() {
         <EtcdSnapshotsCard etcd={data.etcdSnapshots} />
         <BucketsCard buckets={data.buckets} />
       </Group>
-      <ClustersTable data={data} />
+      <ClustersTable data={data} onOpenPool={(cluster) => setPoolModalCluster(cluster)} />
+      {poolModalCluster ? (
+        <BackupsPoolModal
+          cluster={poolModalCluster}
+          policy={data.clusters.find((c) => c.cluster === poolModalCluster)?.policy ?? null}
+          pools={poolsQuery.data ?? []}
+          onClose={() => setPoolModalCluster(null)}
+          onSaved={() => void query.refetch()}
+        />
+      ) : null}
       <OrphansCard orphans={data.orphans} />
       <Text c="dimmed" size="sm">
         Инвентарь обновлён:{' '}
@@ -212,7 +229,10 @@ function BucketsCard({ buckets }: { buckets: string[] }) {
 
 // Дерево «Кластеры → шарды»: размер, полные шт., WAL-сегменты шт., пометки
 // сверки (объекты без ключа / сирота); клик по шарду → детали (spec §4.7).
-function ClustersTable({ data }: { data: BackupStorageDto }) {
+function ClustersTable({ data, onOpenPool }: {
+  data: BackupStorageDto;
+  onOpenPool: (cluster: string) => void;
+}) {
   return (
     <Card withBorder padding="md" radius="md">
       <Text fw={600} mb="xs">Кластеры → шарды</Text>
@@ -229,6 +249,8 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
                 <Table.Th>Полные</Table.Th>
                 <Table.Th>WAL-сегменты</Table.Th>
                 <Table.Th>Сверка</Table.Th>
+                <Table.Th>Пул</Table.Th>
+                <Table.Th>Действия</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -243,6 +265,12 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
                       </Group>
                     </Table.Td>
                     <Table.Td colSpan={5}><Text c="dimmed" size="sm">—</Text></Table.Td>
+                    <Table.Td><PoolBadge poolName={c.policy?.s3?.pool ?? null} /></Table.Td>
+                    <Table.Td>
+                      <Button size="compact-sm" variant="light" onClick={() => onOpenPool(c.cluster)}>
+                        Пул бэкапов
+                      </Button>
+                    </Table.Td>
                   </Table.Tr>
                 ) : (
                   c.shards.map((s) => (
@@ -281,6 +309,14 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
                           {!s.hasS3Only && !s.orphan ? <Text c="dimmed" size="sm">—</Text> : null}
                         </Group>
                       </Table.Td>
+                      <Table.Td>{s.shard === c.shards[0]?.shard ? <PoolBadge poolName={c.policy?.s3?.pool ?? null} /> : null}</Table.Td>
+                      <Table.Td>
+                        {s.shard === c.shards[0]?.shard ? (
+                          <Button size="compact-sm" variant="light" onClick={() => onOpenPool(s.cluster)}>
+                            Пул бэкапов
+                          </Button>
+                        ) : null}
+                      </Table.Td>
                     </Table.Tr>
                   ))
                 ),
@@ -290,6 +326,19 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
         </Table.ScrollContainer>
       )}
     </Card>
+  );
+}
+
+// t36 (arch/adminpanel/03 §3): бейдж пула кластера либо красный «пул не выбран».
+function PoolBadge({ poolName }: { poolName: string | null }) {
+  return poolName ? (
+    <Tooltip label={`policy.s3.pool = ${poolName}`}>
+      <Badge color="blue" variant="light" ff="monospace">{poolName}</Badge>
+    </Tooltip>
+  ) : (
+    <Tooltip label="policy без секции s3 — бэкапы кластера не пишутся (backup-pool-missing)">
+      <Badge color="red" variant="light">пул не выбран</Badge>
+    </Tooltip>
   );
 }
 

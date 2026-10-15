@@ -846,6 +846,18 @@ export interface BackupPolicyDto {
   fullMaxAgeSec: number | null;
   verifyOnCreate: boolean | null;
   drillIntervalDays: number | null;
+  // t36: секция s3 policy (arch/19 §4); null — пул не выбран.
+  s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
+}
+
+// Пул S3 read-минимум (t36, adminpanel/02 §12; GET /api/backups/s3-pools) —
+// без ключей/секретов: имена/состояния нод + endpoints.
+export interface S3PoolDto {
+  name: string;
+  secretProfile: string | null;
+  active: boolean;
+  nodes: { name: string; state: string | null }[];
+  endpoints: string[];
 }
 
 export interface BackupOrphanDto {
