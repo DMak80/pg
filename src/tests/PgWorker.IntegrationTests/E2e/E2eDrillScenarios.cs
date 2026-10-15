@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E тренировочных восстановлений (t24/ревизия 8 — разбиение
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЙ MinIO — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -25,7 +25,10 @@ public class E2eDrillScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -39,12 +42,12 @@ public class E2eDrillScenarios
         // Arrange — кластер bkdrll<тег> + policy (verify off, drill включён) + воркер.
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-drill", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-drill", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkdrll{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1}}""", null, ct);
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkdrill", ct);
 
         // Act 1 — COMPLETED-полный (бюджет 300 c)
@@ -142,10 +145,12 @@ public class E2eDrillScenarios
         // Arrange — кластер bkdrfl<тег>; дрилы выключены глобально (env IntervalDays=0).
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-drillf", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-drillf", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkdrfl{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
         await using var app = await StartBackupHostAsync("bkdrillf", ct,
             extraEnv: new Dictionary<string, string>
             {
@@ -180,8 +185,14 @@ public class E2eDrillScenarios
 
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        var corruptS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
-        
+        var corruptS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
+
+        // Догружаем цепь РЕАЛЬНЫМИ данными (GenerateWalAsync — образец
+        // E2eWalStreamScenarios): логический слот не доставляет пустые
+        // pg_switch_wal — в idle-базе позже жертвы не появляется ничего
+        // (прогон 2026-10-15: бюджет гварда сгорел на [002,003]).
+        await GenerateWalAsync(adminDsn, ct);
+
         // Act — жертва = САМ wal_start COMPLETED-полного (валидация дрилла идёт
         // от него; он гарантированно в wal/ — дублирование t02). Дыра обязана
         // иметь «найдено» — сегмент позже wal_start (гвард ниже). ВАЖНО: сегменты
@@ -193,8 +204,14 @@ public class E2eDrillScenarios
         // валидации дрилла (тик 1 с).
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var fullStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
-        var victim = PgWorker.Backups.WalFileName.TryParse(
+        var fullStart = PgWorker.Backups.WalFileName.TryParse(
             fullStatus["wal_start_segment"].GetString()!)!.Value;
+        // Жертва — предпоследний доставленный сегмент (дыра СТРОГО внутри цепи):
+        // удалённая ГОЛОВА легитимно переживает переработку цепи (CheckWithRestart
+        // сдвигает начало — дрилл succeeds, прогон 2026-10-15), сосед слева —
+        // начало полного, сосед справа — доставлен. Соседи жертвы гарантируют
+        // «дыру внутри» → валидационный FAILED.
+        PgWorker.Backups.WalFileName victim = default;
         var victimReady = await E2eFixture.WaitForAsync(async () =>
         {
             var list = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -204,12 +221,15 @@ public class E2eDrillScenarios
                 .Select(o => PgWorker.Backups.WalFileName.TryParse(o.Name))
                 .OfType<PgWorker.Backups.WalFileName>()
                 .Distinct()
+                .OrderBy(w => w.Tli).ThenBy(w => w.Log).ThenBy(w => w.Seg)
                 .ToList();
-            return positions.Any(w => (w.Tli, w.Log, w.Seg) == (victim.Tli, victim.Log, victim.Seg))
-                   && positions.Any(w => w.Tli > victim.Tli
-                       || (w.Tli == victim.Tli
-                           && (w.Log > victim.Log
-                               || (w.Log == victim.Log && w.Seg > victim.Seg))));
+            var startIdx = positions.FindIndex(
+                w => (w.Tli, w.Log, w.Seg) == (fullStart.Tli, fullStart.Log, fullStart.Seg));
+            // Цепь от начала полного несёт ≥3 сегмента: [.. fullStart .. жертва .. хвост].
+            if (startIdx < 0 || positions.Count - startIdx < 3)
+                return false;
+            victim = positions[^2];
+            return true;
         }, TimeSpan.FromSeconds(300), ct);
         if (!victimReady)
         {
@@ -231,17 +251,21 @@ public class E2eDrillScenarios
         // прогон мерж-гейта 2026-10-01: дрилл легитимно SUCCEEDED на зажившей
         // цепи). Остановленный агент ничего не ре-аплоадит; планировщик BROKEN-
         // пересъёма завершается ПОСЛЕ валидации дрилла (дыра живёт ≥1 тик).
+        // Останавливаем ВСЕ агенты шарда (их по два, t07): оставшийся агент
+        // пересъёмом заживает дыру до валидации дрилла (прогон 2026-10-15:
+        // второй агент вернул жертву — дрилл легитимно SUCCEEDED на зажившей цепи).
         var agents = await Fx.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-        var agentName = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Select(n => n.Trim()).FirstOrDefault();
-        agentName.Should().NotBeNullOrEmpty("агент shard1 жив — предусловие стопа");
-        await Fx.RunDockerAsync(["stop", agentName!], ct);
+        var agentNames = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(n => n.Trim()).ToList();
+        agentNames.Should().NotBeEmpty("агенты shard1 живы — предусловие стопа");
+        foreach (var agentName in agentNames)
+            await Fx.RunDockerAsync(["stop", agentName], ct);
 
         (await corruptS3.DeleteKeysAsync([$"{cluster}/shard1/wal/{victim.Name}"], ct))
             .IsSuccess.Should().BeTrue("сегмент-жертва обязан удалиться");
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1}}""", null, ct);
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
 
         // Assert — валидационный FAILED (бюджет 180 c: тик + валидация list).
         var failed = await E2eFixture.WaitForAsync(async () =>
@@ -315,24 +339,23 @@ public class E2eDrillScenarios
 
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
-    // Воркер с включённой подсистемой бэкапов: S3 на локальный MinIO,
+    // Воркер с включённой подсистемой бэкапов: S3 на ownS3-ноду,
     // образ pgworker-backup:e2e, ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
-        string name, CancellationToken ct, string? s3EndpointOverride = null,
+        string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var env = new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
+        foreach (var (key, value) in Fx.BackupPoolEnv())
+            env[key] = value;
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);
@@ -367,6 +390,10 @@ public class E2eDrillScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // ниже (с секцией s3 — без неё подсистема кластера молчит).
+        await Fx.SeedS3PoolAsync(Pool, ct);
     }
 
     // Закрытие count сегментов на мастере (логические сообщения + pg_switch_wal):

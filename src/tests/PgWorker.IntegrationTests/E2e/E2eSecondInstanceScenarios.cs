@@ -171,7 +171,7 @@ public class E2eSecondInstanceScenarios
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
             // PortRange — остаток ОКНА контура (t24, spec §1.5): тот же контракт,
             // что у хост-воркеров StartHostAsync — окно за вычетом инфраструктуры
-            // контура (etcd/MinIO/API-порты/w1/w2); литеральные диапазоны
+            // контура (etcd/ownS3/API-порты/w1/w2); литеральные диапазоны
             // (одинаковые всем контурам) запрещены — межконтурная гонка bind'ов.
             ["PgWorker__Docker__PortRange__From"] = Fx.RemainingPortRange.From.ToString(),
             ["PgWorker__Docker__PortRange__To"] = Fx.RemainingPortRange.To.ToString(),

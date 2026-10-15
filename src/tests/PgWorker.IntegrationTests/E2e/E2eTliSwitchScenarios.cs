@@ -23,12 +23,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // доставлен) → ДВЕ restore-заявки на ОДНОЙ цепочке и ОДНОМ контуре класса
 // (граница изоляции — сценарный класс, docs/e2e-isolation.md §1): (a) latest —
 // полный хвост через точку; (b) PITR target_time — остановка в цели ПОСЛЕ
-// переключения. Окружение целиком своё (сеть/etcd/MinIO по guid, динамические
+// переключения. Окружение целиком своё (сеть/etcd/ownS3 по guid, динамические
 // порты, teardown при любом исходе с ассертом чистоты); телеметрия —
 // docs/e2e-launch.md ([PHASE]-строки, MarkFailed-режим оставляет контейнеры).
 public sealed class TliSwitchContext : IAsyncLifetime
 {
     private const string Bucket = "pgworker-backups";
+
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
 
     // Поля контура (spec §3.1): заполняются InitializeAsync, читаются Fact'ами.
     public E2eEnvironment Fx = null!;
@@ -70,7 +73,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (Fx is null)
             return; // контур не поднимался (гейт docker выключен)
         // Teardown окружения при любом исходе: kill воркеров → dispose
-        // etcd/MinIO → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
+        // etcd/ownS3 → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
         // MarkFailed-режим останавливает, не удаляя (разбор по артефактам
         // /tmp/pgw-e2e-artifacts-<guid>/ + README-cleanup.txt).
         await Fx.DisposeAsync();
@@ -84,11 +87,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Вся подготовка контура (шаги 1–6 spec §3.2).
     private async Task PrepareAsync(CancellationToken ct)
     {
-        // Шаг 1 — контур: окружение (сеть/etcd/MinIO по guid, динамические
+        // Шаг 1 — контур: окружение (сеть/etcd/ownS3 по guid, динамические
         // порты), сид кластера tlsw<тег> (2 шарда × 2 реплики — как образцы),
         // воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные + WAL-агенты +
         // restore одновременно — spec §3.1); provisioning DONE ≤ 360 с.
-        Fx = await E2eEnvironment.StartAsync("tlsw", withMinio: true, ct: ct);
+        Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
         Cluster = $"tlsw{Fx.ClusterTag}";
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);
@@ -165,7 +168,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         string cluster, string shard, string segmentName, CancellationToken ct)
     {
         using var client = new AmazonS3Client(
-            new BasicAWSCredentials("minioadmin", "minioadmin"),
+            new BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
             new AmazonS3Config
             {
                 ServiceURL = Fx.S3Endpoint.Replace(
@@ -581,11 +584,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
-            ["PgWorker__Backups__S3__AdvertisedEndpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -621,7 +623,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         => new(new PgWorker.Backups.S3ClientOptions(
             Fx.S3Endpoint.Replace(
                 "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            Bucket, "minioadmin", "minioadmin"));
+            Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
     // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант t28):
@@ -1008,6 +1010,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул + policy с секцией s3 — без неё подсистема кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 }
 

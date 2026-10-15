@@ -67,13 +67,26 @@ public sealed class BackupPoolResolver(
         if (!writeReplicaResult.IsSuccess)
             return Result<BackupPoolContext?>.Failed(writeReplicaResult.Error!);
 
-        // ReadAll — все ноды пула без приоритетов, порядок endpoints-ключа
-        // (листинги — первая доступная; точечные GET — перебор, arch/19 §5).
-        var readAll = (IReadOnlyList<string>)pool.Endpoints;
+        // ReadAll — все ноды пула без приоритетов, порядок endpoints-ключа:
+        // адреса — portalloc-пары нод (http-URI, как write-списки; endpoints-ключ
+        // — host:port без схемы, arch/23 §2). Нода без адреса пропускается —
+        // пул поднимается (arch/19 §5).
+        var readAll = ReadAllUris(pool);
         return Result<BackupPoolContext?>.Success(new BackupPoolContext(
             pool.Name, accessKey!, secretKey!,
             writeMasterResult.Value, writeReplicaResult.Value, readAll));
     }
+
+    /// <summary>Read-адреса пула: portalloc-пары в порядке endpoints-ключа,
+    /// http-URI (тот же резолв, что у write-списков; env-джобы чтения и клиенты
+    /// требуют абсолютный URI). Записи endpoints без portalloc-ноды пропускаются.</summary>
+    public static IReadOnlyList<string> ReadAllUris(S3Pool pool)
+        => pool.Endpoints
+            .Select(ep => pool.Nodes.FirstOrDefault(n =>
+                n.Host is { } host && n.S3Port is { } port && $"{host}:{port}" == ep))
+            .Where(n => n is not null)
+            .Select(n => $"http://{n!.Host}:{n.S3Port}")
+            .ToList();
 
     // Резолв одного write-списка: имена → "http://host:port"; пустой список =
     // записанная битая policy (transient-диагностика; «не выбрано» — это

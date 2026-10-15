@@ -14,8 +14,8 @@ namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>
 /// Изолированное e2e-окружение (docker даёт полностью независимые окружения —
-/// используем): собственная docker-сеть, свой etcd-контейнер, опционально свой
-/// MinIO — на КАЖДЫЙ сценарий (Fact). PgWorker-инстансы (хост-процессы) стартует
+/// используем): собственная docker-сеть, свой etcd-контейнер, опционально свою
+/// ownS3-ноду — на КАЖДЫЙ сценарий (Fact). PgWorker-инстансы (хост-процессы) стартует
 /// сам сценарий через StartHostAsync; они смотрят ТОЛЬКО в etcd этого окружения
 /// и обслуживают только его Active-кластеры — джобы/операции одного сценария
 /// физически не могут попасть в ресурсы другого (инцидент Release: E2eBackup
@@ -38,10 +38,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
-    // mc запинен существующим docker-тегом (ближайший к MC_VERSION образа
-    // pgworker-backup, arch/19 §10; у docker-тегов и архивных тегов dl.min.io
-    // метки времени расходятся).
-    private const string MinioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
+    // Нода пула — ownS3-образ (E2E: локальная сборка publish-COPY, канон
+    // E2E-образов; в registry не кладётся — только внешние образы там).
+    public const string OwnS3Image = "owns3:e2e";
 
     // mc запинен существующим docker-тегом (ближайший к MC_VERSION образа
     // pgworker-backup, arch/19 §10; у docker-тегов и архивных тегов dl.min.io
@@ -63,9 +62,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
     public const string SdImage = "sdgenerator:e2e";
 
-    private const string MinioUser = "minioadmin";
-    private const string MinioPassword = "minioadmin";
+    // Креды ownS3-ноды E2E: root-пара (mc/сид/чтение теста) и read-write ключ
+    // ноды — ему соответствуют env-профили кредов воркера (arch/19 §7).
+    public const string S3RootUser = "owns3-e2e-root";
+    public const string S3RootPassword = "owns3-e2e-root-pwd";
+    public const string S3WriterKey = "pgw-e2e-writer";
+    public const string S3WriterSecret = "pgw-e2e-writer-pwd";
     private const string BucketName = "pgworker-backups";
+
+    // t36: пул S3 E2E — имя env-профиля кредов (= config.secret_profile пула,
+    // сид SeedS3PoolAsync) и bucket per-install (единый на всех нодах пула,
+    // arch/19 §5; ownS3-ноды окружения поднимается с ним в StartAsync).
+    public const string PoolProfile = "backups-main";
+    public const string PoolBucket = BucketName;
 
     private readonly List<HostInstance> _hosts = [];
 
@@ -77,6 +86,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork _net;
     private readonly IContainer? _minio;
+    // Дополнительные ownS3-ноды пула (t36, сценарии AC2/AC4/AC6): teardown
+    // чистит own-only вместе с прочим окружением.
+    private readonly List<IContainer> _extraContainers = [];
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий помечается
     // MarkFailed() — teardown тогда НЕ удаляет docker-объекты окружения, а
@@ -84,7 +96,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // доступны до зачистки. Перезапуск теста для выяснения причин запрещён.
     private bool _failed;
 
-    // Идентификатор прогона: полный guid — в именах сети/etcd/MinIO; тег (8 hex)
+    // Идентификатор прогона: полный guid — в именах сети/etcd/ownS3; тег (8 hex)
     // — в имени кластера сценария. Имена ВСЕХ движковых контейнеров/томов
     // содержат имя кластера (pgw-<C>-*, pgw-backup-*-<C>-*, pgw-backup-wal-<C>-*),
     // поэтому всё окружение опознаётся по своему идентификатору: чистка и ассерт
@@ -103,7 +115,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>Остаток окна контура [From, To) для PortRange воркер-контейнеров
     /// сценариев — тот же контракт, что у хост-воркеров StartHostAsync: окно за
-    /// вычетом уже занятого инфраструктурой контура (etcd, MinIO, API-порты).
+    /// вычетом уже занятого инфраструктурой контура (etcd, ownS3, API-порты).
     /// Литеральные PortRange в конфиге воркера E2E запрещены
     /// (docs/e2e-isolation.md §5 — межконтурная гонка bind'ов).</summary>
     public (int From, int To) RemainingPortRange => (EngineFrom(), _portWindowStart + PortWindowSize);
@@ -226,6 +238,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// не существует никогда.</summary>
     public string EtcdContainerName => $"pgw-ee1-{_runId}";
 
+    // t36: идентификаторы контейнеров нод пула (сценарии AC4/AC6: stop/start).
+    public string RunId => _runId;
+
+    /// <summary>Имя контейнера ownS3-ноды окружения (инстанс node1 пула; пусто —
+    /// окружение без S3-ноды).</summary>
+    public string S3NodeContainerName => _minio?.Name.TrimStart('/') ?? "";
+
+    /// <summary>Имя контейнера ДОПОЛНИТЕЛЬНОЙ ownS3-ноды пула (StartExtraS3NodeAsync).</summary>
+    public string ExtraS3NodeContainerName(string alias) => $"pgw-eo-x-{alias}-{_runId}";
+
     /// <summary>[PHASE]-метка статических фаз подготовки: Console (в лог факта)
     /// + ФАЙЛ /tmp/pgw-e2e-static-phase.log — xUnit буферизует Console до конца
     /// факта, файл виден наблюдателю во время «тихих» фаз (канон e2e-launch).</summary>
@@ -249,9 +271,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     public EtcdGateway Gateway { get; }
 
-    /// <summary>S3-endpoint для джобов/воркера: published порт MinIO на хосте,
+    /// <summary>S3-endpoint для джобов/воркера: published порт ownS3 на хосте,
     /// из docker-контейнеров — host.docker.internal (Docker Desktop/host-gateway).
-    /// Пустая строка, если окружение поднято без MinIO.</summary>
+    /// Пустая строка, если окружение поднято без ownS3.</summary>
     public string S3Endpoint { get; }
 
     // ===== Статические ассеты процесса (не мутабельный рантайм-стейт) =====
@@ -265,12 +287,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static string _serverCertPem = "";
     private static string _serverKeyPem = "";
     private static HttpClient _healthHttp = null!;
+    private static bool _owns3ImageReady;
     private static bool _jobImageReady;
     private static bool _walImageReady;
     private static bool _sdImageReady;
 
     /// <summary>Подъём окружения: сеть → etcd (wait-стратегия /health) →
-    /// опционально MinIO + bucket. Хост-порты — зонд свободного порта; advertise
+    /// опционально ownS3 + bucket. Хост-порты — зонд свободного порта; advertise
     /// строится от фактического published порта. Гейт PGW_TEST_DOCKER и скип —
     /// ответственность сценария (DockerTrait.SkipIfUnavailable до StartAsync).</summary>
     // Портовое окно контура (t24, spec §1.5, arch/14 §2.4 п.2): 200 портов,
@@ -284,7 +307,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private const int PortWindowBudget = 40;
 
     // База занятого окна и счётчик последовательной выдачи остатку контура
-    // (MinIO → API-порты хост-воркеров → контейнеры сценариев через
+    // (ownS3 → API-порты хост-воркеров → контейнеры сценариев через
     // ReserveWindowPort) — все host-порты контура идут ПОДРЯД из окна.
     private readonly int _portWindowStart;
     private int _windowNext;
@@ -306,7 +329,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private int EngineFrom() => _engineFrom ??= _windowNext + ContourApiReserve;
 
     public static async Task<E2eEnvironment> StartAsync(
-        string slug, bool withMinio = false, bool haEtcd = false, CancellationToken ct = default)
+        string slug, bool withS3Node = false, bool haEtcd = false, CancellationToken ct = default)
     {
         await EnsureStaticAsync(ct);
 
@@ -322,7 +345,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var windowStart = PortWindowBase + w * PortWindowSize;
             try
             {
-                return await StartOnceAsync(slug, withMinio, haEtcd, windowStart, ct);
+                return await StartOnceAsync(slug, withS3Node, haEtcd, windowStart, ct);
             }
             catch (Exception e) when (IsRetryableStartRace(e))
             {
@@ -348,7 +371,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
            || e.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<E2eEnvironment> StartOnceAsync(
-        string slug, bool withMinio, bool haEtcd, int windowStart, CancellationToken ct)
+        string slug, bool withS3Node, bool haEtcd, int windowStart, CancellationToken ct)
     {
         // Сеть окружения: имя = короткий префикс + полный guid прогона (уникален),
         // создаём/удаляем сами, ryuk не гарант; отсутствие после teardown — ассерт.
@@ -441,38 +464,44 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c "
                 + $"(проб сделано {probeAttempts}, латентность последней {lastProbeLatencyMs:0} мс)");
 
-            if (withMinio)
+            if (withS3Node)
             {
-                // MinIO в сети окружения (mc ходит по алиасу; джобы — через published
+                // ownS3 в сети окружения (mc ходит по алиасу; джобы — через published
                 // порт, сеть им не нужна). Готовность — wait-стратегия health/live.
                 // Хост-порт — СЛЕДУЮЩИЙ последовательный слот окна контура (t24,
                 // spec §1.5: все контейнеры контура — подряд из своего окна).
-                var minioPort = windowNext++;
-                minio = new ContainerBuilder(MinioImage)
-                    .WithName($"pgw-em-{runId}")
-                    .WithCommand("server", "/data")
-                    .WithEnvironment("MINIO_ROOT_USER", MinioUser)
-                    .WithEnvironment("MINIO_ROOT_PASSWORD", MinioPassword)
+                var owns3Port = windowNext++;
+                minio = new ContainerBuilder(OwnS3Image)
+                    .WithName($"pgw-eo-{runId}")
+                    .WithEnvironment("OWNS3_ROOT_USER", S3RootUser)
+                    .WithEnvironment("OWNS3_ROOT_PASSWORD", S3RootPassword)
+                    // Ключ 0 — read-write для подсистемы бэкапов (профиль воркера).
+                    .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", S3WriterKey)
+                    .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", S3WriterSecret)
+                    .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
                     .WithNetwork(net)
-                    .WithNetworkAliases("e2e-minio")
-                    .WithPortBinding(minioPort, 9000) // окно контура: последовательный слот
+                    .WithNetworkAliases("e2e-owns3")
+                    .WithPortBinding(owns3Port, 9000) // окно контура: последовательный слот
                     .WithWaitStrategy(Wait.ForUnixContainer()
                         .UntilHttpRequestIsSucceeded(
-                            request => request.ForPort(9000).ForPath("/minio/health/live"),
+                            request => request.ForPort(9000).ForPath("/healthz"),
                             wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
                     .Build();
                 await minio.StartAsync(ct);
 
                 // Bucket pgworker-backups (mc из той же сети — по алиасу): блокирующий
                 // docker run, без поллинга.
-                Console.WriteLine($"[PHASE] e2e-env {slug}: MinIO поднят, бакет/образы…");
+                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3-нода поднята, бакет/образы…");
                 await E2eFixture.RunProcessAsync("docker",
                 [
                     "run", "--rm", "--network", netName, "--entrypoint", "/bin/sh", McImage,
-                    "-c", $"mc alias set t http://e2e-minio:9000 {MinioUser} {MinioPassword} >/dev/null"
+                    "-c", $"mc alias set t http://e2e-owns3:9000 {S3RootUser} {S3RootPassword} >/dev/null"
                           + $" && mc mb --ignore-existing t/{BucketName}",
                 ], ct);
 
+                // Образ ownS3-ноды (t36): publish НА ХОСТЕ → образ publish-COPY
+                // (канон E2E-образов); один раз на процесс.
+                await EnsureOwnS3ImageAsync(ct);
                 // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…),
                 // один раз на процесс (статический ассет, docker-cache инкрементален).
                 await EnsureJobImageAsync(ct);
@@ -491,7 +520,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             // частично поднятое окружение не оставляем (лучшими усилиями):
             // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
-            // узлы etcd/MinIO — здесь; сеть (без endpoints) — здесь.
+            // узлы etcd/ownS3 — здесь; сеть (без endpoints) — здесь.
             if (minio is not null)
                 try
                 {
@@ -755,14 +784,127 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
+    // ===== t36: пул S3 (инстансы пула — ownS3-ноды окружения) =====
+
+    /// <summary>Сид S3-пула (t36, AC10): /s3/clusters/&lt;pool&gt;/{config,
+    /// nodes/&lt;I&gt;/{state,placement}}, /s3worker/portalloc/&lt;pool&gt;,
+    /// endpoints — прямо в etcd окружения (PgWorker — только читатель /s3/).
+    /// Инстанс пула — ownS3-контейнер; имена нод node1..N; secret_profile —
+    /// PoolProfile. endpoints: null → одна нода (ownS3-ноды окружения); иначе —
+    /// список "host:port" (вторые ownS3 сценариев AC2/AC4/AC6).</summary>
+    public async Task SeedS3PoolAsync(string pool, CancellationToken ct, IReadOnlyList<string>? endpoints = null)
+    {
+        S3Endpoint.Should().NotBeEmpty("пул сидается только в окружении с ownS3 (withS3Node: true)");
+        var list = (endpoints is { Count: > 0 } ? endpoints : [S3Endpoint])
+            .Select(e => e.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/'))
+            .ToArray();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/config",
+            $"{{\"platform\":\"owns3\",\"nodes\":{list.Length},\"secret_profile\":\"{PoolProfile}\",\"created_unix\":{now}}}",
+            null, ct);
+        var alloc = new List<string>(list.Length);
+        for (var i = 0; i < list.Length; i++)
+        {
+            var node = $"node{i + 1}";
+            await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/nodes/{node}/state", "RUNNING", null, ct);
+            await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/nodes/{node}/placement",
+                "{\"docker_host\":\"local\"}", null, ct);
+            var sep = list[i].LastIndexOf(':');
+            sep.Should().BePositive($"endpoint '{list[i]}' обязан быть host:port (порт — published ownS3)");
+            alloc.Add($"\"{node}\":{{\"host\":\"{list[i][..sep]}\",\"s3\":{list[i][(sep + 1)..]}}}");
+        }
+
+        await Gateway.PutAsync(EtcdEndpoint, $"/s3worker/portalloc/{pool}",
+            "{" + string.Join(",", alloc) + "}", null, ct);
+        await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/endpoints",
+            string.Join(",", list), null, ct);
+    }
+
+    /// <summary>env-комплект пула для воркера сценария: env-профиль кредов ownS3
+    /// окружения (t36, arch/19 §7 — store читает сырой env, не конфиг). Bucket
+    /// per-install сценарий задаёт ключом PgWorker__Backups__S3__Bucket.</summary>
+    public IReadOnlyDictionary<string, string> BackupPoolEnv()
+        => new Dictionary<string, string>
+        {
+            [$"PGW_BACKUP_S3_PROFILES__{PoolProfile}__ACCESS_KEY"] = S3RootUser,
+            [$"PGW_BACKUP_S3_PROFILES__{PoolProfile}__SECRET_KEY"] = S3RootPassword,
+        };
+
+    /// <summary>Секция s3 policy однонодового пула (node1 в обоих списках записи;
+    /// формат spec §5 / arch/19 §4). Многонодовые списки сценарии пишут сами.</summary>
+    public static string PoolS3(string pool)
+        => $"\"s3\":{{\"pool\":\"{pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}";
+
+    /// <summary>Дополнительная нода ownS3-пула (сценарии AC2/AC4/AC6): контейнер
+    /// в сети окружения с bucket per-install; teardown чистит own-only
+    /// (_extraContainers). Возврат — endpoint host.docker.internal:&lt;published&gt;.</summary>
+    public async Task<string> StartExtraS3NodeAsync(string alias, CancellationToken ct)
+    {
+        var port = ReserveWindowPort();
+        var container = new ContainerBuilder(OwnS3Image)
+            .WithName($"pgw-eo-{alias}-{_runId}")
+            .WithEnvironment("OWNS3_ROOT_USER", S3RootUser)
+            .WithEnvironment("OWNS3_ROOT_PASSWORD", S3RootPassword)
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", S3WriterKey)
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", S3WriterSecret)
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
+            .WithNetwork(_net)
+            .WithNetworkAliases(alias)
+            .WithPortBinding(port, 9000)
+            .WithWaitStrategy(Wait.ForUnixContainer()
+                .UntilHttpRequestIsSucceeded(
+                    request => request.ForPort(9000).ForPath("/healthz"),
+                    wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
+            .Build();
+        await container.StartAsync(ct);
+        _extraContainers.Add(container);
+
+        // bucket per-install на второй ноде (mc в сети окружения — по алиасу).
+        await E2eFixture.RunProcessAsync("docker",
+        [
+            "run", "--rm", "--network", NetName, "--entrypoint", "/bin/sh", McImage,
+            "-c", $"mc alias set t http://{alias}:9000 {S3RootUser} {S3RootPassword} >/dev/null"
+                  + $" && mc mb --ignore-existing t/{BucketName}",
+        ], ct);
+        return $"http://host.docker.internal:{container.GetMappedPublicPort(9000)}";
+    }
+
+    /// <summary>mc-команда в сети окружения по алиасу (сценарии пула: ls/mirror):
+    /// скрипт сам ставит alias "t" и ведёт им.</summary>
+    public Task<string> RunMcAsync(string script, CancellationToken ct = default)
+        => E2eFixture.RunProcessAsync("docker",
+        [
+            "run", "--rm", "--network", NetName, "--entrypoint", "/bin/sh", McImage, "-c", script,
+        ], ct);
+
+    /// <summary>mTLS-клиент API воркера для сценариев (клиентский серт фикстуры,
+    /// доверие контурной CA): policy-API/restore-API кейсы AC8. Вызывающий
+    /// Dispose-ит.</summary>
+    public static HttpClient CreateMtlsApiClient()
+        => new(MtlsHandler()) { Timeout = TimeSpan.FromSeconds(15) };
+
+    // Общий mTLS-обработчик фикстуры (клиентский серт + доверие per-contour CA).
+    private static SocketsHttpHandler MtlsHandler() => new()
+    {
+        SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+        {
+            // TLS 1.2: macOS SslStream не шлёт клиентские серты в TLS 1.3 (runtime#37961).
+            EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+            ClientCertificates = [_clientCert!],
+            RemoteCertificateValidationCallback = (_, _, _, _) => true, // тест доверяет фикстурной CA
+        },
+    };
+
+    private static X509Certificate2 _clientCert = null!;
+
     /// <summary>
     /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (docs/e2e-launch.md):
     /// 0) ДО любых удалений — docker-логи/inspect всех своих контейнеров и
     /// host.log'ы воркеров копируются в ArtifactsDir («что произошло» отвечает
     /// по логам, без перезапуска теста). 1) kill воркеров. 2) Упавший сценарий
-    /// (_failed): контейнеры (вкл. etcd/MinIO) ОСТАНАВЛИВАЮТСЯ, тома/сети/etcd
+    /// (_failed): контейнеры (вкл. etcd/S3-ноду) ОСТАНАВЛИВАЮТСЯ, тома/сети/etcd
     /// остаются до ручной зачистки (README-cleanup.txt) — перезапуск теста ради
-    /// логов запрещён. Успешный сценарий: 3) etcd/MinIO → 4) stop/rm контейнеров
+    /// логов запрещён. Успешный сценарий: 3) etcd/S3-нода → 4) stop/rm контейнеров
     /// → 5) rm томов → 6) rm сети окружения → 7) rm per-cluster сетей СВОИХ
     /// кластеров (pgw-net-<C>) → 8) АССЕРТ ЧИСТОТЫ: не осталось ни одного
     /// КОНТЕЙНЕРА/ТОМА/СЕТИ СВОЕГО идентификатора (окружение + кластеры).
@@ -795,7 +937,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             return;
         }
 
-        // 3) etcd-контур и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
+        // 3) etcd-контур, ownS3 и дополнительные ноды пула (testcontainers:
+        // stop + rm; ключи умирают вместе с etcd).
         try
         {
             if (_minio is not null)
@@ -805,6 +948,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             problems.Add($"minio: {e.Message}");
         }
+
+        foreach (var extra in _extraContainers)
+            try
+            {
+                await extra.DisposeAsync();
+            }
+            catch (Exception e)
+            {
+                problems.Add($"extra-minio: {e.Message}");
+            }
 
         foreach (var node in _etcdNodes)
             try
@@ -992,7 +1145,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // Teardown упавшего сценария: контейнеры (вкл. etcd/MinIO) останавливаются,
+    // Teardown упавшего сценария: контейнеры (вкл. etcd/S3-ноду) останавливаются,
     // тома/сети остаются — разбор по живым объектам и снятым логам; зачистка
     // вручную по README-cleanup.txt (own-only, по идентификатору прогона).
     private async Task FailedTearDownAsync(List<string> problems)
@@ -1007,7 +1160,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 problems.Add($"stop контейнера {id}: {e.Message}");
             }
 
-        foreach (var container in _etcdNodes.Concat<IContainer?>([_minio]))
+        foreach (var container in _etcdNodes.Concat<IContainer?>([_minio])
+                     .Concat(_extraContainers.Select(c => (IContainer?)c)))
             try
             {
                 if (container is not null)
@@ -1065,18 +1219,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var (clientPem, clientKeyPem) = E2eTestPki.Issue(
                 _installCa.CaPem, _installCa.CaKeyPem, "e2e-healthcheck", ["e2e-healthcheck"], ip: null);
             var pemPair = X509Certificate2.CreateFromPem(clientPem, clientKeyPem);
-            var clientCert = X509CertificateLoader.LoadPkcs12(pemPair.Export(X509ContentType.Pkcs12), null);
-            _healthHttp = new HttpClient(new SocketsHttpHandler
+            _clientCert = X509CertificateLoader.LoadPkcs12(pemPair.Export(X509ContentType.Pkcs12), null);
+            _healthHttp = new HttpClient(MtlsHandler())
             {
-                SslOptions = new System.Net.Security.SslClientAuthenticationOptions
-                {
-                    // TLS 1.2: macOS SslStream не шлёт клиентские серты в TLS 1.3 (runtime#37961).
-                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
-                    ClientCertificates = [clientCert],
-                    RemoteCertificateValidationCallback = (_, _, _, _) => true, // тест доверяет фикстурной CA
-                },
-            })
-            { Timeout = TimeSpan.FromSeconds(3) };
+                Timeout = TimeSpan.FromSeconds(3)
+            };
 
             // Корень репозитория и артефакты: от каталога тестовой сборки вверх.
             _root = E2eFixture.FindRoot(AppContext.BaseDirectory);
@@ -1104,6 +1251,42 @@ public sealed class E2eEnvironment : IAsyncDisposable
             StaticPhase($"pgworker-node:e2e готов за {nodeSw.Elapsed.TotalSeconds:F0} с");
 
             _staticReady = true;
+        }
+        finally
+        {
+            StaticGate.Release();
+        }
+    }
+
+    // Образ ownS3-ноды (t36): .NET-сервис — publish НА ХОСТЕ (инкрементально,
+    // секунды), в образ — только готовый вывод (docker/OwnS3.Dockerfile,
+    // runtime-слой; канон AGENTS.md). Локальная сборка, в registry не кладётся.
+    private static async Task EnsureOwnS3ImageAsync(CancellationToken ct)
+    {
+        if (_owns3ImageReady)
+            return;
+        await StaticGate.WaitAsync(ct);
+        try
+        {
+            if (_owns3ImageReady)
+                return;
+            var outDir = Path.Combine(_root, "artifacts", "e2e", "owns3");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            StaticPhase($"e2e-image {OwnS3Image}: dotnet publish OwnS3.App (host)…");
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{_root}/src/OwnS3.App/OwnS3.App.csproj",
+                "-c", "Release", "-o", outDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-e2e-static-process-owns3-publish.log");
+            StaticPhase($"e2e-image {OwnS3Image}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/owns3)…");
+            await E2eFixture.RunProcessAsync("docker",
+            [
+                "build", "-f", $"{_root}/docker/OwnS3.Dockerfile", "-t", OwnS3Image, outDir,
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: "/tmp/pgw-e2e-static-process-owns3-build.log");
+            StaticPhase($"e2e-image {OwnS3Image}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
+            _owns3ImageReady = true;
         }
         finally
         {

@@ -75,7 +75,9 @@ public sealed class BackupS3Factory(
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
                 $"s3-pool: {diag ?? $"пул {pool} без secret_profile"}"));
 
-        var endpoints = (IReadOnlyList<string>)s3pool.Endpoints;
+        // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
+        // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).
+        var endpoints = BackupPoolResolver.ReadAllUris(s3pool);
         return Result<(PoolBackupS3, BackupPoolContext)>.Success((
             new PoolBackupS3(endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
                 requestTimeout, targetFactory),

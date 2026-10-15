@@ -10,7 +10,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // E2E ретенции (t06, spec §4 Ф6): изолированное окружение E2eEnvironment (своя
-// сеть/etcd/MinIO, динамические порты, полный teardown в DisposeAsync) +
+// сеть/etcd/ownS3, динамические порты, полный teardown в DisposeAsync) +
 // provisioned-кластер с включёнными бэкапами → реальный COMPLETED полный →
 // синтетика (etcd-ключ старого COMPLETED ~40 дней назад с wal_start ниже
 // реального + его объекты full/<old-id>/ + WAL-объекты ниже cutoff) →
@@ -21,7 +21,10 @@ public class E2eRetentionScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -36,7 +39,7 @@ public class E2eRetentionScenarios
         // Arrange 1 — окружение + кластер bkret<тег прогона> + policy 1/0/0 + воркер
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-ret", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-ret", withS3Node: true, ct: ct);
         Fx = fx;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
         // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
@@ -59,7 +62,7 @@ public class E2eRetentionScenarios
     {
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"retention":{"days":1,"weeks":0,"months":0},"full_max_age_sec":600,"verify":{"on_create":false}}""",
+            $$"""{"retention":{"days":1,"weeks":0,"months":0},"full_max_age_sec":600,"verify":{"on_create":false},{{E2eEnvironment.PoolS3(Pool)}}}""",
             null, ct);
         await using var app = await StartRetentionHostAsync(cluster, ct);
 
@@ -123,16 +126,27 @@ public class E2eRetentionScenarios
         // ниже cutoff удалены, всё живое в wal/ ≥ cutoff
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}/", ct: ct);
         oldPrefix.Value.Should().BeEmpty("объекты старого полного удалены (DELETING-доводка)");
         var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}/", ct: ct);
         realPrefix.Value.Should().NotBeEmpty("объекты реального полного не тронуты");
+        // Посевные ниже cutoff удаляет WAL-trim — ПОСЛЕ verify-OK реального
+        // полного (cutoff = wal_start verify-OK; периодика verify 7 дней, но
+        // verify null due сразу). Удаление старого полного и trim — РАЗНЫЕ
+        // проходы: verify мог ещё идти к моменту доводки — ждём удаление
+        // посевных с бюджетом (ретенционный интервал 60 c + verify-джоб).
+        var seedsGone = await E2eFixture.WaitForAsync(async () =>
+        {
+            var listed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
+            if (!listed.IsSuccess)
+                return false;
+            var keys = listed.Value.Select(o => o.Key).ToList();
+            return seededWal.All(s => !keys.Contains($"{cluster}/shard1/wal/{s}"));
+        }, TimeSpan.FromSeconds(300), ct);
+        seedsGone.Should().BeTrue("посевные сегменты строго ниже cutoff удалены");
         var walListed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
         walListed.Value.Should().NotBeNull();
-        walListed.Value.Select(o => o.Key).Should().NotContain(
-            seededWal.Select(s => $"{cluster}/shard1/wal/{s}"),
-            "посевные сегменты строго ниже cutoff удалены");
         walListed.Value
             .Select(o => o.Key.Split('/')[^1])
             .Where(n => PgWorker.Backups.WalFileName.TryParse(n) is not null)
@@ -181,17 +195,18 @@ public class E2eRetentionScenarios
         }
     }
 
-    // Воркер с включённой подсистемой: S3 на локальный MinIO, образ джобов
+    // Воркер с включённой подсистемой: S3 на ownS3-ноду, образ джобов
     // pgworker-backup:e2e, ускоренный бэкофф, ретенция раз в 60 c (минимум
     // валидации IntervalSec ≥ 60; первый проход — сразу, далее по расписанию).
     private Task<HostInstance> StartRetentionHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -208,12 +223,12 @@ public class E2eRetentionScenarios
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
-    // mc-посев объекта с фиксированным телом (mc в сети MinIO окружения).
+    // mc-посев объекта с фиксированным телом (mc в сети ownS3-ноды окружения).
     private async Task McCpAsync(string key, string content)
         => await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && echo {content} >/tmp/f && mc cp /tmp/f t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -240,6 +255,10 @@ public class E2eRetentionScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // ниже (с секцией s3 — без неё подсистема кластера молчит).
+        await Fx.SeedS3PoolAsync(Pool, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —

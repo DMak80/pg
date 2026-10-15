@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E WAL-потока, promote/TLI (t24/ревизия 8 — разбиение E2eBackupScenarios):
 // монолитный одиночный факт (2-6 мин) — отдельный класс.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЙ MinIO — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -25,7 +25,10 @@ public class E2eWalStreamPromoteScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -44,7 +47,7 @@ public class E2eWalStreamPromoteScenarios
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
         {
@@ -317,7 +320,7 @@ public class E2eWalStreamPromoteScenarios
     {
         var phaseStart = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
-        var fx = await E2eEnvironment.StartAsync(slug, withMinio: true, ct: ct);
+        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
         Console.WriteLine($"[PHASE] {slug}: окружение поднято за " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c (вкл. Release-сборку и образы)");
@@ -345,12 +348,11 @@ public class E2eWalStreamPromoteScenarios
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            ["PgWorker__Backups__S3__AdvertisedEndpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -403,6 +405,12 @@ public class E2eWalStreamPromoteScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // без неё подсистема бэкапов кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
