@@ -182,16 +182,59 @@ public static class BackupsParser
                 && drillDays.TryGetInt32(out var daysValue))
                 drillIntervalDays = daysValue;
 
+            // t36: секция s3 — пул + списки по роли источника. Отсутствие/битая
+            // секция = пул не выбран — как drill, толерантность парсеров
+            // (arch/19 §4): parseError не валид, S3=null, policy читается.
+            var s3 = TryParsePolicyS3(root);
+
             return new BackupPolicy(
                 days, weeks, months,
                 ReadLong(root, "full_max_age_sec") ?? 86400,
-                verifyOnCreate, verifyIntervalSec, drillIntervalDays);
+                verifyOnCreate, verifyIntervalSec, drillIntervalDays, s3);
         }
         catch (JsonException)
         {
             errors.Add($"/pgworker/backups/{cluster}/policy: битый JSON");
             return null;
         }
+    }
+
+    // Секция s3 (t36, arch/19 §4): pool — непустая строка, списки — массивы
+    // строк; любое несоответствие формы → null (пул не выбран).
+    private static BackupPolicyS3? TryParsePolicyS3(JsonElement root)
+    {
+        if (!root.TryGetProperty("s3", out var s3) || s3.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var pool = ReadString(s3, "pool");
+        if (string.IsNullOrEmpty(pool))
+            return null;
+
+        var master = ReadStringList(s3, "write_master");
+        var replica = ReadStringList(s3, "write_replica");
+        if (master is null || replica is null)
+            return null;
+
+        return new BackupPolicyS3(pool, master, replica);
+    }
+
+    // Массив строк из секции s3; не-массив/не-строчные элементы → null.
+    private static IReadOnlyList<string>? ReadStringList(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty(name, out var element)
+            || element.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var items = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+                return null;
+            items.Add(item.GetString()!);
+        }
+
+        return items;
     }
 
     // full/<id>: обязательны state/node/role/started_unix; wal_start_segment —

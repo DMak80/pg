@@ -507,3 +507,72 @@ public class BackupsParserTests
         result.Value.Single().Policy.Should().NotBeNull();
     }
 }
+
+// t36 (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
+public class BackupsParserS3Tests
+{
+    // AAA: policy с секцией s3 — пул и списки читаются в порядке JSON.
+    [Fact]
+    public void ParsePolicy_WithS3_ReadsLists()
+    {
+        // Arrange — policy полного формата spec §5 с секцией s3.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/policy",
+                """{"retention":{"days":1,"weeks":1,"months":1},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":1},"s3":{"pool":"backups","write_master":["east1","east2"],"write_replica":["east2","east1"]}}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var policy = result.Value.Single(c => c.Cluster == "c1").Policy!;
+        policy.S3.Should().NotBeNull();
+        policy.S3!.Pool.Should().Be("backups");
+        policy.S3.WriteMaster.Should().Equal("east1", "east2");
+        policy.S3.WriteReplica.Should().Equal("east2", "east1");
+    }
+
+    // AAA: policy без секции s3 → S3 null, остальные поля читаются
+    // (backwards-compat, как drill).
+    [Fact]
+    public void ParsePolicy_WithoutS3_Null()
+    {
+        // Arrange — прежний JSON без s3.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/policy",
+                """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var policy = result.Value.Single().Policy!;
+        policy.S3.Should().BeNull();
+        policy.RetentionDays.Should().Be(7);
+    }
+
+    // AAA: битая секция s3 → S3 null, policy читается (unknownKeys-
+    // толерантность — parseError не валиден, отсутствие = пул не выбран).
+    [Fact]
+    public void ParsePolicy_BitS3Section_Null()
+    {
+        // Arrange — секция s3 не объект, а мусор.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/policy",
+                """{"retention":{"days":7},"full_max_age_sec":86400,"s3":"мусор"}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        result.Value.Single().Policy!.S3.Should().BeNull();
+    }
+}
