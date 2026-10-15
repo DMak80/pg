@@ -303,3 +303,43 @@ public sealed class FakePatroni : IAsyncDisposable
         await _app.DisposeAsync();
     }
 }
+
+// t36: тестовая фабрика пула — резолвер всегда возвращает контекст с заданным
+// write/read-списками (одна fake-цель на все uri — PoolBackupS3 пробрасывает
+// вызовы в FakeBackupS3 теста). AAA-хелпер перевода существующих сценариев
+// WalStreamProcess/Retention на пул-режим без etcd-сида /s3/.
+public static class FakePoolFactory
+{
+    public static BackupS3Factory Single(IBackupS3 target, string bucket = "pgworker-backups")
+    {
+        var pool = new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+            [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+            ["h1:9000"]);
+        var ctx = new BackupPoolContext(
+            "backups", "ak", "sk",
+            ["http://h1:9000"], ["http://h1:9000"], ["http://h1:9000"]);
+        var secrets = new BackupSecretProfileStore(
+            getenv: _ => "x",
+            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
+        return new BackupS3Factory(
+            new BackupPoolResolver(
+                new FixedPoolStore(pool),
+                secrets,
+                policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
+                    new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
+                        S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
+                            "backups", ["node1"], ["node1"])))),
+            new FixedPoolStore(pool), secrets,
+            () => bucket, () => null, TimeSpan.FromSeconds(5),
+            targetFactory: _ => target);
+    }
+
+    private sealed class FixedPoolStore(PgWorker.Etcd.S3.S3Pool? pool) : PgWorker.Etcd.S3.IS3PoolStore
+    {
+        public Task<Result<PgWorker.Etcd.S3.S3Pool?>> ReadAsync(string name, CancellationToken ct)
+            => Task.FromResult(Result<PgWorker.Etcd.S3.S3Pool?>.Success(pool));
+
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(pool is null ? [] : [pool.Name]));
+    }
+}

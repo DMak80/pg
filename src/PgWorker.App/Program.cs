@@ -15,6 +15,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
+using PgWorker.Etcd.S3;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Moves;
@@ -675,7 +676,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IClusterDriver>(),
         sp.GetRequiredService<ShardEndpoints>(),
         sp.GetRequiredService<IWalSqlExecutor>(),
-        sp.GetRequiredService<IBackupS3>(),
+        sp.GetRequiredService<BackupS3Factory>(),
         new WalStatusWriter(sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints),
         sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
@@ -691,6 +692,25 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+// t36: пул S3 бэкапов — чтение /s3/, резолвер policy→списки, фабрика пула-клиента.
+builder.Services.AddSingleton<IS3PoolStore>(sp => new PgWorker.Etcd.S3.S3PoolStore(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Etcd.S3.S3PoolStore>()));
+builder.Services.AddSingleton(sp => new BackupPoolResolver(
+    sp.GetRequiredService<IS3PoolStore>(),
+    sp.GetRequiredService<BackupSecretProfileStore>(),
+    policyReader: new BackupPolicyReader(
+        sp.GetRequiredService<IEtcdGateway>(),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints).ReadAsync));
+builder.Services.AddSingleton(sp => new BackupS3Factory(
+    sp.GetRequiredService<BackupPoolResolver>(),
+    sp.GetRequiredService<IS3PoolStore>(),
+    sp.GetRequiredService<BackupSecretProfileStore>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3Bucket,
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3CaBundlePath,
+    // Пер-попыточный таймаут S3-запроса (arch/19 §5): половина окна watchdog.
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec / 2.0)));
 // Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
 // Enabled=false — no-op (гвард в процессе дублирует guard цикла).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(

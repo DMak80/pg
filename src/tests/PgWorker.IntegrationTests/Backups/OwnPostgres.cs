@@ -63,12 +63,11 @@ public sealed class OwnPostgres : IAsyncDisposable
             Slot: Slot,
             Cluster: cluster,
             Shard: shard,
-            S3Endpoint: s3Endpoint,
-            S3Region: null,
+            S3Endpoints: [s3Endpoint],
+            S3ReadEndpoints: [s3Endpoint],
             S3Bucket: "pgw-backups-test",
             S3AccessKey: accessKey,
-            S3SecretKey: secretKey,
-            S3PathStyle: true);
+            S3SecretKey: secretKey);
 
     /// <summary>Подъём: postgres:18-alpine (образ в images.txt), pg_isready ≤ 45 c,
     /// затем TLS-раскладка + reload + физический слот immediately_reserve.

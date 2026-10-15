@@ -64,7 +64,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
-            sql, s3,
+            sql, FakePoolFactory.Single(s3),
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
@@ -296,7 +296,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var process = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
-            sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
+            sql, FakePoolFactory.Single(s3), new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));
@@ -335,7 +335,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var process = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
-            sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
+            sql, FakePoolFactory.Single(s3), new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));

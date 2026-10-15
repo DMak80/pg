@@ -213,6 +213,10 @@ public class RestoreDrillProcessTests
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
+    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(""));
+
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
 

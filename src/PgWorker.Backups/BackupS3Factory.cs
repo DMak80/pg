@@ -15,8 +15,26 @@ public sealed class BackupS3Factory(
     BackupSecretProfileStore secrets,
     Func<string> bucket,
     Func<string?> caBundlePath,
-    TimeSpan requestTimeout)
+    TimeSpan requestTimeout,
+    Func<string, IBackupS3>? targetFactory = null)
 {
+    /// <summary>Пасс-through резолв для процессов: контекст списков до создания
+    /// клиента (гварды policy.s3 / waiting-backup-pool — у вызывающего).</summary>
+    public Task<Result<BackupPoolContext?>> ResolveAsync(string cluster, CancellationToken ct)
+        => resolver.ResolveAsync(cluster, ct);
+
+    /// <summary>Пул-клиент из резолвнутого контекста (создание per-вызов,
+    /// dispose вызывающим; клиенты per-цели кэшируются внутри PoolBackupS3).</summary>
+    public PoolBackupS3 Create(BackupPoolContext ctx)
+        => new(
+            ctx.WriteMaster.ToList(), ctx.WriteReplica.ToList(),
+            ctx.AccessKey, ctx.SecretKey, bucket(), caBundlePath(),
+            requestTimeout,
+            targetFactory: targetFactory ?? (uri => new BackupS3(
+                new S3ClientOptions(uri, bucket(), ctx.AccessKey, ctx.SecretKey,
+                    CaBundlePath: caBundlePath()),
+                requestTimeout)));
+
     /// <summary>Пул-клиент кластера: write — списки роли источника из policy,
     /// read — все ноды; policy без s3 → Success(null)-стайл ошибки — нет:
     /// фабрика вызывается уже ПОСЛЕ гварда policy.s3 у процесса (null сюда не
@@ -58,17 +76,8 @@ public sealed class BackupS3Factory(
         var endpoints = (IReadOnlyList<string>)s3pool.Endpoints;
         return Result<PoolBackupS3>.Success(new PoolBackupS3(
             endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
-            requestTimeout));
+            requestTimeout, targetFactory));
     }
 
-    // Сборка клиента из резолвнутого контекста: цели — prod-фабрика BackupS3.
-    private PoolBackupS3 Create(BackupPoolContext ctx)
-        => new(
-            ctx.WriteMaster.ToList(), ctx.WriteReplica.ToList(),
-            ctx.AccessKey, ctx.SecretKey, bucket(), caBundlePath(),
-            requestTimeout,
-            targetFactory: uri => new BackupS3(
-                new S3ClientOptions(uri, bucket(), ctx.AccessKey, ctx.SecretKey,
-                    CaBundlePath: caBundlePath()),
-                requestTimeout));
+    // Сборка клиента из резолвнутого контекста вынесена в public Create(ctx).
 }

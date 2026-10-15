@@ -20,7 +20,7 @@ public class WalReceiverCoreTests
     private static WalReceiverOptions Options() => new(
         "s1a", 5432, "backup_exec", "pw", "postgres",
         "pgw_bkp_c1_shard1", "c1", "shard1",
-        "http://minio:9000", null, "backups", "ak", "sk", true);
+        ["http://minio:9000"], ["http://minio:9000"], "backups", "ak", "sk");
 
     /// <summary>Сегментные байты с long page header (tli, pageaddr=boundary).</summary>
     private static byte[] SegmentData(uint tli, ulong boundary)

@@ -315,7 +315,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var walProcess = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], new StubScaleDriver(),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
-            sql, s3, writer, _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
+            sql, FakePoolFactory.Single(s3), writer, _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => (BackupsRuntimeOptions?)Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             new FrozenClock());
 

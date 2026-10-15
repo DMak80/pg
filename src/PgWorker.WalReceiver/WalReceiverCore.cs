@@ -184,7 +184,10 @@ public sealed class WalReceiverCore
     }
 
     /// <summary>Put с ретраем (transient-отказ S3): на время ретраев чтение потока
-    /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.</summary>
+    /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.
+    /// t36: исчерпание списка пула (маркер s3-pool-exhausted в ошибке) — маркер
+    /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
+    /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).</summary>
     private static async Task PutWithRetryAsync(
         IBackupS3 s3, TextWriter stdout, string key, byte[] data, TimeSpan retry, CancellationToken ct)
     {
@@ -194,6 +197,8 @@ public sealed class WalReceiverCore
             var put = await s3.PutObjectAsync(key, data, sha256, ct);
             if (put.IsSuccess)
                 return;
+            if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal))
+                await stdout.WriteLineAsync(WalReceiverMarkers.PoolExhausted());
             await Task.Delay(retry, ct);
         }
     }
