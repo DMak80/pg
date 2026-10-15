@@ -116,6 +116,22 @@ public sealed class RestoreProcess(
         }
     }
 
+    // t36 (arch/19 §4.2/§3.5): пул чтения restore — source_pool DR-заявки
+    // (чужой пул, CreateForPoolAsync) ?? собственный пул кластера (policy.s3).
+    private async Task<Result<(PoolBackupS3 Client, BackupPoolContext Context)>> ResolveReadPoolAsync(
+        string cluster, RestoreOperationState op, CancellationToken ct)
+    {
+        if (op.SourcePool is { Length: > 0 } sourcePool)
+            return await s3Factory.CreateForPoolAsync(sourcePool, ct);
+        var resolved = await s3Factory.ResolveAsync(cluster, ct);
+        if (!resolved.IsSuccess)
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(resolved.Error!);
+        if (resolved.Value is not { } ctx)
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
+                $"s3-pool: у кластера {cluster} policy без секции s3 — пул не выбран"));
+        return (s3Factory.Create(ctx), ctx);
+    }
+
     // ── PLANNED: валидация заявки (все шаги идемпотентны) ──
 
     private async Task<Result<ProcessOutcome>> ValidateAsync(
@@ -124,16 +140,18 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // t36 (arch/19 §5): пул чтения per-cluster (source_pool DR — Task 12).
-        // null/Failed — transient: journal, ретраи тиком (статусы не трогаем).
-        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
-        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        // t36 (arch/19 §5): пул чтения — source_pool DR-заявки ?? собственный
+        // пул policy.s3. null/Failed — transient: journal, ретраи тиком.
+        var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
+        if (!poolRead.IsSuccess)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+                poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
-        await using var s3 = s3Factory.Create(poolCtx);
+        // (клиент, контекст): клиент — IAsyncDisposable, контекст — списки env.
+        var (readS3, poolCtx) = poolRead.Value;
+        await using var s3 = readS3;
 
         // 1. Усыновлённые (object) ноды — ручной путь, restore plain-only.
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -257,14 +275,17 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // t36: пул чтения (source_pool DR — Task 12); null/Failed — transient.
-        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
-        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        // t36: пул чтения — source_pool DR-заявки ?? собственный пул policy.s3.
+        var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
+        if (!poolRead.IsSuccess)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+                poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
+        // (клиент, контекст): клиент — IAsyncDisposable, контекст — списки env.
+        var (readS3, poolCtx) = poolRead.Value;
+        await using var s3 = readS3;
 
         // Первая нода (джоб пишет восстановленный PGDATA в её data-volume);
         // адрес из portalloc, движок — по хосту (null → transient).

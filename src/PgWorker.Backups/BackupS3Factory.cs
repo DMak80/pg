@@ -52,31 +52,34 @@ public sealed class BackupS3Factory(
     }
 
     /// <summary>Пул-клиент по имени (restore source_pool, глобальные сверки):
-    /// write=read=все ноды пула (порядок endpoints).</summary>
-    public async Task<Result<PoolBackupS3>> CreateForPoolAsync(string pool, CancellationToken ct)
+    /// write=read=все ноды пула (порядок endpoints); контекст — списки env
+    /// джобов чтения.</summary>
+    public async Task<Result<(PoolBackupS3 Client, BackupPoolContext Context)>> CreateForPoolAsync(
+        string pool, CancellationToken ct)
     {
         var read = await pools.ReadAsync(pool, ct);
         if (!read.IsSuccess)
-            return Result<PoolBackupS3>.Failed(read.Error!);
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(read.Error!);
         var s3pool = read.Value;
         if (s3pool is null)
-            return Result<PoolBackupS3>.Failed(new ApplicationException(
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
                 $"s3-pool: пул {pool} не найден в /s3/clusters/"));
         if (s3pool.ToRemove)
-            return Result<PoolBackupS3>.Failed(new ApplicationException(
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
                 $"s3-pool: пул {pool} в состоянии TO_REMOVE"));
         string? accessKey = null;
         string? secretKey = null;
         string? diag = null;
         if (s3pool.SecretProfile is null
             || !secrets.TryGet(s3pool.SecretProfile, out accessKey, out secretKey, out diag))
-            return Result<PoolBackupS3>.Failed(new ApplicationException(
+            return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
                 $"s3-pool: {diag ?? $"пул {pool} без secret_profile"}"));
 
         var endpoints = (IReadOnlyList<string>)s3pool.Endpoints;
-        return Result<PoolBackupS3>.Success(new PoolBackupS3(
-            endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
-            requestTimeout, targetFactory));
+        return Result<(PoolBackupS3, BackupPoolContext)>.Success((
+            new PoolBackupS3(endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
+                requestTimeout, targetFactory),
+            new BackupPoolContext(pool, accessKey!, secretKey!, endpoints, endpoints, endpoints)));
     }
 
     // Сборка клиента из резолвнутого контекста вынесена в public Create(ctx).

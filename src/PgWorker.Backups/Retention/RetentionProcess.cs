@@ -240,7 +240,7 @@ public sealed class RetentionProcess(
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
                 continue; // пул недоступен/без кредов — суммарное по остальным (agregate сходимости mesh)
-            await using var poolS3 = created.Value;
+            await using var poolS3 = created.Value.Client;
             var listed = await S3Pulse.CallAsync(progress, token => poolS3.ListPrefixAsync("", ct: token), ct);
             if (!listed.IsSuccess)
                 continue; // transient этого пула — повтор тика

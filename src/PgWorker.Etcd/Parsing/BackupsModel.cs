@@ -143,7 +143,10 @@ public sealed record RestoreOperationState(
     long? FinishedUnix = null,
     string? Phase = null,
     string? RestoredToLsn = null,
-    string? Error = null)
+    string? Error = null,
+    // t36 (arch/14 §1.1): пул чтения DR-источника (source_pool); null —
+    // собственный пул кластера policy.s3. null у старых ключей — совместимо.
+    string? SourcePool = null)
 {
     /// <summary>System id восстановленного PGDATA (из result-джоба): щит
     /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не

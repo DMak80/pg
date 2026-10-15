@@ -345,7 +345,9 @@ public static class BackupsParser
                 requestedUnix.Value, requestedBy,
                 ReadLong(root, "started_unix"), ReadLong(root, "finished_unix"),
                 ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
-                ReadString(root, "error"))
+                ReadString(root, "error"),
+                // t36: пул DR-источника (arch/14 §1.1); отсутствие — свой пул.
+                ReadString(root, "source_pool"))
             {
                 SystemId = ReadString(root, "system_id"),
             };

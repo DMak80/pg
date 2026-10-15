@@ -58,7 +58,7 @@ public sealed class BackupOrphanSweeper(
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
                 continue; // пул недоступен/без кредов — union по остальным
-            await using var poolS3 = created.Value;
+            await using var poolS3 = created.Value.Client;
             var listed = await poolS3.ListPrefixAsync("", ct: ct);
             if (!listed.IsSuccess)
                 continue; // transient этого пула — повтор прохода
@@ -181,7 +181,7 @@ public sealed class BackupOrphanSweeper(
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
                 continue; // пул недоступен — доводку делает оставшийся проход
-            await using var poolS3 = created.Value;
+            await using var poolS3 = created.Value.Client;
             var objects = await poolS3.ListPrefixAsync(delPrefix, ct: ct);
             if (!objects.IsSuccess)
                 return Result.Failed(objects.Error!); // запись остаётся DELETING — доведёт

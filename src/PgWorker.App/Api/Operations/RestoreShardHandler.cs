@@ -92,6 +92,21 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
         }
         source = hasSourceCluster ? $"{body.SourceCluster}/{body.SourceShard}" : $"{cluster}/{shard}";
 
+        // 5.5) t36: source_pool — живое чтение /s3/clusters/<C>/config: пул
+        // существует и не TO_REMOVE, иначе 400 по полю (arch/14 §1.1).
+        if (!string.IsNullOrWhiteSpace(body.SourcePool))
+        {
+            var poolRead = await new PgWorker.Etcd.S3.S3PoolStore(gateway, endpoints).ReadAsync(body.SourcePool, ct);
+            if (!poolRead.IsSuccess)
+                return Result<RestoreRequestedDto>.Failed(poolRead.Error!);
+            if (poolRead.Value is null)
+                return Result<RestoreRequestedDto>.Failed(new RestoreValidationException(
+                    [new ValidationError("source_pool", $"пул {body.SourcePool} не найден в /s3/clusters/")]));
+            if (poolRead.Value.ToRemove)
+                return Result<RestoreRequestedDto>.Failed(new RestoreValidationException(
+                    [new ValidationError("source_pool", $"пул {body.SourcePool} в состоянии TO_REMOVE")]));
+        }
+
         // 6) Гвард «максимум один активный restore на шард» (§3.1) + существующие
         //    id (NextId суффиксирует коллизию в ту же секунду).
         var range = await EtcdFailover.CallAsync(endpoints,
@@ -115,7 +130,8 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
             .OrderBy(n => n, StringComparer.Ordinal)
             .First();
         var op = new RestoreOperationState(id, RestoreStatus.Planned, body.BackupId ?? "",
-            source, target, node, time.GetUtcNow().ToUnixTimeSeconds(), requestedBy);
+            source, target, node, time.GetUtcNow().ToUnixTimeSeconds(), requestedBy,
+            SourcePool: string.IsNullOrWhiteSpace(body.SourcePool) ? null : body.SourcePool);
         var key = BackupNames.RestoreKey(cluster, shard, id);
         var txn = await EtcdFailover.CallAsync(endpoints,
             e => gateway.TxnAsync(e,
@@ -164,6 +180,8 @@ public sealed record RestoreShardRequest(
     [property: JsonPropertyName("target_time")] string? TargetTime,
     [property: JsonPropertyName("source_cluster")] string? SourceCluster,
     [property: JsonPropertyName("source_shard")] string? SourceShard,
+    // t36 (arch/14 §1.1): пул чтения DR-источника; отсутствие — собственный пул.
+    [property: JsonPropertyName("source_pool")] string? SourcePool,
     [property: JsonPropertyName("confirm")] string Confirm,
     [property: JsonPropertyName("requested_by")] string? RequestedBy);
 
