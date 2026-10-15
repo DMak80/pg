@@ -467,7 +467,9 @@ public static class S3Parser
             ? value
             : null;
 
-    private static int AsInt(long? value) => value is null ? 0 : checked((int)value.Value);
+    // Unchecked-каст (порт ValkeyParser): config.nodes вне int не бросает —
+    // контракт парсера «битые значения не бросают исключений» (arch/23 §2).
+    private static int AsInt(long? value) => value is null ? 0 : (int)value.Value;
 
     private static TValue GetOrAdd<TKey, TValue>(Dictionary<TKey, TValue> dictionary, TKey key, Func<TKey, TValue> factory)
         where TKey : notnull
