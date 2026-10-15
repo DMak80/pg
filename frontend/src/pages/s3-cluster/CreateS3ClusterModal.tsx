@@ -25,14 +25,21 @@ const NAME_RE = /^[a-z][a-z0-9_]{0,62}$/;
 const RESERVED_NAME = 'orchestrator';
 
 // Placement-форма инстанса:.radio-режимы канона arch/23 §4 (конъюнкция указанных,
-// в UI — один выбранный атрибут; минимум один обязателен).
-type PlacementMode = 'dockerHost' | 'swarmNode';
+// в UI — один выбранный атрибут; минимум один обязателен). swarm_labels —
+// key-value-редактор строк («+ метка»/«−»; минимум одна метка — канон §4).
+type PlacementMode = 'dockerHost' | 'swarmNode' | 'swarmLabels';
+
+interface LabelRow {
+  key: string;
+  value: string;
+}
 
 interface InstanceForm {
   name: string;
   mode: PlacementMode;
   dockerHost: string;
   swarmNode: string;
+  labels: LabelRow[];
   cpu: string;
   memGi: string;
   diskGi: string;
@@ -52,6 +59,7 @@ const EMPTY_INSTANCE: InstanceForm = {
   mode: 'dockerHost',
   dockerHost: '',
   swarmNode: '',
+  labels: [{ key: '', value: '' }],
   cpu: '',
   memGi: '',
   diskGi: '',
@@ -76,11 +84,15 @@ function parseResources(cpu: string, memGi: string, diskGi: string): S3Resources
   };
 }
 
-// Placement формы → DTO (минимум один атрибут валидируется выше).
+// Placement формы → DTO (минимум один атрибут валидируется выше); строки
+// с пустым ключом в swarm_labels не включаются.
 function parsePlacement(instance: InstanceForm): S3PlacementDto {
-  return instance.mode === 'dockerHost'
-    ? { dockerHost: instance.dockerHost }
-    : { swarmNode: instance.swarmNode };
+  if (instance.mode === 'dockerHost') return { dockerHost: instance.dockerHost };
+  if (instance.mode === 'swarmNode') return { swarmNode: instance.swarmNode };
+  const labels = Object.fromEntries(instance.labels
+    .filter((l) => l.key.trim() !== '')
+    .map((l) => [l.key.trim(), l.value]));
+  return { swarmLabels: labels };
 }
 
 export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
@@ -110,6 +122,16 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
     }));
   }
 
+  // key-value-редактор swarm_labels инстанса.
+  function setLabel(instanceIndex: number, labelIndex: number, patch: Partial<LabelRow>) {
+    setForm((f) => ({
+      ...f,
+      instances: f.instances.map((inst, i) => (i === instanceIndex
+        ? { ...inst, labels: inst.labels.map((l, j) => (j === labelIndex ? { ...l, ...patch } : l)) }
+        : inst)),
+    }));
+  }
+
   // Валидация-зеркало 02 §12.3 (сервер — источник истины, это UX).
   function validate(): string | null {
     if (!NAME_RE.test(form.name)) return 'имя кластера: [a-z][a-z0-9_]{0,62} (строчные, без дефиса)';
@@ -126,6 +148,8 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
         return `инстанс ${i + 1}: укажите docker_host`;
       if (inst.mode === 'swarmNode' && inst.swarmNode.trim() === '')
         return `инстанс ${i + 1}: укажите swarm_node`;
+      if (inst.mode === 'swarmLabels' && !inst.labels.some((l) => l.key.trim() !== ''))
+        return `инстанс ${i + 1}: добавьте минимум одну метку swarm_labels`;
       // resources — cpu 0.01..64, mem/disk 1..65536 GiB (пусто = fallback).
       if (inst.cpu !== '' && (Number(inst.cpu) < 0.01 || Number(inst.cpu) > 64))
         return `инстанс ${i + 1}: cpu 0.01..64`;
@@ -224,6 +248,7 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                 <Group mt="xs">
                   <Radio value="dockerHost" label="docker_host" />
                   <Radio value="swarmNode" label="swarm_node" />
+                  <Radio value="swarmLabels" label="swarm_labels" />
                 </Group>
               </Radio.Group>
               {inst.mode === 'dockerHost' ? (
@@ -234,7 +259,7 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                   onChange={(e) => setInstance(index, { dockerHost: e.currentTarget.value })}
                   mb="sm"
                 />
-              ) : (
+              ) : inst.mode === 'swarmNode' ? (
                 <TextInput
                   label="swarm_node"
                   placeholder="n1"
@@ -242,6 +267,47 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                   onChange={(e) => setInstance(index, { swarmNode: e.currentTarget.value })}
                   mb="sm"
                 />
+              ) : (
+                <Stack gap="xs" mb="sm">
+                  {inst.labels.map((label, j) => (
+                    <Group key={j} align="flex-end" gap="xs">
+                      <TextInput
+                        label={j === 0 ? 'Метка: ключ' : undefined}
+                        placeholder="geo"
+                        value={label.key}
+                        onChange={(e) => setLabel(index, j, { key: e.currentTarget.value })}
+                        maw={160}
+                      />
+                      <TextInput
+                        label={j === 0 ? 'значение' : undefined}
+                        placeholder="dc1"
+                        value={label.value}
+                        onChange={(e) => setLabel(index, j, { value: e.currentTarget.value })}
+                        maw={160}
+                      />
+                      <Button
+                        variant="default"
+                        size="xs"
+                        mb={4}
+                        disabled={inst.labels.length === 1}
+                        onClick={() => setInstance(index, {
+                          labels: inst.labels.filter((_, k) => k !== j),
+                        })}
+                      >
+                        −
+                      </Button>
+                    </Group>
+                  ))}
+                  <Button
+                    variant="default"
+                    size="xs"
+                    onClick={() => setInstance(index, {
+                      labels: [...inst.labels, { key: '', value: '' }],
+                    })}
+                  >
+                    + метка
+                  </Button>
+                </Stack>
               )}
               <Group grow>
                 <NumberInput label="CPU" placeholder="0.5" value={inst.cpu || ''} step={0.1}
