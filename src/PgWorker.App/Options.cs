@@ -402,9 +402,12 @@ public sealed class SnapshotOptions
 }
 
 /// <summary>Выгрузка снапшотов etcd в S3 (t08, arch/14 §8): каждый слепок уходит
-/// в bucket подсистемы бэкапов префиксом etcd/ (S3-комплект — Backups:S3;
-/// Backups:Enabled НЕ требуется — контроль-плейн не зависит от бэкапов PG).
-/// Enabled=false (дефолт) — sink не подключается, поведение прежнее (§2.10).</summary>
+/// в bucket ОТДЕЛЬНОЙ env-пары PgWorker:Snapshots:Export:S3 (t36, env
+/// PGW_SNAPSHOTS_S3_*; префикс etcd/ — в её bucket) — источник правды о
+/// DR-слепках не живёт в восстанавливаемом etcd и не переиспользует креды
+/// пулов бэкапов. Backups:Enabled НЕ требуется — контроль-плейн не зависит от
+/// подсистемы бэкапов PG. Enabled=false (дефолт) — sink не подключается,
+/// поведение прежнее (§2.10).</summary>
 public sealed class SnapshotExportOptions
 {
     /// <summary>Выгрузка включена.</summary>
@@ -423,17 +426,40 @@ public sealed class SnapshotExportOptions
     /// фазы процессов кластеров.</summary>
     public int TimeoutSec { get; set; } = 30;
 
+    /// <summary>Собственная пара слепков (t36, arch/14 §6/§8; env
+    /// PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY).</summary>
+    public SnapshotExportS3Options S3 { get; set; } = new();
+
     /// <summary>Fail-fast старта (образец BackupsOptions.IsValid): Enabled=true
-    /// требует полный S3-комплект Backups:S3; диапазоны — всегда.</summary>
-    public bool IsValid(BackupsS3Options s3)
+    /// требует ПОЛНУЮ собственную пару S3; диапазоны — всегда.</summary>
+    public bool IsValid()
         => (!Enabled
-            || (!string.IsNullOrWhiteSpace(s3.Endpoint)
-                && !string.IsNullOrWhiteSpace(s3.Bucket)
-                && !string.IsNullOrWhiteSpace(s3.AccessKey)
-                && !string.IsNullOrWhiteSpace(s3.SecretKey)))
+            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
+                && !string.IsNullOrWhiteSpace(S3.Bucket)
+                && !string.IsNullOrWhiteSpace(S3.AccessKey)
+                && !string.IsNullOrWhiteSpace(S3.SecretKey)))
            && RetentionObjects >= 1
            && RetryIntervalSec > 0
            && TimeoutSec > 0;
+}
+
+/// <summary>S3-цель слепков etcd (t36): per-install env-пара, не креды пулов
+/// бэкапов (arch/19 §7; CA https — опциональный собственный путь).</summary>
+public sealed class SnapshotExportS3Options
+{
+    public string Endpoint { get; set; } = "";
+
+    public string Bucket { get; set; } = "";
+
+    public string AccessKey { get; set; } = "";
+
+    public string SecretKey { get; set; } = "";
+
+    /// <summary>Регион (опц.; MinIO/ownS3 не требуют — null).</summary>
+    public string? Region { get; set; }
+
+    /// <summary>Путь CA-bundle https-endpoint слепков (опц.; пусто — системное доверие).</summary>
+    public string? CaBundlePath { get; set; }
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка
@@ -532,14 +558,15 @@ public sealed class BackupsOptions
         ContourNetwork: contourNetwork);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
-    /// обязан иметь полный S3-комплект; false — подсистема не активна.
-    /// Диапазоны ретенции/квоты (t06) — всегда: мусорный конфиг виден на старте.</summary>
-    public bool IsValid()
+    /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один
+    /// env-профиль кредов PGW_BACKUP_S3_PROFILES__* (t36, arch/19 §7/§9;
+    /// секреты — env-only, число профилей сюда приносит Program.cs);
+    /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
+    /// мусорный конфиг виден на старте.</summary>
+    public bool IsValid(int secretProfileCount)
         => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
-                && !string.IsNullOrWhiteSpace(S3.Bucket)
-                && !string.IsNullOrWhiteSpace(S3.AccessKey)
-                && !string.IsNullOrWhiteSpace(S3.SecretKey)
+            || (!string.IsNullOrWhiteSpace(S3.Bucket)
+                && secretProfileCount > 0
                 && !string.IsNullOrWhiteSpace(Job.Image)
                 && !string.IsNullOrWhiteSpace(Wal.AgentImage)))   // t27: образ wal-агента
            && Quota.WarnPercent < Quota.CritPercent

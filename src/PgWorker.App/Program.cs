@@ -56,12 +56,15 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Api:AdvertiseUrl обязан быть https:// (mTLS-only API, arch/14 §1.1)")
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
-    .Validate(o => o.Backups.IsValid(),
-        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
+    // t36: Enabled=true требует непустой Bucket + хотя бы один env-профиль
+    // кредов пулов (arch/19 §7/§9 — единый endpoint записи ушёл).
+    .Validate(o => o.Backups.IsValid(new BackupSecretProfileStore().ProfileNames.Count),
+        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один профиль PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
     // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
-    // S3-комплект из Backups:S3 (Backups:Enabled не нужен); диапазоны — всегда.
-    .Validate(o => o.Snapshots.Export.IsValid(o.Backups.S3),
-        "PgWorker:Snapshots:Export: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
+    // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (t36, env
+    // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
+    .Validate(o => o.Snapshots.Export.IsValid(),
+        "PgWorker:Snapshots:Export: Enabled=true требует полную пару PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
@@ -75,6 +78,14 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Docker:RestTls обязателен: оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
         "(per-install CA для REST-TLS нод; HTTP-режим не существует)")
     .ValidateOnStart();
+
+// t36 (arch/19 §9): полупары env-профилей кредов пулов — fail-fast старта
+// (ACCESS_KEY без SECRET_KEY — мусорный деплой, резолверу creds не бывает).
+var halfPairs = new BackupSecretProfileStore().ValidateEnvPairs();
+if (halfPairs.Count > 0)
+    throw new ApplicationException(
+        $"PGW_BACKUP_S3_PROFILES__: полупары env-профилей (ACCESS_KEY и SECRET_KEY задаются вместе): {string.Join(", ", halfPairs)}");
+builder.Services.AddSingleton(_ => new BackupSecretProfileStore());
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.

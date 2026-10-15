@@ -15,7 +15,7 @@ public class BackupsOptionsTests
 
         // Act / Assert — поведение воркера не меняется: подсистема выключена.
         options.Enabled.Should().BeFalse();
-        options.IsValid().Should().BeTrue();
+        options.IsValid(1).Should().BeTrue();
         options.S3.PathStyle.Should().BeTrue(); // клиент MinIO-режима (arch/19 §5)
     }
 
@@ -26,7 +26,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions { Enabled = true };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -47,26 +47,23 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue();
+        options.IsValid(1).Should().BeTrue();
     }
 
+    // t36 (arch/19 §7): конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
+    // влияют на валидность — креды только env-профилями; достаточно Bucket.
     [Fact]
-    public void Enabled_MissingSecretKey_Invalid()
+    public void Enabled_BucketOnly_ValidWithoutConfigCreds()
     {
-        // Arrange — частичная конфигурация: endpoint/bucket/key есть, секрета нет.
+        // Arrange — включили с одним Bucket (без endpoint/кредов в конфиге).
         var options = new BackupsOptions
         {
             Enabled = true,
-            S3 = new BackupsS3Options
-            {
-                Endpoint = "http://host.docker.internal:9000",
-                Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-            },
+            S3 = new BackupsS3Options { Bucket = "pgworker-backups" },
         };
 
-        // Act / Assert
-        options.IsValid().Should().BeFalse();
+        // Act / Assert — 1 env-профиль кредов → валидно.
+        options.IsValid(1).Should().BeTrue();
     }
 
     [Fact]
@@ -99,7 +96,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -202,7 +199,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — fail-fast старта.
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -215,7 +212,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -228,7 +225,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -241,7 +238,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -251,7 +248,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions();
 
         // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
-        options.IsValid().Should().BeTrue();
+        options.IsValid(1).Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
         options.Quota.Bytes.Should().Be(0);
@@ -319,7 +316,7 @@ public class BackupsOptionsTests
         options.Job.RestoreTimeoutSec = restore;
 
         // Act / Assert
-        options.IsValid().Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
     }
 
     // AAA: OrphanTtlSec=0 — валиден (только алерт, без авто-удаления)
@@ -333,7 +330,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
+        options.IsValid(1).Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
     }
 
     // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
@@ -391,7 +388,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid().Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
     }
 
     // AAA: IntervalDays=0 валиден (глобальное выключение новых запусков)
@@ -405,7 +402,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue("0 — легитимное выключение новых запусков");
+        options.IsValid(1).Should().BeTrue("0 — легитимное выключение новых запусков");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
 
@@ -442,7 +439,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)
