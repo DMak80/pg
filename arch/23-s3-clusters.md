@@ -311,9 +311,8 @@ per-install env-профили (ниже); **PKI репликации** — per-
 ## 9. Панель (проекция — t34)
 
 Панель читает `/s3/` и `/s3worker/{api,rotations}/`, мутирует только через
-API S3Worker (панель в etcd домена S3 не пишет ничего); проекция в
-[adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) (глава
-домена S3 по образцу §10 kafka / §11 valkey) — задача t34.
+API S3Worker (панель в etcd домена S3 не пишет ничего); проекция —
+[adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) §12.
 
 Совместимость с механикой панели: unknownKeys-толерантность (§2), битый
 JSON — parseError-запись без падения тика, `state`-семантика
