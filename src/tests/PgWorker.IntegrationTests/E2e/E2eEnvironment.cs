@@ -702,6 +702,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
         // инстанс — закрывается в HostInstance.DisposeAsync).
         var tail = new Queue<string>();
         var logWriter = new StreamWriter(Path.Combine(snapshotsDir, "host.log"), append: false) { AutoFlush = true };
+        // Диагностика SSL-fail (t36-разбор): отпечаток env-CA, переданной этому
+        // воркеру, — в host.log. Сверка с rest-ca.sha256 артефактов и с env-CA
+        // поднятых нод (docker inspect) отвечает «чей серт у ноды» без перезапуска.
+        logWriter.WriteLine(
+            $"[diag] PGW_REST_TLS_CA_SHA256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(_installCa.CaPem)))}");
         process.OutputDataReceived += (_, e) => { Collect(tail, e.Data); if (e.Data is not null) logWriter.WriteLine(e.Data); };
         process.ErrorDataReceived += (_, e) => { Collect(tail, e.Data); if (e.Data is not null) logWriter.WriteLine(e.Data); };
         process.BeginOutputReadLine();
@@ -1222,6 +1227,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
             _installCa = E2eTestPki.GenerateCa("e2e");
             (_serverCertPem, _serverKeyPem) = E2eTestPki.Issue(
                 _installCa.CaPem, _installCa.CaKeyPem, "pgworker", ["localhost", "127.0.0.1"], ip: null);
+
+            // Воркеры-призраки (разбор 2026-10-15): живой PgWorker.App прошлого
+            // прогона указывает etcd на повторно занятый порт (зонд портов
+            // воспроизводим!) и выигрывает гонку provisioning нового контура —
+            // ноды получают ЧУЖУЮ per-install CA, Patroni-пробы ловят SSL-fail.
+            // Свои воркеры этот testhost ещё не запускал: любой pgw-e2e-*
+            // воркер старше старта этого процесса — призрак, fail-fast.
+            await EnsureNoGhostWorkersAsync(ct);
             var (clientPem, clientKeyPem) = E2eTestPki.Issue(
                 _installCa.CaPem, _installCa.CaKeyPem, "e2e-healthcheck", ["e2e-healthcheck"], ip: null);
             var pemPair = X509Certificate2.CreateFromPem(clientPem, clientKeyPem);
@@ -1262,6 +1275,44 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             StaticGate.Release();
         }
+    }
+
+    // Воркеры-призраки: живые PgWorker.App-процессы прошлых прогонов. Процесс
+    // этого testhost ещё не стартовал ни одного воркера, поэтому воркер с cwd
+    // в pgw-e2e-* каталоге, созданном ДО старта процесса, — призрак (параллельным
+    // легитимным прогонам не мешаем: их воркеры моложе). Призрак переиспользует
+    // etcd-endpoint по коллизии портов и перехватывает provisioning (разбор
+    // 2026-10-15: SSL-fail Patroni-проб из-за чужой per-install CA на нодах).
+    private static async Task EnsureNoGhostWorkersAsync(CancellationToken ct)
+    {
+        var processStart = Process.GetCurrentProcess().StartTime;
+        var listing = await E2eFixture.RunProcessAsync(
+            "bash", ["-c", "ps aux | grep 'PgWorker.App.dll' | grep -v grep || true"],
+            ct, timeout: TimeSpan.FromSeconds(20));
+        var ghosts = new List<string>();
+        foreach (var line in listing.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pid = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+            if (!int.TryParse(pid, out var processId) || processId == Process.GetCurrentProcess().Id)
+                continue;
+            var cwdOut = await E2eFixture.RunProcessAsync(
+                "bash", [$"-c", $"lsof -p {processId} 2>/dev/null || true"],
+                ct, timeout: TimeSpan.FromSeconds(20));
+            var cwd = cwdOut.Split('\n')
+                .FirstOrDefault(l => l.Contains(" cwd "))?.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .LastOrDefault();
+            if (cwd is null || !cwd.Contains("pgw-e2e-", StringComparison.Ordinal))
+                continue;
+            if (!Directory.Exists(cwd) || Directory.GetCreationTime(cwd) >= processStart)
+                continue; // каталог моложе процесса — воркер параллельного/своего прогона
+            ghosts.Add($"pid={processId} cwd={cwd}");
+        }
+        if (ghosts.Count > 0)
+            throw new ApplicationException(
+                "Обнаружены воркеры-призраки прошлых прогонов (живые PgWorker.App в pgw-e2e-* " +
+                "каталогах старше старта этого процесса). Они перехватывают etcd/порты новых " +
+                "контуров (SSL-fail, portalloc-расхождения). Убей их и повтори прогон:\n- " +
+                string.Join("\n- ", ghosts));
     }
 
     // Образ ownS3-ноды (t36): .NET-сервис — publish НА ХОСТЕ (инкрементально,
