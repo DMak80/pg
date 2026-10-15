@@ -27,7 +27,7 @@ public sealed class BackupVerifyProcess(
     string[] endpoints,
     IClusterDriver driver,
     ShardEndpoints shardEndpoints,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -69,6 +69,18 @@ public sealed class BackupVerifyProcess(
         if (!addresses.IsSuccess)
             return Result<ProcessOutcome>.Failed(addresses.Error!);
 
+        // t36 (arch/19 §5): пул чтения per-cluster — точечные GET/листинги с
+        // перебором ReadAll. null/Failed — transient: journal, ретраи тиком
+        // (кандидаты остаются PENDING/OK, статусы не трогаем).
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        await using var s3 = s3Factory.Create(poolCtx);
+
         foreach (var shard in snap.Shards.Where(s => !s.ToRemove))
         {
             // шард без ключей полных — пропускается (dsn не нужен: verify чисто по S3)
@@ -77,7 +89,7 @@ public sealed class BackupVerifyProcess(
 
             try
             {
-                await TickShardAsync(cluster, shard.Name, shardBackups, addresses.Value, intervalSec, nowUnix, ct);
+                await TickShardAsync(cluster, shard.Name, shardBackups, addresses.Value, intervalSec, nowUnix, poolCtx, s3, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -97,7 +109,8 @@ public sealed class BackupVerifyProcess(
 
     private async Task TickShardAsync(
         string cluster, string shard, ShardBackups shardBackups,
-        IReadOnlyDictionary<string, NodeAddress> addresses, long intervalSec, long nowUnix, CancellationToken ct)
+        IReadOnlyDictionary<string, NodeAddress> addresses, long intervalSec, long nowUnix,
+        BackupPoolContext pool, IBackupS3 s3, CancellationToken ct)
     {
         var fulls = shardBackups.Full;
 
@@ -241,7 +254,8 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
-        var spec = VerifyJobSpec.Build(options, cluster, shard, id);
+        var spec = VerifyJobSpec.Build(options, cluster, shard, id,
+            pool.ReadAll, pool.AccessKey, pool.SecretKey);
         var jobName = BackupNames.VerifyContainerName(cluster, shard, id);
         var created = await engine.CreateContainerAsync(spec, jobName, ct);
         if (!created.IsSuccess)

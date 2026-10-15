@@ -72,7 +72,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
         Action<string, string, string>? restoreObserver = null)
-        => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
+        => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),

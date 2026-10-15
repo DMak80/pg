@@ -111,17 +111,19 @@ public class BackupJobSpecTests
         };
 
         // Act
-        var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "20260911120000Z");
+        var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "20260911120000Z",
+            ["http://minio:9000"], "ak", "sk");
 
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
-        spec.Env!["PGW_BK_S3_ENDPOINT"].Should().Be("http://minio:9000");
-        spec.Env!["PGW_BK_S3_REGION"].Should().Be("us-east-1");
+        // t36: env чтения — список нод пула + креды профиля.
+        spec.Env![VerifyJobCommand.EnvS3Endpoints].Should().Be("http://minio:9000");
+        spec.Env![VerifyJobCommand.EnvS3AccessKey].Should().Be("ak");
+        spec.Env![VerifyJobCommand.EnvS3SecretKey].Should().Be("sk");
         spec.Env!["PGW_BK_S3_BUCKET"].Should().Be("bkt");
         spec.Env!["PGW_BK_PREFIX"].Should().Be("c1/shard1");
         spec.Env!["PGW_BK_ID"].Should().Be("20260911120000Z");
         spec.Env!["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
-        spec.Env[VerifyJobCommand.EnvMcHostVariable].Should().Contain("ak:sk@minio:9000");
         spec.Cmd.Should().BeEquivalentTo(VerifyJobCommand.Build(), o => o.WithStrictOrdering());
         spec.CpuCores.Should().Be(0.5, "лимиты Agent { Cpu, Mem } — как у джоба t02 (spec §3.2)");
         spec.MemoryBytes.Should().Be(536870912);
@@ -139,8 +141,8 @@ public class BackupJobSpecTests
         var opts = new BackupsRuntimeOptions { StagingQuotaBytes = 1024, StagingDir = "/backup-staging" };
 
         // Act
-        var withQuota = VerifyJobSpec.Build(opts, "c1", "s1", "id1");
-        var noQuota = VerifyJobSpec.Build(opts with { StagingQuotaBytes = null }, "c1", "s1", "id1");
+        var withQuota = VerifyJobSpec.Build(opts, "c1", "s1", "id1", ["http://m:9000"], "ak", "sk");
+        var noQuota = VerifyJobSpec.Build(opts with { StagingQuotaBytes = null }, "c1", "s1", "id1", ["http://m:9000"], "ak", "sk");
 
         // Assert — ENOSPC → download-phase transient (арх. §6 канона)
         withQuota.Tmpfs!["/backup-staging"].Should().Be("size=1024");
@@ -176,14 +178,14 @@ public class BackupJobSpecTests
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
-        var spec = VerifyJobSpec.Build(_opts with { S3CaBundlePath = caPath }, "c1", "s1", "id1");
+        var spec = VerifyJobSpec.Build(_opts with { S3CaBundlePath = caPath }, "c1", "s1", "id1", ["http://m:9000"], "ak", "sk");
         spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
     }
 
     [Fact]
     public void VerifyJobSpec_БезCaBundle_НетS3CaPem()
     {
-        var spec = VerifyJobSpec.Build(_opts, "c1", "s1", "id1");
+        var spec = VerifyJobSpec.Build(_opts, "c1", "s1", "id1", ["http://m:9000"], "ak", "sk");
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
     }
 
@@ -221,7 +223,7 @@ public class BackupJobSpecTests
         var opts = new BackupsRuntimeOptions { ContourNetwork = contour };
 
         // Act
-        var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "id1");
+        var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "id1", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Network.Should().Be(expectedNet);

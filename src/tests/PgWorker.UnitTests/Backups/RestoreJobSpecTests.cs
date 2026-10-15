@@ -19,7 +19,7 @@ public class RestoreJobSpecTests
 
         // Act
         var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "pgw-c1-shard1-shard1a-data",
-            "2026-09-11T10:00:00Z", "srcc", "srcx");
+            "2026-09-11T10:00:00Z", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
@@ -54,7 +54,7 @@ public class RestoreJobSpecTests
             S3AccessKey: "ak", S3SecretKey: "sk");
 
         // Act
-        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Env!["TARGET_TIME"].Should().BeEmpty();
@@ -69,7 +69,7 @@ public class RestoreJobSpecTests
         var spec = RestoreJobSpec.Build(
             new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
                 S3AccessKey: "ak", S3SecretKey: "sk") { S3CaBundlePath = caPath },
-            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
         spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
     }
 
@@ -80,7 +80,7 @@ public class RestoreJobSpecTests
         var spec = RestoreJobSpec.Build(
             new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
                 S3AccessKey: "ak", S3SecretKey: "sk"),
-            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
     }
 
@@ -98,7 +98,7 @@ public class RestoreJobSpecTests
             ContourNetwork: contour);
 
         // Act
-        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Network.Should().Be(expectedNet);

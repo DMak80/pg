@@ -14,17 +14,32 @@ namespace PgWorker.Backups.Restore;
 // Spilo-layout (§3.3): точка монтирования volume и PGDATA конфигурируются env.
 public static class RestoreJobCommand
 {
-    /// <summary>Значение env MC_HOST-alias (формат mc: MC_HOST_&lt;alias&gt;):
-    /// scheme://access:secret@authority. URL-escape кредов — секреты per-install
-    /// могут содержать спецсимволы URL. (t27: перенесено из удалённого
-    /// WalAgentCommand — джобы restore/drill/verify продолжают пользоваться.)</summary>
-    public static string McHost(string endpoint, string accessKey, string secretKey)
-    {
-        var uri = new Uri(endpoint);
-        return $"{uri.Scheme}://{Uri.EscapeDataString(accessKey)}:{Uri.EscapeDataString(secretKey)}@{uri.Authority}";
+    /// <summary>t36: ГОЛОВА скрипта чтения (переиспользуют verify и drill —
+    /// общий env-контракт трёх джобов): алиасы per-ноды пула из S3_ENDPOINTS +
+    /// mc_copy_first — перебор нод до найденного (per-попыточный timeout — R3,
+    /// arch/23 §7; NotFound/отказ → следующая, лаг mesh допущен, исчерпание
+    /// всех → код ≠ 0). $1 — источник С алиасом-плейсхолдером {A}; $2 — цель.</summary>
+    public const string AliasesScript = """
+    # t36: алиасы per-ноды пула (заменяют единый MC_HOST_pgwbkp)
+    MC_ALIAS_N=0
+    for ep in $(echo "$S3_ENDPOINTS" | tr ',' ' '); do
+      export MC_HOST_pgwbkp$MC_ALIAS_N="${ep%%://*}://$S3_ACCESS_KEY:$S3_SECRET_KEY@${ep#*://}"
+      MC_ALIAS_N=$((MC_ALIAS_N+1))
+    done
+    [ "$MC_ALIAS_N" -gt 0 ] || { printf '{"ok":false,"error":"S3_ENDPOINTS empty"}\n'; exit 1; }
+    mc_copy_first() { # $1 — mc-источник С алиасом-плейсхолдером {A}; $2 — цель
+      i=0
+      while [ $i -lt $MC_ALIAS_N ]; do
+        timeout 300 mc cp --recursive "$(echo "$1" | sed "s/{A}/pgwbkp$i/")" "$2" && return 0
+        i=$((i+1))
+      done
+      return 1
     }
+    """;
 
-    public const string EnvMcHost = "MC_HOST_pgwbkp";
+    public const string EnvS3Endpoints = "S3_ENDPOINTS";
+    public const string EnvS3AccessKey = "S3_ACCESS_KEY";
+    public const string EnvS3SecretKey = "S3_SECRET_KEY";
     public const string EnvBucket = "S3_BUCKET";
     public const string EnvSrcPrefix = "SRC_PREFIX";
     public const string EnvBackupId = "BACKUP_ID";
@@ -40,6 +55,7 @@ public static class RestoreJobCommand
         # Доверие CA https-endpoint (t42, arch/19 §7): PEM из env — в файл + SSL_CERT_FILE (mc)
         if [ -n "${S3_CA_PEM:-}" ]; then printf '%s\n' "$S3_CA_PEM" > /tmp/s3-ca.pem; export SSL_CERT_FILE=/tmp/s3-ca.pem; fi
         DATA_DIR="${PGW_RESTORE_DATA_DIR:-/restore}"
+        """ + AliasesScript + """
         # Дефолт Spilo-layout: volume-корень узла /home/postgres/pgdata, данные
         # узла — pgroot/data (arch/14 §2.1)
         PGDATA="${PGW_RESTORE_PGDATA:-$DATA_DIR/pgroot/data}"
@@ -47,8 +63,9 @@ public static class RestoreJobCommand
         FAIL() { LOG "{\"ok\":false,\"error\":\"$(printf '%s' "$1" | tr '\n' ' ' | tr -d '"')\"}"; exit 1; }
 
         LOG '{"phase":"downloading"}'
-        mc cp --recursive "pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/" "$PGDATA/" \
-          || FAIL "download full/$BACKUP_ID failed"
+        # Полный — с первой доступной ноды пула (перебор до найденного, arch/19 §5)
+        mc_copy_first "{A}/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/" "$PGDATA/" \
+          || FAIL "download full/$BACKUP_ID failed on all pool endpoints"
         [ -f "$PGDATA/backup_label" ] || FAIL "full/$BACKUP_ID: no backup_label"
         # Пустые/транзиентные каталоги PGDATA не переживают S3: mc не хранит пустые
         # каталоги, а pg_basebackup ИСКЛЮЧАЕТ транзиентные SLRU-каталоги (pg_subtrans,
@@ -64,8 +81,11 @@ public static class RestoreJobCommand
                  "$PGDATA"/pg_wal/archive_status \
                  "$PGDATA"/pg_logical/snapshots "$PGDATA"/pg_logical/mappings
 
-        # restore_command: mc качает сегмент/.history из wal/-префикса прямо в %p;
-        # объекта нет → mc exit != 0 → конец WAL (канон §3.5)
+        # restore_command: mc качает сегмент/.history из wal/-префикса с ПЕРВОЙ
+        # ноды пула, ГДЕ ОН ЕСТЬ (перебор ReadAll до найденного — arch/19 §5;
+        # лаг mesh допущен); нигде нет → mc exit != 0 → конец WAL (канон §3.5).
+        # MC_ALIAS_N вычисляется заново из S3_ENDPOINTS (shell-переменные
+        # родителя не переживают execve restore_command).
         cat > "$PGDATA/restore-wal.sh" <<'WALSH'
         #!/bin/bash
         set -o pipefail
@@ -74,7 +94,17 @@ public static class RestoreJobCommand
         # буквенный сегмент (…a-f, t27: WAL длиннее 0x9000000) давал ложный 404
         # («Object does not exist») и обрыв recovery за полсекунды до цели.
         SEG="${1,,}"
-        exec mc cp "pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG" "$2"
+        N=0
+        for ep in $(echo "$S3_ENDPOINTS" | tr ',' ' '); do
+          export MC_HOST_pgwbkp$N="${ep%%://*}://$S3_ACCESS_KEY:$S3_SECRET_KEY@${ep#*://}"
+          N=$((N+1))
+        done
+        i=0
+        while [ $i -lt $N ]; do
+          timeout 30 mc cp "pgwbkp$i/$S3_BUCKET/$SRC_PREFIX/wal/$SEG" "$2" && exit 0
+          i=$((i+1))
+        done
+        exit 1
         WALSH
         chmod 755 "$PGDATA/restore-wal.sh"
 

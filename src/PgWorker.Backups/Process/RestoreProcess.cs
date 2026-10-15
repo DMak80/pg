@@ -30,7 +30,7 @@ public sealed class RestoreProcess(
     IEtcdGateway etcd,
     string[] endpoints,
     IClusterDriver driver,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -123,6 +123,17 @@ public sealed class RestoreProcess(
         ClusterBackups? mine, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
+
+        // t36 (arch/19 §5): пул чтения per-cluster (source_pool DR — Task 12).
+        // null/Failed — transient: journal, ретраи тиком (статусы не трогаем).
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        await using var s3 = s3Factory.Create(poolCtx);
 
         // 1. Усыновлённые (object) ноды — ручной путь, restore plain-only.
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -246,6 +257,15 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
 
+        // t36: пул чтения (source_pool DR — Task 12); null/Failed — transient.
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
         // Первая нода (джоб пишет восстановленный PGDATA в её data-volume);
         // адрес из portalloc, движок — по хосту (null → transient).
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -343,7 +363,8 @@ public sealed class RestoreProcess(
 
             var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.BackupId,
                 $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
-                SrcCluster(op), SrcShard(op));
+                SrcCluster(op), SrcShard(op),
+                poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
