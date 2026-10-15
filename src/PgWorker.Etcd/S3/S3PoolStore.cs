@@ -5,6 +5,15 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Etcd.S3;
 
+/// <summary>Чтение домена /s3/ (t36): интерфейс для резолвера/фабрики —
+/// тестовые фейки не тянут etcd-транспорт.</summary>
+public interface IS3PoolStore
+{
+    Task<Result<S3Pool?>> ReadAsync(string pool, CancellationToken ct);
+
+    Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct);
+}
+
 /// <summary>
 /// Чтение домена /s3/ воркером (t36, arch/23 §7): PgWorker — ЧИТАТЕЛЬ,
 /// участником контракта не становится. ReadAsync собирает пул из config,
@@ -12,7 +21,7 @@ namespace PgWorker.Etcd.S3;
 /// placed_on и portalloc (ИСТОЧНИК АДРЕСОВ); Failover — локальный цикл по
 /// endpoints (паттерн WalStreamProcess/PortAllocIndex — библиотека без DI).
 /// </summary>
-public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogger<S3PoolStore>? logger = null)
+public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogger<S3PoolStore>? logger = null) : IS3PoolStore
 {
     private const string ClustersPrefix = "/s3/clusters/";
     private const string PortAllocPrefix = "/s3worker/portalloc/";
