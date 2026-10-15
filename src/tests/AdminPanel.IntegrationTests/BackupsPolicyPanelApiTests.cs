@@ -207,9 +207,8 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
         // Arrange — форма модала «Пул бэкапов» шлёт полный policy + s3.
         _factory.EnsureBuilt();
         using var client = await BackupsLogin.LoginAsync(_factory);
-        WorkerApi.Respond = _ => new WorkerApiResult(200, """{"ok":true}""");
 
-        // Act
+        // Act — дефолтный 204-стаб воркера (тело пусто — десериализации нет).
         var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
         {
             retentionDays = 1, retentionWeeks = 1, retentionMonths = 1,
@@ -232,7 +231,6 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
         // Arrange
         _factory.EnsureBuilt();
         using var client = await BackupsLogin.LoginAsync(_factory);
-        WorkerApi.Respond = _ => new WorkerApiResult(200, """{"ok":true}""");
 
         // Act
         var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
