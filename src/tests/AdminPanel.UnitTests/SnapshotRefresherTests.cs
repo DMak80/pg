@@ -521,7 +521,7 @@ public class SnapshotRefresherTests
         // Arrange — стор MinIO с готовым инвентарём (кластер demo, 152 байта)
         var minio = new MinioInventoryStore();
         minio.Replace(new MinioStorageInfo(
-            Configured: true, "http://minio:9000", "pgworker-backups", Health: null,
+            Configured: true, ["http://minio:9000"], "pgworker-backups", Health: null,
             Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
             Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
             ConsecutiveFailures: 0, LastError: null));
@@ -544,7 +544,7 @@ public class SnapshotRefresherTests
         // Arrange — успешный тик с инвентарём, затем endpoints умирают
         var minio = new MinioInventoryStore();
         minio.Replace(new MinioStorageInfo(
-            Configured: true, "http://minio:9000", "pgworker-backups", Health: null,
+            Configured: true, ["http://minio:9000"], "pgworker-backups", Health: null,
             Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
             Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
             ConsecutiveFailures: 0, LastError: null));

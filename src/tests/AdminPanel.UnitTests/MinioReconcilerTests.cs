@@ -273,7 +273,7 @@ public class MinioReconcilerTests
     // ——— фикстуры ———
 
     private static MinioStorageInfo Minio(params MinioClusterNode[] clusters) => new(
-        Configured: true, Endpoint: "http://minio:9000", Bucket: "pgworker-backups",
+        Configured: true, Endpoints: ["http://minio:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: ["pgworker-backups"],
         UsedBytes: clusters.Sum(c => c.SizeBytes), ObjectCount: 0,
         Clusters: clusters, ForeignPrefixes: [], UpdatedAtUnix: 1000,

@@ -75,7 +75,9 @@ public sealed record EtcdSnapshotsDto(
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
 
 public sealed record BackupStorageDto(
-    bool Configured, string? NotConfiguredReason, string? Endpoint, string? Bucket,
+    bool Configured, string? NotConfiguredReason,
+    IReadOnlyList<string> Endpoints, // t36 (02 §2.5): цели инвентаря списком, без ключей
+    string? Bucket,
     MinioHealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
@@ -176,7 +178,7 @@ public static class BackupStorageMappers
             return new BackupStorageDto(
                 Configured: false,
                 NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint не задан",
-                Endpoint: null, Bucket: null, Health: null, Buckets: [], Etcd: null,
+                Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
                 InventoryUpdatedUnix: 0, InventoryError: null);
@@ -188,7 +190,7 @@ public static class BackupStorageMappers
         return new BackupStorageDto(
             Configured: true,
             NotConfiguredReason: null,
-            Endpoint: minio.Endpoint,
+            Endpoints: minio.Endpoints,
             Bucket: minio.Bucket,
             Health: MapHealth(minio.Health),
             Buckets: minio.Buckets,

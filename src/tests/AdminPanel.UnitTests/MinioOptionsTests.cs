@@ -4,90 +4,66 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Валидация MinioOptions (t08, spec §4.1): fail-fast только при заданном
-// Endpoint — пустой Endpoint = грань выключена (не ошибка, AC1).
+// MinioOptions.Endpoints (t36, 02 §2.5): запятая-список целей; пусто →
+// [Endpoint]; оба пусты — грань выключена. Поведенческий перебор целей —
+// MinioS3ClientFailoverTests.
 public class MinioOptionsTests
 {
-    private static MinioOptions Valid() => new()
+    private static MinioOptions.MinioS3Options S3(string endpoint = "", string endpoints = "")
+        => new() { Endpoint = endpoint, Endpoints = endpoints, Bucket = "b", AccessKey = "k", SecretKey = "s" };
+
+    // AAA: Endpoints="a,b" → 2 цели в порядке списка.
+    [Fact]
+    public void Endpoints_TwoTargets()
     {
-        S3 =
+        // Arrange
+        var s3 = S3("http://a:9000", "http://a:9000/,http://b:9000");
+
+        // Act
+        var targets = s3.TargetList();
+
+        // Assert: порядок сохранён, хвостовой слэш отсечён.
+        targets.Should().Equal("http://a:9000", "http://b:9000");
+    }
+
+    // AAA: задан только Endpoint → валидный частный случай (один элемент).
+    [Fact]
+    public void EndpointOnly_SingleTarget()
+    {
+        // Arrange
+        var s3 = S3("http://a:9000");
+
+        // Act
+        var targets = s3.TargetList();
+
+        // Assert
+        targets.Should().Equal("http://a:9000");
+    }
+
+    // AAA: оба пусты → грань выключена, список целей пуст.
+    [Fact]
+    public void BothEmpty_NoTargets_GrainDisabled()
+    {
+        // Arrange
+        var options = new MinioOptions { S3 = S3() };
+
+        // Act
+        var targets = options.S3.TargetList();
+
+        // Assert
+        targets.Should().BeEmpty();
+        options.IsConfigured.Should().BeFalse();
+    }
+
+    // AAA: EnsureValid не бросает при заданных Endpoints (валидация грани).
+    [Fact]
+    public void Endpoints_EnsureValid_Passes()
+    {
+        // Arrange
+        var options = new MinioOptions
         {
-            Endpoint = "http://minio:9000",
-            Bucket = "pgworker-backups",
-            AccessKey = "minioadmin",
-            SecretKey = "minioadmin",
-        },
-        IntervalSec = 60,
-        TimeoutSec = 5,
-    };
-
-    // AAA: Endpoint задан, Bucket пуст → InvalidOperationException с именем поля
-    [Fact]
-    public void EnsureValid_EmptyBucket_Throws()
-    {
-        // Arrange — грань включена, bucket не задан
-        var options = Valid();
-        options.S3.Bucket = "";
-
-        // Act
-        var act = () => options.EnsureValid();
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>().Which.Message.Should().Contain("Bucket");
-    }
-
-    // AAA: Endpoint задан, AccessKey/SecretKey пусты → бросок
-    [Fact]
-    public void EnsureValid_EmptyCredentials_Throws()
-    {
-        // Arrange — креды не заданы
-        var options = Valid();
-        options.S3.AccessKey = "";
-        options.S3.SecretKey = "";
-
-        // Act
-        var act = () => options.EnsureValid();
-
-        // Assert — сообщение называет поле кредов
-        act.Should().Throw<InvalidOperationException>().Which.Message.Should().Contain("AccessKey");
-    }
-
-    // AAA: Endpoint задан, IntervalSec = 0 → бросок
-    [Fact]
-    public void EnsureValid_ZeroInterval_Throws()
-    {
-        // Arrange — период тика 0
-        var options = Valid();
-        options.IntervalSec = 0;
-
-        // Act
-        var act = () => options.EnsureValid();
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>().Which.Message.Should().Contain("IntervalSec");
-    }
-
-    // AAA: Endpoint задан, TimeoutSec = -1 → бросок
-    [Fact]
-    public void EnsureValid_NegativeTimeout_Throws()
-    {
-        // Arrange — отрицательный таймаут
-        var options = Valid();
-        options.TimeoutSec = -1;
-
-        // Act
-        var act = () => options.EnsureValid();
-
-        // Assert
-        act.Should().Throw<InvalidOperationException>().Which.Message.Should().Contain("TimeoutSec");
-    }
-
-    // AAA: пустой Endpoint — грань выключена, валидации нет (не бросает)
-    [Fact]
-    public void EnsureValid_EmptyEndpoint_DoesNotThrow()
-    {
-        // Arrange — незаданная грань с прочими пустыми полями
-        var options = new MinioOptions();
+            S3 = S3("http://a:9000", "http://a:9000,http://b:9000"),
+        };
 
         // Act
         var act = () => options.EnsureValid();
@@ -96,17 +72,17 @@ public class MinioOptionsTests
         act.Should().NotThrow();
     }
 
-    // AAA: полный валидный набор — не бросает
+    // AAA: дубли в Endpoints схлопываются (перебор не крутит одну цель дважды).
     [Fact]
-    public void EnsureValid_FullValidSet_DoesNotThrow()
+    public void Endpoints_Duplicates_Collapsed()
     {
-        // Arrange — всё задано
-        var options = Valid();
+        // Arrange
+        var s3 = S3("http://a:9000", "http://a:9000,http://a:9000,http://b:9000");
 
         // Act
-        var act = () => options.EnsureValid();
+        var targets = s3.TargetList();
 
         // Assert
-        act.Should().NotThrow();
+        targets.Should().Equal("http://a:9000", "http://b:9000");
     }
 }

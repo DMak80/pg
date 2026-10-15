@@ -41,10 +41,19 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
 {
     public const string HealthHttpClientName = "minio-health";
 
-    private readonly AmazonS3Client? _client;
+    private readonly bool _configured;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly string _endpoint;
     private readonly string _bucket;
+    // t36 (02 §2.5): цели инвентаря — TargetList() (Endpoints ?? [Endpoint]);
+    // клиенты per-цели — лениво (перебор с первого доступного).
+    private readonly string[] _endpoints;
+    private readonly string _accessKey;
+    private readonly string _secretKey;
+    private readonly string? _region;
+    private readonly bool _pathStyle;
+    private readonly TimeSpan _timeout;
+    private readonly Func<string, AmazonS3Client> _targetClientFactory;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, AmazonS3Client> _targetClients = new();
 
     // Единственный ctor (DI): health-пробы идут через именованный HttpClient
     // "minio-health" — фикс интеграции AC2/AC3 (t08): DI выбирал 1-арговый ctor
@@ -55,35 +64,35 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     {
     }
 
+    // Юнит-шов (t36): подмена клиента per-цели — тесты перебора строят
+    // фейк-подкласс AmazonS3Client (методы виртуальные) вместо транспорта.
+    internal MinioS3Client(
+        MinioOptions options, IHttpClientFactory httpClientFactory,
+        Func<string, AmazonS3Client> targetClientFactory)
+        : this(options, httpClientFactory)
+    {
+        _targetClientFactory = targetClientFactory;
+    }
+
     // httpClientFactory — именованный HttpClient "minio-health" (без SigV4).
     public MinioS3Client(MinioOptions options, IHttpClientFactory httpClientFactory)
     {
-        _endpoint = options.S3.Endpoint.TrimEnd('/');
         _bucket = options.S3.Bucket;
         _httpClientFactory = httpClientFactory;
+        _accessKey = options.S3.AccessKey;
+        _secretKey = options.S3.SecretKey;
+        _region = options.S3.Region;
+        _pathStyle = options.S3.PathStyle;
+        _timeout = TimeSpan.FromSeconds(options.TimeoutSec > 0 ? options.TimeoutSec : 5);
+        _endpoints = options.S3.TargetList();
+        _targetClientFactory = BuildClient;
 
         // AC1: пустой Endpoint — грань выключена, панель обязана стартовать;
-        // AWSSDK-клиент без ServiceURL не конструируется — строим его ТОЛЬКО
+        // AWSSDK-клиент без ServiceURL не конструируется — цели строятся ТОЛЬКО
         // при конфигурации (все вызовы гвардятся IsConfigured в loop/handler'е).
-        if (string.IsNullOrWhiteSpace(options.S3.Endpoint))
+        _configured = !string.IsNullOrWhiteSpace(options.S3.Endpoint);
+        if (!_configured)
             return;
-
-        // Таймауты HTTP-вызовов S3 — из настроек (<= 0 — дефолт 5 c, образец
-        // именованного HttpClient в ModuleExtensions).
-        var timeoutSeconds = options.TimeoutSec > 0 ? options.TimeoutSec : 5;
-        var config = new AmazonS3Config
-        {
-            ServiceURL = options.S3.Endpoint,
-            ForcePathStyle = options.S3.PathStyle,
-            AuthenticationRegion = options.S3.Region,
-
-            // Тик — свой retry-механизм (ConsecutiveFailures, период 60 c):
-            // SDK-ретраи с бэкоффом только растягивали сбойный тик на минуты.
-            MaxErrorRetry = 0,
-            Timeout = TimeSpan.FromSeconds(timeoutSeconds),
-        };
-        _client = new AmazonS3Client(
-            new BasicAWSCredentials(options.S3.AccessKey, options.S3.SecretKey), config);
     }
 
     // Вызов при выключенной грани — ошибка вызова, не транспорта (callers guard
@@ -91,52 +100,94 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     private static Result<T> NotConfigured<T>() => Result<T>.Failed(
         new InvalidOperationException("S3 endpoint не задан — грань «Хранилище бэкапов» выключена"));
 
+    // t36: перебор целей с первого доступного (list-семантика 02 §2.5) —
+    // первая Success выигрывает; исчерпание — последняя ошибка (алерт
+    // backup-s3-unreachable видит текст).
+    private async Task<Result<T>> AnyTargetAsync<T>(
+        Func<string, AmazonS3Client, Task<Result<T>>> call, string what)
+    {
+        Result<T> last = default;
+        foreach (var endpoint in _endpoints)
+        {
+            var client = _targetClients.GetOrAdd(endpoint, _targetClientFactory);
+            var result = await call(endpoint, client);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result<T>.Failed(new ApplicationException(
+            $"{what}: все цели инвентаря недоступны: {last.Error!.Message}"));
+    }
+
+    // Клиент одной цели (креды общие per-install, ServiceURL — по цели).
+    private AmazonS3Client BuildClient(string endpoint)
+        => new(
+            new BasicAWSCredentials(_accessKey, _secretKey),
+            new AmazonS3Config
+            {
+                ServiceURL = endpoint,
+                ForcePathStyle = _pathStyle,
+                AuthenticationRegion = _region,
+                MaxErrorRetry = 0,
+                Timeout = _timeout,
+            });
+
     public async Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct)
     {
-        if (_client is null)
+        if (!_configured)
             return NotConfigured<IReadOnlyList<string>>();
-        try
+        // t36: первая доступная цель (перебор Endpoints, 02 §2.5).
+        return await AnyTargetAsync(async (_, client) =>
         {
-            var response = await _client.ListBucketsAsync(ct);
-            return Result<IReadOnlyList<string>>.Success(
-                response.Buckets.Select(b => b.BucketName).ToList());
-        }
-        catch (Exception e)
-        {
-            return Result<IReadOnlyList<string>>.Failed(
-                new ApplicationException($"S3 list-buckets: {e.Message}", e));
-        }
+            try
+            {
+                var response = await client.ListBucketsAsync(ct);
+                return Result<IReadOnlyList<string>>.Success(
+                    response.Buckets.Select(b => b.BucketName).ToList());
+            }
+            catch (Exception e)
+            {
+                return Result<IReadOnlyList<string>>.Failed(
+                    new ApplicationException($"S3 list-buckets: {e.Message}", e));
+            }
+        }, "S3 list-buckets");
     }
 
     public async Task<Result<S3Page>> ListPageAsync(
         string? prefix, string? continuationToken, int maxKeys, CancellationToken ct)
     {
-        if (_client is null)
+        if (!_configured)
             return NotConfigured<S3Page>();
-        try
+        // t36: первая доступная цель; токен страницы валиден в рамках ОДНОЙ
+        // цели — перебор идёт только до первого успеха (дальше цель фикс).
+        return await AnyTargetAsync(async (_, client) =>
         {
-            var response = await _client.ListObjectsV2Async(new ListObjectsV2Request
+            try
             {
-                BucketName = _bucket,
-                Prefix = prefix,
-                ContinuationToken = continuationToken,
-                MaxKeys = maxKeys,
-            }, ct);
-            var items = response.S3Objects
-                .Select(o => new MinioObjectInfo(
-                    o.Key, o.Size,
-                    new DateTimeOffset(o.LastModified.ToUniversalTime(), TimeSpan.Zero)
-                        .ToUnixTimeSeconds()))
-                .ToList();
-            return Result<S3Page>.Success(new S3Page(
-                items,
-                response.IsTruncated is true ? response.NextContinuationToken : null));
-        }
-        catch (Exception e)
-        {
-            return Result<S3Page>.Failed(
-                new ApplicationException($"S3 list-v2 (prefix={prefix ?? "<root>"}): {e.Message}", e));
-        }
+                var response = await client.ListObjectsV2Async(new ListObjectsV2Request
+                {
+                    BucketName = _bucket,
+                    Prefix = prefix,
+                    ContinuationToken = continuationToken,
+                    MaxKeys = maxKeys,
+                }, ct);
+                var items = response.S3Objects
+                    .Select(o => new MinioObjectInfo(
+                        o.Key, o.Size,
+                        new DateTimeOffset(o.LastModified.ToUniversalTime(), TimeSpan.Zero)
+                            .ToUnixTimeSeconds()))
+                    .ToList();
+                return Result<S3Page>.Success(new S3Page(
+                    items,
+                    response.IsTruncated is true ? response.NextContinuationToken : null));
+            }
+            catch (Exception e)
+            {
+                return Result<S3Page>.Failed(
+                    new ApplicationException($"S3 list-v2 (prefix={prefix ?? "<root>"}): {e.Message}", e));
+            }
+        }, "S3 list-v2");
     }
 
     public async Task<MinioHealth> GetHealthAsync(CancellationToken ct)
@@ -171,28 +222,35 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
 
     // GET {endpoint}{relativePath}; отсутствие ответа — null-статус; тело
     // (только cluster) парсится толерантно — битый JSON → drives null.
+    // t36: перебор целей с первого ответившего (list-семантика 02 §2.5) —
+    // мёртвая первая цель не роняет live/cluster-грань; фолбэк live→healthz
+    // остаётся пробой по статусу (мёртвый endpoint вторую пробу не крутит).
     private async Task<(int? StatusCode, MinioDrives? Drives)> ProbeHealthAsync(
         string relativePath, bool withDrives, CancellationToken ct)
     {
-        try
+        foreach (var endpoint in _endpoints)
         {
-            var client = _httpClientFactory.CreateClient(HealthHttpClientName);
-            using var response = await client.GetAsync(
-                new Uri($"{_endpoint}{relativePath}"), ct);
-            MinioDrives? drives = null;
-            if (withDrives)
+            try
             {
-                var body = await response.Content.ReadAsStringAsync(ct);
-                drives = ParseDrives(body);
-            }
+                var client = _httpClientFactory.CreateClient(HealthHttpClientName);
+                using var response = await client.GetAsync(
+                    new Uri($"{endpoint}{relativePath}"), ct);
+                MinioDrives? drives = null;
+                if (withDrives)
+                {
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    drives = ParseDrives(body);
+                }
 
-            return ((int)response.StatusCode, drives);
+                return ((int)response.StatusCode, drives);
+            }
+            catch (Exception)
+            {
+                // Сетевой сбой/таймаут — «эндпоинт не отвечает», следующая цель.
+            }
         }
-        catch (Exception)
-        {
-            // Сетевой сбой/таймаут — «эндпоинт не отвечает», не исключение наружу.
-            return (null, null);
-        }
+
+        return (null, null);
     }
 
     private static MinioDrives? ParseDrives(string? body)
@@ -226,7 +284,8 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _client?.Dispose();
+        foreach (var client in _targetClients.Values)
+            client.Dispose();
         return ValueTask.CompletedTask;
     }
 }

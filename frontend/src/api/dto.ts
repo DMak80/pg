@@ -900,7 +900,8 @@ export interface EtcdSnapshotsDto {
 export interface BackupStorageDto {
   configured: boolean;
   notConfiguredReason: string | null;
-  endpoint: string | null;
+  // t36 (adminpanel/02 §2.5): цели инвентаря списком (ноды пула), без ключей.
+  endpoints: string[];
   bucket: string | null;
   health: MinioHealthDto | null;
   buckets: string[];

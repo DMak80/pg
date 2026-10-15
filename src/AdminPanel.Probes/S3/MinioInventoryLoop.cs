@@ -61,7 +61,7 @@ public sealed class MinioInventoryLoop(
         if (store.Current is null)
         {
             store.Replace(new MinioStorageInfo(
-                Configured: true, config.S3.Endpoint, config.S3.Bucket,
+                Configured: true, config.S3.TargetList(), config.S3.Bucket,
                 Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                 Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
                 ConsecutiveFailures: 0, LastError: null));
@@ -110,7 +110,7 @@ public sealed class MinioInventoryLoop(
                 inventory.Clusters.Count, inventory.UsedBytes, inventory.ObjectCount);
 
             store.Replace(new MinioStorageInfo(
-                Configured: true, config.S3.Endpoint, config.S3.Bucket,
+                Configured: true, config.S3.TargetList(), config.S3.Bucket,
                 health, buckets.Value, inventory.UsedBytes, inventory.ObjectCount,
                 inventory.Clusters, inventory.ForeignPrefixes, at,
                 ConsecutiveFailures: 0, LastError: null));
@@ -133,7 +133,7 @@ public sealed class MinioInventoryLoop(
         store.Replace(
             previous is null
                 ? new MinioStorageInfo(
-                    Configured: true, options.Value.S3.Endpoint, options.Value.S3.Bucket,
+                    Configured: true, options.Value.S3.TargetList(), options.Value.S3.Bucket,
                     Health: health, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                     Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
                     ConsecutiveFailures: 1, LastError: message)

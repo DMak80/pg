@@ -40,9 +40,11 @@ public sealed partial record MinioInventory(
     IReadOnlyList<string> Buckets, IReadOnlyList<string> ForeignPrefixes);
 
 /// <summary>Состояние грани в снапшоте: null — AdminPanel:Backups:S3 не настроен
-/// (configured=false); Configured=true + UpdatedAtUnix=0 — первый тик ещё шёл.</summary>
+/// (configured=false); Configured=true + UpdatedAtUnix=0 — первый тик ещё шёл.
+/// t36 (adminpanel/02 §2.5): Endpoints — цели инвентаря списком (env Endpoints;
+/// одиночный Endpoint — валидный частный случай, один элемент); ключей нет.</summary>
 public sealed record MinioStorageInfo(
-    bool Configured, string Endpoint, string Bucket,
+    bool Configured, IReadOnlyList<string> Endpoints, string Bucket,
     MinioHealth? Health, IReadOnlyList<string> Buckets,
     long UsedBytes, long ObjectCount,
     IReadOnlyList<MinioClusterNode> Clusters, IReadOnlyList<string> ForeignPrefixes,

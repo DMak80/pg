@@ -24,7 +24,15 @@ public sealed record DrillInfo(
 /// читает и дефолтирует (панель PUTит полный набор через policy-API воркера).</summary>
 public sealed record BackupsPolicyInfo(
     int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
-    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays);
+    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays,
+    // t36 (arch/19 §4): секция s3 policy; null — пул не выбран (алерт
+    // backup-pool-missing), списки — имена нод пула по приоритету записи.
+    BackupsPolicyS3Info? S3 = null);
+
+/// <summary>Секция s3 policy кластера (панель — толерантный читатель;
+/// мутация — policy-API воркера, 02 §9.12).</summary>
+public sealed record BackupsPolicyS3Info(
+    string Pool, IReadOnlyList<string> WriteMaster, IReadOnlyList<string> WriteReplica);
 
 public sealed record ClusterBackupsInfo(
     string Cluster,

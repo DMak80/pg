@@ -65,7 +65,7 @@ export function BackupsStoragePage() {
       <Group gap="sm">
         <Title order={2}>Хранилище бэкапов</Title>
         <Text c="dimmed" size="sm" ff="monospace">
-          {data.endpoint} / {data.bucket}
+          {data.endpoints.join(', ')} / {data.bucket}
         </Text>
       </Group>
       {data.inventoryError ? (

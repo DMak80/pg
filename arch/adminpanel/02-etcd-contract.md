@@ -256,7 +256,9 @@ enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
 
 // Live-инвентарь MinIO-грани «Хранилище бэкапов» (§2.5, t08): пишется
 // инвентарь-тиком в стор, вносится refresher'ом; null — грань не настроена.
-sealed record MinioStorageInfo(bool Configured, string Endpoint, string Bucket,
+// t36: Endpoints — цели инвентаря списком (env Endpoints; одиночный Endpoint —
+// валидный частный случай, один элемент); ключей в DTO нет.
+sealed record MinioStorageInfo(bool Configured, IReadOnlyList<string> Endpoints, string Bucket,
     MinioHealth? Health, IReadOnlyList<string> Buckets, long UsedBytes,
     long ObjectCount, IReadOnlyList<MinioClusterNode> Clusters,
     IReadOnlyList<string> ForeignPrefixes, long UpdatedAtUnix,

@@ -46,8 +46,29 @@ public class MinioOptions
 
     public sealed class MinioS3Options
     {
-        // Пусто — грань выключена.
+        // Пусто — грань выключена (переключатель грани, t08).
         public string Endpoint { get; set; } = "";
+
+        // t36 (02 §2.5): запятая-список целей инвентаря (ноды пула); пусто →
+        // [Endpoint] (одиночный endpoint — валидный частный случай). Перебор —
+        // с первого доступного (быстрый отказ per-попытки, TimeoutSec).
+        public string Endpoints { get; set; } = "";
+
+        // Разрешённый список целей инвентаря (02 §2.5): Endpoints (запятая)
+        // ?? [Endpoint]; пустые элементы и хвостовые слэши отсечены, дубли схлопнуты.
+        public string[] TargetList()
+        {
+            var targets = Endpoints
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(e => e.TrimEnd('/'))
+                .Where(e => e.Length > 0)
+                .Distinct()
+                .ToArray();
+            if (targets.Length > 0)
+                return targets;
+            var endpoint = Endpoint.TrimEnd('/');
+            return endpoint.Length == 0 ? [] : [endpoint];
+        }
 
         // MinIO не требует; облако — регион (AuthenticationRegion).
         public string? Region { get; set; }

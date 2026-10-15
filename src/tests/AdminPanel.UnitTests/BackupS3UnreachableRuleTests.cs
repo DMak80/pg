@@ -21,7 +21,7 @@ public class BackupS3UnreachableRuleTests
 
     private static MinioStorageInfo Minio(
         bool configured = true, int failures = 0, string? error = null) => new(
-        Configured: configured, Endpoint: "http://minio:9000", Bucket: "pgworker-backups",
+        Configured: configured, Endpoints: ["http://minio:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
         Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 1000,
         ConsecutiveFailures: failures, LastError: error);

@@ -25,11 +25,13 @@ public sealed class BackupS3UnreachableRule : IAlertRule
         if (minio is not { Configured: true } || minio.ConsecutiveFailures < Threshold)
             yield break; // грань выключена или порог не достигнут — молчание
 
+        // t36: цель в заголовке — первая из списка (клиент перебирает с неё).
+        var target = $"{minio.Endpoints.FirstOrDefault() ?? ""}/{minio.Bucket}";
         yield return new Alert(
-            $"{KindName}:{minio.Endpoint}/{minio.Bucket}",
+            $"{KindName}:{target}",
             AlertSeverity.Warning,
             KindName,
-            $"{minio.Endpoint}/{minio.Bucket}",
+            target,
             $"панель не может листить bucket бэкапов {minio.Bucket}: {minio.ConsecutiveFailures} подряд неудачных инвентарь-тиков ({minio.LastError})",
             new Dictionary<string, string>
             {
@@ -37,8 +39,8 @@ public sealed class BackupS3UnreachableRule : IAlertRule
                 ["bucket"] = minio.Bucket,
             },
             SinceUnix: null, // проставляет AlertEngine по стабильному id
-            Hint: "панель не может листить bucket бэкапов: endpoint/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и MinIO; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",
+            Hint: "панель не может листить bucket бэкапов: endpoints/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и MinIO; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "проверьте доступность MinIO (endpoint AdminPanel:Backups:S3:Endpoint, креды, docker-сеть) и логи PgWorker; после восстановления алерт гаснет первым успешным тиком");
+            RemedyText: "проверьте доступность нод пула (AdminPanel:Backups:S3:Endpoints, креды, docker-сеть) и логи PgWorker; после восстановления алерт гаснет первым успешным тиком");
     }
 }
