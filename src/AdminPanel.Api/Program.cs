@@ -3,6 +3,7 @@ using AdminPanel.Api.Auth;
 using AdminPanel.Api.Inspection;
 using AdminPanel.Api.Operations;
 using AdminPanel.Api.Operations.Kafka;
+using AdminPanel.Api.Operations.S3;
 using AdminPanel.Api.Operations.Valkey;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
@@ -113,6 +114,7 @@ app.MapS3InspectionApi();      // t34: инспекция s3-домена (arch/
 app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)
 app.MapValkeyOperationsApi();  // t03: valkey-мутации (arch/02 §11.2)
+app.MapS3OperationsApi();       // t34: s3-мутации (arch/02 §12.2)
 app.MapWorkersApi(); // серты API воркеров + рестарт (arch/adminpanel/02 §9.9, 03 §3.7)
 
 // Живость самой панели (liveness, arch/03 §1): только чеки с тегом live.
