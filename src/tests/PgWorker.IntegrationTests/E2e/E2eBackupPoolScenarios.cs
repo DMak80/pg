@@ -148,6 +148,15 @@ public abstract class E2eBackupPoolScenarios
         return done!;
     }
 
+    // Факт доставки: в wal/ ноды пула есть ≥1 сегмент (running-агентов мало —
+    // под параллельной нагрузкой uploads запаздывают за стартом контейнеров).
+    protected async Task<bool> WaitWalUploadedAsync(string cluster, string hostPort, CancellationToken ct)
+        => await E2eFixture.WaitForAsync(async () =>
+        {
+            var keys = await McKeysOnNodeAsync(hostPort, $"{cluster}/shard1/wal/");
+            return keys.Count > 0;
+        }, TimeSpan.FromSeconds(480), ct);
+
     protected async Task<bool> WaitBothWalAgentsAsync(string cluster, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
         {
@@ -157,7 +166,7 @@ public abstract class E2eBackupPoolScenarios
                 "--format", "{{.Names}} {{.State}}",
             ], ct);
             return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
-        }, TimeSpan.FromSeconds(300), ct);
+        }, TimeSpan.FromSeconds(480), ct);
 
     protected async Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
@@ -270,7 +279,7 @@ public abstract class E2eBackupPoolScenarios
             }
 
             return false;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(240), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(), primary!);
@@ -412,6 +421,8 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
             var bothAgents = await WaitBothWalAgentsAsync(cluster, ct);
             bothAgents.Should().BeTrue("master- и sync-агенты живы (sync выбран)");
             await GenerateWalAsync(adminDsn, ct);
+            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
+                "мастер-агент доставил сегменты на node1");
 
             // Act/Assert — полный с реплики: role=replica, объекты на node2,
             // на node1 префикса full/ нет.
@@ -473,8 +484,8 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("оба агента подняты");
             var ep1 = HostPort(Fx.S3Endpoint);
-            var walOnNode = await McLsOnNodeAsync(ep1, $"{cluster}/shard1/wal/");
-            walOnNode.Should().NotBeEmpty("оба потока пишут на единственную ноду");
+            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
+                "оба потока доставляют сегменты на единственную ноду");
             (await WaitCompletedFullAsync(cluster, ct)).Should().NotBeNull();
 
             // Act/Assert — restore latest из пула: COMPLETED.
@@ -525,6 +536,9 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("агенты до отказа ноды");
+            var ep1 = HostPort(Fx.S3Endpoint);
+            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
+                "сегменты доставлены на node1 до инъекции отказа");
 
             // Act A — стоп node1: мастер-агент доезжает до node2.
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
@@ -612,6 +626,8 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("оба агента до promote");
             await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
+            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
+                "сегменты TLI 1 доставлены до promote");
 
             // Act — потеря мастера → promote реплики (механика .history —
             // образец E2eWalStreamPromoteScenarios).
@@ -754,6 +770,8 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 ["PgWorker__Snapshots__Export__RetryIntervalSec"] = "5",
                 ["PgWorker__Snapshots__Export__S3__Endpoint"] = localhost,
                 ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
+                ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
+                ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
             }, ct: ct);
 
             // Assert 1 — статус OK, пара db+meta в своём bucket (префикс etcd/).
@@ -849,9 +867,10 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
                 """{"full_max_age_sec":3600,"s3":{"pool":"claiming","write_master":["node1"],"write_replica":["node1"]}}""", ct);
             ((int)code).Should().BeInRange(200, 299, $"заявленная без portalloc нода не инвалидирует policy: {body}");
             // Возврат рабочей policy (замещение целиком).
-            (code, _) = await PutPolicyApiAsync(api, app, cluster,
+            string finalBody;
+            (code, finalBody) = await PutPolicyApiAsync(api, app, cluster,
                 $$"""{"full_max_age_sec":3600,"s3":{{E2eEnvironment.PoolS3(Pool)}}}""", ct);
-            ((int)code).Should().BeInRange(200, 299, $"валидная policy принимается: {body}");
+            ((int)code).Should().BeInRange(200, 299, $"валидная policy принимается: {finalBody}");
 
             // Act 2 — DR: полный лежит в пуле «bkpool» (node1 жив); чтение DR-источника
             // задаётся source_pool. Сносим контур кластера и поднимаем заново
