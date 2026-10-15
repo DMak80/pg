@@ -86,8 +86,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   лёгкий `pgworker-backup` приёмнику физической репликации не подходит
   (COPY-протокол требует рантайм воркера). Джоб не публикует портов
   (клиент) и запускается на docker-хосте источника (адрес ноды достижим по
-  advertised-правилу ниже; оттуда же достижим S3-endpoint — он per-install,
-  см. §7).
+  advertised-правилу ниже; оттуда же достижимы ноды пула S3 — §5/§7).
 - **Источник**: реплика шарда (sync-standby из Patroni `GET /cluster`:
   member с `state=running`, `role=replica`, sync-статусом);
   реплика недоступна/отстала → fallback на мастер (резолв мастера —
@@ -96,6 +95,17 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 - **Пайплайн джоба**: staging-каталог (ephemeral volume) →
   `pg_basebackup -D <staging>` → загрузка в S3 (`mc cp` файлами 1:1
   объектами, включая `backup_manifest` и `pg_wal/`) → результат в stdout.
+  **Загрузка в пул S3 (t36)**: env джоба несёт СПИСОК endpoints по роли
+  источника (реплика → `write_replica`, fallback-мастер → `write_master`,
+  §4) — `PGW_BK_S3_ENDPOINTS` (запятая, порядок = приоритет); entrypoint ДО
+  загрузки выбирает первый доступный ноду короткой mc-пробой (`mc ls`,
+  per-попыточный таймаут coreutils `timeout` — висящая нода НЕ вешает
+  попытку) и грузит на неё; падение загрузки → следующий endpoint списка
+  (каждая попытка — per-попыточный таймаут; «быстрый отказ/успех, не
+  молчание» — R3, arch/23 §7; переливка идемпотентна — имена объектов
+  детерминированы); исчерпание списка → FAILED с маркером
+  `s3-pool-exhausted` в `error` (алерт панели `backup-pool-unreachable`,
+  обычный бэкофф переснятия).
   Прогресс и результат джоб публикует структурированными JSON-строками в
   stdout (`{"phase":"basebackup"}`, `{"phase":"uploading"}`, финальный
   result `{"ok":true,"wal_start_segment":…,"size_bytes":…}` или
@@ -105,7 +115,8 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   контракта etcd не знает. `wal_start_segment` — из `backup_label`
   (START WAL LOCATION). После фиксации итога воркер удаляет контейнер и
   staging-volume джоба. Конфигурация джоба — только env контейнера от
-  воркера: подключение к источнику, S3-комплект (§7), префикс `<C>/<X>`,
+  воркера: подключение к источнику, S3-комплект (§7: bucket + списки
+  endpoints пула по роли источника + креды профиля), префикс `<C>/<X>`,
   путь staging `PGW_BK_STAGING_DIR` (опция `Staging.Dir`, дефолт
   `/backup-staging` — точка монтирования staging-volume в джобе).
 - **WAL набора `-X stream` (t02)**: файлы бэкапа грузятся строго 1:1 в
@@ -174,8 +185,17 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   смену timeline); `.partial`-семантики нет вовсе (незакрытый сегмент живёт
   только в памяти и не подтверждается). Staging-ТОМ ОТСУТСТВУЕТ: локальный
   буфер — кэш без гарантий durability; всё неподтверждённое перезаказывается
-  у источника (инвариант ниже), терять нечего. S3-креды и DSN — env
-  контейнера (§7); restart-политика `no`: переподключение к источнику —
+  у источника (инвариант ниже), терять нечего. S3-цели пула, креды и DSN —
+  env контейнера (§7): env агента несёт СПИСОК endpoints его роли источника
+  `S3_ENDPOINTS` (запятая; мастер-агент — `write_master`, sync-агент —
+  `write_replica`, §4) + общий read-список `S3_READ_ENDPOINTS` (все ноды
+  пула, порядок `endpoints` — резолв хвоста `wal/`, t36); приёмник пишет на
+  первую доступную ноду списка и перебирает при отказе текущей
+  (per-попыточный таймаут уже в S3-клиенте приёмника); исчерпание списка —
+  ретрай-цикл (стрим стоит, backpressure, слот держит — RPO-инвариант выше
+  не меняется) + маркер `s3-pool-exhausted` в stdout (контроль ставит его в
+  `error` DEGRADED-статуса — алерт панели `backup-pool-unreachable`).
+  restart-политика `no`: переподключение к источнику —
   внутри приёмника (transient-цикл), exited-контейнер — только permanent
   (несовместимый segment size, невалидные env/креды) — супервиз тика воркера
   пересоздаёт агента со свежими env; ребут docker-хоста покрывается тем же
@@ -244,7 +264,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   сети контура (единая сеть с нодами кластера); `pgw-net-<C>` не
   используется; прод-режим — без изменений. Смена мастера
   ИЛИ смена sync-standby (резолв разошёлся с источниками статуса, §4) →
-  воркер пересоздаёт СООТВЕТСТВУЮЩЕГО агента на новом источнике: догон
+  воркер пересоздаёт СООТВЕТСТВУЮЩЕГО агента на новом источнике — уже СО
+  СПИСКОМ НОВОЙ РОЛИ в env (t36: promote реплики → её агент получает
+  `S3_ENDPOINTS` = `write_master`): догон
   цепочки от хвоста S3, склейка timeline через `.history` (контроль уже
   понимает — WalChain). Promote реплики: физический слот при promote
   сохраняется, агент продолжает от хвоста S3 уже новой TLI (риск-таблица
@@ -286,7 +308,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   НОВЫЙ полный бэкап (планировщик §2 реагирует на
   BROKEN пересъёмом); `error` несёт границы разрыва. `DEGRADED` — только
   transient-деградации (lag/тишина): агент жив, ретраи тиками, пересъём НЕ
-  триггерит. Слот при BROKEN: жив (не lost) — не трогаем (копит WAL в
+  триггерит; `error` DEGRADED несёт маркер `s3-pool-exhausted`, когда
+  приёмник в ретрай-цикле исчерпания списка пула (t36, §3 — алерт
+  `backup-pool-unreachable`; «lag/тишина» без маркера — обычное отставание). Слот при BROKEN: жив (не lost) — не трогаем (копит WAL в
   пределах `max_slot_wal_keep_size`), исчез или lost — пересоздаётся
   immediate+reserved СРАЗУ ЖЕ (drop+create; к старту пересъёма полного
   слот держит позицию ≤ wal_start нового
@@ -559,7 +583,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 | Ключ | Значение |
 |---|---|
-| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":1,"weeks":1,"months":1},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":N}}` (reliability t02, §3.6: `interval_days` — период дрилов шардов кластера в сутках, `N=0` — дрилл кластера выключен; поле отсутствует → дефолт конфига `PgWorker:Backups:Drill:IntervalDays`); пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
+| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":1,"weeks":1,"months":1},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":N}}` (reliability t02, §3.6: `interval_days` — период дрилов шардов кластера в сутках, `N=0` — дрилл кластера выключен; поле отсутствует → дефолт конфига `PgWorker:Backups:Drill:IntervalDays`); секция `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` (t36, ниже); пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
 | `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки t04 (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED\|BROKEN","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?,"agents"?":[{"node":"<n>","state":"running\|exited\|absent"}]}`; `agents` — супервиз-факты по нодам-источникам двойной архивации (мастер + sync-standby, §3); поле опционально — парсеры панели читают известные поля и новому толерантны |
 | `/pgworker/backups/storage` | занятость хранилища установки (t06): `{"used_bytes":…,"quota_bytes"?,"used_percent"?,"state":"OK\|WARN\|CRIT","updated_unix":…}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ретенционный проход (см. «Ретенция» ниже) — любой живой клэйм пишет одно и то же свежее значение (идемпотентно); `quota_bytes` не задан (0) → пишется только `used_bytes`, `state=OK` |
@@ -569,7 +593,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 | `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (t05, §3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фаза джоба/процесса (`downloading\|recovering`); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
 | `/pgworker/backups/<C>/<X>/drill` | состояние последнего/текущего дрилла шарда (reliability t02, §3.6): `{"state":"RUNNING\|SUCCEEDED\|FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура после терминального исхода); снятый `phase` у терминального ключа = контейнер и volume подтверждённо удалены — чистый итог; ключ перезаписывается каждым новым дриллом (история — фазы журнала `backup-drill/<X>/<id>`); ключ один на шард — «максимум один активный дрилл» следует из формата; пишет воркер (держатель клэйма `<C>`) |
 
+- **Секция `s3` policy (t36)**: `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` — выбор пула S3 кластера (архитектура пула — [23-s3-clusters.md](23-s3-clusters.md)); `pool` — имя кластера `/s3/clusters/`; `write_master`/`write_replica` — упорядоченные (по приоритету записи) имена инстансов пула — ССЫЛКИ, не адреса: резолв `имя → host:port` воркер выполняет чтением `endpoints`-ключа пула и `/s3worker/portalloc/<C>` (arch/23 §7); поля названы по роли ИСТОЧНИКА записи (мастер-потоки/репличные), не по роли ноды. Пересечение списков и неполный охват нод пула допустимы. Отсутствие секции — пул не выбран: подсистема бэкапов кластера НЕ пишет и НЕ читает (алерт `backup-pool-missing` панели); никаких env-дефолтов. Приём секции — замещение целиком (как drill); сброс — отправкой policy без `s3`.
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками (t02/t03);
+  **Failed-резолв пула (t36)** — пул удалён/`TO_REMOVE`, имя списка не заявлено в пуле (`nodes/<I>/placement` нет), профиль без кредов, нода без portalloc-адреса — transient для процессов: ретраи тиком + journal-фаза `waiting-backup-pool`, НЕ краш тика; в `Error` wal/full-статусов при этом ставится тот же маркер `s3-pool-exhausted` — алерт `backup-pool-unreachable` закрывает и случай «policy записана, но резолв не удался» (единая алертная грань записи в пул);
   permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
   ретенции (t06; запрет удалять последний валидный полный — guard t06).
   `BROKEN` — разрыв цепочки (дыра WalChain / исчезновение слотов всех
@@ -693,8 +719,11 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 ## 5. Хранилище S3: layout
 
-Один bucket на установку (`PgWorker:Backups:S3:Bucket`); префиксы
-per-cluster/per-shard:
+Bucket ОДИН на установку (`PgWorker:Backups:S3:Bucket`, env
+`PGW_BACKUP_S3_BUCKET`); запись кластера — в ПУЛ S3 (t36: per-cluster выбор
+policy.s3, §4 — пул = кластер `/s3/clusters/`, bucket единый на всех нодах
+пула; разные пулы — раздельные экземпляры этого bucket, mesh-репликация —
+внутри пула). Префиксы per-cluster/per-shard:
 
 ```
 s3://<bucket>/<C>/<X>/
@@ -707,7 +736,17 @@ s3://<bucket>/<C>/<X>/
 - Ключ объекта = путь файла; `backup_manifest` в корне `full/<id>/` — база
   `pg_verifybackup` (t04: скачивание в staging → verify). Никаких
   tar-обёрток; WAL-сегмент = один объект. Layout одинаков для MinIO и
-  облака; регион/endpoint — конфиг.
+  облака; адресация — ноды пула (§7).
+- **Семантика пула (t36)**: запись (put/delete) — «первый доступный по
+  списку роли» (`write_master`/`write_replica`, перебор при отказе;
+  исчерпание → маркер `s3-pool-exhausted`, §2/§3/§4); чтение — перебор ВСЕХ
+  нод пула «где данные есть» (точечные GET — до найденного: страховка на
+  лаг доставки mesh-репликации; листинги — первая доступная нода, лаг
+  допускается — повторные проходы досматривают); удаления (ретенция/сироты)
+  — на первой доступной ноде пула (mesh разносит tombstone —
+  [22-owns3.md](22-owns3.md) §7); глобальные сверки (`used_bytes`,
+  реестр сирот) — union по ВСЕМ существующим пулам `/s3/clusters/`
+  (первый доступный endpoint каждого; дедуп ключей — по (пул, ключ)).
 - **Дублирование WAL (t02, §2)**: закрытые сегменты набора `-X stream`
   полного бэкапа лежат и в `full/<id>/pg_wal/` (1:1 с manifest — база
   verify t04), и копией в `wal/` (общий префикс — стартовая точка цепочки
@@ -821,18 +860,30 @@ s3://<bucket>/<C>/<X>/
 
 ## 7. Секреты
 
-- **Per-install, env воркера** (не etcd, не git): `PGW_BACKUP_S3_ENDPOINT`,
-  `PGW_BACKUP_S3_REGION` (опц., MinIO не требует), `PGW_BACKUP_S3_BUCKET`,
-  `PGW_BACKUP_S3_ACCESS_KEY`, `PGW_BACKUP_S3_SECRET_KEY` — конфиг-биндинг
-  `PgWorker:Backups:S3` (группа транспортных секретов
-  [14-pgworker.md](14-pgworker.md) §4 п.3); передача агенту/джобу — env
-  контейнера (t02/t03); тот же комплект S3 обслуживает и выгрузку etcd-снапшотов
-  (t08: `Snapshots:Export` — см. [14-pgworker.md](14-pgworker.md) §8);
-  второй набор S3-секретов не заводится. Стенд/контур-режим: адресация S3
-  всех потребителей контура — по имени сети (`http://owns3:9000` на стенде;
-  `PGW_BACKUP_S3_ADVERTISED_ENDPOINT` не задаётся — равен endpoint);
-  хост-публикация хранилища — только для внешних потребителей (чеки с хоста,
-  mc-миграция, оператор). Прод — endpoint per-install (выше).
+- **Per-install, env воркера** (не etcd, не git) — t36: (а) **bucket
+  per-install** — env `PGW_BACKUP_S3_BUCKET` (конфиг-биндинг
+  `PgWorker:Backups:S3:Bucket`, группа транспортных секретов
+  [14-pgworker.md](14-pgworker.md) §4 п.3; единый на всех нодах всех пулов
+  установки, §5); (б) **креды пулов — env-профили**:
+  `PGW_BACKUP_S3_PROFILES__<PROFILE>__ACCESS_KEY` /
+  `PGW_BACKUP_S3_PROFILES__<PROFILE>__SECRET_KEY` (read-write ключи
+  профилей; пул ссылается профилем `config.secret_profile` —
+  [23-s3-clusters.md](23-s3-clusters.md) §6; воркер резолвит креды
+  per-профиль по образцу `S3W_NODE_SECRETS__*` S3Worker); единого
+  `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
+  больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
+  ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
+  (env `PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY`) —
+  обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
+  [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
+  переиспользуется: источник правды о DR-слепках не живёт в
+  восстанавливаемом etcd. Передача агенту/джобу — env контейнера (t02/t03:
+  bucket + списки endpoints по роли + креды профиля). Стенд/контур-режим:
+  адресация S3 всех потребителей контура — по имени сети (`http://owns3:9000`
+  на стенде); хост-публикация хранилища — только для внешних потребителей
+  (чеки с хоста, mc-миграция, оператор). Прод — endpoints нод пула
+  (`endpoints`-ключ + portalloc, arch/23 §7). Точка расширения: статические
+  внешние цели (`external`, вне `/s3/`) в env воркера — вне задачи t36.
 - **Доверие CA при https-endpoint** (TLS-режим ownS3,
   [owns3/03-protocol.md](owns3/03-protocol.md) §6): per-install CA
   (`ca.pem` TLS-пакета `deploy/tls/`). Воркер: env
@@ -840,7 +891,9 @@ s3://<bucket>/<C>/<X>/
   `PgWorker:Backups:S3:CaBundlePath`; при заданном пути SDK-клиент воркера
   (BackupS3, снапшеты etcd) доверяет CA **программно — фабрика HttpClient
   с валидацией корня цепочки сервера по отпечатку CA** (env `AWS_CA_BUNDLE`
-  линейкой AWSSDK.Core 3.7.x не читается — эмпирический факт); путь не
+  линейкой AWSSDK.Core 3.7.x не читается — эмпирический факт) — единый
+  per-install пакет на ВСЕ цели (t36: ноды всех пулов и слепочная пара;
+  per-пул CA не вводится); путь не
   задан (http-endpoint) — фабрика не ставится, поведение прежнее;
   нечитаемый/пустой файл CA — отказ с диагностикой. Агент/джоб (контейнер
   на любом docker-хосте — файл хоста воркера в нём недоступен): CA
@@ -875,8 +928,12 @@ s3://<bucket>/<C>/<X>/
 ## 9. Конфигурация
 
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
-  `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true,
-  CaBundlePath="" (путь ca.pem per-install CA — доверие https-endpoint, §7) }`,
+  `S3 { Bucket, CaBundlePath="" (путь ca.pem per-install CA — доверие
+  https-endpoint, §7; на все цели), Profiles (env-only:
+  `PGW_BACKUP_S3_PROFILES__*`, §7 — в конфиге не дублируются) }`
+  (t36: Endpoint/Region/AccessKey/SecretKey/PathStyle/AdvertisedEndpoint
+  УШЛИ — единого endpoint записи больше нет, цели даёт пул per-cluster,
+  §4/§5),
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
@@ -885,8 +942,9 @@ s3://<bucket>/<C>/<X>/
   FullTimeoutSec=21600, VerifyTimeoutSec=21600, RestoreTimeoutSec=86400 }`
   (общий образ джобов t02 и WAL-агентов t03, §2; t07: бюджеты зависших
   джобов), `Retry { BaseSec=300, MaxSec=3600 }`
-  (бэкофф переснятия FAILED, t02), `S3 { AdvertisedEndpoint }` (t03: адрес
-  S3 из контейнеров агентов), `Wal { VerifyIntervalSec=30,
+  (бэкофф переснятия FAILED, t02) (t36: `S3 { AdvertisedEndpoint }` ушёл —
+  адреса нод пула воркер резолвит сам и передаёт агентам списками в env,
+  §3/§7), `Wal { VerifyIntervalSec=30,
   LagMaxSegments=1024, StaleSec=300, AgentImage="pgworker-wal:dev" }` (t03:
   период list/контроля цепочки, порог отставания в сегментах, порог тишины
   загрузок; AgentImage — образ собственных wal-агентов-приёмников §3,
@@ -904,8 +962,12 @@ s3://<bucket>/<C>/<X>/
   `started_unix` → FAILED `drill-timeout`; бюджет наката WAL внутри
   drill-джоба — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
   OrphanTtlSec=604800 }` (t07: период сверок per-cluster и глобального
-  лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
-  `Enabled=true` при пустых S3-полях — fail-fast; отрицательные
+  лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта (t36):
+  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`) И
+  хотя бы один env-профиль кредов `PGW_BACKUP_S3_PROFILES__*` (без
+  полупар) — fail-fast; `Snapshots:Export:Enabled=true` → полная
+  слепочная пара `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*`)
+  — fail-fast; отрицательные
   таймауты/TTL супервизора — fail-fast; отрицательные
   `Drill:IntervalDays`/`Drill:TimeoutSec` — fail-fast (`0` интервала
   валиден — глобальное выключение новых запусков).

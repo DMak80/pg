@@ -280,6 +280,14 @@ per-install env-профили (ниже); **PKI репликации** — per-
 [19-backups.md](19-backups.md) §5 без изменений. Канон фиксирует границу;
 реализация и правки arch/19/arch/14 — t36.
 
+Реализация t36 (фиксируется): PgWorker — читатель
+`/s3/clusters/<C>/{config,nodes/<I>/state,endpoints}` плюс
+`/s3worker/portalloc/<C>` для резолва имён инстансов в адреса; PgWorker в
+`/s3/` НЕ пишет. Списки приоритетов записи per-PG-кластер живут в policy
+бэкапов ([19-backups.md](19-backups.md) §4) ссылками на имена инстансов
+(`write_master`/`write_replica` — по роли источника, не по роли ноды);
+чтение — все ноды пула без приоритетов (порядок `endpoints`-ключа).
+
 ## 8. Координация воркера `/s3worker/`
 
 Порт схемы `/kafkaworker/` ([15-kafka-clusters.md](15-kafka-clusters.md)
