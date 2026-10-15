@@ -197,4 +197,54 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
+
+    // ---- t36 (arch/02 §9.12): s3 в policy-мутации панели ----
+
+    // AAA: PUT policy с секцией s3 → тело прокси воркеру содержит s3.
+    [Fact]
+    public async Task Put_PolicyWithS3_ProxiedToWorker()
+    {
+        // Arrange — форма модала «Пул бэкапов» шлёт полный policy + s3.
+        _factory.EnsureBuilt();
+        var client = _factory.CreateClient();
+        WorkerApi.Respond = _ => new WorkerApiResult(200, """{"ok":true}""");
+
+        // Act
+        var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
+        {
+            retentionDays = 1, retentionWeeks = 1, retentionMonths = 1,
+            fullMaxAgeSec = 86400, verifyOnCreate = true, drillIntervalDays = 1,
+            s3 = new { pool = "backups", writeMaster = new[] { "n1" }, writeReplica = new[] { "n1" } },
+        }, TestContext.Current.CancellationToken);
+
+        // Assert — 200 и прокси-тело несёт s3-секцию.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var call = WorkerApi.Calls.Should().ContainSingle().Subject;
+        call.Path.Should().Be("/api/clusters/c1/backups/policy");
+        var body = System.Text.Json.JsonSerializer.Serialize(call.Body);
+        body.Should().Contain("\"pool\":\"backups\"").And.Contain("write_master");
+    }
+
+    // AAA: PUT policy без s3 (null) → json прокси НЕ содержит секции (выключение).
+    [Fact]
+    public async Task Put_PolicyWithoutS3_FieldOmitted()
+    {
+        // Arrange
+        _factory.EnsureBuilt();
+        var client = _factory.CreateClient();
+        WorkerApi.Respond = _ => new WorkerApiResult(200, """{"ok":true}""");
+
+        // Act
+        var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
+        {
+            retentionDays = 1, retentionWeeks = 1, retentionMonths = 1,
+            fullMaxAgeSec = 86400, verifyOnCreate = true, drillIntervalDays = 1,
+            s3 = (object?)null,
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = System.Text.Json.JsonSerializer.Serialize(WorkerApi.Calls.Single().Body);
+        body.Should().NotContain("s3").And.NotContain("write_master");
+    }
 }

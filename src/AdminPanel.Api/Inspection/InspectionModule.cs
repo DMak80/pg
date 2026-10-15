@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using AdminPanel.Etcd;
 using Shared.Core.CQRS;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -33,6 +34,17 @@ public static class InspectionModule
         {
             var result = await handler.HandleQuery<EtcdStatusQuery, EtcdStatusDto>(new EtcdStatusQuery(), ct);
             return ResultToHttp(result);
+        });
+
+        // GET /api/backups/s3-pools (t36, adminpanel/02 §12): пулы /s3/clusters/
+        // read-минимум — Select модала «Пул бэкапов» (без ключей/секретов).
+        endpoints.MapGet("/api/backups/s3-pools", async (ISnapshotStore store, CancellationToken ct) =>
+        {
+            var snapshot = store.Current;
+            if (snapshot is null)
+                return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready");
+            return Results.Ok(snapshot.S3Pools ?? []);
         });
 
         // GET /api/clusters — сводный список (arch/03 §1; spec §6.1).
