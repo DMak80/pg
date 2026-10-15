@@ -25,7 +25,10 @@ NodeSupervisor PgWorker); она зафиксирована кодом ране�
 `/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments}/` и
 14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03) + мутация №17 ротации CA/сертов (t07). Отдельный домен **Valkey** (§11,
 t03): чтение `/valkey/clusters/` + `/valkeyworker/{rotations,api}/` и 5 мутаций
-декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1).
+декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1). Отдельный
+домен **S3** (§12): чтение `/s3/clusters/` + `/s3worker/{api,rotations}/` и
+10 мутаций через API S3Worker (arch/24 §1.1) — панель в etcd домена S3 не
+пишет ничего.
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -166,6 +169,21 @@ pg/kafka-инстансов) пробит живые инстансы ValkeyWork
 живых ключей → 503 мутаций + critical-алерт `worker-api-unreachable`
 (03 §8.4). Остальные ключи `/valkeyworker/` панель не читает и не пишет
 (кроме `rotations/` — §11.1).
+
+### 2.3.4. `/s3worker/api/…` — дискавери API S3Worker
+
+Симметрично §2.3.3: lease-ключи `/s3worker/api/<id>` (ставит сам воркер,
+arch/23 §8; формат `{"url","instance","since_unix","cert_thumbprint"?}`)
+читаются s3-refresher'ом в `S3Snapshot.WorkerEndpoints` — источник URL
+для s3-мутаций §12.2. API — mTLS той же пакеты per-install API-CA
+(`AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`), серверный серт —
+ключ `/workers/api_tls/s3worker` (§9.9). По тем же URL тик опроса
+`/healthz` (`AdminPanel:Workers:HealthIntervalSec`, тем же поллером, что у
+pg/kafka/valkey-инстансов) пробит живые инстансы S3Worker → `WorkerHealth[]`
+в `S3Snapshot.WorkerHealth`, warning-алерт `worker-unhealthy` (03 §12.4).
+Отсутствие живых ключей → 503 мутаций + critical-алерт
+`worker-api-unreachable` (03 §12.4). Остальные ключи `/s3worker/` панель
+не читает и не пишет (кроме `rotations/` — §12.1).
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -808,7 +826,7 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 ### 9.9. Серверные серты API воркеров (создание/замена/удаление + перезапуск)
 
 Управление серверными сертами входящих mTLS-граней воркеров
-(`pgworker`, `kafkaworker`, `valkeyworker` — t03) и перезапуск инстансов.
+(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`) и перезапуск инстансов.
 В отличие от §9.1–§9.8, запись идёт **напрямую в etcd** (не через API
 воркера): воркер не может «принять» серт без перезапуска, а панель должна
 уметь положить серт ДО первого запуска воркера. Воркеры ключи только читают
@@ -822,6 +840,7 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
                                "updated_unix":<unix>,"updated_by":"<username>"}
 /workers/api_tls/kafkaworker   (симметрично)
 /workers/api_tls/valkeyworker  (симметрично; t03)
+/workers/api_tls/s3worker   (симметрично; env-фоллбек воркера — S3W_API_TLS_{CERT,KEY,CLIENT_CA})
 ```
 
 `key_pem` — приватный ключ: в снапшот/API/UI отдаются ТОЛЬКО метаданные
