@@ -55,7 +55,7 @@ public static class RestoreJobCommand
         # Доверие CA https-endpoint (t42, arch/19 §7): PEM из env — в файл + SSL_CERT_FILE (mc)
         if [ -n "${S3_CA_PEM:-}" ]; then printf '%s\n' "$S3_CA_PEM" > /tmp/s3-ca.pem; export SSL_CERT_FILE=/tmp/s3-ca.pem; fi
         DATA_DIR="${PGW_RESTORE_DATA_DIR:-/restore}"
-        """ + AliasesScript + """
+        """ + "\n" + AliasesScript + "\n" + """
         # Дефолт Spilo-layout: volume-корень узла /home/postgres/pgdata, данные
         # узла — pgroot/data (arch/14 §2.1)
         PGDATA="${PGW_RESTORE_PGDATA:-$DATA_DIR/pgroot/data}"

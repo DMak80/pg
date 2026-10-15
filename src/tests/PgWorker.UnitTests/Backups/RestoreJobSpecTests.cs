@@ -37,7 +37,10 @@ public class RestoreJobSpecTests
         spec.Env!["PGW_RESTORE_DATA_DIR"].Should().Be("/restore");
         // внутри тома pgroot/data (volume-корень узла /home/postgres/pgdata)
         spec.Env!["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgroot/data");
-        spec.Env!["MC_HOST_pgwbkp"].Should().Contain("ak:sk@minio:9000");
+        // t36: env чтения — списки/креды (MC_HOST-алиасы строит скрипт).
+        spec.Env!["S3_ENDPOINTS"].Should().Be("http://m:9000");
+        spec.Env!["S3_ACCESS_KEY"].Should().Be("ak");
+        spec.Env!["S3_SECRET_KEY"].Should().Be("sk");
         spec.Hostname.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", "id9"));
         spec.Label.Should().Be("c1");
         spec.Network.Should().BeNull();

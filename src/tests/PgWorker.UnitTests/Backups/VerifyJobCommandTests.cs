@@ -18,7 +18,8 @@ public class VerifyJobCommandTests
         // Assert
         cmd.Should().HaveCount(3).And.HaveElementAt(0, "bash").And.HaveElementAt(1, "-c");
         var script = cmd[2];
-        script.Should().Contain("mc cp --recursive \"pgw/$PGW_BK_S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/\" \"$PGW_BK_STAGING_DIR/full/\"");
+        // t36: скачивание mc_copy_first с перебором нод пула ({A}-алиас).
+        script.Should().Contain("mc_copy_first \"{A}/$S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/\" \"$PGW_BK_STAGING_DIR/full/\"");
         script.Should().Contain("pg_verifybackup \"$PGW_BK_STAGING_DIR/full\"");
     }
 

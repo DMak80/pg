@@ -27,7 +27,7 @@ public static class VerifyJobCommand
     set -euo pipefail
     # Доверие CA https-endpoint (t42, arch/19 §7): PEM из env — в файл + SSL_CERT_FILE (mc)
     if [ -n "${S3_CA_PEM:-}" ]; then printf '%s\n' "$S3_CA_PEM" > /tmp/s3-ca.pem; export SSL_CERT_FILE=/tmp/s3-ca.pem; fi
-    """ + RestoreJobCommand.AliasesScript + """
+    """ + "\n" + RestoreJobCommand.AliasesScript + "\n" + """
     # протокол t02: result-JSON — stdout, вывод утилит — stderr/stdin-перехват
     LOG() { printf '%s\n' "$1"; }
     FAIL() {
