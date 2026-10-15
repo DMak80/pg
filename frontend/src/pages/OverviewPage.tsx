@@ -87,6 +87,7 @@ export function OverviewPage() {
         <EtcdCard data={data} />
         <ClustersCard data={data} />
         <KafkaCard data={data} />
+        <S3Card data={data} />
         <BackupsCard
           data={backups.data}
           isPending={backups.isPending}
@@ -257,6 +258,35 @@ function KafkaCard({ data }: { data: OverviewDto }) {
           <Group gap={5}>
             <Text size="xl" fw={600} c={data.kafka.clustersCritical > 0 ? 'red' : undefined}>
               {data.kafka.clustersCritical}
+            </Text>
+            <Text size="sm" c="dimmed">критических</Text>
+          </Group>
+        </Group>
+      )}
+    </Card>
+  );
+}
+
+// Карточка s3-домена (t34, arch/03 §12.1): порт KafkaCard — сводка из
+// OverviewDto.s3 (null до первого тика s3-refresher'а).
+function S3Card({ data }: { data: OverviewDto }) {
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" wrap="nowrap" mb="xs">
+        <Text fw={600}>S3</Text>
+        <Anchor component={Link} to="/s3" size="sm">все кластеры →</Anchor>
+      </Group>
+      {data.s3 === null ? (
+        <Text c="dimmed" size="sm">S3-снапшот ещё не собран</Text>
+      ) : (
+        <Group gap="md">
+          <Group gap={5}>
+            <Text size="xl" fw={600}>{data.s3.clustersTotal}</Text>
+            <Text size="sm" c="dimmed">кластеров</Text>
+          </Group>
+          <Group gap={5}>
+            <Text size="xl" fw={600} c={data.s3.clustersCritical > 0 ? 'red' : undefined}>
+              {data.s3.clustersCritical}
             </Text>
             <Text size="sm" c="dimmed">критических</Text>
           </Group>

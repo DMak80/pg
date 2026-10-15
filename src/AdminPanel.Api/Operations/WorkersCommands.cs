@@ -1,5 +1,6 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
+using AdminPanel.Core.S3;
 using AdminPanel.Core.Valkey;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Workers;
@@ -52,27 +53,30 @@ public sealed record RestartInstanceResultDto(string Instance, bool Accepted, st
 [InjectAsScoped]
 public sealed class GenerateWorkerApiCertCommandHandler(
     WorkerCertService certs, ISnapshotStore pg, IKafkaSnapshotReader kafka,
-    IValkeySnapshotReader valkey) : ICommandHandler<GenerateWorkerApiCertCommand, WorkerApiCertDto>
+    IValkeySnapshotReader valkey, IS3SnapshotReader s3) : ICommandHandler<GenerateWorkerApiCertCommand, WorkerApiCertDto>
 {
     public async ValueTask<Result<WorkerApiCertDto>> Handle(GenerateWorkerApiCertCommand c, CancellationToken ct)
     {
-        var hosts = LiveHosts(c.Worker, pg.Current, kafka.Current, valkey.Current);
+        var hosts = LiveHosts(c.Worker, pg.Current, kafka.Current, valkey.Current, s3.Current);
         var write = await certs.GenerateAndPutAsync(c.Worker, hosts, c.RequestedBy, ct);
         return write.Map(w => ToDto(w, hosts.Count == 0
             ? "живых инстансов нет — SAN только localhost/127.0.0.1; после подъёма замените серт (PUT) для полного SAN"
             : null));
     }
 
-    // Хосты живых advertise-URL этого воркера (spec §3.3 п.1). Неизвестный
-    // воркер → пустой список (НЕ throw): 404 возвращает WorkerCertService —
-    // исключение здесь пролетело бы мимо Result и роняло запрос в 500.
-    internal static IReadOnlyList<string> LiveHosts(
-        string worker, EtcdSnapshot? pg, KafkaSnapshot? kafka, ValkeySnapshot? valkey)
+    // Хосты живых advertise-URL этого воркера (spec §3.3 п.1; public — юнит-тест
+    // карточки/гвардов s3worker). Неизвестный воркер → пустой список (НЕ throw):
+    // 404 возвращает WorkerCertService — исключение здесь пролетело бы мимо
+    // Result и роняло запрос в 500.
+    public static IReadOnlyList<string> LiveHosts(
+        string worker, EtcdSnapshot? pg, KafkaSnapshot? kafka, ValkeySnapshot? valkey,
+        S3Snapshot? s3)
         => (worker switch
         {
             "pgworker" => pg?.PgWorkerEndpoints ?? [],
             "kafkaworker" => kafka?.WorkerEndpoints ?? [],
             "valkeyworker" => valkey?.WorkerEndpoints ?? [],
+            "s3worker" => s3?.WorkerEndpoints ?? [],
             _ => [], // 404 даст сервис (гвард до KeyOf)
         })
         .Select(e => WorkerCertService.HostOf(e.Url))
@@ -122,7 +126,7 @@ public sealed class RestartWorkerCommandHandler(IWorkerApiGateway api)
 {
     public async ValueTask<Result<WorkerRestartDto>> Handle(RestartWorkerCommand c, CancellationToken ct)
     {
-        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker"))
+        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
             return Result<WorkerRestartDto>.Failed(new WorkerNotFoundException(c.Worker));
         IReadOnlyList<WorkerApiInstanceResult> results;
         try

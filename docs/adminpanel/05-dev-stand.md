@@ -29,5 +29,15 @@ checks/90-down.sh -v                      # разбор
 Панель — сервис compose `adminpanel` (:5050); повторный прогон — всегда с
 чистого состояния (`90-down.sh -v` → `00-up.sh`).
 
+## Грабли
+
+- **`00-up.sh` падает на deploy-up: «required variable OWNS3_MESH_PEER1_* is
+  missing»** — docker compose интерполирует ВЕСЬ файл `deploy/docker-compose.yml`,
+  включая профилированные `owns3-m1/m2`, даже когда профиль `owns3-mesh` не
+  стартует: `:?`-обязательные переменные peer-ключей меша роняют весь `up`.
+  Лечение: дописать в локальный `deploy/.env` (в git не tracked) четыре
+  значения `OWNS3_MESH_PEER1/2_{ACCESSKEY,SECRETKEY}` (dev-значения в стиле
+  compose-комментария, например `os3m-peer-1` / `os3m-peer-1-secret`).
+
 Подробности профилей, чеков и сетевой модели — канон
 [arch/adminpanel/04](../../arch/adminpanel/04-local-stand.md).

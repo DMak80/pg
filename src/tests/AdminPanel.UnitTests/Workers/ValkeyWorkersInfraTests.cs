@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using AdminPanel.Core;
+using AdminPanel.Core.S3;
 using AdminPanel.Core.Valkey;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Workers;
@@ -152,7 +153,17 @@ public class ValkeyWorkersInfraTests
             provider.GetRequiredService<IHttpClientFactory>(),
             pg ?? new SettablePgStore(),
             kafka ?? new SettableKafkaStore(),
-            valkey ?? new SettableValkeyStore());
+            valkey ?? new SettableValkeyStore(),
+            // t34: s3-стор нейтрален для valkey-сценариев (пустой).
+            new SettableS3Store());
+    }
+
+    // t34: стор s3-снапшота (в этих тестах живых s3-ключей нет).
+    private sealed class SettableS3Store : IS3SnapshotStore
+    {
+        public S3Snapshot? Current { get; set; }
+
+        public void Replace(S3Snapshot snapshot) => Current = snapshot;
     }
 
     // ===== 1. Грань «Воркеры»: третья карточка =====
@@ -173,7 +184,7 @@ public class ValkeyWorkersInfraTests
             },
         };
         var handler = new GetWorkersQueryHandler(
-            EmptyPg(), new StubKafkaReader(), valkey);
+            EmptyPg(), new StubKafkaReader(), valkey, new StubS3Reader());
 
         // Act
         var result = await handler.Handle(new GetWorkersQuery(), CancellationToken.None);
@@ -184,9 +195,9 @@ public class ValkeyWorkersInfraTests
         card.Instances.Should().ContainSingle().Which.Instance.Should().Be("i1");
         card.TargetCert.Should().NotBeNull();
         card.TargetCert!.Thumbprint.Should().Be("abc123");
-        // kafka-карточка не пострадала (порядок pg→kafka→valkey).
+        // kafka-карточка не пострадала (порядок pg→kafka→valkey; s3 — t34).
         result.Value.Workers.Select(w => w.Worker).Should()
-            .Equal("pgworker", "kafkaworker", "valkeyworker");
+            .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker");
     }
 
     // ===== 2. Gateway: резолв endpoints по /valkeyworker/api/ =====
@@ -264,17 +275,27 @@ public class ValkeyWorkersInfraTests
         Func<HttpRequestMessage, HttpResponseMessage> respond)
     {
         var handler = new StubHttpHandler(respond);
-        return new WorkerHealthPoller(
+        var poller = new WorkerHealthPoller(
             new StubPgReader(TestSnapshots.Healthy(Now) with { PgWorkerEndpoints = [] }),
             new WorkerHealthStore(),
             new StubKafkaReader(),
             new KafkaWorkerHealthStore(),
             valkeyReader,
             valkeyStore,
+            // t34: s3-пара нейтральна для valkey-сценариев.
+            new StubS3Reader(),
+            new S3WorkerHealthStore(),
             new StubHttpClientFactory(handler),
             Options.Create(new WorkerApiOptions { HealthIntervalSec = 15, TimeoutSec = 3 }),
             new FixedTimeProvider { Utc = Now },
             NullLogger<WorkerHealthPoller>.Instance);
+        return poller;
+    }
+
+    // t34: s3-двойник поллера (в этих тестах s3-ключей нет).
+    private sealed class StubS3Reader : IS3SnapshotReader
+    {
+        public S3Snapshot? Current { get; }
     }
 
     private sealed class StubPgReader : ISnapshotReader

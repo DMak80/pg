@@ -69,13 +69,15 @@ public static class AlertsMapper
 }
 
 // Хендлер: store → отказ «снапшота нет» или фильтры+маппер (spec §3.12).
-// GET /api/alerts объединяет алерты pg-, kafka- и valkey-движков (kind различает
-// kafka-*/valkey-*, arch/03 §8.1); до первого kafka/valkey-тика — только pg-лента.
+// GET /api/alerts объединяет алерты pg-, kafka-, valkey- и s3-движков (kind
+// различает kafka-*/valkey-*/s3-*, arch/03 §8.1/§12.1); до первого тика
+// доменного refresher'а — только pg-лента.
 [InjectAsScoped]
 public sealed class AlertsQueryHandler(
     ISnapshotStore store,
     IKafkaSnapshotReader kafkaStore,
-    IValkeySnapshotReader valkeyStore)
+    IValkeySnapshotReader valkeyStore,
+    IS3SnapshotReader s3Store)
     : IQueryHandler<AlertsQuery, IReadOnlyList<AlertDto>>
 {
     public ValueTask<Result<IReadOnlyList<AlertDto>>> Handle(AlertsQuery query, CancellationToken ct)
@@ -84,17 +86,19 @@ public sealed class AlertsQueryHandler(
         return ValueTask.FromResult(snapshot is null
             ? Result<IReadOnlyList<AlertDto>>.Failed(new InspectionModule.SnapshotNotReadyException())
             : Result<IReadOnlyList<AlertDto>>.Success(AlertsMapper.Map(AlertsMapper.ApplyFilters(
-                Merge(snapshot.Alerts, kafkaStore.Current?.Alerts, valkeyStore.Current?.Alerts),
+                Merge(snapshot.Alerts, kafkaStore.Current?.Alerts, valkeyStore.Current?.Alerts,
+                    s3Store.Current?.Alerts),
                 query.Severity, query.Kind))));
     }
 
     // Merge: единая сортировка severity → kind → target (механика движков);
-    // kind уже различает valkey-* (arch/03 §8.1).
+    // kind уже различает valkey-*/s3-* (arch/03 §8.1/§12.1).
     private static IReadOnlyList<Alert> Merge(
-        IReadOnlyList<Alert> pg, IReadOnlyList<Alert>? kafka, IReadOnlyList<Alert>? valkey)
-        => valkey is null && kafka is null
+        IReadOnlyList<Alert> pg, IReadOnlyList<Alert>? kafka, IReadOnlyList<Alert>? valkey,
+        IReadOnlyList<Alert>? s3)
+        => valkey is null && kafka is null && s3 is null
             ? pg
-            : [.. pg.Concat(kafka ?? []).Concat(valkey ?? [])
+            : [.. pg.Concat(kafka ?? []).Concat(valkey ?? []).Concat(s3 ?? [])
                 .OrderBy(a => a.Severity, Comparer<AlertSeverity>.Create((x, y) => y.CompareTo(x)))
                 .ThenBy(a => a.Kind, StringComparer.Ordinal)
                 .ThenBy(a => a.Target, StringComparer.Ordinal)];

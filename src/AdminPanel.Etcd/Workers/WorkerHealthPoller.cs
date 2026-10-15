@@ -17,6 +17,8 @@ public sealed class WorkerHealthPoller(
     IKafkaWorkerHealthStore kafkaStore,
     IValkeySnapshotReader valkeySnapshotReader,
     IValkeyWorkerHealthStore valkeyStore,
+    IS3SnapshotReader s3SnapshotReader,
+    IS3WorkerHealthStore s3Store,
     IHttpClientFactory factory,
     IOptions<WorkerApiOptions> options,
     TimeProvider time,
@@ -63,6 +65,14 @@ public sealed class WorkerHealthPoller(
         var valkeyAt = time.GetUtcNow();
         var valkeyResults = await Task.WhenAll(valkeyEndpoints.Select(e => ProbeAsync(e, valkeyAt, ct)));
         valkeyStore.Replace([.. valkeyResults.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
+
+        // S3Worker-инстансы (arch/02 §2.3.4): тот же тик/клиент/семантика —
+        // 200 → Healthy, 503 → Degraded, сетевой сбой → Unreachable;
+        // /healthz за mTLS тем же клиентским сертом.
+        var s3Endpoints = s3SnapshotReader.Current?.WorkerEndpoints ?? [];
+        var s3At = time.GetUtcNow();
+        var s3Results = await Task.WhenAll(s3Endpoints.Select(e => ProbeAsync(e, s3At, ct)));
+        s3Store.Replace([.. s3Results.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
     }
 
     private async Task<WorkerHealth> ProbeAsync(WorkerEndpoint endpoint, DateTimeOffset at, CancellationToken ct)

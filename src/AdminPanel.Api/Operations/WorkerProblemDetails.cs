@@ -55,4 +55,40 @@ internal static class WorkerProxy
 
         return Result<T>.Failed(WorkerProblemDetails.From(resp));
     }
+
+    // Результат прокси с исходным кодом воркера (для зеркалирования 202|204/201|200).
+    // Объявляется на уровне namespace AdminPanel.Api.Operations (НЕ внутри WorkerProxy —
+    // команды Operations.S3 ссылаются на него без квалификации).
+    public static async ValueTask<Result<WorkerRaw<T>>> SendWithStatusAsync<T>(
+        IWorkerApiGateway api, string worker, HttpMethod method, string path,
+        object? body, string? requestedBy, CancellationToken ct) where T : class
+    {
+        WorkerApiResult resp;
+        try
+        {
+            resp = await api.SendAsync(worker, method, path, body, requestedBy, ct);
+        }
+        catch (WorkerApiUnavailableException e)
+        {
+            return Result<WorkerRaw<T>>.Failed(e);
+        }
+
+        if (resp.StatusCode is >= 200 and < 300)
+        {
+            // DELETE- и deny/allow-мутации различают 202 (записано) и 204 (already),
+            // ротация — 201/200: Success несёт исходный код, модуль зеркалит 1:1.
+            var dto = string.IsNullOrEmpty(resp.Body)
+                ? default
+                : JsonSerializer.Deserialize<T>(resp.Body, Json);
+            return Result<WorkerRaw<T>>.Success(new WorkerRaw<T>(resp.StatusCode, dto));
+        }
+
+        return Result<WorkerRaw<T>>.Failed(WorkerProblemDetails.From(resp));
+    }
 }
+
+/// <summary>
+/// Прокси-ответ с исходным статусом воркера (t34, arch/02 §12.2): Value — DTO
+/// или null (204 без тела).
+/// </summary>
+public sealed record WorkerRaw<T>(int StatusCode, T? Value);

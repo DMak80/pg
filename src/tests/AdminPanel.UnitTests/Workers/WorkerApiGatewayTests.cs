@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
+using AdminPanel.Core.S3;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
@@ -136,7 +137,17 @@ public class WorkerApiGatewayTests
             pg ?? new SettableSnapshotStore(),
             kafka ?? new SettableKafkaStore(),
             // t03: valkey-стор нейтрален для kafka/pg-сценариев (пустой).
-            new SettableValkeyStore());
+            new SettableValkeyStore(),
+            // t34: s3-стор нейтрален для pg/kafka/valkey-сценариев (пустой).
+            new SettableS3Store());
+    }
+
+    // t34: стор s3-снапшота (в этих тестах живых s3-ключей нет).
+    private sealed class SettableS3Store : IS3SnapshotStore
+    {
+        public S3Snapshot? Current { get; set; }
+
+        public void Replace(S3Snapshot snapshot) => Current = snapshot;
     }
 
     // t03: стор valkey-снапшота (в этих тестах живых valkey-ключей нет).

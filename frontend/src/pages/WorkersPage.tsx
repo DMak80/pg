@@ -14,6 +14,7 @@ import { UploadWorkerCertModal } from './workers/UploadWorkerCertModal';
 const WORKER_TITLES: Record<string, string> = {
   pgworker: 'PgWorker (бд)',
   kafkaworker: 'KafkaWorker (кафки)',
+  s3worker: 'S3Worker (хранилище S3)',
 };
 
 // Действия с confirm-модалом (тексты предупреждений — arch/adminpanel/03 §3.7).
