@@ -292,6 +292,45 @@ public static class InspectionModule
         return endpoints;
     }
 
+    // Инспекция s3-домена (t34; arch/03 §12.1): GET /api/s3/clusters — 200/503;
+    // GET /api/s3/clusters/{cluster} — 200 / 404 кластера нет / 503.
+    public static IEndpointRouteBuilder MapS3InspectionApi(this IEndpointRouteBuilder endpoints)
+    {
+        // GET /api/s3/clusters — сводный список (arch/03 §12.1).
+        endpoints.MapGet("/api/s3/clusters", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<S3ClustersQuery, IReadOnlyList<S3ClusterSummaryDto>>(
+                new S3ClustersQuery(), ct);
+            return result.IsSuccess
+                ? Results.Ok(result.Value)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "S3 snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        // GET /api/s3/clusters/{cluster} — детали; 404 кластера нет, прочее — 503.
+        endpoints.MapGet("/api/s3/clusters/{cluster}", async (
+            string cluster, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<S3ClusterDetailsQuery, S3ClusterDto>(
+                new S3ClusterDetailsQuery(cluster), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is S3ClusterNotFound
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "S3 snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        return endpoints;
+    }
+
     // Допустимые значения ?severity= — строчный канон arch/03 §1.
     private static readonly Dictionary<string, AlertSeverity> SeverityNames = new()
     {

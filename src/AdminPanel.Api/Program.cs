@@ -109,6 +109,7 @@ app.MapInspectionApi(); // [t04] эндпоинты инспекции etcd из
 app.MapBackupsInspectionApi(); // [t08] грань «Хранилище бэкапов» (arch/03 §1)
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)
 app.MapValkeyInspectionApi();  // t03: инспекция valkey-домена (arch/03 §8.1)
+app.MapS3InspectionApi();      // t34: инспекция s3-домена (arch/03 §12.1)
 app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)
 app.MapValkeyOperationsApi();  // t03: valkey-мутации (arch/02 §11.2)
