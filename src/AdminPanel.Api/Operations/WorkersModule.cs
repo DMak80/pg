@@ -109,7 +109,8 @@ public sealed record GetWorkersQuery() : IQuery<WorkersViewDto>;
 public sealed class GetWorkersQueryHandler(
     ISnapshotStore pg,
     IKafkaSnapshotReader kafka,
-    IValkeySnapshotReader valkey)
+    IValkeySnapshotReader valkey,
+    IS3SnapshotReader s3)
     : IQueryHandler<GetWorkersQuery, WorkersViewDto>
 {
     public ValueTask<Result<WorkersViewDto>> Handle(GetWorkersQuery _, CancellationToken ct)
@@ -117,6 +118,7 @@ public sealed class GetWorkersQueryHandler(
         var p = pg.Current;
         var k = kafka.Current;
         var v = valkey.Current;
+        var s = s3.Current;
 
         static string ApplyStatus(WorkerApiCert? target, string? instanceThumb) => target switch
         {
@@ -151,6 +153,10 @@ public sealed class GetWorkersQueryHandler(
                 (v?.WorkerEndpoints ?? []).Select(e => Instance(e, v?.WorkerApiCert,
                     v?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
                 Cert(v?.WorkerApiCert)),
+            new("s3worker",
+                (s?.WorkerEndpoints ?? []).Select(e => Instance(e, s?.WorkerApiCert,
+                    s?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
+                Cert(s?.WorkerApiCert)),
         ])));
     }
 }

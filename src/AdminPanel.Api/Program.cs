@@ -34,6 +34,7 @@ builder
    .AddEtcd()
    .AddKafka() // [B3] kafka-домен: refresher + стор снапшота (арх/02 §10)
    .AddValkey() // t03: valkey-домен: refresher + сторы (arch/02 §11)
+   .AddS3() // t34: s3-домен: refresher + стор (arch/02 §12)
    .AddProbes()
    .AddOpenApi()
    .AddHealthChecks()
