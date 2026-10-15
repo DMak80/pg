@@ -90,15 +90,7 @@ public class E2eSupervisorSelfHealScenarios
         // агент унесёт цепь вперёд и в окне появится ≥2 сегмента.
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = hostEndpoint,
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         var inChain = new List<string>();
         string? chainStartBefore = null;
         string? hole = null;

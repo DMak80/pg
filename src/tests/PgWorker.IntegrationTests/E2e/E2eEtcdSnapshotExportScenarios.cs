@@ -33,15 +33,15 @@ public class E2eEtcdSnapshotExportScenarios
             ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
         }, ct: ct);
 
-    // Runtime-опции подсистемы на окружение Fact'а (хост-клиент, образец OwnMinio.Runtime).
+    // S3-цель окружения Fact'а (хост-клиент; t36 — S3ClientOptions).
+    private PgWorker.Backups.S3ClientOptions MinioS3() => new(
+        Fx.S3Endpoint.Replace("host.docker.internal:", "localhost:", StringComparison.Ordinal),
+        Bucket, "minioadmin", "minioadmin");
+
+    // Runtime-опции подсистемы на окружение Fact'а (bucket per-install).
     private BackupsRuntimeOptions MinioRuntimeForHost() => new(
         Enabled: true,
-        S3Endpoint: Fx.S3Endpoint.Replace("host.docker.internal:", "localhost:", StringComparison.Ordinal),
-        S3AdvertisedEndpoint: Fx.S3Endpoint,
         S3Bucket: Bucket,
-        S3AccessKey: "minioadmin",
-        S3SecretKey: "minioadmin",
-        S3PathStyle: true,
         JobImage: E2eEnvironment.JobImage,
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: 30,
@@ -69,13 +69,13 @@ public class E2eEtcdSnapshotExportScenarios
     // Чтение объекта bucket'a через AWSSDK-клиент теста (факт содержимого S3).
     private async Task<byte[]> DownloadAsync(string key, CancellationToken ct)
     {
-        var runtime = MinioRuntimeForHost();
+        // t36: креды/endpoint — литералы окружения Fact'а (S3-полей в runtime нет).
         using var client = new Amazon.S3.AmazonS3Client(
-            new Amazon.Runtime.BasicAWSCredentials(runtime.S3AccessKey, runtime.S3SecretKey),
-            new Amazon.S3.AmazonS3Config { ServiceURL = runtime.S3Endpoint, ForcePathStyle = true });
+            new Amazon.Runtime.BasicAWSCredentials("minioadmin", "minioadmin"),
+            new Amazon.S3.AmazonS3Config { ServiceURL = MinioS3().Endpoint, ForcePathStyle = true });
         var response = await client.GetObjectAsync(new Amazon.S3.Model.GetObjectRequest
         {
-            BucketName = runtime.S3Bucket,
+            BucketName = Bucket,
             Key = key,
         }, ct);
         using var ms = new MemoryStream();

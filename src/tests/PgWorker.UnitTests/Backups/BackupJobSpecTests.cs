@@ -11,10 +11,7 @@ public class BackupJobSpecTests
     private readonly BackupsRuntimeOptions _opts = new()
     {
         Enabled = true,
-        S3Endpoint = "http://host.docker.internal:9000",
         S3Bucket = "pgworker-backups",
-        S3AccessKey = "ak",
-        S3SecretKey = "sk",
         JobImage = "pgworker-backup:dev",
         StagingDir = "/backup-staging",
     };
@@ -105,8 +102,7 @@ public class BackupJobSpecTests
         // Arrange
         var opts = new BackupsRuntimeOptions
         {
-            Enabled = true, S3Endpoint = "http://minio:9000", S3Region = "us-east-1", S3Bucket = "bkt",
-            S3AccessKey = "ak", S3SecretKey = "sk", JobImage = "pgworker-backup:dev",
+            Enabled = true, S3Bucket = "bkt",
             StagingDir = "/backup-staging", AgentCpu = 0.5, AgentMem = 536870912,
         };
 

@@ -40,10 +40,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
         S3Bucket: "bkt",
-        S3AccessKey: "ak",
-        S3SecretKey: "sk",
         JobImage: "pgworker-backup:test",
         RestoreRecoveryTimeoutSec: 1800);
 

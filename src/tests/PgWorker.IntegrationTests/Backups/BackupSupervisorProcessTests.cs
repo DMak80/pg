@@ -48,13 +48,12 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
     private BackupSupervisorProcess BuildProcess(
         BackupsRuntimeOptions? options, FakeBackupS3 s3) => new(
-        fixture.Gateway, [fixture.Endpoint], s3, _claims,
+        fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3), _claims,
         new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         () => options, TimeProvider.System);
 
     private static BackupsRuntimeOptions Options(int supervisorInterval = 0) => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
         S3Bucket: "bkt",
         SupervisorIntervalSec: supervisorInterval);
 
@@ -155,7 +154,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         s3c.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
         await using var claims2 = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         var other = new BackupSupervisorProcess(
-            fixture.Gateway, [fixture.Endpoint], s3c, claims2,
+            fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3c), claims2,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), TimeProvider.System);
         (await other.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeFalse(

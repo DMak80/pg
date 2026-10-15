@@ -119,12 +119,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
-        S3AdvertisedEndpoint: "http://minio-agent",
         S3Bucket: "bkt",
-        S3AccessKey: "ak",
-        S3SecretKey: "sk",
-        S3PathStyle: true,
         JobImage: "pgworker-backup:test",
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: verify,

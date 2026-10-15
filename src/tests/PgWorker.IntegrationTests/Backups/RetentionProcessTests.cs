@@ -67,7 +67,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     private RetentionProcess BuildProcess(
         BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
-        fixture.Gateway, [fixture.Endpoint], s3,
+        fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+        FakePoolFactory.Store(),
         _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
@@ -80,10 +81,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         long quotaBytes = 0, int quotaWarn = 80, int quotaCrit = 90)
         => new(
             Enabled: true,
-            S3Endpoint: "http://minio",
             S3Bucket: "bkt",
-            S3AccessKey: "ak",
-            S3SecretKey: "sk",
             PolicyRetentionDays: policyDays,
             PolicyRetentionWeeks: policyWeeks,
             PolicyRetentionMonths: policyMonths,
@@ -407,7 +405,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/{full.Id}/base.tar", 7L));
         var process = BuildProcess(Options() with { }, s3);
         var disabled = new RetentionProcess(
-            fixture.Gateway, [fixture.Endpoint], s3,
+            fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+            FakePoolFactory.Store(),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             Options() with { Enabled = false }, new FrozenClock(),
             NullLogger<RetentionProcess>.Instance);

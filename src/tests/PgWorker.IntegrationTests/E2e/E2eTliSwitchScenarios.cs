@@ -618,16 +618,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Замена host.docker.internal → localhost — ТОЛЬКО здесь (воркер-процесс
     // на хосте; джобы/агенты её НЕ получают — см. StartTliSwitchHostAsync).
     public PgWorker.Backups.BackupS3 HostS3Client()
-        => new(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = Fx.S3Endpoint.Replace(
+        => new(new PgWorker.Backups.S3ClientOptions(
+            Fx.S3Endpoint.Replace(
                 "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+            Bucket, "minioadmin", "minioadmin"));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
     // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант t28):

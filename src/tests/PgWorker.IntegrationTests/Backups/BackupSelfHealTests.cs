@@ -76,12 +76,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
-        S3AdvertisedEndpoint: "http://minio-agent",
         S3Bucket: "bkt",
-        S3AccessKey: "ak",
-        S3SecretKey: "sk",
-        S3PathStyle: true,
         JobImage: "pgworker-backup:test",
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: 0,

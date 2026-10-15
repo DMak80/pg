@@ -340,16 +340,10 @@ public class E2eRestoreScenarios
 
     // Host-клиент BackupS3 (порт published): ассерты S3 и DR-list.
     private PgWorker.Backups.BackupS3 HostS3Client()
-        => new(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = Fx.S3Endpoint.Replace(
+        => new(new PgWorker.Backups.S3ClientOptions(
+            Fx.S3Endpoint.Replace(
                 "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+            Bucket, "minioadmin", "minioadmin"));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление Task 15:
     // прецедент E2eRotateScenarios; API-путь покрыт WAF-тестами RestoreApiTests).

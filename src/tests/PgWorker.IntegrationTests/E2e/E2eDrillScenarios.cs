@@ -180,17 +180,7 @@ public class E2eDrillScenarios
 
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        var corruptS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = hostEndpoint,
-            S3AdvertisedEndpoint = Fx.S3Endpoint,
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-            JobImage = E2eEnvironment.JobImage,
-        });
+        var corruptS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         
         // Act — жертва = САМ wal_start COMPLETED-полного (валидация дрилла идёт
         // от него; он гарантированно в wal/ — дублирование t02). Дыра обязана

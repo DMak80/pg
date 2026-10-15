@@ -25,7 +25,6 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
     private static BackupsRuntimeOptions Options(long ttl = 604800) => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
         S3Bucket: "bkt",
         SupervisorOrphanTtlSec: ttl);
 
@@ -46,7 +45,8 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
     private BackupOrphanSweeper BuildSweeper(
         FakeBackupS3 s3, ClaimStore claims, MutableClock? clock = null, BackupsRuntimeOptions? options = null)
-        => new(fixture.Gateway, [fixture.Endpoint], s3, claims,
+        => new(fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+            FakePoolFactory.Store(), claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options ?? Options(), clock ?? TimeProvider.System);
 

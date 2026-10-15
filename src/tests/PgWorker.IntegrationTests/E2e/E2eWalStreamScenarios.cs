@@ -71,17 +71,7 @@ public class E2eWalStreamScenarios
         // агентам отдаётся advertised (Fx.S3Endpoint = host.docker.internal:<порт>).
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = hostEndpoint,
-            S3AdvertisedEndpoint = Fx.S3Endpoint,
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-            JobImage = E2eEnvironment.JobImage,
-        });
+        var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
 
         // Assert 1 — бюджет 120 c: сегменты в MinIO, все без .partial (AC1)
         List<PgWorker.Backups.WalObject> listed = [];
@@ -209,16 +199,7 @@ public class E2eWalStreamScenarios
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(
-            new PgWorker.Backups.BackupsRuntimeOptions
-            {
-                Enabled = true,
-                S3Endpoint = hostEndpoint,
-                S3Bucket = Bucket,
-                S3AccessKey = "minioadmin",
-                S3SecretKey = "minioadmin",
-                S3PathStyle = true,
-            });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         var agentName = $"pgw-backup-wal-{cluster}-shard1-{masterNode}";
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
 
@@ -389,16 +370,7 @@ public class E2eWalStreamScenarios
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(
-            new PgWorker.Backups.BackupsRuntimeOptions
-            {
-                Enabled = true,
-                S3Endpoint = hostEndpoint,
-                S3Bucket = Bucket,
-                S3AccessKey = "minioadmin",
-                S3SecretKey = "minioadmin",
-                S3PathStyle = true,
-            });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
 
         // WAL-нагрузка ПЕРВАЯ: Patroni выбирает sync-реплику при живом потоке
@@ -544,16 +516,7 @@ public class E2eWalStreamScenarios
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(
-            new PgWorker.Backups.BackupsRuntimeOptions
-            {
-                Enabled = true,
-                S3Endpoint = hostEndpoint,
-                S3Bucket = Bucket,
-                S3AccessKey = "minioadmin",
-                S3SecretKey = "minioadmin",
-                S3PathStyle = true,
-            });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
 
         try
         {

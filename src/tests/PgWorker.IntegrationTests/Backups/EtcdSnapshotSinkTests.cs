@@ -24,13 +24,13 @@ public class EtcdSnapshotSinkTests
         new BasicAWSCredentials(OwnMinio.AccessKey, OwnMinio.SecretKey),
         new AmazonS3Config { ServiceURL = minio.HostEndpoint, ForcePathStyle = true });
 
-    private static BackupsRuntimeOptions BadS3Runtime(OwnMinio minio)
-        => minio.Runtime() with { S3Endpoint = $"http://localhost:{E2eFixture.FreePort()}" }; // закрытый порт — транзиент
+    private static S3ClientOptions BadS3Runtime(OwnMinio minio)
+        => minio.S3() with { Endpoint = $"http://localhost:{E2eFixture.FreePort()}" }; // закрытый порт — транзиент
 
     private static async Task<EtcdSnapshotSink> SinkAsync(OwnEtcd etcd, OwnMinio minio, string instance,
         int retention = 28, CancellationToken ct = default)
     {
-        var s3 = new BackupS3(minio.Runtime());
+        var s3 = new BackupS3(minio.S3());
         return new EtcdSnapshotSink(s3, etcd.Gateway, [etcd.Endpoint], retention, 5, instance, 360);
     }
 
@@ -65,7 +65,7 @@ public class EtcdSnapshotSinkTests
 
         // Assert — снятие успешно; в S3 ровно пара db+meta; статус OK с фактом
         shot.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(2).And.Contain(k => k.Key.EndsWith(".db")).And.Contain(k => k.Key.EndsWith(".meta.json"));
         // Assert — канон нейминга §3.2 (фиксация от регрессии): мета-ключ
@@ -113,7 +113,7 @@ public class EtcdSnapshotSinkTests
         // Assert — (а) в S3 4 ключа: ДВЕ пары; локальных файлов 2
         shot1.IsSuccess.Should().BeTrue();
         shot2.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4, "второй слепок уезжает новой парой — дедупа нет (AC2)");
         Directory.GetFiles(dir, "snapshot-*.db").Should().HaveCount(2);
@@ -153,7 +153,7 @@ public class EtcdSnapshotSinkTests
         await job.TakeAsync(ct);
 
         // Assert — ровно 2 пары (4 ключа); старейший id отсутствует
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4, "ретенция держит ровно N=2 пары");
         var oldestId = listed.Select(k => k.Key).Where(k => k.EndsWith(".db"))
@@ -227,7 +227,7 @@ public class EtcdSnapshotSinkTests
         catchUp.IsSuccess.Should().BeTrue();
         catchUp.Value.Should().BeTrue();
         var latest = Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).First();
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().Contain(k => k.Key == $"etcd/{Path.GetFileName(latest)}");
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
@@ -254,7 +254,7 @@ public class EtcdSnapshotSinkTests
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
         var shot = await job.TakeAsync(ct);
         shot.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         var dbKey = listed.Single(k => k.Key.EndsWith(".db")).Key;
         var metaKey = listed.Single(k => k.Key.EndsWith(".meta.json")).Key;
@@ -333,7 +333,7 @@ public class EtcdSnapshotSinkTests
         // Assert — две пары; мета новейшего объекта — inst-B; статус OK
         shotA.IsSuccess.Should().BeTrue();
         shotB.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.Runtime());
+        var s3 = new BackupS3(minioFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4);
         var newestMetaKey = $"etcd/{Path.GetFileName(shotB.Value)[..^".db".Length]}.meta.json";

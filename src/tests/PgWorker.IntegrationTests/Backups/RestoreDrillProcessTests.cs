@@ -273,8 +273,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
             FakePoolFactory.Single(s3), Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
-                Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test"),
+                Enabled: true, S3Bucket: "bkt",
+                JobImage: "pgworker-backup:test"),
             TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreDrillProcess>.Instance,
             drillObserver);
@@ -582,8 +582,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         SeedValidCandidate(s3, cluster);
         var process = BuildProcess(cluster, driver, s3, new BackupsRuntimeOptions(
-            Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
+            Enabled: true, S3Bucket: "bkt",
+            JobImage: "pgworker-backup:test",
             DrillIntervalDays: 0));
 
         // Act
@@ -747,8 +747,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 120));
         var process = BuildProcess(cluster, driver, new FakeBackupS3(),
             new BackupsRuntimeOptions(
-                Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
+                Enabled: true, S3Bucket: "bkt",
+                JobImage: "pgworker-backup:test",
                 DrillTimeoutSec: 60));
 
         // Act
@@ -780,8 +780,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 120));
         var process = BuildProcess(cluster, driver, new FakeBackupS3(),
             new BackupsRuntimeOptions(
-                Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
+                Enabled: true, S3Bucket: "bkt",
+                JobImage: "pgworker-backup:test",
                 DrillTimeoutSec: 60));
 
         // Act
@@ -848,8 +848,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 30));
         var process = BuildProcess(cluster, driver, s3, new BackupsRuntimeOptions(
-            Enabled: false, S3Endpoint: "http://minio", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test"));
+            Enabled: false, S3Bucket: "bkt",
+            JobImage: "pgworker-backup:test"));
 
         // Act 1 — доводка активного до терминала/сноса (стоп-семантика).
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))

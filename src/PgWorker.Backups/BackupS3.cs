@@ -82,13 +82,6 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
     // фабрика передаёт производный от Loops:Watchdog:CheckIntervalSec.
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
 
-    public BackupS3(BackupsRuntimeOptions options, TimeSpan? requestTimeout = null)
-        : this(new S3ClientOptions(
-                options.S3Endpoint, options.S3Bucket, options.S3AccessKey, options.S3SecretKey,
-                options.S3Region, options.S3CaBundlePath), requestTimeout, options.S3PathStyle)
-    {
-    }
-
     // t36: цель пула (endpoint+креды одного адреса); PathStyle=true — общий
     // MinIO/ownS3-контур (Region/PathStyle per-цель появятся с external-целями).
     public BackupS3(S3ClientOptions options, TimeSpan? requestTimeout = null, bool pathStyle = true)

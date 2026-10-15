@@ -520,13 +520,7 @@ public sealed class BackupsOptions
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
         VerifyIntervalSec: Policy.VerifyIntervalSec,
-        S3Endpoint: S3.Endpoint,
-        S3AdvertisedEndpoint: S3.AdvertisedEndpoint,
-        S3Region: S3.Region,
         S3Bucket: S3.Bucket,
-        S3AccessKey: S3.AccessKey,
-        S3SecretKey: S3.SecretKey,
-        S3PathStyle: S3.PathStyle,
         S3CaBundlePath: S3.CaBundlePath,
         JobImage: Job.Image,
         RetryBaseSec: Retry.BaseSec,
@@ -661,29 +655,12 @@ public sealed class BackupsRetryOptions
     public int MaxSec { get; set; } = 3600;
 }
 
-/// <summary>S3-хранилище бэкапов (arch/19 §5/§7): per-install креды — ТОЛЬКО
-/// env воркера (PGW_BACKUP_S3_*), не etcd/не git; PathStyle=true — клиент
-/// MinIO-режима.</summary>
+/// <summary>S3-хранилище бэкапов (t36, arch/19 §5/§7): bucket per-install
+/// (единый на всех нодах пулов) + CA https; endpoint/креды — пул per-cluster
+/// (policy.s3) и env-профили PGW_BACKUP_S3_PROFILES__* (не конфиг).</summary>
 public sealed class BackupsS3Options
 {
-    public string Endpoint { get; set; } = "";
-
-    /// <summary>Регион (опц.; MinIO не требует — null).</summary>
-    public string? Region { get; set; }
-
     public string Bucket { get; set; } = "";
-
-    public string AccessKey { get; set; } = "";
-
-    public string SecretKey { get; set; } = "";
-
-    public bool PathStyle { get; set; } = true;
-
-    /// <summary>Endpoint, как S3 виден ИЗ контейнеров агентов/джобов (single-host:
-    /// host.docker.internal; null → Endpoint как есть — паттерн Etcd:AdvertisedEndpoints,
-    /// Moves:AdvertisedPublisherHost). Реализация-деталь t03 (env-адресация агента,
-    /// arch/19 §7); стенд-включение подсистемы — t02.</summary>
-    public string? AdvertisedEndpoint { get; set; }
 
     /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (t42,
     /// arch/19 §7; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).

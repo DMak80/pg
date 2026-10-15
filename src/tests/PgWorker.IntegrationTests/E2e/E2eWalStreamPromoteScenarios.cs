@@ -44,16 +44,7 @@ public class E2eWalStreamPromoteScenarios
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(
-            new PgWorker.Backups.BackupsRuntimeOptions
-            {
-                Enabled = true,
-                S3Endpoint = hostEndpoint,
-                S3Bucket = Bucket,
-                S3AccessKey = "minioadmin",
-                S3SecretKey = "minioadmin",
-                S3PathStyle = true,
-            });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
         {

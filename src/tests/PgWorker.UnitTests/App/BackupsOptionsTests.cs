@@ -16,7 +16,6 @@ public class BackupsOptionsTests
         // Act / Assert — поведение воркера не меняется: подсистема выключена.
         options.Enabled.Should().BeFalse();
         options.IsValid(1).Should().BeTrue();
-        options.S3.PathStyle.Should().BeTrue(); // клиент MinIO-режима (arch/19 §5)
     }
 
     [Fact]
@@ -36,13 +35,10 @@ public class BackupsOptionsTests
         var options = new BackupsOptions
         {
             Enabled = true,
+            // t36: только Bucket (креды — env-профили, arch/19 §7).
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
-                Region = null,
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
         };
 
@@ -87,10 +83,7 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Job = new BackupsJobOptions { Image = "" },
         };
@@ -118,21 +111,18 @@ public class BackupsOptionsTests
         options.Staging.QuotaBytes.Should().BeNull();
         options.Agent.Cpu.Should().BeNull();
         options.Agent.Mem.Should().BeNull();
-        options.S3.Endpoint.Should().BeEmpty();
     }
 
     [Fact]
     public void ToRuntime_склеивает_все_секции_и_advertised_fallback()
     {
-        // Arrange
+        // Arrange — t36: только bucket/CA (endpoint/креды — пул и env-профили).
         var options = new BackupsOptions
         {
             Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://localhost:9000",
-                AdvertisedEndpoint = "http://host.docker.internal:9000",
-                Bucket = "b", AccessKey = "a", SecretKey = "s",
+                Bucket = "b",
             },
             Staging = new BackupsStagingOptions { Dir = "/st", QuotaBytes = 1024 },
             Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
@@ -144,27 +134,27 @@ public class BackupsOptionsTests
 
         // Assert
         runtime.JobImage.Should().Be("pgworker-backup:test");
-        runtime.AgentS3Endpoint.Should().Be("http://host.docker.internal:9000");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);
         runtime.StagingQuotaBytes.Should().Be(1024);
     }
 
+    // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
     [Fact]
-    public void ToRuntime_без_advertised_берет_endpoint_как_есть()
+    public void ToRuntime_без_endpoint_кредов_вален()
     {
         // Arrange
         var options = new BackupsOptions
         {
-            S3 = new BackupsS3Options { Endpoint = "http://minio:9000", Bucket = "b", AccessKey = "a", SecretKey = "s" },
+            S3 = new BackupsS3Options { Bucket = "b" },
         };
 
         // Act
         var runtime = options.ToRuntime();
 
         // Assert
-        runtime.AgentS3Endpoint.Should().Be("http://minio:9000");
+        runtime.S3Bucket.Should().Be("b");
         runtime.WalVerifyIntervalSec.Should().Be(30); // дефолты канона §9
         runtime.WalLagMaxSegments.Should().Be(1024);
         runtime.WalStaleSec.Should().Be(300);
@@ -304,10 +294,7 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Supervisor = new BackupsSupervisorOptions { IntervalSec = interval, OrphanTtlSec = ttl },
         };
@@ -430,10 +417,7 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Wal = new BackupsWalOptions { AgentImage = "" },
         };

@@ -365,7 +365,15 @@ builder.Services.AddSingleton(sp =>
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return opts.Snapshots.Export.Enabled
         ? new EtcdSnapshotSink(
-            new BackupS3(opts.BackupsRuntime()),
+            // t36: цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
+            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов).
+            new BackupS3(new S3ClientOptions(
+                opts.Snapshots.Export.S3.Endpoint,
+                opts.Snapshots.Export.S3.Bucket,
+                opts.Snapshots.Export.S3.AccessKey,
+                opts.Snapshots.Export.S3.SecretKey,
+                opts.Snapshots.Export.S3.Region,
+                opts.Snapshots.Export.S3.CaBundlePath)),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
@@ -717,17 +725,14 @@ builder.Services.AddSingleton(sp => new BackupS3Factory(
 builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IS3PoolStore>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
-// S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
-// Backups без рестарта воркера пересоздаёт клиента при первом же вызове
-// (асимметрия «выключение работает, включение нет» устранена).
-builder.Services.AddSingleton<IBackupS3, ReloadableBackupS3>();
 
 // Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup-джобы;
 // verifyObserver — counter pgworker_backup_verify_total{result}.
@@ -770,7 +775,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSupervisorProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
@@ -785,7 +790,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphanSweeper(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IS3PoolStore>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
@@ -890,155 +896,6 @@ static InstallSecrets SecretsFromEnv()
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
 
-// S3-клиент подсистемы бэкапов с горячей конфигурацией (ревью Ф7 №3): секция
-// PgWorker:Backups читается CurrentValue при КАЖДОМ вызове; смена опций (record-
-// равенство) пересоздаёт клиента (креды/endpoint актуальны сразу после reload).
-// Enabled=false → отказ "Backups:Enabled=false" (семантика заглушки: WalStreamProcess
-// при runtime()==null уходит в стоп-семантику, не доходя до S3; ошибки list —
-// консервативный сигнал, если зовут мимо процесса).
-file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) : IBackupS3, IAsyncDisposable
-{
-    private readonly object _gate = new();
-    private (BackupsRuntimeOptions Config, BackupS3 Client)? _current;
-    private bool _disposed;
-
-    // Клиент под ТЕКУЩУЮ конфигурацию (ленивая инициализация + пересоздание);
-    // устаревший клиент диспозится ВНЕ lock (IAsyncDisposable).
-    private async ValueTask<IBackupS3> CurrentAsync()
-    {
-        BackupS3? stale = null;
-        IBackupS3 current;
-        lock (_gate)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(ReloadableBackupS3));
-            var runtime = options.CurrentValue.Backups.Enabled
-                ? options.CurrentValue.BackupsRuntime()
-                : null;
-
-            if (_current is { } pair && (runtime is null || pair.Config != runtime))
-            {
-                stale = pair.Client; // старый конфиг (креды/endpoint) неактуален
-                _current = null;
-            }
-
-            if (runtime is null)
-                current = DisabledBackupS3.Instance;
-            else
-            {
-                // Пер-попыточный таймаут — производный окна watchdog (полокна,
-                // arch/14 §6 / arch/19 §5): S3-вызов конечен, пульс S3Pulse
-                // вокруг него легитимен.
-                _current ??= (runtime, new BackupS3(runtime, TimeSpan.FromSeconds(
-                    Math.Max(1, options.CurrentValue.Loops.Watchdog.CheckIntervalSec / 2))));
-                current = _current.Value.Client;
-            }
-        }
-
-        if (stale is not null)
-            await stale.DisposeAsync();
-        return current;
-    }
-
-    public async Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
-        => await (await CurrentAsync()).BucketExistsAsync(ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
-        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
-        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListPrefixAsync(prefix, maxKeysPerTest, ct);
-
-    public async Task<Result> DeleteKeysAsync(
-        IReadOnlyList<string> keys, CancellationToken ct = default)
-        => await (await CurrentAsync()).DeleteKeysAsync(keys, ct);
-
-    public async Task<Result> PutObjectAsync(
-        string key, byte[] data, string? sha256, CancellationToken ct = default)
-        => await (await CurrentAsync()).PutObjectAsync(key, data, sha256, ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
-        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct);
-
-    public async Task<Result<string>> GetObjectAsync(
-        string cluster, string shard, string key, CancellationToken ct = default)
-        => await (await CurrentAsync()).GetObjectAsync(cluster, shard, key, ct);
-
-    public async Task<Result<IReadOnlyList<string>>> ListFullsAsync(
-        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListFullsAsync(cluster, shard, maxKeysPerTest, ct);
-
-    public async Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-        => await (await CurrentAsync()).DownloadTextAsync(cluster, shard, objectKey, ct);
-
-    public async ValueTask DisposeAsync()
-    {
-        BackupS3? client;
-        lock (_gate)
-        {
-            _disposed = true;
-            client = _current?.Client;
-            _current = null;
-        }
-
-        if (client is not null)
-            await client.DisposeAsync();
-    }
-
-    // Заглушка выключенной подсистемы: list не зовётся штатным путём (стоп-семантика).
-    private sealed class DisabledBackupS3 : IBackupS3
-    {
-        public static readonly DisabledBackupS3 Instance = new();
-
-        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
-            => Task.FromResult(Result<bool>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
-            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
-            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result> DeleteKeysAsync(
-            IReadOnlyList<string> keys, CancellationToken ct = default)
-            => Task.FromResult(Result.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result> PutObjectAsync(
-            string key, byte[] data, string? sha256, CancellationToken ct = default)
-            => Task.FromResult(Result.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
-            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<string>> GetObjectAsync(
-            string cluster, string shard, string key, CancellationToken ct = default)
-            => Task.FromResult(Result<string>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
-            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<string>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<string>> DownloadTextAsync(
-            string cluster, string shard, string objectKey, CancellationToken ct = default)
-            => Task.FromResult(Result<string>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-    }
-}
 
 // WAF-тесты (PgWorker.IntegrationTests/Api): точка входа как public partial.
 public partial class Program;

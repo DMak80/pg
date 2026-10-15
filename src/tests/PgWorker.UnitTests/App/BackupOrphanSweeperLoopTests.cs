@@ -28,7 +28,7 @@ public sealed class BackupOrphanSweeperLoopTests
             "/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System);
         var sweeper = new BackupOrphanSweeper(
             etcd, options.CurrentValue.Etcd.Endpoints,
-            new Fakes.DisabledBackupS3Stub(), claims,
+            UnitPoolFactory.Disabled(), UnitPoolFactory.Store(), claims,
             new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             () => null, TimeProvider.System, NullLogger<BackupOrphanSweeper>.Instance);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, health,
@@ -127,7 +127,8 @@ public sealed class BackupOrphanSweeperLoopTests
             "/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System);
         var s3 = new HangingS3();
         var sweeper = new BackupOrphanSweeper(
-            etcd, options.CurrentValue.Etcd.Endpoints, s3, claims,
+            etcd, options.CurrentValue.Etcd.Endpoints,
+            UnitPoolFactory.Wrap(s3), UnitPoolFactory.Store(), claims,
             new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
             NullLogger<BackupOrphanSweeper>.Instance);

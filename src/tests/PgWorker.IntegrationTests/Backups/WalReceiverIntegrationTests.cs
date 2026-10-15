@@ -76,11 +76,7 @@ public class WalReceiverIntegrationTests
         }
     }
 
-    private static BackupS3 HostS3(OwnMinio minio)
-    {
-        var options = minio.Runtime();
-        return new BackupS3(options);
-    }
+    private static BackupS3 HostS3(OwnMinio minio) => new(minio.S3());
 
     /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты).</summary>
     private async Task<(CancellationTokenSource Cts, Task<int> Run)> StartCoreAsync(

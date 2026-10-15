@@ -22,7 +22,8 @@ namespace PgWorker.Backups.Supervisor;
 public sealed class BackupOrphanSweeper(
     IEtcdGateway etcd,
     string[] endpoints,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
+    PgWorker.Etcd.S3.IS3PoolStore pools,
     ClaimStore claims,
     WorkJournal journal,
     Func<BackupsRuntimeOptions?> runtime,
@@ -45,11 +46,28 @@ public sealed class BackupOrphanSweeper(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // (1) list ВЕСЬ bucket (образец storage-монитора t06) → группировка.
-        var listed = await s3.ListPrefixAsync("", ct: ct);
-        if (!listed.IsSuccess)
-            return Result.Failed(listed.Error!);
-        var grouped = OrphanRegistry.GroupPrefixes(listed.Value);
+        // (1) t36 (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
+        // (первый доступный endpoint каждого; дедуп по (пул, ключ)) → группировка.
+        var poolNames = await pools.ListPoolNamesAsync(ct);
+        if (!poolNames.IsSuccess)
+            return Result.Failed(poolNames.Error!);
+        var observedKeys = new HashSet<string>(StringComparer.Ordinal);
+        var observedObjects = new List<S3ObjectInfo>();
+        foreach (var poolName in poolNames.Value)
+        {
+            var created = await s3Factory.CreateForPoolAsync(poolName, ct);
+            if (!created.IsSuccess)
+                continue; // пул недоступен/без кредов — union по остальным
+            await using var poolS3 = created.Value;
+            var listed = await poolS3.ListPrefixAsync("", ct: ct);
+            if (!listed.IsSuccess)
+                continue; // transient этого пула — повтор прохода
+            foreach (var obj in listed.Value)
+                if (observedKeys.Add(obj.Key))
+                    observedObjects.Add(obj);
+        }
+
+        var grouped = OrphanRegistry.GroupPrefixes(observedObjects);
         var observed = grouped.Sizes;
 
         // (2) Владельцы: /clusters/ → живые кластеры (State ≠ ToRemove) и их
@@ -154,21 +172,30 @@ public sealed class BackupOrphanSweeper(
         await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
             $"orphan-deleting/{candidate}", claims.InstanceId, null, ct);
 
-        // batch-delete префикса + list-подтверждение пустоты.
+        // batch-delete префикса + list-подтверждение пустоты — через КАЖДЫЙ
+        // доступный пул (t36: префикс <C>/<X> может лежать в любом пуле;
+        // удаление идемпотентно, mesh разносит tombstone — arch/19 §5).
         var delPrefix = $"{candidate}/";
-        var objects = await s3.ListPrefixAsync(delPrefix, ct: ct);
-        if (!objects.IsSuccess)
-            return Result.Failed(objects.Error!); // запись остаётся DELETING — доведёт
-        if (objects.Value.Count > 0)
+        foreach (var poolName in poolNames.Value)
         {
-            var deleted = await s3.DeleteKeysAsync(
-                objects.Value.Select(o => o.Key).ToList(), ct);
-            if (!deleted.IsSuccess)
-                return Result.Failed(deleted.Error!);
-            var recheck = await s3.ListPrefixAsync(delPrefix, ct: ct);
-            if (!recheck.IsSuccess || recheck.Value.Count > 0)
-                return Result.Failed(new ApplicationException(
-                    $"удаление {delPrefix} не завершилось — повторит следующий проход"));
+            var created = await s3Factory.CreateForPoolAsync(poolName, ct);
+            if (!created.IsSuccess)
+                continue; // пул недоступен — доводку делает оставшийся проход
+            await using var poolS3 = created.Value;
+            var objects = await poolS3.ListPrefixAsync(delPrefix, ct: ct);
+            if (!objects.IsSuccess)
+                return Result.Failed(objects.Error!); // запись остаётся DELETING — доведёт
+            if (objects.Value.Count > 0)
+            {
+                var deleted = await poolS3.DeleteKeysAsync(
+                    objects.Value.Select(o => o.Key).ToList(), ct);
+                if (!deleted.IsSuccess)
+                    return Result.Failed(deleted.Error!);
+                var recheck = await poolS3.ListPrefixAsync(delPrefix, ct: ct);
+                if (!recheck.IsSuccess || recheck.Value.Count > 0)
+                    return Result.Failed(new ApplicationException(
+                        $"удаление {delPrefix} не завершилось — повторит следующий проход"));
+            }
         }
 
         // Объекты удалены — del записи из реестра + журнал-факт.

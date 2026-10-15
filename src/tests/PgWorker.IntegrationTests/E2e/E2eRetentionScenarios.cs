@@ -123,15 +123,7 @@ public class E2eRetentionScenarios
         // ниже cutoff удалены, всё живое в wal/ ≥ cutoff
         var hostEndpoint = Fx.S3Endpoint.Replace(
             "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = hostEndpoint,
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, "minioadmin", "minioadmin"));
         var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}/", ct: ct);
         oldPrefix.Value.Should().BeEmpty("объекты старого полного удалены (DELETING-доводка)");
         var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}/", ct: ct);

@@ -8,16 +8,9 @@ public sealed record BackupsRuntimeOptions(
     bool Enabled = false,
     long FullMaxAgeSec = 86400,
     bool VerifyOnCreate = true,
-    string S3Endpoint = "",
-    // t03: S3 из контейнеров агентов (single-host: host.docker.internal;
-    // null → S3Endpoint — паттерн Etcd:AdvertisedEndpoints).
-    string? S3AdvertisedEndpoint = null,
-    string? S3Region = null,
+    // t36 (arch/19 §7): только bucket per-install + CA; endpoint/креды — пул
+    // per-cluster (policy.s3) и env-профили PGW_BACKUP_S3_PROFILES__*.
     string S3Bucket = "",
-    string S3AccessKey = "",
-    string S3SecretKey = "",
-    // t03: path-style — MinIO и облако одним клиентом (BackupS3).
-    bool S3PathStyle = true,
     // t42 (arch/19 §7): путь ca.pem per-install CA — доверие https S3-endpoint;
     // null — http-endpoint, поведение прежнее; при заданном пути BackupS3 ставит
     // фабрику доверия S3CaHttpClientFactory (env AWS_CA_BUNDLE линейкой
@@ -70,10 +63,4 @@ public sealed record BackupsRuntimeOptions(
     // t41 (arch/14 §2.1): сеть контура поставки — задана → ноды/wal-агенты/
     // ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не
     // используется, extra_hosts спек не применяются); null — прод-режим.
-    string? ContourNetwork = null)
-{
-    /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
-    /// env, не строка команды; advertised-fallback).</summary>
-    public string AgentS3Endpoint
-        => S3AdvertisedEndpoint is { Length: > 0 } ? S3AdvertisedEndpoint : S3Endpoint;
-}
+    string? ContourNetwork = null);

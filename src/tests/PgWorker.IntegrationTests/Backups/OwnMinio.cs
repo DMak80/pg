@@ -97,15 +97,13 @@ public sealed class OwnMinio : IAsyncDisposable
         }
     }
 
-    /// <summary>Runtime-опции подсистемы на своё окружение (хост-клиент).</summary>
+    /// <summary>S3-цель своего окружения (t36: S3ClientOptions для BackupS3).</summary>
+    public S3ClientOptions S3() => new(HostEndpoint, Bucket, AccessKey, SecretKey);
+
+    /// <summary>Runtime-опции подсистемы на своё окружение (bucket per-install).</summary>
     public BackupsRuntimeOptions Runtime() => new(
         Enabled: true,
-        S3Endpoint: HostEndpoint,
-        S3AdvertisedEndpoint: ContainerEndpoint,
         S3Bucket: Bucket,
-        S3AccessKey: AccessKey,
-        S3SecretKey: SecretKey,
-        S3PathStyle: true,
         JobImage: "pgworker-backup:test",
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: 30,

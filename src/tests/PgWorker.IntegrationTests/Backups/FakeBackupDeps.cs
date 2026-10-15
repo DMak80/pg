@@ -334,6 +334,13 @@ public static class FakePoolFactory
             targetFactory: _ => target);
     }
 
+    // Отдельный store для процессов, берущих фабрику И store раздельно
+    // (RetentionProcess/BackupOrphanSweeper — union пулов).
+    public static PgWorker.Etcd.S3.IS3PoolStore Store() => new FixedPoolStore(
+        new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+            [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+            ["h1:9000"]));
+
     private sealed class FixedPoolStore(PgWorker.Etcd.S3.S3Pool? pool) : PgWorker.Etcd.S3.IS3PoolStore
     {
         public Task<Result<PgWorker.Etcd.S3.S3Pool?>> ReadAsync(string name, CancellationToken ct)

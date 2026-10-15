@@ -10,8 +10,7 @@ namespace PgWorker.UnitTests.Backups;
 public class DrillJobSpecTests
 {
     private static BackupsRuntimeOptions Opts() =>
-        new(Enabled: true, S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:dev",
+        new(Enabled: true, S3Bucket: "bkt",
             AgentCpu: 2, AgentMem: 4_000_000_000, RestoreRecoveryTimeoutSec: 1800);
 
     // AAA: спека дрилла — свой ephemeral volume с именем джоба, PGDATA
