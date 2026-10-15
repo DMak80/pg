@@ -367,13 +367,7 @@ builder.Services.AddSingleton(sp =>
         ? new EtcdSnapshotSink(
             // t36: цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
             // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов).
-            new BackupS3(new S3ClientOptions(
-                opts.Snapshots.Export.S3.Endpoint,
-                opts.Snapshots.Export.S3.Bucket,
-                opts.Snapshots.Export.S3.AccessKey,
-                opts.Snapshots.Export.S3.SecretKey,
-                opts.Snapshots.Export.S3.Region,
-                opts.Snapshots.Export.S3.CaBundlePath)),
+            new BackupS3(EtcdSnapshotSinkFactory.Create(opts)),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
