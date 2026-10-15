@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
-# Грань «Хранилище бэкапов» против ownS3 (t41: контур — owns3:9000 внутри /
-# :9010 снаружи; t08, arch/04 §3): идемпотентный mc-налив тестовых объектов
-# снаружи → /api/backups/storage (configured/health/дерево demo/shard1),
-# on-demand objects, отсутствие секретов в DTO; дерево несут реальные
-# бэкапы demo (налив — гарантия минимума до первого тика планировщика).
-# Панель — всегда в докере.
+# Грань «Хранилище бэкапов» против пула бэкапов (t36: инвентарь — нода пула
+# s3w-backups-node1 в стендовой сети, сид 00-up.sh; t08, arch/04 §3):
+# идемпотентный mc-налив тестовых объектов → /api/backups/storage
+# (configured/health/дерево demo/shard1), on-demand objects, отсутствие
+# секретов в DTO; дерево несут реальные бэкапы demo (налив — гарантия
+# минимума до первого тика планировщика). Панель — всегда в докере.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
-# Гвард: ownS3 жив (deploy-контур, t41) — без S3 бэкапов грань не проверить;
-# порт/root — из deploy/.env (по образцу чека 46).
+# Гвард: пул бэкапов жив (сид 00-up.sh) — без пула грань не проверить;
+# root-креды ноды пула — профиль BACKUPS-MAIN из deploy/.env.
 ROOT="$(cd ../.. && pwd)"
 ENV_FILE="$ROOT/deploy/.env"
-OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
-OWNS3_PORT="${OWNS3_PORT:-9010}"
-OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
-OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
-curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 \
-  || { echo "❌ owns3 не отвечает на :${OWNS3_PORT}/healthz — запусти checks/00-up.sh"; exit 1; }
-echo "  owns3 жив (/healthz ok, :${OWNS3_PORT})"
+STAND_NET="${PGW_CONTOUR_NETWORK:-adminpanel-stand-net}"
+S3W_ROOT_USER="$(grep -E '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
+S3W_ROOT_PASSWORD="$(grep -E '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
+[ -n "$S3W_ROOT_USER" ] && [ -n "$S3W_ROOT_PASSWORD" ] \
+  || { echo "❌ deploy/.env: нет S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_*"; exit 1; }
+pool_state="$(docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 \
+  get /s3/clusters/backups/nodes/node1/state --print-value-only </dev/null 2>/dev/null || true)"
+[ "$pool_state" = "RUNNING" ] \
+  || { echo "❌ пул backups не RUNNING ($pool_state) — запусти checks/00-up.sh (сид пула)"; exit 1; }
+echo "  пул backups жив (node1 RUNNING, инвентарь — s3w-backups-node1:9000)"
 
 # Панель поднята (до 60 c) + cookie-логин — как 10-smoke-api.sh.
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
@@ -33,16 +36,16 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 echo "  панель жива ($BASE), login ok"
 
-# Налив тестовых объектов mc-контейнером против ХОСТ-ПУБЛИКАЦИИ ownS3
-# (прецедент чека 46: --add-host host-gateway, root-креды из deploy/.env;
+# Налив тестовых объектов mc-контейнером в стендовой СЕТИ (нода пула
+# достаётся по имени контейнера: s3w-backups-node1:9000; root-креды профиля;
 # идемпотентно — перепись тех же ключей).
-docker run --rm --add-host host.docker.internal:host-gateway \
+docker run --rm --network "$STAND_NET" \
   --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
-  -c "mc alias set a http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
+  -c "mc alias set a http://s3w-backups-node1:9000 '$S3W_ROOT_USER' '$S3W_ROOT_PASSWORD' >/dev/null \
       && echo data | mc pipe a/pgworker-backups/demo/shard1/full/20260913a/base.tar \
       && echo wal  | mc pipe a/pgworker-backups/demo/shard1/wal/000000010000000000000001" \
-  || { echo "❌ mc-налив в ownS3/pgworker-backups не прошёл (:${OWNS3_PORT})"; exit 1; }
-echo "  налиты demo/shard1/full/20260913a/base.tar и demo/shard1/wal/…01 (ownS3)"
+  || { echo "❌ mc-налив в пул backups/pgworker-backups не прошёл (s3w-backups-node1)"; exit 1; }
+echo "  налиты demo/shard1/full/20260913a/base.tar и demo/shard1/wal/…01 (пул backups)"
 
 # Ждём инвентарь-тик панели (интервал 60 c — ретрай до 70 c). ВАЖНО: ждать
 # надо ИМЕННО налитое дерево — configured/health зелёные сразу от первого

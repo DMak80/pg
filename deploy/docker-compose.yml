@@ -40,28 +40,29 @@ x-pgworker-env: &pgworker-env
   PGW_REST_TLS_CA_PATH: /tls/ca.pem
   PGW_REST_TLS_CA_KEY_PATH: /tls/ca.key
   PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
-  # Подсистема бэкапов (arch/19, t01): каркас — Enabled=false default;
-  # S3-креды per-install только env (PGW_BACKUP_S3_*, deploy/.env.example).
-  # Пустые значения валидны при Enabled=false (валидация старта воркера).
+  # Подсистема бэкапов (arch/19, t36): пул S3 per-cluster — policy кластера
+  # ссылается пул /s3/clusters/ (выбор — панель, «Пул бэкапов»); endpoint/креды
+  # единого S3 ушли, env-профили кредов едут env_file (x-pgworker-base).
+  # Пустой Bucket валиден при Enabled=false (валидация старта воркера).
   PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
-  PgWorker__Backups__S3__Endpoint: ${PGW_BACKUP_S3_ENDPOINT:-}
-  PgWorker__Backups__S3__Region: ${PGW_BACKUP_S3_REGION:-}
   PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
-  PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
-  PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
-  # S3 из контейнеров агентов/джобов (single-host: host.docker.internal; пусто
-  # → ENDPOINT как есть — паттерн Etcd:AdvertisedEndpoints, t03).
-  PgWorker__Backups__S3__AdvertisedEndpoint: ${PGW_BACKUP_S3_ADVERTISED_ENDPOINT:-}
-  # Доверие CA https S3-endpoint (t42, arch/19 §7): путь ca.pem в контейнере
-  # (ro-монтирование TLS-пакета, прод); пусто — http, прежнее поведение.
+  # Доверие CA https S3-целей (t42, arch/19 §7): путь ca.pem в контейнере
+  # (ro-монтирование TLS-пакета, прод); единый на все цели. Пусто — http.
   PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
   # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
   # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
   PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
-  # Экспорт etcd-снапшотов в S3 (reliability t08, arch/14 §8): тот же bucket
-  # бэкапов (PGW_BACKUP_S3_*), служебный префикс etcd/; S3-креды отдельной
-  # переменной НЕ задаются. false → sink не подключается (поведение прежнее).
+  # Экспорт etcd-снапшотов в S3 (t36, arch/14 §6/§8): ОТДЕЛЬНАЯ env-пара
+  # PgWorker:Snapshots:Export:S3 (свой bucket, префикс etcd/, свои креды —
+  # PGW_SNAPSHOTS_S3_*); обязательна при Enabled=true (fail-fast старта).
+  # false → sink не подключается (поведение прежнее).
   PgWorker__Snapshots__Export__Enabled: ${PGW_SNAPSHOTS_EXPORT_ENABLED:-false}
+  PgWorker__Snapshots__Export__S3__Endpoint: ${PGW_SNAPSHOTS_S3_ENDPOINT:-}
+  PgWorker__Snapshots__Export__S3__Bucket: ${PGW_SNAPSHOTS_S3_BUCKET:-}
+  PgWorker__Snapshots__Export__S3__AccessKey: ${PGW_SNAPSHOTS_S3_ACCESS_KEY:-}
+  PgWorker__Snapshots__Export__S3__SecretKey: ${PGW_SNAPSHOTS_S3_SECRET_KEY:-}
+  PgWorker__Snapshots__Export__S3__Region: ${PGW_SNAPSHOTS_S3_REGION:-}
+  PgWorker__Snapshots__Export__S3__CaBundlePath: ${PGW_SNAPSHOTS_S3_CA_BUNDLE_PATH:-}
   # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
   # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
   # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
@@ -92,6 +93,13 @@ x-pgworker-base: &pgworker-base
     dockerfile: docker/PgWorker.Dockerfile
   image: pgworker:dev
   restart: unless-stopped
+  # t36 (arch/19 §7): env-профили кредов пулов — env_file БЕЗ интерполяции
+  # (дефис в имени профиля compose-${…} не ест; прецедент s3w-node-secrets.env).
+  # Файл per-install (в git НЕ попадает; стенд — собирает 00-up.sh из .env
+  # по префиксу PGW_BACKUP_S3_PROFILES__, прод — оператор сам). Пустой файл
+  # валиден: грань выключена (Enabled=false).
+  env_file:
+    - ./pgw-s3-profiles.env
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - pgw-snapshots:/snapshots
@@ -197,6 +205,10 @@ x-s3worker-env: &s3worker-env
   # Advertised-хост S3-порта нод → endpoints в etcd резолвимы клиентами
   # (arch/23 §2.1 advertised-правило).
   S3Worker__Docker__AdvertisedHost: ${S3W_ADVERTISED_HOST:-host.docker.internal}
+  # Сеть контура (t41-симметрия PgWorker): задана → ноды пулов /s3/ создаются
+  # в ней одной (стенд — adminpanel-stand-net: панель/pgworker/jobs достают
+  # ноды и по имени сети); пусто — прод-режим (de-facto-сеть docker-хоста).
+  S3Worker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
   # per-install bucket (arch/19 §5; env S3W_BUCKET — fail-fast старта).
   S3Worker__Bucket: ${S3W_BUCKET:?задайте bucket per-install}
   # HTTP API воркера (arch/24 §1.1): mTLS-серты из /tls (env-фоллбек до
