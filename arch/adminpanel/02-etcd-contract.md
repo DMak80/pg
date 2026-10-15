@@ -1149,3 +1149,65 @@ instances) панель не читает и не пишет.
 | `cpu` | десятичные ядра 0.01..64, def 1 (на ноду) |
 | `memGi`/`diskGi` | целые GiB 1..65536, def 1/10 (на ноду; в etcd `"<n>Gi"`; `disk` — инфо-поле, действий не вызывает) |
 | инвариант R3 | `maxmemoryBytes < memGi`-лимит (иначе OOM-килл контейнера) — 400 при create и конфиг-мутациях; UI-предупреждение (03 §8.3) |
+
+## 12. S3 (чтение + мутации)
+
+Пятый домен панели. Канон ключей —
+[23-s3-clusters.md](../23-s3-clusters.md) (§2 — состав кластера, §3 —
+connectivity/sync зонда, §4 — placement, §6 — PKI, §8 — ротации и API);
+этот раздел — панельная проекция. Декларатор — панель, исполнитель —
+S3Worker ([24-s3worker.md](../24-s3worker.md)); панель никогда не трогает
+контейнеры и ноды S3 напрямую. Отдельный домен-снапшот `S3Snapshot`
+(не `EtcdSnapshot`/`KafkaSnapshot`/`ValkeySnapshot`) — своя механика тика
+§4, теми же транспортом §1 и настройками endpoints.
+
+### 12.1. Читаемые ключи
+
+| Префикс/ключ | В модель | Примечание |
+|---|---|---|
+| `/s3/clusters/<C>/config` | `S3ClusterInfo` (config + state-маппинг: отсутствие = Active) | `platform` (`owns3`), `nodes`, `secret_profile`, `created_unix` |
+| `/s3/clusters/<C>/nodes/<I>/{placement,resources,state,placed_on,usage}` | `S3NodeInfo` | `state` — raw-строка (толерантно к новым); `usage` — занятость диска |
+| `/s3/clusters/<C>/links` | список пар `S3ReplicationLink` | граф репликации |
+| `/s3/clusters/<C>/denylist` | список имён | отозванные инстансы |
+| `/s3/clusters/<C>/endpoints` | `S3ClusterInfo.Endpoints` | точка дискавери клиентов; отсутствие у Active с нодами — critical-алерт |
+| `/s3/clusters/<C>/connectivity` | `S3ConnectivityInfo` (state, checked_unix, links-матрица, probe_error?) | зонд |
+| `/s3/clusters/<C>/sync` | `S3SyncInfo` (state, checked_unix, pairs, last_error?) | зонд |
+| `/s3worker/rotations/<C>` | `S3RotationTicket` | живая заявка ротации секретов |
+| `pki/*`, `nodes/<I>/pki` | — (парсер пропускает молча, без unknownKeys) | PKI репликации — только воркеру |
+
+Неизвестные ключи внутри `/s3/` — лог + `unknownKeys`; битый JSON —
+parseError-запись + warning-алерт `s3-key-malformed`.
+
+### 12.2. Мутации панели (10; исполняет S3Worker API — arch/24 §1.1)
+
+Панель отправляет команду в API воркера, URL — живой
+`/s3worker/api/<id>` (§2.3.4); воркер валидирует и пишет etcd; панель
+маппит коды 1:1 (503 — в т.ч. когда живых ключей нет). Протоколы записи —
+канон исполнителя arch/24 §1.1 (клэйм-txn, атомарность, идемпотентность
+already→204/202); панель — прокси, тело команды передаёт как есть.
+`requested_by` — username сессии панели (заголовок `X-Requested-By`;
+мутации 9–10 — с аудитом). Отмена заявок ротации из панели НЕТ (снятие —
+только воркером).
+
+| # | Мутация | Эндпоинт панели → эндпоинт воркера | Отказы |
+|---|---|---|---|
+| 1 | Создание кластера | `POST /api/s3/clusters` → `POST /api/s3/clusters` | 400, 409, 422 (профиль секретов), 503 |
+| 2 | Удаление кластера (TO_REMOVE) | `DELETE /api/s3/clusters/{c}` → тот же | 404, 503 |
+| 3 | Добавление инстанса | `POST /api/s3/clusters/{c}/nodes` → тот же | 400, 404, 409, 503 |
+| 4 | Маркер демонтажа инстанса | `DELETE /api/s3/clusters/{c}/nodes/{n}` → тот же | 404, 409 (последняя нода), 503 |
+| 5 | Ресурсы инстанса | `PUT /api/s3/clusters/{c}/nodes/{n}/resources` → тот же | 400, 404, 503 |
+| 6 | Граф репликации (замена целиком) | `PUT /api/s3/clusters/{c}/links` → тот же | 400 (links), 404, 503 |
+| 7 | Отзыв ключа инстанса (deny) | `POST /api/s3/clusters/{c}/nodes/{n}/deny` → тот же | 404, 503 |
+| 8 | Снятие отзыва (allow) | `POST /api/s3/clusters/{c}/nodes/{n}/allow` → тот же | 404, 503 |
+| 9 | Заявка ротации секретов профиля | `POST /api/s3/clusters/{c}/rotations` → тот же | 404, 503 |
+| 10 | Внеплановый зонд | `POST /api/s3/clusters/{c}/sync-probe` → тот же | 404, 409 (не Active), 503 |
+
+### 12.3. Валидация
+
+Сервер — источник истины (arch/24 §1.1), фронт дублирует для UX: имя
+кластера/инстанса `^[a-z][a-z0-9_]{0,62}$`; имя `orchestrator`
+зарезервировано; инстансы 0..9; placement — обязательный валидный селектор
+(минимум один атрибут `dockerHost`|`swarmNode`|`swarmLabels`); resources —
+cpu 0.01..64, mem/disk 1..65536 GiB; `secretProfile` — непустое имя (422 с
+перечнем доступных); links — имена существуют, `a≠b`, пары уникальны.
+`platform` — единственное значение `owns3` (панель подставляет всегда).
