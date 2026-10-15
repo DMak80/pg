@@ -869,7 +869,7 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             // Возврат рабочей policy (замещение целиком).
             string finalBody;
             (code, finalBody) = await PutPolicyApiAsync(api, app, cluster,
-                $$"""{"full_max_age_sec":3600,"s3":{{E2eEnvironment.PoolS3(Pool)}}}""", ct);
+                $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}}}", ct);
             ((int)code).Should().BeInRange(200, 299, $"валидная policy принимается: {finalBody}");
 
             // Act 2 — DR: полный лежит в пуле «bkpool» (node1 жив); чтение DR-источника
