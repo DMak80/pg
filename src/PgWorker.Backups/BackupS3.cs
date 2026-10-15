@@ -83,25 +83,34 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
 
     public BackupS3(BackupsRuntimeOptions options, TimeSpan? requestTimeout = null)
+        : this(new S3ClientOptions(
+                options.S3Endpoint, options.S3Bucket, options.S3AccessKey, options.S3SecretKey,
+                options.S3Region, options.S3CaBundlePath), requestTimeout, options.S3PathStyle)
     {
-        _bucket = options.S3Bucket;
+    }
+
+    // t36: цель пула (endpoint+креды одного адреса); PathStyle=true — общий
+    // MinIO/ownS3-контур (Region/PathStyle per-цель появятся с external-целями).
+    public BackupS3(S3ClientOptions options, TimeSpan? requestTimeout = null, bool pathStyle = true)
+    {
+        _bucket = options.Bucket;
         var timeout = requestTimeout is { } t && t >= TimeSpan.FromSeconds(1) ? t : DefaultRequestTimeout;
         var config = new AmazonS3Config
         {
-            ServiceURL = options.S3Endpoint,
-            ForcePathStyle = options.S3PathStyle,
-            AuthenticationRegion = options.S3Region,
+            ServiceURL = options.Endpoint,
+            ForcePathStyle = pathStyle,
+            AuthenticationRegion = options.Region,
             Timeout = timeout,
         };
         // Доверие CA https S3-endpoint (t42, spec §5 fallback): AWSSDK.Core env
         // AWS_CA_BUNDLE не читает (доказано E2E t42) — per-install CA доверяется
         // фабрикой HttpClient. Путь не задан (http-endpoint) — прежнее поведение.
         // Нечитаемый/пустой файл CA — исключение с диагностикой (BackupCaPem).
-        if (!string.IsNullOrWhiteSpace(options.S3CaBundlePath))
+        if (!string.IsNullOrWhiteSpace(options.CaBundlePath))
             config.HttpClientFactory = new S3CaHttpClientFactory(
-                Shared.Tls.TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(options)!));
+                Shared.Tls.TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(options.CaBundlePath)!));
         _client = new AmazonS3Client(
-            new BasicAWSCredentials(options.S3AccessKey, options.S3SecretKey), config);
+            new BasicAWSCredentials(options.AccessKey, options.SecretKey), config);
     }
 
     public async Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
