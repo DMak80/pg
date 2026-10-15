@@ -256,31 +256,62 @@ public abstract class E2eBackupPoolScenarios
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
+        // Порт Patroni — ФАКТ docker-биндинга (docker port), не portalloc:
+        // portalloc-план может расходиться с фактическими публикациями нод
+        // (прогон 2026-10-15: portalloc.patroni=15117, факт=15115 — пробы били
+        // в чужой сервис и ловили SSL-error, primary «не находился»).
+        var probeAttempt = 0;
+        var probeSummary = "проб не было";
         var resolved = await E2eFixture.WaitForAsync(async () =>
         {
+            probeAttempt++;
+            var lines = new List<string>();
             foreach (var (key, addr) in entries
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                          .OrderBy(p => p.Key, StringComparer.Ordinal))
             {
+                var node = key.Split('/')[1];
+                var container = $"pgw-{cluster}-shard1-{node}";
+                int port;
+                try
+                {
+                    var portOut = await Fx.RunDockerAsync(["port", container, "8008"], ct);
+                    var m = System.Text.RegularExpressions.Regex.Match(
+                        portOut, @":(\d+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
+                    if (!m.Success)
+                    {
+                        lines.Add($"{node}:нет-публикации");
+                        continue; // нода ещё без публикации — следующий такт
+                    }
+                    port = int.Parse(m.Groups[1].Value);
+                }
+                catch (Exception e)
+                {
+                    lines.Add($"{node}:{e.Message.Split('\n')[0]}");
+                    continue; // контейнер ещё не создан — следующий такт
+                }
+
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{port}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
-                        primary = key.Split('/')[1];
+                        primary = node;
                         return true;
                     }
+                    lines.Add($"{node}:{port}→{(int)response.StatusCode}");
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
-                    // проба (рестарт/ещё не готова) — следующая нода
+                    lines.Add($"{node}:{port}→{e.GetType().Name}:{e.Message.Split('\n')[0]}");
                 }
             }
 
+            probeSummary = $"attempt {probeAttempt}: [{string.Join("; ", lines)}]";
             return false;
         }, TimeSpan.FromSeconds(240), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue($"primary шарда обязан определиться пробами Patroni (docker port 8008); {probeSummary}");
         var entry = entries[$"{shard}/{primary}"];
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(), primary!);
     }
