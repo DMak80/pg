@@ -8,20 +8,24 @@ namespace PgWorker.Backups.Job;
 // named volume (docker создаст при первом mount).
 public static class BackupJobSpec
 {
+    // t36: s3Endpoints — список пула по РОЛИ ИСТОЧНИКА (реплика → write_replica,
+    // fallback-мастер → write_master; порядок = приоритет записи, arch/19 §4);
+    // креды — env-профиля пула (arch/19 §7). Порядок env-переменных канона:
+    // PGW_BK_S3_ENDPOINTS (запятая), BUCKET, ACCESS_KEY, SECRET_KEY.
     public static ContainerSpec Build(
         BackupsRuntimeOptions opts, string cluster, string shard, string id,
-        NodeAddress source, string backupPassword)
+        NodeAddress source, string backupPassword,
+        IReadOnlyList<string> s3Endpoints, string s3AccessKey, string s3SecretKey)
     {
         var env = new Dictionary<string, string>
         {
             ["PGW_BK_DSN"] =
                 $"host={source.Host} port={source.Ports.Pg} user=backup_exec password={backupPassword} sslmode=require",
             ["PGW_BK_ID"] = id,
-            ["PGW_BK_S3_ENDPOINT"] = opts.S3Endpoint,
-            ["PGW_BK_S3_REGION"] = opts.S3Region ?? string.Empty,
+            ["PGW_BK_S3_ENDPOINTS"] = string.Join(",", s3Endpoints),
             ["PGW_BK_S3_BUCKET"] = opts.S3Bucket,
-            ["PGW_BK_S3_ACCESS_KEY"] = opts.S3AccessKey,
-            ["PGW_BK_S3_SECRET_KEY"] = opts.S3SecretKey,
+            ["PGW_BK_S3_ACCESS_KEY"] = s3AccessKey,
+            ["PGW_BK_S3_SECRET_KEY"] = s3SecretKey,
             ["PGW_BK_PREFIX"] = $"{cluster}/{shard}",
             ["PGW_BK_STAGING_DIR"] = opts.StagingDir,
         };

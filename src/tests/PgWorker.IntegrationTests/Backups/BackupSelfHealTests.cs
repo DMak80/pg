@@ -157,7 +157,8 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            Options(), TimeProvider.System, NullLogger<BackupProcess>.Instance);
+            Options(), FakePoolFactory.Single(new FakeBackupS3()), TimeProvider.System,
+            NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
         engine.Created.Should().NotBeEmpty("BROKEN лечится пересъёмом — джоб запущен");

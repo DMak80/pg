@@ -624,6 +624,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
