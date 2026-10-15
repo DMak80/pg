@@ -62,13 +62,20 @@ public static class S3PoolParser
                 if (parts.Length != 7 || parts[1] != "s3" || parts[2] != "clusters"
                     || parts[3] != name || parts[4] != "nodes")
                 {
-                    if (kv.Key.StartsWith($"/s3/clusters/{name}/", StringComparison.Ordinal))
-                        unknownKeys++;
                     continue;
                 }
                 nodeNames.Add(parts[5]);
-                if (parts[6] == "state")
-                    states[parts[5]] = Unquote(kv.Value);
+                switch (parts[6])
+                {
+                    case "state":
+                        states[parts[5]] = Unquote(kv.Value);
+                        break;
+                    case "placement":
+                        break; // заявка — имя уже добавлено
+                    default:
+                        unknownKeys++; // неизвестный лист ноды (usage/pki/…)
+                        break;
+                }
             }
 
             var endpointsRaw = kvs.FirstOrDefault(kv => kv.Key == $"/s3/clusters/{name}/endpoints");
