@@ -156,7 +156,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
         Directory.CreateDirectory(ArtifactsDir);
         // REST-TLS CA контура (t22): тот же per-install CA, что mTLS API —
         // артефакт для разбора падений и ручных curl-проверок контура.
+        // + отпечаток CA — сверка с PGW_REST_TLS_* воркера при разборе SSL-fail.
         File.WriteAllText(Path.Combine(ArtifactsDir, "rest-ca.pem"), _installCa.CaPem);
+        File.WriteAllText(Path.Combine(ArtifactsDir, "rest-ca.sha256"),
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(_installCa.CaPem))));
         File.WriteAllText(Path.Combine(ArtifactsDir, "rest-ca.key"), _installCa.CaKeyPem);
     }
 
@@ -648,6 +652,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // в тестах нет).
             ["PGW_REST_TLS_CA"] = _installCa.CaPem,
             ["PGW_REST_TLS_CA_KEY"] = _installCa.CaKeyPem,
+            // Диагностика SSL-fail (t36-разбор): отпечаток CA воркера — в host.log.
+            //["PGW_REST_TLS_CA_SHA256"] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(_installCa.CaPem))),
             // WAF-ModuleInitializer (TestEnv, MetricsApiFactory.cs) ставит
             // process-env PgWorker__Api__Tls__AllowInsecureHttp=true — дочерние
             // процессы наследуют её, и воркер стартует на dev-серте без mTLS
