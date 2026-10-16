@@ -458,9 +458,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var etcdNames = new List<string>();
         var etcdAliases = Enumerable.Range(1, haEtcd ? 3 : 1).Select(i => $"e2e-etcd{i}").ToList();
         IContainer? minio = null;
+        // Артефакты факта: host-ветка — temp хоста; раннер — ТОМ /artifacts
+        // (E2eContour монтирует hostArtifacts ровно в /artifacts). Хостовый
+        // путь из env внутри контейнера не существует — телеметрия per-факт
+        // писалась в слой контейнера и терялась с ним (прогон 2026-10-16:
+        // подкаталог факта заявлен, на хосте пусто).
         var artifactsDir = createNet
             ? Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}")
-            : Path.Combine(GetRequiredEnv("PGW_E2E_HOST_ARTIFACTS"), runId);
+            : Path.Combine("/artifacts", runId);
         var (caPem, caKeyPem) = createNet
             ? E2eTestPki.GenerateCa("e2e")
             : (GetRequiredEnv("PGW_E2E_CA_PEM"), GetRequiredEnv("PGW_E2E_CA_KEY_PEM"));

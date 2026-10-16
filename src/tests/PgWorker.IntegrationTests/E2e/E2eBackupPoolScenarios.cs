@@ -41,6 +41,24 @@ public abstract class E2eBackupPoolScenarios
 
     // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
 
+    // [TIMING]-хронометраж шага (stderr: канал не буферизуется ни xUnit,
+    // ни docker — метка долетает до runner.log/артефактов; канон [PHASE],
+    // docs/e2e-launch.md).
+    protected static async Task TimedAsync(string step, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        await action();
+        Console.Error.WriteLine($"[TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+    }
+
+    protected static async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
+    {
+        var sw = Stopwatch.StartNew();
+        var result = await action();
+        Console.Error.WriteLine($"[TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+        return result;
+    }
+
     protected static string PolicyKey(string cluster) => $"/pgworker/backups/{cluster}/policy";
 
     // mTLS policy-API воркера: тело канона, ответ (status, body) — кейсы 400 AC8.
@@ -171,17 +189,43 @@ public abstract class E2eBackupPoolScenarios
         }, TimeSpan.FromSeconds(480), ct);
 
     protected async Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
-        => await E2eFixture.WaitForAsync(async () =>
+    {
+        // Fail-fast «провижининг застрял»: нода давно RUNNING, а config всё ещё
+        // со state=NOT_INITIALIZED — воркер не завершает заявку (ретраи).
+        // Раньше случай молча выжигал бюджет 360 с (прогон 2026-10-16 AC3:
+        // 310 с ожидания при живом лидере патрони).
+        var runningSince = (DateTimeOffset?)null;
+        return await E2eFixture.WaitForAsync(async () =>
         {
             var config = await GetOrNullAsync($"/clusters/{cluster}/config");
             if (config is null
                 || JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!
                     .ContainsKey("state"))
+            {
+                var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+                if (node is { Value: "RUNNING" })
+                {
+                    runningSince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+                    {
+                        await Fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
+                        throw new ApplicationException(
+                            $"провижининг застрял: нода {cluster}/shard1a RUNNING >60 с, "
+                            + "config.state не снят (воркер не завершает заявку — см. "
+                            + "container-pgw-ew-*.log в телеметрии fail-fast)");
+                    }
+                }
+                else
+                {
+                    runningSince = null;
+                }
                 return false;
+            }
             var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
-            var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-            return dsn is not null && node is { Value: "RUNNING" };
+            var ready = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+            return dsn is not null && ready is { Value: "RUNNING" };
         }, TimeSpan.FromSeconds(360), ct);
+    }
 
     protected static async Task ExecAsync(string adminDsn, string sql, CancellationToken ct)
     {
@@ -360,25 +404,28 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
         try
         {
             // Arrange — пул сидится, policy БЕЗ секции s3; воркер живёт.
-            await SeedClusterAsync(cluster);
-            await Fx.SeedS3PoolAsync(Pool, ct);
-            await G.PutAsync(Endpoint, PolicyKey(cluster),
-                """{"full_max_age_sec":3600}""", null, ct);
+            await TimedAsync("ac1 seed-cluster", () => SeedClusterAsync(cluster));
+            await TimedAsync("ac1 seed-pool", () => Fx.SeedS3PoolAsync(Pool, ct));
+            await TimedAsync("ac1 policy-no-s3", () => G.PutAsync(Endpoint, PolicyKey(cluster),
+                """{"full_max_age_sec":3600}""", null, ct));
             await using var app = await StartPoolHostAsync("pac1", ct);
-            var provisioned = await WaitProvisionedAsync(cluster, ct);
+            var provisioned = await TimedAsync(
+                "ac1 provision", () => WaitProvisionedAsync(cluster, ct));
             provisioned.Should().BeTrue("provisioning до окна наблюдения");
 
             // Act/Assert 1 — «пул не выбран» = молчание: full-ключей нет за 45 c.
-            await Task.Delay(TimeSpan.FromSeconds(45), ct);
+            await TimedAsync("ac1 silence-window-45s",
+                () => Task.Delay(TimeSpan.FromSeconds(45), ct));
             (await FullKeysAsync(cluster, "shard1")).Should().BeEmpty(
                 "policy без s3 — подсистема кластера не пишет (arch/19 §4)");
 
             // Act 2 — policy с секцией s3 (применяется следующим тиком).
-            await G.PutAsync(Endpoint, PolicyKey(cluster),
-                $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
+            await TimedAsync("ac1 policy-s3", () => G.PutAsync(Endpoint, PolicyKey(cluster),
+                $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct));
 
             // Assert 2 — COMPLETED ≤ 300 c, объекты на ноде пула.
-            var done = await WaitCompletedFullAsync(cluster, ct);
+            var done = await TimedAsync(
+                "ac1 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             var id = done.Key.Split('/').Last();
             var listing = await McLsOnNodeAsync(ep1, $"{cluster}/shard1/");
             listing.Should().Contain($"full/{id}/backup_manifest",
@@ -415,11 +462,13 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
         {
             // Arrange — вторая нода пула + двухнодовые списки.
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
-            await SeedClusterAsync(cluster);
-            await PutPolicyAsync(cluster, ["node1"], ["node2"]);
+            await TimedAsync("ac2 seed-pool-2nodes",
+                () => Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]));
+            await TimedAsync("ac2 seed-cluster", () => SeedClusterAsync(cluster));
+            await TimedAsync("ac2 policy-split", () => PutPolicyAsync(cluster, ["node1"], ["node2"]));
             await using var app = await StartPoolHostAsync("pac2", ct);
-            var provisioned = await WaitProvisionedAsync(cluster, ct);
+            var provisioned = await TimedAsync(
+                "ac2 provision", () => WaitProvisionedAsync(cluster, ct));
             provisioned.Should().BeTrue("provisioning до wal-фазы");
 
             // WAL-нагрузка ПЕРВАЯ (Patroni выбирает sync при живом потоке —
@@ -429,15 +478,18 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
-            var bothAgents = await WaitBothWalAgentsAsync(cluster, ct);
+            var bothAgents = await TimedAsync(
+                "ac2 both-wal-agents", () => WaitBothWalAgentsAsync(cluster, ct));
             bothAgents.Should().BeTrue("master- и sync-агенты живы (sync выбран)");
-            await GenerateWalAsync(adminDsn, ct);
-            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
-                "мастер-агент доставил сегменты на node1");
+            await TimedAsync("ac2 generate-wal", () => GenerateWalAsync(adminDsn, ct));
+            var uploaded = await TimedAsync(
+                "ac2 wal-uploaded-node1", () => WaitWalUploadedAsync(cluster, ep1, ct));
+            uploaded.Should().BeTrue("мастер-агент доставил сегменты на node1");
 
             // Act/Assert — полный с реплики: role=replica, объекты на node2,
             // на node1 префикса full/ нет.
-            var done = await WaitCompletedFullAsync(cluster, ct);
+            var done = await TimedAsync(
+                "ac2 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
             status["role"].GetString().Should().Be("replica", "sync-реплика выбрана — источник полного реплика");
             var id = done.Key.Split('/').Last();
@@ -481,26 +533,34 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
         var cluster = $"pac3{Fx.ClusterTag}";
         try
         {
-            await SeedClusterAsync(cluster);
-            await Fx.SeedS3PoolAsync(Pool, ct);
-            await PutPolicyAsync(cluster, ["node1"], ["node1"]);
+            await TimedAsync("ac3 seed-cluster", () => SeedClusterAsync(cluster));
+            await TimedAsync("ac3 seed-pool", () => Fx.SeedS3PoolAsync(Pool, ct));
+            await TimedAsync("ac3 policy", () => PutPolicyAsync(cluster, ["node1"], ["node1"]));
             await using var app = await StartPoolHostAsync("pac3", ct);
-            (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
+            var provisioned = await TimedAsync(
+                "ac3 provision", () => WaitProvisionedAsync(cluster, ct));
+            provisioned.Should().BeTrue();
 
             var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-            await GenerateWalAsync(adminDsn, ct);
+            await TimedAsync("ac3 generate-wal", () => GenerateWalAsync(adminDsn, ct));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("оба агента подняты");
+            var bothAgents = await TimedAsync(
+                "ac3 both-wal-agents", () => WaitBothWalAgentsAsync(cluster, ct));
+            bothAgents.Should().BeTrue("оба агента подняты");
             var ep1 = HostPort(Fx.S3Endpoint);
-            (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
-                "оба потока доставляют сегменты на единственную ноду");
-            (await WaitCompletedFullAsync(cluster, ct)).Should().NotBeNull();
+            var uploaded = await TimedAsync(
+                "ac3 wal-uploaded", () => WaitWalUploadedAsync(cluster, ep1, ct));
+            uploaded.Should().BeTrue("оба потока доставляют сегменты на единственную ноду");
+            var done = await TimedAsync(
+                "ac3 full-completed", () => WaitCompletedFullAsync(cluster, ct));
+            done.Should().NotBeNull();
 
             // Act/Assert — restore latest из пула: COMPLETED.
-            var restore = await RestoreLatestAsync(cluster, "shard1", ct);
+            var restore = await TimedAsync(
+                "ac3 restore-latest", () => RestoreLatestAsync(cluster, "shard1", ct));
             restore["state"].GetString().Should().Be("COMPLETED", "restore из однонодового пула");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
