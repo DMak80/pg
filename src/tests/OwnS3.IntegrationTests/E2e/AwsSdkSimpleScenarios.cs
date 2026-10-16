@@ -480,7 +480,7 @@ public sealed class AwsSdkSimpleScenarios
             {
                 (await s3.Invoking(x => x.GetObjectMetadataAsync(
                         new GetObjectMetadataRequest { BucketName = bucket, Key = key }, ct))
-                    .Should().ThrowAsync<AmazonS3Exception>()))
+                    .Should().ThrowAsync<AmazonS3Exception>())
                     .Where(e => e.StatusCode == HttpStatusCode.NotFound);
                 return;
             }

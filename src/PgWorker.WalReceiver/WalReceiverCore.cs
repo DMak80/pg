@@ -59,6 +59,11 @@ public sealed class WalReceiverCore
                         return 3;
                     }
 
+                    // Диагностика transient-цикла подключения: причина обязана быть
+                    // видимой в логе контейнера без перезапуска (R3 «не молчание»);
+                    // stdout — протокол воркера, ошибка идёт в stderr.
+                    await Console.Error.WriteLineAsync(
+                        $"open_failed: {opened.Error.Message.Split('\n')[0]}");
                     await Task.Delay(retry, ct);
                     continue;
                 }
@@ -97,6 +102,10 @@ public sealed class WalReceiverCore
                 var started = await source.StartReplicationAsync(o.Slot, tail.Value, ct);
                 if (!started.IsSuccess)
                 {
+                    // Диагностика отказа старта стрима (слот/позиция) — в stderr,
+                    // stdout остаётся протоколом воркера.
+                    await Console.Error.WriteLineAsync(
+                        $"start_failed: {started.Error!.Message.Split('\n')[0]}");
                     await Task.Delay(retry, ct);
                     continue;
                 }
@@ -173,6 +182,10 @@ public sealed class WalReceiverCore
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     // Обрыв источника (исключение из Stream) — поглощается ниже.
+                    // Диагностика причины обрыва — в stderr (тихий обрыв делал цикл
+                    // ненаблюдаемым: только «starting» без причины, R3 «не молчание»).
+                    await Console.Error.WriteLineAsync(
+                        $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
                 }
 
                 // Поток кончился/оборвался (сервер закрыл, транспортный сбой) — transient:

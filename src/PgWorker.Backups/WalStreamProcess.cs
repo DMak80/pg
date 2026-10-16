@@ -179,6 +179,12 @@ public sealed class WalStreamProcess(
             var (syncRef, syncPgHost, syncPgPort) = ResolveNodeRef(shard, addresses.Value, syncAddr);
             sources.Add(new WalSource(syncRef, syncAddr, syncPgHost, syncPgPort));
         }
+        // DIAG-T36: разбор AC5 — кого воркер считает мастером/sync и какие списки
+        // записи уходят в env агентов (удалить до финального отчёта).
+        Console.WriteLine(
+            $"[DIAG-T36] wal-src {cluster}/{shard.Name}: master={masterRef} sync={(sources.Count > 1 ? sources[1].Node : "-")} "
+            + $"writeMaster=[{string.Join(",", pool.WriteMaster)}] writeReplica=[{string.Join(",", pool.WriteReplica)}] "
+            + $"readAll={pool.ReadAll.Count}");
 
         var slot = BackupNames.Slot(cluster, shard.Name);
         var wal = shardBackups?.Wal;

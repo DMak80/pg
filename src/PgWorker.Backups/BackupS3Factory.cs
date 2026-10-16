@@ -24,10 +24,13 @@ public sealed class BackupS3Factory(
         => resolver.ResolveAsync(cluster, ct);
 
     /// <summary>Пул-клиент из резолвнутого контекста (создание per-вызов,
-    /// dispose вызывающим; клиенты per-цели кэшируются внутри PoolBackupS3).</summary>
+    /// dispose вызывающим; клиенты per-цели кэшируются внутри PoolBackupS3).
+    /// Чтение — ВСЕГДА ReadAll (все ноды пула, arch/19 §5 «где данные есть»):
+    /// write-реплика — не read-список (per-cluster клиент обслуживает контроль/
+    /// verify/restore — перебор чтения обязан доходить до живой ноды пула).</summary>
     public PoolBackupS3 Create(BackupPoolContext ctx)
         => new(
-            ctx.WriteMaster.ToList(), ctx.WriteReplica.ToList(),
+            ctx.WriteMaster.ToList(), ctx.ReadAll.ToList(),
             ctx.AccessKey, ctx.SecretKey, bucket(), caBundlePath(),
             requestTimeout,
             targetFactory: targetFactory ?? (uri => new BackupS3(
