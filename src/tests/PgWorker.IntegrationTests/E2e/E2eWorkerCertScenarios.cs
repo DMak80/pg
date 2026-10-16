@@ -60,7 +60,8 @@ public class E2eWorkerCertScenarios
 
             // ---------- Act 1: ключ со СТАРОЙ парой → старт воркера ----------
             await PutManagedKeyAsync(fx, oldPem, oldKey, ct);
-            await using var p1 = await fx.StartHostAsync("cert-p1", extraEnv: extraEnv, ct: ct);
+            await using var p1 = await fx.StartHostAsync("cert-p1", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
 
             // Assert 1: грань на etcd-серте — /healthz 200 ТОЛЬКО при доверии
             // старому thumbprint; дискавери-ключ сообщает старый thumbprint.
@@ -106,7 +107,8 @@ public class E2eWorkerCertScenarios
 
             // docker-политика restart: unless-stopped в e2e имитируется новым
             // инстансом с тем же контуром: при старте перечитан etcd-ключ.
-            await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct);
+            await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
             var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, p2, ct);
             discoveryNew.Should().Be(newThumb, "дискавери-ключ переподставился с новым thumbprint");
             using (var client = TlsClient(clientPem, clientKeyPem, newThumb))
@@ -119,7 +121,8 @@ public class E2eWorkerCertScenarios
             var deleted = await fx.Gateway.DeleteAsync(fx.EtcdEndpoint, ManagedKey, prefix: false, ct);
             deleted.IsSuccess.Should().BeTrue("ключ управляемого серта должен удаляться");
             p2.Kill(); // рестарт: смерть процесса + повторный подъём = политика docker
-            await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct);
+            await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
 
             var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, p3, ct);
             discoveryEnv.Should().Be(envThumb, "после удаления ключа воркер на env-серте (unmanaged)");

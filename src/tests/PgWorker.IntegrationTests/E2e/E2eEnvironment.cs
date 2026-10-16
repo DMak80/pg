@@ -306,6 +306,40 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private HttpClient HealthHttp { get; }
 
+    /// <summary>mTLS-клиент пробы готовности для воркера с env-парой
+    /// (PGW_API_TLS_CERT перекрывает сервер): клиентский серт — от CA контура
+    /// (CLIENT_CA воркером не перекрывается), серверное доверие — по списку
+    /// sha256-hex thumbprint'ов через запятую (этапы жизненного цикла серта
+    /// поднимают API то на managed-ключе, то на env-фоллбеке — все self-signed,
+    /// цепи нет).</summary>
+    private HttpClient CreateThumbprintHealthClient(string thumbprintsCsv)
+    {
+        var expected = thumbprintsCsv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => t.ToLowerInvariant())
+            .ToHashSet();
+        var (clientPem, clientKeyPem) = E2eTestPki.Issue(
+            _caPem, _caKeyPem, "e2e-healthcheck", ["e2e-healthcheck"], ip: null);
+        var pemPair = X509Certificate2.CreateFromPem(clientPem, clientKeyPem);
+        var clientCert = X509CertificateLoader.LoadPkcs12(pemPair.Export(X509ContentType.Pkcs12), null);
+        return new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                ClientCertificates = [clientCert],
+                RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+                    certificate is X509Certificate2 c2
+                    && expected.Contains(Convert.ToHexString(
+                            System.Security.Cryptography.SHA256.HashData(c2.RawData))
+                        .ToLowerInvariant()),
+            },
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(3),
+        };
+    }
+
     private HttpClient CreatePatroniHttpsClientOnly()
         => new(new SocketsHttpHandler
         {
@@ -399,13 +433,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>Удаление сети класса (конец класса, хост). Идемпотентно:
     /// «no such network» — успех; активные endpoints контейнеров факта держат
-    /// сеть — ретраи до 60 с (отцепление асинхронно после docker rm/rm -f).</summary>
+    /// сеть — принудительный disconnect -f каждого endpoint (ha-etcd-ноды
+    /// после kill-сценария не отцепляются сами) + ретраи до 60 с.</summary>
     public static async Task DeleteClassNetworkAsync(string netName, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
             try
             {
+                await ForceDisconnectEndpointsAsync(netName, ct);
                 await E2eFixture.RunProcessAsync("docker", ["network", "rm", netName], ct);
                 return;
             }
@@ -419,6 +455,34 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 // сеть держат endpoints — ретрай
                 await Task.Delay(2000, ct);
             }
+        }
+    }
+
+    // Принудительный отцеп всех endpoints сети: docker network rm падает
+    // «network has active endpoints», если контейнер умер без отцепа
+    // (kill-сценарии ha-etcd). Лучшими усилиями — ошибки не роняют teardown.
+    private static async Task ForceDisconnectEndpointsAsync(string netName, CancellationToken ct)
+    {
+        try
+        {
+            var inspect = await E2eFixture.RunProcessAsync(
+                "docker", ["network", "inspect", netName, "--format", "{{range .Containers}}{{.Name}} {{end}}"], ct);
+            foreach (var name in inspect.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                try
+                {
+                    await E2eFixture.RunProcessAsync(
+                        "docker", ["network", "disconnect", "-f", netName, name], ct);
+                }
+                catch (ApplicationException)
+                {
+                    // контейнер уже ушёл — endpoint отцепится удалением сети
+                }
+            }
+        }
+        catch (ApplicationException)
+        {
+            // сети нет — отцеплять нечего
         }
     }
 
@@ -740,7 +804,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// </summary>
     public async Task<HostInstance> StartHostAsync(
         string name, int snapshotIntervalMin = 360,
-        IReadOnlyDictionary<string, string>? extraEnv = null, CancellationToken ct = default)
+        IReadOnlyDictionary<string, string>? extraEnv = null, CancellationToken ct = default,
+        string? readinessThumbprint = null)
     {
         var alias = $"pgw-ew-{name}";
         var containerName = $"pgw-ew-{name}-{_runId}";
@@ -826,13 +891,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "PGW_E2E_HOST_SNAPS_DIR не задан — старт воркера вне раннер-контейнера");
         Directory.CreateDirectory(Path.Combine("/snaps", name));
 
-        return await StartWorkerWithEnvAsync(name, alias, containerName, env, ct);
+        return await StartWorkerWithEnvAsync(name, alias, containerName, env, ct, readinessThumbprint);
     }
 
     // docker run воркера: env парами -e K=V (обход ограничения списка аргументов).
+    // readinessThumbprint: sha256-hex серверного серта env-пары (PGW_API_TLS_CERT
+    // перекрывает сервер фикстуры — проба /healthz доверяет CA контура и НЕ
+    // прошла бы хендшейк; по thumbprint — честное доверие именно env-серту).
     private async Task<HostInstance> StartWorkerWithEnvAsync(
         string name, string alias, string containerName,
-        IReadOnlyDictionary<string, string> env, CancellationToken ct)
+        IReadOnlyDictionary<string, string> env, CancellationToken ct,
+        string? readinessThumbprint = null)
     {
         var hostSnapsDir = Environment.GetEnvironmentVariable("PGW_E2E_HOST_SNAPS_DIR")!;
         var args = new List<string>
@@ -852,6 +921,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var instance = new HostInstance(this, name, alias, containerName);
         _hosts.Add(instance);
 
+        var readinessClient = readinessThumbprint is null
+            ? HealthHttp
+            : CreateThumbprintHealthClient(readinessThumbprint);
+
         // Готовность: mTLS /healthz по внутрисетевому имени (SAN=алиас —
         // хендшейк честный). При неуспехе — хвост логов в исключении.
         var ready = await E2eFixture.WaitForAsync(async () =>
@@ -860,7 +933,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 return false;
             try
             {
-                using var response = await HealthHttp.GetAsync(
+                using var response = await readinessClient.GetAsync(
                     $"{instance.ApiUrl}/healthz", CancellationToken.None);
                 return response.StatusCode != System.Net.HttpStatusCode.NotFound;
             }

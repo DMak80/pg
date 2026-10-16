@@ -41,8 +41,11 @@ public class E2eEtcdSnapshotExportScenarios
             ["PgWorker__Snapshots__Export__RetentionObjects"] = retention.ToString(),
             ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint,
             ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
-            ["PgWorker__Snapshots__Export__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Snapshots__Export__S3__SecretKey"] = "minioadmin",
+            // Креды ownS3-ноды контура (минIO-наследие «minioadmin» отвергается
+            // ownS3 — выгрузка слепков молча не ехала, полный прогон 2026-10-16:
+            // snap-* 3 факта «первая выгрузка False»).
+            ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
+            ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
         }, ct: ct);
     }
 
