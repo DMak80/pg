@@ -149,7 +149,7 @@ public static class E2eContour
             };
             foreach (var (key, value) in E2eEnvironment.BuildRunnerEnv(
                          contour.NetName, contour.ArtifactsDir, contour.SnapshotsDir,
-                         contour.CaPem, contour.CaKeyPem))
+                         contour.CaPem, contour.CaKeyPem, contour.PortFrom, contour.PortTo))
                 runArgs.AddRange(["-e", $"{key}={value}"]);
             runArgs.Add(E2eEnvironment.RunnerImage);
             // Все факты класса в одном раннере (группировка — скорость).

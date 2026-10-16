@@ -362,10 +362,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// оркестратором на хосте; в раннере сборок нет (образ уже собран).</summary>
     public static Task EnsureStaticAssetsAsync(CancellationToken ct) => EnsureStaticAsync(ct);
 
-    /// <summary>Периметр класса: сеть + host-пути + CA. Живёт весь класс;
+    /// <summary>Периметр класса: сеть + host-пути + CA + окно портов. Живёт весь класс;
     /// etcd/ownS3/mc/воркеры — per-факт (внутри раннера).</summary>
     public sealed record ClassNetwork(string NetName, string ArtifactsDir, string SnapshotsDir,
-        string CaPem, string CaKeyPem);
+        string CaPem, string CaKeyPem, int PortFrom, int PortTo);
 
     /// <summary>Создание периметра класса (фаза 1, хост): docker-сеть класса +
     /// host-каталоги артефактов/снапшотов + per-класс CA.</summary>
@@ -384,7 +384,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
         File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
         File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.key"), caKeyPem);
         Console.WriteLine($"[PHASE] e2e-class {slug}: сеть класса {netName} создана (CA: rest-ca.pem в артефактах)");
-        return new ClassNetwork(netName, artifactsDir, Path.Combine(artifactsDir, "snapshots"), caPem, caKeyPem);
+        // Окно портов ВЫДАЁТСЯ ЗДЕСЬ, на хосте-оркестраторе (его счётчик
+        // глобален для прогонов процесса), и передаётся раннеру env'ом:
+        // у каждого раннера свой процесс со счётчиком с нуля — локальный
+        // подсчёт давал ВСЕМ параллельным классам одно окно 15100–15300 и
+        // конфликты «Bind ... port is already allocated» (прогон 2026-10-16:
+        // AC3, docker start 500, провижининг не завершался).
+        var portFrom = PortWindowBase
+            + (int)Math.Min(Interlocked.Increment(ref _windowCursor) - 1, 100) * PortWindowSize;
+        return new ClassNetwork(
+            netName, artifactsDir, Path.Combine(artifactsDir, "snapshots"),
+            caPem, caKeyPem, portFrom, portFrom + PortWindowSize);
     }
 
     /// <summary>Удаление сети класса (конец класса, хост). Идемпотентно:
@@ -469,9 +479,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var (caPem, caKeyPem) = createNet
             ? E2eTestPki.GenerateCa("e2e")
             : (GetRequiredEnv("PGW_E2E_CA_PEM"), GetRequiredEnv("PGW_E2E_CA_KEY_PEM"));
-        var windowIndex = Interlocked.Increment(ref _windowCursor) - 1;
-        var portFrom = PortWindowBase + (int)Math.Min(windowIndex, 100) * PortWindowSize;
-        var portTo = portFrom + PortWindowSize;
+        // Окно портов: inner (раннер) — из env периметра класса (выдано
+        // хостом-оркестратором; у раннера свой процесс и локальный счётчик
+        // дал бы всем классам одно окно — конфликты Bind 500, прогон
+        // 2026-10-16); host-ветка (без раннера) — локальный счётчик.
+        var portFrom = createNet
+            ? PortWindowBase + (int)Math.Min(Interlocked.Increment(ref _windowCursor) - 1, 100) * PortWindowSize
+            : int.Parse(GetRequiredEnv("PGW_E2E_PORT_FROM"), CultureInfo.InvariantCulture);
+        var portTo = createNet ? portFrom + PortWindowSize
+            : int.Parse(GetRequiredEnv("PGW_E2E_PORT_TO"), CultureInfo.InvariantCulture);
 
         // Дроссель параллельности: слот КОНТУРА занят ДО подъёма (per-факт
         // контур живёт в сети класса; дроссель считает классы-контуры — слот
@@ -689,11 +705,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
     internal static IReadOnlyDictionary<string, string> BuildRunnerEnv(
-        string netName, string hostArtifacts, string hostSnaps, string caPem, string caKeyPem)
+        string netName, string hostArtifacts, string hostSnaps, string caPem, string caKeyPem,
+        int portFrom, int portTo)
     {
-        // Раннер получает ТОЛЬКО периметр класса: сеть, CA (per-факт окружение
-        // выпускает серты из него) и host-пути bind-источников (bind-пути
-        // резолвит демон хоста, а не раннер). etcd/ownS3/mc — per-факт внутри.
+        // Раннер получает ТОЛЬКО периметр класса: сеть, CA, окно портов
+        // (per-класс, выдано хостом — см. CreateClassNetworkAsync) и host-пути
+        // bind-источников (bind-пути резолвит демон хоста, а не раннер).
+        // etcd/ownS3/mc — per-факт внутри.
         var env = new Dictionary<string, string>
         {
             ["PGW_TEST_DOCKER"] = "1",
@@ -704,6 +722,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PGW_E2E_CA_KEY_PEM"] = caKeyPem,
             ["PGW_E2E_HOST_ARTIFACTS"] = hostArtifacts,
             ["PGW_E2E_HOST_SNAPS_DIR"] = hostSnaps,
+            ["PGW_E2E_PORT_FROM"] = portFrom.ToString(CultureInfo.InvariantCulture),
+            ["PGW_E2E_PORT_TO"] = portTo.ToString(CultureInfo.InvariantCulture),
         };
         return env;
     }
