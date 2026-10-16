@@ -286,7 +286,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -303,7 +303,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -320,7 +320,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):

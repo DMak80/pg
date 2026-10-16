@@ -45,8 +45,7 @@ public class E2eWalStreamPromoteScenarios
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-ac5", "shopac5", ct);
         await using var envOwner = fx;
         await using var appOwner = app;
-        var hostEndpoint = Fx.S3Endpoint.Replace(
-            "host.docker.internal:", "localhost:", StringComparison.Ordinal);
+        var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
@@ -169,7 +168,7 @@ public class E2eWalStreamPromoteScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://pgw-{cluster}-{shard}-{key}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -214,7 +213,7 @@ public class E2eWalStreamPromoteScenarios
             foreach (var host in Fx.Hosts)
                 try
                 {
-                    var lines = File.ReadAllLines(Path.Combine(host.SnapshotsDir, "host.log"));
+                    var lines = (await host.ReadLogTailAsync(600, TestContext.Current.CancellationToken)).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                     var noise = new[]
                     {
                         "ClientHandler", "LogicalHandler", "HTTP request", "HTTP response",
@@ -291,7 +290,7 @@ public class E2eWalStreamPromoteScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://pgw-{cluster}-shard1-{key.Split('/')[1]}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -332,8 +331,8 @@ public class E2eWalStreamPromoteScenarios
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
-        var (_, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
-        var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", pgPort, cluster,
+        var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
+        var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
         return (fx, app, cluster, adminDsn, masterNode);
     }
@@ -418,7 +417,7 @@ public class E2eWalStreamPromoteScenarios
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -435,7 +434,7 @@ public class E2eWalStreamPromoteScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -452,7 +451,7 @@ public class E2eWalStreamPromoteScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(),
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);
 
     }

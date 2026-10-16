@@ -399,10 +399,10 @@ public class E2eScaleScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
+    private sealed record MasterInfo(string Node, string Host, string Dsn);
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
     // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
@@ -421,15 +421,16 @@ public class E2eScaleScenarios
                              .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                              .OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
+                    var node = nodeKey.Split('/')[1];
                     try
                     {
+                        var host = $"pgw-{cluster}-{shard}-{node}";
                         using var response = await PatroniHttp.GetAsync(
-                            $"https://localhost:{addr.Patroni}/primary", ct);
+                            $"https://{host}:8008/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        var node = nodeKey.Split('/')[1];
-                        return new MasterInfo(node, addr.Pg, addr.Patroni,
-                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, host,
+                            $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
                     catch (Exception)
                     {
@@ -452,9 +453,9 @@ public class E2eScaleScenarios
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct))
             .Value!.Value;
-        using var http = E2eEnvironment.CreatePatroniHttpsClient();
+        using var http = Fx.PatroniHttp;
         using var response = await http.SendAsync(
-            E2eEnvironment.PatroniPatch($"https://localhost:{master.PatroniPort}/config",
+            E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),
             ct);
         response.IsSuccessStatusCode.Should().BeTrue(
@@ -487,7 +488,7 @@ public class E2eScaleScenarios
         {
             var master = await MasterInfoAsync(cluster, shard, ct);
             await using var con = new NpgsqlConnection(
-                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;" +
+                $"Host={master.Host};Port=5432;Database={cluster};Username=app;" +
                 $"Password={await Fx.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);

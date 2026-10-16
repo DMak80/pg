@@ -33,6 +33,7 @@ public class E2eWorkerCertScenarios
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("worker-cert", ct: ct);
+        var p1San = WorkerAlias("cert-p1"); // SAN сертов управляемого ключа = алиас воркера
         try
         {
             // Arrange: ДВЕ пары (старая/новая) для управляемого ключа + env-пара
@@ -41,11 +42,13 @@ public class E2eWorkerCertScenarios
             // клиентский серт mTLS выпускаем от фикстурного CA (иначе проба
             // готовности фикстуры перестаёт проходить хендшейк).
             var (clientPem, clientKeyPem) = E2eTestPki.Issue(
-                E2eEnvironment.InstallCaPem, E2eEnvironment.InstallCaKeyPem,
+                fx.CaPem, fx.CaKeyPem,
                 "certsc-client", ["certsc-client"], ip: null);
-            var (oldPem, oldKey) = SelfSignedPair("pgworker-old");
-            var (newPem, newKey) = SelfSignedPair("pgworker-new");
-            var (envPem, envKey) = SelfSignedPair("pgworker-env");
+            // Серты управляемого ключа: SAN = алиас воркера в сети контура
+            // (тест ходит по https://pgw-ew-…:8443 — доверие по thumbprint).
+            var (oldPem, oldKey) = SelfSignedPair("pgworker-old", p1San);
+            var (newPem, newKey) = SelfSignedPair("pgworker-new", p1San);
+            var (envPem, envKey) = SelfSignedPair("pgworker-env", p1San);
             var oldThumb = ThumbprintOf(oldPem);
             var newThumb = ThumbprintOf(newPem);
             var envThumb = ThumbprintOf(envPem);
@@ -85,7 +88,6 @@ public class E2eWorkerCertScenarios
             }
 
             // ---------- Act 3: POST /api/restart → self-stop → подъём ----------
-            int exitCode;
             using (var restartClient = TlsClient(clientPem, clientKeyPem, oldThumb))
             {
                 restartClient.DefaultRequestHeaders.Add("X-Requested-By", "e2e-cert-scenario");
@@ -96,10 +98,11 @@ public class E2eWorkerCertScenarios
             }
 
             var exited = await E2ePhase.WaitAsync(fx, "cert-restart-exit",
-                () => Task.FromResult(p1.Process.HasExited), TimeSpan.FromSeconds(30), ct);
+                async () => (await p1.InspectStateAsync(ct)).Status != "running",
+                TimeSpan.FromSeconds(30), ct);
             exited.Should().BeTrue("graceful self-stop обязан завершить процесс после ~1 c");
-            exitCode = p1.Process.HasExited ? p1.Process.ExitCode : -1;
-            exitCode.Should().Be(0, "штатный graceful stop — exit 0");
+            var (state, exitCode) = await p1.InspectStateAsync(ct);
+            exitCode.Should().Be(0, $"штатный graceful stop — exit 0 (state={state})");
 
             // docker-политика restart: unless-stopped в e2e имитируется новым
             // инстансом с тем же контуром: при старте перечитан etcd-ключ.
@@ -143,6 +146,7 @@ public class E2eWorkerCertScenarios
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("worker-cert-broken", ct: ct);
+        var brokenSan = WorkerAlias("cert-broken");
         try
         {
             // Arrange: ключ с битым JSON — явное намерение оператора, тихий
@@ -151,9 +155,9 @@ public class E2eWorkerCertScenarios
                 fx.EtcdEndpoint, ManagedKey, "{not-json", null, ct);
             put.IsSuccess.Should().BeTrue();
             var (clientPem, clientKeyPem) = E2eTestPki.Issue(
-                E2eEnvironment.InstallCaPem, E2eEnvironment.InstallCaKeyPem,
+                fx.CaPem, fx.CaKeyPem,
                 "certbroken-client", ["certbroken-client"], ip: null);
-            var (envPem, envKey) = SelfSignedPair("pgworker-broken-env");
+            var (envPem, envKey) = SelfSignedPair("pgworker-broken-env", brokenSan);
             var extraEnv = new Dictionary<string, string>
             {
                 ["PGW_API_TLS_CERT"] = envPem,
@@ -180,16 +184,18 @@ public class E2eWorkerCertScenarios
 
     // ===== Хелперы =====
 
-    // Самоподписанный лист-пара (SAN localhost/127.0.0.1, EKU serverAuth):
-    // материалы управляемого ключа сценария — доверие по thumbprint.
-    private static (string CertPem, string KeyPem) SelfSignedPair(string commonName)
+    // DNS-алиас воркера в сети контура (тот же формат, что StartHostAsync).
+    private static string WorkerAlias(string name) => $"pgw-ew-{name}";
+
+    // Самоподписанный лист-пара (SAN = алиас воркера в сети контура, EKU
+    // serverAuth): материалы управляемого ключа сценария — доверие по thumbprint.
+    private static (string CertPem, string KeyPem) SelfSignedPair(string commonName, string dnsName)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(
             $"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        san.AddDnsName("localhost");
-        san.AddIpAddress(System.Net.IPAddress.Loopback);
+        san.AddDnsName(dnsName);
         request.CertificateExtensions.Add(san.Build());
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
             [new Oid("1.3.6.1.5.5.7.3.1")], critical: false));
@@ -261,7 +267,7 @@ public class E2eWorkerCertScenarios
             return bestSince >= 0;
         }, TimeSpan.FromSeconds(30), ct,
             progress: async () =>
-                $"alive={!host.Process.HasExited}, api-keys={await CountApiKeysAsync(fx, ct)}");
+                $"alive={await host.IsRunningAsync(ct)}, api-keys={await CountApiKeysAsync(fx, ct)}");
         found.Should().BeTrue("дискавери-ключ с cert_thumbprint обязан появиться");
         return (url!, actualThumb!);
     }

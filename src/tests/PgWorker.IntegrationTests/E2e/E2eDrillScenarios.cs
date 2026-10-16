@@ -76,7 +76,7 @@ public class E2eDrillScenarios
             foreach (var host in Fx.Hosts)
                 try
                 {
-                    var lines = File.ReadAllLines(Path.Combine(host.SnapshotsDir, "host.log"));
+                    var lines = (await host.ReadLogTailAsync(600, ct)).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                     var interesting = lines.Where(l =>
                         !l.Contains("ClientHandler") && !l.Contains("LogicalHandler")
                         && !l.Contains("HTTP request") && !l.Contains("HTTP response")
@@ -172,8 +172,8 @@ public class E2eDrillScenarios
         // chain_start и цепью не быть (прогон 2026-10-01: дрилл легитимно
         // SUCCEEDED за 6 c). Жертва — СТРОГО Next(wal_start) полного, дыра —
         // при наличии более позднего сегмента.
-        var (_, pgPort, _) = await MasterPgAsync(cluster, "shard1", ct);
-        var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", pgPort, cluster,
+        var (pgHost, pgPort, _) = await MasterPgAsync(cluster, "shard1", ct);
+        var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
         await using (var conn = new NpgsqlConnection(adminDsn))
         {
@@ -183,8 +183,7 @@ public class E2eDrillScenarios
                     await cmd.ExecuteScalarAsync(ct);
         }
 
-        var hostEndpoint = Fx.S3Endpoint.Replace(
-            "host.docker.internal:", "localhost:", StringComparison.Ordinal);
+        var hostEndpoint = Fx.S3Endpoint;
         var corruptS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
         // Догружаем цепь РЕАЛЬНЫМИ данными (GenerateWalAsync — образец
@@ -415,7 +414,7 @@ public class E2eDrillScenarios
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -432,7 +431,7 @@ public class E2eDrillScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -449,7 +448,7 @@ public class E2eDrillScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(),
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);
 
     }

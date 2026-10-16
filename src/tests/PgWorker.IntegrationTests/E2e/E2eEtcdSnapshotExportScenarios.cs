@@ -39,8 +39,7 @@ public class E2eEtcdSnapshotExportScenarios
             ["PgWorker__Snapshots__Export__Enabled"] = "true",
             ["PgWorker__Snapshots__Export__RetryIntervalSec"] = retrySec.ToString(),
             ["PgWorker__Snapshots__Export__RetentionObjects"] = retention.ToString(),
-            ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+            ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint,
             ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
             ["PgWorker__Snapshots__Export__S3__AccessKey"] = "minioadmin",
             ["PgWorker__Snapshots__Export__S3__SecretKey"] = "minioadmin",
@@ -49,7 +48,7 @@ public class E2eEtcdSnapshotExportScenarios
 
     // S3-цель окружения Fact'а (хост-клиент; t36 — S3ClientOptions).
     private PgWorker.Backups.S3ClientOptions MinioS3() => new(
-        Fx.S3Endpoint.Replace("host.docker.internal:", "localhost:", StringComparison.Ordinal),
+        Fx.S3Endpoint,
         SnapshotBucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword);
 
     // Runtime-опции подсистемы на окружение Fact'а (bucket per-install).
@@ -217,7 +216,7 @@ public class E2eEtcdSnapshotExportScenarios
         await using var fx = await E2eEnvironment.StartAsync("snap-neg", withS3Node: true, ct: ct);
         Fx = fx;
         await using var app = await StartExportHostAsync(
-            "snapneg", ct, s3Override: "http://host.docker.internal:1");
+            "snapneg", ct, s3Override: "http://e2e-broken-s3:1");
 
         // Act — ждём ключ FAILED (транзиент S3 не роняет снятие; статус пишет sink)
         var failed = await E2eFixture.WaitForAsync(async () =>

@@ -37,7 +37,7 @@ public abstract class E2eBackupPoolScenarios
     protected string Endpoint => Fx.EtcdEndpoint;
     protected EtcdGateway G => Fx.Gateway;
 
-    protected static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    protected HttpClient PatroniHttp => Fx.PatroniHttp;
 
     // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
 
@@ -49,7 +49,7 @@ public abstract class E2eBackupPoolScenarios
     {
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
         using var response = await api.PostAsync(
-            $"https://127.0.0.1:{app.ApiPort}/api/clusters/{cluster}/backups/policy",
+            $"{app.ApiUrl}/api/clusters/{cluster}/backups/policy",
             content, ct);
         return (response.StatusCode, await response.Content.ReadAsStringAsync(ct));
     }
@@ -247,8 +247,9 @@ public abstract class E2eBackupPoolScenarios
         }
     }
 
-    // Published pg-порт мастера шарда из portalloc; резолв primary — пробы
-    // Patroni /primary (копия E2eWalStreamPromoteScenarios.MasterPgAsync).
+    // Внутрисетевой адрес мастера шарда: primary — пробы Patroni /primary по
+    // контейнерным именам нод (REST :8008 — константа контракта, arch/14 §2.1);
+    // pg — тот же контейнер :5432 (адресация теста целиком внутрисетевая).
     protected async Task<(string Host, int Port, string Node)> MasterPgAsync(
         string cluster, string shard, CancellationToken ct)
     {
@@ -256,64 +257,41 @@ public abstract class E2eBackupPoolScenarios
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
-        // Порт Patroni — ФАКТ docker-биндинга (docker port), не portalloc:
-        // portalloc-план может расходиться с фактическими публикациями нод
-        // (прогон 2026-10-15: portalloc.patroni=15117, факт=15115 — пробы били
-        // в чужой сервис и ловили SSL-error, primary «не находился»).
         var probeAttempt = 0;
         var probeSummary = "проб не было";
         var resolved = await E2eFixture.WaitForAsync(async () =>
         {
             probeAttempt++;
             var lines = new List<string>();
-            foreach (var (key, addr) in entries
+            foreach (var (key, _) in entries
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                          .OrderBy(p => p.Key, StringComparer.Ordinal))
             {
                 var node = key.Split('/')[1];
-                var container = $"pgw-{cluster}-shard1-{node}";
-                int port;
-                try
-                {
-                    var portOut = await Fx.RunDockerAsync(["port", container, "8008"], ct);
-                    var m = System.Text.RegularExpressions.Regex.Match(
-                        portOut, @":(\d+)$", System.Text.RegularExpressions.RegexOptions.Multiline);
-                    if (!m.Success)
-                    {
-                        lines.Add($"{node}:нет-публикации");
-                        continue; // нода ещё без публикации — следующий такт
-                    }
-                    port = int.Parse(m.Groups[1].Value);
-                }
-                catch (Exception e)
-                {
-                    lines.Add($"{node}:{e.Message.Split('\n')[0]}");
-                    continue; // контейнер ещё не создан — следующий такт
-                }
-
+                var container = $"pgw-{cluster}-{shard}-{node}";
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{port}/primary", ct);
+                        $"https://{container}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = node;
                         return true;
                     }
-                    lines.Add($"{node}:{port}→{(int)response.StatusCode}");
+
+                    lines.Add($"{node}→{(int)response.StatusCode}");
                 }
                 catch (Exception e)
                 {
-                    lines.Add($"{node}:{port}→{e.GetType().Name}:{e.Message.Split('\n')[0]}");
+                    lines.Add($"{node}→{e.GetType().Name}:{e.Message.Split('\n')[0]}");
                 }
             }
 
             probeSummary = $"attempt {probeAttempt}: [{string.Join("; ", lines)}]";
             return false;
         }, TimeSpan.FromSeconds(240), ct);
-        resolved.Should().BeTrue($"primary шарда обязан определиться пробами Patroni (docker port 8008); {probeSummary}");
-        var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(), primary!);
+        resolved.Should().BeTrue($"primary шарда обязан определиться пробами Patroni (:8008); {probeSummary}");
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432, primary!);
     }
 
     // PUT PLANNED-заявки restore прямым ключом (прецедент E2eRestoreScenarios).
@@ -445,7 +423,7 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
             // WAL-нагрузка ПЕРВАЯ (Patroni выбирает sync при живом потоке —
             // прецедент E2eWalStreamScenarios), оба агента поднимаются.
             var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+            var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -508,7 +486,7 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
 
             var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+            var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await GenerateWalAsync(adminDsn, ct);
             using var load = new CancellationTokenSource();
@@ -561,8 +539,8 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
             await PutPolicyAsync(cluster, ["node1", "node2"], ["node2", "node1"]);
             var app = await StartPoolHostAsync("pac4", ct);
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
-            var (_, port, _) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+            var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
+            var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -650,8 +628,8 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             await using var app = await StartPoolHostAsync("pac5", ct);
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
-            var (_, port, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+            var (host, port, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
+            var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -663,8 +641,8 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
             // Act — потеря мастера → promote реплики (механика .history —
             // образец E2eWalStreamPromoteScenarios).
             await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
-            var (_, newMasterPort, _) = await MasterPgAsync(cluster, "shard1", ct);
-            var newMasterDsn = DatabaseProvisioner.BuildAdminDsn("localhost", newMasterPort, cluster,
+            var (newMasterHost, newMasterPort, _) = await MasterPgAsync(cluster, "shard1", ct);
+            var newMasterDsn = DatabaseProvisioner.BuildAdminDsn(newMasterHost, newMasterPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             // Promote-окно: ex-реплика отвечает «recovery is in progress» (55000),
             // пока promote не завершён — switch ретраится до готовности нового мастера.
@@ -748,8 +726,8 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             await PutPolicyAsync(cluster, ["node1"], ["node1"]);
             await using var app = await StartPoolHostAsync("pac6", ct);
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
-            var (_, port, _) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+            var (host, port, _) = await MasterPgAsync(cluster, "shard1", ct);
+            var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await ExecAsync(adminDsn, "CREATE TABLE pool_probe(id int, note text)", ct);
             await ExecAsync(adminDsn, "INSERT INTO pool_probe SELECT g, 'keeper' FROM generate_series(1, 5) g", ct);
@@ -806,13 +784,12 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 + $" && mc mb --ignore-existing t/{SnapshotBucket}", ct);
 
             // Act 1 — воркер со слепочной парой (localhost-вид: sink из процесса).
-            var localhost = Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal);
+            var s3Endpoint = Fx.S3Endpoint;
             await using var app = await Fx.StartHostAsync("pac7", extraEnv: new Dictionary<string, string>
             {
                 ["PgWorker__Snapshots__Export__Enabled"] = "true",
                 ["PgWorker__Snapshots__Export__RetryIntervalSec"] = "5",
-                ["PgWorker__Snapshots__Export__S3__Endpoint"] = localhost,
+                ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Endpoint,
                 ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
                 ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
                 ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
@@ -886,7 +863,7 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue();
 
             // Act/Assert 1 — валидация по полям (mTLS policy-API воркера).
-            using var api = E2eEnvironment.CreateMtlsApiClient();
+            using var api = Fx.CreateMtlsApiClient();
             var (code, body) = await PutPolicyApiAsync(api, app, cluster, 
                 """{"full_max_age_sec":3600,"s3":{"pool":"ghost","write_master":["node1"],"write_replica":["node1"]}}""", ct);
             code.Should().Be(System.Net.HttpStatusCode.BadRequest);

@@ -49,7 +49,7 @@ public class E2eBackupFailsOnBadS3Scenarios
         await SeedClusterAsync(cluster);
         // t36: «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
         // (tcpmux; НЕ тестовый хардкод: фиксированный протокольный «всегда закрыт»).
-        await Fx.SeedS3PoolAsync(Pool, ct, ["host.docker.internal:1"]);
+        await Fx.SeedS3PoolAsync(Pool, ct, ["e2e-broken-s3:1"]);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
         await using var app = await StartBackupHostAsync("bkbads3", ct);

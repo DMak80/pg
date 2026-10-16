@@ -171,8 +171,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             new BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
             new AmazonS3Config
             {
-                ServiceURL = Fx.S3Endpoint.Replace(
-                    "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+                ServiceURL = Fx.S3Endpoint,
                 ForcePathStyle = true,
             });
         var response = await client.GetObjectAsync(new GetObjectRequest
@@ -388,8 +387,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             if (key.Split('/')[1] == master)
                 continue; // сам мастер — не проверяется
             var replay = ParseLsn(await ScalarAsync(
-                AdminDsn(addr.GetProperty("host").GetString()!,
-                    addr.GetProperty("pg").GetInt32()),
+                AdminDsn($"pgw-{Cluster}-shard1-{key.Split('/')[1]}", 5432),
                 "SELECT pg_last_wal_replay_lsn()", ct));
             if (replay < masterPos)
                 return false;
@@ -621,8 +619,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // на хосте; джобы/агенты её НЕ получают — см. StartTliSwitchHostAsync).
     public PgWorker.Backups.BackupS3 HostS3Client()
         => new(new PgWorker.Backups.S3ClientOptions(
-            Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+            Fx.S3Endpoint,
             Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
@@ -887,7 +884,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     }
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
@@ -908,7 +905,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{Cluster}-{shard}-{key}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -925,7 +922,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(),
+        return ($"pgw-{Cluster}-{shard}-{primary}", 5432,
             primary!);
 
     }
@@ -948,7 +945,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://pgw-{Cluster}-{shard}-{key}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())

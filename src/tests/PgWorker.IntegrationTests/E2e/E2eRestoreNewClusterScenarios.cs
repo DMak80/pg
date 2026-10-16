@@ -227,8 +227,7 @@ public class E2eRestoreNewClusterScenarios
     // Host-клиент BackupS3 (порт published): ассерты S3 и DR-list.
     private PgWorker.Backups.BackupS3 HostS3Client()
         => new(new PgWorker.Backups.S3ClientOptions(
-            Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+            Fx.S3Endpoint,
             Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление Task 15:
@@ -553,7 +552,7 @@ public class E2eRestoreNewClusterScenarios
     // Published pg-порт мастера шарда из portalloc (резолв фактического primary
     // по пробам Patroni /primary; host-клиент — localhost).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -570,7 +569,7 @@ public class E2eRestoreNewClusterScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -587,7 +586,7 @@ public class E2eRestoreNewClusterScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.

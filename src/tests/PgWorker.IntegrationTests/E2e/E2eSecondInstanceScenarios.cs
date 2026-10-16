@@ -41,12 +41,13 @@ public class E2eSecondInstanceScenarios
         var w2 = $"pgw-ew2-{tag}";
 
         // PKI сценария (PECULIARITY: статический пакет фикстуры приватен —
-        // свой CA/серты снимают зависимость; клиент доверяет только своей CA).
+        // свой CA/серты снимают зависимость; воркеры слушают mTLS на
+        // внутрисетевых алиасах, тест ходит только по etcd-ключам).
         var ca = E2eTestPki.GenerateCa("si2");
-        var (serverCert, serverKey) = E2eTestPki.Issue(
-            ca.CaPem, ca.CaKeyPem, "pgworker", ["localhost", "127.0.0.1", "host.docker.internal"], ip: null);
-        var (clientPem, clientKeyPem) = E2eTestPki.Issue(
-            ca.CaPem, ca.CaKeyPem, "si2-healthcheck", ["si2-healthcheck"], ip: null);
+        var (serverCertW1, serverKeyW1) = E2eTestPki.Issue(
+            ca.CaPem, ca.CaKeyPem, "pgworker", [w1], ip: null);
+        var (serverCertW2, serverKeyW2) = E2eTestPki.Issue(
+            ca.CaPem, ca.CaKeyPem, "pgworker", [w2], ip: null);
 
         try
         {
@@ -65,13 +66,10 @@ public class E2eSecondInstanceScenarios
                 logFile: Path.Combine(Fx.ArtifactsDir, $"process-build-{tag}.log"));
             Console.Error.WriteLine($"[PHASE] build {image}: {buildSw.Elapsed.TotalSeconds:F0} c");
 
-            // Порты w1/w2 — последовательные слоты ОКНА контура (t24, spec §1.5):
-            // FreePort() вне окна гонялся бы за теми же базами, что и окна
-            // параллельных контуров — межконтурная гонка bind'ов.
-            var p1 = Fx.ReserveWindowPort();
-            var p2 = Fx.ReserveWindowPort();
-            await RunWorkerContainerAsync(w1, image, p1, serverCert, serverKey, ca, ct);
-            await RunWorkerContainerAsync(w2, image, p2, serverCert, serverKey, ca, ct);
+            // Инстансы w1/w2 — КОНТЕЙНЕРЫ в сети контура (Вариант A): API —
+            // внутрисетевой :8443 по алиасу (публикаций на хост нет).
+            await RunWorkerContainerAsync(w1, image, serverCertW1, serverKeyW1, ca, ct);
+            await RunWorkerContainerAsync(w2, image, serverCertW2, serverKeyW2, ca, ct);
 
             // Готовность ОБОИХ: по 2 lease-ключа api/instances (start-бюджет
             // <=100 c; ключ жив = процесс поднялся, etcd-keepalive тикает).
@@ -144,35 +142,33 @@ public class E2eSecondInstanceScenarios
         }
     }
 
-    // Запуск инстанса-контейнера PgWorker: динамический хост-порт, docker.sock
-    // (воркер управляет нодами), extra_hosts host-gateway (etcd/ноды через
-    // host.docker.internal), mTLS PEM-значениями (без volume), уникальный
-    // AdvertiseUrl; env-набор — как у хост-инстансов фикстуры (быстрые тики).
+    // Запуск инстанса-контейнера PgWorker: ВНУТРИСЕТВОЙ (сеть контура, алиас =
+    // имя контейнера), docker.sock (воркер управляет нодами в контуре),
+    // mTLS PEM-значениями (без volume), уникальный AdvertiseUrl по алиасу;
+    // env-набор — как у воркеров фикстуры StartHostAsync (быстрые тики).
     private async Task RunWorkerContainerAsync(
-        string name, string image, int hostPort,
+        string name, string image,
         string serverCert, string serverKey, (string CaPem, string CaKeyPem) ca,
         CancellationToken ct)
     {
-        var etcdHost = Endpoint.Replace("localhost:", "host.docker.internal:", StringComparison.Ordinal);
         var env = new Dictionary<string, string>
         {
-            // Секреты установки (Д7) — как у хост-инстансов фикстуры.
+            // Секреты установки (Д7) — как у воркеров фикстуры.
             ["PGW_PG_SUPERUSER_PASSWORD"] = E2eFixture.SuPassword,
             ["PGW_PG_STANDBY_PASSWORD"] = E2eFixture.StandbyPassword,
             ["PGW_BUCKET_ADMIN_PASSWORD"] = E2eFixture.BucketAdminPassword,
             ["PGW_BUCKET_MOVER_PASSWORD"] = E2eFixture.MoverPassword,
 
-            // etcd окружения: из контейнера — публикацией на хост; Advertised —
-            // для Patroni-нод (те ходят из своих контейнеров).
-            ["PgWorker__Etcd__Endpoints__0"] = etcdHost,
-            ["PgWorker__Etcd__AdvertisedEndpoints__0"] = etcdHost,
+            // etcd окружения: воркер в сети контура — внутрисетевой алиас;
+            // Advertised — тот же (Patroni-ноды в той же сети).
+            ["PgWorker__Etcd__Endpoints__0"] = Endpoint,
+            ["PgWorker__Etcd__AdvertisedEndpoints__0"] = Endpoint,
             ["PgWorker__Docker__Mode"] = "Plain",
+            ["PgWorker__Docker__ContourNetwork"] = Fx.NetName,
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
-            // PortRange — остаток ОКНА контура (t24, spec §1.5): тот же контракт,
-            // что у хост-воркеров StartHostAsync — окно за вычетом инфраструктуры
-            // контура (etcd/ownS3/API-порты/w1/w2); литеральные диапазоны
-            // (одинаковые всем контурам) запрещены — межконтурная гонка bind'ов.
+            // PortRange — окно контура (публикации троек нод — канон продукта);
+            // аллокаторы двух воркеров согласованы общим etcd (arch/14 §2.4).
             ["PgWorker__Docker__PortRange__From"] = Fx.RemainingPortRange.From.ToString(),
             ["PgWorker__Docker__PortRange__To"] = Fx.RemainingPortRange.To.ToString(),
             ["PgWorker__Docker__Images__Node"] = E2eEnvironment.NodeImage,
@@ -196,24 +192,23 @@ public class E2eSecondInstanceScenarios
             ["PGW_API_TLS_KEY"] = serverKey,
             ["PGW_API_TLS_CLIENT_CA"] = ca.CaPem,
             ["PgWorker__Api__Tls__AllowInsecureHttp"] = "false",
-            ["PgWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{hostPort}",
+            ["PgWorker__Api__AdvertiseUrl"] = $"https://{name}:8443",
 
             // REST-TLS нод (t22): per-install CA — fail-fast старта без пары
-            // CA/CA_KEY (как у хостовых инстансов фикстуры; http-режима нет).
-            ["PGW_REST_TLS_CA"] = E2eEnvironment.InstallCaPem,
-            ["PGW_REST_TLS_CA_KEY"] = E2eEnvironment.InstallCaKeyPem,
+            // CA/CA_KEY (как у воркеров фикстуры; http-режима нет).
+            ["PGW_REST_TLS_CA"] = Fx.CaPem,
+            ["PGW_REST_TLS_CA_KEY"] = Fx.CaKeyPem,
 
-            ["ASPNETCORE_URLS"] = "https://+:8080",
+            ["ASPNETCORE_URLS"] = "https://+:8443",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
         var args = new List<string>
         {
             "run", "-d", "--name", name, "--restart", "no",
-            "-p", $"{hostPort}:8080",
+            "--network", Fx.NetName,
+            "--network-alias", name,
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "--add-host", "local:host-gateway",
-            "--add-host", "host.docker.internal:host-gateway",
         };
         args.AddRange(env.Select(p => new[] { "-e", $"{p.Key}={p.Value}" }).SelectMany(x => x));
         args.Add(image);

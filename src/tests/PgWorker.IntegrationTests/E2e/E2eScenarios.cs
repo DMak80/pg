@@ -242,7 +242,7 @@ public class E2eScenarios(ITestOutputHelper output)
         foreach (var shard in new[] { "shard1", "shard2" })
         {
             var master = await WaitForMasterAsync(cluster, shard, ct);
-            var adminDsn = $"Host=localhost;Port={master.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
+            var adminDsn = $"Host={master.Host};Port={master.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
             var roles = await SqlListAsync(adminDsn,
                 "SELECT rolname FROM pg_roles WHERE rolname IN ('app','bucket_admin','bucket_mover') ORDER BY 1", ct);
             roles.Should().BeEquivalentTo(["app", "bucket_admin", "bucket_mover"],
@@ -250,7 +250,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
             // Схемы живут в БД кластера (роли — кластерные, видно из postgres).
             string[] expected = shard == "shard1" ? ["bucket_0", "bucket_2", "bucket_4"] : ["bucket_1", "bucket_3", "bucket_5"];
-            var schemasDsn = $"Host=localhost;Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
+            var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
             var schemas = await SqlListAsync(schemasDsn,
                 "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
             schemas.Should().BeEquivalentTo(expected, $"схемы бакетов {shard} созданы по routing");
@@ -359,9 +359,9 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 var recoveries = new List<bool>();
-                foreach (var (_, addr) in nodes)
+                foreach (var (key, _) in nodes)
                 {
-                    var dsn = $"Host=localhost;Port={addr.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
+                    var dsn = $"Host=pgw-{cluster}-{shard}-{key.Split('/')[1]};Port=5432;Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
                     recoveries.Add(await SqlScalarAsync(dsn, "SELECT pg_is_in_recovery()", ct) == "True");
                 }
 
@@ -401,7 +401,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
         // Схемы эвакуированных бакетов созданы на живом шарде (E1).
         var master = await WaitForMasterAsync(cluster, aliveShard, ct);
-        var schemasDsn = $"Host=localhost;Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
+        var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
         var schemas = await SqlListAsync(schemasDsn,
             "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
         schemas.Should().HaveCount(6, "все 6 схем бакетов теперь на живом шарде");
@@ -552,7 +552,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.PatroniHttp;
 
     // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
     // GET /primary. Null — primary недоступен (failover-окно/шард мёртв).
@@ -566,7 +566,7 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 using var response = await PatroniHttp.GetAsync(
-                    $"https://localhost:{addr.Patroni}/primary", ct);
+                    $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
@@ -594,8 +594,7 @@ public class E2eScenarios(ITestOutputHelper output)
                 if (primary is not null)
                 {
                     var addresses = await PortallocAsync(cluster);
-                    var addr = addresses[$"{shard}/{primary}"];
-                    return new MasterAddr(primary, addr.Host, addr.Pg, addr.Doorman);
+                    return new MasterAddr(primary, $"pgw-{cluster}-{shard}-{primary}", 5432, 6432);
                 }
             }
 
