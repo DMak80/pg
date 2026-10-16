@@ -39,9 +39,27 @@ public static class E2eContour
         DockerTrait.SkipIfUnavailable();
         var testCase = TestContext.Current.TestCase
             ?? throw new ApplicationException(
-                "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна");
+                "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна"
+                + " (класс-фикстуры оркестрируются OrchestrateClassAsync)");
         // TestClassName — ПОЛНОЕ имя типа (namespace+class).
         var fqn = $"{testCase.TestClassName}.{testCase.TestMethodName}";
+        await OrchestrateCoreAsync(fqn, slug, withS3Node, haEtcd, ct);
+    }
+
+    /// <summary>Оркестрация КЛАССА целиком (для класс-фикстур, поднимающих
+    /// окружение в InitializeAsync вне факта — TestContext.TestCase там null):
+    /// раннер получает фильтр «-class FQN» (все методы класса в одном контуре).
+    /// Исходы — те же, что у OrchestrateCurrentTestAsync.</summary>
+    public static async Task OrchestrateClassAsync(
+        string classFqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
+    {
+        DockerTrait.SkipIfUnavailable();
+        await OrchestrateCoreAsync(classFqn, slug, withS3Node, haEtcd, ct);
+    }
+
+    private static async Task OrchestrateCoreAsync(
+        string fqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
+    {
 
         await E2eEnvironment.EnsureStaticAssetsAsync(ct);
         var env = await E2eEnvironment.StartEnvironmentAsync(slug, withS3Node, haEtcd, ct);

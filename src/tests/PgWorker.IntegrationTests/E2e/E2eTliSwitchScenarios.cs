@@ -56,6 +56,16 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
             return;
         var ct = TestContext.Current.CancellationToken;
+        if (!E2eEnvironment.IsInnerRunner)
+        {
+            // Хост: оркестрация КЛАССА целиком — раннер с фильтром «-class»
+            // (TestContext.TestCase в класс-фикстуре недоступен, факт не идёт).
+            await E2eContour.OrchestrateClassAsync(
+                $"PgWorker.IntegrationTests.E2e.{nameof(E2eTliSwitchScenarios)}",
+                "tlsw", withS3Node: true, haEtcd: false, ct);
+            return;
+        }
+
         try
         {
             await PrepareAsync(ct);

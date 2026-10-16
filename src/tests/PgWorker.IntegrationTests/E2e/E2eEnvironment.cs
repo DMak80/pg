@@ -494,7 +494,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
                     .WithNetwork(net)
                     .WithNetworkAliases("e2e-owns3")
-                    .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("OWNS3 READY"))
+                    // Готовность ownS3: Kestrel пишет «Now listening on :9000»
+                    // (строку лога ждёт wait-стратегия; бакет далее — mc ready).
+                    .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Now listening on"))
                     .Build();
                 await minio.StartAsync(ct);
                 await EnsureOwnS3ImageAsync(ct);
