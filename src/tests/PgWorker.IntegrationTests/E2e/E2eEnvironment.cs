@@ -588,11 +588,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
 
             Console.WriteLine($"[PHASE] e2e-env {slug}: etcd-ноды подняты ({etcdNames.Count}), ожидание здоровья…");
-            Console.WriteLine($"[PHASE] e2e-env {slug}: etcd-ноды подняты ({etcdNames.Count}), ожидание здоровья…");
 
             // Готовность контура (бюджет ≤ 100 c — быстрое падение фикстуры,
             // AGENTS.md): etcdctl внутри узла №1 — endpoint health по всем
-            // узлам; HA — плюс избранный лидер (endpoint status, leader:true).
+            // узлам; HA — плюс избранный лидер (endpoint status -w json,
+            // разбор в EtcdQuorumElected: в etcd-образе НЕТ /bin/sh — пайп
+            // «| grep» внутри контейнера всегда exec 127, кластер при этом
+            // мог быть полностью здоров).
             var probeAttempts = 0;
             var ready = await E2eFixture.WaitForAsync(async () =>
             {
@@ -607,9 +609,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     if (etcdAliases.Count > 1)
                     {
                         var status = await E2eFixture.RunDockerAsync(
-                            ["exec", etcdNames[0], "/bin/sh", "-c",
-                             $"etcdctl --endpoints={endpointsArg} endpoint status | grep -c 'true'"], ct);
-                        if (!status.Trim().StartsWith("1"))
+                            ["exec", etcdNames[0], "etcdctl", $"--endpoints={endpointsArg}",
+                             "endpoint", "status", "-w", "json"], ct);
+                        if (!EtcdQuorumElected(status, etcdAliases.Count))
                             return false; // кворум не собран / лидер не избран
                     }
 
@@ -721,6 +723,33 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // Список etcd-endpoints для etcdctl (внутрисетевые URL узлов).
     private static string EtcdAliases(IReadOnlyList<string> aliases)
         => string.Join(",", aliases.Select(a => $"http://{a}:2379"));
+
+    /// <summary>Кворум HA-контура по выводу «endpoint status -w json»: все
+    /// узлы ответили и называют ОДНОГО ненулевого лидера. Идентификатор
+    /// лидера — uint64 и НЕ влезает в long (member_id &gt; long.MaxValue),
+    /// поэтому сравниваем сырые JSON-токены, а не числа.</summary>
+    internal static bool EtcdQuorumElected(string statusJson, int nodes)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(statusJson);
+        var root = doc.RootElement;
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Array
+            || root.GetArrayLength() != nodes)
+            return false;
+        string? leader = null;
+        foreach (var endpoint in root.EnumerateArray())
+        {
+            if (!endpoint.TryGetProperty("Status", out var status)
+                || !status.TryGetProperty("leader", out var elected))
+                return false;
+            var id = elected.GetRawText();
+            if (id == "0")
+                return false; // лидер ещё не избран
+            leader ??= id;
+            if (leader != id)
+                return false; // узлы расходятся в лидере — кворум не сошёлся
+        }
+        return true;
+    }
 
     // Бакет ownS3 (mc-контейнер КОНТУРА: docker exec — переиспользуемый
     // pgw-em-{runId}, канон «инструментальные контейнеры — per-контур»).
