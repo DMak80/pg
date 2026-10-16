@@ -666,7 +666,20 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
             var (_, newMasterPort, _) = await MasterPgAsync(cluster, "shard1", ct);
             var newMasterDsn = DatabaseProvisioner.BuildAdminDsn("localhost", newMasterPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-            await SwitchWalsAsync(newMasterDsn, 2, ct);
+            // Promote-окно: ex-реплика отвечает «recovery is in progress» (55000),
+            // пока promote не завершён — switch ретраится до готовности нового мастера.
+            (await E2eFixture.WaitForAsync(async () =>
+            {
+                try
+                {
+                    await SwitchWalsAsync(newMasterDsn, 2, ct);
+                    return true;
+                }
+                catch (Npgsql.PostgresException pe) when (pe.SqlState == "55000")
+                {
+                    return false;
+                }
+            }, TimeSpan.FromSeconds(120), ct)).Should().BeTrue("новый мастер вышел из recovery — switch выполнен");
 
             // Assert — новый мастер пишет на ноду master-списка: .history и/или
             // свежие сегменты TLI 2 появляются на node1; цепочка ACTIVE непрерывна.
@@ -750,7 +763,7 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             await Fx.RunMcAsync(
                 $"mc alias set s http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc alias set d http://{ep2} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                + $" && mc mirror --overwrite s/{Bucket} d/{Bucket}", ct);
+                + $" && mc mirror --overwrite s/{Bucket} d/{Bucket}", TimeSpan.FromMinutes(5), ct);
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).

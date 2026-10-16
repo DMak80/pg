@@ -883,10 +883,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>mc-команда в сети окружения по алиасу (сценарии пула: ls/mirror):
     /// скрипт сам ставит alias "t" и ведёт им.</summary>
     public Task<string> RunMcAsync(string script, CancellationToken ct = default)
+        => RunMcAsync(script, TimeSpan.FromMinutes(2), ct);
+
+    /// <summary>Сценарный mc с явным бюджетом: mirror полного бакета под
+    /// параллельной нагрузкой превышает дефолтные 2 минуты (AC6).</summary>
+    public Task<string> RunMcAsync(string script, TimeSpan timeout, CancellationToken ct = default)
         => E2eFixture.RunProcessAsync("docker",
         [
             "run", "--rm", "--network", NetName, "--entrypoint", "/bin/sh", McImage, "-c", script,
-        ], ct);
+        ], ct, timeout);
 
     /// <summary>mTLS-клиент API воркера для сценариев (клиентский серт фикстуры,
     /// доверие контурной CA): policy-API/restore-API кейсы AC8. Вызывающий
