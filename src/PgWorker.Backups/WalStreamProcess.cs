@@ -397,6 +397,46 @@ public sealed class WalStreamProcess(
         var recreateAll = foreign.Count > 0
             || missing.Any(m => listedNames.Contains(m.Name, StringComparer.Ordinal)); // exited-контейнер
 
+        // t36 (arch/19 §4): дрейф списков policy — running-агент одноимённого
+        // источника с устаревшим env (S3_ENDPOINTS/S3_READ_ENDPOINTS) не
+        // обновляется супервизом (матч по имени — «все running — skip»), а
+        // policy динамическая: смены списков оператора обязаны доезжать без
+        // ожидания стороннего выхода контейнера (прецедент AC4: рестарт воркера
+        // не меняет env одноимённых running-агентов). Сверка env свежим
+        // контекстом (inspect per-агент, дёшево); расхождение — recreateAll
+        // (демонтаж+создание — общим путём ниже). Inspect-сбой — transient:
+        // сверка повторится следующим тиком.
+        if (!recreateAll)
+        {
+            foreach (var d in desired)
+            {
+                var desiredWrite = string.Join(",",
+                    ReferenceEquals(d.Src, sources[0]) ? pool.WriteMaster : pool.WriteReplica);
+                var desiredRead = string.Join(",", pool.ReadAll);
+                var engine = driver.EngineFor(d.Src.Addr.Host);
+                if (engine is null)
+                    continue;
+                var listedAgent = listed.Value.FirstOrDefault(c =>
+                    c.Names.Contains(d.Name) || c.Names.Contains("/" + d.Name));
+                if (listedAgent is null)
+                    continue;
+                var inspect = await engine.InspectContainerAsync(listedAgent.Id, ct);
+                if (!inspect.IsSuccess)
+                    continue;
+                var curWrite = inspect.Value.Env.FirstOrDefault(e =>
+                    e.StartsWith("S3_ENDPOINTS=", StringComparison.Ordinal));
+                var curRead = inspect.Value.Env.FirstOrDefault(e =>
+                    e.StartsWith("S3_READ_ENDPOINTS=", StringComparison.Ordinal));
+                if (curWrite == $"S3_ENDPOINTS={desiredWrite}"
+                    && curRead == $"S3_READ_ENDPOINTS={desiredRead}")
+                    continue;
+                logger?.LogInformation(
+                    "backup-wal: агент {Agent} — дрейф списков policy, пересоздание", d.Name);
+                recreateAll = true;
+                break;
+            }
+        }
+
         var toEnsure = recreateAll ? desired : missing;
         if (recreateAll)
         {
