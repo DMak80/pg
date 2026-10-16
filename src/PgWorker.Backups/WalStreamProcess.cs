@@ -634,7 +634,7 @@ public sealed class WalStreamProcess(
     private async Task<ControlOutcome> ControlDueAsync(
         string cluster, string shard, WalStreamState? wal, ShardBackups? shardBackups,
         BackupsRuntimeOptions options, string masterRef, string slot, string adminDsn,
-        IBackupS3 s3, CancellationToken ct)
+        PoolBackupS3 s3, CancellationToken ct)
     {
         var key = $"{cluster}/{shard}";
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
@@ -649,12 +649,15 @@ public sealed class WalStreamProcess(
 
         _lastVerifyUnix[key] = now;
 
-        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/.
-        // Пульс прогресса на время вызова (канон t19): прямой S3-вызов на
-        // недоступном endpoint может висеть до HttpClient-таймаута без отметок —
-        // watchdog (порт сноса 30 c) гасил reconcile посреди wal-контроля
-        // (bad-S3 — штатный контур, transient повторит следующий тик).
-        var listed = await S3PulseAsync(token => s3.ListWalAsync(cluster, shard, ct: token), ct);
+        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/ —
+        // UNION по всем нодам пула (t36, arch/19 §5 «где данные есть»): первая
+        // доступная нода может отставать (лаг mesh) — её соло-листинг даёт
+        // ложную дыру и BROKEN (прецедент AC4: нода после рестарта догоняет
+        // mesh). Пульс прогресса на время вызова (канон t19): прямой S3-вызов
+        // на недоступном endpoint может висеть до HttpClient-таймаута без
+        // отметок — watchdog (порт сноса 30 c) гасил reconcile посреди
+        // wal-контроля (bad-S3 — штатный контур, transient повторит следующий тик).
+        var listed = await S3PulseAsync(token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
         var objects = listed.Value;

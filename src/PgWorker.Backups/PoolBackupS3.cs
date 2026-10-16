@@ -60,6 +60,38 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             uri => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct),
             "list-wal");
 
+    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (t36, arch/19 §5 «где
+    /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
+    /// первая доступная нода может отставать (лаг mesh) — её соло-листинг даёт
+    /// ЛОЖНУЮ дыру и переводит шард в BROKEN (прецедент AC4: n1 после рестарта
+    /// догоняет mesh — 002 отсутствует только на ней). Успех — если ответил
+    /// хотя бы один узел; исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<WalObject>>> ListWalUnionAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        var merged = new Dictionary<string, WalObject>(StringComparer.Ordinal);
+        Result<IReadOnlyList<WalObject>> last = default;
+        var anySuccess = false;
+        foreach (var uri in _readTargets)
+        {
+            var result = await Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
+            if (!result.IsSuccess)
+            {
+                last = result;
+                continue;
+            }
+
+            anySuccess = true;
+            foreach (var o in result.Value)
+                merged.TryAdd(o.Name, o);
+        }
+
+        if (!anySuccess)
+            return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
+                $"{S3PoolMarkers.Exhausted}: list-wal-union — все ноды пула недоступны: {last.Error!.Message}"));
+        return Result<IReadOnlyList<WalObject>>.Success([.. merged.Values]);
+    }
+
     public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await FirstAliveAsync(
