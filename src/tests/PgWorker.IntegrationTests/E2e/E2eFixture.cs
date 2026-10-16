@@ -87,16 +87,21 @@ public static class E2eFixture
     }
 
     /// <summary>Ожидание завершения провижининга кластера с fail-fast
-    /// «застрял»: config без state + dsn + нода RUNNING. Если нода давно
-    /// RUNNING, а config.state не снят — воркер не завершает заявку (ретраи):
-    /// телеметрия + ранний фейл вместо молчаливого выжигания бюджета
-    /// (прогон 2026-10-16 AC3: 310 с ожидания при живом лидере патрони).
-    /// Обще-тестовой хелпер: серии переводятся с локальных копий поэтапно.</summary>
+    /// «застрял»: config без state + dsn + ноды RUNNING (+ buckets/status пуст,
+    /// если передан range). Если хоть одна нода RUNNING дольше 60 с, а
+    /// config.state не снят — воркер не завершает заявку (ретраи): телеметрия
+    /// + ранний фейл вместо молчаливого выживания бюджета (прогон 2026-10-16
+    /// AC3: 310 с ожидания при живом лидере патрони). Строгая семантика серий:
+    /// shards = ["shard1","shard2"] по умолчанию; RestTls-подобные — ["shard1"].</summary>
     public static async Task<bool> WaitProvisionedAsync(
         E2eEnvironment fx,
         Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
-        string cluster, CancellationToken ct)
+        string cluster, CancellationToken ct,
+        string[]? shards = null,
+        Func<string, Task<System.Collections.Generic.IReadOnlyList<Shared.Etcd.Client.Kv>>>? range = null,
+        TimeSpan? budget = null)
     {
+        shards ??= ["shard1", "shard2"];
         var runningSince = (DateTimeOffset?)null;
         return await WaitForAsync(async () =>
         {
@@ -106,16 +111,27 @@ public static class E2eFixture
                     .Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(config.Value)!
                     .ContainsKey("state"))
             {
-                var node = await getOrNull($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-                if (node is { Value: "RUNNING" })
+                var anyRunning = false;
+                foreach (var shard in shards)
+                {
+                    foreach (var suffix in new[] { "a", "b" })
+                    {
+                        var st = await getOrNull(
+                            $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state");
+                        if (st is { Value: "RUNNING" })
+                            anyRunning = true;
+                    }
+                }
+
+                if (anyRunning)
                 {
                     runningSince ??= DateTimeOffset.UtcNow;
                     if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
                     {
                         await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
                         throw new ApplicationException(
-                            $"провижининг застрял: нода {cluster}/shard1a RUNNING >60 с, "
-                            + "config.state не снят (воркер не завершает заявку — см. "
+                            $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
+                            + ">60 с, config.state не снят (воркер не завершает заявку — см. "
                             + "container-pgw-ew-*.log в телеметрии fail-fast)");
                     }
                 }
@@ -123,12 +139,87 @@ public static class E2eFixture
                 {
                     runningSince = null;
                 }
+
                 return false;
             }
-            var dsn = await getOrNull($"/clusters/{cluster}/shards/shard1/dsn");
-            var ready = await getOrNull($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-            return dsn is not null && ready is { Value: "RUNNING" };
-        }, TimeSpan.FromSeconds(360), ct);
+
+            foreach (var shard in shards)
+            {
+                if (await getOrNull($"/clusters/{cluster}/shards/{shard}/dsn") is null)
+                    return false;
+                foreach (var suffix in new[] { "a", "b" })
+                {
+                    var ready = await getOrNull(
+                        $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state");
+                    if (ready?.Value != "RUNNING")
+                        return false;
+                }
+            }
+
+            return range is null || (await range($"/clusters/{cluster}/buckets/status/")).Count == 0;
+        }, budget ?? TimeSpan.FromSeconds(360), ct);
+    }
+
+    /// <summary>Fail-fast-декоратор условия провижининга для перевода серий:
+    /// оборачивает ЛОКАЛЬНОЕ строгое условие серии (ProvisionedAsync) — если
+    /// оно не выполнено, а ноды RUNNING дольше 60 с при неснятом config.state
+    /// (воркер не завершает заявку, ретраи) — телеметрия + ранний фейл вместо
+    /// молчаливого выживания бюджета (прогон 2026-10-16 AC3: 310 с при живом
+    /// лидере). Пример: E2ePhase.WaitAsync(Fx, "…-provisioning",
+    ///   E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster,
+    ///       () => ProvisionedAsync(cluster)), …).</summary>
+    public static Func<Task<bool>> ProvisionStuckFailFast(
+        E2eEnvironment fx,
+        Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
+        string cluster,
+        Func<Task<bool>> baseCondition,
+        string[]? shards = null)
+    {
+        shards ??= ["shard1", "shard2"];
+        var runningSince = (DateTimeOffset?)null;
+        return async () =>
+        {
+            if (await baseCondition())
+                return true;
+
+            var config = await getOrNull($"/clusters/{cluster}/config");
+            if (config is null
+                || !System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(config.Value)!
+                    .ContainsKey("state"))
+            {
+                runningSince = null;
+                return false;
+            }
+
+            var anyRunning = false;
+            foreach (var shard in shards)
+            foreach (var suffix in new[] { "a", "b" })
+            {
+                if ((await getOrNull(
+                        $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state"))
+                    is { Value: "RUNNING" })
+                    anyRunning = true;
+            }
+
+            if (!anyRunning)
+            {
+                runningSince = null;
+                return false;
+            }
+
+            runningSince ??= DateTimeOffset.UtcNow;
+            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+            {
+                await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
+                throw new ApplicationException(
+                    $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
+                    + ">60 с, config.state не снят (воркер не завершает заявку — см. "
+                    + "container-pgw-ew-*.log в телеметрии fail-fast)");
+            }
+
+            return false;
+        };
     }
 
     public static Task<string> RunDockerAsync(string[] args, CancellationToken ct = default)

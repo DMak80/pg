@@ -125,7 +125,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);
         var provisioned = await WaitPhaseAsync(
-            "provisioning", () => ProvisionedAsync(Cluster), TimeSpan.FromSeconds(360), ct);
+            "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 

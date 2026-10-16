@@ -54,7 +54,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         //   mc-посев сиротского префикса ghost<тег>/shard1/full/20260901.../x
         //   (кластера ghost<тег> нет в /clusters/)
         var provisioned = await WaitPhaseAsync("provisioning",
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE (воркер-лидер)");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "orphan-seed");
 

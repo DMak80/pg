@@ -68,7 +68,7 @@ public class E2eRetentionScenarios
 
         // Arrange 2 — provisioning DONE
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
 
         // Arrange 3 — генерация WAL ДО первого полного: позиция wal_start

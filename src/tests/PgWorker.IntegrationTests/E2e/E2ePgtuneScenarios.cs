@@ -50,7 +50,7 @@ public class E2ePgtuneScenarios
 
         // Act: provisioning до Active.
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -106,7 +106,7 @@ public class E2ePgtuneScenarios
         await SeedClusterAsync(cluster, requestMem: "4Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -197,7 +197,7 @@ public class E2ePgtuneScenarios
         }
 
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("после посева обязательных заявок provisioning должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -240,7 +240,7 @@ public class E2ePgtuneScenarios
         await SeedClusterAsync(cluster, requestMem: "8Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 

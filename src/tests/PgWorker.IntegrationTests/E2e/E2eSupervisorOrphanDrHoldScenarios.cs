@@ -53,7 +53,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
         // Arrange 2 — provisioning DONE; посев СИРОТЫ С ВАЛИДНЫМ ПОЛНЫМ:
         //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
         var provisioned = await WaitPhaseAsync("provisioning",
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "dr-data");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/backup_manifest", "manifest");

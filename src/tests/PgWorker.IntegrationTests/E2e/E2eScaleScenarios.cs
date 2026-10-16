@@ -44,7 +44,7 @@ public class E2eScaleScenarios
             await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
 
             // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
@@ -203,7 +203,7 @@ public class E2eScaleScenarios
             await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);

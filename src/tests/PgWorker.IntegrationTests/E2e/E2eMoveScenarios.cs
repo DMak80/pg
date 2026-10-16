@@ -72,7 +72,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         Host = await Fx.StartHostAsync("m1", ct: ct);
 
         var provisioned = await E2ePhase.WaitAsync(Fx, "move-provisioning",
-            () => ProvisionedAsync(), TimeSpan.FromSeconds(360), ct,
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync()), TimeSpan.FromSeconds(360), ct,
             // Прогресс-снапшот provisioning: state-ключи нод + dsn-ключи из etcd
             // (дешёвые чтения, тик 5 с) — какая нода в каком состоянии.
             progress: async () =>

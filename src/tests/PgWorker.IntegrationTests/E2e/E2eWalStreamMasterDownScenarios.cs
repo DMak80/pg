@@ -397,7 +397,7 @@ public class E2eWalStreamMasterDownScenarios
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-ac4-provisioning",
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
