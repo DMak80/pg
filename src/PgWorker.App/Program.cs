@@ -58,8 +58,12 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
     // t36: Enabled=true требует непустой Bucket + хотя бы один env-профиль
-    // кредов пулов (arch/19 §7/§9 — единый endpoint записи ушёл).
-    .Validate(o => o.Backups.IsValid(new BackupSecretProfileStore().ProfileNames.Count),
+    // кредов пулов (arch/19 §7/§9 — единый endpoint записи ушёл). Профили —
+    // из DI-store (единый экземпляр с полупарами/регистрацией ниже): валидация
+    // проверяет ТО, чем приложение пользуется (new Store() в лямбде читал env
+    // мимо DI и делал валидацию несовместимой с тестовыми хостами).
+    .Validate<BackupSecretProfileStore>(
+        (o, profiles) => o.Backups.IsValid(profiles.ProfileNames.Count),
         "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один профиль PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
     // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
     // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (t36, env
@@ -82,11 +86,14 @@ builder.Services.AddOptions<PgWorkerOptions>()
 
 // t36 (arch/19 §9): полупары env-профилей кредов пулов — fail-fast старта
 // (ACCESS_KEY без SECRET_KEY — мусорный деплой, резолверу creds не бывает).
-var halfPairs = new BackupSecretProfileStore().ValidateEnvPairs();
+// Единый экземпляр store: та же инстанция уходит в DI (валидация выше читает
+// её же — инвариант «валидация == то, чем пользуется резолвер»).
+var backupProfiles = new BackupSecretProfileStore();
+var halfPairs = backupProfiles.ValidateEnvPairs();
 if (halfPairs.Count > 0)
     throw new ApplicationException(
         $"PGW_BACKUP_S3_PROFILES__: полупары env-профилей (ACCESS_KEY и SECRET_KEY задаются вместе): {string.Join(", ", halfPairs)}");
-builder.Services.AddSingleton(_ => new BackupSecretProfileStore());
+builder.Services.AddSingleton(backupProfiles);
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.

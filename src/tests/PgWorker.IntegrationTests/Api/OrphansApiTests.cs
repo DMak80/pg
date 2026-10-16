@@ -87,7 +87,15 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<BackupSecretProfileStore>();
-                services.AddSingleton(new BackupSecretProfileStore(getenv: _ => null, envNames: ["test"]));
+                // envNames — ПОЛНЫЕ имена переменных (store фильтрует их префиксом
+                // PGW_BACKUP_S3_PROFILES__ и берёт профиль вторым сегментом).
+                services.AddSingleton(new BackupSecretProfileStore(
+                    getenv: _ => "test",
+                    envNames:
+                    [
+                        "PGW_BACKUP_S3_PROFILES__test__ACCESS_KEY",
+                        "PGW_BACKUP_S3_PROFILES__test__SECRET_KEY",
+                    ]));
             });
         }
     }
