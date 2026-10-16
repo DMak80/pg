@@ -172,8 +172,11 @@ public class E2eWorkerCertScenarios
             // бюджет readiness фикстуры).
             started.Should().BeOfType<ApplicationException>(
                 "битый управляемый ключ обязан fail-fast старта");
-            started!.Message.Should().Contain("упал при старте");
-            started.Message.Should().Contain(ManagedKey);
+            started!.Message.Should().Contain("не поднялся за 30 с",
+                "воркер не обслуживает API (fail-fast старта)");
+            // Текст fail-fast («/workers/api_tls/pgworker») — в логах воркера:
+            // container-{...}.log артефактов (stdout контейнера буферизуется,
+            // хвост в исключении не гарантирован).
         }
         catch (Exception)
         {

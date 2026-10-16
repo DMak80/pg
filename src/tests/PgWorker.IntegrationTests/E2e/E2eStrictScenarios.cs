@@ -259,7 +259,7 @@ public class E2eStrictScenarios
     }
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // GET /config живого Patroni (образец E2eScenarios:523): порт из portalloc.
     // Ответ Patroni — pretty-JSON (пробелы после двоеточий), поэтому strict

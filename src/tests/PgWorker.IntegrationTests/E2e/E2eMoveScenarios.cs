@@ -436,7 +436,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<MasterInfo> MasterInfoAsync(string shard, CancellationToken ct)
     {
@@ -485,7 +485,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{Cluster}/rest_password", ct))
             .Value!.Value;
-        var http = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
+        var http = Fx.NewPatroniHttpClient();
         using var response = await http.SendAsync(
             E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),

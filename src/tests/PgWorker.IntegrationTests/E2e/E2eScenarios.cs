@@ -552,7 +552,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
     // GET /primary. Null — primary недоступен (failover-окно/шард мёртв).

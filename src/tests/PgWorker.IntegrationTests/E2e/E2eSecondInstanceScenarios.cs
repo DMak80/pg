@@ -29,14 +29,14 @@ public class E2eSecondInstanceScenarios
 
         await using var fx = await E2eEnvironment.StartAsync("second-instance", ct: ct);
         Fx = fx;
-        var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
 
-        // Идентификаторы прогона: имена контейнеров/тег образа содержат тег
-        // кластера — teardown окружения опознаёт их как СВОИ (OwnName) и
-        // удаляет; телеметрия снимает их логи до удаления.
+        // Идентификаторы прогона: имена контейнеров содержат тег кластера —
+        // teardown окружения опознаёт их как СВОИ (OwnName) и удаляет.
         var tag = Fx.ClusterTag;
         var cluster = $"si2w{tag}";
-        var image = $"pgworker:e2e-{tag}";
+        // Образ воркера — ОБЩИЙ pgworker:e2e (фаза 1 собрала из актуального
+        // publish; сборка образа в раннере невозможна — нет SDK/исходников).
+        var image = E2eEnvironment.WorkerImage;
         var w1 = $"pgw-ew1-{tag}";
         var w2 = $"pgw-ew2-{tag}";
 
@@ -51,21 +51,7 @@ public class E2eSecondInstanceScenarios
 
         try
         {
-            // ---------- Arrange: образ + два инстанса-контейнера ----------
-            // Образ воркера: сборка в сценарии, тег с идентификатором прогона
-            // (кэш слоёв делает повторные прогоны быстрыми; свежий код всегда).
-            // [PHASE]-метка ДО старта: тихая фаза без метки старта нарушает канон
-            // статических фаз (spec §3.6); полный вывод при kill по бюджету — в
-            // ArtifactsDir (RunProcessAsync logFile, t29 §4.5); бюджет 120 c —
-            // прежний дефолт docker-CLI, передаётся явно (число не меняется).
-            Console.Error.WriteLine($"[PHASE] build {image}: старт (контекст корня репо, бюджет 120 c)…");
-            var buildSw = Stopwatch.StartNew();
-            await E2eFixture.RunProcessAsync("docker",
-                ["build", "-q", "-f", $"{root}/docker/PgWorker.Dockerfile", "-t", image, root],
-                ct, timeout: TimeSpan.FromMinutes(2),
-                logFile: Path.Combine(Fx.ArtifactsDir, $"process-build-{tag}.log"));
-            Console.Error.WriteLine($"[PHASE] build {image}: {buildSw.Elapsed.TotalSeconds:F0} c");
-
+            // ---------- Arrange: два инстанса-контейнера ----------
             // Инстансы w1/w2 — КОНТЕЙНЕРЫ в сети контура (Вариант A): API —
             // внутрисетевой :8443 по алиасу (публикаций на хост нет).
             await RunWorkerContainerAsync(w1, image, serverCertW1, serverKeyW1, ca, ct);
@@ -129,9 +115,9 @@ public class E2eSecondInstanceScenarios
                 doc.RootElement.GetProperty("instance").GetString().Should().Be(survivor,
                     "клэйм кластера держит выживший инстанс — надзор мигрировал вторым (work-журнал: фазы доигрывает instance-ид из клэйма)");
 
-            // ---------- Teardown-подготовка (успех): свои контейнеры и образ ----------
+            // ---------- Teardown-подготовка (успех): свои контейнеры ----------
+            // Образ общий (pgworker:e2e) — НЕ удаляется.
             await Fx.RunDockerAsync(["rm", "-f", w1, w2], ct);
-            await Fx.RunDockerAsync(["image", "rm", "-f", image], ct);
         }
         catch
         {

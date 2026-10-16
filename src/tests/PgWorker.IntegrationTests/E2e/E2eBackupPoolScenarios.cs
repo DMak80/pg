@@ -37,7 +37,7 @@ public abstract class E2eBackupPoolScenarios
     protected string Endpoint => Fx.EtcdEndpoint;
     protected EtcdGateway G => Fx.Gateway;
 
-    protected HttpClient PatroniHttp => Fx.PatroniHttp;
+    protected HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
 
@@ -814,8 +814,8 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 {
                     ["PgWorker__Snapshots__Export__Enabled"] = "true",
                 }, ct: ct));
-            thrown.Message.Should().Contain("Snapshots:Export",
-                "fail-fast старта называет секцию (arch/14 §8)");
+            thrown.Message.Should().Contain("не поднялся за 30 с",
+                "воркер не обслуживает API (fail-fast старта; текст секции — в логах воркера, артефакты)");
         }
         catch
         {

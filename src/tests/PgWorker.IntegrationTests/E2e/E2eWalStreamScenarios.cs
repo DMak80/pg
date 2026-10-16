@@ -962,7 +962,7 @@ public class E2eWalStreamScenarios
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {

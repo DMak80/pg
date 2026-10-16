@@ -669,7 +669,7 @@ public class E2eRestoreScenarios
     // Published pg-порт мастера шарда из portalloc (резолв фактического primary
     // по пробам Patroni /primary; host-клиент — localhost).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {

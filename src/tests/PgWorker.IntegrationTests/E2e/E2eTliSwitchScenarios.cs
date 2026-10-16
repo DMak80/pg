@@ -894,7 +894,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     }
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход

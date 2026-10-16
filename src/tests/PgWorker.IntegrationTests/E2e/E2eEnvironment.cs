@@ -103,7 +103,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IReadOnlyList<IContainer>? _etcdNodes;      // только фаза 1 (хост)
     private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork? _net;                             // только фаза 1 (хост)
-    private readonly List<IContainer> _extraContainers = [];      // только фаза 1
     private readonly IContainer? _minio;                         // только фаза 1
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий (exit≠0
@@ -189,9 +188,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // t36: идентификаторы контейнеров нод пула (сценарии AC4/AC6: stop/start).
     public string RunId => _runId;
 
-    /// <summary>Имя контейнера ownS3-ноды окружения (инстанс node1 пула; пусто —
-    /// окружение без S3-ноды).</summary>
-    public string S3NodeContainerName => _minio?.Name.TrimStart('/') ?? "";
+    /// <summary>Имя контейнера ownS3-ноды окружения (инстанс node1 пула;
+    /// детерминировано guid'ом — доступно и фазе 1, и раннеру).</summary>
+    public string S3NodeContainerName => $"pgw-eo-{_runId}";
 
     /// <summary>Имя контейнера ДОПОЛНИТЕЛЬНОЙ ownS3-ноды пула (StartExtraS3NodeAsync).</summary>
     public string ExtraS3NodeContainerName(string alias) => $"pgw-eo-{alias}-{_runId}";
@@ -481,9 +480,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             if (withS3Node)
             {
                 // ownS3 в сети окружения (mc ходит по алиасу; джобы/воркер — по
-                // внутрисетевому endpoint). Готовность — mc ready из разового
-                // mc-контейнера (wait-стратегии хоста недоступны: публикуемых
-                // портов нет).
+                // внутрисетевому endpoint).
                 minio = new ContainerBuilder(OwnS3Image)
                     .WithName($"pgw-eo-{runId}")
                     .WithEnvironment("OWNS3_ROOT_USER", S3RootUser)
@@ -495,14 +492,26 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     .WithNetwork(net)
                     .WithNetworkAliases("e2e-owns3")
                     // Готовность ownS3: Kestrel пишет «Now listening on :9000»
-                    // (строку лога ждёт wait-стратегия; бакет далее — mc ready).
+                    // (строку лога ждёт wait-стратегия; бакет далее — mc mb).
                     .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Now listening on"))
                     .Build();
                 await minio.StartAsync(ct);
                 await EnsureOwnS3ImageAsync(ct);
 
-                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3-нода поднята, бакет/образы…");
-                await EnsureOwnS3BucketAsync(netName, "e2e-owns3", ct);
+                // mc — ИНСТРУМЕНТАЛЬНЫЙ контейнер КОНТУРА (не per-вызов): один
+                // pgw-em-{runId} в сети, живёт с окружением (teardown удаляет),
+                // все mc-вызовы — docker exec в него (иначе per-вызовные
+                // docker run копят безымянные контейнеры вне own-only чистки).
+                await E2eFixture.RunProcessAsync("docker",
+                [
+                    "run", "-d", "--name", $"pgw-em-{runId}",
+                    "--network", netName,
+                    "--entrypoint", "/bin/sh", McImage, "-c", "sleep infinity",
+                ], ct, timeout: TimeSpan.FromMinutes(5));
+                await E2eFixture.RunProcessAsync("docker", ["exec", $"pgw-em-{runId}", "mc", "--version"], ct);
+
+                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3-нода поднята, mc-контейнер контура, бакет/образы…");
+                await EnsureOwnS3BucketAsync(runId, "e2e-owns3", ct);
                 // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…),
                 // один раз на процесс (статический ассет, docker-cache инкрементален).
                 await EnsureJobImageAsync(ct);
@@ -569,15 +578,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static string EtcdAliases(IReadOnlyList<string> aliases)
         => string.Join(",", aliases.Select(a => $"http://{a}:2379"));
 
-    // Бакет ownS3 (разовый mc-контейнер в сети окружения по алиасу; ready —
-    // той же командой: mc ready завершится, когда S3 начнёт отвечать).
-    private static Task EnsureOwnS3BucketAsync(string netName, string alias, CancellationToken ct)
+    // Бакет ownS3 (mc-контейнер КОНТУРА: docker exec — переиспользуемый
+    // pgw-em-{runId}, канон «инструментальные контейнеры — per-контур»).
+    public static Task EnsureOwnS3BucketAsync(string runId, string alias, CancellationToken ct)
         => E2eFixture.RunProcessAsync("docker",
         [
-            "run", "--rm", "--network", netName, "--entrypoint", "/bin/sh", McImage,
-            "-c",
+            "exec", $"pgw-em-{runId}", "/bin/sh", "-c",
             $"mc alias set t http://{alias}:9000 {S3RootUser} {S3RootPassword} >/dev/null"
-            + $" && mc ready t && mc mb --ignore-existing t/{BucketName}",
+            + $" && mc mb --ignore-existing t/{BucketName}",
         ], ct, timeout: TimeSpan.FromMinutes(3));
 
     // ===== ФАЗА 2 (раннер): подключение к контуру =====
@@ -787,18 +795,31 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }, TimeSpan.FromSeconds(30), ct);
         if (!ready)
         {
+            // Телеметрия ДО любых действий: логи воркера — в артефакты И хвост
+            // в исключение; воркер ОСТАЁТСЯ (stop-семантика failed-прогона:
+            // rm здесь потерял бы логи «что произошло»).
             string logs;
             try
             {
                 logs = await E2eFixture.RunProcessAsync("docker", ["logs", containerName],
                     CancellationToken.None, TimeSpan.FromSeconds(30));
+                await File.WriteAllTextAsync(
+                    Path.Combine(ArtifactsDir, $"container-{containerName}.log"), logs);
             }
             catch (Exception e)
             {
                 logs = $"<logs unavailable: {e.Message}>";
             }
 
-            await instance.DisposeAsync();
+            try
+            {
+                await E2eFixture.RunDockerAsync(["stop", containerName], ct);
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"e2e[{Slug}]: stop воркера {name}: {e.Message}");
+            }
+
             throw new ApplicationException(
                 $"воркер {name} не поднялся за 30 с; хвост логов:\n{OutputTail(logs, 60)}");
         }
@@ -913,30 +934,34 @@ public sealed class E2eEnvironment : IAsyncDisposable
         => $"\"s3\":{{\"pool\":\"{pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}";
 
     /// <summary>Дополнительная нода ownS3-пула (сценарии AC2/AC4/AC6): контейнер
-    /// в сети окружения без публикации (внутрисетевой алиас), bucket per-install
-    /// на ноде; teardown чистит own-only (_extraContainers). Возврат —
-    /// внутрисетевой endpoint http://{alias}:9000.</summary>
+    /// в сети окружения БЕЗ публикации (docker CLI: testcontainers-объектов в
+    /// раннере нет), алиас внутрисетевой; bucket per-install на ноде; teardown
+    /// чистит own-only (имя содержит guid прогона). Возврат — внутрисетевой
+    /// endpoint http://{alias}:9000.</summary>
     public async Task<string> StartExtraS3NodeAsync(string alias, CancellationToken ct)
     {
-        var container = new ContainerBuilder(OwnS3Image)
-            .WithName($"pgw-eo-{alias}-{_runId}")
-            .WithEnvironment("OWNS3_ROOT_USER", S3RootUser)
-            .WithEnvironment("OWNS3_ROOT_PASSWORD", S3RootPassword)
-            .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", S3WriterKey)
-            .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", S3WriterSecret)
-            .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
-            .WithNetwork(_net)
-            .WithNetworkAliases(alias)
-            .Build();
-        await container.StartAsync(ct);
-        _extraContainers.Add(container);
+        var containerName = $"pgw-eo-{alias}-{_runId}";
+        await E2eFixture.RunDockerAsync(
+        [
+            "run", "-d", "--name", containerName,
+            "--network", NetName,
+            "--network-alias", alias,
+            "-e", $"OWNS3_ROOT_USER={S3RootUser}",
+            "-e", $"OWNS3_ROOT_PASSWORD={S3RootPassword}",
+            "-e", $"OWNS3_ACCESS_KEYS__0__ACCESSKEY={S3WriterKey}",
+            "-e", $"OWNS3_ACCESS_KEYS__0__SECRETKEY={S3WriterSecret}",
+            "-e", "OWNS3_ACCESS_KEYS__0__POLICY=read-write",
+            OwnS3Image,
+        ], ct);
 
-        await EnsureOwnS3BucketAsync(NetName, alias, ct);
+        await EnsureOwnS3BucketAsync(_runId, alias, ct);
         return $"http://{alias}:9000";
     }
 
-    /// <summary>mc-команда в сети окружения по алиасу (сценарии пула: ls/mirror):
-    /// скрипт сам ставит alias "t" и ведёт им.</summary>
+    /// <summary>mc-команда (сценарии пула: ls/mirror) — docker exec в
+    /// инструментальный mc-контейнер КОНТУРА (pgw-em-{runId}): скрипт сам
+    /// ставит alias "t" и ведёт им; per-вызовные docker run копили безымянные
+    /// контейнеры вне own-only чистки (утечка, исправлено).</summary>
     public Task<string> RunMcAsync(string script, CancellationToken ct = default)
         => RunMcAsync(script, TimeSpan.FromMinutes(2), ct);
 
@@ -945,7 +970,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public Task<string> RunMcAsync(string script, TimeSpan timeout, CancellationToken ct = default)
         => E2eFixture.RunProcessAsync("docker",
         [
-            "run", "--rm", "--network", NetName, "--entrypoint", "/bin/sh", McImage, "-c", script,
+            "exec", $"pgw-em-{_runId}", "/bin/sh", "-c", script,
         ], ct, timeout);
 
     // ===== Teardown (фаза 1, хост) =====
@@ -997,16 +1022,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             problems.Add($"minio: {e.Message}");
         }
-
-        foreach (var extra in _extraContainers)
-            try
-            {
-                await extra.DisposeAsync();
-            }
-            catch (Exception e)
-            {
-                problems.Add($"extra-minio: {e.Message}");
-            }
 
         foreach (var node in _etcdNodes ?? [])
             try
@@ -1202,8 +1217,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 problems.Add($"stop контейнера {id}: {e.Message}");
             }
 
-        foreach (var container in (_etcdNodes ?? []).Concat<IContainer?>([_minio])
-                     .Concat(_extraContainers.Select(c => (IContainer?)c)))
+        foreach (var container in (_etcdNodes ?? []).Concat<IContainer?>([_minio]))
             try
             {
                 if (container is not null)

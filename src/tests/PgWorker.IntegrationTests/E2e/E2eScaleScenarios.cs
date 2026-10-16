@@ -402,7 +402,7 @@ public class E2eScaleScenarios
     private sealed record MasterInfo(string Node, string Host, string Dsn);
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
     // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
@@ -479,7 +479,7 @@ public class E2eScaleScenarios
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct))
             .Value!.Value;
-        var http = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
+        var http = Fx.NewPatroniHttpClient();
         using var response = await http.SendAsync(
             E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),

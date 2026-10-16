@@ -318,7 +318,7 @@ public class E2ePgtuneScenarios
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private HttpClient PatroniHttp => Fx.PatroniHttp;
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Сид кластера в стиле панели (02 §9.1): заявки request_* опциональны —
     // сценарий отсутствия заявок сеет без них.
