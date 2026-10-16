@@ -78,7 +78,7 @@ public class E2ePatroniRestTlsScenarios
                 plainRefused.Should().BeTrue("голый HTTP на :8008 не работает (транспорт — TLS)");
 
                 // (а) https с ca.pem контура → 200 + JSON членов.
-                using var https = Fx.PatroniHttp;
+                var https = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
                 using var clusterResponse = await https.GetAsync($"https://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
                 clusterResponse.StatusCode.Should().Be(HttpStatusCode.OK);
                 var body = await clusterResponse.Content.ReadAsStringAsync(ct);
@@ -252,7 +252,7 @@ public class E2ePatroniRestTlsScenarios
         {
             try
             {
-                using var client = Fx.PatroniHttp;
+                var client = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
                 using var response = await client.GetAsync(
                     $"https://pgw-{cluster}-shard1-{key.Split('/')[1]}:8008/primary", ct);
                 if (response.IsSuccessStatusCode)

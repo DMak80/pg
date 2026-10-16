@@ -414,6 +414,23 @@ public class E2eScaleScenarios
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
+            if (i > 0 && i % 15 == 0)
+            {
+                // Диагностика ожидания мастер-ключа: что вообще есть в etcd
+                // (кластерные ключи + DCS-лок Patroni) без перезапуска прогона.
+                var dump = (await G.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct)).Value;
+                var dcs = (await G.RangeAsync(Endpoint, "/service/", ct)).Value;
+                var work = (await G.RangeAsync(Endpoint, "/pgworker/work/", ct)).Value;
+                var line =
+                    $"[diag] master-{shard}: попытка {i}: /clusters/{cluster}/* = {dump.Count}"
+                    + $" [{string.Join(", ", dump.Select(kv => kv.Key).Take(12))}];"
+                    + $" /service/* = {dcs.Count} [{string.Join(", ", dcs.Select(kv => kv.Key).Take(8))}];"
+                    + $" work = [{string.Join("; ", work.Select(kv => kv.Value[..Math.Min(120, kv.Value.Length)]))}]";
+                // Файловый канал: Console.Error раннер проглатывает (xUnit v3).
+                await File.AppendAllTextAsync(
+                    Path.Combine(Fx.ArtifactsDir, "diag.log"), line + "\n", ct);
+            }
+
             if (key is { Value.Length: > 0 })
             {
                 var addresses = await PortallocAsync(cluster);
@@ -425,15 +442,24 @@ public class E2eScaleScenarios
                     try
                     {
                         var host = $"pgw-{cluster}-{shard}-{node}";
-                        using var response = await PatroniHttp.GetAsync(
+                        // Изолированный клиент на пробу (диагностика общего
+                        // PatroniHttp: ObjectDisposedException в §8-3).
+                        using var http = Fx.NewPatroniHttpClient();
+                        using var response = await http.GetAsync(
                             $"https://{host}:8008/primary", ct);
+                        await File.AppendAllTextAsync(
+                            Path.Combine(Fx.ArtifactsDir, "diag.log"),
+                            $"[diag] probe {node}: {(int)response.StatusCode}\n", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
                         return new MasterInfo(node, host,
                             $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
+                        await File.AppendAllTextAsync(
+                            Path.Combine(Fx.ArtifactsDir, "diag.log"),
+                            $"[diag] probe {node}: EXC {e}\n", ct);
                         // сетевой сбой пробы (рестарт/ещё не готова) — не primary
                     }
                 }
@@ -453,7 +479,7 @@ public class E2eScaleScenarios
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct))
             .Value!.Value;
-        using var http = Fx.PatroniHttp;
+        var http = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
         using var response = await http.SendAsync(
             E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),

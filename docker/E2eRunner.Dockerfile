@@ -6,7 +6,7 @@
 # publish-вывод; sdk-стадий и COPY исходников нет.
 # Тег: pgw-e2e-runner:e2e (локально собираемый, в registry не кладётся).
 # Контекст сборки — каталог publish-вывода тестов (artifacts/e2e/tests).
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 # docker CLI: раннер управляет контурами (старт SUT-воркеров, mc/psql-пробы,
 # инспекция состояний) через смонтированный /var/run/docker.sock.

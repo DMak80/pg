@@ -40,10 +40,8 @@ public static class E2eContour
         var testCase = TestContext.Current.TestCase
             ?? throw new ApplicationException(
                 "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна");
-        var ns = testCase.TestClassNamespace;
-        var fqn = string.IsNullOrEmpty(ns)
-            ? $"{testCase.TestClassName}.{testCase.TestMethodName}"
-            : $"{ns}.{testCase.TestClassName}.{testCase.TestMethodName}";
+        // TestClassName — ПОЛНОЕ имя типа (namespace+class).
+        var fqn = $"{testCase.TestClassName}.{testCase.TestMethodName}";
 
         await E2eEnvironment.EnsureStaticAssetsAsync(ct);
         var env = await E2eEnvironment.StartEnvironmentAsync(slug, withS3Node, haEtcd, ct);
@@ -102,6 +100,13 @@ public static class E2eContour
         {
             runnerLog = $"<runner logs unavailable: {e.Message}>";
         }
+
+        // Fail-safe ложнозелёного прогона: exit 0 при «Total: 0» — фильтр
+        // раннера не совпал ни с одним фактом (оркестрация сломана), прогон
+        // НИЧЕГО не проверил. Падаем, а не докладываем успех.
+        if (failure is null && runnerLog.Contains("Total: 0", StringComparison.Ordinal))
+            failure = new ApplicationException(
+                $"раннер не нашёл ни одного теста по фильтру «{fqn}» — оркестрация сломана");
 
         if (failure is not null)
             env.MarkFailed(); // teardown в stop-режиме: контейнеры стоят для разбора

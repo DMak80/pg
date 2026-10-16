@@ -485,7 +485,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{Cluster}/rest_password", ct))
             .Value!.Value;
-        using var http = Fx.PatroniHttp;
+        var http = Fx.PatroniHttp; // общий клиент окружения — не диспоизим
         using var response = await http.SendAsync(
             E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),

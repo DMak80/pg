@@ -12,6 +12,10 @@ namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>
 /// Изолированное e2e-окружение контура «Вариант A» (docs/e2e-isolation.md).
+/// RYUK ОТКЛЮЧЁН: владелец всех объектов контура — сам прогон (фаза 1/teardown,
+/// stop-режим упавшего сценария обязан ОСТАВИТЬ etcd/сеть для разбора), ryuk же
+/// сносит testcontainers-объекты (etcd, сеть окружения) при смерти host-процесса
+/// — ломает и телеметрию failed-прогона, и ассерт чистоты.
 /// ФАЗА 1 (хост, StartAsync): собственная docker-сеть pgw-en-{guid}, etcd-контур
 /// (1 или 3 узла), опционально ownS3-нода — ВСЁ без публикации портов на хост:
 /// участники общаются внутри сети по DNS-именам и статичным контейнерным
@@ -29,6 +33,13 @@ namespace PgWorker.IntegrationTests.E2e;
 /// </summary>
 public sealed class E2eEnvironment : IAsyncDisposable
 {
+    static E2eEnvironment()
+    {
+        // Владелец объектов контура — сам прогон: ryuk отключён глобально для
+        // E2E-процесса (иначе сносит etcd/сеть при смерти host-процесса).
+        Environment.SetEnvironmentVariable("TESTCONTAINERS_RYUK_DISABLED", "true");
+    }
+
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
     /// <summary>Образ SUT-воркера (контур «Вариант A»): publish PgWorker.App НА
@@ -313,6 +324,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>Клиент Patroni-проб (совместимость: ранее статический по классу —
     /// CA стал per-run, клиент — свойство окружения).</summary>
     public HttpClient CreatePatroniHttpsClient() => PatroniHttp;
+
+    /// <summary>НОВЫЙ клиент Patroni-проб (изоляция от общего: диагностика
+    /// ObjectDisposedException общего клиента в Scale §8-3).</summary>
+    public HttpClient NewPatroniHttpClient() => CreatePatroniHttpsClientOnly();
 
     // ===== ФАЗА 1 (хост): подъём окружения =====
 
