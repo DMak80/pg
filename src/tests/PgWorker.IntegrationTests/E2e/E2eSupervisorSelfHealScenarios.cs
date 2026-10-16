@@ -568,8 +568,10 @@ public class E2eSupervisorSelfHealScenarios
         return $"{bytes >> 32:X}/{bytes & 0xFFFFFFFF:X}";
     }
 
-    // Published pg-порты ОБОИХ нод шарда1 из portalloc (host опускаем — ходим
-    // с хоста по localhost, как MasterPgAsync).
+    // Внутрисетевые адреса ОБОИХ нод шарда1: СПИСОК нод — из portalloc, а
+    // порт — контейнерный 5432 (контур Варианта A без host-публикаций:
+    // portalloc-pg из раннера не слушается — connection rejected на каждой
+    // пробе; ср. MasterPgAsync — тоже внутрисетевой 5432).
     private async Task<List<(string Node, int Port)>> Shard1PortsAsync(string cluster)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}",
@@ -578,7 +580,7 @@ public class E2eSupervisorSelfHealScenarios
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         return entries
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal))
-            .Select(p => (p.Key.Split('/')[1], p.Value.GetProperty("pg").GetInt32()))
+            .Select(p => (p.Key.Split('/')[1], 5432))
             .ToList();
     }
 

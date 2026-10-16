@@ -751,6 +751,10 @@ public sealed partial class ErasureXlDrive : IXlDrive
     // Delete: трэш ФАЙЛОВ записи (мета+данные) в .trash/ на каждом диске сета
     // (кворум ≥ writeQuorum; недоступные диски выравниваются при возврате: живое-
     // в-консенсусе доливается heal; фантом-записи чистятся по порогу — канон 06 §8).
+    // Под _commitLock ВМЕСТЕ с Commit (как single-режим): без лока гонка
+    // «Delete читает запись V1 → Commit ставит V2 → Delete уносит xl.meta,
+    // находит живую запись V2 в поддереве и оставляет каталог» — успех при
+    // живом объекте.
     public Result Delete(string bucket, string key, XlMetaRecord meta)
     {
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
@@ -758,35 +762,38 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var m = meta.Ec is { } ec ? (byte)(ec.EcN - ec.EcM) : (byte)_defaultParity;
         var writeQuorum = ErasureQuorum.Write(k, m);
         var successes = 0;
-        foreach (var disk in set)
+        lock (_commitLock)
         {
-            if (!disk.Online)
-                continue;
-            var target = ObjectDirOnDisk(disk, bucket, key);
-            if (!Directory.Exists(target))
-                continue; // записи нет (деградированная запись/фантом — heal/чистки)
-            try
+            foreach (var disk in set)
             {
-                // семантика single (04 §4 п.5): трэшатся файлы записи, а не весь
-                // объектный каталог — вложенные объекты («a/b» внутри «a»)
-                // не затрагиваются; каталог удаляется только без записей в поддереве
-                var metaPath = Path.Combine(target, "xl.meta");
-                if (File.Exists(metaPath))
-                    MoveToTrash(disk, metaPath);
-                var bkpPath = Path.Combine(target, "xl.meta.bkp");
-                if (File.Exists(bkpPath))
-                    MoveToTrash(disk, bkpPath);
-                var dataDirPath = Path.Combine(target, meta.DataDirName);
-                if (Directory.Exists(dataDirPath))
-                    MoveToTrash(disk, dataDirPath);
-                if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
-                    Directory.Delete(target, recursive: true); // записей в поддереве нет
-                successes++;
-            }
-            catch (Exception ex)
-            {
-                MarkOfflineIfIo(disk, ex);
-                _logger.LogWarning(ex, "EC: Delete на диске {Position} не прошёл", disk.Position);
+                if (!disk.Online)
+                    continue;
+                var target = ObjectDirOnDisk(disk, bucket, key);
+                if (!Directory.Exists(target))
+                    continue; // записи нет (деградированная запись/фантом — heal/чистки)
+                try
+                {
+                    // семантика single (04 §4 п.5): трэшатся файлы записи, а не весь
+                    // объектный каталог — вложенные объекты («a/b» внутри «a»)
+                    // не затрагиваются; каталог удаляется только без записей в поддереве
+                    var metaPath = Path.Combine(target, "xl.meta");
+                    if (File.Exists(metaPath))
+                        MoveToTrash(disk, metaPath);
+                    var bkpPath = Path.Combine(target, "xl.meta.bkp");
+                    if (File.Exists(bkpPath))
+                        MoveToTrash(disk, bkpPath);
+                    var dataDirPath = Path.Combine(target, meta.DataDirName);
+                    if (Directory.Exists(dataDirPath))
+                        MoveToTrash(disk, dataDirPath);
+                    if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
+                        Directory.Delete(target, recursive: true); // записей в поддереве нет
+                    successes++;
+                }
+                catch (Exception ex)
+                {
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: Delete на диске {Position} не прошёл", disk.Position);
+                }
             }
         }
 

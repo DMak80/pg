@@ -283,22 +283,29 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
     }
 
     // Delete канона 04 §4 п.5: xl.meta и dataDir — в .trash ПО ОТДЕЛЬНОСТИ;
-    // опустевший каталог объекта удаляется, каталоги-префиксы с подобъектами остаются.
+    // опустевший каталог объекта удаляется, каталоги-префиксы с подобъектами
+    // остаются. Под _commitLock ВМЕСТЕ с Commit: без лока гонка «Delete читает
+    // запись V1 → параллельный Commit ставит V2 (новый xl.meta) → Delete уносит
+    // xl.meta, находит живую запись V2 в поддереве и ОСТАВЛЯЕТ каталог» —
+    // delete возвращает успех при живом объекте.
     public Result Delete(string bucket, string key, XlMetaRecord meta)
     {
         var target = ObjectDir(bucket, key);
         var metaPath = Path.Combine(target, "xl.meta");
-        if (File.Exists(metaPath))
-            volume.MoveToTrash(metaPath);
-        var bkpPath = Path.Combine(target, "xl.meta.bkp");
-        if (File.Exists(bkpPath))
-            volume.MoveToTrash(bkpPath); // страховочная копия уходит вместе с записью
         var dataDir = Path.Combine(target, meta.DataDirName);
-        if (Directory.Exists(dataDir))
-            volume.MoveToTrash(dataDir);
-        if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
-            Directory.Delete(target, recursive: true); // записей в поддереве нет
-        return Result.Success();
+        lock (_commitLock)
+        {
+            if (File.Exists(metaPath))
+                volume.MoveToTrash(metaPath);
+            var bkpPath = Path.Combine(target, "xl.meta.bkp");
+            if (File.Exists(bkpPath))
+                volume.MoveToTrash(bkpPath); // страховочная копия уходит вместе с записью
+            if (Directory.Exists(dataDir))
+                volume.MoveToTrash(dataDir);
+            if (!Directory.EnumerateFiles(target, "xl.meta", SearchOption.AllDirectories).Any())
+                Directory.Delete(target, recursive: true); // записей в поддереве нет
+            return Result.Success();
+        }
     }
 
     public Result<IReadOnlyList<(int Number, long Size)>> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>

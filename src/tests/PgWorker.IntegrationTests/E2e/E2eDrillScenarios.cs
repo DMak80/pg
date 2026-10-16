@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Npgsql;
 using PgWorker.Core.Templates;
@@ -245,14 +246,14 @@ public class E2eDrillScenarios
                 $"journal=[{workKvDiag?.Value[..Math.Min(400, workKvDiag?.Value.Length ?? 0)]}] " +
                 $"agents=[{agentsDiag.Replace('\n', ';')}]");
         }
-        // Останавливаем WAL-агента ДО порчи: иначе гонка самозалечивания — BROKEN
-        // → пересъём/агент успевают вернуть сегмент до валидации дрилла (тик 1 с;
-        // прогон мерж-гейта 2026-10-01: дрилл легитимно SUCCEEDED на зажившей
-        // цепи). Остановленный агент ничего не ре-аплоадит; планировщик BROKEN-
-        // пересъёма завершается ПОСЛЕ валидации дрилла (дыра живёт ≥1 тик).
-        // Останавливаем ВСЕ агенты шарда (их по два, t07): оставшийся агент
-        // пересъёмом заживает дыру до валидации дрилла (прогон 2026-10-15:
-        // второй агент вернул жертву — дрилл легитимно SUCCEEDED на зажившей цепи).
+        // Останавливаем ВСЕ агенты шарда ДО порчи (их по два, t07): живой агент
+        // доставляет сегмент раньше контрольного тика — дыра заживает до
+        // валидации дрилла. НО супервизор пересоздаёт остановленных агентов
+        // за пару секунд, а бутстрап с чекпойнта слота ПЕРЕЗАЛИВАЕТ весь хвост
+        // (от restart_lsn до confirmed_flush) — перезаливка возвращает жертву
+        // быстрее тика дрилла. Поэтому дриллы включаем СРАЗУ после порчи
+        // (валидация стартует на первом тике — пока дыра жива) и ГЛУШИМ
+        // пересоздания циклом docker stop до фиксации валидационного FAILED.
         var agents = await Fx.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
         var agentNames = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -265,13 +266,34 @@ public class E2eDrillScenarios
             .IsSuccess.Should().BeTrue("сегмент-жертва обязан удалиться");
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
-
-        // Assert — валидационный FAILED (бюджет 180 c: тик + валидация list).
-        var failed = await E2eFixture.WaitForAsync(async () =>
+        // Гейт ФАКТИЧЕСКОГО удаления (не только 200-OK batch-delete): жертва
+        // обязана исчезнуть из листинга немедленно — иначе валидация дрилла
+        // честно видит целую цепь и SUCCEEDED; диагноз «дыры не было» — на
+        // месте порчи, а не в failed-ожидании.
+        var victimGone = await E2eFixture.WaitForAsync(async () =>
         {
-            var kv = await G.GetAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/drill", ct);
-            return kv.Value?.Value.Contains("\"FAILED\"") == true;
-        }, TimeSpan.FromSeconds(180), ct);
+            var list = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
+            return list.IsSuccess && list.Value.All(o => o.Name != victim.Name);
+        }, TimeSpan.FromSeconds(15), ct);
+        victimGone.Should().BeTrue(
+            $"batch-delete вернул успех, но жертва {victim.Name} жива в листинге — дыры нет, дрилл увидит целую цепь");
+
+        // Assert — валидационный FAILED. Глушим пересоздания: агент-перезаливка
+        // закрывает дыру за секунды — пока FAILED не записан, агенты шарда
+        // принудительно мертвы (модель «агент умер и не вернулся до валидации»).
+        var failed = false;
+        var suppressSw = Stopwatch.StartNew();
+        while (!failed && suppressSw.Elapsed < TimeSpan.FromSeconds(60))
+        {
+            var alive = await Fx.RunDockerAsync(
+                ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
+            foreach (var name in alive.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim()))
+                await Fx.RunDockerAsync(["stop", name], ct);
+            var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
+            failed = drillKv?.Value.Contains("\"FAILED\"") == true;
+            if (!failed)
+                await Task.Delay(300, ct);
+        }
         if (!failed)
         {
             // диагностика провала (без перезапуска): ключ дрилла, журнал, wal, полные

@@ -1503,11 +1503,139 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static string AppPublishDir => Path.Combine(_root, "artifacts", "e2e", "app");
     private static string TestsPublishDir => Path.Combine(_root, "artifacts", "e2e", "tests");
 
+    // Фаза подготовки (PgWorker.E2ePrepare): единственный режим, в котором
+    // тесты СТРОЯТ статику. Запускается ОДНИМ процессом ДО тестовых прогонов.
+    private const string PrepareModeEnv = "PGW_E2E_PREPARE";
+
+    private static bool PreparingPhase => Environment.GetEnvironmentVariable(PrepareModeEnv) == "1";
+
+    private const string PrepareHint =
+        "запустите подготовку ОДНИМ процессом ДО тестов: "
+        + "dotnet run --project src/tests/PgWorker.E2ePrepare -c Release";
+
+    /// <summary>Фаза подготовки статических ассетов — ОТДЕЛЬНЫЙ запуск ДО
+    /// тестов (PgWorker.E2ePrepare): publish-выводы и docker-образы собирает
+    /// один процесс; тестовые процессы статику НЕ строят — параллельные
+    /// dotnet publish/docker build в общие каталоги ломают друг друга
+    /// (конфликт статик-фаз трёх параллельных серий). По успеху пишет штамп
+    /// artifacts/e2e/.prepared — тесты сверяют его со свежестью исходников
+    /// (устаревший бинарь маскирует регрессии).</summary>
+    public static async Task PrepareStaticAssetsAsync(CancellationToken ct)
+    {
+        Environment.SetEnvironmentVariable(PrepareModeEnv, "1");
+        try
+        {
+            await EnsureStaticAsync(ct);
+            await EnsureOwnS3ImageAsync(ct);
+            await EnsureJobImageAsync(ct);
+            await EnsureWalImageAsync(ct);
+            await EnsureSdImageAsync(ct);
+            var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "artifacts", "e2e", ".prepared"),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    .ToString(CultureInfo.InvariantCulture), ct);
+            E2eFixture.StaticPhase("e2e-prepare: штамп готовности записан — тесты можно запускать");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(PrepareModeEnv, null);
+        }
+    }
+
+    // Готовность статики для теста: штамп фазы подготовки существует и новее
+    // всех исходников; ключевые образы — в docker. Иначе — fail-fast с командой
+    // подготовки (не молчаливый прогон на устаревшем бинаре).
+    private static async Task VerifyStaticReadyOrThrowAsync(CancellationToken ct)
+    {
+        var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+        var stampPath = Path.Combine(root, "artifacts", "e2e", ".prepared");
+        if (!File.Exists(stampPath))
+            throw new ApplicationException($"статика E2E не подготовлена. {PrepareHint}");
+        long stampMs;
+        try
+        {
+            stampMs = long.Parse(File.ReadAllText(stampPath).Trim(), CultureInfo.InvariantCulture);
+        }
+        catch (FormatException e)
+        {
+            throw new ApplicationException($"штамп подготовки E2E повреждён ({stampPath}). {PrepareHint}", e);
+        }
+
+        var stampUtc = DateTimeOffset.FromUnixTimeMilliseconds(stampMs).UtcDateTime;
+        var newest = NewestSourceInputUtc(root);
+        if (newest > stampUtc)
+            throw new ApplicationException(
+                $"исходники новее подготовки (правка {newest:yyyy-MM-dd HH:mm:ss} UTC > штамп "
+                + $"{stampUtc:yyyy-MM-dd HH:mm:ss} UTC) — устаревший бинарь маскирует регрессии. {PrepareHint}");
+
+        _root = root;
+        foreach (var image in new[] { WorkerImage, RunnerImage, NodeImage })
+            if (!await DockerImageExistsAsync(image, ct))
+                throw new ApplicationException($"образ {image} отсутствует в docker. {PrepareHint}");
+    }
+
+    // Самый свежий вход сборки: исходники src/ (.cs/.csproj/.props/.targets/
+    // .json, без bin/obj), всё docker/ и корневые props/slnx.
+    private static DateTime NewestSourceInputUtc(string root)
+    {
+        DateTime newest = DateTime.MinValue;
+        var srcRoot = Path.Combine(root, "src");
+        var tracked = new HashSet<string> { ".cs", ".csproj", ".props", ".targets", ".json" };
+        foreach (var file in Directory.EnumerateFiles(srcRoot, "*", SearchOption.AllDirectories))
+        {
+            var segments = Path.GetRelativePath(srcRoot, file)
+                .Split(Path.DirectorySeparatorChar);
+            if (segments.Contains("bin") || segments.Contains("obj"))
+                continue;
+            if (!tracked.Contains(Path.GetExtension(file)))
+                continue;
+            var written = File.GetLastWriteTimeUtc(file);
+            if (written > newest)
+                newest = written;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(Path.Combine(root, "docker"), "*", SearchOption.AllDirectories))
+        {
+            var written = File.GetLastWriteTimeUtc(file);
+            if (written > newest)
+                newest = written;
+        }
+
+        foreach (var file in Directory.EnumerateFiles(root))
+        {
+            var extension = Path.GetExtension(file);
+            if (!tracked.Contains(extension) && extension != ".slnx")
+                continue;
+            var written = File.GetLastWriteTimeUtc(file);
+            if (written > newest)
+                newest = written;
+        }
+
+        return newest;
+    }
+
+    private static async Task<bool> DockerImageExistsAsync(string tag, CancellationToken ct)
+    {
+        try
+        {
+            await E2eFixture.RunProcessAsync("docker", ["image", "inspect", tag], ct);
+            return true;
+        }
+        catch (ApplicationException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Подготовка статических ассетов процесса (канон AGENTS.md: сборка
     /// НА ХОСТЕ, в образы — только готовые артефакты; sdk-стадий и COPY
     /// исходников в E2E-образах нет): publish PgWorker.App → pgworker:e2e;
     /// publish тестов → pgw-e2e-runner:e2e; docker build pgworker-node:e2e.
-    /// PGW_TEST_E2E_NOBUILD=1 — пропуск publish-шагов (бисект/отладка бинаря).</summary>
+    /// СБОРКА — только фаза подготовки (PrepareStaticAssetsAsync); тест
+    /// проверяет готовность (VerifyStaticReadyOrThrowAsync).
+    /// PGW_TEST_E2E_NOBUILD=1 — бисект-режим: publish-шаги пропускаются,
+    /// образы строятся из существующих каталогов артефактов.</summary>
     private static async Task EnsureStaticAsync(CancellationToken ct)
     {
         // Раннер: статические ассеты собраны фазой 1 (publish + docker build —
@@ -1524,6 +1652,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
             _root = E2eFixture.FindRoot(AppContext.BaseDirectory);
             var noBuild = Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1";
+
+            // Тест НЕ строит статику: сборка — отдельная фаза ДО тестов,
+            // одним процессом. Тест лишь проверяет готовность.
+            if (!PreparingPhase && !noBuild)
+            {
+                await VerifyStaticReadyOrThrowAsync(ct);
+                _staticReady = true;
+                return;
+            }
 
             // publish PgWorker.App → образ SUT-воркера.
             if (noBuild)
@@ -1603,6 +1740,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             if (_owns3ImageReady)
                 return;
+            // Тест не строит образ: сборка — фаза подготовки (один процесс).
+            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
+            {
+                if (!await DockerImageExistsAsync(OwnS3Image, ct))
+                    throw new ApplicationException($"образ {OwnS3Image} отсутствует в docker. {PrepareHint}");
+                _owns3ImageReady = true;
+                return;
+            }
             var outDir = Path.Combine(_root, "artifacts", "e2e", "owns3");
             var sw = E2eFixture.StaticSw();
             E2eFixture.StaticPhase($"e2e-image {OwnS3Image}: dotnet publish OwnS3.App (host)…");
@@ -1640,6 +1785,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             if (_jobImageReady)
                 return;
+            // Тест не строит образ: сборка — фаза подготовки (один процесс).
+            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
+            {
+                if (!await DockerImageExistsAsync(JobImage, ct))
+                    throw new ApplicationException($"образ {JobImage} отсутствует в docker. {PrepareHint}");
+                _jobImageReady = true;
+                return;
+            }
             // Канон AGENTS.md «E2E-образы собираются на хосте»: джоб — sh-скрипт,
             // .NET-publish не нужен; узкий контекст docker/ (без «тихой» передачи
             // корня репозитория), вывод — с [PHASE]-меткой и таймингом.
@@ -1676,6 +1829,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             if (_walImageReady)
                 return;
+            // Тест не строит образ: сборка — фаза подготовки (один процесс).
+            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
+            {
+                if (!await DockerImageExistsAsync(WalImage, ct))
+                    throw new ApplicationException($"образ {WalImage} отсутствует в docker. {PrepareHint}");
+                _walImageReady = true;
+                return;
+            }
             var outDir = Path.Combine(_root, "artifacts", "e2e", "wal");
             var sw = E2eFixture.StaticSw();
             E2eFixture.StaticPhase($"e2e-image {WalImage}: dotnet publish WalReceiver (host)…");
@@ -1717,6 +1878,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             if (_sdImageReady)
                 return;
+            // Тест не строит образ: сборка — фаза подготовки (один процесс).
+            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
+            {
+                if (!await DockerImageExistsAsync(SdImage, ct))
+                    throw new ApplicationException($"образ {SdImage} отсутствует в docker. {PrepareHint}");
+                _sdImageReady = true;
+                return;
+            }
             var outDir = Path.Combine(_root, "artifacts", "e2e", "sdgenerator");
             var sw = E2eFixture.StaticSw();
             E2eFixture.StaticPhase($"e2e-image {SdImage}: dotnet publish SdGenerator (host)…");

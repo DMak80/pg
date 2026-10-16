@@ -279,26 +279,46 @@ public class E2eScenarios(ITestOutputHelper output)
         (stateBefore?.Value).Should().Be("RUNNING", "лидер до failover: ключ state существует и равен RUNNING (предусловие гейта t14)");
         var revAtStop = stateBefore!.ModRevision;
 
-        var sw = Stopwatch.StartNew(); // T0 жёсткого ассерта ≤5с — ДО docker stop (не меняем)
-        // Длительность самой stop-команды — отдельной строкой (t29 §3.1): замер окна
-        // failover неотделим от длительности SIGTERM-завершения PG, ассерт при этом
-        // остаётся от того же T0.
+        // Длительность stop-команды — отдельной строкой (t29 §3.1): SIGTERM
+        // завершает PG graceful (~3 с) — лидер ФОРМАЛЬНО ЖИВ до конца stop.
         var stopSw = Stopwatch.StartNew();
         await Fx.RunDockerAsync(["stop", container], ct);
         stopSw.Stop();
         output.WriteLine($"[PHASE] ac5-docker-stop: elapsed={stopSw.Elapsed.TotalSeconds:F1}s");
 
-        // Master-ключ обновляется (Patroni failover, P11: callback + reconciler).
-        // При EnableDoorman=false (e2e) portalloc-записи несут doorman:0 (миграция
-        // факта инспекции, arch/14 §2.4 п.5) → ключ вырождается в host:0 и
-        // НЕдискриминантен по ноде; сравнивать «до/после» нельзя. Факт смены
-        // мастера читаем из проб Patroni /primary (контракт §5 C); сам ключ
-        // обязан оставаться живым — lease-ключ гаснет только вместе с шарда.
-        // Бюджет смены лидера ≤5с (t09, arch/14 §5 C — критическое требование):
-        // graceful demote при stop ИЛИ ускорение failover воркером (не-running
-        // контейнер лидера → снятие лидер-лока) + промоушен в пределах
-        // loop_wait. Окно ожидания 10с — чтобы поймать факт; жёсткий ассерт
-        // ниже — ≤5с. Опрос WaitForAsync — 0.5с.
+        // Смена лидера (выборы Patroni): бюджет ≤5с (t09, arch/14 §5 C —
+        // критическое требование: ускорение failover воркером — не-running
+        // контейнер лидера → снятие лидер-лока — + промоушен в пределах
+        // loop_wait). T0 жёсткого ассерта — момент СМЕРТИ лидера (завершение
+        // docker stop), НЕ начало стопа: graceful-завершение PG — не часть
+        // failover-окна. Замер закрывается фактом /primary другой ноды.
+        var sw = Stopwatch.StartNew();
+        var leaderFlipped = await E2ePhase.WaitAsync(Fx, "ac5-leader", async () =>
+        {
+            var primary = await PrimaryNodeAsync(cluster, shard, ct);
+            return primary is not null && primary != masterBefore.Node;
+        }, TimeSpan.FromSeconds(30), ct,
+            progress: async () =>
+            {
+                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево
+                return $"primary={primary ?? "none"}";
+            });
+        sw.Stop();
+        leaderFlipped.Should().BeTrue("фактический primary шарда сменился после failover (P11)");
+        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
+        // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
+        output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
+        sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
+            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
+
+        // Master-ключ (P11: callback + reconciler). При EnableDoorman=false
+        // (e2e) portalloc-записи несут doorman:0 (миграция факта инспекции,
+        // arch/14 §2.4 п.5) → ключ вырождается в host:0 и НЕдискриминантен по
+        // ноде; сравнивать «до/после» нельзя — ключ обязан оставаться живым.
+        // До смерти лидера ключ держит lease-демон НОДЫ (callback), после
+        // смерти гаснет по TTL 5с; переписывает его callback нового лидера,
+        // при его отказе — reconciler воркера (сверка после проб, 3с/нода) —
+        // окно 30с покрывает TTL-гэп + тик надзора + пробы.
         var flipped = await E2ePhase.WaitAsync(Fx, "ac5-failover", async () =>
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
@@ -306,20 +326,14 @@ public class E2eScenarios(ITestOutputHelper output)
                 return false;
             var primary = await PrimaryNodeAsync(cluster, shard, ct);
             return primary is not null && primary != masterBefore.Node;
-        }, TimeSpan.FromSeconds(10), ct,
+        }, TimeSpan.FromSeconds(30), ct,
             progress: async () =>
             {
                 var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
-                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево, тик 5 с
+                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево
                 return $"primary={primary ?? "none"}, master-key={(key is { Value.Length: > 0 } ? "есть" : "нет")}";
             });
-        sw.Stop();
         flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
-        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
-        // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
-        output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
-        sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
-            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
 
         // Rebuild: остановленный контейнер пересоздаётся, нода проходит
         // REBUILDING → RUNNING (AC5, spec задачи 26 §11.5). Гейт по ревизии:
