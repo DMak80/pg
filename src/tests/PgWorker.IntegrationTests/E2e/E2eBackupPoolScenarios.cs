@@ -71,7 +71,7 @@ public abstract class E2eBackupPoolScenarios
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
-            ["PgWorker__Backups__Wal__StaleSec"] = "600",
+            ["PgWorker__Backups__Wal__StaleSec"] = "120",
             ["PgWorker__Backups__Wal__LagMaxSegments"] = "100000",
             ["PgWorker__Backups__Restore__RecoveryTimeoutSec"] = "600",
             ["PgWorker__Thresholds__PatroniBootSec"] = "120",

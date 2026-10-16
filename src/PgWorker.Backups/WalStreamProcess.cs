@@ -722,6 +722,25 @@ public sealed class WalStreamProcess(
             error = $"тишина загрузок {now - lastUploadedUnix} c (порог {options.WalStaleSec})";
         }
 
+        // t36 (arch/19 §3): исчерпание write-списка мастер-агента — контроль
+        // КАЖДЫЙ тик верификации, НЕЗАВИСИМО от lag/тишины: «тишина» считается
+        // по последнему объекту пула (ReadAll) и маскируется прогрессом
+        // sync-источника (write_replica на живой ноде) — разбор AC4: мастер-агент
+        // в ретрай-цикле исчерпания, wal-статус оставался Active. Хвост лога
+        // мастер-агента содержит маркер pool_exhausted приёмника → DEGRADED с
+        // s3-pool-exhausted (алерт backup-pool-unreachable); docker-вызов — по
+        // интервалу верификации, не ежетиковый.
+        if (state == WalStreamStatus.Active)
+        {
+            var agentLogs = await driver.BackupAgentLogsAsync(cluster,
+                BackupAgentNames.Container(cluster, shard, masterRef), 50, ct);
+            if (agentLogs.IsSuccess && agentLogs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
+            {
+                state = WalStreamStatus.Degraded;
+                error = $"{S3PoolMarkers.Exhausted}: исчерпание write-списка мастер-агентом (ретрай-цикл приёмника)";
+            }
+        }
+
         // t36 (arch/19 §3): переход в DEGRADED — хвост лога мастер-агента: маркер
         // pool_exhausted приёмника (ретрай-цикл исчерпания списка пула) → error
         // несёт s3-pool-exhausted (алерт backup-pool-unreachable). Только на
@@ -733,6 +752,11 @@ public sealed class WalStreamProcess(
             if (logs.IsSuccess && logs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
                 error = $"{S3PoolMarkers.Exhausted}: {error}";
         }
+
+        // Диагностика (t36-разбор): смена стейта — в host.log (etcd сносит teardown).
+        if (state != wal?.State || error != wal?.Error)
+            Console.WriteLine($"[wal-ctl] {cluster}/{shard}: {wal?.State.ToString() ?? "<нет>"}→{state}" +
+                (error is null ? "" : $"; error={error}"));
 
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,

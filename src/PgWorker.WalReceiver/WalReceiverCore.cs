@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using PgWorker.Backups;
+using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
@@ -16,6 +17,12 @@ namespace PgWorker.WalReceiver;
 public sealed class WalReceiverCore
 {
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
+
+    // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная нода пула
+    // «молча принимает» TCP (docker-паблиш), AWSSDK-ретраи растягивают вызов
+    // до минут: без таймаута маркер s3-pool-exhausted не доходит до лога
+    // агента в окне контроля воркера (WalStaleSec).
+    private static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StreamMarkerPeriod = TimeSpan.FromSeconds(5);
 
     public static async Task<int> RunAsync(
@@ -187,14 +194,24 @@ public sealed class WalReceiverCore
     /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.
     /// t36: исчерпание списка пула (маркер s3-pool-exhausted в ошибке) — маркер
     /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
-    /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).</summary>
+    /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).
+    /// R3 «быстрый отказ, не молчание»: пер-попытка таймаут (PutAttemptTimeout):
+    /// остановленная нода пула может «молча принимать» TCP (docker-паблиш),
+    /// AWSSDK-ретраи растягивают вызов до минут — маркер исчерпания обязан
+    /// появиться в логе агента в пределах окна контроля воркера.</summary>
     private static async Task PutWithRetryAsync(
         IBackupS3 s3, TextWriter stdout, string key, byte[] data, TimeSpan retry, CancellationToken ct)
     {
         var sha256 = Convert.ToHexString(SHA256.HashData(data));
         while (true)
         {
-            var put = await s3.PutObjectAsync(key, data, sha256, ct);
+            Result put;
+            using (var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                attempt.CancelAfter(PutAttemptTimeout);
+                put = await s3.PutObjectAsync(key, data, sha256, attempt.Token);
+            }
+
             if (put.IsSuccess)
                 return;
             if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal))
