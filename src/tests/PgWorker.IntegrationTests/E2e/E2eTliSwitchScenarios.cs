@@ -48,6 +48,22 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     private EtcdGateway G => Fx.Gateway;
 
+    // Хост-исход оркестрации класса (ok — факты скипаются; fail — краснеют).
+    private bool _hostDelegated;
+    private string _hostError = string.Empty;
+
+    /// <summary>Хост-гвардия фактов: если класс исполнялся в раннере — факт
+    /// скипается (ok) или краснеет с исходом (fail). Тела фактов на хосте не
+    /// исполняются — Ctx-поля там не заполняются.</summary>
+    public void SkipIfHostDelegated()
+    {
+        if (!_hostDelegated)
+            return;
+        if (_hostError.Length > 0)
+            throw new ApplicationException(_hostError);
+        Assert.Skip("класс исполнен в раннере (исход — в журнале раннера)");
+    }
+
     public async ValueTask InitializeAsync()
     {
         // Гейт docker в фикстуре: без PGW_TEST_DOCKER=1 Fact'ы скипаются
@@ -63,6 +79,9 @@ public sealed class TliSwitchContext : IAsyncLifetime
             await E2eContour.OrchestrateClassAsync(
                 $"PgWorker.IntegrationTests.E2e.{nameof(E2eTliSwitchScenarios)}",
                 "tlsw", withS3Node: true, haEtcd: false, ct);
+            // ok: фикстура молча завершается (Skip фактов — через
+            // SkipIfHostDelegated; бросок здесь краснил бы факты DynamicSkip'ом).
+            _hostDelegated = true;
             return;
         }
 
@@ -1067,6 +1086,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
     {
         DockerTrait.SkipIfUnavailable();
+        Ctx.SkipIfHostDelegated();
         var ct = TestContext.Current.CancellationToken;
         try
         {
@@ -1150,6 +1170,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
     {
         DockerTrait.SkipIfUnavailable();
+        Ctx.SkipIfHostDelegated();
         // Гейт (spec §3.5): Fact 1 упал → повторная заявка на сломанном
         // контуре — каскадный красный без новой информации; телеметрия
         // первой заявки уже собрана.

@@ -65,10 +65,23 @@ public static class E2eContour
     }
 
     /// <summary>Оркестрация КЛАССА по явному имени (класс-фикстуры:
-    /// TestContext.TestCase в InitializeAsync недоступен). Тот же исход.</summary>
-    public static Task OrchestrateClassAsync(
+    /// TestContext.TestCase в InitializeAsync недоступен). Тот же исход.
+    /// ВАЖНО: метод НЕ бросает Assert.Skip — из класс-фикстуры Skip
+    /// превращается в FAILED фактов ($XunitDynamicSkip$); класс-фикстура просто
+    /// дожидается исхода, а SKIP-маркировку факты получают через ClassRuns
+    /// (OrchestrateCurrentTestAsync — ClassRuns.GetOrAdd вернёт уже
+    /// завершённую задачу).</summary>
+    public static async Task OrchestrateClassAsync(
         string classFqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
-        => OrchestrateCurrentTestAsync(slug, withS3Node, haEtcd, ct);
+    {
+        DockerTrait.SkipIfUnavailable();
+        // Фоновая задача-оркестрация класса (та же дорога, что у фактов).
+        var run = ClassRuns.GetOrAdd(classFqn, _ => Task.Run(() =>
+            RunClassAsync(classFqn, slug, withS3Node, haEtcd)));
+        var outcome = await run.WaitAsync(ct);
+        if (!outcome.Ok)
+            throw new ApplicationException($"класс {classFqn}: {outcome.Error}");
+    }
 
     private static async Task<ClassRunOutcome> RunClassAsync(
         string classFqn, string slug, bool withS3Node, bool haEtcd)
