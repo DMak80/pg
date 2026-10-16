@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using Xunit;
 
@@ -19,19 +20,115 @@ public static class E2eFixture
     public const string BucketAdminPassword = "pgw-e2e-admin";
     public const string MoverPassword = "pgw-e2e-mover";
 
-    // Хелпер ожидания условия (полл 500 мс).
-    public static async Task<bool> WaitForAsync(
-        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default)
-    {
-        var deadline = Stopwatch.StartNew();
-        while (deadline.Elapsed < timeout)
-        {
-            if (await condition())
-                return true;
-            await Task.Delay(500, ct);
-        }
+    // ===== [TIMING]: авто-хронометраж ожиданий ВСЕХ серий =====
+    // Каждое WaitForAsync пишет метку (условие/длительность/исход), ручные
+    // шаги — через TimedAsync. stderr testhost буферизует — метки копятся в
+    // очередь и докачиваются в timing.log артефактов факта при телеметрии
+    // (CollectDiagnosticsAsync); для живых хост-прогонов дублируются в stderr.
+    private static readonly ConcurrentQueue<string> TimingQueue = new();
 
-        return false;
+    internal static void Timing(string line)
+    {
+        Console.Error.WriteLine(line);
+        TimingQueue.Enqueue(line);
+    }
+
+    /// <summary>Забрать накопленные метки (докачка в timing.log телеметрии).</summary>
+    internal static IReadOnlyList<string> DrainTiming()
+    {
+        var drained = new List<string>();
+        while (TimingQueue.TryDequeue(out var line))
+            drained.Add(line);
+        return drained;
+    }
+
+    /// <summary>[TIMING]-хронометраж явного шага (ручная разметка тестов).</summary>
+    public static async Task TimedAsync(string step, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        await action();
+        Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+    }
+
+    public static async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
+    {
+        var sw = Stopwatch.StartNew();
+        var result = await action();
+        Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+        return result;
+    }
+
+    // Хелпер ожидания условия (полл 500 мс). Авто-[TIMING]: выражение условия
+    // (CallerArgumentExpression) + длительность + исход — все серии получают
+    // хронометраж ожиданий без правки вызовов.
+    public static async Task<bool> WaitForAsync(
+        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default,
+        [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? what = null)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            while (sw.Elapsed < timeout)
+            {
+                if (await condition())
+                    return true;
+                await Task.Delay(500, ct);
+            }
+
+            return false;
+        }
+        finally
+        {
+            var head = (what ?? "wait").Replace("\r", "").Replace("\n", " ").Trim();
+            if (head.Length > 90)
+                head = head[..90] + "…";
+            Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] wait({head}): {sw.Elapsed.TotalSeconds:F1}s");
+        }
+    }
+
+    /// <summary>Ожидание завершения провижининга кластера с fail-fast
+    /// «застрял»: config без state + dsn + нода RUNNING. Если нода давно
+    /// RUNNING, а config.state не снят — воркер не завершает заявку (ретраи):
+    /// телеметрия + ранний фейл вместо молчаливого выжигания бюджета
+    /// (прогон 2026-10-16 AC3: 310 с ожидания при живом лидере патрони).
+    /// Обще-тестовой хелпер: серии переводятся с локальных копий поэтапно.</summary>
+    public static async Task<bool> WaitProvisionedAsync(
+        E2eEnvironment fx,
+        Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
+        string cluster, CancellationToken ct)
+    {
+        var runningSince = (DateTimeOffset?)null;
+        return await WaitForAsync(async () =>
+        {
+            var config = await getOrNull($"/clusters/{cluster}/config");
+            if (config is null
+                || System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(config.Value)!
+                    .ContainsKey("state"))
+            {
+                var node = await getOrNull($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+                if (node is { Value: "RUNNING" })
+                {
+                    runningSince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+                    {
+                        await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
+                        throw new ApplicationException(
+                            $"провижининг застрял: нода {cluster}/shard1a RUNNING >60 с, "
+                            + "config.state не снят (воркер не завершает заявку — см. "
+                            + "container-pgw-ew-*.log в телеметрии fail-fast)");
+                    }
+                }
+                else
+                {
+                    runningSince = null;
+                }
+                return false;
+            }
+            var dsn = await getOrNull($"/clusters/{cluster}/shards/shard1/dsn");
+            var ready = await getOrNull($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+            return dsn is not null && ready is { Value: "RUNNING" };
+        }, TimeSpan.FromSeconds(360), ct);
     }
 
     public static Task<string> RunDockerAsync(string[] args, CancellationToken ct = default)

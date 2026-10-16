@@ -41,39 +41,14 @@ public abstract class E2eBackupPoolScenarios
 
     // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
 
-    // [TIMING]-хронометраж шага: дублируется в {ArtifactsDir}/timing.log —
-    // stderr тела теста буферизуется testhost'ом и до runner.log не доходит
-    // (прогон 2026-10-16: метки в runner.log отсутствовали); файл — тот же
-    // приём, что у [PHASE]-дубля фикстуры (docs/e2e-launch.md).
-    protected async Task TimedAsync(string step, Func<Task> action)
-    {
-        var sw = Stopwatch.StartNew();
-        await action();
-        WriteTiming(step, sw.Elapsed);
-    }
+    // [TIMING]-хронометраж шага: общий E2eFixture.TimedAsync (очередь меток
+    // докачивается в timing.log артефактов телеметрией — stderr testhost
+    // буферизует, файл survives).
+    protected static Task TimedAsync(string step, Func<Task> action)
+        => E2eFixture.TimedAsync(step, action);
 
-    protected async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
-    {
-        var sw = Stopwatch.StartNew();
-        var result = await action();
-        WriteTiming(step, sw.Elapsed);
-        return result;
-    }
-
-    private void WriteTiming(string step, TimeSpan elapsed)
-    {
-        var line = $"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {elapsed.TotalSeconds:F1}s";
-        Console.Error.WriteLine(line);
-        try
-        {
-            System.IO.File.AppendAllText(
-                System.IO.Path.Combine(Fx.ArtifactsDir, "timing.log"), line + "\n");
-        }
-        catch
-        {
-            // телеметрия лучшими усилиями
-        }
-    }
+    protected static Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
+        => E2eFixture.TimedAsync(step, action);
 
     protected static string PolicyKey(string cluster) => $"/pgworker/backups/{cluster}/policy";
 
@@ -204,44 +179,10 @@ public abstract class E2eBackupPoolScenarios
             return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
         }, TimeSpan.FromSeconds(480), ct);
 
-    protected async Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
-    {
-        // Fail-fast «провижининг застрял»: нода давно RUNNING, а config всё ещё
-        // со state=NOT_INITIALIZED — воркер не завершает заявку (ретраи).
-        // Раньше случай молча выжигал бюджет 360 с (прогон 2026-10-16 AC3:
-        // 310 с ожидания при живом лидере патрони).
-        var runningSince = (DateTimeOffset?)null;
-        return await E2eFixture.WaitForAsync(async () =>
-        {
-            var config = await GetOrNullAsync($"/clusters/{cluster}/config");
-            if (config is null
-                || JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!
-                    .ContainsKey("state"))
-            {
-                var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-                if (node is { Value: "RUNNING" })
-                {
-                    runningSince ??= DateTimeOffset.UtcNow;
-                    if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
-                    {
-                        await Fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
-                        throw new ApplicationException(
-                            $"провижининг застрял: нода {cluster}/shard1a RUNNING >60 с, "
-                            + "config.state не снят (воркер не завершает заявку — см. "
-                            + "container-pgw-ew-*.log в телеметрии fail-fast)");
-                    }
-                }
-                else
-                {
-                    runningSince = null;
-                }
-                return false;
-            }
-            var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
-            var ready = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
-            return dsn is not null && ready is { Value: "RUNNING" };
-        }, TimeSpan.FromSeconds(360), ct);
-    }
+    protected Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
+        // Fail-fast застрявшего провижининга — общий хелпер (E2eFixture):
+        // серии переводятся на него с локальных копий поэтапно.
+        => E2eFixture.WaitProvisionedAsync(Fx, GetOrNullAsync, cluster, ct);
 
     protected static async Task ExecAsync(string adminDsn, string sql, CancellationToken ct)
     {

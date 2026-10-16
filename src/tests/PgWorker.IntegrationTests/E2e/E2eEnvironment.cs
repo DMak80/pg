@@ -1277,6 +1277,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 $"reason={reason}\nslug={Slug}\nrun={_runId}\nutc={DateTime.UtcNow:O}\n"
                 + $"failed={_failed}\n");
 
+            // [TIMING]-метки накопленные (авто-WaitForAsync + ручные TimedAsync):
+            // докачка в timing.log факта — stderr testhost глотает, файл survives.
+            var timing = E2eFixture.DrainTiming();
+            if (timing.Count > 0)
+                await File.AppendAllLinesAsync(
+                    Path.Combine(ArtifactsDir, "timing.log"), timing);
+
             // Логи/inspect — ПАРАЛЛЕЛЬНО (teardown-бюджет: 10-20 контейнеров ×
             // последовательные docker logs = минуты; WhenAll — секунды).
             var own = (await E2eFixture.RunProcessAsync(
