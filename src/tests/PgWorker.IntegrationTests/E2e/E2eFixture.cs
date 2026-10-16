@@ -320,6 +320,22 @@ public sealed class HostInstance : IAsyncDisposable
         if (_disposed)
             return;
         _disposed = true;
+        // Журнал воркера — в телеметрию ДО удаления: тест держит воркер в
+        // await using и удаляет раньше CollectDiagnostics teardown'а факта —
+        // после rm логи контейнера недоступны (прогон 2026-10-16:
+        // container-pgw-ew-*.log отсутствовал в артефактах при живых прочих).
+        try
+        {
+            var logs = await E2eFixture.RunDockerAsync(
+                ["logs", "--timestamps", ContainerName], CancellationToken.None);
+            await System.IO.File.WriteAllTextAsync(
+                System.IO.Path.Combine(_env.ArtifactsDir, $"container-{ContainerName}.log"),
+                logs);
+        }
+        catch
+        {
+            // телеметрия лучшими усилиями — не мешает teardown
+        }
         try
         {
             await E2eFixture.RunDockerAsync(["rm", "-f", ContainerName]);

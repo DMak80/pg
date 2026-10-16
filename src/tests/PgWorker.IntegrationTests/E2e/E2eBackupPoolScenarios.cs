@@ -41,22 +41,38 @@ public abstract class E2eBackupPoolScenarios
 
     // ===== хелперы (прецедент копирования — E2eRestoreScenarios/E2eWalStreamScenarios) =====
 
-    // [TIMING]-хронометраж шага (stderr: канал не буферизуется ни xUnit,
-    // ни docker — метка долетает до runner.log/артефактов; канон [PHASE],
-    // docs/e2e-launch.md).
-    protected static async Task TimedAsync(string step, Func<Task> action)
+    // [TIMING]-хронометраж шага: дублируется в {ArtifactsDir}/timing.log —
+    // stderr тела теста буферизуется testhost'ом и до runner.log не доходит
+    // (прогон 2026-10-16: метки в runner.log отсутствовали); файл — тот же
+    // приём, что у [PHASE]-дубля фикстуры (docs/e2e-launch.md).
+    protected async Task TimedAsync(string step, Func<Task> action)
     {
         var sw = Stopwatch.StartNew();
         await action();
-        Console.Error.WriteLine($"[TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+        WriteTiming(step, sw.Elapsed);
     }
 
-    protected static async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
+    protected async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
     {
         var sw = Stopwatch.StartNew();
         var result = await action();
-        Console.Error.WriteLine($"[TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+        WriteTiming(step, sw.Elapsed);
         return result;
+    }
+
+    private void WriteTiming(string step, TimeSpan elapsed)
+    {
+        var line = $"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {elapsed.TotalSeconds:F1}s";
+        Console.Error.WriteLine(line);
+        try
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(Fx.ArtifactsDir, "timing.log"), line + "\n");
+        }
+        catch
+        {
+            // телеметрия лучшими усилиями
+        }
     }
 
     protected static string PolicyKey(string cluster) => $"/pgworker/backups/{cluster}/policy";
