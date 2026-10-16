@@ -78,11 +78,6 @@ public sealed class RestoreProcess(
             .SelectMany(kv => kv.Value.Restores.Select(r => (Shard: kv.Key, Op: r)))
             .Where(p => p.Op.State is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining)
             .OrderBy(p => p.Op.Id).ThenBy(p => p.Shard).ToList() ?? [];
-        // DIAG-T36: разбор AC8 — видит ли процесс заявку (удалить до финального отчёта).
-        Console.WriteLine(
-            $"[DIAG-T36] restore-tick {cluster}: mine={mine is not null} shards={mine?.Shards.Count ?? 0} "
-            + $"restores={string.Join(";", mine?.Shards.SelectMany(kv => kv.Value.Restores
-                .Select(r => $"{kv.Key}:{r.Id}:{r.State}")) ?? [])} actives={actives.Count}");
         if (actives.Count == 0)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
 
@@ -150,8 +145,6 @@ public sealed class RestoreProcess(
         var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
         if (!poolRead.IsSuccess)
         {
-            // DIAG-T36: разбор AC8 — transient-ветка резолва пула (удалить до финального отчёта).
-            Console.WriteLine($"[DIAG-T36] restore-validate {cluster}/{op.Id}: pool failed — {poolRead.Error!.Message}");
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
                 poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
@@ -185,11 +178,6 @@ public sealed class RestoreProcess(
         }
         var (srcC, srcX) = (parts[0], parts[1]);
         var ownSource = srcC == cluster && srcX == shard.Name;
-        // DIAG-T36: разбор AC8 — ход валидации (удалить до финального отчёта).
-        Console.WriteLine(
-            $"[DIAG-T36] restore-validate {cluster}/{op.Id}: state={op.State} src={op.Source} "
-            + $"ownSource={ownSource} sourcePool={op.SourcePool ?? "-"} backupId='{op.BackupId}' "
-            + $"readAll={poolCtx.ReadAll.Count}");
 
         // 3. backup_id: заявка → свой свежий COMPLETED (etcd) → DR-list S3.
         FullBackupState? ownFresh = null;
@@ -929,8 +917,6 @@ public sealed class RestoreProcess(
     private async Task<Result<ProcessOutcome>> TransientAsync(
         string cluster, string phase, string? error, CancellationToken ct)
     {
-        // DIAG-T36: разбор AC8 — transient-циклы валидации (удалить до финального отчёта).
-        Console.WriteLine($"[DIAG-T36] restore-transient {cluster}: {phase} — {error ?? "-"}");
         await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error, ct);
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
     }
