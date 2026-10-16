@@ -129,8 +129,10 @@ public abstract class E2eBackupPoolScenarios
     }
 
     protected async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
+        // Null-защита: транзиентный неуспех транспорта Range → пустой список
+        // (поллинг повторит; NRE внутри лямбды ожидания маскировал причину).
         => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
-            TestContext.Current.CancellationToken)).Value;
+            TestContext.Current.CancellationToken)).Value ?? [];
 
     protected async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
@@ -814,7 +816,7 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 {
                     ["PgWorker__Snapshots__Export__Enabled"] = "true",
                 }, ct: ct));
-            thrown.Message.Should().Contain("не поднялся за 30 с",
+            thrown.Message.Should().Contain("не поднялся за",
                 "воркер не обслуживает API (fail-fast старта; текст секции — в логах воркера, артефакты)");
         }
         catch

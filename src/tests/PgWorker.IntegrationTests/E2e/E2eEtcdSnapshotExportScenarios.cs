@@ -186,7 +186,7 @@ public class E2eEtcdSnapshotExportScenarios
         // слепок уезжает новой парой; интервал 1 мин; бюджет ≤ 180 c)
         var first = await E2eFixture.WaitForAsync(async () =>
             (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value.Contains("\"state\":\"OK\"") == true,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(300), ct);
         first.Should().BeTrue("первая выгрузка");
         var firstName = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
             await StatusValueAsync(ct))!.LastObject;

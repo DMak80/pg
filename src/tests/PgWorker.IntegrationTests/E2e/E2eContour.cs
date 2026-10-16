@@ -89,9 +89,33 @@ public static class E2eContour
         string fqn, string slug, bool withS3Node, bool haEtcd)
     {
         await E2eEnvironment.EnsureStaticAssetsAsync(CancellationToken.None);
-        var env = await E2eEnvironment.StartEnvironmentAsync(slug, withS3Node, haEtcd, CancellationToken.None);
-        var runnerName = $"pgw-er-{env.RunId}";
-        Console.WriteLine($"[PHASE] e2e-contour {slug}: запуск раннера {runnerName} ({fqn})…");
+
+        // Дроссель: слот КЛАССА-контура (3 живых класса — дефолт; факты внутри
+        // класса последовательны). Успех — Release после раннера; провал — тоже.
+        E2eParallelismGuard.Acquire(slug, CancellationToken.None);
+        try
+        {
+            await RunContourClassAsync(fqn, slug, withS3Node, haEtcd, CancellationToken.None);
+            return new ClassRunOutcome(true, LastContourArtifactsDir, string.Empty);
+        }
+        finally
+        {
+            E2eParallelismGuard.Release(slug);
+        }
+    }
+
+    // Каталог артефактов последнего контура (для текста Skip).
+    private static string LastContourArtifactsDir = string.Empty;
+
+    private static async Task RunContourClassAsync(
+        string fqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
+    {
+        await E2eEnvironment.EnsureStaticAssetsAsync(ct);
+
+        // Периметр класса: сеть + host-пути + CA (etcd/ownS3/mc/воркеры — per-факт).
+        var contour = await E2eEnvironment.CreateClassNetworkAsync(slug, ct);
+        var runnerName = $"pgw-er-{Guid.NewGuid().ToString("N")[..12]}";
+        Console.WriteLine($"[PHASE] e2e-contour {slug}: запуск раннера {runnerName} (класс {fqn})…");
 
         // Блокирующий run: exit code контейнера = исход факта. RunProcessAsync
         // при exit≠0 раннера бросает ApplicationException («… → N: …») — это
@@ -104,12 +128,14 @@ public static class E2eContour
             var runArgs = new List<string>
             {
                 "run", "--name", runnerName,
-                "--network", env.NetName,
-                "-v", $"{env.ArtifactsDir}:/artifacts",
-                "-v", $"{env.SnapshotsHostDir}:/snaps",
+                "--network", contour.NetName,
+                "-v", $"{contour.ArtifactsDir}:/artifacts",
+                "-v", $"{contour.SnapshotsDir}:/snaps",
                 "-v", "/var/run/docker.sock:/var/run/docker.sock",
             };
-            foreach (var (key, value) in env.RunnerEnv())
+            foreach (var (key, value) in E2eEnvironment.BuildRunnerEnv(
+                         contour.NetName, contour.ArtifactsDir, contour.SnapshotsDir,
+                         contour.CaPem, contour.CaKeyPem))
                 runArgs.AddRange(["-e", $"{key}={value}"]);
             runArgs.Add(E2eEnvironment.RunnerImage);
             // Все факты класса в одном раннере (группировка — скорость).
@@ -140,7 +166,7 @@ public static class E2eContour
         try
         {
             runnerLog = await E2eFixture.RunDockerAsync(["logs", runnerName], CancellationToken.None);
-            await File.WriteAllTextAsync(Path.Combine(env.ArtifactsDir, "runner.log"), runnerLog);
+            await File.WriteAllTextAsync(Path.Combine(contour.ArtifactsDir, "runner.log"), runnerLog);
         }
         catch (Exception e)
         {
@@ -154,31 +180,16 @@ public static class E2eContour
             failure = new ApplicationException(
                 $"раннер не нашёл ни одного теста по фильтру «{fqn}» — оркестрация сломана");
 
-        if (failure is not null)
-            env.MarkFailed(); // teardown в stop-режиме: контейнеры стоят для разбора
-
-        Exception? teardownFailure = null;
-        try
-        {
-            await env.DisposeAsync();
-        }
-        catch (Exception e)
-        {
-            teardownFailure = e;
-        }
-
-        if (teardownFailure is not null)
-            throw new ApplicationException(
-                $"e2e[{slug}]: teardown окружения неполный (изоляция — брак, docs/e2e-isolation.md §5):"
-                + $" {teardownFailure.Message}", teardownFailure);
+        // Сеть класса — после раннера (контейнеры уже удалены/остановлены).
+        await E2eEnvironment.DeleteClassNetworkAsync(contour.NetName, CancellationToken.None);
 
         if (failure is not null)
             throw new ApplicationException(
                 $"e2e[{slug}]: раннер завершился с ошибкой ({fqn}); хвост журнала:\n"
                 + Tail(runnerLog, 60)
-                + $"\n(полный журнал и телеметрия: {env.ArtifactsDir})", failure);
+                + $"\n(полный журнал и телеметрия: {contour.ArtifactsDir})", failure);
 
-        return new ClassRunOutcome(true, env.ArtifactsDir, string.Empty);
+        LastContourArtifactsDir = contour.ArtifactsDir;
     }
 
     // Последние строки журнала — для исключения (полный — в runner.log).
