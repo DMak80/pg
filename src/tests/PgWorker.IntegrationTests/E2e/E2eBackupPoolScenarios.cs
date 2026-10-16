@@ -435,7 +435,7 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
         {
             // Arrange — вторая нода пула + двухнодовые списки.
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [ep2]);
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             await SeedClusterAsync(cluster);
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             await using var app = await StartPoolHostAsync("pac2", ct);
@@ -556,7 +556,7 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
         {
             // Arrange — двухнодовый пул, список записи с перебором; поток жив.
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [ep2]);
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             await SeedClusterAsync(cluster);
             await PutPolicyAsync(cluster, ["node1", "node2"], ["node2", "node1"]);
             var app = await StartPoolHostAsync("pac4", ct);
@@ -645,7 +645,7 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
         try
         {
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [ep2]);
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             await SeedClusterAsync(cluster);
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             await using var app = await StartPoolHostAsync("pac5", ct);
@@ -729,7 +729,7 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
         try
         {
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [ep2]);
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             await SeedClusterAsync(cluster);
             // Пишем всё на node1 (оба списка — node1).
             await PutPolicyAsync(cluster, ["node1"], ["node1"]);
@@ -856,7 +856,7 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
         try
         {
             var ep2 = HostPort(await Fx.StartExtraS3NodeAsync(Node2Alias, ct));
-            await Fx.SeedS3PoolAsync(Pool, ct, [ep2]);
+            await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             // Пул в состоянии TO_REMOVE + пул с Заявленной нодой без portalloc.
             await G.PutAsync(Endpoint, "/s3/clusters/toremove/config",
                 """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760000000,"state":"TO_REMOVE"}""",
