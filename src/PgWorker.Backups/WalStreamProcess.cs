@@ -314,6 +314,9 @@ public sealed class WalStreamProcess(
                 return ctx;
             // Пул не выбран (policy без s3): стоп-семантика — агенты шарда вниз,
             // wal-ключ оставляем (алерт backup-pool-missing — проекция панели).
+            // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит
+            // teardown, артефактная телеметрия теряет журнал).
+            Console.WriteLine($"[wal-pool] {cluster}/{shardName}: пул не выбран (policy без секции s3) — агенты вниз");
             var removed = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
             if (!removed.IsSuccess)
                 throw new ApplicationException($"стоп агента {shardName}: {removed.Error!.Message}");
@@ -326,6 +329,8 @@ public sealed class WalStreamProcess(
         // Failed-резолв — transient (arch/19 §4): journal + маркер s3-pool-exhausted
         // в живом wal-статусе (алерт backup-pool-unreachable закрывает и случай
         // «policy записана, но резолв не удался»); ретраи тиком.
+        // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит teardown).
+        Console.WriteLine($"[wal-pool] {cluster}/{shardName}: резолв пула не удался — {resolved.Error!.Message}");
         await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
             $"{shardName}: {resolved.Error!.Message}", ct);
         if (wal is { State: WalStreamStatus.Active or WalStreamStatus.Degraded }
