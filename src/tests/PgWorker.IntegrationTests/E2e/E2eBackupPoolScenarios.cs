@@ -429,9 +429,14 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
                 "ac1 provision", () => WaitProvisionedAsync(cluster, ct));
             provisioned.Should().BeTrue("provisioning до окна наблюдения");
 
-            // Act/Assert 1 — «пул не выбран» = молчание: full-ключей нет за 45 c.
-            await TimedAsync("ac1 silence-window-45s",
-                () => Task.Delay(TimeSpan.FromSeconds(45), ct));
+            // Act/Assert 1 — «пул не выбран» = молчание: full-ключей нет за
+            // окно наблюдения. Окно = ×1.25 от ожидаемого нормального времени
+            // запуска полного (факт [TIMING] тех же прогонов: full-completed
+            // в условиях AC1 без фоновой нагрузки — 10.5 c → 13 c): если бы
+            // подсистема ошибочно писала, ключи появились бы задолго до
+            // истечения окна; «неудача пишет своё» — длиннее окна не нужно.
+            await TimedAsync("ac1 silence-window-13s",
+                () => Task.Delay(TimeSpan.FromSeconds(13), ct));
             (await FullKeysAsync(cluster, "shard1")).Should().BeEmpty(
                 "policy без s3 — подсистема кластера не пишет (arch/19 §4)");
 
