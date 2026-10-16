@@ -18,11 +18,13 @@ public sealed class WalReceiverCore
 {
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
 
-    // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная нода пула
-    // «молча принимает» TCP (docker-паблиш), AWSSDK-ретраи растягивают вызов
-    // до минут: без таймаута маркер s3-pool-exhausted не доходит до лога
-    // агента в окне контроля воркера (WalStaleSec).
-    private static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
+    // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная/перегруженная
+    // нода пула «молча принимает» TCP и не отвечает — ПЕР-ЦЕЛЬНЫЙ бюджет: это
+    // значение уходит requestTimeout'ом в КАЖДУЮ цель PoolBackupS3 (Program),
+    // чтобы висящая первая цель НЕ съедала бюджет перебора и фейловер доезжал
+    // до следующей ноды списка (прецедент AC4: put к ноде под mesh-нагрузкой
+    // висел до отмены попытки — вторая цель не получала ни одной попытки).
+    internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StreamMarkerPeriod = TimeSpan.FromSeconds(5);
 
     public static async Task<int> RunAsync(
@@ -144,7 +146,7 @@ public sealed class WalReceiverCore
                                 if (history is { IsSuccess: true } && history.Value is not null)
                                 {
                                     await PutWithRetryAsync(
-                                        s3, stdout, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
+                                        s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
                                         history.Value, retry, ct);
                                 }
                                 else
@@ -159,7 +161,7 @@ public sealed class WalReceiverCore
                             await Emit(WalReceiverMarkers.Delivering(segment.Name));
                             var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
                             await PutWithRetryAsync(
-                                s3, stdout, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
+                                s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
                                 segment.Data, retry, ct);
 
                             // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
@@ -208,20 +210,22 @@ public sealed class WalReceiverCore
     /// t36: исчерпание списка пула (маркер s3-pool-exhausted в ошибке) — маркер
     /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
     /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).
-    /// R3 «быстрый отказ, не молчание»: пер-попытка таймаут (PutAttemptTimeout):
-    /// остановленная нода пула может «молча принимать» TCP (docker-паблиш),
-    /// AWSSDK-ретраи растягивают вызов до минут — маркер исчерпания обязан
-    /// появиться в логе агента в пределах окна контроля воркера.</summary>
+    /// R3 «быстрый отказ, не молчание»: пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout —
+    /// requestTimeout каждой цели в PoolBackupS3) + бюджет ВЫЗОВА
+    /// (цели записи + 1) × таймаут цели: висящая первая цель не отменяет
+    /// перебор — фейловер доезжает до живой ноды (прецедент AC4).</summary>
     private static async Task PutWithRetryAsync(
-        IBackupS3 s3, TextWriter stdout, string key, byte[] data, TimeSpan retry, CancellationToken ct)
+        IBackupS3 s3, TextWriter stdout, WalReceiverOptions o,
+        string key, byte[] data, TimeSpan retry, CancellationToken ct)
     {
         var sha256 = Convert.ToHexString(SHA256.HashData(data));
+        var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
         while (true)
         {
             Result put;
             using (var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                attempt.CancelAfter(PutAttemptTimeout);
+                attempt.CancelAfter(callBudget);
                 put = await s3.PutObjectAsync(key, data, sha256, attempt.Token);
             }
 
