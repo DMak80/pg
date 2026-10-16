@@ -16,7 +16,7 @@ docker/swarm-хостам) и mesh-репликацией между нодам�
 иметь **0 и более инстансов** (декларация без развёртывания валидна). Имя
 инстанса = ключ etcd (`nodes/<I>/…`) = имя docker-объектов
 (`s3w-<C>-<I>…`, arch/24 §2) = имя target/коммуникации репликации
-(`TargetRecord.Name`, [owns3/07-replication.md](owns3/07-replication.md)
+(`TargetRecord.Name`, [owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md)
 §2). Имя `orchestrator` зарезервировано (сертификат оркестратора PKI, §6).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
@@ -128,8 +128,8 @@ east2↔west1 нет):
 
 | Ключ | Формат | Кто пишет |
 |---|---|---|
-| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — активные репликационные ping-пробы: зонд опрашивает `POST /admin/replication/probe` ([owns3/07-replication.md](owns3/07-replication.md) §2/§6) каждой ноды — параллельный ping её соседей исходящим репликационным транспортом; матрица `links` — только НАСТРОЕННЫЕ линки (targets каждой ноды; полнота меша и зеркальность состава НЕ контролируются — настройка состава — зона оркестратора G, не зонда); ping-ок = «канал жив» — отдельно от доставки (лаг/очередь статуса) и сверки данных (sync-половина): в `connectivity` ложится только линк; линков не настроено — OK с пустой матрицей, отсутствие репликации отражает sync-агрегат (PUT-пробы связность ownS3 не детектируют: путь записи без синхронных взаимодействий с соседями — PUT всегда 0 с, [owns3/07-replication.md](owns3/07-replication.md) §1) |
-| `/s3/clusters/<C>/sync` | JSON `{"state":"SYNCED"\|"LAGGING"\|"DIVERGED","checked_unix":T,"pairs":[{"from":"node1","to":"node2","missing":N,"extra":N,"lag_bytes"?,"lag_objects"?}...],"last_error"?}` | зонд t33: сверка содержимого bucket между нодами — пары по настроенным линкам (объединение targets, как у connectivity; `from`/`to` — упорядоченная пара по Ordinal); элемент сверки — `(key, modTimeUnixMs)`: `missing` — элементы from, отсутствующие у to (нет ключа или другая версия), `extra` — наоборот; листинги/хвосты (штатные метрики репликации лаг данных не отражают — факт 7 `docs/s3-replication.md`; админ-грань ownS3 sync-report — R5 `docs/owns3-replication-requirements.md`) |
+| `/s3/clusters/<C>/connectivity` | JSON `{"state":"OK"\|"DEGRADED"\|"DOWN","checked_unix":T,"links":{"node1":{"node2":"ok"\|"offline",...},...},"probe_error"?}` | зонд t33 (периодически + по команде API): связность нод между собой — активные репликационные ping-пробы: зонд опрашивает `POST /admin/replication/probe` ([owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md) §2/§6) каждой ноды — параллельный ping её соседей исходящим репликационным транспортом; матрица `links` — только НАСТРОЕННЫЕ линки (targets каждой ноды; полнота меша и зеркальность состава НЕ контролируются — настройка состава — зона оркестратора G, не зонда); ping-ок = «канал жив» — отдельно от доставки (лаг/очередь статуса) и сверки данных (sync-половина): в `connectivity` ложится только линк; линков не настроено — OK с пустой матрицей, отсутствие репликации отражает sync-агрегат (PUT-пробы связность ownS3 не детектируют: путь записи без синхронных взаимодействий с соседями — PUT всегда 0 с, [owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md) §1) |
+| `/s3/clusters/<C>/sync` | JSON `{"state":"SYNCED"\|"LAGGING"\|"DIVERGED","checked_unix":T,"pairs":[{"from":"node1","to":"node2","missing":N,"extra":N,"lag_bytes"?,"lag_objects"?}...],"last_error"?}` | зонд t33: сверка содержимого bucket между нодами — пары по настроенным линкам (объединение targets, как у connectivity; `from`/`to` — упорядоченная пара по Ordinal); элемент сверки — `(key, modTimeUnixMs)`: `missing` — элементы from, отсутствующие у to (нет ключа или другая версия), `extra` — наоборот; листинги/хвосты (штатные метрики репликации лаг данных не отражают — факт 7 `../OwnS3/docs/s3-replication.md`; админ-грань ownS3 sync-report — R5 `../OwnS3/docs/owns3-replication-requirements.md`) |
 
 `state`-агрегаты (по настроенным линкам): connectivity `DOWN` — нет живых
 среди настроенных линков при непустом их составе; `DEGRADED` — часть
@@ -189,17 +189,17 @@ probe по собственным targets; линки симметричны):
 
 ## 5. Платформа инстансов
 
-- **owns3** — единственная платформа пула: образ `owns3:dev` (правила
-  E2E-образов: сборка .NET на хосте, publish-COPY, в registry не
-  кладётся); инстанс — ownS3 single-drive (`OWNS3_DATA_DIR=/data`);
+- **owns3** — единственная платформа пула: образ `owns3:dev` — внешний,
+  собирается репозиторием `../OwnS3` (`deploy/build-image.sh` там);
+  в registry не кладётся; инстанс — ownS3 single-drive (`OWNS3_DATA_DIR=/data`);
   bucket per-install ([19-backups.md](19-backups.md) §5) на каждом
   инстансе (CreateBucket admin-кредом, идемпотентно);
   mesh-репликация — внутренняя механика ownS3
-  ([owns3/07-replication.md](owns3/07-replication.md); конфиг per-install
-  — R6 `docs/owns3-replication-requirements.md`): состав mesh инстансов
+  ([owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md); конфиг per-install
+  — R6 `../OwnS3/docs/owns3-replication-requirements.md`): состав mesh инстансов
   кластера доводит S3Worker по декларации `links` (PKI — §6; процесс
   G — [24-s3worker.md](24-s3worker.md) §5). Health — `/healthz`
-  ([owns3/05-access-config.md](owns3/05-access-config.md) §5);
+  ([owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §5);
   занятость диска — админ-грань `GET /admin/storage` (там же).
   Удаления ownS3 — физические (versioning отсутствует): ретенция
   arch/19 §4 работает напрямую, чистки версий не требуется.
@@ -219,7 +219,7 @@ per-install env-профили (ниже); **PKI репликации** — per-
   [19-backups.md](19-backups.md) §7): профиль = имя + root-пара +
   опциональные статические access keys (read-write для записи бэкапов,
   read-only для панели — симметрия действующего стенда,
-  [owns3/05-access-config.md](owns3/05-access-config.md) §6).
+  [owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §6).
 - Кластер ссылается на профиль полем `config.secret_profile`; профиль един
   на все инстансы кластера (клиент пишет в любой инстанс одним ключом).
 - Формат env — по прецеденту `OWNS3_ACCESS_KEYS__<i>__*` (owns3/05 §2);
@@ -237,7 +237,7 @@ per-install env-профили (ниже); **PKI репликации** — per-
 - Ротация — заявка `/s3worker/rotations/<C>` (§8): rolling-пересоздание
   инстансов с новым env профиля; поддержка рестарт-семантики платформ:
   ownS3 — переконфигурация env + рестарт
-  ([owns3/05-access-config.md](owns3/05-access-config.md) §2).
+  ([owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §2).
 
 ### PKI репликации (per-cluster, etcd)
 
@@ -247,7 +247,8 @@ per-install env-профили (ниже); **PKI репликации** — per-
   контейнер пересоздаётся с тем же сертификатом (том и env пересоздаются,
   материал в etcd). Криптомеханика — канон owns3/07 §2 (ECDSA P-256,
   peer-сертификаты + trust-anchor CA + join): `CreateCa`/`IssueServer`
-  библиотеки peer-PKI ownS3.
+  клиентской копии peer-PKI ownS3 (`S3Worker.Core/OwnS3/Protocol/PeerAuth`;
+  канон — `../OwnS3/arch/owns3/07` §2).
 - Выпуск — лениво, по мере надобности (первый инстанс / deny-доведение),
   txn put-if-absent: CA (имя = `<C>`), сертификат оркестратора (имя
   `orchestrator`, для до-join контура `PUT /replication/denylist`,
@@ -272,9 +273,9 @@ per-install env-профили (ниже); **PKI репликации** — per-
 
 Пул для клиентов — `endpoints`-набор обычных S3-серверов: запись — перебор
 «любой доступный» с per-попыточным таймаутом PUT (health-проба
-недоступность не доказывает — факт 8 `docs/s3-replication.md`; быстрый
+недоступность не доказывает — факт 8 `../OwnS3/docs/s3-replication.md`; быстрый
 отказ/успех, не молчание — R3
-`docs/owns3-replication-requirements.md`); чтение/восстановление — по
+`../OwnS3/docs/owns3-replication-requirements.md`); чтение/восстановление — по
 приоритетам per-cluster (страховка на лаг доставки); синхронизация между
 серверами — не забота клиентов. Layout объектов —
 [19-backups.md](19-backups.md) §5 без изменений. Канон фиксирует границу;

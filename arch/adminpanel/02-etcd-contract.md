@@ -204,7 +204,7 @@ etcd): per-install креды — env `AdminPanel:Backups:S3:*` (arch/19 §7, в
 ListBuckets; LiveOk — live-проба, 404/403 → фолбэк `GET /healthz`
 (канон ownS3, без подписи; 200 → live, 503/иное → down; 403 —
 канонический ответ ownS3 на анонимный запрос вне `/healthz`/`/metrics`
-— arch/owns3/03/05 §5, 404 — несуществующий путь; фолбэк только по
+— ../OwnS3/arch/owns3/03/05 §5, 404 — несуществующий путь; фолбэк только по
 статусу ответа — мёртвый endpoint вторую пробу не крутит); ClusterOk —
 null вне MinIO-контура (404/403/нет ответа); пишущие/удаляющие операции —
 только воркер (arch/19 §4/§5). Инвентарь-тик 60 c (`IntervalSec`): ListBuckets +

@@ -113,9 +113,6 @@ arch/
 │                                  + клиентский дискавери (endpoints/ACL-креды app)
 ├── 21-valkeyworker.md         ← ★ ValkeyWorker: оркестратор Valkey-кластеров
 │                                  (provisioning/deprovisioning/надзор/converge/ротация кред)
-├── 22-owns3.md                ← ★ ownS3: собственное S3-хранилище
-│                                  (критерий — стандарт S3 API; MinIO — точечный референс, не копия;
-│                                  главы канона — owns3/)
 ├── 23-s3-clusters.md          ← ★ S3-кластеры хранилища бэкапов: контракт etcd /s3/ + /s3worker/
 │                                  (декларации кластеров, привязка нод placement-селекторами,
 │                                  статусы связности/синхронности, дискавери endpoints)
@@ -226,14 +223,10 @@ arch/
 18. [21-valkeyworker.md](21-valkeyworker.md) — оркестратор ValkeyWorker:
     декларативный жизненный цикл Valkey-кластеров (standalone-кеш,
     ACL-креды, converge, ротация без рестартов; задачи — [roadmap/valkey.md](roadmap/valkey.md)).
-19. [22-owns3.md](22-owns3.md) — собственное S3-хранилище ownS3:
-    критерий — стандарт S3 API (MinIO — точечный референс, не копия;
-    задачи — [roadmap/owns3.md](roadmap/owns3.md)); главы канона
-    (01 обзор … 05 доступ/эксплуатация) — [owns3/](owns3/).
-20. [23-s3-clusters.md](23-s3-clusters.md) — S3-кластеры хранилища бэкапов:
+19. [23-s3-clusters.md](23-s3-clusters.md) — S3-кластеры хранилища бэкапов:
     контракт etcd `/s3/` (декларации кластеров, привязка нод к хостам
     placement-селекторами по атрибутам, статусы связности/синхронности,
     дискавери endpoints) и координация `/s3worker/`.
-21. [24-s3worker.md](24-s3worker.md) — оркестратор S3Worker: декларативный
+20. [24-s3worker.md](24-s3worker.md) — оркестратор S3Worker: декларативный
     жизненный цикл S3-кластеров (provisioning/надзор/изменение состава, зонд
     синхронности; задачи — [roadmap/s3.md](roadmap/s3.md)).
