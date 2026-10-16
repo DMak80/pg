@@ -44,8 +44,10 @@ public class E2eWalStreamScenarios
     public async Task WalStream_UploadsSegmentsContinuously()
     {
         // Arrange — гейт docker; skip-защита: общий образ t02/t03 обязан быть в дереве
+        // (в раннере корень репозитория недоступен — образ уже собран фазой 1, guard пропускается).
         DockerTrait.SkipIfUnavailable();
-        if (!File.Exists(Path.Combine(
+        if (!E2eEnvironment.IsInnerRunner
+            && !File.Exists(Path.Combine(
                 E2eFixture.FindRoot(AppContext.BaseDirectory), "docker", "PgWorker.Backup.Dockerfile")))
             Assert.Skip("docker/PgWorker.Backup.Dockerfile отсутствует — общий образ джобов/агентов приходит из t02");
         var ct = TestContext.Current.CancellationToken;
@@ -714,7 +716,7 @@ public class E2eWalStreamScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key}:8008/cluster", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -979,7 +981,7 @@ public class E2eWalStreamScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];

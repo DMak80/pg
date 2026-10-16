@@ -280,7 +280,7 @@ public class E2eRetentionScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];

@@ -408,6 +408,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var portFrom = PortWindowBase + (int)Math.Min(windowIndex, 100) * PortWindowSize;
         var portTo = portFrom + PortWindowSize;
 
+        // Дроссель параллельности: слот контура занят ДО подъёма; при провале
+        // подъёма — освобождается здесь (успех — в DisposeAsync).
+        E2eParallelismGuard.Acquire(slug, ct);
+
         try
         {
             await net.CreateAsync(ct);
@@ -522,6 +526,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var env = new E2eEnvironment(slug, runId, netName, artifactsDir, etcdAliases,
                 withS3Node ? "e2e-owns3" : "", caPem, caKeyPem, portFrom, portTo,
                 net, etcdNodes, etcdNames, minio);
+            E2eParallelismGuard.OnEnvironmentStarted(slug);
             // REST-TLS CA контура: артефакт для разбора падений и ручных
             // curl-проверок контура (+ отпечаток — сверка с env воркера).
             File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
@@ -530,14 +535,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     Encoding.UTF8.GetBytes(caPem))));
             File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.key"), caKeyPem);
 
-            var liveEnvironments = E2eParallelismGuard.OnEnvironmentStarted(slug);
             Console.WriteLine(
-                $"[PHASE] e2e-env {slug}: окружение поднято (сеть {netName}, окно {portFrom}–{portTo},"
-                + $" живых контуров процесса: {liveEnvironments})");
+                $"[PHASE] e2e-env {slug}: окружение поднято (сеть {netName}, окно {portFrom}–{portTo})");
             return env;
         }
         catch
         {
+            // провал подъёма — слот контура возвращается (успех — DisposeAsync).
+            E2eParallelismGuard.Release(slug);
+
             // частично поднятое окружение не оставляем (лучшими усилиями):
             // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
             // узлы etcd/ownS3 — здесь; сеть — здесь.
@@ -580,12 +586,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     // Бакет ownS3 (mc-контейнер КОНТУРА: docker exec — переиспользуемый
     // pgw-em-{runId}, канон «инструментальные контейнеры — per-контур»).
+    // Retry-цикл внутри разового exec: extra-ноды стартуют асинхронно —
+    // бакет ждёт готовности S3 (до 60 с), не падая на первом refused.
     public static Task EnsureOwnS3BucketAsync(string runId, string alias, CancellationToken ct)
         => E2eFixture.RunProcessAsync("docker",
         [
             "exec", $"pgw-em-{runId}", "/bin/sh", "-c",
-            $"mc alias set t http://{alias}:9000 {S3RootUser} {S3RootPassword} >/dev/null"
-            + $" && mc mb --ignore-existing t/{BucketName}",
+            $"for i in $(seq 1 30); do mc alias set t http://{alias}:9000 {S3RootUser} {S3RootPassword} >/dev/null 2>&1"
+            + $" && mc mb --ignore-existing t/{BucketName} 2>/dev/null && exit 0; sleep 2; done; exit 1",
         ], ct, timeout: TimeSpan.FromMinutes(3));
 
     // ===== ФАЗА 2 (раннер): подключение к контуру =====

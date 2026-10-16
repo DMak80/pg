@@ -168,7 +168,7 @@ public class E2eWalStreamPromoteScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key}:8008/cluster", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -434,7 +434,7 @@ public class E2eWalStreamPromoteScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key}:8008/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
