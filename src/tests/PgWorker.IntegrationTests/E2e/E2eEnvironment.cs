@@ -696,7 +696,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // аналогично
                 }
 
-            if (net is not null)
+            // Сеть — ТОЛЬКО если создали её здесь (host-ветка). Inner-раннер
+            // держит дескриптор СУЩЕСТВУЮЩЕЙ сети класса: DeleteAsync снёс бы
+            // её из-под живых контейнеров (HaEtcd-прогон 2026-10-16: ee1-3
+            // Up с Networks={}, peer-DNS мёртв, кворум не собрался).
+            if (net is not null && createNet)
                 try
                 {
                     await net.DeleteAsync();
