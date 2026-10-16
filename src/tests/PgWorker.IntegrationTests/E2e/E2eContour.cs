@@ -123,6 +123,7 @@ public static class E2eContour
     private static async Task RunContourClassAsync(
         string fqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
     {
+        var classSw = E2eTiming.StartClass(slug, fqn);
         await E2eEnvironment.EnsureStaticAssetsAsync(ct);
 
         // Периметр класса: сеть + host-пути + CA (etcd/ownS3/mc/воркеры — per-факт).
@@ -203,6 +204,8 @@ public static class E2eContour
                 + $"\n(полный журнал и телеметрия: {contour.ArtifactsDir})", failure);
 
         LastContourArtifactsDir = contour.ArtifactsDir;
+        E2eTiming.Step(classSw, "class-done");
+        E2eTiming.FinishClass(classSw, fqn);
     }
 
     // Последние строки журнала — для исключения (полный — в runner.log).

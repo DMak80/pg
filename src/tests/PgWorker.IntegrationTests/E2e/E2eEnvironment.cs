@@ -387,9 +387,30 @@ public sealed class E2eEnvironment : IAsyncDisposable
         return new ClassNetwork(netName, artifactsDir, Path.Combine(artifactsDir, "snapshots"), caPem, caKeyPem);
     }
 
-    /// <summary>Удаление сети класса (конец класса, хост).</summary>
+    /// <summary>Удаление сети класса (конец класса, хост). Идемпотентно:
+    /// «no such network» — успех; активные endpoints контейнеров факта держат
+    /// сеть — ретраи до 60 с (отцепление асинхронно после docker rm/rm -f).</summary>
     public static async Task DeleteClassNetworkAsync(string netName, CancellationToken ct)
-        => await E2eFixture.RunProcessAsync("docker", ["network", "rm", netName], ct);
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await E2eFixture.RunProcessAsync("docker", ["network", "rm", netName], ct);
+                return;
+            }
+            catch (ApplicationException e) when (attempt < 30
+                && e.Message.Contains("no such object", StringComparison.OrdinalIgnoreCase))
+            {
+                return; // уже удалена — успех
+            }
+            catch (ApplicationException) when (attempt < 30)
+            {
+                // сеть держат endpoints — ретрай
+                await Task.Delay(2000, ct);
+            }
+        }
+    }
 
     private static async Task<E2eEnvironment> StartOnceAsync(
         string slug, bool withS3Node, bool haEtcd, CancellationToken ct, bool createNet)
