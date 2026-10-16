@@ -1050,19 +1050,26 @@ public sealed class E2eEnvironment : IAsyncDisposable
         // Широкий фильтр pgw-* запрещён: на общем демоне живут чужие прогоны.
         // «Removal ... is already in progress» — контейнер уже удаляется
         // (например, testcontainers в шаге 2): исход тот же, не ошибка.
-        foreach (var id in await OwnContainersAsync())
+        // rm — параллельно (демон держит очереди; последовательно = минуты).
+        var containers = await OwnContainersAsync();
+        var rmErrors = await Task.WhenAll(containers.Select(async id =>
+        {
             try
             {
                 await E2eFixture.RunProcessAsync("docker", ["rm", "-f", id]);
+                return (string?)null;
             }
             catch (ApplicationException e) when (e.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
             {
                 Console.Error.WriteLine($"e2e[{Slug}]: контейнер {id} уже удаляется демоном — пропускаем");
+                return (string?)null;
             }
             catch (Exception e)
             {
-                problems.Add($"rm контейнера {id}: {e.Message}");
+                return $"rm контейнера {id}: {e.Message}";
             }
+        }));
+        problems.AddRange(rmErrors.Where(e => e is not null).Select(e => e!));
 
         // 4) Тома окружения: тоже только свои. docker rm -f возвращает управление
         // до фактического освобождения volume-ссылки демоном (гонка Docker
@@ -1166,20 +1173,23 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 $"reason={reason}\nslug={Slug}\nrun={_runId}\nutc={DateTime.UtcNow:O}\n"
                 + $"failed={_failed}\n");
 
-            foreach (var row in (await E2eFixture.RunProcessAsync(
-                         "docker", ["ps", "-a", "--format", "{{.ID}}\t{{.Names}}"]))
-                     .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            // Логи/inspect — ПАРАЛЛЕЛЬНО (teardown-бюджет: 10-20 контейнеров ×
+            // последовательные docker logs = минуты; WhenAll — секунды).
+            var own = (await E2eFixture.RunProcessAsync(
+                    "docker", ["ps", "-a", "--format", "{{.ID}}\t{{.Names}}"]))
+                .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(row => row.Split('\t', 2))
+                .Where(parts => parts.Length == 2 && OwnName(parts[1]))
+                .Select(parts => (Id: parts[0], Name: parts[1]))
+                .ToList();
+            await Task.WhenAll(own.Select(async item =>
             {
-                var parts = row.Split('\t', 2);
-                if (parts.Length < 2 || !OwnName(parts[1]))
-                    continue;
-                var (id, name) = (parts[0], parts[1]);
+                var (id, name) = item;
                 try
                 {
-                    await File.WriteAllTextAsync(
-                        Path.Combine(ArtifactsDir, $"container-{name}.log"),
-                        await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id],
-                            CancellationToken.None, TimeSpan.FromSeconds(60)));
+                    var logs = await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id],
+                        CancellationToken.None, TimeSpan.FromSeconds(60));
+                    await File.WriteAllTextAsync(Path.Combine(ArtifactsDir, $"container-{name}.log"), logs);
                 }
                 catch (Exception e)
                 {
@@ -1190,16 +1200,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
                 try
                 {
-                    await File.WriteAllTextAsync(
-                        Path.Combine(ArtifactsDir, $"container-{name}.json"),
-                        await E2eFixture.RunProcessAsync("docker", ["inspect", id],
-                            CancellationToken.None, TimeSpan.FromSeconds(60)));
+                    var inspect = await E2eFixture.RunProcessAsync("docker", ["inspect", id],
+                        CancellationToken.None, TimeSpan.FromSeconds(60));
+                    await File.WriteAllTextAsync(Path.Combine(ArtifactsDir, $"container-{name}.json"), inspect);
                 }
                 catch
                 {
                     // inspect вторичен к логам — отсутствие не критично
                 }
-            }
+            }));
 
             Console.Error.WriteLine($"e2e[{Slug}]: телеметрия «{reason}» → {ArtifactsDir}");
         }

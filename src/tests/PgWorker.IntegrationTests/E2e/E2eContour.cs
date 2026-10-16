@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using PgWorker.IntegrationTests.Docker;
 using Xunit;
 
@@ -8,15 +9,20 @@ namespace PgWorker.IntegrationTests.E2e;
 /// Точка входа — <see cref="OrchestrateCurrentTestAsync"/>: её вызывает
 /// E2eEnvironment.StartAsync, когда факт исполняется НЕ в раннере (хост).
 /// - ФАЗА 1+оркестрация (хост): DockerTrait-гейт → статические ассеты →
-///   StartAsync (изолированная сеть + etcd + ownS3, без публикаций на хост) →
-///   docker run раннера (pgw-e2e-runner:e2e, сеть контура, volume артефактов +
-///   снапшотов, docker.sock, env контура) с фильтром ровно ТЕКУЩЕГО факта
-///   (TestContext.TestCase) → exit code + docker logs → teardown (упавший:
-///   stop-режим) → исход: успех — Assert.Skip (тело факта на хосте не
-///   исполняется; результат — в журнале раннера), фейл — ApplicationException.
+///   StartAsync (изолированная сеть + etcd + ownS3 + mc, без публикаций на
+///   хост) → docker run раннера (pgw-e2e-runner:e2e, сеть контура, volume
+///   артефактов + снапшотов, docker.sock, env контура) с фильтром «-class
+///   FQN» — ВСЕ факты класса в одном раннере (скорость: docker run + прогрев
+///   dotnet + discovery ~15-25 с на КЛАСС, а не на факт; канон изоляции —
+///   «сценарный класс», у каждого сценария свой кластер с уникальным именем) →
+///   exit code + docker logs → teardown (упавший: stop-режим) → исход:
+///   успех — Assert.Skip (тела фактов на хосте не исполняются; результат —
+///   в журнале раннера), фейл — ApplicationException.
 /// - ТЕЛО СЦЕНАРИЯ (раннер-контейнер): PGW_E2E_INNER=1 → StartAsync возвращает
 ///   AttachFromEnv (подключение к контуру); тело против внутрисетевых адресов.
-/// Граница запуска — один сценарный метод (не шире одного класса).
+/// Координация фактов одного класса — словарь ClassRuns: первый факт запускает
+/// фоновую задачу-оркестрацию (переживает факты: teardown доигрывает),
+/// остальные ждут её исход и скипаются.
 /// </summary>
 public static class E2eContour
 {
@@ -25,12 +31,16 @@ public static class E2eContour
     /// зависший прогон умирает по бюджету с диагностикой, не висит вечно.</summary>
     private static readonly TimeSpan RunnerBudget = TimeSpan.FromMinutes(60);
 
+    // Задачи-оркестрации по классу (первый факт класса создаёт, остальные ждут).
+    private static readonly ConcurrentDictionary<string, Task<ClassRunOutcome>> ClassRuns = new();
+
+    private sealed record ClassRunOutcome(bool Ok, string ArtifactsDir, string Error);
+
     /// <summary>
-    /// Оркестрация текущего факта в двухфазном контуре (только хост): поднять
-    /// окружение, прогнать в раннер-контейнере ровно этот факт, снять результат.
-    /// Всегда завершается исключением: Assert.Skip — факт исполнен в раннере
-    /// зелёно; ApplicationException — фейл (с хвостом журнала раннера) или
-    /// неполный teardown (изоляция — брак).
+    /// Оркестрация КЛАССА текущего факта (только хост). Всегда завершается
+    /// исключением: Assert.Skip — класс исполнен в раннере зелёно (тела фактов
+    /// на хосте не исполняются); ApplicationException — фейл класса (с хвостом
+    /// журнала раннера) или неполный teardown (изоляция — брак).
     /// </summary>
     public static async Task OrchestrateCurrentTestAsync(
         string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
@@ -39,30 +49,47 @@ public static class E2eContour
         DockerTrait.SkipIfUnavailable();
         var testCase = TestContext.Current.TestCase
             ?? throw new ApplicationException(
-                "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна"
-                + " (класс-фикстуры оркестрируются OrchestrateClassAsync)");
-        // TestClassName — ПОЛНОЕ имя типа (namespace+class).
-        var fqn = $"{testCase.TestClassName}.{testCase.TestMethodName}";
-        await OrchestrateCoreAsync(fqn, slug, withS3Node, haEtcd, ct);
+                "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна");
+        var classFqn = testCase.TestClassName
+            ?? throw new ApplicationException("TestClassName не определён");
+
+        // Фоновая задача: оркестрация переживает завершение фактов класса
+        // (teardown контура обязан доиграть); токен — не токен факта.
+        var run = ClassRuns.GetOrAdd(classFqn, _ => Task.Run(() =>
+            RunClassAsync(classFqn, slug, withS3Node, haEtcd)));
+
+        var outcome = await run.WaitAsync(ct);
+        if (!outcome.Ok)
+            throw new ApplicationException($"класс {classFqn}: {outcome.Error}");
+        Assert.Skip($"класс исполнен в раннере (журнал: {outcome.ArtifactsDir}/runner.log)");
     }
 
-    /// <summary>Оркестрация КЛАССА целиком (для класс-фикстур, поднимающих
-    /// окружение в InitializeAsync вне факта — TestContext.TestCase там null):
-    /// раннер получает фильтр «-class FQN» (все методы класса в одном контуре).
-    /// Исходы — те же, что у OrchestrateCurrentTestAsync.</summary>
-    public static async Task OrchestrateClassAsync(
+    /// <summary>Оркестрация КЛАССА по явному имени (класс-фикстуры:
+    /// TestContext.TestCase в InitializeAsync недоступен). Тот же исход.</summary>
+    public static Task OrchestrateClassAsync(
         string classFqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
+        => OrchestrateCurrentTestAsync(slug, withS3Node, haEtcd, ct);
+
+    private static async Task<ClassRunOutcome> RunClassAsync(
+        string classFqn, string slug, bool withS3Node, bool haEtcd)
     {
-        DockerTrait.SkipIfUnavailable();
-        await OrchestrateCoreAsync(classFqn, slug, withS3Node, haEtcd, ct);
+        try
+        {
+            var outcome = await OrchestrateCoreAsync(classFqn, slug, withS3Node, haEtcd);
+            return outcome;
+        }
+        catch (Exception e)
+        {
+            // Исход класса-фейла: все факты класса краснеют с этой причиной.
+            return new ClassRunOutcome(false, string.Empty, e.Message);
+        }
     }
 
-    private static async Task OrchestrateCoreAsync(
-        string fqn, string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
+    private static async Task<ClassRunOutcome> OrchestrateCoreAsync(
+        string fqn, string slug, bool withS3Node, bool haEtcd)
     {
-
-        await E2eEnvironment.EnsureStaticAssetsAsync(ct);
-        var env = await E2eEnvironment.StartEnvironmentAsync(slug, withS3Node, haEtcd, ct);
+        await E2eEnvironment.EnsureStaticAssetsAsync(CancellationToken.None);
+        var env = await E2eEnvironment.StartEnvironmentAsync(slug, withS3Node, haEtcd, CancellationToken.None);
         var runnerName = $"pgw-er-{env.RunId}";
         Console.WriteLine($"[PHASE] e2e-contour {slug}: запуск раннера {runnerName} ({fqn})…");
 
@@ -85,9 +112,10 @@ public static class E2eContour
             foreach (var (key, value) in env.RunnerEnv())
                 runArgs.AddRange(["-e", $"{key}={value}"]);
             runArgs.Add(E2eEnvironment.RunnerImage);
-            runArgs.AddRange(["-noColor", "-noLogo", "-method", fqn]);
+            // Все факты класса в одном раннере (группировка — скорость).
+            runArgs.AddRange(["-noColor", "-noLogo", "-class", fqn]);
 
-            _ = await E2eFixture.RunProcessAsync("docker", [.. runArgs], ct, RunnerBudget);
+            _ = await E2eFixture.RunProcessAsync("docker", [.. runArgs], CancellationToken.None, RunnerBudget);
         }
         catch (ApplicationException e) when (e.Message.Contains(" → ", StringComparison.Ordinal))
         {
@@ -111,7 +139,7 @@ public static class E2eContour
         string runnerLog;
         try
         {
-            runnerLog = await E2eFixture.RunDockerAsync(["logs", runnerName], ct);
+            runnerLog = await E2eFixture.RunDockerAsync(["logs", runnerName], CancellationToken.None);
             await File.WriteAllTextAsync(Path.Combine(env.ArtifactsDir, "runner.log"), runnerLog);
         }
         catch (Exception e)
@@ -150,9 +178,7 @@ public static class E2eContour
                 + Tail(runnerLog, 60)
                 + $"\n(полный журнал и телеметрия: {env.ArtifactsDir})", failure);
 
-        // Зелёный исход: тело факта на хосте НЕ исполняется — Skip прерывает
-        // факт; реальный результат сценария — в журнале раннера.
-        Assert.Skip($"сценарий выполнен в раннере {runnerName} (журнал: {env.ArtifactsDir}/runner.log)");
+        return new ClassRunOutcome(true, env.ArtifactsDir, string.Empty);
     }
 
     // Последние строки журнала — для исключения (полный — в runner.log).
