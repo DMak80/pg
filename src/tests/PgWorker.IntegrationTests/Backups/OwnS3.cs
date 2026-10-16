@@ -115,7 +115,7 @@ public sealed class OwnS3 : IAsyncDisposable
             await publish.WaitForExitAsync(ct);
             if (publish.ExitCode != 0)
                 throw new ApplicationException(
-                    $"publish OwnS3.App не удался: {publishLog[^2000..]}");
+                    $"publish OwnS3.App не удался: {Tail(publishLog)}");
             using var build = Process.Start(new ProcessStartInfo("docker",
                 ["build", "-f", Path.Combine(root, "docker", "OwnS3.Dockerfile"),
                     "-t", Image, outDir])
@@ -128,7 +128,7 @@ public sealed class OwnS3 : IAsyncDisposable
                            await build.StandardError.ReadToEndAsync();
             await build.WaitForExitAsync(ct);
             if (build.ExitCode != 0)
-                throw new ApplicationException($"build {Image} не удался: {buildLog[^2000..]}");
+                throw new ApplicationException($"build {Image} не удался: {Tail(buildLog)}");
             _imageReady = true;
         }
         finally
@@ -137,13 +137,23 @@ public sealed class OwnS3 : IAsyncDisposable
         }
     }
 
+    // Хвост лога без исключения: ^2000.. на логе короче 2000 символов бросает
+    // ArgumentOutOfRangeException и МАСКИРУЕТ реальную ошибку (прецедент
+    // мерж-гейта t36 — MSB1009 не был виден в упавших интеграциях).
+    private static string Tail(string log)
+        => log.Length <= 2000 ? log : log[^2000..];
+
     // Корень репозитория — подъём от каталога сборки (образец E2eFixture.FindRoot).
     private static string FindRepoRoot(string start)
     {
+        // Маркер КОРНЯ репозитория (docker/node/Dockerfile) — как E2eFixture.FindRoot:
+        // PgWorker.slnx лежит в src/ — по нему корень резолвится в src (прецедент
+        // мерж-гейта t36: publish MSB1009 по несуществующему src/src/…-пути).
         var dir = new DirectoryInfo(start);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "PgWorker.slnx")))
-            dir = dir.Parent!;
-        return dir!.FullName;
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "node", "Dockerfile")))
+            dir = dir.Parent;
+        return dir?.FullName
+            ?? throw new ApplicationException("корень репозитория (docker/node/Dockerfile) не найден");
     }
 
     // Bucket per-окружение — прямой AWSSDK-клиент (тестовая утилита фикстуры).
