@@ -110,7 +110,7 @@ s3_pool_put() { docker run --rm --network "$STAND_NET" curlimages/curl:latest sh
     i=$((i+1)); sleep 5
   done
   echo $code' _curl_ "$1"; }
-s3_on=',{"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}'
+s3_on=',"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}'
 code="$(s3_pool_put "$base_policy$s3_on")"
 [ "$code" = "200" ] || { echo "❌ PUT policy c s3: $code (ожидался 200)"; exit 1; }
 api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3.pool == "backups")' >/dev/null \
