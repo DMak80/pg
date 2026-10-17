@@ -147,6 +147,8 @@ export interface OverviewDto {
   kafka: OverviewKafkaDto | null;
   // Сводка valkey-домена (arch/03 §8.1); null до первого тика valkey-refresher'а.
   valkey: OverviewValkeyDto | null;
+  // Сводка s3-домена (arch/03 §12.1); null до первого тика s3-refresher'а.
+  s3: OverviewS3Dto | null;
   snapshotAgeMs: number;
   stale: boolean;
 }
@@ -157,6 +159,11 @@ export interface OverviewKafkaDto {
 }
 
 export interface OverviewValkeyDto {
+  clustersTotal: number;
+  clustersCritical: number;
+}
+
+export interface OverviewS3Dto {
   clustersTotal: number;
   clustersCritical: number;
 }
@@ -1090,3 +1097,85 @@ export interface ReliabilityClusterDto {
 export interface ReliabilityDto {
   clusters: ReliabilityClusterDto[];
 }
+
+// ===== S3-домен (arch/03 §12.2) =====
+export type S3ClusterSummaryDto = {
+  name: string;
+  state: 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
+  nodesTotal: number;
+  nodesRunning: number;
+  endpoints: string | null;
+  connectivityState: 'OK' | 'DEGRADED' | 'DOWN' | null;
+  syncState: 'SYNCED' | 'LAGGING' | 'DIVERGED' | null;
+  rotationPending: boolean;
+};
+export type S3PlacementDto = {
+  dockerHost?: string | null;
+  swarmNode?: string | null;
+  swarmLabels?: Record<string, string> | null;
+};
+export type S3ResourcesDto = { cpu: number | null; memGi: number | null; diskGi: number | null };
+export type S3UsageDto = { usedBytes: number; totalBytes: number; updatedUnix: number };
+export type S3NodeDto = {
+  name: string;
+  state: string | null;
+  placedOn: string | null;
+  placement: S3PlacementDto | null;
+  resources: S3ResourcesDto | null;
+  usage: S3UsageDto | null;
+  denied: boolean;
+};
+export type S3LinkDto = { a: string; b: string };
+export type S3ConnectivityDto = {
+  state: string | null;
+  checkedUnix: number | null;
+  links: Record<string, Record<string, string>>;
+  probeError: string | null;
+};
+export type S3SyncPairDto = {
+  from: string;
+  to: string;
+  missing: number;
+  extra: number;
+  lagBytes: number | null;
+  lagObjects: number | null;
+};
+export type S3SyncDto = {
+  state: string | null;
+  checkedUnix: number | null;
+  pairs: S3SyncPairDto[];
+  lastError: string | null;
+};
+export type S3RotationDto = { requestedUnix: number; requestedBy: string | null };
+export type S3ClusterDto = {
+  name: string;
+  state: 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
+  platform: string;
+  nodesDeclared: number;
+  secretProfile: string;
+  createdUnix: number | null;
+  endpoints: string | null;
+  nodesList: S3NodeDto[];
+  links: S3LinkDto[];
+  denylist: string[];
+  connectivity: S3ConnectivityDto | null;
+  sync: S3SyncDto | null;
+  rotation: S3RotationDto | null;
+};
+export type CreateS3ClusterRequestDto = {
+  name: string;
+  secretProfile: string;
+  instances: { name: string; placement: S3PlacementDto; resources?: S3ResourcesDto | null }[];
+  resources?: S3ResourcesDto | null;
+};
+export type AddS3NodeRequestDto = {
+  name: string;
+  placement: S3PlacementDto;
+  resources?: S3ResourcesDto | null;
+};
+export type UpdateS3ResourcesRequestDto = {
+  cpu?: number | null;
+  memGi?: number | null;
+  diskGi?: number | null;
+};
+export type PutS3LinksRequestDto = { links: { a: string; b: string }[] };

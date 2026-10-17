@@ -11,6 +11,8 @@ import { KafkaClusterDetailsPage } from './pages/kafka-cluster/KafkaClusterDetai
 import { KafkaClustersPage } from './pages/KafkaClustersPage';
 import { ValkeyClusterDetailsPage } from './pages/valkey-cluster/ValkeyClusterDetailsPage';
 import { ValkeyClustersPage } from './pages/ValkeyClustersPage';
+import { S3ClusterDetailsPage } from './pages/s3-cluster/S3ClusterDetailsPage';
+import { S3ClustersPage } from './pages/S3ClustersPage';
 import { EtcdPage } from './pages/EtcdPage';
 import { HaPage } from './pages/HaPage';
 import { ReliabilityPage } from './pages/ReliabilityPage';
@@ -34,6 +36,8 @@ export const router = createBrowserRouter([
       { path: 'kafka/:cluster', element: <KafkaClusterDetailsPage /> },
       { path: 'valkey', element: <ValkeyClustersPage /> },
       { path: 'valkey/:cluster', element: <ValkeyClusterDetailsPage /> },
+      { path: 's3', element: <S3ClustersPage /> },
+      { path: 's3/:cluster', element: <S3ClusterDetailsPage /> },
       { path: 'ha', element: <HaPage /> },
       { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
       { path: 'reliability', element: <ReliabilityPage /> },

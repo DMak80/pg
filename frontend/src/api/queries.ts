@@ -2,8 +2,10 @@
 import { apiFetch } from './client';
 import type {
   AddKafkaBrokerRequestDto,
+  AddS3NodeRequestDto,
   AddShardRequestDto,
   CreateKafkaClusterRequestDto,
+  CreateS3ClusterRequestDto,
   AlertDto,
   ClusterSecretsRotatedDto,
   ClusterCreatedDto,
@@ -45,6 +47,10 @@ import type {
   BackupShardStorageDto,
   BackupStorageDto,
   UploadWorkerCertRequestDto,
+  PutS3LinksRequestDto,
+  S3ClusterDto,
+  S3ClusterSummaryDto,
+  UpdateS3ResourcesRequestDto,
   ValkeyClusterCreatedDto,
   ValkeyClusterDto,
   ValkeyClusterSummaryDto,
@@ -594,4 +600,63 @@ export const reliabilityQueryKeys = {
 
 export function fetchReliability(): Promise<ReliabilityDto> {
   return apiFetch<ReliabilityDto>('/api/reliability');
+}
+
+// ===== S3-домен (arch/03 §12.1) =====
+
+export const s3QueryKeys = {
+  clusters: ['s3-clusters'] as const,
+  cluster: (name: string) => ['s3-clusters', name] as const,
+};
+
+export function fetchS3Clusters(): Promise<S3ClusterSummaryDto[]> {
+  return apiFetch<S3ClusterSummaryDto[]>('/api/s3/clusters');
+}
+export function fetchS3ClusterDetails(name: string): Promise<S3ClusterDto> {
+  return apiFetch<S3ClusterDto>(`/api/s3/clusters/${encodeURIComponent(name)}`);
+}
+// POST /api/s3/clusters — создание (arch/02 §12.2-1): заявку доигрывает S3Worker.
+export function createS3Cluster(request: CreateS3ClusterRequestDto): Promise<unknown> {
+  return apiFetch('/api/s3/clusters', { method: 'POST', body: request });
+}
+// DELETE /api/s3/clusters/{c} — TO_REMOVE (§12.2-2): демонтаж асинхронный.
+export function deleteS3Cluster(cluster: string): Promise<void> {
+  return apiFetch<void>(`/api/s3/clusters/${encodeURIComponent(cluster)}`, { method: 'DELETE' });
+}
+export function addS3Node(cluster: string, request: AddS3NodeRequestDto): Promise<unknown> {
+  return apiFetch(`/api/s3/clusters/${encodeURIComponent(cluster)}/nodes`, { method: 'POST', body: request });
+}
+export function removeS3Node(cluster: string, node: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/s3/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(node)}`,
+    { method: 'DELETE' });
+}
+export function updateS3NodeResources(
+  cluster: string,
+  node: string,
+  request: UpdateS3ResourcesRequestDto,
+): Promise<unknown> {
+  return apiFetch(
+    `/api/s3/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(node)}/resources`,
+    { method: 'PUT', body: request });
+}
+export function putS3Links(cluster: string, request: PutS3LinksRequestDto): Promise<void> {
+  return apiFetch<void>(
+    `/api/s3/clusters/${encodeURIComponent(cluster)}/links`, { method: 'PUT', body: request });
+}
+export function denyS3Node(cluster: string, node: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/s3/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(node)}/deny`,
+    { method: 'POST' });
+}
+export function allowS3Node(cluster: string, node: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/s3/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(node)}/allow`,
+    { method: 'POST' });
+}
+export function rotateS3Secrets(cluster: string): Promise<unknown> {
+  return apiFetch(`/api/s3/clusters/${encodeURIComponent(cluster)}/rotations`, { method: 'POST' });
+}
+export function s3SyncProbe(cluster: string): Promise<void> {
+  return apiFetch<void>(`/api/s3/clusters/${encodeURIComponent(cluster)}/sync-probe`, { method: 'POST' });
 }

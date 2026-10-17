@@ -1,0 +1,5 @@
+[
+  { "key": "/s3worker/rotations/backupsmain", "value": "{\"requested_unix\":1760157000,\"requested_by\":\"admin\"}", "modRevision": 1 },
+  { "key": "/s3worker/rotations/brokenrot", "value": "{битый", "modRevision": 2 },
+  { "key": "/s3worker/rotations/nofields", "value": "{}", "modRevision": 3 }
+]

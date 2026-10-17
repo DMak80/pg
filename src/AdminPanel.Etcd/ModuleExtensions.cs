@@ -62,6 +62,8 @@ public static class ModuleExtensions
                 thumbs.Add(kfw.Thumbprint);
             if (sp.GetRequiredService<IValkeySnapshotStore>().Current?.WorkerApiCert is { } vwk)
                 thumbs.Add(vwk.Thumbprint);
+            if (sp.GetRequiredService<IS3SnapshotStore>().Current?.WorkerApiCert is { } s3w)
+                thumbs.Add(s3w.Thumbprint);
             return thumbs;
         };
         services.AddSingleton<WorkerApiGateway>();
@@ -99,6 +101,19 @@ public static class ModuleExtensions
 
         services.AddSingleton<ValkeySnapshotRefresher>();
         services.AddHostedService(sp => sp.GetRequiredService<ValkeySnapshotRefresher>());
+        return services;
+    }
+
+    // Модуль s3-домена (arch/02 §12): hosted-service refresher'а + стор снапшота.
+    // Отдельный HttpClient не заводится — транспорт общий с pg/kafka/valkey-циклами.
+    public static IServiceCollection AddS3(this IServiceCollection services)
+    {
+        services.AddSingleton<S3SnapshotStore>();
+        services.AddSingleton<IS3SnapshotStore>(sp => sp.GetRequiredService<S3SnapshotStore>());
+        services.AddSingleton<IS3SnapshotReader>(sp => sp.GetRequiredService<S3SnapshotStore>());
+
+        services.AddSingleton<S3SnapshotRefresher>();
+        services.AddHostedService(sp => sp.GetRequiredService<S3SnapshotRefresher>());
         return services;
     }
 }

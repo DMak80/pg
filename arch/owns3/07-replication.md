@@ -513,10 +513,14 @@ App (§11 раскладка исполнения) зовёт проход **п�
    false (крах/kill без drain) → стартовый reconcile-проход по всем
    соседям;
 4. **периодически** — `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS`
-   (дефолт **60**: самозаживление приостановленных проходов — suspend
-   при переполнении fetch-очереди подхватывается следующим проходом
-   максимум через минуту — и общий страховой контур сходимости;
-   нагрузка листинга на домашнем контуре пренебрежима);
+   (дефолт **3 ч**: reconcile — страховой контур сходимости, НЕ основной
+   канал доставки (уведомления+фетч); частые проходы перечитывают полные
+   листинги бакетов — нагрузка, оправданная только тестовыми контурами
+   (E2E переопределяет env до 10 с). Самозаживление приостановленных
+   проходов (suspend при переполнении fetch-очереди) — следующим
+   проходом. Срок проверяется тиком цикла обслуживания (§8-а) с
+   гранулярностью min(60 с, интервал) — переопределение короче минуты
+   срабатывает честно);
 5. **админ-команда** `POST /admin/replication/reconcile` (202; идущий
    продолжается, параллельный не создаётся).
 
@@ -644,7 +648,7 @@ notifiedRetry, fetched, applied, skipped, conflict}}`.
 | `OWNS3_REPLICATION_BACKOFF_MAX_SEC` | потолок эксп-бэкоффа (§7/§8) | **60** |
 | `OWNS3_REPLICATION_DISK_FREE_MIN_BYTES` | watermark свободного места фетчей (§7) | **1 ГиБ** |
 | `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | retention tombstones (§7) | **168** |
-| `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | период reconcile (§9) | **60** |
+| `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` | период reconcile (§9) | **3 ч (10800)** |
 | `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | ёмкость fetch-очереди на источник (§7) | **10000** |
 | `OWNS3_REPLICATION_PROBE_TIMEOUT_MS` | per-target таймаут ping-пробы линков (§2) | **2000** |
 | `OWNS3_REPLICATION_CERT` / `OWNS3_REPLICATION_CERT_PATH` | сертификат пира (JSON, значение/путь — прецедент TLS, глава 05 §4); секция `OwnS3:Replication:Identity:Certificate`/`CertificatePath` | нет — peer-схема не активна |

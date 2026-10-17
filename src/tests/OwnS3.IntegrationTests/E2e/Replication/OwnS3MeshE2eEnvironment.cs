@@ -191,7 +191,11 @@ public sealed class OwnS3MeshE2eEnvironment : IAsyncDisposable
                         keySlot++;
                     }
                     builder = builder
-                        .WithEnvironment("OWNS3_HOST_ID", $"os3m-{i}-{runId[..8]}");
+                        .WithEnvironment("OWNS3_HOST_ID", $"os3m-{i}-{runId[..8]}")
+                        // Периодический reconcile 10 с (глава 07 §9: тестовое
+                        // переопределение — продовый дефолт 3 ч; сценарии догона
+                        // не ждут часами; тик координатора сжимается до интервала)
+                        .WithEnvironment("OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS", "10");
                     if (fullMeshTargets)
                     {
                         // Полный mesh: каждый знает всех (env-seed первого старта — глава 07 §2);

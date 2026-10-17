@@ -1,0 +1,10 @@
+[
+  { "key": "/s3/clusters/bad/config", "value": "{битый json", "modRevision": 1 },
+  { "key": "/s3/clusters/bad/links", "value": "не-массив", "modRevision": 2 },
+  { "key": "/s3/clusters/odd/config", "value": "{\"platform\":\"owns3\",\"state\":\"STRANGE_NEW\"}", "modRevision": 3 },
+  { "key": "/s3/clusters/odd/endpoints", "value": "  ", "modRevision": 4 },
+  { "key": "/s3/clusters/odd/nodes/n1/resources", "value": "{\"cpu\":\"x\",\"mem\":\"4Gi\",\"disk\":\"?\"}", "modRevision": 5 },
+  { "key": "/s3/clusters/odd/nodes/n1/usage", "value": "{\"used_bytes\":10}", "modRevision": 6 },
+  { "key": "/s3/clusters/odd/connectivity", "value": "{\"state\":\"DOWN\",\"checked_unix\":1760156900,\"probe_error\":\"все ноды молчат\"}", "modRevision": 7 },
+  { "key": "/s3/clusters/odd/sync", "value": "{\"state\":\"DIVERGED\",\"checked_unix\":1760156900,\"pairs\":[{\"from\":\"a\",\"to\":\"b\",\"missing\":5,\"extra\":2,\"lag_bytes\":1024,\"lag_objects\":3}],\"last_error\":\"diff page\"}", "modRevision": 8 }
+]

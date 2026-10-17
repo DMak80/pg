@@ -1,0 +1,23 @@
+[
+  { "key": "/s3/clusters/backupsmain/config", "value": "{\"platform\":\"owns3\",\"nodes\":3,\"secret_profile\":\"backups-main\",\"created_unix\":1760156800}", "modRevision": 1 },
+  { "key": "/s3/clusters/backupsmain/endpoints", "value": "h1:18001,h2:18002,h3:18003", "modRevision": 2 },
+  { "key": "/s3/clusters/backupsmain/links", "value": "[{\"a\":\"east1\",\"b\":\"east2\"},{\"a\":\"east1\",\"b\":\"west1\"}]", "modRevision": 3 },
+  { "key": "/s3/clusters/backupsmain/denylist", "value": "[\"west1\"]", "modRevision": 4 },
+  { "key": "/s3/clusters/backupsmain/connectivity", "value": "{\"state\":\"OK\",\"checked_unix\":1760156900,\"links\":{\"node1\":{\"node2\":\"ok\",\"node3\":\"ok\"},\"node2\":{\"node1\":\"ok\",\"node3\":\"ok\"},\"node3\":{\"node1\":\"ok\",\"node2\":\"ok\"}}}", "modRevision": 5 },
+  { "key": "/s3/clusters/backupsmain/sync", "value": "{\"state\":\"SYNCED\",\"checked_unix\":1760156900,\"pairs\":[{\"from\":\"node1\",\"to\":\"node2\",\"missing\":0,\"extra\":0},{\"from\":\"node1\",\"to\":\"node3\",\"missing\":0,\"extra\":0}]}", "modRevision": 6 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/placement", "value": "{\"docker_host\":\"h1\"}", "modRevision": 7 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/resources", "value": "{\"cpu\":\"2\",\"mem\":\"4Gi\",\"disk\":\"200Gi\"}", "modRevision": 8 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/state", "value": "RUNNING", "modRevision": 9 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/placed_on", "value": "h1", "modRevision": 10 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/usage", "value": "{\"used_bytes\":107374182400,\"total_bytes\":214748364800,\"updated_unix\":1760156860}", "modRevision": 11 },
+  { "key": "/s3/clusters/backupsmain/nodes/east1/pki", "value": "{\"certificate\":\"{}\",\"private_key_pem\":\"x\"}", "modRevision": 12 },
+  { "key": "/s3/clusters/backupsmain/nodes/east2/placement", "value": "{\"swarm_labels\":{\"geo\":\"dc1\"}}", "modRevision": 13 },
+  { "key": "/s3/clusters/backupsmain/nodes/east2/state", "value": "PROVISIONING", "modRevision": 14 },
+  { "key": "/s3/clusters/backupsmain/pki/ca", "value": "{\"name\":\"backupsmain\",\"publicKeyPem\":\"x\",\"private_key_pem\":\"y\"}", "modRevision": 15 },
+  { "key": "/s3/clusters/backupsmain/pki/orchestrator", "value": "{\"certificate\":\"{}\",\"private_key_pem\":\"z\"}", "modRevision": 16 },
+  { "key": "/s3/clusters/newclaim/config", "value": "{\"platform\":\"owns3\",\"nodes\":0,\"secret_profile\":\"backups-main\",\"created_unix\":1760156800,\"state\":\"NOT_INITIALIZED\"}", "modRevision": 17 },
+  { "key": "/s3/clusters/dying/config", "value": "{\"platform\":\"owns3\",\"nodes\":1,\"secret_profile\":\"backups-main\",\"created_unix\":1760156800,\"state\":\"TO_REMOVE\"}", "modRevision": 18 },
+  { "key": "/s3/clusters/dying/nodes/node1/placement", "value": "{\"swarm_node\":\"n1\"}", "modRevision": 19 },
+  { "key": "/s3/clusters/swarmy/nodes/s1/placement", "value": "{\"docker_host\":\"h2\",\"swarm_labels\":{\"geo\":\"dc2\",\"tier\":\"fast\"}}", "modRevision": 20 },
+  { "key": "/s3/clusters/backupsmain/future_feature", "value": "1", "modRevision": 21 }
+]

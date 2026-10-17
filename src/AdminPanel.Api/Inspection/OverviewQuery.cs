@@ -19,6 +19,7 @@ public sealed record OverviewDto(
     IReadOnlyList<OverviewMoveDto> ActiveMoves,
     OverviewKafkaDto? Kafka,
     OverviewValkeyDto? Valkey,
+    OverviewS3Dto? S3,
     long SnapshotAgeMs,
     bool Stale);
 
@@ -29,6 +30,11 @@ public sealed record OverviewKafkaDto(
 
 // Сводка valkey-домена (arch/03 §8.1): из ValkeySnapshot + valkey-алертов.
 public sealed record OverviewValkeyDto(
+    int ClustersTotal,
+    int ClustersCritical);
+
+// Сводка s3-домена (arch/03 §12.1): из S3Snapshot + s3-алертов.
+public sealed record OverviewS3Dto(
     int ClustersTotal,
     int ClustersCritical);
 
@@ -74,6 +80,7 @@ public static class OverviewMapper
                         b.Move?.Owner, b.Move?.Target, b.Move?.UpdatedUnix)))],
             null, // kafka-сводка — хендлер дополняет из KafkaSnapshot (B5)
             null, // valkey-сводка — хендлер дополняет из ValkeySnapshot (t03)
+            null, // s3-сводка — хендлер дополняет из S3Snapshot (t34)
             Math.Max(0L, (long)Math.Round(age.TotalMilliseconds)),
             age > TimeSpan.FromSeconds(SnapshotStaleRule.Multiplier * refreshIntervalSeconds));
     }
@@ -90,6 +97,19 @@ public static class OverviewMapper
                 valkey.Clusters.Count,
                 valkey.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical
                     && a.Kind is "valkey-node-not-running" or "valkey-endpoints-missing"));
+
+    // s3-сводка (t34, arch/03 §12.1): кластеры + critical-алерты кластерных
+    // kinds s3-node-not-running/s3-endpoints-missing/s3-connectivity-down/
+    // s3-sync-diverged (симметрия MapValkey — worker-api-unreachable не считаем);
+    // null до первого тика s3-refresher'а. Public static — юнит-тесты.
+    public static OverviewS3Dto? MapS3(Core.S3.S3Snapshot? s3)
+        => s3 is null
+            ? null
+            : new OverviewS3Dto(
+                s3.Clusters.Count,
+                s3.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical
+                    && a.Kind is "s3-node-not-running" or "s3-endpoints-missing"
+                        or "s3-connectivity-down" or "s3-sync-diverged"));
 }
 
 // Хендлер: store → отказ «снапшота нет» или маппер (spec §3.12).
@@ -98,6 +118,7 @@ public sealed class OverviewQueryHandler(
     ISnapshotStore store,
     IKafkaSnapshotReader kafkaStore,
     IValkeySnapshotReader valkeyStore,
+    IS3SnapshotReader s3Store,
     TimeProvider time,
     IOptions<EtcdOptions> etcdOptions) : IQueryHandler<OverviewQuery, OverviewDto>
 {
@@ -113,6 +134,7 @@ public sealed class OverviewQueryHandler(
             {
                 Kafka = MapKafka(kafkaStore.Current),
                 Valkey = OverviewMapper.MapValkey(valkeyStore.Current),
+                S3 = OverviewMapper.MapS3(s3Store.Current),
             };
         return ValueTask.FromResult(Result<OverviewDto>.Success(overview));
     }

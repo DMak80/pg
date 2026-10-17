@@ -9,9 +9,10 @@ namespace AdminPanel.Etcd.Workers;
 /// <summary>
 /// Шлюз в API воркеров: URL резолвит по живым lease-ключам из снапшота
 /// (/pgworker/api/ — EtcdSnapshot, /kafkaworker/api/ — KafkaSnapshot,
-/// arch/02 §2.3.1/§2.3.2). Сетевой сбой/таймаут одного URL → следующий ключ
-/// (failover); ответ получен (любой статус) → результат с телом как есть;
-/// живых нет/все молчат → WorkerApiUnavailableException (503 панели).
+/// /s3worker/api/ — S3Snapshot, arch/02 §2.3.1/§2.3.2/§2.3.4). Сетевой
+/// сбой/таймаут одного URL → следующий ключ (failover); ответ получен (любой
+/// статус) → результат с телом как есть; живых нет/все молчат →
+/// WorkerApiUnavailableException (503 панели).
 /// Аутентификация — mTLS клиентским сертом (WorkerTlsHandler); X-Api-Key
 /// удалён для ОБОИХ воркеров (t03).
 /// </summary>
@@ -20,7 +21,8 @@ public sealed class WorkerApiGateway(
     IHttpClientFactory factory,
     ISnapshotStore pgStore,
     IKafkaSnapshotStore kafkaStore,
-    IValkeySnapshotStore valkeyStore) : IWorkerApiGateway
+    IValkeySnapshotStore valkeyStore,
+    IS3SnapshotStore s3Store) : IWorkerApiGateway
 {
     /// <summary>Имя именованного HttpClient в фабрике (ModuleExtensions.AddEtcd).</summary>
     public const string HttpClientName = "workers";
@@ -121,12 +123,13 @@ public sealed class WorkerApiGateway(
         return await client.SendAsync(request, ct);
     }
 
-    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03).
+    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03; s3 — t34).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,
         "kafkaworker" => kafkaStore.Current?.WorkerEndpoints,
         "valkeyworker" => valkeyStore.Current?.WorkerEndpoints,
-        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker|valkeyworker"),
+        "s3worker" => s3Store.Current?.WorkerEndpoints,
+        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker|valkeyworker|s3worker"),
     };
 }

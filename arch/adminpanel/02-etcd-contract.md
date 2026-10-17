@@ -25,7 +25,10 @@ NodeSupervisor PgWorker); она зафиксирована кодом ране�
 `/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments}/` и
 14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03) + мутация №17 ротации CA/сертов (t07). Отдельный домен **Valkey** (§11,
 t03): чтение `/valkey/clusters/` + `/valkeyworker/{rotations,api}/` и 5 мутаций
-декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1).
+декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1). Отдельный
+домен **S3** (§12): чтение `/s3/clusters/` + `/s3worker/{api,rotations}/` и
+10 мутаций через API S3Worker (arch/24 §1.1) — панель в etcd домена S3 не
+пишет ничего.
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -166,6 +169,21 @@ pg/kafka-инстансов) пробит живые инстансы ValkeyWork
 живых ключей → 503 мутаций + critical-алерт `worker-api-unreachable`
 (03 §8.4). Остальные ключи `/valkeyworker/` панель не читает и не пишет
 (кроме `rotations/` — §11.1).
+
+### 2.3.4. `/s3worker/api/…` — дискавери API S3Worker
+
+Симметрично §2.3.3: lease-ключи `/s3worker/api/<id>` (ставит сам воркер,
+arch/23 §8; формат `{"url","instance","since_unix","cert_thumbprint"?}`)
+читаются s3-refresher'ом в `S3Snapshot.WorkerEndpoints` — источник URL
+для s3-мутаций §12.2. API — mTLS той же пакеты per-install API-CA
+(`AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`), серверный серт —
+ключ `/workers/api_tls/s3worker` (§9.9). По тем же URL тик опроса
+`/healthz` (`AdminPanel:Workers:HealthIntervalSec`, тем же поллером, что у
+pg/kafka/valkey-инстансов) пробит живые инстансы S3Worker → `WorkerHealth[]`
+в `S3Snapshot.WorkerHealth`, warning-алерт `worker-unhealthy` (03 §12.4).
+Отсутствие живых ключей → 503 мутаций + critical-алерт
+`worker-api-unreachable` (03 §12.4). Остальные ключи `/s3worker/` панель
+не читает и не пишет (кроме `rotations/` — §12.1).
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -815,7 +833,7 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 ### 9.9. Серверные серты API воркеров (создание/замена/удаление + перезапуск)
 
 Управление серверными сертами входящих mTLS-граней воркеров
-(`pgworker`, `kafkaworker`, `valkeyworker` — t03) и перезапуск инстансов.
+(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`) и перезапуск инстансов.
 В отличие от §9.1–§9.8, запись идёт **напрямую в etcd** (не через API
 воркера): воркер не может «принять» серт без перезапуска, а панель должна
 уметь положить серт ДО первого запуска воркера. Воркеры ключи только читают
@@ -829,6 +847,7 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
                                "updated_unix":<unix>,"updated_by":"<username>"}
 /workers/api_tls/kafkaworker   (симметрично)
 /workers/api_tls/valkeyworker  (симметрично; t03)
+/workers/api_tls/s3worker   (симметрично; env-фоллбек воркера — S3W_API_TLS_{CERT,KEY,CLIENT_CA})
 ```
 
 `key_pem` — приватный ключ: в снапшот/API/UI отдаются ТОЛЬКО метаданные
@@ -1142,16 +1161,79 @@ instances) панель не читает и не пишет.
 | `memGi`/`diskGi` | целые GiB 1..65536, def 1/10 (на ноду; в etcd `"<n>Gi"`; `disk` — инфо-поле, действий не вызывает) |
 | инвариант R3 | `maxmemoryBytes < memGi`-лимит (иначе OOM-килл контейнера) — 400 при create и конфиг-мутациях; UI-предупреждение (03 §8.3) |
 
-## 12. S3 (read-минимум; t36)
+## 12. S3 (чтение + мутации)
 
-Панель читает `/s3/clusters/*/` (домен — [23-s3-clusters.md](../23-s3-clusters.md))
-в домен-снапшот `S3Pools` — ТОЛЬКО для страницы «Хранилище бэкапов»:
-список пулов (имя кластера `/s3/clusters/`, `config.secret_profile`,
-Active-статус — отсутствие `state`), состав нод (имена из ключей
+Пятый домен панели. Канон ключей —
+[23-s3-clusters.md](../23-s3-clusters.md) (§2 — состав кластера, §3 —
+connectivity/sync зонда, §4 — placement, §6 — PKI, §8 — ротации и API);
+этот раздел — панельная проекция. Декларатор — панель, исполнитель —
+S3Worker ([24-s3worker.md](../24-s3worker.md)); панель никогда не трогает
+контейнеры и ноды S3 напрямую. Отдельный домен-снапшот `S3Snapshot`
+(не `EtcdSnapshot`/`KafkaSnapshot`/`ValkeySnapshot`) — своя механика тика
+§4, теми же транспортом §1 и настройками endpoints.
+
+### 12.1. Читаемые ключи
+
+| Префикс/ключ | В модель | Примечание |
+|---|---|---|
+| `/s3/clusters/<C>/config` | `S3ClusterInfo` (config + state-маппинг: отсутствие = Active) | `platform` (`owns3`), `nodes`, `secret_profile`, `created_unix` |
+| `/s3/clusters/<C>/nodes/<I>/{placement,resources,state,placed_on,usage}` | `S3NodeInfo` | `state` — raw-строка (толерантно к новым); `usage` — занятость диска |
+| `/s3/clusters/<C>/links` | список пар `S3ReplicationLink` | граф репликации |
+| `/s3/clusters/<C>/denylist` | список имён | отозванные инстансы |
+| `/s3/clusters/<C>/endpoints` | `S3ClusterInfo.Endpoints` | точка дискавери клиентов; отсутствие у Active с нодами — critical-алерт |
+| `/s3/clusters/<C>/connectivity` | `S3ConnectivityInfo` (state, checked_unix, links-матрица, probe_error?) | зонд |
+| `/s3/clusters/<C>/sync` | `S3SyncInfo` (state, checked_unix, pairs, last_error?) | зонд |
+| `/s3worker/rotations/<C>` | `S3RotationTicket` | живая заявка ротации секретов |
+| `pki/*`, `nodes/<I>/pki` | — (парсер пропускает молча, без unknownKeys) | PKI репликации — только воркеру |
+
+Неизвестные ключи внутри `/s3/` — лог + `unknownKeys`; битый JSON —
+parseError-запись + warning-алерт `s3-key-malformed`.
+
+### 12.2. Мутации панели (10; исполняет S3Worker API — arch/24 §1.1)
+
+Панель отправляет команду в API воркера, URL — живой
+`/s3worker/api/<id>` (§2.3.4); воркер валидирует и пишет etcd; панель
+маппит коды 1:1 (503 — в т.ч. когда живых ключей нет). Протоколы записи —
+канон исполнителя arch/24 §1.1 (клэйм-txn, атомарность, идемпотентность
+already→204/202); панель — прокси, тело команды передаёт как есть.
+`requested_by` — username сессии панели (заголовок `X-Requested-By`;
+мутации 9–10 — с аудитом). Отмена заявок ротации из панели НЕТ (снятие —
+только воркером).
+
+| # | Мутация | Эндпоинт панели → эндпоинт воркера | Отказы |
+|---|---|---|---|
+| 1 | Создание кластера | `POST /api/s3/clusters` → `POST /api/s3/clusters` | 400, 409, 422 (профиль секретов), 503 |
+| 2 | Удаление кластера (TO_REMOVE) | `DELETE /api/s3/clusters/{c}` → тот же | 404, 503 |
+| 3 | Добавление инстанса | `POST /api/s3/clusters/{c}/nodes` → тот же | 400, 404, 409, 503 |
+| 4 | Маркер демонтажа инстанса | `DELETE /api/s3/clusters/{c}/nodes/{n}` → тот же | 404, 409 (последняя нода), 503 |
+| 5 | Ресурсы инстанса | `PUT /api/s3/clusters/{c}/nodes/{n}/resources` → тот же | 400, 404, 503 |
+| 6 | Граф репликации (замена целиком) | `PUT /api/s3/clusters/{c}/links` → тот же | 400 (links), 404, 503 |
+| 7 | Отзыв ключа инстанса (deny) | `POST /api/s3/clusters/{c}/nodes/{n}/deny` → тот же | 404, 503 |
+| 8 | Снятие отзыва (allow) | `POST /api/s3/clusters/{c}/nodes/{n}/allow` → тот же | 404, 503 |
+| 9 | Заявка ротации секретов профиля | `POST /api/s3/clusters/{c}/rotations` → тот же | 404, 503 |
+| 10 | Внеплановый зонд | `POST /api/s3/clusters/{c}/sync-probe` → тот же | 404, 409 (не Active), 503 |
+
+### 12.3. Валидация
+
+Сервер — источник истины (arch/24 §1.1), фронт дублирует для UX: имя
+кластера/инстанса `^[a-z][a-z0-9_]{0,62}$`; имя `orchestrator`
+зарезервировано; инстансы 0..9; placement — обязательный валидный селектор
+(минимум один атрибут `dockerHost`|`swarmNode`|`swarmLabels`); resources —
+cpu 0.01..64, mem/disk 1..65536 GiB; `secretProfile` — непустое имя (422 с
+перечнем доступных); links — имена существуют, `a≠b`, пары уникальны.
+`platform` — единственное значение `owns3` (панель подставляет всегда).
+
+### 12.4. Потребление страницей «Хранилище бэкапов» (t36)
+
+Домен S3 — единственный источник данных о пулах для грани «Хранилище
+бэкапов»: список пулов для модала «Пул бэкапов» (03 §3.8; мутация —
+прокси в policy-API воркера, §9.12) и колонки «Пул» таблицы
+«Кластеры → шарды» панель получает ИЗ ЭТОГО домена — тот же снапшот
+`S3Snapshot` и тот же тик §4 (второго домена/парсера/тика нет):
+имя кластера (`/s3/clusters/`), `config.secret_profile`, Active-статус
+(отсутствие `state` — §2 arch/23), состав нод (имена из ключей
 `nodes/<I>/state|placement`, состояние `state`) и адреса
-(`endpoints`-строка). Полное управление пулами (создание/инстансы/links/
-denylist/ротации) — t34, глава расширится. Мутаций домена у панели НЕТ
-(пул для страницы бэкапов выбирается policy кластера через policy-API
-воркера — §9.12); проекция read-only, poll-тик общий (§4),
-unknownKeys-толерантность и parseError — как у прочих доменов
-(`state`-семантика «отсутствие = Active», §2 arch/23).
+(`endpoints`-строка). Выбор пула для бэкапов кластера — policy кластера
+через policy-API воркера (§9.12): от этой грани мутаций домена НЕТ —
+чтение read-only, unknownKeys-толерантность и parseError — общие
+(12.1).

@@ -10,13 +10,14 @@ namespace OwnS3.UnitTests.Replication;
 public class ReplicationOptionsTests
 {
     [Fact]
-    public void ReconcileInterval_Default_Is60Seconds()
+    public void ReconcileInterval_Default_Is3Hours()
     {
         // Arrange/Act — дефолтный экземпляр (вне конфигурации)
         var options = new ReplicationOptions();
 
-        // Assert — период reconcile 60 с (§9 триггер 4: самозаживление suspend-проходов)
-        options.ReconcileIntervalSeconds.Should().Be(60);
+        // Assert — период reconcile 3 ч (§9 триггер 4: страховой контур, не
+        // основной канал доставки; тестовые контуры переопределяют env до 10 с)
+        options.ReconcileIntervalSeconds.Should().Be(10800);
     }
 
     [Fact]

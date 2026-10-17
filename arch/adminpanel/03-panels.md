@@ -16,7 +16,9 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 зафиксирована кодом): GET-эндпоинты и POST login/logout не
 мутируют инспектируемые системы (кластерные мутации пишут только ключи своих
 операций). Отдельный модуль **Kafka** (`/api/kafka/*` — §7): свои GET и 8
-мутаций декларативной модели (протоколы — 02 §10). JSON, camelCase,
+мутаций декларативной модели (протоколы — 02 §10). Отдельный модуль **S3**
+(`/api/s3/*` — §12): свои GET и 10 мутаций через API S3Worker (протоколы —
+02 §12). JSON, camelCase,
 `ProblemDetails` для ошибок.
 Все эндпоинты, кроме `login` и `healthz`, требуют cookie-сессию (401 без неё).
 
@@ -54,6 +56,7 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `PUT /api/workers/{worker}/api-cert` | загрузить готовый серт (02 §9.9): тело `{cert_pem, key_pem}` → 201 (те же коды, что generate) |
 | `DELETE /api/workers/{worker}/api-cert` | отказ от управляемого серта (откат к env после перезапуска; 02 §9.9): 204 \| 404 (ключа нет) \| 503 |
 | `POST /api/workers/{worker}/restart` | перезапуск воркера (02 §9.9): прокси `POST /api/restart` на каждый живой инстанс → 202 `{results:[{instance, accepted}\|{instance, error}]}`; живых нет → 503 |
+| `/api/s3/*` | модуль S3 (§12): инспекция + 10 мутаций через API S3Worker (02 §12.2) |
 
 Дополнительно к квери-параметрам: `?owner=&state=` на `/api/clusters/{c}`
 возвращают отфильтрованный `buckets` (удобно для детальной страницы; по
@@ -400,6 +403,7 @@ Active; не-Active — контрол заблокирован с подска�
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
 | **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker/ValkeyWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
 | **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets, etcd-снапшоты (reliability t08: последняя выгрузка — время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only); таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки; t36: колонка «Пул» — бейдж имени пула policy либо красный «пул не выбран», кнопка «Пул бэкапов» per-кластер → модал §3.8: Select пула + два упорядоченных списка мастера/реплики из нод пула); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Единственная форма ввода — модал «Пул бэкапов» (§3.8; мутация — прокси в policy-API воркера, 02 §9.12) |
+| **S3Clusters** / **S3ClusterDetails** | модуль S3 — §12.3 (вкладки Ноды/Репликация/Связность и синхронность) |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
 
@@ -463,10 +467,12 @@ id». Клиентская валидация — зеркало 02 §9.7.1 (н�
 ответа `/api/overview`, опрашиваемого с текущим polling-интервалом (при
 недоступности данных — «нет данных»), счётчики critical/warning у пункта
 «Алерты» в навигации (клиентский подсчёт по ответу `/api/alerts`, опрашиваемому
-с тем же интервалом; скрыты при нуле/ошибке). Форм ввода семь: логин,
-создание кластера (§3.1), добавление шарда (§3.2), перенос бакетов (§3.3),
-откат бакета (§3.4), финализация бакета (§3.5) и отмена переезда (§3.6) —
-всё остальное панель немая по отношению к данным.
+с тем же интервалом; скрыты при нуле/ошибке). Формы ввода — по доменам:
+pg (логин; создание кластера §3.1; добавление шарда §3.2; перенос бакетов
+§3.3; откат §3.4; финализация §3.5; отмена переезда §3.6), kafka (§7.3.1 и
+модалы §7.3), valkey (§8.3.1 и модалы §8.3), s3 (§12.3: создание кластера,
+добавление ноды, ресурсы ноды, редактор links) — всё остальное панель немая
+по отношению к данным.
 
 ### 3.4. Форма «Откатить бакет» (заявка rollback)
 
@@ -521,8 +527,8 @@ Active-кластер). Показывает маршрут owner→target, фа
 
 ### 3.7. Грань «Воркеры» (сертификаты API + перезапуск)
 
-Страница `/workers` — карточки PgWorker, KafkaWorker и ValkeyWorker
-(02 §9.9; ValkeyWorker — t03). В каждой:
+Страница `/workers` — карточки PgWorker, KafkaWorker, ValkeyWorker и
+S3Worker (02 §9.9). В каждой:
 
 - **Инстансы**: instance id, URL, uptime (since_unix), health-бейдж,
   thumbprint применённого серта.
@@ -945,3 +951,93 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 Контракт API не версонируется (панель и API развёртываются одним артефактом,
 фронт и бэк всегда согласованы). Изменение DTO — правкой этого документа
 тем же PR, что и код.
+
+## 12. S3: панель и REST API (`/api/s3/*`)
+
+Пятый домен (etcd-контракт — 02 §12, канон ключей — arch/23; мутации
+исполняет S3Worker, arch/24 §1.1). Источник данных — отдельный снапшот
+`S3Snapshot` (свой refresher, тик 3 с); live-проб нод нет (живость —
+`nodes/*/state`, связность/синхронность — ключи зонда).
+
+### 12.1. Список эндпоинтов
+
+| Метод+путь | Назначение |
+|---|---|
+| `GET /api/s3/clusters` | сводный список S3-кластеров |
+| `POST /api/s3/clusters` | создание кластера (02 §12.2-1): тело `CreateS3ClusterPanelRequest` → 201 \| 400 \| 409 \| 422 (профиль секретов) \| 503 |
+| `GET /api/s3/clusters/{cluster}` | детали: config, ноды, links, denylist, endpoints, connectivity, sync, ротация |
+| `DELETE /api/s3/clusters/{cluster}` | перевод в TO_REMOVE (демонтаж асинхронный — воркер): 202 \| 204 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/nodes` | добавление инстанса: тело `AddS3NodePanelRequest` → 201 \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/s3/clusters/{cluster}/nodes/{node}` | маркер демонтажа (one-way): 202 \| 204 \| 404 \| 409 \| 503 |
+| `PUT /api/s3/clusters/{cluster}/nodes/{node}/resources` | ресурсы инстанса: тело `UpdateS3ResourcesPanelRequest` → 200 \| 400 \| 404 \| 503 |
+| `PUT /api/s3/clusters/{cluster}/links` | граф репликации — замена целиком: тело `PutS3LinksPanelRequest` → 202 \| 400 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/nodes/{node}/deny` | отзыв ключа инстанса: 202 \| 204 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/nodes/{node}/allow` | снятие отзыва: 202 \| 204 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/rotations` | заявка ротации секретов профиля: 201 \| 200 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/sync-probe` | внеплановый зонд: 202 \| 404 \| 409 \| 503 |
+
+`GET /api/alerts` объединяет алерты всех движков (kind `s3-*`);
+`GET /api/overview` получает s3-сводку (clustersTotal, clustersCritical —
+critical-алерты `s3-node-not-running`/`s3-endpoints-missing`/
+`s3-connectivity-down`/`s3-sync-diverged`).
+
+### 12.2. DTO (ключевые поля)
+
+```text
+S3ClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
+    nodesTotal, nodesRunning, endpoints, connectivityState
+    (OK|DEGRADED|DOWN|null), syncState(SYNCED|LAGGING|DIVERGED|null),
+    rotationPending(bool)
+S3ClusterDto: name, state, platform, nodesDeclared, secretProfile,
+    createdUnix, endpoints, nodesList[S3NodeDto], links[{a,b}],
+    denylist[string], connectivity{state, checkedUnix,
+    links<map<string,map<string,string>>>, probeError?},
+    sync{state, checkedUnix, pairs[{from,to,missing,extra,lagBytes?,
+    lagObjects?}], lastError?}, rotation{requestedUnix, requestedBy}?
+S3NodeDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
+    UNREACHABLE|REMOVING|TO_REMOVE), placedOn, placement{dockerHost?,
+    swarmNode?, swarmLabels?}, resources{cpu, memGi, diskGi}(nullable),
+    usage{usedBytes, totalBytes, updatedUnix}(nullable), denied(bool)
+CreateS3ClusterPanelRequest: name, secretProfile, instances[]
+    {name, placement{dockerHost?|swarmNode?|swarmLabels?},
+    resources?{cpu?, memGi?, diskGi?}}, resources?{cpu?, memGi?,
+    diskGi?} (общий fallback — зеркалит DTO воркера)
+AddS3NodePanelRequest: name, placement, resources
+UpdateS3ResourcesPanelRequest: cpu?, memGi?, diskGi? (null = не менять)
+PutS3LinksPanelRequest: links[{a,b}]
+```
+
+Секреты (значения профилей) в DTO/API/UI не отдаются никогда.
+
+### 12.3. Панели UI
+
+| Панель | Что показывает |
+|---|---|
+| **S3Clusters** (`/s3`) | список: имя, state-бейдж (ACTIVE зелёный/NOT_INITIALIZED серый/TO_REMOVE красный), ноды running/всего, endpoints (сокращённо), бейджи связности (OK/DEGRADED/DOWN/—) и синхронности (SYNCED/LAGGING/DIVERGED/—), бейдж ротации («ротация…»); кнопка «Создать кластер» → модальная форма (динамический список инстансов 0..9: имя, placement — docker_host/swarm_node/swarm_labels key-value, ресурсы; подпись «допустимо 0 инстансов — декларация без развёртывания»; клиентская валидация — зеркало 02 §12.3; 422 — перечень профилей текстом) |
+| **S3ClusterDetails** (`/s3/:cluster`) | шапка: state-бейджи, endpoints (моно), secretProfile (только имя); кнопки «Проверить сейчас» (sync-probe; 409 «кластер не Active» — текстом), «Ротация секретов» (модал-предупреждение: rolling-пересоздание инстансов с новым env профиля, PKI переиспользуется), «Удалить кластер» (красная; confirm: снос уничтожает данные бэкапов на дисках всех инстансов — осознанное действие; демонтаж асинхронный; при TO_REMOVE скрыта); `canMutate` = Active; вкладки: **Ноды** (таблица name/state/placed_on/placement/resources/usage — used/total и процент от декларации disk; бейдж «отозван» + Deny (confirm: связи с инстансом сносятся, будущие join запрещены)/Allow; «Добавить ноду», «Изменить ресурсы», красная «Убрать ноду» (confirm: volume инстанса сносится — копия на остальных при настроенных связях; последняя нода — серверный 409 текстом)), **Репликация** (таблица пар + матрица смежности нода×нода; deny-ноды помечены; анти-аффинити: совпадения placed_on подсвечены «один хост»; редактор — модал «таблица пар» → PUT links целиком, 202 — применит доводка воркера; подсказка «полный меш не обязателен; ноды одного кластера — на разных хостах/площадках»), **Связность и синхронность** (connectivity-матрица ok/offline + state + checked_unix-штамп + probe_error; sync-таблица пар from/to/missing/extra/lag_bytes/lag_objects + state + last_error; пустые матрицы — «линков не настроено») |
+
+### 12.4. Каталог s3-алертов (`S3AlertEngine`)
+
+Чистая функция `S3Snapshot (prev, next) → Alert[]`; пороги —
+`AdminPanel:S3Alerts`; sinceUnix по стабильному `id = kind:target`
+(§2-механика); Hint/Remedy обязательны (§4.1).
+
+| kind | severity | Условие |
+|---|---|---|
+| `s3-cluster-not-initialized` | info | state=NOT_INITIALIZED |
+| `s3-cluster-to-remove` | info | state=TO_REMOVE |
+| `s3-node-not-running` | critical | Active-кластер, нода state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
+| `s3-endpoints-missing` | critical | Active-кластер с нодами (nodes>0) без `endpoints` |
+| `s3-connectivity-degraded` | warning | connectivity.state=DEGRADED |
+| `s3-connectivity-down` | critical | connectivity.state=DOWN |
+| `s3-sync-lagging` | warning | sync.state=LAGGING |
+| `s3-sync-diverged` | critical | sync.state=DIVERGED |
+| `s3-sync-stale` | warning | у Active-кластера с RUNNING-нодами connectivity/sync отсутствуют или `checked_unix` старше `SyncStaleSec` (def 300) — зонд молчит |
+| `s3-node-disk-usage-high` | warning | `usage.used/usage.total > DiskUsagePercent` (def 85) или `used > resources.disk`-декларации |
+| `s3-nodes-same-host` | warning | ≥2 нод кластера с одинаковым `placed_on` (гео-раснос — обязанность оператора, arch/23 §4) |
+| `s3-node-not-in-mesh` | warning | нода Active-кластера без единой связи в `links` (частичный граф — риск безрепликационной доли) |
+| `s3-rotation-pending` | info | живая заявка `/s3worker/rotations/<C>` |
+| `s3-rotation-stale` | warning | заявка ротации жива дольше `RotationStaleSeconds` (def 1800) |
+| `s3-key-malformed` | warning | s3-ключ не разобран (parseError) |
+| `worker-api-unreachable` | critical | нет живых ключей `/s3worker/api/` (02 §2.3.4) — s3-мутации панели 503; target `s3worker` |
+| `worker-unhealthy` | warning | живой ключ, но `/healthz` ≠ 200 (02 §2.3.4); target `s3worker/<id>` |
