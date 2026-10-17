@@ -110,15 +110,29 @@ s3_pool_put() { docker run --rm --network "$STAND_NET" curlimages/curl:latest sh
     i=$((i+1)); sleep 5
   done
   echo $code' _curl_ "$1"; }
-s3_on=',"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}'
+# base_policy оставляет корневой { открытым: s3_on закрывает и секцию s3,
+# и корень (две }}); s3_off закрывает корень с "s3":null.
+s3_on=',"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}'
+# Факт policy — etcd-ключ (панель — прокси мутаций; DTO /api/backups/storage
+# секцию s3 не отдаёт — форма дрилов t02). PUT 200 = воркер уже записал;
+# ретрай 10 c — запас на асинхронность прокси.
+policy_etcd() {
+  for i in $(seq 1 10); do
+    v="$(docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 \
+      get /pgworker/backups/demo/policy --print-value-only </dev/null 2>/dev/null || true)"
+    echo "$v" | jq -e "$1" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
 code="$(s3_pool_put "$base_policy$s3_on")"
 [ "$code" = "200" ] || { echo "❌ PUT policy c s3: $code (ожидался 200)"; exit 1; }
-api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3.pool == "backups")' >/dev/null \
-  || { echo "❌ policy.demo: секция s3 не записана"; exit 1; }
-s3_off=',{"s3":null}'
+policy_etcd '.s3.pool == "backups" and (.s3.write_master | index("node1")) and (.s3.write_replica | index("node1"))' \
+  || { echo "❌ policy.demo: секция s3 не записана воркером"; exit 1; }
+s3_off=',"s3":null}'
 code="$(s3_pool_put "$base_policy$s3_off")"
 [ "$code" = "200" ] || { echo "❌ PUT policy без s3 (сброс): $code"; exit 1; }
-api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3 == null)' >/dev/null \
+policy_etcd '.s3 == null' \
   || { echo "❌ policy.demo: сброс s3 не сработал"; exit 1; }
 echo "  policy s3: выбор пула и сброс через панель — ок"
 
