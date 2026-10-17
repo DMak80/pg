@@ -517,7 +517,7 @@ export interface UpdateBackupsPolicyRequestDto {
   s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
 }
 
-// GET /api/backups/s3-pools (t36, 02 §12): пулы /s3/clusters/ read-минимум
+// GET /api/backups/s3-pools (02 §12.4): пулы из единого домена S3 —
 // для Select модала «Пул бэкапов» (без ключей/секретов).
 export function fetchS3Pools(): Promise<S3PoolDto[]> {
   return apiFetch<S3PoolDto[]>('/api/backups/s3-pools');
