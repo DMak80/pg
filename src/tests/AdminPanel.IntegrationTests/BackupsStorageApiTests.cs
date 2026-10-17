@@ -130,7 +130,9 @@ public class BackupsStorageInventoryApiTests(
         using var response = await client.GetAsync(
             "/api/backups/storage", TestContext.Current.CancellationToken);
 
-        // Assert: 200; configured + health по всем трём пробам; bucket в списке.
+        // Assert: 200; configured + health; bucket в списке. ClusterOk — null
+        // вне MinIO-контура (02 §2.5): ownS3 не реализует cluster-пробу
+        // (/minio/health/cluster не отвечает) — панель фиксирует отсутствие.
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
@@ -138,7 +140,8 @@ public class BackupsStorageInventoryApiTests(
         var health = dto.GetProperty("health");
         health.GetProperty("apiOk").GetBoolean().Should().BeTrue();
         health.GetProperty("liveOk").GetBoolean().Should().BeTrue();
-        health.GetProperty("clusterOk").GetBoolean().Should().BeTrue();
+        health.GetProperty("clusterOk").ValueKind.Should().Be(JsonValueKind.Null,
+            "ownS3 не реализует /minio/health/cluster — ClusterOk null вне MinIO-контура (02 §2.5)");
         dto.GetProperty("buckets")
             .EnumerateArray().Select(b => b.GetString())
             .Should().Contain(s3.Bucket);
