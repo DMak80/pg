@@ -279,7 +279,7 @@ public sealed class HandlersValidationTests
     [InlineData("x-amz-checksum-crc32",  "crc32",  "Ox7nCg==")]                  // вектор 6: crc32(TestVectors.PutBody)
     [InlineData("x-amz-checksum-crc32c", "crc32c", "4waSgw==")]                  // эталон RFC 3720 (big-endian)
     [InlineData("x-amz-checksum-sha1",   "sha1",   "2jmj7l5rSw0yVb/vlWAYkK/YBwk=")] // sha1("")
-    [InlineData("x-amz-checksum-sha256", "sha256", "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3GSuDM=")] // sha256("")
+    [InlineData("x-amz-checksum-sha256", "sha256", "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=")] // sha256("")
     public void ParseChecksumHeader_SingleKnown_ReturnsExpectation(string header, string algorithm, string value)
     {
         // Arrange / Act

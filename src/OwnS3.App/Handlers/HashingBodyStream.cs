@@ -1,4 +1,6 @@
+using System.IO.Hashing;
 using System.Security.Cryptography;
+using OwnS3.Protocol.Auth;
 using OwnS3.Protocol.Errors;
 
 namespace OwnS3.App.Handlers;
@@ -15,14 +17,29 @@ public sealed class HashingBodyStream : Stream
     private readonly IncrementalHash _sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
     private readonly IncrementalHash? _md5;
     private readonly string? _expectedMd5Base64;
+    private readonly ChecksumExpectation? _checksum;
+    private readonly Crc32? _checksumCrc32;          // алгоритм Crc32 (System.IO.Hashing)
+    private readonly Crc32C? _checksumCrc32c;        // алгоритм Crc32C (OwnS3.Protocol.Auth)
+    private readonly IncrementalHash? _checksumSha1; // алгоритм Sha1 (Sha256 — существующий _sha256)
     private bool _checked;
 
-    public HashingBodyStream(Stream inner, string? expectedSha256Hex, string? expectedMd5Base64)
+    public HashingBodyStream(Stream inner, string? expectedSha256Hex, string? expectedMd5Base64,
+        ChecksumExpectation? checksum = null)
     {
         _inner = inner;
         _expectedSha256Hex = expectedSha256Hex;
         _expectedMd5Base64 = expectedMd5Base64;
         _md5 = expectedMd5Base64 is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        // Ровно один инкрементальный хэш поверх прохода чтения; Sha256 — переиспользование
+        // уже существующего _sha256 (второй инстанс не создаётся).
+        _checksum = checksum;
+        if (checksum is not null)
+            switch (checksum.Algorithm)
+            {
+                case ChecksumAlgorithm.Crc32: _checksumCrc32 = new(); break;
+                case ChecksumAlgorithm.Crc32C: _checksumCrc32c = new(); break;
+                case ChecksumAlgorithm.Sha1: _checksumSha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1); break;
+            }
     }
 
     public override bool CanRead => _inner.CanRead;
@@ -38,6 +55,9 @@ public sealed class HashingBodyStream : Stream
         {
             _sha256.AppendData(buffer, offset, read);
             _md5?.AppendData(buffer, offset, read);
+            _checksumCrc32?.Append(buffer.AsSpan(offset, read));
+            _checksumCrc32c?.Append(buffer.AsSpan(offset, read));
+            _checksumSha1?.AppendData(buffer, offset, read);
         }
         else
         {
@@ -53,6 +73,9 @@ public sealed class HashingBodyStream : Stream
         {
             _sha256.AppendData(buffer, offset, read);
             _md5?.AppendData(buffer, offset, read);
+            _checksumCrc32?.Append(buffer.AsSpan(offset, read));
+            _checksumCrc32c?.Append(buffer.AsSpan(offset, read));
+            _checksumSha1?.AppendData(buffer, offset, read);
         }
         else
         {
@@ -72,6 +95,7 @@ public sealed class HashingBodyStream : Stream
         {
             // Dispose без дочитывания — сверка не выполняется (частичное чтение).
         }
+        _checksumSha1?.Dispose();
         base.Dispose(disposing);
     }
 
@@ -87,6 +111,21 @@ public sealed class HashingBodyStream : Stream
             if (!string.Equals(actual, _expectedSha256Hex, StringComparison.Ordinal))
                 throw new S3ProtocolException(S3ErrorCode.InvalidRequest,
                     "The provided x-amz-content-sha256 does not match what was computed.");
+        }
+
+        if (_checksum is not null)
+        {
+            var actualChecksum = _checksum.Algorithm switch
+            {
+                ChecksumAlgorithm.Sha256 => Convert.ToBase64String(_sha256.GetCurrentHash()),
+                ChecksumAlgorithm.Crc32 => Convert.ToBase64String(
+                    ChecksumConventions.Crc32BigEndian(_checksumCrc32!)),
+                ChecksumAlgorithm.Crc32C => Convert.ToBase64String(_checksumCrc32c!.GetCurrentHash()),
+                _ => Convert.ToBase64String(_checksumSha1!.GetCurrentHash()),
+            };
+            if (!string.Equals(actualChecksum, _checksum.ExpectedBase64, StringComparison.Ordinal))
+                throw new S3ProtocolException(S3ErrorCode.BadDigest,
+                    "The checksum you specified did not match the calculated checksum.");
         }
 
         if (_md5 is not null && _expectedMd5Base64 is not null)
