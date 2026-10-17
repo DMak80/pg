@@ -130,9 +130,9 @@ public class BackupsStorageInventoryApiTests(
         using var response = await client.GetAsync(
             "/api/backups/storage", TestContext.Current.CancellationToken);
 
-        // Assert: 200; configured + health; bucket в списке. ClusterOk — null
-        // вне ownS3-контура (02 §2.5): cluster-проба не отвечает —
-        // панель фиксирует отсутствие.
+        // Assert: 200; configured + health; bucket в списке. ClusterOk —
+        // true (02 §2.5): фикстура поднимает ownS3 с /s3/health/cluster —
+        // здоровая нода отвечает 200.
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
@@ -140,8 +140,8 @@ public class BackupsStorageInventoryApiTests(
         var health = dto.GetProperty("health");
         health.GetProperty("apiOk").GetBoolean().Should().BeTrue();
         health.GetProperty("liveOk").GetBoolean().Should().BeTrue();
-        health.GetProperty("clusterOk").ValueKind.Should().Be(JsonValueKind.Null,
-            "cluster-проба не отвечает — ClusterOk null вне ownS3-контура (02 §2.5)");
+        health.GetProperty("clusterOk").GetBoolean().Should().BeTrue(
+            "ownS3-нода отвечает 200 на /s3/health/cluster — ClusterOk true (02 §2.5)");
         dto.GetProperty("buckets")
             .EnumerateArray().Select(b => b.GetString())
             .Should().Contain(s3.Bucket);

@@ -54,16 +54,16 @@ echo "  налиты demo/shard1/full/20260913a/base.tar и demo/shard1/wal/…0
 # подъёме, reconfigure не нужна.
 tree_ok() {
   api /api/backups/storage | jq -e \
-    '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == null
+    '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == true
      and any(.clusters[]?; .cluster == "demo")
      and any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "shard1" and .fullsCount >= 1)' >/dev/null
 }
 for i in $(seq 1 70); do tree_ok && break; sleep 1; done
 tree_ok || { echo "❌ /api/backups/storage: configured/health/дерево demo не зелёные за 70 c (инвентарь-тик?)"; exit 1; }
 storage="$(api /api/backups/storage)"
-echo "$storage" | jq -e '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == null' >/dev/null \
+echo "$storage" | jq -e '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == true' >/dev/null \
   || { echo "❌ /api/backups/storage: configured/health"; exit 1; }
-echo "  /api/backups/storage: configured=true, health api/live ok, cluster n/a (ownS3)"
+echo "  /api/backups/storage: configured=true, health api/live/cluster ok (ownS3 /s3/health/cluster)"
 
 # Дерево: кластер demo налит, шард s1 несёт полный бэкап.
 echo "$storage" | jq -e 'any(.clusters[]?; .cluster == "demo")' >/dev/null \
