@@ -338,17 +338,13 @@ services:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
 
-  # ownS3 (arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
+  # ownS3 (../OwnS3/arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
   # `owns3` в стендовой сети — override `docker-compose.contour.yml`,
   # `:9010` — наружу); as-minio полного стенда — переходный read-only-архив
   # (docs/owns3-migration.md). standalone-сервис: без etcd, без docker.sock;
-  # один процесс, один том.
+  # один процесс, один том. Образ — ВНЕШНИЙ: собирается репозиторием
+  # `../OwnS3` (`deploy/build-image.sh` там); pg его не собирает.
   owns3:
-    build:
-      context: ..
-      dockerfile: docker/OwnS3.Dockerfile
-      args:
-        OWNS3_PUBLISH_DIR: artifacts/owns3/publish
     image: owns3:dev
     restart: unless-stopped
     ports:
@@ -358,7 +354,7 @@ services:
     environment:
       OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
       OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
-      # Статические ключи (arch/owns3/05 §2): writer подсистемы бэкапов
+      # Статические ключи (../OwnS3/arch/owns3/05 §2): writer подсистемы бэкапов
       # (= PGW_BACKUP_S3_* — один комплект, arch/19 §7) + read-only панель.
       # Пустые значения безопасны: сервис читает их напрямую и стоп на
       # первом пустом индексе (только root).
@@ -370,7 +366,7 @@ services:
       OWNS3_ACCESS_KEYS__1__POLICY: ${OWNS3_ACCESS_KEYS__1__POLICY:-}
     volumes:
       - owns3-data:/data
-  # TLS-опция ПРОД-инсталляции (t42, arch/owns3/05 §6): раскомментировать —
+  # TLS-опция ПРОД-инсталляции (t42, ../OwnS3/arch/owns3/05 §6): раскомментировать —
   # грань станет HTTPS-only на том же порту 9000 (серт owns3 из deploy/tls/gen.sh,
   # PEM-альтернатива — OWNS3_TLS_CERT/KEY). Добавить строку к volumes выше и
   # ключи к environment выше. Стенд живёт HTTP-only — не включать.
@@ -379,9 +375,9 @@ services:
   #   OWNS3_TLS_CERT_PATH: /tls/owns3.crt
   #   OWNS3_TLS_KEY_PATH: /tls/owns3.key
 
-  # ownS3 XL Erasure (t40, arch/owns3/06 §1): второй режим хранения — тот же
-  # образ owns3:dev (build НЕ дублируется: профиль поднимается на образе,
-  # собранном сервисом owns3 / 00-up.sh), 4 тома под /data1../data4 (сет 3+1).
+  # ownS3 XL Erasure (t40, ../OwnS3/arch/owns3/06 §1): второй режим хранения — тот же
+  # образ owns3:dev (build НЕ дублируется: профиль поднимается на внешнем
+  # образе owns3:dev (репозиторий ../OwnS3)), 4 тома под /data1../data4 (сет 3+1).
   # Профиль owns3-ec — явно: `docker compose --profile owns3-ec up -d owns3-ec`.
   # Контур standalone: без etcd, без docker.sock.
   owns3-ec:
@@ -403,7 +399,7 @@ services:
       - owns3-ec-data-3:/data3
       - owns3-ec-data-4:/data4
 
-  # Mesh-репликация ownS3 (t35, arch/owns3/07): пул 2–5 серверов на разных
+  # Mesh-репликация ownS3 (t35, ../OwnS3/arch/owns3/07): пул 2–5 серверов на разных
   # docker-хостах (гео). Профиль owns3-mesh — ДЕМОНСТРАЦИЯ 2 узлов одной сети
   # (прод — узлы на разных хостах, endpoint — advertised host:port). Каждый узел
   # знает соседа (env-seed первого старта; состав живого пула меняется
