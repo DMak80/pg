@@ -51,7 +51,7 @@ public sealed class BackupOrphanSweeper(
         var poolNames = await pools.ListPoolNamesAsync(ct);
         if (!poolNames.IsSuccess)
             return Result.Failed(poolNames.Error!);
-        var observedKeys = new HashSet<string>(StringComparer.Ordinal);
+        var observedKeys = new HashSet<(string Pool, string Key)>();
         var observedObjects = new List<S3ObjectInfo>();
         foreach (var poolName in poolNames.Value)
         {
@@ -63,7 +63,7 @@ public sealed class BackupOrphanSweeper(
             if (!listed.IsSuccess)
                 continue; // transient этого пула — повтор прохода
             foreach (var obj in listed.Value)
-                if (observedKeys.Add(obj.Key))
+                if (observedKeys.Add((poolName, obj.Key)))
                     observedObjects.Add(obj);
         }
 

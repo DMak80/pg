@@ -95,7 +95,6 @@ echo "  s3-pools: пул backups с нодами, секретов в DTO нет
 
 # Мутация секции s3 policy через панель (замещение целиком) + сброс.
 LOGIN_BODY='{"username":"admin","password":"admin"}'
-api_auth() { curl -fsS -b "$JAR" "$BASE$1"; }
 api_auth_put() { curl -fsS -b "$JAR" -o /dev/null -w '%{http_code}' -X PUT "$BASE$1" -H 'Content-Type: application/json' -d "$2"; }
 base_policy='{"retentionDays":1,"retentionWeeks":1,"retentionMonths":1,"fullMaxAgeSec":86400,"verifyOnCreate":true,"drillIntervalDays":1'
 # PUT — из контейнера стендовой СЕТИ: путь через docker-proxy хоста на этом

@@ -597,16 +597,17 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Воркер t28: ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
     // разнесён — StartRestoreHostAsync не задаёт Wal:AgentImage,
     // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; t28 нужны и
-    // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. ОБА S3-поля — ОДНО значение
-    // Fx.S3Endpoint (http://host.docker.internal:<порт>, БЕЗ замены на
-    // localhost — паттерн StartRestoreHostAsync единственного зелёного контура
-    // «полные + WAL + restore», spec §3.1): full-джоб получает СЫРОЙ
-    // S3Endpoint в env (PGW_BK_S3_ENDPOINT, BackupJobSpec) и грузит бэкап
-    // mc cp ИЗНУТРИ своего контейнера — localhost там недостижим; WAL- и
-    // restore-агенты берут то же значение через AdvertisedEndpoint
-    // (AgentS3Endpoint). Замена host.docker.internal → localhost — ТОЛЬКО в
-    // host-клиентах сценария (HostS3Client): воркер-процесс на хосте
-    // резолвит host.docker.internal.
+    // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. S3 — один пул из policy.s3,
+    // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
+    // host.docker.internal (БЕЗ замены на localhost — паттерн
+    // StartRestoreHostAsync единственного зелёного контура «полные + WAL +
+    // restore», spec §3.1): full-джоб грузит бэкап mc cp ИЗНУТРИ своего
+    // контейнера по списку PGW_BK_S3_ENDPOINTS (BackupJobSpec) — localhost
+    // там недостижим; WAL-агент получает те же ноды списками S3_ENDPOINTS/
+    // S3_READ_ENDPOINTS, restore-джоба — S3_ENDPOINTS (алиасы per-ноды пула).
+    // Замена host.docker.internal → localhost — ТОЛЬКО в host-клиентах
+    // сценария (HostS3Client): воркер-процесс на хосте резолвит
+    // host.docker.internal.
     private Task<HostInstance> StartTliSwitchHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {

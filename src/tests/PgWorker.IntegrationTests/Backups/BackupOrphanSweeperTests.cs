@@ -400,4 +400,31 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         entry.State.Should().Be(OrphanState.Observed);
         s3.DeletedKeys.Should().BeEmpty("кандидата нет — удаления нет");
     }
+
+    // AAA (t36, arch/19 §5): дедуп union-листинга — по (пул, ключ): одинаковый
+    // ключ в двух пулах учитывается КАЖДОЙ пул-копией (размер реестра = сумма
+    // по пулам); дедуп по голому ключу схлопывал бы межпулевые дубли
+    [Fact]
+    public async Task Проход_ключ_в_двух_пулах_учитывается_дважды()
+    {
+        // Arrange — сирота ghost/s1 (объект 100 байт); оба пула листят ОДИН фейк
+        var ct = TestContext.Current.CancellationToken;
+        var s3 = new FakeBackupS3();
+        var clock = await SeedAsync(s3);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
+        var (factory, store) = FakePoolFactory.TwoPoolsSameTarget(s3);
+        var sweeper = new BackupOrphanSweeper(fixture.Gateway, [fixture.Endpoint],
+            factory, store, claims,
+            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
+            () => Options(), clock);
+
+        // Act — один проход
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — запись одна (префикс общий), размер = 100+100: обе пул-копии в union
+        var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
+        entry.Prefix.Should().Be("ghost/s1");
+        entry.SizeBytes.Should().Be(200, "дедуп по (пул, ключ) — межпулевый дубль не схлопнут");
+    }
 }

@@ -407,22 +407,6 @@ public class E2eSupervisorSelfHealScenarios
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
         }, ct: ct);
 
-    // Воркер сценария сирот: реестр+TTL в сжатом времени; verify off.
-    private Task<HostInstance> StartOrphanHostAsync(string name, CancellationToken ct)
-        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
-        {
-            ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
-            ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
-            ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
-            ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
-            ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "120",
-        }, ct: ct);
-
     private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
         => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
             TestContext.Current.CancellationToken)).Value;
