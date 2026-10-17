@@ -501,6 +501,9 @@ if (app.Services.GetRequiredService<StorageModeInfo>().IsErasure
 app.MapGet("/healthz", () => drive.CheckHealth()
     ? Results.Ok()
     : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
+// Кластер-health (канон 05 §5): готовность записи; перехват пути — шаг 0
+// S3Middleware (до роутинга 21 операций); без подписи.
+app.MapGet("/s3/health/cluster", OwnS3.App.Handlers.AdminHandlers.HandleClusterHealthAsync);
 app.MapAppMetrics();
 
 await app.RunAsync();

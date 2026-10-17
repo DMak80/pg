@@ -37,7 +37,9 @@ public sealed class S3Middleware(
     {
         // Шаг 0: служебные пути — точное совпадение, запрос уходит в endpoint'ы.
         var path = context.Request.Path;
-        if (path == "/healthz" || (metricsOptions.Enabled && path == metricsOptions.Path))
+        if (path == "/healthz"
+            || path.StartsWithSegments("/s3/health")    // кластер-health: до роутинга 21 операции (канон 05 §5); сегментная граница — /s3/healthzz не матчится
+            || (metricsOptions.Enabled && path == metricsOptions.Path))
         {
             await next(context);
             return;

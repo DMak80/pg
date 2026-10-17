@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http;
+using OwnS3.Storage;
 using OwnS3.Storage.Erasure;
 
 namespace OwnS3.App.Handlers;
@@ -124,5 +125,46 @@ public static class AdminHandlers
             context.RequestServices.GetRequiredService<ErasureHealService>().RequestPass();
         context.Response.StatusCode = StatusCodes.Status202Accepted;
         return Task.CompletedTask;
+    }
+
+    // GET /s3/health/cluster (канон 05 §5): готовность хранилища обслуживать
+    // запись — single: touch-проба тома (условия /healthz); EC: все сеты
+    // writable (write-кворум, глава 06). Публичная проба наблюдения — без
+    // подписи (прецедент /healthz; потребитель — ClusterOk-проба панели,
+    // adminpanel/02 §2.5). Тело — JSON drives-счётчики camelCase (long);
+    // healingDrives не отдаётся (heal-проход не per-drive — /admin/storage).
+    public static async Task HandleClusterHealthAsync(HttpContext context)
+    {
+        var mode = context.RequestServices.GetRequiredService<StorageModeInfo>();
+        long healthy, offline, total;
+        bool writable;
+        if (mode.IsErasure)
+        {
+            var status = context.RequestServices.GetRequiredService<ErasureStatusProvider>().GetStatus();
+            var drives = status.Sets.SelectMany(set => set.Drives).ToList();
+            total = drives.Count;
+            healthy = drives.Count(d => d.Online);
+            offline = total - healthy;
+            writable = status.Sets.All(set => set.Writable);
+        }
+        else
+        {
+            var drive = context.RequestServices.GetRequiredService<IXlDrive>();
+            writable = drive.CheckHealth();
+            total = 1;
+            healthy = writable ? 1 : 0;
+            offline = 1 - healthy;
+        }
+
+        context.Response.StatusCode = writable
+            ? StatusCodes.Status200OK
+            : StatusCodes.Status503ServiceUnavailable;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsync(JsonSerializer.Serialize(new
+        {
+            healthyDrives = healthy,
+            offlineDrives = offline,
+            totalDrives = total,
+        }, JsonOptions));
     }
 }
