@@ -87,7 +87,9 @@ echo "  секретов AccessKey/SecretKey в DTO нет"
 # несёт его с нодами, DTO без ключей.
 api /api/backups/s3-pools | jq -e 'any(.[]; .name == "backups" and (.nodes | length) >= 1)' >/dev/null \
   || { echo "❌ /api/backups/s3-pools: пула backups нет (сид 00-up.sh?)"; exit 1; }
-api /api/backups/s3-pools | jq -e '((tostring) | contains("SecretKey") or contains("ACCESS_KEY") or contains("secret")) | not' >/dev/null \
+# secretProfile (ИМЯ env-профиля, arch/19 §7) в DTO легален; секреты —
+# только ключи доступа: AccessKey/SecretKey/ACCESS_KEY/SECRET_KEY.
+api /api/backups/s3-pools | jq -e '((tostring) | test("AccessKey|SecretKey|ACCESS_KEY|SECRET_KEY")) | not' >/dev/null \
   || { echo "❌ /api/backups/s3-pools: просочились секреты"; exit 1; }
 echo "  s3-pools: пул backups с нодами, секретов в DTO нет"
 
