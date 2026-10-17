@@ -254,12 +254,12 @@ echo "  образ pgworker-backup:dev готов"
 #     владелец сети adminpanel-stand-net (выше); deploy-контур подключается
 #     к ней external (contour-override). Здесь — проверки живости (нужен
 #     собранный etcd-кворум выше); demo создаётся ниже (1c, POST /api/clusters).
-MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
-for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker не ожил за 60 c (https :${PGW_API_HOST_PORT:-8080}/healthz по mTLS; docker logs deploy-pgworker-1)"; exit 1; }
-for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
   || { echo "❌ pgworker-2 не ожил за 60 c (https :${PGW_API_HOST_PORT2:-8083}/healthz по mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
 # t07: оба инстанса публикуют свой lease-ключ дискавери (InstanceId = GUID,
 # уникальный per контейнер) — двухинстансовый надзор доказан ключами.
@@ -447,11 +447,11 @@ echo "  valkeyworker жив ×2 (heartbeat /valkeyworker/{api,instances}/*: по
 # 7c) s3worker жив ×2 (arch/24): healthz по mTLS healthcheck-парой
 #     (общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
-for i in $(seq 1 60); do $MTLS https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
   || { echo "❌ s3worker не ожил за 60 c (https :${S3W_API_HOST_PORT:-8086}/healthz по mTLS; docker logs deploy-s3worker-1)"; exit 1; }
-for i in $(seq 1 60); do $MTLS https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
   || { echo "❌ s3worker-2 не ожил за 60 c (https :${S3W_API_HOST_PORT2:-8089}/healthz по mTLS; docker logs deploy-s3worker-2-1)"; exit 1; }
 s3w_keys=0
 for i in $(seq 1 60); do
