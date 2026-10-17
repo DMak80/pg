@@ -32,8 +32,8 @@ public sealed class OwnS3 : IAsyncDisposable
     /// константным — снаружи контейнер не виден никому).</summary>
     public const string Bucket = "pgw-backups-test";
 
-    // Локальная сборка ownS3 (publish-COPY, канон E2E-образов; в registry
-    // не кладётся) — та же, что у ноды пула E2E-фикстуры.
+    // Внешний образ owns3:dev (репозиторий ../OwnS3) — тот же, что у ноды
+    // пула E2E-фикстуры.
     private const string Image = E2eEnvironment.OwnS3Image;
 
     private static readonly SemaphoreSlim ImageGate = new(1, 1);
@@ -89,8 +89,9 @@ public sealed class OwnS3 : IAsyncDisposable
         return fx;
     }
 
-    // Локальная сборка ownS3 (publish НА ХОСТЕ → образ publish-COPY; канон
-    // E2E-образов, в registry не кладётся) — один раз на процесс.
+    // Внешний образ owns3:dev (репозиторий ../OwnS3, сборка —
+    // deploy/build-image.sh там; pg его не собирает) — проверка наличия
+    // раз на процесс, fail-fast с командой сборки.
     private static async Task EnsureImageAsync(CancellationToken ct)
     {
         if (_imageReady)
@@ -100,60 +101,24 @@ public sealed class OwnS3 : IAsyncDisposable
         {
             if (_imageReady)
                 return;
-            var root = FindRepoRoot(AppContext.BaseDirectory);
-            var outDir = Path.Combine(root, "artifacts", "e2e", "owns3");
-            using var publish = Process.Start(new ProcessStartInfo("dotnet",
-                ["publish", Path.Combine(root, "src", "OwnS3.App", "OwnS3.App.csproj"),
-                    "-c", "Release", "-o", outDir, "--nologo"])
+            var inspect = new ProcessStartInfo("docker", $"image inspect {Image}")
             {
+                UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                UseShellExecute = false,
-            })!;
-            var publishLog = await publish.StandardOutput.ReadToEndAsync() +
-                             await publish.StandardError.ReadToEndAsync();
-            await publish.WaitForExitAsync(ct);
-            if (publish.ExitCode != 0)
+                CreateNoWindow = true,
+            };
+            using var process = Process.Start(inspect)!;
+            await process.WaitForExitAsync(ct);
+            if (process.ExitCode != 0)
                 throw new ApplicationException(
-                    $"publish OwnS3.App не удался: {Tail(publishLog)}");
-            using var build = Process.Start(new ProcessStartInfo("docker",
-                ["build", "-f", Path.Combine(root, "docker", "OwnS3.Dockerfile"),
-                    "-t", Image, outDir])
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            })!;
-            var buildLog = await build.StandardOutput.ReadToEndAsync() +
-                           await build.StandardError.ReadToEndAsync();
-            await build.WaitForExitAsync(ct);
-            if (build.ExitCode != 0)
-                throw new ApplicationException($"build {Image} не удался: {Tail(buildLog)}");
+                    "образ owns3:dev отсутствует — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
             _imageReady = true;
         }
         finally
         {
             ImageGate.Release();
         }
-    }
-
-    // Хвост лога без исключения: ^2000.. на логе короче 2000 символов бросает
-    // ArgumentOutOfRangeException и МАСКИРУЕТ реальную ошибку (прецедент
-    // мерж-гейта t36 — MSB1009 не был виден в упавших интеграциях).
-    private static string Tail(string log)
-        => log.Length <= 2000 ? log : log[^2000..];
-
-    // Корень репозитория — подъём от каталога сборки (образец E2eFixture.FindRoot).
-    private static string FindRepoRoot(string start)
-    {
-        // Маркер КОРНЯ репозитория (docker/node/Dockerfile) — как E2eFixture.FindRoot:
-        // PgWorker.slnx лежит в src/ — по нему корень резолвится в src (прецедент
-        // мерж-гейта t36: publish MSB1009 по несуществующему src/src/…-пути).
-        var dir = new DirectoryInfo(start);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "node", "Dockerfile")))
-            dir = dir.Parent;
-        return dir?.FullName
-            ?? throw new ApplicationException("корень репозитория (docker/node/Dockerfile) не найден");
     }
 
     // Bucket per-окружение — прямой AWSSDK-клиент (тестовая утилита фикстуры).

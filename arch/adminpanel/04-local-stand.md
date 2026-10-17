@@ -47,7 +47,7 @@ external через override `docker-compose.contour.yml`.
 сети; ownS3 — deploy-проект, external-attach с alias — §2.3),
 `...__Bucket=pgworker-backups`,
 `...__AccessKey/SecretKey=panel-reader/panel-reader-pwd` (read-only ключ
-ownS3, arch/owns3/05 §2; стендовые примеры, прод — per-install env);
+ownS3, ../OwnS3/arch/owns3/05 §2; стендовые примеры, прод — per-install env);
 path-style — дефолт appsettings.
 
 `as-etcd-1/2/3` — **единственный etcd полной системы** — 3 узла ОДНИМ

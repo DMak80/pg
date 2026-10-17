@@ -2,7 +2,8 @@
 # Подъём полного стенда (профили full + kafka + valkey + metrics) до рабочего
 # состояния, по порядку: ГАРАНТИРОВАННАЯ зачистка контура (90-down.sh -v —
 # каждый запуск = новое окружение, базовые правила §13 п.2) → publish-фазы
-# образов ([PHASE]: SdGenerator, OwnS3, wal-агент; остальные — compose build)
+# образов ([PHASE]: SdGenerator, wal-агент; остальные — compose build;
+# owns3 — ВНЕШНИЙ образ из ../OwnS3, fail-fast ниже)
 # → стендовый compose (владелец сети adminpanel-stand-net) → deploy-контур
 # (contour-override: воркеры + ownS3) → bucket-сид ownS3 → POST /api/clusters
 # (канонический demo движком) → панель + прометей. Управление кафкой входит в
@@ -47,6 +48,11 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
 done
 
+# ownS3: ВНЕШНИЙ образ (репозиторий ../OwnS3) — pg его не собирает; нет
+# образа — падаем сразу с подсказкой (сборка: ../OwnS3/deploy/build-image.sh).
+docker image inspect owns3:dev >/dev/null 2>&1 \
+  || { echo "❌ нет образа owns3:dev — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh"; exit 1; }
+
 # mTLS API воркеров (t03, arch/16 §1.1 / arch/21 §1.1): per-install TLS-пакет —
 # gen.sh идемпотентен ПОФАЙЛОВО (ca.pem жив — клиентские/pgserver не трогаются;
 # server-серт без DNS:valkeyworker перегенерируется, t03), поэтому зовём
@@ -71,14 +77,6 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   -c Release -o "$ROOT/artifacts/sd-generator/publish" --nologo \
   || { echo "❌ publish SdGenerator не удался"; exit 1; }
 echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
-
-# ownS3 (t39, arch/owns3/05 §6): publish НА ХОСТЕ → compose build пакует только
-# вывод (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
-echo ">>> [PHASE] publish OwnS3.App ($(date +%H:%M:%S))"
-dotnet publish "$ROOT/src/OwnS3.App/OwnS3.App.csproj" \
-  -c Release -o "$ROOT/artifacts/owns3/publish" --nologo \
-  || { echo "❌ publish OwnS3 не удался"; exit 1; }
-echo ">>> [PHASE] publish OwnS3 готов ($(date +%H:%M:%S))"
 
 # WAL-агент (t41): publish НА ХОСТЕ → образ publish-COPY (канон E2E-образов;
 # сборка не «тихая» — [PHASE] и тайминг).

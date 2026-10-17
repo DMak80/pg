@@ -13,9 +13,10 @@ namespace AdminPanel.IntegrationTests;
 // эта нода, отдельный контейнер хранилища не поднимается; e2e-isolation §1/§3): guid-имя apm-s3-{guid} (префикс
 // apm- отличает панельную серию от pgw-*), динамический хост-порт, свой bucket —
 // сценарии панели не делят хранилище ни с соседними классами, ни с чужими
-// прогонами: посев одного теста физически не виден другому. Образ — owns3:e2e,
-// ЛОКАЛЬНАЯ сборка publish-COPY (канон E2E-образов; в registry не кладётся) —
-// лениво, один раз на процесс. Готовность — wait-стратегия /healthz (бюджет
+// прогонами: посев одного теста физически не виден другому. Образ — ВНЕШНИЙ
+// owns3:dev (репозиторий ../OwnS3, сборка — deploy/build-image.sh там; в
+// registry не кладётся) — проверка наличия раз на процесс. Готовность —
+// wait-стратегия /healthz (бюджет
 // 45 c — правило быстрых падений); bucket и сеяные объекты — прямым
 // AWSSDK-клиентом (утилита теста, не операция грани: панель в S3 не пишет).
 // Teardown в DisposeAsync при ЛЮБОМ исходе (IClassFixture/IAsyncLifetime) +
@@ -28,7 +29,7 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
     public const string AccessKey = "apm-owns3-root";
     public const string SecretKey = "apm-owns3-root-pwd";
 
-    public const string Image = "owns3:e2e";
+    public const string Image = "owns3:dev";
 
     private static readonly SemaphoreSlim ImageGate = new(1, 1);
     private static bool _imageReady;
@@ -73,8 +74,9 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         await EnsureBucketAsync(ct);
     }
 
-    // Локальная сборка owns3:e2e (publish НА ХОСТЕ → образ publish-COPY;
-    // канон E2E-образов, в registry не кладётся) — один раз на процесс.
+    // Внешний образ owns3:dev (репозиторий ../OwnS3, сборка —
+    // deploy/build-image.sh там; pg его не собирает) — проверка наличия
+    // раз на процесс, fail-fast с командой сборки.
     private static async Task EnsureImageAsync(CancellationToken ct)
     {
         if (_imageReady)
@@ -84,92 +86,24 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         {
             if (_imageReady)
                 return;
-            var root = FindRepoRoot(AppContext.BaseDirectory);
-            var outDir = Path.Combine(root, "artifacts", "e2e", "owns3");
-
-            var publish = new ProcessStartInfo("dotnet")
+            var inspect = new ProcessStartInfo("docker", $"image inspect {Image}")
             {
+                UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                UseShellExecute = false,
+                CreateNoWindow = true,
             };
-            publish.ArgumentList.Add("publish");
-            publish.ArgumentList.Add(Path.Combine(root, "src", "OwnS3.App", "OwnS3.App.csproj"));
-            publish.ArgumentList.Add("-c");
-            publish.ArgumentList.Add("Release");
-            publish.ArgumentList.Add("-o");
-            publish.ArgumentList.Add(outDir);
-            publish.ArgumentList.Add("--nologo");
-            await RunToolAsync(publish, "publish OwnS3.App", ct);
-
-            var build = new ProcessStartInfo("docker")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            };
-            build.ArgumentList.Add("build");
-            build.ArgumentList.Add("-f");
-            build.ArgumentList.Add(Path.Combine(root, "docker", "OwnS3.Dockerfile"));
-            build.ArgumentList.Add("-t");
-            build.ArgumentList.Add(Image);
-            build.ArgumentList.Add(outDir);
-            await RunToolAsync(build, $"docker build {Image}", ct);
-
+            using var process = Process.Start(inspect)!;
+            await process.WaitForExitAsync(ct);
+            if (process.ExitCode != 0)
+                throw new ApplicationException(
+                    "образ owns3:dev отсутствует — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
             _imageReady = true;
         }
         finally
         {
             ImageGate.Release();
         }
-    }
-
-    // Запуск host-инструмента: ОБА перенаправленных пайпа дренируются
-    // ПАРАЛЛЕЛЬНО + бюджет 5 мин с Kill всего дерева процессов.
-    // Последовательные await ReadToEndAsync(stdout)-then-stderr — классический
-    // pipe-deadlock: ребёнок блокируется на заполненном stderr, родитель ждёт
-    // конца stdout — оба висят вечно (инцидент мерж-гейта t36: «зависший»
-    // старт интеграций при сборке owns3:e2e). Таймаут — правило быстрых падений.
-    private static async Task RunToolAsync(ProcessStartInfo psi, string what, CancellationToken ct)
-    {
-        var started = Stopwatch.GetTimestamp();
-        using var p = Process.Start(psi)!;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromMinutes(5));
-        var stdoutTask = p.StandardOutput.ReadToEndAsync(timeout.Token);
-        var stderrTask = p.StandardError.ReadToEndAsync(timeout.Token);
-        try
-        {
-            await p.WaitForExitAsync(timeout.Token);
-            var log = (await stdoutTask) + (await stderrTask);
-            if (p.ExitCode != 0)
-                throw new ApplicationException($"{what} не удался (код {p.ExitCode}): {Tail(log)}");
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
-        {
-            p.Kill(entireProcessTree: true);
-            throw new ApplicationException($"{what} превысил бюджет 5 мин — процесс убит деревом");
-        }
-        Console.WriteLine($"[PHASE] {what}: {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} с");
-    }
-
-    // Хвост лога без исключения: ^2000.. на коротком логе маскирует ошибку
-    // ArgumentOutOfRangeException'ом (прецедент мерж-гейта t36 — MSB1009
-    // не был виден в упавших интеграциях).
-    private static string Tail(string log)
-        => log.Length <= 2000 ? log : log[^2000..];
-
-    // Корень репозитория — подъём от каталога сборки (образец E2eFixture.FindRoot).
-    private static string FindRepoRoot(string start)
-    {
-        // Маркер КОРНЯ репозитория (docker/node/Dockerfile) — как E2eFixture.FindRoot:
-        // PgWorker.slnx лежит в src/ — по нему корень резолвится в src (прецедент
-        // мерж-гейта t36: publish MSB1009 по несуществующему src/src/…-пути).
-        var dir = new DirectoryInfo(start);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "node", "Dockerfile")))
-            dir = dir.Parent;
-        return dir?.FullName
-            ?? throw new ApplicationException("корень репозитория (docker/node/Dockerfile) не найден");
     }
 
     // Bucket per-окружение — прямой AWSSDK-клиент (создание bucket — не операция грани).
