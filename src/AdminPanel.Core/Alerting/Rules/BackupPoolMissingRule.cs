@@ -19,6 +19,14 @@ public sealed class BackupPoolMissingRule : IAlertRule
             // выключенным пулом — «policy без s3», алерт честный (архив §4).
             if (cluster.Policy?.S3 is not null)
                 continue;
+
+            // Только живой Active-кластер (03 §4): в переходном окне демонтажа
+            // (NotInitialized/ToRemove) алерт «пул не выбран» — ложный critical,
+            // демонтаж ключи бэкапов чистит сам.
+            if (!snapshot.Clusters.Any(
+                    c => c.Name == cluster.Cluster && c.State == ClusterState.Active))
+                continue;
+
             yield return new Alert(
                 $"{KindName}:{cluster.Cluster}",
                 AlertSeverity.Critical,

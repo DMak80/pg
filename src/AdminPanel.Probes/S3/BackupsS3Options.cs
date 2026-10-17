@@ -3,9 +3,10 @@ using Shared.Core.DI;
 namespace AdminPanel.Probes.S3;
 
 // [Config]-POCO S3-грани «Хранилище бэкапов» (t08, spec §4.1, arch/01 §6):
-// симметрия PgWorker:Backups:S3 (arch/19 §7). Пустой Endpoint — грань выключена
-// (тик не стартует, API configured=false, алерт молчит) — отдельного Enabled-
-// флага нет. Креды — только env поверх appsettings (AdminPanel__Backups__S3__*).
+// симметрия PgWorker:Backups:S3 (arch/19 §7). Нет ни Endpoint, ни Endpoints —
+// грань выключена (тик не стартует, API configured=false, алерт молчит) —
+// отдельного Enabled-флага нет. Креды — только env поверх appsettings
+// (AdminPanel__Backups__S3__*).
 [Config("AdminPanel:Backups")]
 public class BackupsS3Options
 {
@@ -17,36 +18,40 @@ public class BackupsS3Options
     // HTTP-таймаут list/health-вызовов.
     public int TimeoutSec { get; set; } = 5;
 
-    // Грань включена ⟺ задан Endpoint (пустой endpoint и есть выключение).
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(S3.Endpoint);
+    // Грань включена ⟺ есть цели инвентаря: задан Endpoint ИЛИ Endpoints
+    // (t36, 02 §2.5: пустой Endpoint при непустых Endpoints — грань включена;
+    // оба пусты — выключение). TargetList — тот же список, что крутит тик:
+    // согласованность переключателя и перебора.
+    public bool IsConfigured => S3.TargetList().Length > 0;
 
-    /// <summary>Fail-fast старта (образец PgWorker:Backups): Endpoint задан при
+    /// <summary>Fail-fast старта (образец PgWorker:Backups): цели заданы при
     /// пустых Bucket/AccessKey/SecretKey или IntervalSec/TimeoutSec &lt;= 0 — бросок
-    /// с именем поля. Выключенная грань (пустой Endpoint) не валидируется.</summary>
+    /// с именем поля. Выключенная грань (нет Endpoint/Endpoints) не валидируется.</summary>
     public void EnsureValid()
     {
         if (!IsConfigured)
             return;
         if (string.IsNullOrWhiteSpace(S3.Bucket))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:Bucket пуст при заданном Endpoint");
+                "AdminPanel:Backups:S3:Bucket пуст при заданных Endpoint/Endpoints");
         if (string.IsNullOrWhiteSpace(S3.AccessKey))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:AccessKey пуст при заданном Endpoint");
+                "AdminPanel:Backups:S3:AccessKey пуст при заданных Endpoint/Endpoints");
         if (string.IsNullOrWhiteSpace(S3.SecretKey))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:SecretKey пуст при заданном Endpoint");
+                "AdminPanel:Backups:S3:SecretKey пуст при заданных Endpoint/Endpoints");
         if (IntervalSec <= 0)
             throw new InvalidOperationException(
-                "AdminPanel:Backups:IntervalSec <= 0 при заданном Endpoint");
+                "AdminPanel:Backups:IntervalSec <= 0 при заданных Endpoint/Endpoints");
         if (TimeoutSec <= 0)
             throw new InvalidOperationException(
-                "AdminPanel:Backups:TimeoutSec <= 0 при заданном Endpoint");
+                "AdminPanel:Backups:TimeoutSec <= 0 при заданных Endpoint/Endpoints");
     }
 
     public sealed class S3Options
     {
-        // Пусто — грань выключена (переключатель грани, t08).
+        // Пусто → цели берутся из Endpoints; оба пусты — грань выключена
+        // (переключатель грани, t08).
         public string Endpoint { get; set; } = "";
 
         // t36 (02 §2.5): запятая-список целей инвентаря (ноды пула); пусто →

@@ -316,7 +316,8 @@ public sealed class WalStreamProcess(
             // wal-ключ оставляем (алерт backup-pool-missing — проекция панели).
             // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит
             // teardown, артефактная телеметрия теряет журнал).
-            Console.WriteLine($"[wal-pool] {cluster}/{shardName}: пул не выбран (policy без секции s3) — агенты вниз");
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: пул не выбран (policy без секции s3) — агенты вниз",
+                cluster, shardName);
             var removed = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
             if (!removed.IsSuccess)
                 throw new ApplicationException($"стоп агента {shardName}: {removed.Error!.Message}");
@@ -330,7 +331,8 @@ public sealed class WalStreamProcess(
         // в живом wal-статусе (алерт backup-pool-unreachable закрывает и случай
         // «policy записана, но резолв не удался»); ретраи тиком.
         // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит teardown).
-        Console.WriteLine($"[wal-pool] {cluster}/{shardName}: резолв пула не удался — {resolved.Error!.Message}");
+        logger?.LogWarning("backup-wal {Cluster}/{Shard}: резолв пула не удался — {Error}",
+            cluster, shardName, resolved.Error!.Message);
         await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
             $"{shardName}: {resolved.Error!.Message}", ct);
         if (wal is { State: WalStreamStatus.Active or WalStreamStatus.Degraded }
@@ -798,8 +800,9 @@ public sealed class WalStreamProcess(
 
         // Диагностика (t36-разбор): смена стейта — в host.log (etcd сносит teardown).
         if (state != wal?.State || error != wal?.Error)
-            Console.WriteLine($"[wal-ctl] {cluster}/{shard}: {wal?.State.ToString() ?? "<нет>"}→{state}" +
-                (error is null ? "" : $"; error={error}"));
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: контроль {From}→{To}{Error}",
+                cluster, shard, wal?.State.ToString() ?? "<нет>", state,
+                error is null ? "" : $"; error={error}");
 
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,

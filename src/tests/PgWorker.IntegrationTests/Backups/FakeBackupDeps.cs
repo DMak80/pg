@@ -100,6 +100,10 @@ public sealed class FakeBackupS3 : IBackupS3
     // Один сбой list (transient-сценарий «S3 недоступен»): list не падает в статус.
     public bool FailList { get; set; }
 
+    // Сбой list-prefix (t36, сценарий «пул недоступен» для глобальных сверок —
+    // MonitorStorage): ListPrefixAsync падает, префиксные list-ы статусов не касаются.
+    public bool FailListPrefix { get; set; }
+
     public DateTimeOffset LastModified { get; set; } = DateTimeOffset.UtcNow;
 
     public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
@@ -142,6 +146,9 @@ public sealed class FakeBackupS3 : IBackupS3
     public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
+        if (FailListPrefix)
+            return Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Failed(
+                new ApplicationException("fake S3 list-prefix failure (FailListPrefix)")));
         var walKeys = Objects.Select(o =>
             new S3ObjectInfo($"{o.Cluster}/{o.Shard}/wal/{o.Name}", 16, LastModified));
         var prefixKeys = PrefixObjects.Select(o => new S3ObjectInfo(o.Key, o.SizeBytes, LastModified));

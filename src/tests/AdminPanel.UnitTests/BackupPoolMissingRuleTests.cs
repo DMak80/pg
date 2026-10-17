@@ -69,4 +69,25 @@ public class BackupPoolMissingRuleTests
         // Assert
         alerts.Should().ContainSingle();
     }
+
+    // AAA: кластер не-Active (переходное окно демонтажа) — алерта нет (03 §4:
+    // только Active-кластер; ложный critical на демонтаже недопустим — демонтаж
+    // ключи бэкапов чистит сам).
+    [Theory]
+    [InlineData(ClusterState.NotInitialized)]
+    [InlineData(ClusterState.ToRemove)]
+    public void NotActiveCluster_NoAlert(ClusterState state)
+    {
+        // Arrange — policy без s3, но кластер вне Active.
+        var snapshot = SnapshotWithBackups([Cluster(null)]) with
+        {
+            Clusters = [TestSnapshots.FullCluster() with { State = state }],
+        };
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().BeEmpty();
+    }
 }

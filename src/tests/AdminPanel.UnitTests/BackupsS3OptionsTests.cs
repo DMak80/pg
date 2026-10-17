@@ -85,4 +85,45 @@ public class BackupsS3OptionsTests
         // Assert
         targets.Should().Equal("http://a:9000", "http://b:9000");
     }
+
+    // AAA: пустой Endpoint при непустых Endpoints — грань ВКЛЮЧЕНА (t36, 02 §2.5),
+    // EnsureValid при полном комплекте не бросает.
+    [Fact]
+    public void EmptyEndpoint_NonEmptyEndpoints_GrainEnabled()
+    {
+        // Arrange
+        var options = new BackupsS3Options { S3 = S3("", "http://a:9000,http://b:9000") };
+
+        // Act
+        var configured = options.IsConfigured;
+        var act = () => options.EnsureValid();
+
+        // Assert
+        configured.Should().BeTrue(
+            "непустые Endpoints при пустом Endpoint — грань включена (02 §2.5)");
+        act.Should().NotThrow();
+    }
+
+    // AAA: грань через Endpoints валидируется так же — пустой Bucket при заданных
+    // целях → fail-fast с именем поля.
+    [Fact]
+    public void EndpointsOnly_EmptyBucket_EnsureValid_Throws()
+    {
+        // Arrange
+        var options = new BackupsS3Options
+        {
+            S3 = new BackupsS3Options.S3Options
+            {
+                Endpoint = "", Endpoints = "http://a:9000",
+                Bucket = "", AccessKey = "k", SecretKey = "s",
+            },
+        };
+
+        // Act
+        var act = () => options.EnsureValid();
+
+        // Assert
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*AdminPanel:Backups:S3:Bucket*");
+    }
 }

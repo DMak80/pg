@@ -217,6 +217,9 @@ public sealed class RetentionProcess(
     // сравнение не входит: меняющийся now делал бы put каждым проходом, а
     // свежесть прохода видна по возрасту updated_unix (arch/19 §4 «при
     // изменении»; строковое сравнение — образец WalStatusWriter.WriteIfChangedAsync).
+    // Недоступный пул (t36) — used_bytes был бы занижен: частичный вердикт НЕ
+    // публикуется (ключ остаётся с последним ПОЛНЫМ значением — квота-алерт
+    // не молчит зря), неполнота — в лог; полный проход повторится (transient).
     // Отдельное поле-расписание, не словарь кластеров (коллизия "storage" — см.
     // поле); параллельные тики разных кластеров могут гоняться за поле — двойной
     // list безвреден (put при изменении идемпотентен; тики одного кластера
@@ -235,16 +238,30 @@ public sealed class RetentionProcess(
         if (!names.IsSuccess)
             return Result.Failed(names.Error!); // transient: повтор тика
         long used = 0;
+        var failedPools = new List<string>();
         foreach (var poolName in names.Value)
         {
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
-                continue; // пул недоступен/без кредов — суммарное по остальным (agregate сходимости mesh)
+            {
+                failedPools.Add(poolName); // недоступен/без кредов — transient
+                continue;
+            }
             await using var poolS3 = created.Value.Client;
             var listed = await S3Pulse.CallAsync(progress, token => poolS3.ListPrefixAsync("", ct: token), ct);
             if (!listed.IsSuccess)
-                continue; // transient этого пула — повтор тика
+            {
+                failedPools.Add(poolName); // transient этого пула — повтор тика
+                continue;
+            }
             used += listed.Value.Sum(o => o.SizeBytes);
+        }
+        if (failedPools.Count > 0)
+        {
+            logger.LogWarning(
+                "{Op}: used_bytes неполный — пулы недоступны: {Pools}; ключ /pgworker/backups/storage не обновляется до полного прохода",
+                Op, string.Join(", ", failedPools));
+            return Result.Success(); // transient — полный проход повторит
         }
         var verdict = RetentionPlanner.EvaluateStorage(
             used, options.QuotaBytes, options.QuotaWarnPercent, options.QuotaCritPercent);
