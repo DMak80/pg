@@ -40,10 +40,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
         S3Bucket: "bkt",
-        S3AccessKey: "ak",
-        S3SecretKey: "sk",
         JobImage: "pgworker-backup:test",
         RestoreRecoveryTimeoutSec: 1800);
 
@@ -72,7 +69,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
         Action<string, string, string>? restoreObserver = null)
-        => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
+        => new(fixture.Gateway, [fixture.Endpoint], driver, FakePoolFactory.Single(s3), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
@@ -423,6 +420,10 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
+    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(""));
+
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
         public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
         public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);

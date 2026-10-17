@@ -11,15 +11,19 @@ namespace PgWorker.Backups.Restore;
 // джоба t02: none.
 public static class RestoreJobSpec
 {
+    // t36: s3Endpoints — read-список источника (собственный пул или source_pool
+    // DR; все ноды, порядок endpoints); креды — env-профиля пула (arch/19 §7).
     public static ContainerSpec Build(
         BackupsRuntimeOptions opts, string cluster, string shard, string id,
         string nodeVolumeName, string targetTime, string srcCluster, string srcShard,
+        IReadOnlyList<string> s3Endpoints, string s3AccessKey, string s3SecretKey,
         string dataDir = "/restore")
     {
         var env = new Dictionary<string, string>
         {
-            [RestoreJobCommand.EnvMcHost] = RestoreJobCommand.McHost(
-                opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
+            [RestoreJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
+            [RestoreJobCommand.EnvS3AccessKey] = s3AccessKey,
+            [RestoreJobCommand.EnvS3SecretKey] = s3SecretKey,
             [RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [RestoreJobCommand.EnvSrcPrefix] = $"{srcCluster}/{srcShard}",
             [RestoreJobCommand.EnvBackupId] = id,

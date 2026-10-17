@@ -176,6 +176,10 @@ public class BackupVerifyProcessTests
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
+    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(""));
+
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
 
@@ -225,10 +229,10 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
-            s3, Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
+            FakePoolFactory.Single(s3), Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
-                Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
+                Enabled: true, S3Bucket: "bkt",
+                JobImage: "pgworker-backup:test",
                 StagingDir: "/backup-staging"),
             TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,

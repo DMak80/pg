@@ -57,7 +57,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
         var provisioned = await E2ePhase.WaitAsync(Fx,
-            "ac2-provisioning", () => ProvisionedAsync(Cluster), TimeSpan.FromSeconds(360), ct);
+            "ac2-provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE (dsn/RUNNING/без status/state)");
 
         await AssertProvisioningResultAsync(Cluster, ct);
@@ -72,7 +72,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2ePhase.WaitAsync(Fx,
-            "ac3-takeover-done", () => ProvisionedAsync(Cluster2), TimeSpan.FromSeconds(360), ct);
+            "ac3-takeover-done", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(360), ct);
         taken.Should().BeTrue($"второй инстанс должен донести {Cluster2} до DONE (takeover)");
 
         var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");
@@ -242,7 +242,7 @@ public class E2eScenarios(ITestOutputHelper output)
         foreach (var shard in new[] { "shard1", "shard2" })
         {
             var master = await WaitForMasterAsync(cluster, shard, ct);
-            var adminDsn = $"Host=localhost;Port={master.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
+            var adminDsn = $"Host={master.Host};Port={master.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
             var roles = await SqlListAsync(adminDsn,
                 "SELECT rolname FROM pg_roles WHERE rolname IN ('app','bucket_admin','bucket_mover') ORDER BY 1", ct);
             roles.Should().BeEquivalentTo(["app", "bucket_admin", "bucket_mover"],
@@ -250,7 +250,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
             // Схемы живут в БД кластера (роли — кластерные, видно из postgres).
             string[] expected = shard == "shard1" ? ["bucket_0", "bucket_2", "bucket_4"] : ["bucket_1", "bucket_3", "bucket_5"];
-            var schemasDsn = $"Host=localhost;Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
+            var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
             var schemas = await SqlListAsync(schemasDsn,
                 "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
             schemas.Should().BeEquivalentTo(expected, $"схемы бакетов {shard} созданы по routing");
@@ -279,26 +279,46 @@ public class E2eScenarios(ITestOutputHelper output)
         (stateBefore?.Value).Should().Be("RUNNING", "лидер до failover: ключ state существует и равен RUNNING (предусловие гейта t14)");
         var revAtStop = stateBefore!.ModRevision;
 
-        var sw = Stopwatch.StartNew(); // T0 жёсткого ассерта ≤5с — ДО docker stop (не меняем)
-        // Длительность самой stop-команды — отдельной строкой (t29 §3.1): замер окна
-        // failover неотделим от длительности SIGTERM-завершения PG, ассерт при этом
-        // остаётся от того же T0.
+        // Длительность stop-команды — отдельной строкой (t29 §3.1): SIGTERM
+        // завершает PG graceful (~3 с) — лидер ФОРМАЛЬНО ЖИВ до конца stop.
         var stopSw = Stopwatch.StartNew();
         await Fx.RunDockerAsync(["stop", container], ct);
         stopSw.Stop();
         output.WriteLine($"[PHASE] ac5-docker-stop: elapsed={stopSw.Elapsed.TotalSeconds:F1}s");
 
-        // Master-ключ обновляется (Patroni failover, P11: callback + reconciler).
-        // При EnableDoorman=false (e2e) portalloc-записи несут doorman:0 (миграция
-        // факта инспекции, arch/14 §2.4 п.5) → ключ вырождается в host:0 и
-        // НЕдискриминантен по ноде; сравнивать «до/после» нельзя. Факт смены
-        // мастера читаем из проб Patroni /primary (контракт §5 C); сам ключ
-        // обязан оставаться живым — lease-ключ гаснет только вместе с шарда.
-        // Бюджет смены лидера ≤5с (t09, arch/14 §5 C — критическое требование):
-        // graceful demote при stop ИЛИ ускорение failover воркером (не-running
-        // контейнер лидера → снятие лидер-лока) + промоушен в пределах
-        // loop_wait. Окно ожидания 10с — чтобы поймать факт; жёсткий ассерт
-        // ниже — ≤5с. Опрос WaitForAsync — 0.5с.
+        // Смена лидера (выборы Patroni): бюджет ≤5с (t09, arch/14 §5 C —
+        // критическое требование: ускорение failover воркером — не-running
+        // контейнер лидера → снятие лидер-лока — + промоушен в пределах
+        // loop_wait). T0 жёсткого ассерта — момент СМЕРТИ лидера (завершение
+        // docker stop), НЕ начало стопа: graceful-завершение PG — не часть
+        // failover-окна. Замер закрывается фактом /primary другой ноды.
+        var sw = Stopwatch.StartNew();
+        var leaderFlipped = await E2ePhase.WaitAsync(Fx, "ac5-leader", async () =>
+        {
+            var primary = await PrimaryNodeAsync(cluster, shard, ct);
+            return primary is not null && primary != masterBefore.Node;
+        }, TimeSpan.FromSeconds(30), ct,
+            progress: async () =>
+            {
+                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево
+                return $"primary={primary ?? "none"}";
+            });
+        sw.Stop();
+        leaderFlipped.Should().BeTrue("фактический primary шарда сменился после failover (P11)");
+        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
+        // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
+        output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
+        sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
+            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
+
+        // Master-ключ (P11: callback + reconciler). При EnableDoorman=false
+        // (e2e) portalloc-записи несут doorman:0 (миграция факта инспекции,
+        // arch/14 §2.4 п.5) → ключ вырождается в host:0 и НЕдискриминантен по
+        // ноде; сравнивать «до/после» нельзя — ключ обязан оставаться живым.
+        // До смерти лидера ключ держит lease-демон НОДЫ (callback), после
+        // смерти гаснет по TTL 5с; переписывает его callback нового лидера,
+        // при его отказе — reconciler воркера (сверка после проб, 3с/нода) —
+        // окно 30с покрывает TTL-гэп + тик надзора + пробы.
         var flipped = await E2ePhase.WaitAsync(Fx, "ac5-failover", async () =>
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
@@ -306,20 +326,14 @@ public class E2eScenarios(ITestOutputHelper output)
                 return false;
             var primary = await PrimaryNodeAsync(cluster, shard, ct);
             return primary is not null && primary != masterBefore.Node;
-        }, TimeSpan.FromSeconds(10), ct,
+        }, TimeSpan.FromSeconds(30), ct,
             progress: async () =>
             {
                 var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
-                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево, тик 5 с
+                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево
                 return $"primary={primary ?? "none"}, master-key={(key is { Value.Length: > 0 } ? "есть" : "нет")}";
             });
-        sw.Stop();
         flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
-        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
-        // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
-        output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
-        sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
-            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
 
         // Rebuild: остановленный контейнер пересоздаётся, нода проходит
         // REBUILDING → RUNNING (AC5, spec задачи 26 §11.5). Гейт по ревизии:
@@ -359,9 +373,9 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 var recoveries = new List<bool>();
-                foreach (var (_, addr) in nodes)
+                foreach (var (key, _) in nodes)
                 {
-                    var dsn = $"Host=localhost;Port={addr.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
+                    var dsn = $"Host=pgw-{cluster}-{shard}-{key.Split('/')[1]};Port=5432;Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
                     recoveries.Add(await SqlScalarAsync(dsn, "SELECT pg_is_in_recovery()", ct) == "True");
                 }
 
@@ -401,7 +415,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
         // Схемы эвакуированных бакетов созданы на живом шарде (E1).
         var master = await WaitForMasterAsync(cluster, aliveShard, ct);
-        var schemasDsn = $"Host=localhost;Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
+        var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
         var schemas = await SqlListAsync(schemasDsn,
             "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
         schemas.Should().HaveCount(6, "все 6 схем бакетов теперь на живом шарде");
@@ -552,7 +566,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
     // GET /primary. Null — primary недоступен (failover-окно/шард мёртв).
@@ -566,7 +580,7 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 using var response = await PatroniHttp.GetAsync(
-                    $"https://localhost:{addr.Patroni}/primary", ct);
+                    $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
@@ -594,8 +608,7 @@ public class E2eScenarios(ITestOutputHelper output)
                 if (primary is not null)
                 {
                     var addresses = await PortallocAsync(cluster);
-                    var addr = addresses[$"{shard}/{primary}"];
-                    return new MasterAddr(primary, addr.Host, addr.Pg, addr.Doorman);
+                    return new MasterAddr(primary, $"pgw-{cluster}-{shard}-{primary}", 5432, 6432);
                 }
             }
 

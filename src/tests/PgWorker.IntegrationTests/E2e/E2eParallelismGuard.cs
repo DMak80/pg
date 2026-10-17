@@ -1,29 +1,53 @@
 namespace PgWorker.IntegrationTests.E2e;
 
-/// <summary>Рельса канона параллелизма E2E (t24, docs/e2e-launch.md §5):
-/// потолок — 5 одновременно живых контуров (выбран приёмкой N=3/5/6 —
-/// решение пользователя). Считает ФАКТИЧЕСКИ живые окружения процесса:
-/// при превышении канона один раз на процесс пишет громкое предупреждение
-/// в stderr и /tmp/pgw-e2e-static-phase.log. Жёсткий запрет не вводится —
-/// диагностические прогоны с переопределённым потолком N&gt;5 легальны,
-/// но обязаны быть громкими.</summary>
+/// <summary>Дроссель живых E2E-контуров (t36, docs/e2e-launch.md §5): ЖЁСТКИЙ
+/// SemaphoreSlim-потолок (не только предупреждение) — факты-оркестраторы ждут
+/// слот до освобождения контура. Дефолт 3 — СТАБИЛЬНЫЙ старт параллельности
+/// (5 контуров на 7.7GB docker-VM перегружали демон — каскад таймаутов);
+/// настраивается без правок кода: env PGW_E2E_MAX_CONTOURS (5/8 — подъём
+/// после наращивания ресурсов). xunit.runner.json maxParallelThreads —
+/// потолок ПОТОКОВ фактов, не контуров (5 — выше дросселя намеренно).
+/// При превышении дефолта — громкая пометка [E2E-PARALLELISM] (результаты
+/// вне стабильного канона требуют пометки).</summary>
 internal static class E2eParallelismGuard
 {
-    internal const int CanonMaxLiveEnvironments = 5;
+    private static readonly int MaxLiveEnvironments = ParseMax();
+    private static readonly SemaphoreSlim Gate = new(MaxLiveEnvironments, MaxLiveEnvironments);
 
     private static int _live;
     private static int _warned;
 
-    /// <summary>Вызывается E2eEnvironment после успешного подъёма окружения.
-    /// Возвращает текущее число живых окружений (диагностика стартовых строк).</summary>
-    public static int OnEnvironmentStarted(string slug)
+    private static int ParseMax()
+    {
+        var raw = Environment.GetEnvironmentVariable("PGW_E2E_MAX_CONTOURS");
+        return int.TryParse(raw, out var n) && n >= 1 ? n : 3;
+    }
+
+    /// <summary>Захват слота контура (ждёт освобождения; отмена — по токену).
+    /// Парный вызов — <see cref="Release"/> (в DisposeAsync окружения либо в
+    /// catch провалившегося подъёма).</summary>
+    public static void Acquire(string slug, CancellationToken ct)
+        => Gate.Wait(ct);
+
+    /// <summary>Освобождение слота контура (DisposeAsync / провал подъёма).</summary>
+    public static void Release(string slug)
+    {
+        var live = Interlocked.Decrement(ref _live);
+        Gate.Release();
+        if (live < 0)
+            Console.Error.WriteLine($"e2e[{slug}]: [E2E-PARALLELISM] Release без Acquire — дисбаланс слотов");
+    }
+
+    /// <summary>Регистрация живого контура (после успешного подъёма):
+    /// при превышении дефолта — громкая пометка вне стабильного канона.</summary>
+    public static void OnEnvironmentStarted(string slug)
     {
         var live = Interlocked.Increment(ref _live);
-        if (live > CanonMaxLiveEnvironments && Interlocked.Exchange(ref _warned, 1) == 0)
+        if (live > MaxLiveEnvironments && Interlocked.Exchange(ref _warned, 1) == 0)
         {
             var line = $"{DateTime.UtcNow:HH:mm:ss} [E2E-PARALLELISM] e2e[{slug}]: живых E2E-контуров {live} > канона"
-                + $" {CanonMaxLiveEnvironments} (xunit.runner.json maxParallelThreads / docs/e2e-launch.md «Параллелизм и нагрузка»)"
-                + " — прогон ВНЕ канона: вероятна деградация docker-хоста (DNS/сети); результаты требуют этой пометки.";
+                + $" {MaxLiveEnvironments} (PGW_E2E_MAX_CONTOURS / docs/e2e-launch.md §5)"
+                + " — прогон вне стабильного канона: результаты требуют этой пометки.";
             Console.Error.WriteLine(line);
             try
             {
@@ -34,11 +58,8 @@ internal static class E2eParallelismGuard
                 // файловая телеметрия — «лучшими усилиями», не роняет серию
             }
         }
-
-        return live;
     }
 
-    /// <summary>Вызывается E2eEnvironment.DisposeAsync при любом исходе.</summary>
-    public static void OnEnvironmentDisposed()
-        => Interlocked.Decrement(ref _live);
+    /// <summary>Освобождение контура (DisposeAsync окружения, host-ветка).</summary>
+    public static void OnEnvironmentDisposed() => Release(string.Empty);
 }

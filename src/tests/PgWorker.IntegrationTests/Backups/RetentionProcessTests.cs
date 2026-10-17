@@ -67,7 +67,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     private RetentionProcess BuildProcess(
         BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
-        fixture.Gateway, [fixture.Endpoint], s3,
+        fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+        FakePoolFactory.Store(),
         _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
@@ -80,10 +81,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         long quotaBytes = 0, int quotaWarn = 80, int quotaCrit = 90)
         => new(
             Enabled: true,
-            S3Endpoint: "http://minio",
             S3Bucket: "bkt",
-            S3AccessKey: "ak",
-            S3SecretKey: "sk",
             PolicyRetentionDays: policyDays,
             PolicyRetentionWeeks: policyWeeks,
             PolicyRetentionMonths: policyMonths,
@@ -315,7 +313,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var walProcess = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], new StubScaleDriver(),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
-            sql, s3, writer, _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
+            sql, FakePoolFactory.Single(s3), writer, _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => (BackupsRuntimeOptions?)Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             new FrozenClock());
 
@@ -407,7 +405,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/{full.Id}/base.tar", 7L));
         var process = BuildProcess(Options() with { }, s3);
         var disabled = new RetentionProcess(
-            fixture.Gateway, [fixture.Endpoint], s3,
+            fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+            FakePoolFactory.Store(),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             Options() with { Enabled = false }, new FrozenClock(),
             NullLogger<RetentionProcess>.Instance);
@@ -551,6 +550,30 @@ public class RetentionProcessTests(EtcdFixture fixture)
             .And.Contain("\"state\":\"OK\"")
             .And.NotContain("quota_bytes")
             .And.NotContain("used_percent");
+    }
+
+    // t36 (arch/19 §5): недоступный пул — used_bytes был бы занижен, частичный
+    // вердикт НЕ публикуется (ключа нет → квота-алерт не молчит зря, прежнее
+    // полное значение остаётся); тик успешен — неполнота transient, полный
+    // проход повторит.
+    [Fact]
+    public async Task Storage_недоступный_пул_ключ_не_пишется()
+    {
+        // Arrange — один пул, list-prefix которого падает (FailListPrefix); квота задана.
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt16";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var s3 = new FakeBackupS3 { FailListPrefix = true };
+        var process = BuildProcess(Options(quotaBytes: 100), s3);
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(cluster), null, ct);
+
+        // Assert — тик успешен, заниженный used_bytes не опубликован.
+        result.IsSuccess.Should().BeTrue();
+        (await GetKvAsync("/pgworker/backups/storage")).Should().BeNull(
+            "неполный used_bytes не публикуется — квота-алерт не молчит зря");
     }
 
     // G0: кластер не Active — no-op.

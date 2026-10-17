@@ -26,6 +26,14 @@ MC_TARGET="http://host.docker.internal:${PORT}"
 curl -sf "$BASE/healthz" >/dev/null || { echo "❌ $BASE/healthz не 200"; exit 1; }
 echo "  healthz: 200"
 
+# 1b) кластер-health — 200 без подписи + JSON drives-поля (канон 05 §5;
+#     потребитель — ClusterOk-проба панели, adminpanel/02 §2.5)
+CLUSTER="$(curl -sf "$BASE/s3/health/cluster")" \
+  || { echo "❌ $BASE/s3/health/cluster не 200"; exit 1; }
+echo "$CLUSTER" | grep -q '"healthyDrives"' \
+  || { echo "❌ /s3/health/cluster: нет healthyDrives"; exit 1; }
+echo "  cluster-health: 200 + healthyDrives"
+
 # 2) mc-smoke ЧЕРЕЗ ХОСТ-ПУБЛИКАЦИЮ: alias → mb → cp(128 КиБ /dev/urandom)
 #    → ls → cat(sha256 == источник) → stat → скачивание → rm → ls пуст → rb;
 #    чистка — trap при любом исходе (mc rb --force). Образ mc урезан

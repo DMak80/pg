@@ -100,6 +100,10 @@ public sealed class FakeBackupS3 : IBackupS3
     // Один сбой list (transient-сценарий «S3 недоступен»): list не падает в статус.
     public bool FailList { get; set; }
 
+    // Сбой list-prefix (t36, сценарий «пул недоступен» для глобальных сверок —
+    // MonitorStorage): ListPrefixAsync падает, префиксные list-ы статусов не касаются.
+    public bool FailListPrefix { get; set; }
+
     public DateTimeOffset LastModified { get; set; } = DateTimeOffset.UtcNow;
 
     public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
@@ -142,6 +146,9 @@ public sealed class FakeBackupS3 : IBackupS3
     public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
+        if (FailListPrefix)
+            return Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Failed(
+                new ApplicationException("fake S3 list-prefix failure (FailListPrefix)")));
         var walKeys = Objects.Select(o =>
             new S3ObjectInfo($"{o.Cluster}/{o.Shard}/wal/{o.Name}", 16, LastModified));
         var prefixKeys = PrefixObjects.Select(o => new S3ObjectInfo(o.Key, o.SizeBytes, LastModified));
@@ -301,5 +308,95 @@ public sealed class FakePatroni : IAsyncDisposable
     {
         await _app.StopAsync();
         await _app.DisposeAsync();
+    }
+}
+
+// t36: тестовая фабрика пула — резолвер всегда возвращает контекст с заданным
+// write/read-списками (одна fake-цель на все uri — PoolBackupS3 пробрасывает
+// вызовы в FakeBackupS3 теста). AAA-хелпер перевода существующих сценариев
+// WalStreamProcess/Retention на пул-режим без etcd-сида /s3/.
+public static class FakePoolFactory
+{
+    public static BackupS3Factory Single(IBackupS3 target, string bucket = "pgworker-backups")
+    {
+        var pool = new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+            [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+            ["h1:9000"]);
+        var ctx = new BackupPoolContext(
+            "backups", "ak", "sk",
+            ["http://h1:9000"], ["http://h1:9000"], ["http://h1:9000"]);
+        var secrets = new BackupSecretProfileStore(
+            getenv: _ => "x",
+            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
+        return new BackupS3Factory(
+            new BackupPoolResolver(
+                new FixedPoolStore(pool),
+                secrets,
+                policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
+                    new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
+                        S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
+                            "backups", ["node1"], ["node1"])))),
+            new FixedPoolStore(pool), secrets,
+            () => bucket, () => null, TimeSpan.FromSeconds(5),
+            targetFactory: _ => target);
+    }
+
+    // Два пула («backups», «cold») на ОДНОМ фейк-таргете: union-сверки свипера
+    // (arch/19 §5) видят одинаковые ключи в обоих пулах — дедуп по (пул, ключ)
+    // учитывает каждую пул-копию. Store отдаётся раздельно (свипер листит имена
+    // пулов из него).
+    public static (BackupS3Factory Factory, PgWorker.Etcd.S3.IS3PoolStore Store) TwoPoolsSameTarget(
+        IBackupS3 target, string bucket = "pgworker-backups")
+    {
+        var secrets = new BackupSecretProfileStore(
+            getenv: _ => "x",
+            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
+        var store = new MultiPoolStore(
+            new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+                [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+                ["h1:9000"]),
+            new PgWorker.Etcd.S3.S3Pool("cold", "backups-main", false,
+                [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+                ["h1:9000"]));
+        var factory = new BackupS3Factory(
+            new BackupPoolResolver(
+                store,
+                secrets,
+                policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
+                    new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
+                        S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
+                            "backups", ["node1"], ["node1"])))),
+            store, secrets,
+            () => bucket, () => null, TimeSpan.FromSeconds(5),
+            targetFactory: _ => target);
+        return (factory, store);
+    }
+
+    // Отдельный store для процессов, берущих фабрику И store раздельно
+    // (RetentionProcess/BackupOrphanSweeper — union пулов).
+    public static PgWorker.Etcd.S3.IS3PoolStore Store() => new FixedPoolStore(
+        new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+            [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
+            ["h1:9000"]));
+
+    private sealed class FixedPoolStore(PgWorker.Etcd.S3.S3Pool? pool) : PgWorker.Etcd.S3.IS3PoolStore
+    {
+        public Task<Result<PgWorker.Etcd.S3.S3Pool?>> ReadAsync(string name, CancellationToken ct)
+            => Task.FromResult(Result<PgWorker.Etcd.S3.S3Pool?>.Success(pool));
+
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(pool is null ? [] : [pool.Name]));
+    }
+
+    // Store на несколько пулов: ListPoolNamesAsync — все имена, ReadAsync — по имени.
+    private sealed class MultiPoolStore(params PgWorker.Etcd.S3.S3Pool[] pools) : PgWorker.Etcd.S3.IS3PoolStore
+    {
+        public Task<Result<PgWorker.Etcd.S3.S3Pool?>> ReadAsync(string name, CancellationToken ct)
+            => Task.FromResult(Result<PgWorker.Etcd.S3.S3Pool?>.Success(
+                pools.FirstOrDefault(p => p.Name == name)));
+
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(
+                pools.Select(p => p.Name).ToArray()));
     }
 }

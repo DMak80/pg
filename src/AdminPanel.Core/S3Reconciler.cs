@@ -5,14 +5,14 @@ namespace AdminPanel.Core;
 // Панель ТОЛЬКО ПОКАЗЫВАЕТ расхождения: сироты находит и удаляет супервизор
 // воркера (arch/19 §4), вердикты WAL не ставятся.
 
-public static class MinioReconciler
+public static class S3Reconciler
 {
     // Активные заявки без объектов — ожидаемо («идёт, объектов ещё нет»).
     private static bool IsEtcdActive(string state) =>
         state is "PLANNED" or "RUNNING" or "UPLOADING";
 
     public static BackupReconcileInfo Reconcile(
-        MinioStorageInfo minio,
+        S3StorageInfo s3,
         IReadOnlyList<ClusterBackupsInfo> backups,
         IReadOnlyList<ClusterInfo> clusters,
         BackupOrphansInfo? orphanRegistry)
@@ -38,9 +38,9 @@ public static class MinioReconciler
         // только etcd (bucket/префикс стёрт, свежий кластер до первой загрузки),
         // обязан попасть в сверку: его полные — EtcdOnly/InProgress, wal — etcd-
         // факты («etcd-ключи без объектов» — ядро сверки, spec §1/§4.4).
-        var treeByCluster = minio.Clusters.ToDictionary(c => c.Cluster, StringComparer.Ordinal);
+        var treeByCluster = s3.Clusters.ToDictionary(c => c.Cluster, StringComparer.Ordinal);
         var clusterNames = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var clusterNode in minio.Clusters)
+        foreach (var clusterNode in s3.Clusters)
             clusterNames.Add(clusterNode.Cluster);
         foreach (var etcdCluster in backups)
             clusterNames.Add(etcdCluster.Cluster);
@@ -106,7 +106,7 @@ public static class MinioReconciler
 
     // Полные: объединение id S3 ∪ etcd, статус по правилам spec §4.4.
     private static void ReconcileFulls(
-        string cluster, string shard, MinioShardNode? s3Shard,
+        string cluster, string shard, S3ShardNode? s3Shard,
         ClusterBackupsInfo? etcdCluster, List<BackupFullReconcile> into)
     {
         IReadOnlyList<BackupFullInfo>? etcdFulls = null;
@@ -124,7 +124,7 @@ public static class MinioReconciler
 
         foreach (var id in ids)
         {
-            MinioFullNode? s3 = s3ById?.TryGetValue(id, out var node) == true ? node : null;
+            S3FullNode? s3 = s3ById?.TryGetValue(id, out var node) == true ? node : null;
             BackupFullInfo? etcd = null;
             if (etcdFulls != null)
             {
@@ -153,7 +153,7 @@ public static class MinioReconciler
 
     // WAL — только факты обеих сторон, без вердикта (spec §4.4).
     private static void ReconcileWal(
-        string cluster, string shard, MinioShardNode? s3Shard,
+        string cluster, string shard, S3ShardNode? s3Shard,
         ClusterBackupsInfo? etcdCluster, List<BackupWalReconcile> into)
     {
         WalStreamInfo? etcdWal = null;

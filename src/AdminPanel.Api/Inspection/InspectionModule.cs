@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using AdminPanel.Etcd;
 using Shared.Core.CQRS;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -33,6 +34,18 @@ public static class InspectionModule
         {
             var result = await handler.HandleQuery<EtcdStatusQuery, EtcdStatusDto>(new EtcdStatusQuery(), ct);
             return ResultToHttp(result);
+        });
+
+        // GET /api/backups/s3-pools (t36, adminpanel/02 §12.4): пулы — из единого
+        // домена S3 (S3Snapshot, тот же тик) — Select модала «Пул бэкапов»
+        // (без ключей/секретов).
+        endpoints.MapGet("/api/backups/s3-pools", async (IS3SnapshotReader store, CancellationToken ct) =>
+        {
+            var snapshot = store.Current;
+            if (snapshot is null)
+                return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready");
+            return Results.Ok(S3Mappers.MapPools(snapshot.Clusters));
         });
 
         // GET /api/clusters — сводный список (arch/03 §1; spec §6.1).
@@ -214,7 +227,7 @@ public static class InspectionModule
     }
 
     // GET /api/backups/* — грань «Хранилище бэкапов» (t08, arch/03 §1): сводка/
-    // детали — из снапшота; objects — on-demand list-v2 (единственный выход в MinIO).
+    // детали — из снапшота; objects — on-demand list-v2 (единственный выход в ownS3).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
     {
         // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной).
@@ -247,7 +260,7 @@ public static class InspectionModule
 
         // GET /api/backups/objects?prefix=&maxKeys=&continuationToken= — on-demand
         // list-v2: ступень 1 гварда (форма prefix + диапазон maxKeys) inline до query —
-        // 400; ступень 2 (принадлежность кластерам/дереву) и сбой MinIO — в handler'е
+        // 400; ступень 2 (принадлежность кластерам/дереву) и сбой хранилища — в handler'е
         // (InvalidBackupPrefixException → 400, BackupsS3UnavailableException → 502).
         endpoints.MapGet("/api/backups/objects", async (
             string? prefix, int? maxKeys, string? continuationToken,
@@ -280,7 +293,7 @@ public static class InspectionModule
                     detail: result.Error.Message),
                 BackupsS3UnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status502BadGateway,
-                    title: "MinIO unavailable",
+                    title: "S3 storage unavailable",
                     detail: result.Error.Message),
                 _ => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable,

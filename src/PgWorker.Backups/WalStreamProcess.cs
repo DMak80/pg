@@ -39,7 +39,7 @@ public sealed class WalStreamProcess(
     IClusterDriver driver,
     ShardEndpoints shards,
     IWalSqlExecutor sql,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
     WalStatusWriter status,
     ClaimStore claims,
     WorkJournal journal,
@@ -142,6 +142,16 @@ public sealed class WalStreamProcess(
                 $"{shard.Name}: нет /clusters/{cluster}/backup_password (t02 не смержена/ensure не прошёл)", ct);
             return;
         }
+
+        // (1.5) t36 (arch/19 §4): резолв пула бэкапов ДО источников/слотов/агентов.
+        //     null (пул не выбран) → стоп-семантика (агенты вниз, ключ не пишем);
+        //     Failed (пул удалён/нода не заявлена/профиль без кредов/без адреса) →
+        //     transient: journal + маркер s3-pool-exhausted в wal-статусе — тик не валится.
+        var pool = await ResolvePoolAsync(cluster, shard.Name, wal: shardBackups?.Wal, ct);
+        if (pool is null)
+            return;
+        // Пул-клиент шарда на этот тик: control/history — перебор ReadAll/write-списков.
+        await using var poolS3 = s3Factory.Create(pool);
 
         // (2) Два источника (t27 §3.3 п.2): мастер + sync-standby (двойная архивация,
         //     оба из portalloc; sync нет → только мастер — второй агент тиком при
@@ -277,7 +287,7 @@ public sealed class WalStreamProcess(
         // spec §3.2); transient-DEGRADED (lag/тишина) — НЕ блокирует супервиз
         // (exited-агент пересоздаётся, spec §3.2 п.5; ревью Ф4-2 №1).
         var controlled = await ControlDueAsync(
-            cluster, shard.Name, wal, shardBackups, options, masterRef, slot, adminDsn, ct);
+            cluster, shard.Name, wal, shardBackups, options, masterRef, slot, adminDsn, poolS3, ct);
 
         // (4–5) Per-node агенты + супервиз.
         if (!controlled.ChainBroken)
@@ -287,8 +297,52 @@ public sealed class WalStreamProcess(
                 .Select(k => k.Split('/')[1])
                 .ToList();
             await EnsureAgentsAsync(cluster, shard.Name, sources, shardNodes, options, slot,
-                password, controlled.State, ct);
+                password, controlled.State, pool, ct);
         }
+    }
+
+    // t36 (arch/19 §4): резолв пула бэкапов per-cluster. Контекст | null;
+    // «пул не выбран» и Failed-резолв оба возвращают null (тик без мутаций),
+    // различие — в побочных эффектах ниже.
+    private async Task<BackupPoolContext?> ResolvePoolAsync(
+        string cluster, string shardName, WalStreamState? wal, CancellationToken ct)
+    {
+        var resolved = await s3Factory.ResolveAsync(cluster, ct);
+        if (resolved.IsSuccess)
+        {
+            if (resolved.Value is { } ctx)
+                return ctx;
+            // Пул не выбран (policy без s3): стоп-семантика — агенты шарда вниз,
+            // wal-ключ оставляем (алерт backup-pool-missing — проекция панели).
+            // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит
+            // teardown, артефактная телеметрия теряет журнал).
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: пул не выбран (policy без секции s3) — агенты вниз",
+                cluster, shardName);
+            var removed = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
+            if (!removed.IsSuccess)
+                throw new ApplicationException($"стоп агента {shardName}: {removed.Error!.Message}");
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                $"{shardName}: policy без секции s3 — пул не выбран, агенты остановлены", ct);
+            Observe(cluster, shardName, null, null);
+            return null;
+        }
+
+        // Failed-резолв — transient (arch/19 §4): journal + маркер s3-pool-exhausted
+        // в живом wal-статусе (алерт backup-pool-unreachable закрывает и случай
+        // «policy записана, но резолв не удался»); ретраи тиком.
+        // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит teardown).
+        logger?.LogWarning("backup-wal {Cluster}/{Shard}: резолв пула не удался — {Error}",
+            cluster, shardName, resolved.Error!.Message);
+        await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+            $"{shardName}: {resolved.Error!.Message}", ct);
+        if (wal is { State: WalStreamStatus.Active or WalStreamStatus.Degraded }
+            && wal.Error?.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) != true)
+            await status.WriteIfChangedAsync(cluster, shardName, wal with
+            {
+                State = WalStreamStatus.Degraded,
+                Error = $"{S3PoolMarkers.Exhausted}: {resolved.Error!.Message}",
+            }, ct);
+        return null;
     }
 
     /// <summary>Источник WAL-архивации (t27): нода-владелец агента (имя из
@@ -305,7 +359,7 @@ public sealed class WalStreamProcess(
     private async Task EnsureAgentsAsync(
         string cluster, string shard, IReadOnlyList<WalSource> sources,
         IReadOnlyList<string> shardNodes, BackupsRuntimeOptions options, string slot,
-        string password, WalStreamState? wal, CancellationToken ct)
+        string password, WalStreamState? wal, BackupPoolContext pool, CancellationToken ct)
     {
         var listed = await driver.ListBackupAgentsAsync(cluster, ct);
         if (!listed.IsSuccess)
@@ -345,6 +399,46 @@ public sealed class WalStreamProcess(
         var recreateAll = foreign.Count > 0
             || missing.Any(m => listedNames.Contains(m.Name, StringComparer.Ordinal)); // exited-контейнер
 
+        // t36 (arch/19 §4): дрейф списков policy — running-агент одноимённого
+        // источника с устаревшим env (S3_ENDPOINTS/S3_READ_ENDPOINTS) не
+        // обновляется супервизом (матч по имени — «все running — skip»), а
+        // policy динамическая: смены списков оператора обязаны доезжать без
+        // ожидания стороннего выхода контейнера (прецедент AC4: рестарт воркера
+        // не меняет env одноимённых running-агентов). Сверка env свежим
+        // контекстом (inspect per-агент, дёшево); расхождение — recreateAll
+        // (демонтаж+создание — общим путём ниже). Inspect-сбой — transient:
+        // сверка повторится следующим тиком.
+        if (!recreateAll)
+        {
+            foreach (var d in desired)
+            {
+                var desiredWrite = string.Join(",",
+                    ReferenceEquals(d.Src, sources[0]) ? pool.WriteMaster : pool.WriteReplica);
+                var desiredRead = string.Join(",", pool.ReadAll);
+                var engine = driver.EngineFor(d.Src.Addr.Host);
+                if (engine is null)
+                    continue;
+                var listedAgent = listed.Value.FirstOrDefault(c =>
+                    c.Names.Contains(d.Name) || c.Names.Contains("/" + d.Name));
+                if (listedAgent is null)
+                    continue;
+                var inspect = await engine.InspectContainerAsync(listedAgent.Id, ct);
+                if (!inspect.IsSuccess)
+                    continue;
+                var curWrite = inspect.Value.Env.FirstOrDefault(e =>
+                    e.StartsWith("S3_ENDPOINTS=", StringComparison.Ordinal));
+                var curRead = inspect.Value.Env.FirstOrDefault(e =>
+                    e.StartsWith("S3_READ_ENDPOINTS=", StringComparison.Ordinal));
+                if (curWrite == $"S3_ENDPOINTS={desiredWrite}"
+                    && curRead == $"S3_READ_ENDPOINTS={desiredRead}")
+                    continue;
+                logger?.LogInformation(
+                    "backup-wal: агент {Agent} — дрейф списков policy, пересоздание", d.Name);
+                recreateAll = true;
+                break;
+            }
+        }
+
         var toEnsure = recreateAll ? desired : missing;
         if (recreateAll)
         {
@@ -361,10 +455,15 @@ public sealed class WalStreamProcess(
         {
             foreach (var d in toEnsure)
             {
+                // t36 (arch/19 §3/§4): write-список по РОЛИ источника — мастер-агент
+                // пишет write_master, sync-агент write_replica (порядок = приоритет);
+                // read-список общий (все ноды пула).
+                var writeEndpoints = ReferenceEquals(d.Src, sources[0]) ? pool.WriteMaster : pool.WriteReplica;
                 var spec = new ContainerSpec(
                     Image: options.WalAgentImage, // t27: образ приёмника pgworker-wal
                     Env: (IReadOnlyDictionary<string, string>)AgentEnv(
-                        options, cluster, shard, slot, d.Src.PgHost, d.Src.PgPort, password),
+                        options, cluster, shard, slot, d.Src.PgHost, d.Src.PgPort, password,
+                        writeEndpoints, pool.ReadAll, pool.AccessKey, pool.SecretKey),
                     VolumeName: null,   // t27: staging-том упразднён — буфер в памяти приёмника
                     VolumeDest: null,
                     Ports: [],
@@ -446,11 +545,16 @@ public sealed class WalStreamProcess(
         return tail.Split('-')[0];
     }
 
-    // env контейнера агента-приёмника (t27 §3.1): СЕКРЕТЫ — только env, в argv/логи
-    // не попадают; приёмник читает Environment.GetEnvironmentVariable (WalReceiverEnv).
+    // env контейнера агента-приёмника (t27 §3.1; t36 — списки пула): СЕКРЕТЫ —
+    // только env, в argv/логи не попадают; приёмник читает
+    // Environment.GetEnvironmentVariable (WalReceiverEnv). S3_ENDPOINTS — список
+    // роли источника (порядок = приоритет записи), S3_READ_ENDPOINTS — все ноды
+    // пула (резолв хвоста); креды — env-профиля пула (arch/19 §7).
     internal static IReadOnlyDictionary<string, string> AgentEnv(
         BackupsRuntimeOptions options, string cluster, string shard, string slot,
-        string pgHost, int pgPort, string password)
+        string pgHost, int pgPort, string password,
+        IReadOnlyList<string> s3Endpoints, IReadOnlyList<string> s3ReadEndpoints,
+        string s3AccessKey, string s3SecretKey)
     {
         var env = new Dictionary<string, string>
         {
@@ -462,14 +566,12 @@ public sealed class WalStreamProcess(
             ["SLOT"] = slot,
             ["CLUSTER"] = cluster,
             ["SHARD"] = shard,
-            ["S3_ENDPOINT"] = options.AgentS3Endpoint,
+            ["S3_ENDPOINTS"] = string.Join(",", s3Endpoints),
+            ["S3_READ_ENDPOINTS"] = string.Join(",", s3ReadEndpoints),
             ["S3_BUCKET"] = options.S3Bucket,
-            ["S3_ACCESS_KEY"] = options.S3AccessKey,
-            ["S3_SECRET_KEY"] = options.S3SecretKey,
-            ["S3_PATHSTYLE"] = options.S3PathStyle ? "true" : "false",
+            ["S3_ACCESS_KEY"] = s3AccessKey,
+            ["S3_SECRET_KEY"] = s3SecretKey,
         };
-        if (options.S3Region is { Length: > 0 } region)
-            env["S3_REGION"] = region;
         // t42 (arch/19 §7): CA https-endpoint — PEM значением (multi-host), материализация внутри контейнера
         var caPem = BackupCaPem.ReadIfConfigured(options);
         if (caPem is not null)
@@ -534,7 +636,7 @@ public sealed class WalStreamProcess(
     private async Task<ControlOutcome> ControlDueAsync(
         string cluster, string shard, WalStreamState? wal, ShardBackups? shardBackups,
         BackupsRuntimeOptions options, string masterRef, string slot, string adminDsn,
-        CancellationToken ct)
+        PoolBackupS3 s3, CancellationToken ct)
     {
         var key = $"{cluster}/{shard}";
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
@@ -549,12 +651,15 @@ public sealed class WalStreamProcess(
 
         _lastVerifyUnix[key] = now;
 
-        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/.
-        // Пульс прогресса на время вызова (канон t19): прямой S3-вызов на
-        // недоступном endpoint может висеть до HttpClient-таймаута без отметок —
-        // watchdog (порт сноса 30 c) гасил reconcile посреди wal-контроля
-        // (bad-S3 — штатный контур, transient повторит следующий тик).
-        var listed = await S3PulseAsync(token => s3.ListWalAsync(cluster, shard, ct: token), ct);
+        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/ —
+        // UNION по всем нодам пула (t36, arch/19 §5 «где данные есть»): первая
+        // доступная нода может отставать (лаг mesh) — её соло-листинг даёт
+        // ложную дыру и BROKEN (прецедент AC4: нода после рестарта догоняет
+        // mesh). Пульс прогресса на время вызова (канон t19): прямой S3-вызов
+        // на недоступном endpoint может висеть до HttpClient-таймаута без
+        // отметок — watchdog (порт сноса 30 c) гасил reconcile посреди
+        // wal-контроля (bad-S3 — штатный контур, transient повторит следующий тик).
+        var listed = await S3PulseAsync(token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
         var objects = listed.Value;
@@ -593,7 +698,7 @@ public sealed class WalStreamProcess(
         // TIMELINE_HISTORY во время стрима (replication-команды после
         // START_REPLICATION сервером не обслуживаются — E2E-факт) — контроль
         // докладывает недостающий .history docker-exec'ом ноды при TLI-переходе.
-        await DeliverMissingHistoriesAsync(cluster, shard, objects, masterRef, ct);
+        await DeliverMissingHistoriesAsync(cluster, shard, objects, masterRef, s3, ct);
 
         if (!chain.IsContinuous)
         {
@@ -662,6 +767,43 @@ public sealed class WalStreamProcess(
             error = $"тишина загрузок {now - lastUploadedUnix} c (порог {options.WalStaleSec})";
         }
 
+        // t36 (arch/19 §3): исчерпание write-списка мастер-агента — контроль
+        // КАЖДЫЙ тик верификации, НЕЗАВИСИМО от lag/тишины: «тишина» считается
+        // по последнему объекту пула (ReadAll) и маскируется прогрессом
+        // sync-источника (write_replica на живой ноде) — разбор AC4: мастер-агент
+        // в ретрай-цикле исчерпания, wal-статус оставался Active. Хвост лога
+        // мастер-агента содержит маркер pool_exhausted приёмника → DEGRADED с
+        // s3-pool-exhausted (алерт backup-pool-unreachable); docker-вызов — по
+        // интервалу верификации, не ежетиковый.
+        if (state == WalStreamStatus.Active)
+        {
+            var agentLogs = await driver.BackupAgentLogsAsync(cluster,
+                BackupAgentNames.Container(cluster, shard, masterRef), 50, ct);
+            if (agentLogs.IsSuccess && agentLogs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
+            {
+                state = WalStreamStatus.Degraded;
+                error = $"{S3PoolMarkers.Exhausted}: исчерпание write-списка мастер-агентом (ретрай-цикл приёмника)";
+            }
+        }
+
+        // t36 (arch/19 §3): переход в DEGRADED — хвост лога мастер-агента: маркер
+        // pool_exhausted приёмника (ретрай-цикл исчерпания списка пула) → error
+        // несёт s3-pool-exhausted (алерт backup-pool-unreachable). Только на
+        // переходе (не каждый тик — docker-вызов дёшев, но не ежетиковый).
+        if (state == WalStreamStatus.Degraded && wal is not { State: WalStreamStatus.Degraded })
+        {
+            var logs = await driver.BackupAgentLogsAsync(cluster,
+                BackupAgentNames.Container(cluster, shard, masterRef), 50, ct);
+            if (logs.IsSuccess && logs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
+                error = $"{S3PoolMarkers.Exhausted}: {error}";
+        }
+
+        // Диагностика (t36-разбор): смена стейта — в host.log (etcd сносит teardown).
+        if (state != wal?.State || error != wal?.Error)
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: контроль {From}→{To}{Error}",
+                cluster, shard, wal?.State.ToString() ?? "<нет>", state,
+                error is null ? "" : $"; error={error}");
+
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,
             lastUploadedUnix, lag, error);
@@ -677,7 +819,7 @@ public sealed class WalStreamProcess(
     /// определению резолва).</summary>
     private async Task DeliverMissingHistoriesAsync(
         string cluster, string shard, IReadOnlyList<WalObject> objects,
-        string masterRef, CancellationToken ct)
+        string masterRef, IBackupS3 s3, CancellationToken ct)
     {
         var listedNames = objects.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
         if (listedNames.Count == 0)

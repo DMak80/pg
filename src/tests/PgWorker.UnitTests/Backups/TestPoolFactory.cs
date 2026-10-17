@@ -1,0 +1,40 @@
+using PgWorker.Backups;
+using PgWorker.Etcd.Parsing;
+using PgWorker.Etcd.S3;
+using Shared.Core;
+
+namespace PgWorker.UnitTests.Backups;
+
+// t36: тестовая фабрика пула для юнит-процессов — резолвер всегда возвращает
+// контекст с одной fake-нодой (BackupProcess использует фабрику ТОЛЬКО для
+// резолва; target-фабрика сценариям не нужна — бросок как страховка).
+public static class TestPoolFactory
+{
+    public static BackupS3Factory Single()
+    {
+        var pool = new S3Pool("backups", "backups-main", false,
+            [new S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)], ["h1:9000"]);
+        var store = new FixedPoolStore(pool);
+        var secrets = new BackupSecretProfileStore(
+            getenv: _ => "x",
+            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
+        return new BackupS3Factory(
+            new BackupPoolResolver(store, secrets,
+                policyReader: (_, _) => Task.FromResult<BackupPolicy?>(new BackupPolicy(
+                    1, 1, 1, 86400, true,
+                    S3: new BackupPolicyS3("backups", ["node1"], ["node1"])))),
+            store, secrets,
+            () => "pgworker-backups", () => null, TimeSpan.FromSeconds(5),
+            targetFactory: _ => throw new NotSupportedException(
+                "юнит-сценарий планировщика S3-операций не выполняет"));
+    }
+
+    private sealed class FixedPoolStore(S3Pool? pool) : IS3PoolStore
+    {
+        public Task<Result<S3Pool?>> ReadAsync(string name, CancellationToken ct)
+            => Task.FromResult(Result<S3Pool?>.Success(pool));
+
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Success(pool is null ? [] : [pool.Name]));
+    }
+}

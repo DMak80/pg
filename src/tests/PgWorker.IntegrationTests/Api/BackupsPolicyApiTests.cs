@@ -260,4 +260,159 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd5/policy", ct);
         stored.Value.Should().BeNull();
     }
+
+// ---- t36: секция s3 policy (arch/14 §1.1) ----
+
+// Сид пула /s3/clusters/backups/: config + заявка двух нод (placement/state)
+// + portalloc ТОЛЬКО на node1 (кейс «заявлена, не провижинена — валидна»).
+private async Task SeedS3PoolAsync(string ctTag = "")
+{
+    var ct = TestContext.Current.CancellationToken;
+    var g = Etcd.Gateway; var ep = Etcd.Endpoint;
+    await g.PutAsync(ep, "/s3/clusters/backups/config",
+        """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""", null, ct);
+    await g.PutAsync(ep, "/s3/clusters/backups/nodes/node1/placement",
+        """{"docker_host":"h1"}""", null, ct);
+    await g.PutAsync(ep, "/s3/clusters/backups/nodes/node1/state", "\"RUNNING\"", null, ct);
+    await g.PutAsync(ep, "/s3/clusters/backups/nodes/node2/placement",
+        """{"docker_host":"h2"}""", null, ct);
+    await g.PutAsync(ep, "/s3/clusters/backups/endpoints", "h1:18001", null, ct);
+    await g.PutAsync(ep, "/s3worker/portalloc/backups",
+        """{"node1":{"host":"h1","s3":18001}}""", null, ct);
+}
+
+// AAA: политика с валидной секцией s3 → 200; ключ каноничен (парсер t01
+// читает pool/списки); инстанс с placement БЕЗ portalloc — ВАЛИДЕН (201/200,
+// без 400: адрес появится при provisioning).
+[Fact]
+public async Task PolicyСS3_Валидна_ИнстансБезPortallocВалиден()
+{
+    // Arrange — кластер + пул (node2 без portalloc-записи).
+    await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3", buckets: 4, shards: 2);
+    await SeedS3PoolAsync();
+    var ct = TestContext.Current.CancellationToken;
+
+    // Act — список write_master включает node2 (заявлена, не провижинена).
+    var resp = await Client.PostAsJsonAsync("/api/clusters/bps3/backups/policy", new
+    {
+        retention = new { days = 1, weeks = 1, months = 1 },
+        full_max_age_sec = 86400,
+        verify = new { on_create = true },
+        s3 = new { pool = "backups", write_master = new[] { "node1", "node2" }, write_replica = new[] { "node1" } },
+    }, ct);
+
+    // Assert — 200 и ключ несёт s3; парсер читает секцию.
+    resp.StatusCode.Should().Be(HttpStatusCode.OK);
+    var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bps3/policy", ct);
+    stored.Value!.Value.Should().Contain("\"pool\":\"backups\"")
+        .And.Contain("node2");
+    var range = await Etcd.Gateway.RangeAsync(Etcd.Endpoint, "/pgworker/backups/bps3/", ct);
+    var parsed = BackupsParser.Parse(range.Value, out var errors);
+    errors.Should().BeEmpty();
+    parsed.Value.Single(c => c.Cluster == "bps3").Policy!.S3!.WriteMaster
+        .Should().Equal("node1", "node2");
+}
+
+// AAA: повторный PUT без s3 — секция исчезла (выключение бэкапов кластера).
+[Fact]
+public async Task ПовторныйПутБезS3_СекцияУдалена()
+{
+    // Arrange — policy с s3 уже записана.
+    await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3r", buckets: 4, shards: 2);
+    await SeedS3PoolAsync();
+    var ct = TestContext.Current.CancellationToken;
+    await Client.PostAsJsonAsync("/api/clusters/bps3r/backups/policy", new
+    {
+        retention = new { days = 1, weeks = 1, months = 1 },
+        full_max_age_sec = 86400,
+        verify = new { on_create = true },
+        s3 = new { pool = "backups", write_master = new[] { "node1" }, write_replica = new[] { "node1" } },
+    }, ct);
+
+    // Act — тот же PUT без секции s3.
+    var resp = await Client.PostAsJsonAsync("/api/clusters/bps3r/backups/policy", new
+    {
+        retention = new { days = 1, weeks = 1, months = 1 },
+        full_max_age_sec = 86400,
+        verify = new { on_create = true },
+    }, ct);
+
+    // Assert — 200, s3 в ключе нет.
+    resp.StatusCode.Should().Be(HttpStatusCode.OK);
+    var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bps3r/policy", ct);
+    stored.Value!.Value.Should().NotContain("\"s3\"");
+}
+
+// AAA: 400-набор — несуществующий пул / нода не в пуле / дубликат / пустой
+// список / pool пуст при заданных списках — ошибки ПО ПОЛЯМ.
+[Fact]
+public async Task НекорректнаяS3_400ПоПолям()
+{
+    // Arrange — кластер + пул.
+    await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3v", buckets: 4, shards: 2);
+    await SeedS3PoolAsync();
+    var ct = TestContext.Current.CancellationToken;
+
+    // Act/Assert — шесть граней валидации.
+    var cases = new (string Body, string Field, string Fragment)[]
+    {
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"pool":"ghost","write_master":["node1"],"write_replica":["node1"]}}
+        """, "s3.pool", "не найден"),
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"pool":"backups","write_master":["ghost1"],"write_replica":["node1"]}}
+        """, "s3.write_master", "не в пуле"),
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"pool":"backups","write_master":["node1","node1"],"write_replica":["node1"]}}
+        """, "s3.write_master", "дубликат"),
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"pool":"backups","write_master":[],"write_replica":["node1"]}}
+        """, "s3.write_master", "список пуст"),
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"write_master":["node1"],"write_replica":["node1"]}}
+        """, "s3.pool", "обязателен"),
+        ("""
+        {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
+         "s3":{"pool":"backups","write_master":["node1"],"write_replica":[]}}
+        """, "s3.write_replica", "список пуст"),
+    };
+    foreach (var (body, field, fragment) in cases)
+    {
+        var resp = await Client.PostAsync("/api/clusters/bps3v/backups/policy",
+            new StringContent(body, System.Text.Encoding.UTF8, "application/json"), ct);
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest, body);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        text.Should().Contain(field).And.Contain(fragment, body);
+    }
+}
+
+// AAA: пул в TO_REMOVE → 400 по полю s3.pool.
+[Fact]
+public async Task ПулToRemove_400()
+{
+    // Arrange — пул с заявкой удаления.
+    await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3t", buckets: 4, shards: 2);
+    await SeedS3PoolAsync();
+    var ct = TestContext.Current.CancellationToken;
+    await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/s3/clusters/backups/config",
+        """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1,"state":"TO_REMOVE"}""", null, ct);
+
+    // Act
+    var resp = await Client.PostAsJsonAsync("/api/clusters/bps3t/backups/policy", new
+    {
+        retention = new { days = 1, weeks = 1, months = 1 },
+        full_max_age_sec = 86400,
+        verify = new { on_create = true },
+        s3 = new { pool = "backups", write_master = new[] { "node1" }, write_replica = new[] { "node1" } },
+    }, ct);
+
+    // Assert
+    resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    (await resp.Content.ReadAsStringAsync(ct)).Should().Contain("TO_REMOVE");
+}
 }

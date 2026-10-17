@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using PgWorker.Backups;
+using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
@@ -16,6 +17,14 @@ namespace PgWorker.WalReceiver;
 public sealed class WalReceiverCore
 {
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
+
+    // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная/перегруженная
+    // нода пула «молча принимает» TCP и не отвечает — ПЕР-ЦЕЛЬНЫЙ бюджет: это
+    // значение уходит requestTimeout'ом в КАЖДУЮ цель PoolBackupS3 (Program),
+    // чтобы висящая первая цель НЕ съедала бюджет перебора и фейловер доезжал
+    // до следующей ноды списка (прецедент AC4: put к ноде под mesh-нагрузкой
+    // висел до отмены попытки — вторая цель не получала ни одной попытки).
+    internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StreamMarkerPeriod = TimeSpan.FromSeconds(5);
 
     public static async Task<int> RunAsync(
@@ -52,6 +61,11 @@ public sealed class WalReceiverCore
                         return 3;
                     }
 
+                    // Диагностика transient-цикла подключения: причина обязана быть
+                    // видимой в логе контейнера без перезапуска (R3 «не молчание»);
+                    // stdout — протокол воркера, ошибка идёт в stderr.
+                    await Console.Error.WriteLineAsync(
+                        $"open_failed: {opened.Error.Message.Split('\n')[0]}");
                     await Task.Delay(retry, ct);
                     continue;
                 }
@@ -90,6 +104,10 @@ public sealed class WalReceiverCore
                 var started = await source.StartReplicationAsync(o.Slot, tail.Value, ct);
                 if (!started.IsSuccess)
                 {
+                    // Диагностика отказа старта стрима (слот/позиция) — в stderr,
+                    // stdout остаётся протоколом воркера.
+                    await Console.Error.WriteLineAsync(
+                        $"start_failed: {started.Error!.Message.Split('\n')[0]}");
                     await Task.Delay(retry, ct);
                     continue;
                 }
@@ -128,7 +146,7 @@ public sealed class WalReceiverCore
                                 if (history is { IsSuccess: true } && history.Value is not null)
                                 {
                                     await PutWithRetryAsync(
-                                        s3, stdout, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
+                                        s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
                                         history.Value, retry, ct);
                                 }
                                 else
@@ -143,7 +161,7 @@ public sealed class WalReceiverCore
                             await Emit(WalReceiverMarkers.Delivering(segment.Name));
                             var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
                             await PutWithRetryAsync(
-                                s3, stdout, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
+                                s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
                                 segment.Data, retry, ct);
 
                             // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
@@ -166,6 +184,10 @@ public sealed class WalReceiverCore
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     // Обрыв источника (исключение из Stream) — поглощается ниже.
+                    // Диагностика причины обрыва — в stderr (тихий обрыв делал цикл
+                    // ненаблюдаемым: только «starting» без причины, R3 «не молчание»).
+                    await Console.Error.WriteLineAsync(
+                        $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
                 }
 
                 // Поток кончился/оборвался (сервер закрыл, транспортный сбой) — transient:
@@ -184,16 +206,33 @@ public sealed class WalReceiverCore
     }
 
     /// <summary>Put с ретраем (transient-отказ S3): на время ретраев чтение потока
-    /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.</summary>
+    /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.
+    /// t36: исчерпание списка пула (маркер s3-pool-exhausted в ошибке) — маркер
+    /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
+    /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).
+    /// R3 «быстрый отказ, не молчание»: пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout —
+    /// requestTimeout каждой цели в PoolBackupS3) + бюджет ВЫЗОВА
+    /// (цели записи + 1) × таймаут цели: висящая первая цель не отменяет
+    /// перебор — фейловер доезжает до живой ноды (прецедент AC4).</summary>
     private static async Task PutWithRetryAsync(
-        IBackupS3 s3, TextWriter stdout, string key, byte[] data, TimeSpan retry, CancellationToken ct)
+        IBackupS3 s3, TextWriter stdout, WalReceiverOptions o,
+        string key, byte[] data, TimeSpan retry, CancellationToken ct)
     {
         var sha256 = Convert.ToHexString(SHA256.HashData(data));
+        var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
         while (true)
         {
-            var put = await s3.PutObjectAsync(key, data, sha256, ct);
+            Result put;
+            using (var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                attempt.CancelAfter(callBudget);
+                put = await s3.PutObjectAsync(key, data, sha256, attempt.Token);
+            }
+
             if (put.IsSuccess)
                 return;
+            if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal))
+                await stdout.WriteLineAsync(WalReceiverMarkers.PoolExhausted());
             await Task.Delay(retry, ct);
         }
     }

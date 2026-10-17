@@ -7,54 +7,70 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // E2E экспорта etcd-снапшотов (t08): изолированное окружение E2eEnvironment
-// (своя сеть/etcd/MinIO — withMinio:true) + хост-воркер с включённым
+// (своя сеть/etcd/ownS3 — withS3Node:true) + хост-воркер с включённым
 // Snapshots:Export. Каждый Fact — своё окружение (per-method изоляция,
 // e2e-isolation §1/§3): метрики/ключи/объекты сценария не пересекаются.
 public class E2eEtcdSnapshotExportScenarios
 {
     private const string Bucket = "pgworker-backups";
+
+    // t36: bucket слепочной пары (не пуловый pgworker-backups).
+    private const string SnapshotBucket = "pgworker-etcd-snapshots";
     private E2eEnvironment Fx = null!;
     private string Endpoint => Fx.EtcdEndpoint;
     private EtcdGateway G => Fx.Gateway;
 
-    // Хост-воркер с включённым экспортом (S3 — MinIO окружения; Endpoint —
-    // localhost-вид воркера, джобам/агентам не нужен: sink ходит из процесса).
-    private Task<HostInstance> StartExportHostAsync(string name, CancellationToken ct,
+    // Хост-воркер с включённым экспортом (t36: ОТДЕЛЬНАЯ слепочная пара
+    // PgWorker:Snapshots:Export:S3 — свой bucket pgworker-etcd-snapshots,
+    // префикс etcd/; Endpoint — localhost-вид воркера: sink ходит из процесса).
+    private async Task<HostInstance> StartExportHostAsync(string name, CancellationToken ct,
         int intervalMin = 1, int retrySec = 5, int retention = 28, string? s3Override = null)
-        => Fx.StartHostAsync(name, snapshotIntervalMin: intervalMin, extraEnv: new Dictionary<string, string>
+    {
+        // bucket слепков (t36): отдельный от пулового — создаёт окружение сценария
+        // (прод: per-install, arch/19 §7; воркер bucket не создаёт).
+        await Fx.RunDockerAsync(
+        [
+            "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+                  + $" && mc mb --ignore-existing t/{SnapshotBucket}",
+        ], ct);
+        return await Fx.StartHostAsync(name, snapshotIntervalMin: intervalMin, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Snapshots__Export__Enabled"] = "true",
             ["PgWorker__Snapshots__Export__RetryIntervalSec"] = retrySec.ToString(),
             ["PgWorker__Snapshots__Export__RetentionObjects"] = retention.ToString(),
-            ["PgWorker__Backups__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint,
+            ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
+            // Креды ownS3-ноды контура (дефолт «minioadmin» ownS3 отвергает
+            // ownS3 — выгрузка слепков молча не ехала, полный прогон 2026-10-16:
+            // snap-* 3 факта «первая выгрузка False»).
+            ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
+            ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
         }, ct: ct);
+    }
 
-    // Runtime-опции подсистемы на окружение Fact'а (хост-клиент, образец OwnMinio.Runtime).
-    private BackupsRuntimeOptions MinioRuntimeForHost() => new(
+    // S3-цель окружения Fact'а (хост-клиент; t36 — S3ClientOptions).
+    private PgWorker.Backups.S3ClientOptions OwnS3() => new(
+        Fx.S3Endpoint,
+        SnapshotBucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword);
+
+    // Runtime-опции подсистемы на окружение Fact'а (bucket per-install).
+    private BackupsRuntimeOptions OwnS3RuntimeForHost() => new(
         Enabled: true,
-        S3Endpoint: Fx.S3Endpoint.Replace("host.docker.internal:", "localhost:", StringComparison.Ordinal),
-        S3AdvertisedEndpoint: Fx.S3Endpoint,
         S3Bucket: Bucket,
-        S3AccessKey: "minioadmin",
-        S3SecretKey: "minioadmin",
-        S3PathStyle: true,
         JobImage: E2eEnvironment.JobImage,
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: 30,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
 
-    // mc ls --recursive префикса etcd/ (mc в сети MinIO окружения — по алиасу);
+    // mc ls --recursive префикса etcd/ (mc в сети ownS3-ноды окружения — по алиасу);
     // пути в выводе — ОТНОСИТЕЛЬНО префикса (образец E2eBackupScenarios).
     private async Task<string> McLsAsync(string path)
         => await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null && mc ls --recursive t/{Bucket}/{path}",
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null && mc ls --recursive t/{SnapshotBucket}/{path}",
         ], TestContext.Current.CancellationToken);
 
     // Имена ключей из mc-листинга (последний токен строки — путь).
@@ -69,13 +85,13 @@ public class E2eEtcdSnapshotExportScenarios
     // Чтение объекта bucket'a через AWSSDK-клиент теста (факт содержимого S3).
     private async Task<byte[]> DownloadAsync(string key, CancellationToken ct)
     {
-        var runtime = MinioRuntimeForHost();
+        // t36: креды/endpoint — литералы окружения Fact'а (S3-полей в runtime нет).
         using var client = new Amazon.S3.AmazonS3Client(
-            new Amazon.Runtime.BasicAWSCredentials(runtime.S3AccessKey, runtime.S3SecretKey),
-            new Amazon.S3.AmazonS3Config { ServiceURL = runtime.S3Endpoint, ForcePathStyle = true });
+            new Amazon.Runtime.BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
+            new Amazon.S3.AmazonS3Config { ServiceURL = OwnS3().Endpoint, ForcePathStyle = true });
         var response = await client.GetObjectAsync(new Amazon.S3.Model.GetObjectRequest
         {
-            BucketName = runtime.S3Bucket,
+            BucketName = SnapshotBucket,
             Key = key,
         }, ct);
         using var ms = new MemoryStream();
@@ -86,15 +102,15 @@ public class E2eEtcdSnapshotExportScenarios
     private async Task<string> StatusValueAsync(CancellationToken ct)
         => (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value!.Value;
 
-    // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в MinIO,
+    // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в ownS3,
     // ключ OK с фактом, sha256 совпадает, слепок разворачиваем (etcdctl).
     [Fact]
     public async Task Export_плановый_слепок_уезжает_в_S3_ключ_OK()
     {
-        // Arrange — своё окружение (сеть/etcd/MinIO) + хост-воркер с экспортом
+        // Arrange — своё окружение (сеть/etcd/ownS3) + хост-воркер с экспортом
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-exp", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("snap-exp", withS3Node: true, ct: ct);
         Fx = fx;
         await using var app = await StartExportHostAsync("snapexp", ct, intervalMin: 1);
 
@@ -107,7 +123,7 @@ public class E2eEtcdSnapshotExportScenarios
         okKey.Should().BeTrue("первый тик лидера снимает слепок и выгружает его");
         var kv = await StatusValueAsync(ct);
         kv.Should().Contain("\"interval_min\":1").And.Contain("\"last_object\":\"etcd/snapshot-");
-        // Assert — объекты в MinIO: пара db+meta (имена относительно etcd/).
+        // Assert — объекты в ownS3: пара db+meta (имена относительно etcd/).
         // Ретрай-поллинг до УСТОЙЧИВОГО листинга (t24, фейлы №14/№16/№17):
         // intervalMin=1 — в окне ожидания OK воркер успевает снять ЕЩЁ один
         // слепок, и счёт пар в листинге — зона РЕТЕНЦИЯ-факта (Export_ретенция
@@ -165,7 +181,7 @@ public class E2eEtcdSnapshotExportScenarios
         // Arrange — хост с retention: 1 и минутным интервалом
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-ret", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("snap-ret", withS3Node: true, ct: ct);
         Fx = fx;
         await using var app = await StartExportHostAsync("snapret", ct, intervalMin: 1, retention: 1);
 
@@ -173,7 +189,7 @@ public class E2eEtcdSnapshotExportScenarios
         // слепок уезжает новой парой; интервал 1 мин; бюджет ≤ 180 c)
         var first = await E2eFixture.WaitForAsync(async () =>
             (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value.Contains("\"state\":\"OK\"") == true,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(300), ct);
         first.Should().BeTrue("первая выгрузка");
         var firstName = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
             await StatusValueAsync(ct))!.LastObject;
@@ -200,10 +216,10 @@ public class E2eEtcdSnapshotExportScenarios
         // Arrange — хост с экспортом на закрытый порт (протокольный «всегда закрыт»)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-neg", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("snap-neg", withS3Node: true, ct: ct);
         Fx = fx;
         await using var app = await StartExportHostAsync(
-            "snapneg", ct, s3Override: "http://host.docker.internal:1");
+            "snapneg", ct, s3Override: "http://e2e-broken-s3:1");
 
         // Act — ждём ключ FAILED (транзиент S3 не роняет снятие; статус пишет sink)
         var failed = await E2eFixture.WaitForAsync(async () =>

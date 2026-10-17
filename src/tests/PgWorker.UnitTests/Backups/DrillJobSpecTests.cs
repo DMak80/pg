@@ -10,8 +10,7 @@ namespace PgWorker.UnitTests.Backups;
 public class DrillJobSpecTests
 {
     private static BackupsRuntimeOptions Opts() =>
-        new(Enabled: true, S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:dev",
+        new(Enabled: true, S3Bucket: "bkt",
             AgentCpu: 2, AgentMem: 4_000_000_000, RestoreRecoveryTimeoutSec: 1800);
 
     // AAA: спека дрилла — свой ephemeral volume с именем джоба, PGDATA
@@ -23,7 +22,7 @@ public class DrillJobSpecTests
         var opts = Opts();
 
         // Act
-        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.VolumeName.Should().Be(BackupNames.DrillVolumeName("c1", "shard1", "id7"));
@@ -45,7 +44,7 @@ public class DrillJobSpecTests
         var opts = Opts();
 
         // Act
-        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Ports.Should().BeEmpty();
@@ -95,7 +94,7 @@ public class DrillJobSpecTests
 
         // Act
         var spec = DrillJobSpec.Build(Opts() with { S3CaBundlePath = caPath },
-            "c1", "shard1", "id7", "20261001090000Z");
+            "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
@@ -106,7 +105,7 @@ public class DrillJobSpecTests
     public void Build_БезCaBundle_НетS3CaPem()
     {
         // Arrange / Act
-        var spec = DrillJobSpec.Build(Opts(), "c1", "shard1", "id7", "20261001090000Z");
+        var spec = DrillJobSpec.Build(Opts(), "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
@@ -123,7 +122,7 @@ public class DrillJobSpecTests
         var opts = Opts() with { ContourNetwork = contour };
 
         // Act
-        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Network.Should().Be(expectedNet);

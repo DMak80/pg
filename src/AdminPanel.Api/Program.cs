@@ -73,10 +73,10 @@ var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
     app.Logger.LogWarning("AdminPanel:Auth: не задан ни Password, ни PasswordHash — логин отключён");
 
-// t08: fail-fast конфига MinIO-грани (пустой Endpoint — грань выключена, не ошибка).
-var minio = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.MinioOptions>>().Value;
-if (minio.IsConfigured)
-    minio.EnsureValid();
+// t08: fail-fast конфига S3-грани (пустой Endpoint — грань выключена, не ошибка).
+var s3 = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.BackupsS3Options>>().Value;
+if (s3.IsConfigured)
+    s3.EnsureValid();
 
 // OpenAPI-схема — только в dev-окружении.
 if (app.Environment.IsDevelopment())

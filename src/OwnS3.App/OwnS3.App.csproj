@@ -14,6 +14,7 @@
         <ProjectReference Include="..\OwnS3.Storage\OwnS3.Storage.csproj"/>
         <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
         <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+        <PackageReference Include="System.IO.Hashing"/>
     </ItemGroup>
 
     <ItemGroup>

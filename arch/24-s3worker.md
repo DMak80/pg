@@ -38,8 +38,7 @@ lease-клэймы, arch/23 §8); смерть контролирующего и
 
 Границы (что НЕ входит): механика mesh-репликации ownS3 (канон
 [owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md)); зонды
-синхронности (t33); панель домена S3; клиентская интеграция пула
-(t36).
+синхронности (t33); панель домена S3 (канон adminpanel/02 §12).
 
 ---
 
@@ -64,7 +63,7 @@ only, всё видит;          ключ /s3worker/api/<id> =
 URL API — из etcd)        URL воркера (§1.1)
 ```
 
-Отдельная строка: **PgWorker — клиент пула** (читатель `endpoints` в t36),
+Отдельная строка: **PgWorker — клиент пула** (читатель `endpoints`),
 участником контракта НЕ является — в `/s3/` и `/s3worker/` не пишет и
 docker-объектов домена не создаёт.
 
@@ -471,7 +470,7 @@ Fail-fast валидации старта — по образцу pg (непол
   [21-valkeyworker.md](21-valkeyworker.md).
 - Принципы синхронизации —
   [17-synchronization-principles.md](17-synchronization-principles.md).
-- Отложенные задачи — [roadmap/s3.md](roadmap/s3.md) (t36 клиентская интеграция).
+- Отложенные задачи — [roadmap/s3.md](roadmap/s3.md).
 - Требования mesh-ownS3 —
   `../OwnS3/docs/owns3-replication-requirements.md`; изыскания платформ
   репликации (MinIO/Garage) — справочник фактов `../OwnS3/docs/s3-replication.md`.

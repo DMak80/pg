@@ -53,6 +53,12 @@ public enum RestoreStatus
     Failed,
 }
 
+/// <summary>Секция s3 policy бэкапов (t36, arch/19 §4): пул = имя кластера
+/// /s3/clusters/; списки — упорядоченные имена инстансов пула (ссылки, не
+/// адреса; резолв — воркером через endpoints/portalloc).</summary>
+public sealed record BackupPolicyS3(
+    string Pool, IReadOnlyList<string> WriteMaster, IReadOnlyList<string> WriteReplica);
+
 /// <summary>Per-cluster политика бэкапов (ключ
 /// /pgworker/backups/&lt;C&gt;/policy); отсутствует → дефолт конфига
 /// PgWorker:Backups:Policy у потребителя (t02+).</summary>
@@ -66,10 +72,13 @@ public enum RestoreStatus
 /// <param name="DrillIntervalDays">Период дрилов шардов кластера, суток
 /// (reliability t02, arch/19 §4); 0 — дрилл кластера выключен; null — поля
 /// нет в policy-ключе → дефолт конфига подставляет потребитель.</param>
+/// <param name="S3">Секция s3 (t36): null — пул не выбран (отсутствие/битая
+/// секция — подсистема кластера не пишет и не читает, arch/19 §4).</param>
 public sealed record BackupPolicy(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null,
-    int? DrillIntervalDays = null);
+    int? DrillIntervalDays = null,
+    BackupPolicyS3? S3 = null);
 
 /// <summary>Результат проверки полного: состояние + время последней проверки;
 /// Error — причина провала (t04, только для FAILED).</summary>
@@ -134,7 +143,10 @@ public sealed record RestoreOperationState(
     long? FinishedUnix = null,
     string? Phase = null,
     string? RestoredToLsn = null,
-    string? Error = null)
+    string? Error = null,
+    // t36 (arch/14 §1.1): пул чтения DR-источника (source_pool); null —
+    // собственный пул кластера policy.s3. null у старых ключей — совместимо.
+    string? SourcePool = null)
 {
     /// <summary>System id восстановленного PGDATA (из result-джоба): щит
     /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не

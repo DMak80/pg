@@ -273,6 +273,10 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         public Task<Result> EnsureBackupAgentAsync(
             string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct) => throw NotSupported();
+    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(""));
+
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
@@ -342,6 +346,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             store, [Ep], driver,
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
             claims, journal, Secrets, options ?? new BackupsRuntimeOptions { Enabled = true },
+            TestPoolFactory.Single(),
             TimeProvider.System, NullLogger<BackupProcess>.Instance, snapshot: null,
             fullAgeObserver: observer,
             watchdogWindow: watchdogWindow,

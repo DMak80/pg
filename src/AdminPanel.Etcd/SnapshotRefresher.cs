@@ -20,7 +20,7 @@ public sealed class SnapshotRefresher(
     ISnapshotStore store,
     IProbeStateStore probeStateStore,
     IWorkerHealthStore workerHealthStore,
-    IMinioInventoryStore minioStore,
+    IS3InventoryStore inventoryStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -164,21 +164,20 @@ public sealed class SnapshotRefresher(
         // 6. Сборка + внесение проб (arch/02 §4 п.3) + health воркеров (spec D4,
         // образец ProbeEnricher.Apply — poller пишет независимо от KV-тика) +
         // алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
-        var built = ProbeEnricher.Apply(
-            SnapshotBuilder.Build(
-                time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
-                etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed),
-            probeStateStore.Current)
+        var builtBase = SnapshotBuilder.Build(
+            time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
+            etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed);
+        var enrichedBase = ProbeEnricher.Apply(builtBase, probeStateStore.Current)
             with
         {
             WorkerHealth = workerHealthStore.Current ?? [],
-            // t08: live-инвентарь MinIO — готовым состоянием из стора (по образцу
+            // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
-            MinioStorage = minioStore.Current,
+            S3Storage = inventoryStore.Current,
         };
-        store.Replace(built with
+        store.Replace(enrichedBase with
         {
-            Alerts = alertEngine.Evaluate(built, previous, now, EffectiveIntervalSeconds()),
+            Alerts = alertEngine.Evaluate(enrichedBase, previous, now, EffectiveIntervalSeconds()),
         });
         return Finish(Result.Success(), working: true);
     }
@@ -252,7 +251,7 @@ public sealed class SnapshotRefresher(
             previous?.UnknownKeyCount ?? 0,
             previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
-            previous?.MinioStorage, // инвентарь MinIO переживает отказ etcd (t08, как WorkerHealth)
+            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (t08, как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
             previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик (t08)
 

@@ -193,23 +193,29 @@ pg/kafka/valkey-инстансов) пробит живые инстансы S3W
 | `POST /v3/cluster/member/list` | активный endpoint | `EtcdMember[]`: id, name, peerUrls, clientUrls; `IsLeader` по совпадению id со статусом leader |
 | `POST /v3/maintenance/alarm` | активный endpoint | `Alarm[]`: memberId, type (NOSPACE, CORRUPT, NOSPACE-потомки) |
 
-### 2.5. MinIO/S3 бэкапов — live-чтение панели (t08)
+### 2.5. S3 бэкапов — live-чтение панели (t08)
 
 Грань «Хранилище бэкапов» читает объектное хранилище бэкапов НАПРЯМУЮ (не через
 etcd): per-install креды — env `AdminPanel:Backups:S3:*` (arch/19 §7, в git их
-нет; DTO несёт только endpoint/bucket). Панель в S3 ТОЛЬКО ЧИТАЕТ — контракт
+нет; DTO несёт только endpoint/bucket). Адреса хранилища — env
+`AdminPanel:Backups:S3:Endpoints` (запятая-список нод пула инвентаря;
+одиночный `Endpoint` — валидный частный случай: один элемент); клиент
+перебирает цели с первого доступного (быстрый отказ per-попытки —
+существующий `TimeoutSec`, R3 arch/23 §7), DTO несёт список endpoints
+(без ключей). Панель в S3 ТОЛЬКО ЧИТАЕТ — контракт
 уровня кода: интерфейс клиента содержит лишь ListBuckets/ListObjectsV2 и
-публичные health-пробы: `/minio/health/live`|`/minio/health/cluster`
+публичные health-пробы ownS3: `/s3/health/live`|`/s3/health/cluster`
 (200/503; drives-поля тела при наличии — толерантный парс); ApiOk —
-ListBuckets; LiveOk — live-проба, 404/403 → фолбэк `GET /healthz`
+ListBuckets; LiveOk — `/s3/health/live`, 404/403 → фолбэк `GET /healthz`
 (канон ownS3, без подписи; 200 → live, 503/иное → down; 403 —
 канонический ответ ownS3 на анонимный запрос вне `/healthz`/`/metrics`
 — ../OwnS3/arch/owns3/03/05 §5, 404 — несуществующий путь; фолбэк только по
 статусу ответа — мёртвый endpoint вторую пробу не крутит); ClusterOk —
-null вне MinIO-контура (404/403/нет ответа); пишущие/удаляющие операции —
+`/s3/health/cluster`, null — эндпоинт не отвечает/не поддерживается
+(404/403/нет ответа); пишущие/удаляющие операции —
 только воркер (arch/19 §4/§5). Инвентарь-тик 60 c (`IntervalSec`): ListBuckets +
 health + ОДИН полный list-v2 bucket → агрегаты дерева `<C>/<X>` в стор →
-снапшот `EtcdSnapshot.MinioStorage` (§3); построчные объекты — on-demand
+снапшот `EtcdSnapshot.S3Storage` (§3); построчные объекты — on-demand
 `GET /api/backups/objects` (пагинация, единственный прямой выход на запрос).
 Сверка S3↔etcd — отображение (полные без ключа / ключи без объектов / сироты с
 джойном на реестр /pgworker/backups/orphans): находит и удаляет сироты
@@ -234,7 +240,7 @@ sealed record EtcdSnapshot(
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
     IReadOnlyList<WorkJournalInfo> PgWorkerWork, // §2.3.1: журналы /pgworker/work/<C>
     IReadOnlyList<WorkerHealth> WorkerHealth, // §2.3.1: опрос /healthz живых инстансов
-    MinioStorageInfo? MinioStorage,   // §2.5: live-инвентарь MinIO (t08), null — грань не настроена
+    S3StorageInfo? S3Storage,   // §2.5: live-S3-инвентарь (t08), null — грань не настроена
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
@@ -267,11 +273,13 @@ sealed record WorkerHealth(
 
 enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
 
-// Live-инвентарь MinIO-грани «Хранилище бэкапов» (§2.5, t08): пишется
+// Live-инвентарь S3-грани «Хранилище бэкапов» (§2.5, t08): пишется
 // инвентарь-тиком в стор, вносится refresher'ом; null — грань не настроена.
-sealed record MinioStorageInfo(bool Configured, string Endpoint, string Bucket,
-    MinioHealth? Health, IReadOnlyList<string> Buckets, long UsedBytes,
-    long ObjectCount, IReadOnlyList<MinioClusterNode> Clusters,
+// Endpoints — цели инвентаря списком (env Endpoints; одиночный Endpoint —
+// валидный частный случай, один элемент); ключей в DTO нет.
+sealed record S3StorageInfo(bool Configured, IReadOnlyList<string> Endpoints, string Bucket,
+    S3Health? Health, IReadOnlyList<string> Buckets, long UsedBytes,
+    long ObjectCount, IReadOnlyList<S3ClusterNode> Clusters,
     IReadOnlyList<string> ForeignPrefixes, long UpdatedAtUnix,
     int ConsecutiveFailures, string? LastError);
 
@@ -961,12 +969,16 @@ retention + full_max_age_sec + verify + drill (канон замещения ц�
 значение drill, прочитанное из policy-ключа/дефолта). Поле «Дрилл каждые
 N суток» (0 = выкл, диапазон валидации 0..3650; истина валидации —
 сервер воркера, панель дублирует для UX) — в грани «Хранилище бэкапов»
-кластера. Применяется следующим проходом воркера без рестарта
+кластера. Полное тело формы дополняется секцией
+`s3 { pool, write_master, write_replica }` (выбор пула и упорядоченные
+списки нод записи — модал «Пул бэкапов», arch/19 §4); сброс секции —
+отправкой policy БЕЗ `s3` (выключение бэкапов кластера, «только явный
+выбор»). Применяется следующим проходом воркера без рестарта
 (тик читает policy-ключ). Коды — как у прочих прокси-мутаций §9: 200/204
 успех, 400 валидация воркера (перечень полей), 503 живых инстансов
 воркера нет, 404 кластера нет. Панель парсер policy — толерантен:
-policy без секции `drill` читается без ошибок (дефолт), drill-ключей нет —
-правила дрилла молчат.
+policy без секций `drill`/`s3` читается без ошибок (дефолт), drill-ключей нет —
+правила дрилла молчат, секции `s3` нет — правила `backup-pool-*` молчат.
 
 ## 10. Kafka (чтение + записи панели)
 
@@ -1211,3 +1223,18 @@ already→204/202); панель — прокси, тело команды пе�
 cpu 0.01..64, mem/disk 1..65536 GiB; `secretProfile` — непустое имя (422 с
 перечнем доступных); links — имена существуют, `a≠b`, пары уникальны.
 `platform` — единственное значение `owns3` (панель подставляет всегда).
+
+### 12.4. Потребление страницей «Хранилище бэкапов»
+
+Домен S3 — единственный источник данных о пулах для грани «Хранилище
+бэкапов»: список пулов для модала «Пул бэкапов» (03 §3.8; мутация —
+прокси в policy-API воркера, §9.12) и колонки «Пул» таблицы
+«Кластеры → шарды» панель получает ИЗ ЭТОГО домена — тот же снапшот
+`S3Snapshot` и тот же тик §4 (второго домена/парсера/тика нет):
+имя кластера (`/s3/clusters/`), `config.secret_profile`, Active-статус
+(отсутствие `state` — §2 arch/23), состав нод (имена из ключей
+`nodes/<I>/state|placement`, состояние `state`) и адреса
+(`endpoints`-строка). Выбор пула для бэкапов кластера — policy кластера
+через policy-API воркера (§9.12): от этой грани мутаций домена НЕТ —
+чтение read-only, unknownKeys-толерантность и parseError — общие
+(12.1).

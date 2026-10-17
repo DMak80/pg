@@ -4,50 +4,51 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Fail-fast включения экспорта etcd-снапшотов (t08, spec §3.3): Enabled=true
-// требует полный S3-комплект из Backups:S3 (Backups:Enabled НЕ требуется);
-// диапазоны — всегда; false — подсистема не активна (нулевое влияние, §2.10).
+// Fail-fast включения экспорта etcd-снапшотов (t08, spec §3.3; t36 — собственная
+// пара S3): Enabled=true требует полную пару PgWorker:Snapshots:Export:S3 (env
+// PGW_SNAPSHOTS_S3_* — НЕ креды пулов бэкапов, arch/14 §6/§8); диапазоны —
+// всегда; false — подсистема не активна (нулевое влияние, §2.10).
 public class SnapshotExportOptionsTests
 {
-    private static BackupsS3Options S3(bool full = true) => new()
+    private static SnapshotExportS3Options S3(bool full = true) => new()
     {
-        Endpoint = full ? "http://minio:9000" : "",
-        Bucket = full ? "b" : "",
+        Endpoint = full ? "http://owns3:9000" : "",
+        Bucket = full ? "pgworker-etcd-snapshots" : "",
         AccessKey = full ? "k" : "",
         SecretKey = full ? "s" : "",
     };
 
-    // AAA: дефолты — выключено, валидно при пустом S3 (нулевое влияние)
+    // AAA: дефолты — выключено, валидно при пустой паре (нулевое влияние)
     [Fact]
     public void Выключено_по_умолчанию_валидно_без_S3()
     {
         // Act
-        var valid = new SnapshotExportOptions().IsValid(S3(full: false));
+        var valid = new SnapshotExportOptions().IsValid();
 
         // Assert
         valid.Should().BeTrue();
     }
 
-    // AAA: Enabled=true + полный S3 — валидно даже при Backups:Enabled=false
+    // AAA: Enabled=true + полная пара — валидно даже при Backups:Enabled=false
     [Fact]
-    public void Включено_с_полным_S3_валидно()
+    public void Включено_с_полной_парой_валидно()
     {
         // Arrange
-        var options = new SnapshotExportOptions { Enabled = true };
+        var options = new SnapshotExportOptions { Enabled = true, S3 = S3() };
 
         // Act/Assert
-        options.IsValid(S3()).Should().BeTrue("контроль-плейн не зависит от подсистемы бэкапов PG");
+        options.IsValid().Should().BeTrue("контроль-плейн не зависит от подсистемы бэкапов PG");
     }
 
-    // AAA: Enabled=true + пустой S3-комплект — ошибка старта
+    // AAA: Enabled=true + пустая пара — ошибка старта (fail-fast)
     [Fact]
-    public void Включено_без_S3_невалидно()
+    public void Включено_без_пары_невалидно()
     {
         // Arrange
-        var options = new SnapshotExportOptions { Enabled = true };
+        var options = new SnapshotExportOptions { Enabled = true, S3 = S3(full: false) };
 
         // Act/Assert
-        options.IsValid(S3(full: false)).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     // AAA: диапазоны — всегда (мусорный конфиг виден на старте)
@@ -62,6 +63,6 @@ public class SnapshotExportOptionsTests
             { Enabled = false, RetentionObjects = retention, RetryIntervalSec = retrySec, TimeoutSec = timeoutSec };
 
         // Act/Assert
-        options.IsValid(S3(full: false)).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 }

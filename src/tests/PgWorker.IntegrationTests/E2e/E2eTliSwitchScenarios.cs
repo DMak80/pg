@@ -23,12 +23,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // доставлен) → ДВЕ restore-заявки на ОДНОЙ цепочке и ОДНОМ контуре класса
 // (граница изоляции — сценарный класс, docs/e2e-isolation.md §1): (a) latest —
 // полный хвост через точку; (b) PITR target_time — остановка в цели ПОСЛЕ
-// переключения. Окружение целиком своё (сеть/etcd/MinIO по guid, динамические
+// переключения. Окружение целиком своё (сеть/etcd/ownS3 по guid, динамические
 // порты, teardown при любом исходе с ассертом чистоты); телеметрия —
 // docs/e2e-launch.md ([PHASE]-строки, MarkFailed-режим оставляет контейнеры).
 public sealed class TliSwitchContext : IAsyncLifetime
 {
     private const string Bucket = "pgworker-backups";
+
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
 
     // Поля контура (spec §3.1): заполняются InitializeAsync, читаются Fact'ами.
     public E2eEnvironment Fx = null!;
@@ -45,6 +48,22 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     private EtcdGateway G => Fx.Gateway;
 
+    // Хост-исход оркестрации класса (ok — факты скипаются; fail — краснеют).
+    private bool _hostDelegated;
+    private string _hostError = string.Empty;
+
+    /// <summary>Хост-гвардия фактов: если класс исполнялся в раннере — факт
+    /// скипается (ok) или краснеет с исходом (fail). Тела фактов на хосте не
+    /// исполняются — Ctx-поля там не заполняются.</summary>
+    public void SkipIfHostDelegated()
+    {
+        if (!_hostDelegated)
+            return;
+        if (_hostError.Length > 0)
+            throw new ApplicationException(_hostError);
+        Assert.Skip("класс исполнен в раннере (исход — в журнале раннера)");
+    }
+
     public async ValueTask InitializeAsync()
     {
         // Гейт docker в фикстуре: без PGW_TEST_DOCKER=1 Fact'ы скипаются
@@ -53,6 +72,19 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
             return;
         var ct = TestContext.Current.CancellationToken;
+        if (!E2eEnvironment.IsInnerRunner)
+        {
+            // Хост: оркестрация КЛАССА целиком — раннер с фильтром «-class»
+            // (TestContext.TestCase в класс-фикстуре недоступен, факт не идёт).
+            await E2eContour.OrchestrateClassAsync(
+                $"PgWorker.IntegrationTests.E2e.{nameof(E2eTliSwitchScenarios)}",
+                "tlsw", withS3Node: true, haEtcd: false, ct);
+            // ok: фикстура молча завершается (Skip фактов — через
+            // SkipIfHostDelegated; бросок здесь краснил бы факты DynamicSkip'ом).
+            _hostDelegated = true;
+            return;
+        }
+
         try
         {
             await PrepareAsync(ct);
@@ -70,7 +102,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (Fx is null)
             return; // контур не поднимался (гейт docker выключен)
         // Teardown окружения при любом исходе: kill воркеров → dispose
-        // etcd/MinIO → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
+        // etcd/ownS3 → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
         // MarkFailed-режим останавливает, не удаляя (разбор по артефактам
         // /tmp/pgw-e2e-artifacts-<guid>/ + README-cleanup.txt).
         await Fx.DisposeAsync();
@@ -84,16 +116,16 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Вся подготовка контура (шаги 1–6 spec §3.2).
     private async Task PrepareAsync(CancellationToken ct)
     {
-        // Шаг 1 — контур: окружение (сеть/etcd/MinIO по guid, динамические
+        // Шаг 1 — контур: окружение (сеть/etcd/ownS3 по guid, динамические
         // порты), сид кластера tlsw<тег> (2 шарда × 2 реплики — как образцы),
         // воркер с ОБЪЕДИНЁННЫМ бэкап-комплектом (полные + WAL-агенты +
         // restore одновременно — spec §3.1); provisioning DONE ≤ 360 с.
-        Fx = await E2eEnvironment.StartAsync("tlsw", withMinio: true, ct: ct);
+        Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
         Cluster = $"tlsw{Fx.ClusterTag}";
         await SeedClusterAsync(Cluster);
         await StartTliSwitchHostAsync("tlsw", ct);
         var provisioned = await WaitPhaseAsync(
-            "provisioning", () => ProvisionedAsync(Cluster), TimeSpan.FromSeconds(360), ct);
+            "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
@@ -165,11 +197,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
         string cluster, string shard, string segmentName, CancellationToken ct)
     {
         using var client = new AmazonS3Client(
-            new BasicAWSCredentials("minioadmin", "minioadmin"),
+            new BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
             new AmazonS3Config
             {
-                ServiceURL = Fx.S3Endpoint.Replace(
-                    "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+                ServiceURL = Fx.S3Endpoint,
                 ForcePathStyle = true,
             });
         var response = await client.GetObjectAsync(new GetObjectRequest
@@ -385,8 +416,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             if (key.Split('/')[1] == master)
                 continue; // сам мастер — не проверяется
             var replay = ParseLsn(await ScalarAsync(
-                AdminDsn(addr.GetProperty("host").GetString()!,
-                    addr.GetProperty("pg").GetInt32()),
+                AdminDsn($"pgw-{Cluster}-shard1-{key.Split('/')[1]}", 5432),
                 "SELECT pg_last_wal_replay_lsn()", ct));
             if (replay < masterPos)
                 return false;
@@ -567,25 +597,25 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Воркер t28: ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
     // разнесён — StartRestoreHostAsync не задаёт Wal:AgentImage,
     // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; t28 нужны и
-    // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. ОБА S3-поля — ОДНО значение
-    // Fx.S3Endpoint (http://host.docker.internal:<порт>, БЕЗ замены на
-    // localhost — паттерн StartRestoreHostAsync единственного зелёного контура
-    // «полные + WAL + restore», spec §3.1): full-джоб получает СЫРОЙ
-    // S3Endpoint в env (PGW_BK_S3_ENDPOINT, BackupJobSpec) и грузит бэкап
-    // mc cp ИЗНУТРИ своего контейнера — localhost там недостижим; WAL- и
-    // restore-агенты берут то же значение через AdvertisedEndpoint
-    // (AgentS3Endpoint). Замена host.docker.internal → localhost — ТОЛЬКО в
-    // host-клиентах сценария (HostS3Client): воркер-процесс на хосте
-    // резолвит host.docker.internal.
+    // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. S3 — один пул из policy.s3,
+    // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
+    // host.docker.internal (БЕЗ замены на localhost — паттерн
+    // StartRestoreHostAsync единственного зелёного контура «полные + WAL +
+    // restore», spec §3.1): full-джоб грузит бэкап mc cp ИЗНУТРИ своего
+    // контейнера по списку PGW_BK_S3_ENDPOINTS (BackupJobSpec) — localhost
+    // там недостижим; WAL-агент получает те же ноды списками S3_ENDPOINTS/
+    // S3_READ_ENDPOINTS, restore-джоба — S3_ENDPOINTS (алиасы per-ноды пула).
+    // Замена host.docker.internal → localhost — ТОЛЬКО в host-клиентах
+    // сценария (HostS3Client): воркер-процесс на хосте резолвит
+    // host.docker.internal.
     private Task<HostInstance> StartTliSwitchHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
-            ["PgWorker__Backups__S3__AdvertisedEndpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -618,16 +648,9 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // Замена host.docker.internal → localhost — ТОЛЬКО здесь (воркер-процесс
     // на хосте; джобы/агенты её НЕ получают — см. StartTliSwitchHostAsync).
     public PgWorker.Backups.BackupS3 HostS3Client()
-        => new(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+        => new(new PgWorker.Backups.S3ClientOptions(
+            Fx.S3Endpoint,
+            Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
     // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант t28):
@@ -891,7 +914,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     }
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
@@ -912,7 +935,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{Cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -929,7 +952,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(),
+        return ($"pgw-{Cluster}-{shard}-{primary}", 5432,
             primary!);
 
     }
@@ -952,7 +975,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://pgw-{Cluster}-{shard}-{key.Split('/')[1]}:8008/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -1014,6 +1037,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул + policy с секцией s3 — без неё подсистема кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 }
 
@@ -1059,6 +1087,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
     {
         DockerTrait.SkipIfUnavailable();
+        Ctx.SkipIfHostDelegated();
         var ct = TestContext.Current.CancellationToken;
         try
         {
@@ -1142,6 +1171,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
     {
         DockerTrait.SkipIfUnavailable();
+        Ctx.SkipIfHostDelegated();
         // Гейт (spec §3.5): Fact 1 упал → повторная заявка на сломанном
         // контуре — каскадный красный без новой информации; телеметрия
         // первой заявки уже собрана.

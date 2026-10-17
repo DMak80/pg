@@ -36,16 +36,14 @@ public static class Program
             await File.WriteAllTextAsync(s3CaBundlePath, options.S3CaPem + "\n", cts.Token);
         }
 
-        // BackupS3 из S3-полей приёмника (реюз математики/клиента Backups).
-        var s3Options = new BackupsRuntimeOptions(
-            S3Endpoint: options.S3Endpoint,
-            S3Region: options.S3Region,
-            S3Bucket: options.S3Bucket,
-            S3AccessKey: options.S3AccessKey,
-            S3SecretKey: options.S3SecretKey,
-            S3PathStyle: options.S3PathStyle,
-            S3CaBundlePath: s3CaBundlePath);
-        await using var s3 = new BackupS3(s3Options);
+        // t36: пул-клиент из списков env (write — роль источника, read — все
+        // ноды, порядок endpoints); пер-ЦЕЛЬНЫЙ таймаут — PutAttemptTimeout
+        // (requestTimeout каждой цели: висящая нода не съедает перебор — AC4).
+        await using var s3 = new PoolBackupS3(
+            options.S3Endpoints, options.S3ReadEndpoints,
+            options.S3AccessKey, options.S3SecretKey,
+            options.S3Bucket, s3CaBundlePath,
+            requestTimeout: WalReceiverCore.PutAttemptTimeout);
 
         return await WalReceiverCore.RunAsync(
             options,

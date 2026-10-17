@@ -52,13 +52,13 @@ public class E2ePatroniRestTlsScenarios
             await using (var p1 = await Fx.StartHostAsync("rtls-p1", extraEnv: extraEnv, ct: ct))
             {
                 var provisioned = await E2ePhase.WaitAsync(fx, "rtls-provisioning",
-                    () => ActiveAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                    E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 provisioned.Should().BeTrue($"provisioning обязан дойти до Active; work={await WorkDumpAsync(cluster, ct)}");
 
                 var addresses = await PortallocAsync(cluster);
                 addresses.Should().ContainKey("shard1/shard1a");
-                var patroniPort = addresses["shard1/shard1a"].Patroni;
-                patroniPort.Should().BePositive("порт Patroni ноды опубликован");
+                // Внутрисетевой адрес ноды: REST :8008 — константа контракта;
+                // публикации на хост тест не использует (контур «Вариант A»).
 
                 // (а) http-only отказ: голый HTTP на TLS-порт не отвечает 200
                 // (короткий таймаут: сервер рвёт соединение сразу).
@@ -67,7 +67,7 @@ public class E2ePatroniRestTlsScenarios
                 {
                     using var plainClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
                     using var plain = await plainClient.GetAsync(
-                        $"http://127.0.0.1:{patroniPort}/cluster", ct);
+                        $"http://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
                     plainRefused = !plain.IsSuccessStatusCode;
                 }
                 catch (Exception)
@@ -78,14 +78,14 @@ public class E2ePatroniRestTlsScenarios
                 plainRefused.Should().BeTrue("голый HTTP на :8008 не работает (транспорт — TLS)");
 
                 // (а) https с ca.pem контура → 200 + JSON членов.
-                using var https = E2eEnvironment.CreatePatroniHttpsClient();
-                using var clusterResponse = await https.GetAsync($"https://127.0.0.1:{patroniPort}/cluster", ct);
+                var https = Fx.NewPatroniHttpClient();
+                using var clusterResponse = await https.GetAsync($"https://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
                 clusterResponse.StatusCode.Should().Be(HttpStatusCode.OK);
                 var body = await clusterResponse.Content.ReadAsStringAsync(ct);
                 body.Should().Contain("members", "ответ — Patroni /cluster JSON");
 
                 // (б) серт ноды верифицируется цепочкой против CA контура.
-                var leafDer = await CaptureServerCertificateAsync(patroniPort, ct);
+                var leafDer = await CaptureServerCertificateAsync($"pgw-{cluster}-shard1-shard1a", ct);
                 leafDer.Should().NotBeNull("TLS-хендшейк отдаёт серверный серт");
                 ChainValidAgainstInstallCa(leafDer!).Should().BeTrue("серт ноды выпущен per-contour CA");
 
@@ -93,7 +93,7 @@ public class E2ePatroniRestTlsScenarios
                 var restPassword = (await GetOrNullAsync($"/clusters/{cluster}/rest_password"))!.Value;
                 restPassword.Should().NotBeNullOrWhiteSpace("ensure положил седьмой ключ");
                 using var noAuth = new HttpRequestMessage(HttpMethod.Patch,
-                    $"https://127.0.0.1:{patroniPort}/config")
+                    $"https://pgw-{cluster}-shard1-shard1a:8008/config")
                 {
                     Content = new StringContent("{\"ttl\":30}", Encoding.UTF8, "application/json"),
                 };
@@ -103,7 +103,7 @@ public class E2ePatroniRestTlsScenarios
 
                 // (в) с Authorization: Basic patroni:<rest_password> — 200.
                 using var withAuth = new HttpRequestMessage(HttpMethod.Patch,
-                    $"https://127.0.0.1:{patroniPort}/config")
+                    $"https://pgw-{cluster}-shard1-shard1a:8008/config")
                 {
                     Content = new StringContent("{\"ttl\":30}", Encoding.UTF8, "application/json"),
                 };
@@ -137,6 +137,9 @@ public class E2ePatroniRestTlsScenarios
             var legacyVolume = $"{legacy}-data";
             var legacyAddr = (await PortallocAsync(cluster))[$"shard1/{replica}"];
             await Fx.RunDockerAsync(["rm", "-f", legacy], ct);
+            // Легаси-контейнер имитирует ОПЕРАТОРСКУЮ ноду: тройка из portalloc
+            // публикуется, как у чужого контейнера в проде (адопция — не тестовая
+            // инфраструктура; порты — слоты окна контура, коллизий нет).
             await Fx.RunDockerAsync(
                 ["run", "-d", "--name", legacy, "--entrypoint", "sh",
                  "-p", $"{legacyAddr.Pg}:5432", "-p", $"{legacyAddr.Patroni}:8008",
@@ -174,7 +177,7 @@ public class E2ePatroniRestTlsScenarios
 
                 // Кластер снова Active после миграции.
                 var activeAgain = await E2ePhase.WaitAsync(fx, "rtls-active-again",
-                    () => ActiveAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                    E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 activeAgain.Should().BeTrue($"кластер Active после миграции; work={await WorkDumpAsync(cluster, ct)}");
             }
         }
@@ -249,8 +252,9 @@ public class E2ePatroniRestTlsScenarios
         {
             try
             {
-                using var client = E2eEnvironment.CreatePatroniHttpsClient();
-                using var response = await client.GetAsync($"https://127.0.0.1:{addr.Patroni}/primary", ct);
+                var client = Fx.NewPatroniHttpClient();
+                using var response = await client.GetAsync(
+                    $"https://pgw-{cluster}-shard1-{key.Split('/')[1]}:8008/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
@@ -269,15 +273,15 @@ public class E2ePatroniRestTlsScenarios
     // Серверный серт ноды: перехват в TLS-хендшейке (без доверия — только
     // захват). Внутри callback копируем DER: хендл сертификата живёт лишь
     // пока открыт поток (после Dispose чтение бросает invalid handle).
-    private static async Task<byte[]?> CaptureServerCertificateAsync(int port, CancellationToken ct)
+    private static async Task<byte[]?> CaptureServerCertificateAsync(string nodeHost, CancellationToken ct)
     {
         using var tcp = new TcpClient();
-        await tcp.ConnectAsync(IPAddress.Loopback, port, ct);
+        await tcp.ConnectAsync(nodeHost, 8008, ct);
         using var ssl = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
         byte[]? captured = null;
         var options = new SslClientAuthenticationOptions
         {
-            TargetHost = "127.0.0.1",
+            TargetHost = nodeHost,
             RemoteCertificateValidationCallback = (_, certificate, _, _) =>
             {
                 captured = certificate?.GetRawCertData();
@@ -290,9 +294,9 @@ public class E2ePatroniRestTlsScenarios
 
     // Цепочка серта к per-contour CA (CustomRootTrust, без hostname); вход —
     // DER из хендшейка (ре-импорт — чистый хендл, macOS-паттерн).
-    private static bool ChainValidAgainstInstallCa(byte[] leafDer)
+    private bool ChainValidAgainstInstallCa(byte[] leafDer)
     {
-        using var ca = X509Certificate2.CreateFromPem(E2eEnvironment.InstallCaPem);
+        using var ca = X509Certificate2.CreateFromPem(Fx.CaPem);
         using var leaf = System.Security.Cryptography.X509Certificates.X509CertificateLoader
             .LoadCertificate(leafDer);
         using var chain = new X509Chain();

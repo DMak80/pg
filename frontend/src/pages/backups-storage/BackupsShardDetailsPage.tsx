@@ -1,7 +1,7 @@
 // Детали шарда «Хранилище бэкапов» (t08, arch/03 §3): таблица полных
 // (id/размер/дата + etcd state/verify + статус сверки), блок WAL (etcd-статус
 // + S3-факт), бейдж активного restore, блок «Объекты» с on-demand пагинацией
-// («Загрузить ещё» — единственный прямой выход панели в MinIO на действие).
+// («Загрузить ещё» — единственный прямой выход панели в S3-хранилище на действие).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
@@ -274,6 +274,8 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
         fullMaxAgeSec: policy?.fullMaxAgeSec ?? 86400,
         verifyOnCreate: policy?.verifyOnCreate ?? true,
         drillIntervalDays: drillDays === '' ? 1 : drillDays,
+        // t36: полный policy — s3 возвращаем как есть (сброс — только модалом).
+        s3: policy?.s3 ?? null,
       }),
     onSuccess: () => {
       notifications.show({

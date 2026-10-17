@@ -35,6 +35,12 @@ public static class RestoreStatusJson
             o["system_id"] = sysid;
         if (state.Error is { } error)
             o["error"] = error;
+        // t36 (arch/14 §1.1): пул чтения DR-источника — roundtrip с парсером
+        // (BackupsParser читает source_pool); потеря поля уводит DR-заявку в
+        // «собственный пул» — при wiped/отсутствии policy она навсегда висит
+        // в transient «пул не выбран» (PLANNED без продвижения).
+        if (state.SourcePool is { Length: > 0 } sourcePool)
+            o["source_pool"] = sourcePool;
 
         return JsonSerializer.Serialize(o, Options);
     }

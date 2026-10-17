@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.AspNetCore.Http;
 using OwnS3.Protocol.Errors;
 
 namespace OwnS3.App.Handlers;
@@ -142,4 +143,62 @@ public static class OperationValidation
             throw new S3ProtocolException(S3ErrorCode.EntityTooLarge,
                 "Your proposed upload exceeds the maximum allowed size");
     }
+
+    // Wire-имена алгоритмов набора x-amz-checksum-* (симметрия трейлерам, глава 03 §3).
+    private static readonly IReadOnlyDictionary<string, ChecksumAlgorithm> KnownChecksumAlgorithms =
+        new Dictionary<string, ChecksumAlgorithm>(StringComparer.Ordinal)
+        {
+            ["crc32"] = ChecksumAlgorithm.Crc32,
+            ["crc32c"] = ChecksumAlgorithm.Crc32C,
+            ["sha1"] = ChecksumAlgorithm.Sha1,
+            ["sha256"] = ChecksumAlgorithm.Sha256,
+        };
+
+    // x-amz-checksum-<alg> (глава 02 PutObject): опционален, не более одного
+    // на запрос. Возвращает null при отсутствии ИЛИ единственном неизвестном
+    // алгоритме (игнор); более одного заголовка семейства (включая неизвестные
+    // алгоритмы) → InvalidArgument «Invalid checksum provided.»; известный —
+    // валидация base64 и длины по алгоритму (crc32/crc32c — 4 байта, sha1 — 20,
+    // sha256 — 32) → ChecksumExpectation, иначе InvalidArgument с фактическим
+    // именем алгоритма. x-amz-sdk-checksum-algorithm не читается.
+    public static ChecksumExpectation? ParseChecksumHeader(IHeaderDictionary headers)
+    {
+        const string prefix = "x-amz-checksum-";
+        string? knownWireName = null, knownValue = null;
+        var familyCount = 0;
+        foreach (var (name, values) in headers)
+        {
+            if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+            familyCount++;
+            var wireName = name[prefix.Length..].ToLowerInvariant();
+            if (KnownChecksumAlgorithms.ContainsKey(wireName))
+            {
+                knownWireName = wireName;
+                knownValue = values.ToString();
+            }
+        }
+
+        if (familyCount == 0)
+            return null;
+        if (familyCount > 1)
+            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Invalid checksum provided.");
+        // известный алгоритм и его значение присваиваются атомарно — оба не null.
+        if (knownWireName is null || knownValue is null)
+            return null;   // единственный заголовок семейства — неизвестный алгоритм: игнор
+
+        var expectedLength = knownWireName is "crc32" or "crc32c" ? 4
+            : knownWireName == "sha1" ? 20 : 32;
+        Span<byte> decoded = stackalloc byte[32];
+        if (!Convert.TryFromBase64String(knownValue, decoded, out var written) || written != expectedLength)
+            throw new S3ProtocolException(S3ErrorCode.InvalidArgument,
+                $"Value for x-amz-checksum-{knownWireName} header is invalid.");
+        return new ChecksumExpectation(KnownChecksumAlgorithms[knownWireName], knownValue);
+    }
 }
+
+// Алгоритм заголовочной контрольной суммы x-amz-checksum-<alg> (глава 02).
+public enum ChecksumAlgorithm { Crc32, Crc32C, Sha1, Sha256 }
+
+// Ожидание клиента: ровно один известный checksum-заголовок + его base64-значение.
+public sealed record ChecksumExpectation(ChecksumAlgorithm Algorithm, string ExpectedBase64);

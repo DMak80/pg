@@ -1,43 +1,24 @@
 namespace PgWorker.Backups;
 
-/// <summary>Билдер inline bash-команды verify-джоба (arch/19 §2/§5, t04; паттерн
-/// RestoreJobCommand.McHost): скачивание full/&lt;id&gt;/ 1:1 в staging (mc) → pg_verifybackup
-/// (manifest SHA256, вкл. pg_wal/ набора). Протокол t02: result-JSON в stdout +
-/// exit-код; вывод утилиты — stderr. S3-креды — ТОЛЬКО env (MC_HOST_pgw собирает
-/// воркер; секреты не в argv/ps). Статус PENDING/OK/FAILED пишет воркер — джоб
-/// etcd не касается. Идемпотентен: S3 только читает.</summary>
+using PgWorker.Backups.Restore;
+
+/// <summary>Билдер inline bash-команды verify-джоба (arch/19 §2/§5, t04; t36 —
+/// перебор нод пула): скачивание full/&lt;id&gt;/ 1:1 в staging с ПЕРВОЙ ДОСТУПНОЙ
+/// ноды read-списка (mc_copy_first, per-попыточный timeout — R3 arch/23 §7) →
+/// pg_verifybackup (manifest SHA256, вкл. pg_wal/ набора). Протокол t02:
+/// result-JSON в stdout + exit-код; вывод утилиты — stderr. S3-креды — ТОЛЬКО
+/// env (MC_HOST_pgwbkp&lt;i&gt; собирает скрипт из S3_ENDPOINTS; секреты не в argv/ps).
+/// Статус PENDING/OK/FAILED пишет воркер — джоб etcd не касается. Идемпотентен:
+/// S3 только читает.</summary>
 public static class VerifyJobCommand
 {
-    public const string EnvMcHostVariable = "MC_HOST_pgw";
-    public const string EnvS3Endpoint = "PGW_BK_S3_ENDPOINT";
-    public const string EnvS3Region = "PGW_BK_S3_REGION";
-    public const string EnvS3Bucket = "PGW_BK_S3_BUCKET";
-    public const string EnvS3AccessKey = "PGW_BK_S3_ACCESS_KEY";
-    public const string EnvS3SecretKey = "PGW_BK_S3_SECRET_KEY";
+    public const string EnvS3Endpoints = "S3_ENDPOINTS";
+    public const string EnvS3Bucket = "S3_BUCKET";
+    public const string EnvS3AccessKey = "S3_ACCESS_KEY";
+    public const string EnvS3SecretKey = "S3_SECRET_KEY";
     public const string EnvPrefix = "PGW_BK_PREFIX";
     public const string EnvId = "PGW_BK_ID";
     public const string EnvStagingDir = "PGW_BK_STAGING_DIR";
-
-    /// <summary>Значение env MC_HOST_pgw: scheme://access:secret@authority
-    /// (URL-escape кредов — per-install спецсимволы). Невалидный/пустой endpoint
-    /// не бросает (fail-fast конфига — не забота спеки): scheme опускается.</summary>
-    public static string McHost(string endpoint, string accessKey, string secretKey)
-    {
-        var scheme = string.Empty;
-        var authority = endpoint;
-        try
-        {
-            var uri = new Uri(endpoint);
-            scheme = $"{uri.Scheme}://";
-            authority = uri.Authority;
-        }
-        catch (UriFormatException)
-        {
-            // пустой/кривой endpoint — джоб упадёт на подключении (transient), не спека
-        }
-
-        return $"{scheme}{Uri.EscapeDataString(accessKey)}:{Uri.EscapeDataString(secretKey)}@{authority}";
-    }
 
     /// <summary>Cmd контейнера: ["bash","-c",script] — полная замена ENTRYPOINT.</summary>
     public static IReadOnlyList<string> Build()
@@ -46,6 +27,7 @@ public static class VerifyJobCommand
     set -euo pipefail
     # Доверие CA https-endpoint (t42, arch/19 §7): PEM из env — в файл + SSL_CERT_FILE (mc)
     if [ -n "${S3_CA_PEM:-}" ]; then printf '%s\n' "$S3_CA_PEM" > /tmp/s3-ca.pem; export SSL_CERT_FILE=/tmp/s3-ca.pem; fi
+    """ + "\n" + RestoreJobCommand.AliasesScript + "\n" + """
     # протокол t02: result-JSON — stdout, вывод утилит — stderr/stdin-перехват
     LOG() { printf '%s\n' "$1"; }
     FAIL() {
@@ -53,8 +35,9 @@ public static class VerifyJobCommand
       exit 1
     }
     LOG '{"phase":"download"}'
-    mc cp --recursive "pgw/$PGW_BK_S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/" "$PGW_BK_STAGING_DIR/full/" \
-      || FAIL download "mc cp failed"
+    # Скачивание с первой доступной ноды пула (перебор до найденного — arch/19 §5)
+    mc_copy_first "{A}/$S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/" "$PGW_BK_STAGING_DIR/full/" \
+      || FAIL download "mc cp failed on all pool endpoints"
     LOG '{"phase":"verify"}'
     if OUT="$(pg_verifybackup "$PGW_BK_STAGING_DIR/full" 2>&1)"; then
       LOG '{"ok":true}'

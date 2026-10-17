@@ -37,4 +37,9 @@ fi
 docker ps -aq --filter name='^pgw-' --format '{{.ID}}' | xargs -r docker rm -f
 docker volume ls -q --filter name='^pgw-' --format '{{.Name}}' | xargs -r docker volume rm -f
 docker network ls --filter name='^pgw-net-' --format '{{.Name}}' | xargs -r docker network rm 2>/dev/null || true
+# s3w-* — ownS3-ноды пулов, созданные S3Worker'ом (Engine API, не compose;
+# t36): полный down их не трогает — снос own-only по префиксу (контейнеры +
+# их тома данных).
+docker ps -aq --filter name='^s3w-' --format '{{.ID}}' | xargs -r docker rm -f
+docker volume ls -q --filter name='^s3w-' --format '{{.Name}}' | xargs -r docker volume rm -f
 docker network prune -f

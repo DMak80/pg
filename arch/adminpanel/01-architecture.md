@@ -40,7 +40,7 @@
                  │ S3 live-тик (AdminPanel.Probes/S3,     │  тик 60 c
                  │  AdminPanel:Backups)                   │──► S3 bucket бэкапов
                  │  ListBuckets + health + list-v2 bucket │    установки
-                 │  → MinioInventoryStore → снапшот       │    (ownS3/MinIO,
+                 │  → S3InventoryStore → снапшот          │    (ownS3,
                  │                                        │    read-only!)
                  └────────────────────────────────────────┘
 
@@ -74,11 +74,11 @@ critical-алерт `worker-api-unreachable` (03 §4.1); чтение при э�
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».
-- **MinIO live-тик панели** (t08): отдельный `BackgroundService`
-  `MinioInventoryLoop` пишет инвентарь bucket'а бэкапов в
-  `MinioInventoryStore`; `SnapshotRefresher` вносит готовое состояние в
-  `EtcdSnapshot.MinioStorage` (по образцу `WorkerHealth`) — KV-тик не
-  блокируется; API не ходит в MinIO на запрос, КРОМЕ on-demand
+- **S3 live-тик панели** (t08): отдельный `BackgroundService`
+  `S3InventoryLoop` пишет инвентарь bucket'а бэкапов в
+  `S3InventoryStore`; `SnapshotRefresher` вносит готовое состояние в
+  `EtcdSnapshot.S3Storage` (по образцу `WorkerHealth`) — KV-тик не
+  блокируется; API не ходит в хранилище на запрос, КРОМЕ on-demand
   `GET /api/backups/objects` (постраничный list-v2 — большой объём, тиком
   не тянется).
 - **Направление зависимостей**: `Api → (Core, Etcd, Probes)`; `Etcd → (Core,

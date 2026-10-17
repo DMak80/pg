@@ -43,17 +43,23 @@ public class E2ePatroniFileSdScenarios
         // опознаются teardown'ом окружения по своему тегу.
         var cluster = $"pfsd{Fx.ClusterTag}";
 
-        IVolume? sdVol = null;
-        IContainer? sdGen = null;
-        IContainer? prom = null;
+        // Имена объектов контура мониторинга (own-only teardown по тегу прогона):
+        // контейнеры стартует РАННЕР docker run'ом (testcontainers в раннере не
+        // участвует), binds — хост-пути (демон резолвит их на хосте).
+        var sdVolName = $"pgw-sd-{Fx.ClusterTag}";
+        var sdGenName = $"pgw-sdgen-{Fx.ClusterTag}";
+        var promName = $"pgw-prom-{Fx.ClusterTag}";
+        var promUrl = $"http://{promName}:9090"; // внутрисетевой, без публикаций
+        string? sdVol = null, sdGen = null, prom = null; // фактический подъём — для finally
+        var hostArtifacts = Environment.GetEnvironmentVariable("PGW_E2E_HOST_ARTIFACTS")
+            ?? throw new ApplicationException("PGW_E2E_HOST_ARTIFACTS не задан — старт вне раннера");
         try
         {
             // ---------- контур мониторинга (только этого сценария) ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сборка образа {E2eEnvironment.SdImage} (ленивая, первая серия платит)…");
             await E2eEnvironment.EnsureSdImageAsync(ct);
 
-            sdVol = new VolumeBuilder().WithName($"pgw-sd-{Fx.ClusterTag}").Build();
-            await sdVol.CreateAsync(ct);
+            await Fx.RunDockerAsync(["volume", "create", sdVolName], ct);
             // Тестовый prometheus.yml: короткие интервалы (фаза не дорожает),
             // file_sd на volume + самоскрейп генератора по network-alias.
             var promConfigPath = Path.Combine(Fx.ArtifactsDir, "prometheus.yml");
@@ -88,31 +94,35 @@ public class E2ePatroniFileSdScenarios
                 sdGenEnv[$"SdGenerator__Etcd__Endpoints__{i}"] = $"http://e2e-etcd{i + 1}:2379";
 
             // sd-generator: alias обязателен — static-таргет «sd-generator:8080»
-            // резолвится по имени/alias, а случайное имя контейнеру даёт testcontainers.
-            sdGen = new ContainerBuilder(E2eEnvironment.SdImage)
-                .WithName($"pgw-sdgen-{Fx.ClusterTag}")
-                .WithNetwork(Fx.Net)
-                .WithNetworkAliases("sd-generator")
-                .WithVolumeMount($"pgw-sd-{Fx.ClusterTag}", "/sd")
-                .WithEnvironment(sdGenEnv)
-                .Build();
+            // резолвится по имени/alias в сети контура.
+            var sdGenArgs = new List<string>
+            {
+                "run", "-d", "--name", sdGenName,
+                "--network", Fx.NetName, "--network-alias", "sd-generator",
+                "-v", $"{sdVolName}:/sd",
+            };
+            sdGenArgs.AddRange(sdGenEnv.Select(p => new[] { "-e", $"{p.Key}={p.Value}" }).SelectMany(x => x));
+            sdGenArgs.Add(E2eEnvironment.SdImage);
 
-            prom = new ContainerBuilder("prom/prometheus:v3.14.0")
-                .WithName($"pgw-prom-{Fx.ClusterTag}")
-                .WithNetwork(Fx.Net)
-                .WithVolumeMount($"pgw-sd-{Fx.ClusterTag}", "/etc/prometheus/sd", AccessMode.ReadOnly)
-                .WithBindMount(promConfigPath, "/etc/prometheus/prometheus.yml")
+            var promArgs = new List<string>
+            {
+                "run", "-d", "--name", promName,
+                "--network", Fx.NetName,
+                "-v", $"{sdVolName}:/etc/prometheus/sd:ro",
+                "-v", $"{hostArtifacts}/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
                 // CA контура для https-скрейпа patroni-nodes (t22: rest-ca.pem
-                // фиксстура пишет в ArtifactsDir при старте окружения).
-                .WithBindMount(Path.Combine(Fx.ArtifactsDir, "rest-ca.pem"), "/etc/prometheus/ca.pem", AccessMode.ReadOnly)
-                .WithPortBinding(9090, assignRandomHostPort: true)
-                .Build();
+                // фаза 1 пишет в каталог артефактов при старте окружения).
+                "-v", $"{hostArtifacts}/rest-ca.pem:/etc/prometheus/ca.pem:ro",
+                "prom/prometheus:v3.14.0",
+            };
 
             // ---------- старт контура мониторинга ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: старт контейнеров контура (sd-generator + prometheus)…");
-            await sdGen.StartAsync(ct);
-            await prom.StartAsync(ct);
-            var promPort = prom.GetMappedPublicPort(9090);
+            await Fx.RunDockerAsync([.. sdGenArgs], ct);
+            await Fx.RunDockerAsync([.. promArgs], ct);
+            sdGen = sdGenName;
+            prom = promName;
+            sdVol = sdVolName;
             using var promHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             // ---------- кластер ----------
@@ -127,7 +137,7 @@ public class E2ePatroniFileSdScenarios
             });
 
             var provisioned = await E2eFixture.WaitForAsync(
-                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
 
             // ---------- сетевая идентичность (Д1-контур в E2E) ----------
@@ -147,14 +157,14 @@ public class E2ePatroniFileSdScenarios
             // ---------- таргеты up ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: ожидание таргетов patroni-nodes up…");
             var targetsUp = await E2eFixture.WaitForAsync(
-                () => PatroniTargetsUpAsync(promHttp, promPort, aliases),
+                () => PatroniTargetsUpAsync(promHttp, promUrl, aliases),
                 TimeSpan.FromSeconds(120), ct);
             targetsUp.Should().BeTrue("таргеты patroni-nodes обязаны появиться и быть up");
 
             // Канон ревизии 3: ни один scrapeUrl (обе джобы: patroni-nodes и
             // sd-generator) не содержит host.docker.internal — скрейп целиком
             // сетевой, host-форвардинга в контуре нет.
-            var allUrls = await AllScrapeUrlsAsync(promHttp, promPort);
+            var allUrls = await AllScrapeUrlsAsync(promHttp, promUrl);
             allUrls.Should().NotBeEmpty("activeTargets прометея непусты");
             allUrls.Should().NotContain(u => u.Contains("host.docker.internal", StringComparison.Ordinal),
                 "ни один таргет не на host-форвардинге (канон t15 ревизии 3)");
@@ -162,11 +172,11 @@ public class E2ePatroniFileSdScenarios
             // ---------- канон-минимум серий (M3-факт) ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: фиксация фактического словаря patroni_* + самоскрейп генератора…");
             var factSeries = await E2eFixture.WaitForAsync(
-                async () => await PatroniSeriesFactAsync(promHttp, promPort) is not null,
+                async () => await PatroniSeriesFactAsync(promHttp, promUrl) is not null,
                 TimeSpan.FromSeconds(60), ct);
             factSeries.Should().BeTrue(
                 "при up-скрейпе таргетов серии patroni_* обязаны появиться в TSDB (факт для arch/18 §2.5)");
-            var fact = await PatroniSeriesFactAsync(promHttp, promPort);
+            var fact = await PatroniSeriesFactAsync(promHttp, promUrl);
             fact!.Should().NotBeEmpty("нативные серии Patroni — словарь arch/18 §2.5 (M3-факт)");
             // M3-факт — в артефакты прогона: xUnit буферизует Console, файл виден
             // сразу и остаётся в дампе (фиксация словаря arch/18 §2.5 по факту).
@@ -188,7 +198,7 @@ public class E2ePatroniFileSdScenarios
                      })
             {
                 var present = await E2eFixture.WaitForAsync(
-                    () => SeriesPresentAsync(promHttp, promPort, series),
+                    () => SeriesPresentAsync(promHttp, promUrl, series),
                     TimeSpan.FromSeconds(60), ct);
                 present.Should().BeTrue($"серия {series} обязана быть в TSDB (канон-минимум arch/18 §2.5 / §5.4)");
             }
@@ -197,7 +207,7 @@ public class E2ePatroniFileSdScenarios
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: демонтаж кластера → таргеты patroni-nodes исчезают…");
             await SetToRemoveAsync(cluster);
             var gone = await E2eFixture.WaitForAsync(
-                () => DismantledAsync(cluster, promHttp, promPort),
+                () => DismantledAsync(cluster, promHttp, promUrl),
                 TimeSpan.FromSeconds(240), ct);
             gone.Should().BeTrue("после демонтажа portalloc-ключ исчез, а таргеты patroni-nodes = 0");
         }
@@ -225,8 +235,8 @@ public class E2ePatroniFileSdScenarios
                 try
                 {
                     await File.WriteAllTextAsync(
-                        Path.Combine(Fx.ArtifactsDir, $"container-{c.Name.TrimStart('/')}.log"),
-                        await E2eFixture.RunDockerAsync(["logs", "--timestamps", c.Name], CancellationToken.None),
+                        Path.Combine(Fx.ArtifactsDir, $"container-{c}.log"),
+                        await E2eFixture.RunDockerAsync(["logs", "--timestamps", c], CancellationToken.None),
                         CancellationToken.None);
                 }
                 catch
@@ -237,9 +247,9 @@ public class E2ePatroniFileSdScenarios
 
             foreach (var c in new[] { prom, sdGen })
                 if (c is not null)
-                    await c.DisposeAsync(); // stop + rm
+                    await Fx.RunDockerAsync(["rm", "-f", c], CancellationToken.None); // stop + rm
             if (sdVol is not null)
-                await sdVol.DisposeAsync();
+                await Fx.RunDockerAsync(["volume", "rm", "-f", sdVol], CancellationToken.None);
 
             // Ассерт чистоты контура сценария: volume file_sd удалён.
             var leftVolumes = await E2eFixture.RunDockerAsync(
@@ -344,10 +354,10 @@ public class E2ePatroniFileSdScenarios
     // Таргеты patroni-nodes: пары (health, scrapeUrl) — материализуются ВНУТРИ
     // жизни JsonDocument (JsonElement из using-документа после Dispose бросает
     // ObjectDisposedException — факт прогона 1117a3db).
-    private async Task<List<(string? Health, string? Url)>> PatroniTargetsAsync(HttpClient http, int promPort)
+    private async Task<List<(string? Health, string? Url)>> PatroniTargetsAsync(HttpClient http, string promUrl)
     {
         using var doc = JsonDocument.Parse(
-            await http.GetStringAsync($"http://localhost:{promPort}/api/v1/targets"));
+            await http.GetStringAsync($"{promUrl}/api/v1/targets"));
         return doc.RootElement.GetProperty("data").GetProperty("activeTargets").EnumerateArray()
             .Where(t => t.GetProperty("labels").TryGetProperty("job", out var job)
                         && job.GetString() == "patroni-nodes")
@@ -358,10 +368,10 @@ public class E2ePatroniFileSdScenarios
 
     // scrapeUrl ВСЕХ активных таргетов (обе джобы) — прямой канон-ассерт
     // ревизии 3: host-форвардинга нет ни в одной джобе.
-    private async Task<List<string>> AllScrapeUrlsAsync(HttpClient http, int promPort)
+    private async Task<List<string>> AllScrapeUrlsAsync(HttpClient http, string promUrl)
     {
         using var doc = JsonDocument.Parse(
-            await http.GetStringAsync($"http://localhost:{promPort}/api/v1/targets"));
+            await http.GetStringAsync($"{promUrl}/api/v1/targets"));
         return doc.RootElement.GetProperty("data").GetProperty("activeTargets").EnumerateArray()
             .Select(t => t.GetProperty("scrapeUrl").GetString())
             .Cast<string>()
@@ -372,12 +382,12 @@ public class E2ePatroniFileSdScenarios
     // (tls_config ca_file контура; alias = SAN серта ноды): Uri.Host ∈ alias'ам
     // portalloc, Uri.Port — контейнерный порт контракта (host-публикации записи
     // в таргете НЕ участвуют).
-    private async Task<bool> PatroniTargetsUpAsync(HttpClient http, int promPort, List<string> aliases)
+    private async Task<bool> PatroniTargetsUpAsync(HttpClient http, string promUrl, List<string> aliases)
     {
         List<(string? Health, string? Url)> targets;
         try
         {
-            targets = await PatroniTargetsAsync(http, promPort);
+            targets = await PatroniTargetsAsync(http, promUrl);
         }
         catch (Exception)
         {
@@ -402,12 +412,12 @@ public class E2ePatroniFileSdScenarios
     }
 
     // Серия непуста в TSDB (мгновенный вектор /api/v1/query).
-    private async Task<bool> SeriesPresentAsync(HttpClient http, int promPort, string series)
+    private async Task<bool> SeriesPresentAsync(HttpClient http, string promUrl, string series)
     {
         try
         {
             using var doc = JsonDocument.Parse(await http.GetStringAsync(
-                $"http://localhost:{promPort}/api/v1/query?query={Uri.EscapeDataString(series)}"));
+                $"{promUrl}/api/v1/query?query={Uri.EscapeDataString(series)}"));
             return doc.RootElement.GetProperty("data").GetProperty("result").GetArrayLength() > 0;
         }
         catch (Exception)
@@ -419,12 +429,12 @@ public class E2ePatroniFileSdScenarios
     // Факт словаря arch/18 §2.5: фактические имена серий patroni_* этого
     // Patroni (M3 — словарь фиксируется прогоном, спека §6.5); null — TSDB
     // ещё пуста (полл повторит).
-    private async Task<IReadOnlyList<string>?> PatroniSeriesFactAsync(HttpClient http, int promPort)
+    private async Task<IReadOnlyList<string>?> PatroniSeriesFactAsync(HttpClient http, string promUrl)
     {
         try
         {
             using var doc = JsonDocument.Parse(await http.GetStringAsync(
-                $"http://localhost:{promPort}/api/v1/label/__name__/values"));
+                $"{promUrl}/api/v1/label/__name__/values"));
             var names = doc.RootElement.GetProperty("data").EnumerateArray()
                 .Select(n => n.GetString())
                 .Where(n => n is not null && n.StartsWith("patroni_", StringComparison.Ordinal))
@@ -439,13 +449,13 @@ public class E2ePatroniFileSdScenarios
     }
 
     // Демонтаж завершён: portalloc-ключ исчез И таргеты patroni-nodes = 0.
-    private async Task<bool> DismantledAsync(string cluster, HttpClient http, int promPort)
+    private async Task<bool> DismantledAsync(string cluster, HttpClient http, string promUrl)
     {
         if (await GetOrNullAsync($"/pgworker/portalloc/{cluster}") is not null)
             return false;
         try
         {
-            return (await PatroniTargetsAsync(http, promPort)).Count == 0;
+            return (await PatroniTargetsAsync(http, promUrl)).Count == 0;
         }
         catch (Exception)
         {

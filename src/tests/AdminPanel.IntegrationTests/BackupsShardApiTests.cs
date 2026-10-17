@@ -14,15 +14,15 @@ namespace AdminPanel.IntegrationTests;
 // (Ok/S3Only/InProgress); 404 шарда, которого нет ни в etcd, ни в S3-дереве.
 [Collection("backups")]
 public class BackupsShardDetailsApiTests(
-    EtcdContainerFixture etcd, MinioContainerFixture minio)
-    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+    EtcdContainerFixture etcd, S3NodeContainerFixture s3)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = minio.HostEndpoint,
-        MinioBucket = minio.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]
@@ -33,7 +33,7 @@ public class BackupsShardDetailsApiTests(
         // тики: инвентарь → снапшот.
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
-        await minio.SeedObjectsAsync(
+        await s3.SeedObjectsAsync(
         [
             ("demo/s1/full/b1/base.tar", new string('a', 100)),
             ("demo/s1/full/b1/pg_wal/000000010000000000000001", new string('a', 16)),
@@ -41,7 +41,7 @@ public class BackupsShardDetailsApiTests(
             ("demo/s1/wal/000000010000000000000002", new string('a', 16)),
             ("demo/s1/wal/00000002.history", new string('a', 4)),
         ], TestContext.Current.CancellationToken);
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
@@ -107,15 +107,15 @@ public class BackupsShardDetailsApiTests(
 // с джойном на реестр воркера (OBSERVED + TTL) и «панель видит, в реестре нет».
 [Collection("backups")]
 public class BackupsOrphansApiTests(
-    EtcdContainerFixture etcd, MinioContainerFixture minio)
-    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+    EtcdContainerFixture etcd, S3NodeContainerFixture s3)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = minio.HostEndpoint,
-        MinioBucket = minio.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]
@@ -126,12 +126,12 @@ public class BackupsOrphansApiTests(
         // noowner/s1 — есть только в S3, в реестре записи нет.
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
-        await minio.SeedObjectsAsync(
+        await s3.SeedObjectsAsync(
         [
             ("ghost_shard/s9/full/b9/base.tar", new string('a', 50)),
             ("noowner/s1/wal/000000010000000000000003", new string('a', 16)),
         ], TestContext.Current.CancellationToken);
-        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))

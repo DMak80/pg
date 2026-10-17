@@ -88,6 +88,33 @@ public sealed class HealthMetricsScenarios
         }, ct);
     }
 
+    [Fact]
+    public async Task ClusterHealth_200_JsonFields()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        // AAA: кластер-health в докер-контуре (канон 05 §5): анонимный GET —
+        // 200 (шаг 0 конвейера, не 403) + JSON-поля camelCase (панельная проба
+        // ClusterOk adminpanel/02 §2.5 парсит эти имена)
+        await OwnS3E2eEnvironment.RunScenarioAsync("hm3", async fx =>
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+
+            // Act
+            var response = await http.GetAsync($"{fx.S3BaseUrl}/s3/health/cluster", ct);
+
+            // Assert: single-контур — 1 живой диск; healingDrives отсутствует
+            response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+            using var json = System.Text.Json.JsonDocument.Parse(
+                await response.Content.ReadAsStringAsync(ct));
+            json.RootElement.GetProperty("healthyDrives").GetInt64().Should().Be(1);
+            json.RootElement.GetProperty("offlineDrives").GetInt64().Should().Be(0);
+            json.RootElement.GetProperty("totalDrives").GetInt64().Should().Be(1);
+            json.RootElement.TryGetProperty("healingDrives", out _).Should().BeFalse();
+        }, ct);
+    }
+
     // Gauge-строка Prometheus OTel: «имя{лейблы} значение» (лейблы могут
     // отсутствовать — «имя значение»); значение — последний токен строки.
     private static double ParseGauge(string metrics, string name)

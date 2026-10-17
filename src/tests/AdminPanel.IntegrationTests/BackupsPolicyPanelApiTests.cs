@@ -16,7 +16,7 @@ namespace AdminPanel.IntegrationTests;
 // в POST policy-API воркера ПОЛНЫМ телом (панель в etcd не пишет).
 [Collection("backups")]
 public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
-    IClassFixture<MinioContainerFixture>, IAsyncDisposable
+    IClassFixture<S3NodeContainerFixture>, IAsyncDisposable
 {
     private readonly TestWorkerApi _workerApi = new();
 
@@ -24,17 +24,17 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
 
     private readonly string _etcdEndpoint;
 
-    private readonly MinioContainerFixture _minio;
+    private readonly S3NodeContainerFixture _storage;
 
-    public BackupsPolicyPanelApiTests(EtcdContainerFixture etcd, MinioContainerFixture minio)
+    public BackupsPolicyPanelApiTests(EtcdContainerFixture etcd, S3NodeContainerFixture s3)
     {
         _etcdEndpoint = etcd.Endpoint;
-        _minio = minio;
+        _storage = s3;
         _factory = new BackupsWebFactory
         {
             EtcdEndpoint = etcd.Endpoint,
-            MinioEndpoint = minio.HostEndpoint,
-            MinioBucket = minio.Bucket,
+            StorageEndpoint = s3.HostEndpoint,
+            StorageBucket = s3.Bucket,
             WorkerApi = _workerApi,
         };
     }
@@ -82,9 +82,9 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
             """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":2}}""",
             ct);
         // Объект demo/s1 в S3 — кластер появляется в дереве инвентаря.
-        await _minio.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
-        var minio = _factory.Services.GetRequiredService<MinioInventoryLoop>();
-        await minio.RunOnceAsync(ct);
+        await _storage.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
+        var s3 = _factory.Services.GetRequiredService<S3InventoryLoop>();
+        await s3.RunOnceAsync(ct);
         (await _factory.Services.GetRequiredService<SnapshotRefresher>().RefreshOnceAsync(ct))
             .IsSuccess.Should().BeTrue();
         using var client = await BackupsLogin.LoginAsync(_factory);
@@ -197,4 +197,52 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
+
+    // ---- t36 (arch/02 §9.12): s3 в policy-мутации панели ----
+
+    // AAA: PUT policy с секцией s3 → тело прокси воркеру содержит s3.
+    [Fact]
+    public async Task Put_PolicyWithS3_ProxiedToWorker()
+    {
+        // Arrange — форма модала «Пул бэкапов» шлёт полный policy + s3.
+        _factory.EnsureBuilt();
+        using var client = await BackupsLogin.LoginAsync(_factory);
+
+        // Act — дефолтный 204-стаб воркера (тело пусто — десериализации нет).
+        var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
+        {
+            retentionDays = 1, retentionWeeks = 1, retentionMonths = 1,
+            fullMaxAgeSec = 86400, verifyOnCreate = true, drillIntervalDays = 1,
+            s3 = new { pool = "backups", writeMaster = new[] { "n1" }, writeReplica = new[] { "n1" } },
+        }, TestContext.Current.CancellationToken);
+
+        // Assert — 200 и прокси-тело несёт s3-секцию.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var call = WorkerApi.Calls.Should().ContainSingle().Subject;
+        call.Path.Should().Be("/api/clusters/c1/backups/policy");
+        var body = System.Text.Json.JsonSerializer.Serialize(call.Body);
+        body.Should().Contain("\"pool\":\"backups\"").And.Contain("write_master");
+    }
+
+    // AAA: PUT policy без s3 (null) → json прокси НЕ содержит секции (выключение).
+    [Fact]
+    public async Task Put_PolicyWithoutS3_FieldOmitted()
+    {
+        // Arrange
+        _factory.EnsureBuilt();
+        using var client = await BackupsLogin.LoginAsync(_factory);
+
+        // Act
+        var resp = await client.PutAsJsonAsync("/api/clusters/c1/backups/policy", new
+        {
+            retentionDays = 1, retentionWeeks = 1, retentionMonths = 1,
+            fullMaxAgeSec = 86400, verifyOnCreate = true, drillIntervalDays = 1,
+            s3 = (object?)null,
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = System.Text.Json.JsonSerializer.Serialize(WorkerApi.Calls.Single().Body);
+        body.Should().NotContain("s3").And.NotContain("write_master");
+    }
 }

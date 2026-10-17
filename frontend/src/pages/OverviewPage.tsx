@@ -15,7 +15,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, MinioHealthDto, OverviewDto, ReliabilityDto } from '../api/dto';
+import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, S3HealthDto, OverviewDto, ReliabilityDto } from '../api/dto';
 import { backupsQueryKeys, fetchAlerts, fetchBackupsStorage, fetchHaScopes, fetchOverview, fetchReliability, queryKeys, reliabilityQueryKeys } from '../api/queries';
 import { BucketStateBadge } from '../components/BucketStateBadge';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
@@ -296,7 +296,7 @@ function S3Card({ data }: { data: OverviewDto }) {
   );
 }
 
-// Карточка бэкапов: health MinIO (api/live/cluster) + место (used/quota/state
+// Карточка бэкапов: health S3 (api/live/cluster) + место (used/quota/state
 // воркера + live-факт) — компактная сводка грани «Хранилище бэкапов»,
 // клиентская агрегация GET /api/backups/storage (по образцу HA-агрегации,
 // arch/03 §3). Ошибка без данных — своя (не роняет остальные карточки),
@@ -363,9 +363,9 @@ function BackupsCard({ data, isPending, onRetry }: {
   );
 }
 
-// Бейджи health MinIO — цветовая логика 1:1 с HealthCard страницы
+// Бейджи health S3 — цветовая логика 1:1 с HealthCard страницы
 // /backups-storage (api/live teal/red, cluster gray при n/a).
-function HealthBadges({ health }: { health: MinioHealthDto | null }) {
+function HealthBadges({ health }: { health: S3HealthDto | null }) {
   if (health === null) return <Text size="sm" c="dimmed">health: нет данных (первый тик)</Text>;
   return (
     <Group gap="xs">

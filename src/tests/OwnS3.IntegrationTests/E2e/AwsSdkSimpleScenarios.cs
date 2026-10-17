@@ -1,7 +1,10 @@
+using System.IO.Hashing;             // Crc32
 using System.Net;
+using System.Security.Cryptography;  // SHA1/SHA256
 using Amazon.S3;
 using Amazon.S3.Model;
 using FluentAssertions;
+using OwnS3.Protocol.Auth;           // Crc32C (в System.IO.Hashing 10.x типа нет)
 
 namespace OwnS3.IntegrationTests.E2e;
 
@@ -364,6 +367,138 @@ public sealed class AwsSdkSimpleScenarios
     }
 
     [Fact]
+    public async Task DeleteObjects_AfterOverwrite_WalPattern_BigObjects()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        // AAA: паттерн WAL-агентов подсистемы бэкапов PgWorker — глубокий
+        // префикс cluster/shard1/wal/, 24-hex имена, ТЕЛО 16 МБ (реальный
+        // сегмент), ПЕРЕЗАПИСЬ живого объекта (рестарт агента перезаливает
+        // с чекпойнта) → batch-delete середины цепи → листинги не видят
+        // удалённый ключ и НЕ ДУБЛИРУЮТ перезаписанный (инцидент прогона
+        // 2026-10-16: wal-контур PgWorker — batch-удалённая жертва видна
+        // листингу дрилла, перезаписанный сегмент — дважды).
+        await OwnS3E2eEnvironment.RunScenarioAsync("s9", async fx =>
+        {
+            using var admin = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
+            using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
+            var bucket = $"os3e2e{fx.RunTag}wl";
+            await admin.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
+            var big = OwnS3E2eBytes.Deterministic(16 * 1024 * 1024, 11);
+            string K(string seg) => $"e2ecluster{fx.RunTag}/shard1/wal/{seg}";
+
+            // Arrange: цепь 5 сегментов по 16 МБ + ПЕРЕЗАПИСЬ середины
+            // (дубль-паттерн рестарта агента: тот же ключ новым телом)
+            foreach (var seg in new[]
+                     {
+                         "000000010000000000000002", "000000010000000000000003",
+                         "000000010000000000000004", "000000010000000000000005",
+                         "000000010000000000000006",
+                     })
+                await s3.PutObjectAsync(new PutObjectRequest
+                { BucketName = bucket, Key = K(seg), InputStream = new MemoryStream(big) }, ct);
+            await s3.PutObjectAsync(new PutObjectRequest
+            { BucketName = bucket, Key = K("000000010000000000000003"), InputStream = new MemoryStream(big) }, ct);
+
+            // Act: batch-delete середины цепи (жертва валидационного дрилла)
+            var victimKey = K("000000010000000000000004");
+            var batch = await s3.DeleteObjectsAsync(new DeleteObjectsRequest
+            {
+                BucketName = bucket,
+                Objects = new List<KeyVersion> { new() { Key = victimKey } },
+            }, ct);
+
+            // Assert: удаление подтверждено ответом
+            batch.DeletedObjects.Should().ContainSingle(
+                d => d.Key == victimKey, "жертва удалена пакетно");
+
+            // Assert: листинг — жертвы НЕТ, перезаписанный ровно ОДИН
+            var list = await s3.ListObjectsV2Async(new ListObjectsV2Request
+            { BucketName = bucket, Prefix = $"e2ecluster{fx.RunTag}/shard1/wal/" }, ct);
+            list.S3Objects.Select(o => o.Key).Should().HaveCount(4, "5 − жертва")
+                .And.NotContain(victimKey);
+            list.S3Objects.Count(o => o.Key == K("000000010000000000000003")).Should().Be(1,
+                "перезапись не создаёт дубль ключа в листинге");
+
+            // Assert: HEAD жертвы — 404 (физически удалена)
+            (await s3.Invoking(x => x.GetObjectMetadataAsync(
+                    new GetObjectMetadataRequest { BucketName = bucket, Key = victimKey }, ct))
+                .Should().ThrowAsync<AmazonS3Exception>())
+                .Where(e => e.StatusCode == HttpStatusCode.NotFound);
+        }, ct);
+    }
+
+    [Fact]
+    public async Task DeleteObjects_WhileParallelOverwrite_LinearizableOutcome()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        // AAA: гонка batch-delete × параллельная перезапись того же ключа
+        // (паттерн двух WAL-агентов, перезаливающих хвост с чекпойнта поверх
+        // удаления). Итог линеен: ключ либо удалён (HEAD 404), либо жив
+        // РОВНО ОДИН раз и GET отдаёт ЦЕЛЫЕ байты одной из записанных версий
+        // — «delete вернул успех при рассогласованном живом объекте»
+        // (живой xl.meta поверх убранного dataDir) невозможен.
+        await OwnS3E2eEnvironment.RunScenarioAsync("s10", async fx =>
+        {
+            using var admin = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
+            using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
+            var bucket = $"os3e2e{fx.RunTag}go";
+            await admin.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
+            var key = $"e2e{fx.RunTag}/shard1/wal/000000010000000000000099";
+
+            // Arrange: начальная версия + 5 перезаписей параллельно с batch-delete
+            var versions = Enumerable.Range(0, 6)
+                .Select(i => OwnS3E2eBytes.Deterministic(1024 * 1024, 21 + i))
+                .ToList();
+            await s3.PutObjectAsync(new PutObjectRequest
+            { BucketName = bucket, Key = key, InputStream = new MemoryStream(versions[0]) }, ct);
+            var overwrites = Task.WhenAll(Enumerable.Range(1, 5).Select(async i =>
+            {
+                await Task.Delay(i * 40, ct);
+                await s3.PutObjectAsync(new PutObjectRequest
+                {
+                    BucketName = bucket, Key = key, InputStream = new MemoryStream(versions[i]),
+                }, ct);
+            }));
+            var deleted = await s3.DeleteObjectsAsync(new DeleteObjectsRequest
+            {
+                BucketName = bucket,
+                Objects = new List<KeyVersion> { new() { Key = key } },
+            }, ct);
+            await overwrites;
+            deleted.DeletedObjects.Should().ContainSingle(d => d.Key == key, "объект существовал на момент delete");
+
+            // Act: финальный листинг после успокоения гонки
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            var listed = (await s3.ListObjectsV2Async(
+                    new ListObjectsV2Request { BucketName = bucket, Prefix = $"e2e{fx.RunTag}/" }, ct))
+                .S3Objects.Where(o => o.Key == key).ToList();
+
+            // Assert: линеаризованный исход — либо удалён, либо один и целый
+            listed.Should().HaveCountLessThanOrEqualTo(1, "дублей ключа в листинге быть не может");
+            if (listed.Count == 0)
+            {
+                (await s3.Invoking(x => x.GetObjectMetadataAsync(
+                        new GetObjectMetadataRequest { BucketName = bucket, Key = key }, ct))
+                    .Should().ThrowAsync<AmazonS3Exception>())
+                    .Where(e => e.StatusCode == HttpStatusCode.NotFound);
+                return;
+            }
+
+            using var get = await s3.GetObjectAsync(new GetObjectRequest { BucketName = bucket, Key = key }, ct);
+            using var ms = new MemoryStream();
+            await get.ResponseStream.CopyToAsync(ms, ct);
+            var bytes = ms.ToArray();
+            bytes.Length.Should().Be(1024 * 1024, "размер целой версии");
+            versions.Skip(1).Should().Contain(v => v.SequenceEqual(bytes),
+                "байты — ЦЕЛАЯ версия одной из перезаписей (целостность не зависит от гонки delete)");
+        }, ct);
+    }
+
+    [Fact]
     public async Task ChecksumTrailer_PutGet_WhenSupported()
     {
         DockerTrait.SkipIfUnavailable();
@@ -437,6 +572,82 @@ public sealed class AwsSdkSimpleScenarios
             using var ms = new MemoryStream();
             await get.ResponseStream.CopyToAsync(ms, ct);
             ms.ToArray().Should().Equal(body);
+        }, ct);
+    }
+
+    [Fact]
+    public async Task ChecksumHeader_Put_VerifyAndReject()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        // AAA: заголовочная checksum-верификация реальным SDK (канон 02 PutObject):
+        // ВСЕ ЧЕТЫРЕ алгоритма — свойство запроса шлёт x-amz-checksum-<alg>;
+        // валидное значение → 200 + объект читается + ETag-MD5; битое → 400
+        // BadDigest от сервера. Битые значения — валидный base64 корректной длины
+        // (проверяется несовпадение суммы, не формат).
+        await OwnS3E2eEnvironment.RunScenarioAsync("s11", async fx =>
+        {
+            using var admin = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
+            using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
+            var bucket = $"os3e2e{fx.RunTag}hc";
+            var body = OwnS3E2eBytes.Deterministic(256 * 1024, 31);
+            await admin.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
+
+            // Конвенция теста = конвенция сервера: crc32 big-endian (BCL + Reverse),
+            // crc32c — OwnS3.Protocol.Auth.Crc32C (big-endian).
+            string Sum(string algorithm) => algorithm switch
+            {
+                "crc32" => Convert.ToBase64String(Crc32.Hash(body).Reverse().ToArray()),
+                "crc32c" => Convert.ToBase64String(Crc32C.Hash(body)),
+                "sha1" => Convert.ToBase64String(SHA1.HashData(body)),
+                _ => Convert.ToBase64String(SHA256.HashData(body)),
+            };
+            string WrongSum(string algorithm) => algorithm is "crc32" or "crc32c"
+                ? "AAAAAA=="                       // 4 байта, чужое значение
+                : Convert.ToBase64String(new byte[algorithm == "sha1" ? 20 : 32]);
+
+            Task<PutObjectResponse> PutAsync(string algorithm, string checksum, string key) =>
+                s3.PutObjectAsync(new PutObjectRequest
+                {
+                    BucketName = bucket, Key = key, InputStream = new MemoryStream(body),
+                    // Не-чанковый путь (hex-подпись тела): при заданном checksum-свойстве
+                    // SDK по умолчанию уходит в STREAMING-чанковый режим, где заголовочные
+                    // x-amz-checksum-* каноном игнорируются (авторитет — трейлер) —
+                    // заголовочная верификация осталась бы непроверенной.
+                    UseChunkEncoding = false,
+                    ChecksumCRC32 = algorithm == "crc32" ? checksum : null,
+                    ChecksumCRC32C = algorithm == "crc32c" ? checksum : null,
+                    ChecksumSHA1 = algorithm == "sha1" ? checksum : null,
+                    ChecksumSHA256 = algorithm == "sha256" ? checksum : null,
+                }, ct);
+
+            foreach (var algorithm in new[] { "crc32", "crc32c", "sha1", "sha256" })
+            {
+                // Act: валидная сумма
+                var put = await PutAsync(algorithm, Sum(algorithm), $"chk-{algorithm}.bin");
+
+                // Assert: 200 + объект читается + ETag hex-MD5 (не зависит от алгоритма)
+                put.HttpStatusCode.Should().Be(HttpStatusCode.OK, "алгоритм {0}", algorithm);
+                using var get = await s3.GetObjectAsync(
+                    new GetObjectRequest { BucketName = bucket, Key = $"chk-{algorithm}.bin" }, ct);
+                using var ms = new MemoryStream();
+                await get.ResponseStream.CopyToAsync(ms, ct);
+                ms.ToArray().Should().Equal(body);
+                get.ETag!.Trim('"').Should().Be(OwnS3E2eETag.Md5Hex(body));
+
+                // Act: битая сумма (валидный base64 корректной длины)
+                var rejected = await s3.Invoking(x => PutAsync(algorithm, WrongSum(algorithm), $"bad-{algorithm}.bin"))
+                    .Should().ThrowAsync<AmazonS3Exception>();
+
+                // Assert: HTTP 400, код BadDigest в теле ошибки; объект не закоммичен
+                rejected.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest, "алгоритм {0}", algorithm);
+                rejected.Which.ErrorCode.Should().Be("BadDigest");
+                (await s3.Invoking(x => x.GetObjectMetadataAsync(
+                        new GetObjectMetadataRequest { BucketName = bucket, Key = $"bad-{algorithm}.bin" }, ct))
+                    .Should().ThrowAsync<AmazonS3Exception>())
+                    .Which.StatusCode.Should().Be(HttpStatusCode.NotFound, "битой put не коммитит объект");
+            }
         }, ct);
     }
 }

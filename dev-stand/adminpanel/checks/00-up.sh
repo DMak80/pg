@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Подъём полного стенда (профили full + kafka + valkey + metrics) до рабочего
-# состояния, по порядку: publish-фазы образов ([PHASE]: SdGenerator, OwnS3,
-# wal-агент; остальные — compose build) → стендовый compose (владелец сети
-# adminpanel-stand-net) → deploy-контур (contour-override: воркеры + ownS3) →
-# bucket-сид ownS3 → POST /api/clusters (канонический demo движком) → панель +
-# прометей. Управление кафкой входит в стенд всегда (не только e2e-гейтом):
-# без воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
+# состояния, по порядку: ГАРАНТИРОВАННАЯ зачистка контура (90-down.sh -v —
+# каждый запуск = новое окружение, базовые правила §13 п.2) → publish-фазы
+# образов ([PHASE]: SdGenerator, OwnS3, wal-агент; остальные — compose build)
+# → стендовый compose (владелец сети adminpanel-stand-net) → deploy-контур
+# (contour-override: воркеры + ownS3) → bucket-сид ownS3 → POST /api/clusters
+# (канонический demo движком) → панель + прометей. Управление кафкой входит в
+# стенд всегда (не только e2e-гейтом): без воркера kafka-домен панели глух —
+# отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
@@ -16,6 +18,14 @@ phase() {
   echo ">>> [PHASE] $*"
   echo "[$(date +%H:%M:%S)] [PHASE] $*" >> "$PHASES_LOG"
 }
+# КАЖДЫЙ ЗАПУСК — НОВОЕ ОКРУЖЕНИЕ (базовые правила §13 п.2): повторный подъём
+# поверх живого контура недопустим — первым шагом ГАРАНТИРОВАННАЯ зачистка
+# существующего стенда (та же логика, что 90-down.sh -v: стендовый compose down
+# с томами, deploy-контур, движковые pgw-*/s3w-* контейнеры, тома, сети;
+# own-only по стендовым именам, «не существует» — молча ок). etcd-данные
+# стираются: пулы/кластеры/сиды создаются заново на чистом контуре.
+phase "зачистка контура перед подъёмом (90-down.sh -v — каждый запуск = новое окружение)"
+bash "$PWD/checks/90-down.sh" -v >/dev/null 2>&1 || true
 # Хост-публикация API pgworker параметризуется (коллизии портов на хосте;
 # канон 8080, второй инстанс — 8083, t07). Advertise обязан совпадать с
 # фактической публикацией (панель и чеки стучатся по advertise),
@@ -143,6 +153,22 @@ fi
 grep -E '^S3W_NODE_SECRETS__' "$ROOT/deploy/.env" > "$ROOT/deploy/s3w-node-secrets.env"
 [ -s "$ROOT/deploy/s3w-node-secrets.env" ] \
   || { echo "❌ deploy/s3w-node-secrets.env пуст — профиль секретов не собран из .env"; exit 1; }
+# t36: env-профили кредов пулов pgworker (arch/19 §7) — в .env без блока
+# дописываются ЦЕЛИКОМ (прежний .env от старого шаблона блока не несёт;
+# свежий .env — копия .env.example — уже несёт). Имя профиля = secretProfile
+# сида пула ниже (BACKUPS-MAIN).
+if ! grep -q '^PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=' "$ROOT/deploy/.env"; then
+cat >> "$ROOT/deploy/.env" <<'EOF'
+
+# Профиль кредов пула бэкапов (t36, arch/19 §7): имя = secretProfile сида
+# пула «backups» (00-up.sh); ключ — writer-комплект OWNS3_ACCESS_KEYS__0.
+PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=pgw-backups-writer
+PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__SECRET_KEY=pgw-backups-writer-pwd
+EOF
+fi
+# t36: производный файл профилей для env_file pgworker — те же строки KEY=VAL
+# без интерполяции (дефис в имени профиля; прецедент s3w-node-secrets.env).
+grep -E '^PGW_BACKUP_S3_PROFILES__' "$ROOT/deploy/.env" > "$ROOT/deploy/pgw-s3-profiles.env"
 # t15/t41: единая сеть контура = стендовая сеть (adminpanel-stand-net);
 # отдельная pgw-metrics на стенде НЕ создаётся (весь стенд в одной сети).
 for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
@@ -200,21 +226,19 @@ curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
   || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
 echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
 
-# ownS3: bucket бэкапов — идемпотентный сид root-кредами; хост-переход НАРУЖУ
-# (bucket-сид — чек-подобная операция с хоста; внутри контура адресация
-# owns3:9000 — arch/owns3/05 §2-3:
-# CreateBucket — только admin, воркер bucket не создаёт — как и раньше с
-# as-minio). Ephemeral mc ходит через хост-публикацию (прецедент чека 46);
-# стоит ДО проверок pgworker: подсистема бэкапов стартует против готового
-# bucket (S3-недоступность и так transient-ретраи тика, arch/19 §5).
+# ownS3 (t39/t36): bucket СЛЕПКОВ etcd — идемпотентный сид root-кредами
+# (спецификация §7: standalone owns3 остаётся целью слепков — отдельная пара
+# PGW_SNAPSHOTS_S3_* со своим bucket; bucket пулов создаёт S3Worker, сюда
+# бэкапы больше не пишутся). Ephemeral mc ходит через хост-публикацию
+# (прецедент чека 46); стоит ДО проверок pgworker.
 OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
 OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
 docker run --rm --add-host host.docker.internal:host-gateway \
   --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
   -c "mc alias set own http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
-      && mc mb --ignore-existing own/pgworker-backups >/dev/null" \
-  || { echo "❌ bucket pgworker-backups не создан в ownS3 (:${OWNS3_PORT})"; exit 1; }
-echo "  bucket pgworker-backups готов в ownS3 (:${OWNS3_PORT})"
+      && mc mb --ignore-existing own/pgworker-etcd-snapshots >/dev/null" \
+  || { echo "❌ bucket pgworker-etcd-snapshots не создан в ownS3 (:${OWNS3_PORT})"; exit 1; }
+echo "  bucket pgworker-etcd-snapshots готов в ownS3 (:${OWNS3_PORT})"
 
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
@@ -240,12 +264,12 @@ echo "  образ pgworker-backup:dev готов"
 #     владелец сети adminpanel-stand-net (выше); deploy-контур подключается
 #     к ней external (contour-override). Здесь — проверки живости (нужен
 #     собранный etcd-кворум выше); demo создаётся ниже (1c, POST /api/clusters).
-MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
-for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker не ожил за 60 c (https :${PGW_API_HOST_PORT:-8080}/healthz по mTLS; docker logs deploy-pgworker-1)"; exit 1; }
-for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
   || { echo "❌ pgworker-2 не ожил за 60 c (https :${PGW_API_HOST_PORT2:-8083}/healthz по mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
 # t07: оба инстанса публикуют свой lease-ключ дискавери (InstanceId = GUID,
 # уникальный per контейнер) — двухинстансовый надзор доказан ключами.
@@ -433,11 +457,11 @@ echo "  valkeyworker жив ×2 (heartbeat /valkeyworker/{api,instances}/*: по
 # 7c) s3worker жив ×2 (arch/24): healthz по mTLS healthcheck-парой
 #     (общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
-for i in $(seq 1 60); do $MTLS https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
   || { echo "❌ s3worker не ожил за 60 c (https :${S3W_API_HOST_PORT:-8086}/healthz по mTLS; docker logs deploy-s3worker-1)"; exit 1; }
-for i in $(seq 1 60); do $MTLS https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
-$MTLS https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
   || { echo "❌ s3worker-2 не ожил за 60 c (https :${S3W_API_HOST_PORT2:-8089}/healthz по mTLS; docker logs deploy-s3worker-2-1)"; exit 1; }
 s3w_keys=0
 for i in $(seq 1 60); do
@@ -448,6 +472,37 @@ done
 [ "${s3w_keys:-0}" -ge 2 ] \
   || { echo "❌ /s3worker/api/ содержит ${s3w_keys:-0} ключей (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
 echo "  s3worker жив ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; ключей /s3worker/api/: ${s3w_keys})"
+
+# 7c-2) Сид пула бэкапов (t36, spec §4.6/§7): S3-кластер «backups» из одной
+#       ноды через API живого s3worker (mTLS healthcheck-парой, образец 75);
+#       идемпотентен: живой Active-кластер → 409 (пропуск). S3Worker сам
+#       провижинит ownS3-ноду (порт из ряда S3W), создаст per-install bucket
+#       (S3W_BUCKET, P3) и напишет /s3/clusters/backups/{config,nodes,endpoints}.
+#       Политика пулов кластерам стенда не задаётся сидом — оператор выбирает
+#       пул со страницы (до выбора — алерт backup-pool-missing, канон §7).
+echo ">>> [PHASE] сид пула бэкапов backups (POST /api/s3/clusters, $(date +%s))"
+# DTO CreateS3ClusterRequest (S3Api.cs): инстансы — списком instances (имена
+# нод + placement); nodes/placements в запросе не читаются (кластер
+# создавался пустым — прецедент мерж-гейта t36).
+pool_body='{"name":"backups","platform":"owns3","secretProfile":"BACKUPS-MAIN","instances":[{"name":"node1","placement":{"dockerHost":"local"},"resources":{"cpu":0.5,"memGi":1,"diskGi":5}}]}'
+pool_code="$("${MTLS[@]}" -o /tmp/pgw-seed-pool.json -w '%{http_code}' -X POST \
+  "https://localhost:${S3W_API_HOST_PORT:-8086}/api/s3/clusters" \
+  -H 'Content-Type: application/json' -d "$pool_body")"
+case "$pool_code" in
+  201) echo "  пул backups: заявка принята (201)";;
+  409) echo "  пул backups уже существует (409) — пропуск";;
+  *) { echo "❌ POST /api/s3/clusters → $pool_code"; cat /tmp/pgw-seed-pool.json; exit 1; };;
+esac
+pool_ready=0
+for i in $(seq 1 50); do
+  [ "$(ect get /s3/clusters/backups/nodes/node1/state --print-value-only 2>/dev/null)" = "RUNNING" ] \
+    && [ -n "$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)" ] \
+    && { pool_ready=1; break; }
+  sleep 2
+done
+[ "$pool_ready" = 1 ] \
+  || { echo "❌ пул backups не собран за 100 c (node1 RUNNING + endpoints; docker logs deploy-s3worker-1)"; exit 1; }
+echo "  пул backups: node1 RUNNING, endpoints=$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)"
 
 # 7d) valkey-сид (t03): демо-кластер demo наливается ЧЕРЕЗ API живого воркера —
 #     метрика spec §8.1: после ПОЛНОГО 00-up.sh панель /valkey уже показывает

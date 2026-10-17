@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E отказа S3 (t24/ревизия 8 — разбиение E2eBackupScenarios): монолитный
 // одиночный факт (критический путь ~7 мин, §7) — отдельный класс.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -25,7 +25,10 @@ public class E2eBackupFailsOnBadS3Scenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    // t36: пул E2E (однонодовый; etcd у Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -40,12 +43,16 @@ public class E2eBackupFailsOnBadS3Scenarios
         // хардкод: фиксированный протокольный «всегда закрыт»)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        await using var app = await StartBackupHostAsync(
-            "bkbads3", ct, s3EndpointOverride: "http://host.docker.internal:1");
+        // t36: «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
+        // (tcpmux; НЕ тестовый хардкод: фиксированный протокольный «всегда закрыт»).
+        await Fx.SeedS3PoolAsync(Pool, ct, ["e2e-broken-s3:1"]);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
+        await using var app = await StartBackupHostAsync("bkbads3", ct);
 
         // Act/Assert 1 — первая попытка FAILED с error ≤ 480 c: окно включает
         // provisioning (4 ноды, минуты) + джоб (pg_basebackup со spread-чекпоинтом
@@ -66,24 +73,23 @@ public class E2eBackupFailsOnBadS3Scenarios
         retried.Should().BeTrue("бэкофф 2 c должен запустить переснятие новым id");
     }
 
-    // Воркер с включённой подсистемой бэкапов: S3 на локальный MinIO,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
+    // env-профиль кредов — env (t36); образ pgworker-backup:e2e, ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
-        string name, CancellationToken ct, string? s3EndpointOverride = null,
+        string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var env = new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
+        foreach (var (key, value) in Fx.BackupPoolEnv())
+            env[key] = value;
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);

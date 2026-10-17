@@ -20,7 +20,8 @@ namespace PgWorker.Backups;
 public sealed class RetentionProcess(
     IEtcdGateway etcd,
     string[] endpoints,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
+    PgWorker.Etcd.S3.IS3PoolStore pools,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -58,6 +59,20 @@ public sealed class RetentionProcess(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
+        // t36 (arch/19 §4): per-cluster проход — гвард policy.s3. null (пул не
+        // выбран) → кластер молчит (не чистит; алерт missing — проекция панели);
+        // Failed → journal, ретраи проходом (retention-interval).
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (poolRead.Value is not { } poolCtx)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        await using var s3 = s3Factory.Create(poolCtx);
+
         // S: расписание per-cluster; не время — только storage-монитор.
         if (nowUnix - _lastPassUnix.GetOrAdd(cluster, 0L) >= options.RetentionIntervalSec)
         {
@@ -77,7 +92,7 @@ public sealed class RetentionProcess(
 
                 try
                 {
-                    await TickShardAsync(cluster, shard.Name, shardBackups, policy, nowUnix, ct);
+                    await TickShardAsync(cluster, shard.Name, shardBackups, policy, nowUnix, s3, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -103,13 +118,13 @@ public sealed class RetentionProcess(
 
     private async Task TickShardAsync(
         string cluster, string shard, ShardBackups shardBackups, BackupPolicy policy,
-        long nowUnix, CancellationToken ct)
+        long nowUnix, IBackupS3 s3, CancellationToken ct)
     {
         var fulls = shardBackups.Full;
 
         // (1) DELETING-доводка: list full/<id>/ → delete → list пуст → del ключа.
         foreach (var deleting in fulls.Where(f => f.State == FullBackupStatus.Deleting))
-            await FinishDeletionAsync(cluster, shard, deleting, ct);
+            await FinishDeletionAsync(cluster, shard, deleting, s3, ct);
 
         // (2) GFS-отбор COMPLETED-полных.
         var selection = RetentionPlanner.SelectKeep(fulls, policy, nowUnix);
@@ -123,7 +138,7 @@ public sealed class RetentionProcess(
                 BackupStatusJson.Serialize(marked), ct);
             if (!put.IsSuccess)
                 throw new ApplicationException($"put DELETING: {put.Error!.Message}");
-            await FinishDeletionAsync(cluster, shard, marked, ct);
+            await FinishDeletionAsync(cluster, shard, marked, s3, ct);
         }
 
         // (4) Чистка WAL (t18, arch/19 §4 п.5): cutoff = wal_start новейшего
@@ -172,7 +187,7 @@ public sealed class RetentionProcess(
     // исключение наверх (пер-шардовый catch): статус остаётся DELETING,
     // следующий проход повторит (spec §3.3 п.1, AC3).
     private async Task FinishDeletionAsync(
-        string cluster, string shard, FullBackupState deleting, CancellationToken ct)
+        string cluster, string shard, FullBackupState deleting, IBackupS3 s3, CancellationToken ct)
     {
         var prefix = $"{cluster}/{shard}/full/{deleting.Id}/";
         var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
@@ -202,6 +217,9 @@ public sealed class RetentionProcess(
     // сравнение не входит: меняющийся now делал бы put каждым проходом, а
     // свежесть прохода видна по возрасту updated_unix (arch/19 §4 «при
     // изменении»; строковое сравнение — образец WalStatusWriter.WriteIfChangedAsync).
+    // Недоступный пул (t36) — used_bytes был бы занижен: частичный вердикт НЕ
+    // публикуется (ключ остаётся с последним ПОЛНЫМ значением — квота-алерт
+    // не молчит зря), неполнота — в лог; полный проход повторится (transient).
     // Отдельное поле-расписание, не словарь кластеров (коллизия "storage" — см.
     // поле); параллельные тики разных кластеров могут гоняться за поле — двойной
     // list безвреден (put при изменении идемпотентен; тики одного кластера
@@ -212,11 +230,39 @@ public sealed class RetentionProcess(
             return Result.Success();
         _lastStoragePassUnix = nowUnix;
 
-        var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync("", ct: token), ct);
-        if (!listed.IsSuccess)
-            return Result.Failed(listed.Error!); // transient: повтор тика
-
-        var used = listed.Value.Sum(o => o.SizeBytes);
+        // t36 (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/ —
+        // по первому доступному endpoint каждого (CreateForPoolAsync: write=read=
+        // все ноды; листинг с первой доступной); дедуп ключей — по (пул, ключ)
+        // (mesh-дубликат в разных пулах учтён один раз).
+        var names = await pools.ListPoolNamesAsync(ct);
+        if (!names.IsSuccess)
+            return Result.Failed(names.Error!); // transient: повтор тика
+        long used = 0;
+        var failedPools = new List<string>();
+        foreach (var poolName in names.Value)
+        {
+            var created = await s3Factory.CreateForPoolAsync(poolName, ct);
+            if (!created.IsSuccess)
+            {
+                failedPools.Add(poolName); // недоступен/без кредов — transient
+                continue;
+            }
+            await using var poolS3 = created.Value.Client;
+            var listed = await S3Pulse.CallAsync(progress, token => poolS3.ListPrefixAsync("", ct: token), ct);
+            if (!listed.IsSuccess)
+            {
+                failedPools.Add(poolName); // transient этого пула — повтор тика
+                continue;
+            }
+            used += listed.Value.Sum(o => o.SizeBytes);
+        }
+        if (failedPools.Count > 0)
+        {
+            logger.LogWarning(
+                "{Op}: used_bytes неполный — пулы недоступны: {Pools}; ключ /pgworker/backups/storage не обновляется до полного прохода",
+                Op, string.Join(", ", failedPools));
+            return Result.Success(); // transient — полный проход повторит
+        }
         var verdict = RetentionPlanner.EvaluateStorage(
             used, options.QuotaBytes, options.QuotaWarnPercent, options.QuotaCritPercent);
         var status = new StorageStatus(

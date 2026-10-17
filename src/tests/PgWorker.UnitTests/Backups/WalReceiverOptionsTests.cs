@@ -19,7 +19,7 @@ public class WalReceiverOptionsTests
         ["SLOT"] = "pgw_bkp_c1_shard1",
         ["CLUSTER"] = "c1",
         ["SHARD"] = "shard1",
-        ["S3_ENDPOINT"] = "http://minio:9000",
+        ["S3_ENDPOINTS"] = "http://s3a:9000,http://s3b:9000",
         ["S3_BUCKET"] = "backups",
         ["S3_ACCESS_KEY"] = "access-key",
         ["S3_SECRET_KEY"] = "secret-key",
@@ -62,12 +62,12 @@ public class WalReceiverOptionsTests
         options.Slot.Should().Be("pgw_bkp_c1_shard1");
         options.Cluster.Should().Be("c1");
         options.Shard.Should().Be("shard1");
-        options.S3Endpoint.Should().Be("http://minio:9000");
-        options.S3Region.Should().BeNull();
+        // t36: списки пула — порядок сохранён; без S3_READ_ENDPOINTS read=write.
+        options.S3Endpoints.Should().Equal("http://s3a:9000", "http://s3b:9000");
+        options.S3ReadEndpoints.Should().Equal("http://s3a:9000", "http://s3b:9000");
         options.S3Bucket.Should().Be("backups");
         options.S3AccessKey.Should().Be("access-key");
         options.S3SecretKey.Should().Be("secret-key");
-        options.S3PathStyle.Should().BeTrue();
     }
 
     [Theory]
@@ -79,7 +79,7 @@ public class WalReceiverOptionsTests
     [InlineData("SLOT")]
     [InlineData("CLUSTER")]
     [InlineData("SHARD")]
-    [InlineData("S3_ENDPOINT")]
+    [InlineData("S3_ENDPOINTS")]
     [InlineData("S3_BUCKET")]
     [InlineData("S3_ACCESS_KEY")]
     [InlineData("S3_SECRET_KEY")]
@@ -128,15 +128,13 @@ public class WalReceiverOptionsTests
         errors.Should().ContainSingle(e => e.Contains("PG_PORT"));
     }
 
-    [Theory]
-    [InlineData("true", true)]
-    [InlineData("false", false)]
-    [InlineData("1", true)]
-    [InlineData("0", false)]
-    public void S3_PATHSTYLE_парсится_как_bool(string value, bool expected)
+    // AAA (t36): S3_ENDPOINTS парсится в список с сохранением порядка.
+    [Fact]
+    public void S3_ENDPOINTS_порядок_сохранён()
     {
-        // Arrange
-        var env = With("S3_PATHSTYLE", value);
+        // Arrange — три uri в заданном порядке + отдельный read-список.
+        var env = With("S3_ENDPOINTS", "http://a:9000,http://b:9000,http://c:9000");
+        env["S3_READ_ENDPOINTS"] = "http://b:9000,http://a:9000";
 
         // Act
         var options = Parse(env, out var errors);
@@ -144,39 +142,38 @@ public class WalReceiverOptionsTests
         // Assert
         options.Should().NotBeNull();
         errors.Should().BeEmpty();
-        options!.S3PathStyle.Should().Be(expected);
+        options!.S3Endpoints.Should().Equal("http://a:9000", "http://b:9000", "http://c:9000");
+        options.S3ReadEndpoints.Should().Equal("http://b:9000", "http://a:9000");
     }
 
-    [Theory]
-    [InlineData("yes")]
-    [InlineData("2")]
-    public void S3_PATHSTYLE_невалидное_значение_ошибка(string value)
+    // AAA (t36): отсутствие S3_ENDPOINTS — ошибка permanent (код 5 в Program).
+    [Fact]
+    public void S3_ENDPOINTS_отсутствует_ошибка()
     {
         // Arrange
-        var env = With("S3_PATHSTYLE", value);
+        var env = Without("S3_ENDPOINTS");
 
         // Act
         var options = Parse(env, out var errors);
 
         // Assert
         options.Should().BeNull();
-        errors.Should().ContainSingle(e => e.Contains("S3_PATHSTYLE"));
+        errors.Should().Contain(e => e.Contains("S3_ENDPOINTS"));
     }
 
+    // AAA (t36): пустой S3_ENDPOINTS (только запятые) — тоже ошибка.
     [Fact]
-    public void Отсутствие_S3_REGION_даёт_null()
+    public void S3_ENDPOINTS_пустой_ошибка()
     {
         // Arrange
-        var env = Valid();
-        env["S3_REGION"] = "us-east-1";
+        var env = With("S3_ENDPOINTS", ",, ");
 
         // Act
         var options = Parse(env, out var errors);
 
-        // Assert — заданный регион читается; отсутствие покрыто тестом полного набора
-        options.Should().NotBeNull();
-        errors.Should().BeEmpty();
-        options!.S3Region.Should().Be("us-east-1");
+        // Assert
+        options.Should().BeNull();
+        errors.Should().Contain(e => e.Contains("S3_ENDPOINTS"));
     }
 
     [Fact]

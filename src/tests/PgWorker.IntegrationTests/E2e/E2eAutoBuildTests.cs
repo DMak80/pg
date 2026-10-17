@@ -3,25 +3,26 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// t09, spec «фаза Г»: правило пересборки Release в E2eFixture. Юнит-слой —
-// детерминированная ветка PGW_TEST_E2E_NOBUILD без бинаря (fail-fast);
-// автосборка проверяется живым прогоном (Task 2).
+// t09, spec «фаза Г»: правило пересборки Release в статических ассетах
+// (E2eEnvironment.EnsureStaticAssetsAsync → E2eFixture.PublishProjectAsync).
+// Юнит-слой — fail-fast NOBUILD без publish-артефактов (EnsurePublishedDir);
+// автосборка проверяется живым прогоном.
 public class E2eAutoBuildTests
 {
     [Fact]
-    public async Task EnsureAppDll_NoBuild_WithoutDll_FailsFastWithBuildHint()
+    public void EnsurePublishedDir_NoBuild_WithoutArtifacts_FailsFastWithHint()
     {
-        // Arrange: пустой временный каталог — бинаря нет, автосборка выключена.
+        // Arrange: пустой временный каталог — артефактов publish нет.
         var root = Path.Combine(Path.GetTempPath(), $"pgw-e2e-nobuild-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
         {
-            // Act: NOBUILD + отсутствие бинаря.
-            var ex = await Assert.ThrowsAsync<ApplicationException>(
-                () => E2eFixture.EnsureAppDllAsync(root, noBuild: true));
+            // Act: NOBUILD + отсутствие артефактов.
+            var ex = Assert.Throws<ApplicationException>(
+                () => E2eFixture.EnsurePublishedDir(root, "hint-test"));
 
-            // Assert: fail-fast с командой сборки в сообщении.
-            ex.Message.Should().Contain("dotnet build src/PgWorker.slnx -c Release");
+            // Assert: fail-fast с подсказкой про автосборку.
+            ex.Message.Should().Contain("PGW_TEST_E2E_NOBUILD").And.Contain("dotnet publish");
         }
         finally
         {

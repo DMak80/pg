@@ -30,7 +30,7 @@ public sealed class RestoreDrillProcess(
     string[] endpoints,
     IClusterDriver driver,
     ShardEndpoints shardEndpoints,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -114,6 +114,17 @@ public sealed class RestoreDrillProcess(
     {
         var cluster = snap.Config.Cluster;
 
+        // t36 (arch/19 §5): пул чтения per-cluster — манифест/label/лист wal с
+        // перебором ReadAll. null/Failed — transient: journal, тик повторит.
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        await using var s3 = s3Factory.Create(poolCtx);
+
         if (!mine.Shards.TryGetValue(shard, out var sb))
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         var fresh = sb.Full
@@ -188,7 +199,8 @@ public sealed class RestoreDrillProcess(
                 if (list.Value.Any(c => c.Names.Contains(jobName)))
                     return await engine.StartContainerAsync(jobName, token);
                 var created = await engine.CreateContainerAsync(
-                    DrillJobSpec.Build(options, cluster, shard, id, backupId), jobName, token);
+                    DrillJobSpec.Build(options, cluster, shard, id, backupId,
+                        poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey), jobName, token);
                 if (!created.IsSuccess)
                     return created;
                 return await engine.StartContainerAsync(jobName, token);
@@ -231,6 +243,16 @@ public sealed class RestoreDrillProcess(
     {
         var cluster = snap.Config.Cluster;
         var containerName = BackupNames.DrillContainerName(cluster, shard, drill.Id);
+
+        // t36: пул чтения для досоздачи джоба (env-списки); null/Failed —
+        // transient: досоздача следующим тиком, супервизRunning продолжается.
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+            return;
+        }
 
         // Резолв хоста джоба: основной путь — первая нода шарда из portalloc
         // (там джоб создавался); fallback (portalloc/шард исчезли — шард
@@ -305,7 +327,8 @@ public sealed class RestoreDrillProcess(
                 async token =>
                 {
                     var created = await engine.CreateContainerAsync(
-                        DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId), containerName, token);
+                        DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId,
+                        poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey), containerName, token);
                     if (!created.IsSuccess)
                         return created;
                     return await engine.StartContainerAsync(containerName, token);

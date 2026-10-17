@@ -16,21 +16,21 @@ public class BackupS3UnreachableRuleTests
     private static IReadOnlyList<Alert> Evaluate(EtcdSnapshot snapshot) =>
         [.. new BackupS3UnreachableRule().Evaluate(snapshot, new AlertContext(null, Now, 3))];
 
-    private static EtcdSnapshot SnapshotWith(MinioStorageInfo? minio)
-        => TestSnapshots.Healthy(Now) with { MinioStorage = minio };
+    private static EtcdSnapshot SnapshotWith(S3StorageInfo? s3)
+        => TestSnapshots.Healthy(Now) with { S3Storage = s3 };
 
-    private static MinioStorageInfo Minio(
+    private static S3StorageInfo Storage(
         bool configured = true, int failures = 0, string? error = null) => new(
-        Configured: configured, Endpoint: "http://minio:9000", Bucket: "pgworker-backups",
+        Configured: configured, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
         Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 1000,
         ConsecutiveFailures: failures, LastError: error);
 
-    // AAA: MinioStorage = null (грань выключена) → алерта нет
+    // AAA: S3Storage = null (грань выключена) → алерта нет
     [Fact]
-    public void Evaluate_NoMinioStorage_NoAlert()
+    public void Evaluate_NoS3Storage_NoAlert()
     {
-        // Arrange — снапшот без MinioStorage
+        // Arrange — снапшот без S3Storage
         var snapshot = SnapshotWith(null);
 
         // Act
@@ -45,7 +45,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_ConfiguredUnderThreshold_NoAlert()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 1, error: "down"));
+        var snapshot = SnapshotWith(Storage(failures: 1, error: "down"));
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -59,7 +59,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_TwoFailures_Warning()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 2, error: "minio down"));
+        var snapshot = SnapshotWith(Storage(failures: 2, error: "s3 down"));
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -68,7 +68,7 @@ public class BackupS3UnreachableRuleTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Warning);
         alert.Kind.Should().Be("backup-s3-unreachable");
-        alert.Target.Should().Be("http://minio:9000/pgworker-backups");
+        alert.Target.Should().Be("http://s3:9000/pgworker-backups");
         alert.Details!["consecutiveFailures"].Should().Be("2");
         alert.Details["bucket"].Should().Be("pgworker-backups");
         alert.Hint.Should().Contain("bucket").And.Contain("PgWorker");
@@ -80,7 +80,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_SuccessResets_NoAlert()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 0));
+        var snapshot = SnapshotWith(Storage(failures: 0));
 
         // Act
         var alerts = Evaluate(snapshot);

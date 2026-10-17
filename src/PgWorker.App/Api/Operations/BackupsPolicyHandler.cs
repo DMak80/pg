@@ -21,7 +21,10 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         [property: JsonPropertyName("retention")] RetentionBody? Retention,
         [property: JsonPropertyName("full_max_age_sec")] long? FullMaxAgeSec,
         [property: JsonPropertyName("verify")] VerifyBody? Verify,
-        [property: JsonPropertyName("drill")] DrillBody? Drill);
+        [property: JsonPropertyName("drill")] DrillBody? Drill,
+        // t36 (arch/19 §4): секция s3 — пул + списки роли источника;
+        // отсутствие секции → в policy не кладётся (выключение бэкапов).
+        [property: JsonPropertyName("s3")] BackupsPolicyS3Body? S3);
 
     // reliability t02 (arch/19 §4/§14 §1.1): interval_days — период дрилов
     // шардов кластера в сутках; null/отсутствие секции → поля в policy нет.
@@ -90,6 +93,13 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         var drillDays = body.Drill?.IntervalDays;
         if (drillDays is < 0 or > 3650)
             errors.Add(new("drill.interval_days", "период дрилов — целое в [0..3650]"));
+
+        // t36: секция s3 — живая валидация пула/нод/списков (400 по полям;
+        // etcd-отказ чтения /s3/ → 503 через EtcdWriteUnavailableException).
+        var s3Errors = await new BackupsPolicyS3Validator(gateway, endpoints).ValidateAsync(body.S3, ct);
+        if (!s3Errors.IsSuccess)
+            return Result<string>.Failed(new EtcdWriteUnavailableException());
+        errors.AddRange(s3Errors.Value);
         if (errors.Count > 0)
             return Result<string>.Failed(new BackupsPolicyValidationException(errors));
 
@@ -104,6 +114,14 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         };
         if (drillDays is { } d)
             policyBody["drill"] = new Dictionary<string, object> { ["interval_days"] = d };
+        // t36: секция задана → канонический JSON spec §5 (списки как пришли).
+        if (body.S3 is { } s3)
+            policyBody["s3"] = new Dictionary<string, object>
+            {
+                ["pool"] = s3.Pool!.Trim(),
+                ["write_master"] = s3.WriteMaster!,
+                ["write_replica"] = s3.WriteReplica!,
+            };
         var payload = JsonSerializer.Serialize(policyBody);
         var put = await EtcdFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, $"/pgworker/backups/{cluster}/policy", payload, null, ct));

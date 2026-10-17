@@ -21,7 +21,7 @@ namespace PgWorker.Backups.Supervisor;
 public sealed class BackupSupervisorProcess(
     IEtcdGateway etcd,
     string[] endpoints,
-    IBackupS3 s3,
+    BackupS3Factory s3Factory,
     ClaimStore claims,
     WorkJournal journal,
     Func<BackupsRuntimeOptions?> runtime,
@@ -64,6 +64,20 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
+        // t36 (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
+        // первая доступная нода: put/delete-семантика пула). null (пул не
+        // выбран) → проход молчит; Failed → journal, ретраи проходом.
+        var poolRead = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolRead.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolRead.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (poolRead.Value is not { } poolCtx)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        await using var s3 = s3Factory.Create(poolCtx);
+
         foreach (var shard in snap.Shards)
         {
             if (shard.ToRemove)
@@ -79,7 +93,7 @@ public sealed class BackupSupervisorProcess(
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
                     continue;
 
-                await SweepShardAsync(cluster, shard.Name, shardBackups, ct);
+                await SweepShardAsync(cluster, shard.Name, shardBackups, s3, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -101,7 +115,7 @@ public sealed class BackupSupervisorProcess(
     // batch-delete каждого с list-подтверждением пустоты (иначе журнал-ошибка —
     // следующий проход повторит, идемпотентно).
     private async Task SweepShardAsync(
-        string cluster, string shard, ShardBackups? shardBackups, CancellationToken ct)
+        string cluster, string shard, ShardBackups? shardBackups, IBackupS3 s3, CancellationToken ct)
     {
         var listed = await S3PulseAsync(token => s3.ListFullsAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)

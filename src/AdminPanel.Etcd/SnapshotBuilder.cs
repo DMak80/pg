@@ -41,7 +41,7 @@ public static class SnapshotBuilder
             clusters.UnknownKeyCount + service.UnknownKeyCount,
             backups.Storage, // /pgworker/backups/storage (t06)
             backups.Orphans, // /pgworker/backups/orphans (t07)
-            null, // MinioStorage вносит SnapshotRefresher из стора (t08)
+            null, // S3Storage вносит SnapshotRefresher из стора (t08)
             workerCert?.Cert, // /workers/api_tls/pgworker (adminpanel/02 §9.9)
             etcdSnapshots?.Info); // /pgworker/etcd-snapshots (t08, adminpanel/02 §2.3.1)
 }

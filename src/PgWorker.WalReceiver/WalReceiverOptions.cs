@@ -1,8 +1,9 @@
 namespace PgWorker.WalReceiver;
 
-/// <summary>Параметры WAL-приёмника (t27, arch/19 §3.1): DSN источника репликации,
-/// слот, координаты шарда и S3-приёмника. Секреты — только env контейнера, в
-/// argv/логи/маркеры не попадают.</summary>
+/// <summary>Параметры WAL-приёмника (t27, arch/19 §3.1; t36 — списки пула):
+/// DSN источника репликации, слот, координаты шарда и S3-цели пула —
+/// write-список роли источника (порядок = приоритет) + read-список (все ноды).
+/// Секреты — только env контейнера, в argv/логи/маркеры не попадают.</summary>
 public sealed record WalReceiverOptions(
     string PgHost,
     int PgPort,
@@ -12,12 +13,13 @@ public sealed record WalReceiverOptions(
     string Slot,
     string Cluster,
     string Shard,
-    string S3Endpoint,
-    string? S3Region,
+    // t36: S3_ENDPOINTS (запятая, порядок списка роли источника) +
+    // S3_READ_ENDPOINTS (все ноды пула, порядок endpoints); URI http.
+    IReadOnlyList<string> S3Endpoints,
+    IReadOnlyList<string> S3ReadEndpoints,
     string S3Bucket,
     string S3AccessKey,
     string S3SecretKey,
-    bool S3PathStyle,
     // t42 (arch/19 §7): PEM CA https S3-endpoint (материализуется Program приёмника
     // в файл → S3CaBundlePath: SDK-клиент — фабрика HttpClient с валидацией корня
     // цепочки по отпечатку CA); null — http-endpoint.
@@ -57,32 +59,18 @@ public static class WalReceiverEnv
         var slot = Require("SLOT");
         var cluster = Require("CLUSTER");
         var shard = Require("SHARD");
-        var s3Endpoint = Require("S3_ENDPOINT");
-        var s3Region = env("S3_REGION"); // опциональный: отсутствие — валидно
+        // t36: список endpoints пула (роль источника) ОБЯЗАТЕЛЕН непустым —
+        // перебор без целей бессмыслен (permanent, код 5).
+        var s3EndpointsText = Require("S3_ENDPOINTS");
+        var s3Endpoints = SplitEndpoints(s3EndpointsText);
+        if (failures.Count == 0 && s3Endpoints.Count == 0)
+            failures.Add("env S3_ENDPOINTS должен быть непустым списком uri через запятую");
+        // Read-список опционален: отсутствие = читать с write-целей (однонодовый пул).
+        var s3ReadEndpoints = SplitEndpoints(env("S3_READ_ENDPOINTS") ?? "");
         var s3Bucket = Require("S3_BUCKET");
         var s3AccessKey = Require("S3_ACCESS_KEY");
         var s3SecretKey = Require("S3_SECRET_KEY");
         var s3CaPem = env("S3_CA_PEM"); // опциональный (t42): отсутствие — http-endpoint
-
-        var s3PathStyle = true;
-        var pathStyleText = env("S3_PATHSTYLE");
-        switch (pathStyleText)
-        {
-            case null:
-            case "":
-                break; // default true
-            case "true":
-            case "1":
-                s3PathStyle = true;
-                break;
-            case "false":
-            case "0":
-                s3PathStyle = false;
-                break;
-            default:
-                failures.Add("env S3_PATHSTYLE должен быть true/false/1/0");
-                break;
-        }
 
         errors = failures;
         if (failures.Count > 0)
@@ -91,8 +79,12 @@ public static class WalReceiverEnv
         return new WalReceiverOptions(
             pgHost, pgPort, pgUser, pgPassword, pgDbname,
             slot, cluster, shard,
-            s3Endpoint, string.IsNullOrWhiteSpace(s3Region) ? null : s3Region,
-            s3Bucket, s3AccessKey, s3SecretKey, s3PathStyle,
+            s3Endpoints, s3ReadEndpoints.Count > 0 ? s3ReadEndpoints : s3Endpoints,
+            s3Bucket, s3AccessKey, s3SecretKey,
             string.IsNullOrWhiteSpace(s3CaPem) ? null : s3CaPem);
     }
+
+    // "uri1,uri2" → список непустых trimmed-элементов (мусорные пустые — долой).
+    private static IReadOnlyList<string> SplitEndpoints(string raw)
+        => raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }
