@@ -38,7 +38,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
     [Fact]
     public async Task Backup_OrphanDrHold_ПолныйПереживаетTtl_ЗаявкаЧистит()
     {
-        // Arrange 1 — окружение bk-drh (withMinio), воркер с OrphanTtlSec=120,
+        // Arrange 1 — окружение bk-drh (withS3Node), воркер с OrphanTtlSec=120,
         //   Supervisor IntervalSec=60 (StartOrphanHostAsync — сжатое время)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;

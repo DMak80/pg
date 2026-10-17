@@ -108,12 +108,12 @@ public class BackupJobSpecTests
 
         // Act
         var spec = VerifyJobSpec.Build(opts, "c1", "shard1", "20260911120000Z",
-            ["http://minio:9000"], "ak", "sk");
+            ["http://s3a:9000"], "ak", "sk");
 
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
         // t36: env чтения — список нод пула + креды профиля.
-        spec.Env![VerifyJobCommand.EnvS3Endpoints].Should().Be("http://minio:9000");
+        spec.Env![VerifyJobCommand.EnvS3Endpoints].Should().Be("http://s3a:9000");
         spec.Env![VerifyJobCommand.EnvS3AccessKey].Should().Be("ak");
         spec.Env![VerifyJobCommand.EnvS3SecretKey].Should().Be("sk");
         spec.Env![VerifyJobCommand.EnvS3Bucket].Should().Be("bkt");

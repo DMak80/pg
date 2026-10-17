@@ -24,17 +24,17 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
 
     private readonly string _etcdEndpoint;
 
-    private readonly S3NodeContainerFixture _minio;
+    private readonly S3NodeContainerFixture _storage;
 
     public BackupsPolicyPanelApiTests(EtcdContainerFixture etcd, S3NodeContainerFixture s3)
     {
         _etcdEndpoint = etcd.Endpoint;
-        _minio = s3;
+        _storage = s3;
         _factory = new BackupsWebFactory
         {
             EtcdEndpoint = etcd.Endpoint,
-            MinioEndpoint = s3.HostEndpoint,
-            MinioBucket = s3.Bucket,
+            StorageEndpoint = s3.HostEndpoint,
+            StorageBucket = s3.Bucket,
             WorkerApi = _workerApi,
         };
     }
@@ -82,7 +82,7 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
             """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":2}}""",
             ct);
         // Объект demo/s1 в S3 — кластер появляется в дереве инвентаря.
-        await _minio.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
+        await _storage.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
         var s3 = _factory.Services.GetRequiredService<S3InventoryLoop>();
         await s3.RunOnceAsync(ct);
         (await _factory.Services.GetRequiredService<SnapshotRefresher>().RefreshOnceAsync(ct))

@@ -20,7 +20,7 @@ public sealed class SnapshotRefresher(
     ISnapshotStore store,
     IProbeStateStore probeStateStore,
     IWorkerHealthStore workerHealthStore,
-    IS3InventoryStore minioStore,
+    IS3InventoryStore inventoryStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -173,7 +173,7 @@ public sealed class SnapshotRefresher(
             WorkerHealth = workerHealthStore.Current ?? [],
             // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
-            S3Storage = minioStore.Current,
+            S3Storage = inventoryStore.Current,
         };
         store.Replace(enrichedBase with
         {

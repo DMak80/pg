@@ -4,7 +4,7 @@ namespace AdminPanel.Core;
 // Заполняет S3InventoryLoop (Probes/S3) через IS3InventoryStore; снапшот
 // вносит refresher. Все метрики — факты, без вердиктов (вердикты — воркер).
 
-/// <summary>Drives-поля тела /s3/health/cluster (свежие MinIO); null-поля —
+/// <summary>Drives-поля тела /s3/health/cluster (если хранилище их отдаёт); null-поля —
 /// в теле нет; сам Drives null — тела/полей не было вовсе (только статус-код).</summary>
 public sealed record S3Drives(
     long? HealthyDrives, long? OfflineDrives, long? HealingDrives, long? TotalDrives);

@@ -75,14 +75,14 @@ public class BackupsS3Options
             return endpoint.Length == 0 ? [] : [endpoint];
         }
 
-        // MinIO не требует; облако — регион (AuthenticationRegion).
+        // ownS3 не требует; облако — регион (AuthenticationRegion).
         public string? Region { get; set; }
 
         public string Bucket { get; set; } = "";
         public string AccessKey { get; set; } = "";
         public string SecretKey { get; set; } = "";
 
-        // ForcePathStyle: MinIO и облако одним клиентом (arch/19 §5).
+        // ForcePathStyle: ownS3 и облако одним клиентом (arch/19 §5).
         public bool PathStyle { get; set; } = true;
     }
 }

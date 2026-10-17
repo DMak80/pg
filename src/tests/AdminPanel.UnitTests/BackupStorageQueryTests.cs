@@ -114,7 +114,7 @@ public class BackupStorageQueryTests
         // Arrange — demo/s1 (владелец есть), ghost-shard/s9 (сирота в реестре)
         var snapshot = TestSnapshots.Healthy(Now) with
         {
-            S3Storage = Minio(
+            S3Storage = Storage(
                 ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])),
                 ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
             BackupStorage = new BackupStorageInfo(152, 1000, 15.2, BackupStorageState.Warn, 900),
@@ -153,7 +153,7 @@ public class BackupStorageQueryTests
         // Arrange — префиксы совпадают: ghost-shard/s9 в дереве и в реестре
         var snapshot = TestSnapshots.Healthy(Now) with
         {
-            S3Storage = Minio(
+            S3Storage = Storage(
                 ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
             BackupOrphans = new BackupOrphansInfo(
                 [new BackupOrphanInfo("ghost-shard/s9", "shard", 50, NowUnix - 100, "OBSERVED")], NowUnix),
@@ -229,7 +229,7 @@ public class BackupStorageQueryTests
     public void MapShard_JoinsEtcdAndS3()
     {
         // Arrange — полный b1 с обеих сторон, restore PLANNED в фазе downloading
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
         var etcdCluster = new ClusterBackupsInfo(
             "demo", null, new Dictionary<string, long?>(),
             ShardsRestores: new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>
@@ -263,13 +263,13 @@ public class BackupStorageQueryTests
 
     private static EtcdSnapshot SnapshotWithTree(BackupOrphansInfo? registry = null) => TestSnapshots.Healthy(Now) with
     {
-        S3Storage = Minio(
+        S3Storage = Storage(
             ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])),
             ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
         BackupOrphans = registry,
     };
 
-    private static S3StorageInfo Minio(params S3ClusterNode[] clusters) => new(
+    private static S3StorageInfo Storage(params S3ClusterNode[] clusters) => new(
         Configured: true, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: ["pgworker-backups"],
         UsedBytes: clusters.Sum(c => c.SizeBytes), ObjectCount: 0,

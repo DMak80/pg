@@ -13,7 +13,7 @@ public class S3ReconcilerTests
     public void Reconcile_OkFull_BothFacts()
     {
         // Arrange — S3-полный 20260913a и etcd-ключ того же id
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("20260913a")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("20260913a")])));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -44,7 +44,7 @@ public class S3ReconcilerTests
     public void Reconcile_S3Only_NoEtcdKey()
     {
         // Arrange — объекты есть, ключа нет
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("gone")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("gone")])));
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
@@ -63,7 +63,7 @@ public class S3ReconcilerTests
     public void Reconcile_EtcdOnly_CompletedWithoutObjects()
     {
         // Arrange — ключ COMPLETED, в S3-шарде полных нет
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1")));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1")));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -89,7 +89,7 @@ public class S3ReconcilerTests
     public void Reconcile_ActiveNoObjects_IsInProgress()
     {
         // Arrange — две активные заявки без объектов
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1")));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1")));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1",
@@ -111,7 +111,7 @@ public class S3ReconcilerTests
     public void Reconcile_Deleting_WithLeftovers()
     {
         // Arrange — ключ DELETING и объекты ещё на месте
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("dying")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("dying")])));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -132,7 +132,7 @@ public class S3ReconcilerTests
     public void Reconcile_OrphanPrefix_WithRegistry()
     {
         // Arrange — ghost-кластера в /clusters/ нет; реестр знает ghost/s9
-        var s3 = Minio(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
+        var s3 = Storage(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
         var clusters = new[] { Cluster("demo", "s1") };
         var registry = new BackupOrphansInfo(
             [new BackupOrphanInfo("ghost/s9", "shard", 50, 1, "OBSERVED")], 100);
@@ -154,7 +154,7 @@ public class S3ReconcilerTests
     public void Reconcile_OrphanPrefix_NotInRegistry()
     {
         // Arrange — тот же ghost/s9, реестра нет вовсе
-        var s3 = Minio(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
+        var s3 = Storage(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
@@ -172,7 +172,7 @@ public class S3ReconcilerTests
     public void Reconcile_RegistryEntry_WithoutS3_NotOrphan()
     {
         // Arrange — реестр помнит префикс, в S3-дереве его уже нет
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
         var clusters = new[] { Cluster("demo", "s1") };
         var registry = new BackupOrphansInfo(
             [new BackupOrphanInfo("ghost/s9", "shard", 50, 1, "DELETING")], 100);
@@ -189,7 +189,7 @@ public class S3ReconcilerTests
     public void Reconcile_WalFacts_BothSides()
     {
         // Arrange — etcd отстал на сегмент: последний S3 ..02, etcd ..01
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1",
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1",
             wal: new S3WalNode(2, 0, 32, 950, "000000010000000000000002"))));
         var backups = new[]
         {
@@ -217,7 +217,7 @@ public class S3ReconcilerTests
     public void Reconcile_ShardOfKnownCluster_NotOrphan()
     {
         // Arrange — demo/s1 с владельцем в /clusters/
-        var s3 = Minio(ClusterNode("demo", ShardNode("demo", "s1",
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1",
             fulls: [Full("b1")], wal: new S3WalNode(1, 0, 16, 100, "000000010000000000000001"))));
         var clusters = new[] { Cluster("demo", "s1") };
 
@@ -235,7 +235,7 @@ public class S3ReconcilerTests
     public void Reconcile_EtcdOnlyCluster_NoS3Objects()
     {
         // Arrange — дерево ownS3 пустое; etcd знает demo/s1: полный b1 + wal-цепочка
-        var s3 = Minio();
+        var s3 = Storage();
         var backups = new[]
         {
             Backups("demo",
@@ -272,7 +272,7 @@ public class S3ReconcilerTests
 
     // ——— фикстуры ———
 
-    private static S3StorageInfo Minio(params S3ClusterNode[] clusters) => new(
+    private static S3StorageInfo Storage(params S3ClusterNode[] clusters) => new(
         Configured: true, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: ["pgworker-backups"],
         UsedBytes: clusters.Sum(c => c.SizeBytes), ObjectCount: 0,

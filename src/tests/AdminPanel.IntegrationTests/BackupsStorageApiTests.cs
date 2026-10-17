@@ -40,7 +40,7 @@ internal static class BackupsLogin
 public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
     : IClassFixture<EtcdContainerFixture>, IAsyncDisposable
 {
-    private readonly BackupsWebFactory _factory = BackupsWebFactory.WithoutMinio(etcd.Endpoint);
+    private readonly BackupsWebFactory _factory = BackupsWebFactory.WithoutStorage(etcd.Endpoint);
 
     [Fact]
     public async Task Storage_Disabled_WhenEndpointEmpty()
@@ -84,7 +84,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// AC2+AC6 (t08 spec §7.2/§7.6): MinIO с сеянными объектами <C>/<X>/full/<id>/…,
+// AC2+AC6 (t08 spec §7.2/§7.6): ownS3-нода с сеянными объектами <C>/<X>/full/<id>/…,
 // wal/<segment>, wal/<tli>.history, посторонний корневой префикс → после тиков
 // сводка отдаёт buckets, health (api/live/cluster), дерево <C>/<X> с размерами/
 // счётчиками, foreign-префикс; usedBytes = сумме; ключ /pgworker/backups/storage
@@ -98,15 +98,15 @@ public class BackupsStorageInventoryApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]
     public async Task Storage_Summary_Tree_Health_And_Quota()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
-        // Arrange: бэкап-ключи в etcd + сеяные объекты в своём MinIO; тики
+        // Arrange: бэкап-ключи в etcd + сеяные объекты в своей ownS3-ноде; тики
         // двигает тест: инвентарь (loop) → снапшот с S3Storage (refresher).
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
@@ -131,8 +131,8 @@ public class BackupsStorageInventoryApiTests(
             "/api/backups/storage", TestContext.Current.CancellationToken);
 
         // Assert: 200; configured + health; bucket в списке. ClusterOk — null
-        // вне MinIO-контура (02 §2.5): ownS3 не реализует cluster-пробу
-        // (/minio/health/cluster не отвечает) — панель фиксирует отсутствие.
+        // вне ownS3-контура (02 §2.5): cluster-проба не отвечает —
+        // панель фиксирует отсутствие.
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
             TestContext.Current.CancellationToken);
@@ -141,7 +141,7 @@ public class BackupsStorageInventoryApiTests(
         health.GetProperty("apiOk").GetBoolean().Should().BeTrue();
         health.GetProperty("liveOk").GetBoolean().Should().BeTrue();
         health.GetProperty("clusterOk").ValueKind.Should().Be(JsonValueKind.Null,
-            "ownS3 не реализует /minio/health/cluster — ClusterOk null вне MinIO-контура (02 §2.5)");
+            "cluster-проба не отвечает — ClusterOk null вне ownS3-контура (02 §2.5)");
         dto.GetProperty("buckets")
             .EnumerateArray().Select(b => b.GetString())
             .Should().Contain(s3.Bucket);
@@ -211,11 +211,11 @@ public class BackupsStorageInventoryApiTests(
     }
 }
 
-// AC3 (t08 spec §7.3): остановленный MinIO → apiOk=false/liveOk=false, инвентарь
+// AC3 (t08 spec §7.3): остановленное хранилище → apiOk=false/liveOk=false, инвентарь
 // устаревает (штамп прежний, inventoryError не пуст), алерт backup-s3-unreachable
 // после 2 неудачных тиков подряд (ручной прогон RunOnceAsync — spec §5 фаза 2).
 [Collection("backups")]
-public class BackupsStorageMinioDownApiTests(
+public class BackupsStorageDownApiTests(
     EtcdContainerFixture etcd, S3NodeContainerFixture s3)
     : IClassFixture<EtcdContainerFixture>, IClassFixture<S3NodeContainerFixture>,
       IAsyncDisposable
@@ -223,12 +223,12 @@ public class BackupsStorageMinioDownApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]
-    public async Task Storage_StopMinio_ApiDown_Alert_AfterTwoTicks()
+    public async Task Storage_StorageDown_ApiDown_Alert_AfterTwoTicks()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange: как AC2 — успешный первый тик (инвентарь + снапшот).
@@ -254,7 +254,7 @@ public class BackupsStorageMinioDownApiTests(
             stampBefore.Should().BeGreaterThan(0);
         }
 
-        // Act: MinIO остановлен → два неудачных тика подряд → снапшот обновлён.
+        // Act: хранилище остановлено → два неудачных тика подряд → снапшот обновлён.
         await s3.StopAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
@@ -294,15 +294,15 @@ public class BackupsStorageMinioDownApiTests(
 // Байндинг простых листьев AdminPanel:Backups:S3:* (план Task 9 Step 4,
 // Решение 9: тот же класс байндинга, что env AdminPanel__Backups__S3__* —
 // митигация урока WORKERTLS). Хост не тикает (hosted сняты), контейнеры
-// MinIO/etcd не нужны — строки endpoint'ов произвольные.
+// Хранилище/etcd не нужны — строки endpoint'ов произвольные.
 [Collection("backups")]
 public class BackupsOptionsBindingApiTests : IAsyncDisposable
 {
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = "http://localhost:59997",
-        MinioEndpoint = "http://localhost:59998",
-        MinioBucket = "apm-bind-bucket",
+        StorageEndpoint = "http://localhost:59998",
+        StorageBucket = "apm-bind-bucket",
     };
 
     [Fact]
@@ -341,8 +341,8 @@ public class BackupsStorageOrphanProtectApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]

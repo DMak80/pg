@@ -260,7 +260,7 @@ public static class InspectionModule
 
         // GET /api/backups/objects?prefix=&maxKeys=&continuationToken= — on-demand
         // list-v2: ступень 1 гварда (форма prefix + диапазон maxKeys) inline до query —
-        // 400; ступень 2 (принадлежность кластерам/дереву) и сбой MinIO — в handler'е
+        // 400; ступень 2 (принадлежность кластерам/дереву) и сбой хранилища — в handler'е
         // (InvalidBackupPrefixException → 400, BackupsS3UnavailableException → 502).
         endpoints.MapGet("/api/backups/objects", async (
             string? prefix, int? maxKeys, string? continuationToken,
@@ -293,7 +293,7 @@ public static class InspectionModule
                     detail: result.Error.Message),
                 BackupsS3UnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status502BadGateway,
-                    title: "MinIO unavailable",
+                    title: "S3 storage unavailable",
                     detail: result.Error.Message),
                 _ => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable,

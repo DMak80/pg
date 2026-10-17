@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- t36: internal-шов MinioS3Client для юнит-тестов перебора целей. -->
+    <!-- t36: internal-ctor S3StorageClient для юнит-тестов перебора целей. -->
     <ItemGroup>
         <InternalsVisibleTo Include="AdminPanel.UnitTests"/>
     </ItemGroup>

@@ -49,7 +49,7 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `GET /api/reliability` | грань «Надёжность» (read-only): per-cluster/per-shard RPO-блок (mode wal/full/off, возраст валидного полного + id, лаг/возраст WAL, сводный RPO-потенциал, порог) и RTO-блок (последний failover/rebuild с cause/duration/ongoing, длительности последнего drill/restore); всегда 200 с пустыми секциями при выключенных подсистемах, 503 — нет снапшота |
 | `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (t08, 02 §2.5) |
 | `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
-| `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в MinIO на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
+| `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в S3-хранилище на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
 | `GET /api/workers` | грань «Воркеры»: по `pgworker`/`kafkaworker` — живые инстансы (instance, url, since, health, cert_thumbprint), ЦЕЛЕВОЙ серт из `/workers/api_tls/<worker>` (метаданные: subject, issuer, SAN, not_before/not_after, sha256-thumbprint, updated_unix/by; PEM не отдаётся) и статус применения per-instance: `applied` \| `pending restart` \| `unmanaged` (ключа нет — env-серт) \| `unknown` (инстанс без thumbprint) |
 | `POST /api/workers/{worker}/api-cert/generate` | сгенерировать self-signed серверный лист и записать в etcd (02 §9.9): без тела → 201 `{worker, thumbprint, updatedUnix, updatedBy, restartRequired:true}` \| 422 (влияет на исходящие — не записан) \| 503 |
@@ -379,7 +379,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 
 Грань «Хранилище бэкапов» (t08): `BackupStorageDto`,
 `BackupShardStorageDto`, `BackupObjectsPageDto` (+ вложенные `BackupFullDto`,
-`BackupWalDto`, `BackupOrphanDto`, `MinioHealthDto`); camelCase; S3-ключи
+`BackupWalDto`, `BackupOrphanDto`, `S3HealthDto`); camelCase; S3-ключи
 (AccessKey/SecretKey) НЕ отдаются никогда.
 
 ## 3. Панели UI
@@ -608,7 +608,7 @@ DnD-библиотек). Поля:
 | `sync-standby-missing` | strict ? critical : warning (t06: strict — запись блокирована, инцидент; не-strict — предусловие переездов) | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов); Hint/Remedy (t06): для strict ремеди «запись блокирована — восстановите реплику (rebuild воркера) или выключите strict (PUT config)» | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
-| `backup-s3-unreachable` | warning | грань настроена && S3-инвентарь-тик падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | MinIO live-тик (02 §2.5) |
+| `backup-s3-unreachable` | warning | грань настроена && S3-инвентарь-тик падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | S3 live-тик (02 §2.5) |
 | `etcd-snapshot-export-failed` | critical | `enabled=true` и `state=FAILED` — текст `error`; контроль-плейн не защищён от потери хоста | `/pgworker/etcd-snapshots` |
 | `etcd-snapshot-export-stale` | warning | `enabled=true` и (`last_uploaded_unix` отсутствует или старше `2×interval_min`, панельный дефолт 360 мин); «выгрузка молчит» (обе инстанции воркера лежат / вечный transient) | `/pgworker/etcd-snapshots` |
 | `backup-pool-missing` | critical | per-cluster: Active-кластер с включённой подсистемой, policy без секции `s3` — пул не выбран, бэкапы кластера не пишутся (t36, «только явный выбор»; Remedy: «выбери пул на странице "Хранилище бэкапов" — без выбора бэкапы кластера не пишутся») | policy-ключ `/pgworker/backups/<C>/policy` |

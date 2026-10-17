@@ -112,7 +112,7 @@ public class S3StorageClientHealthTests
     // поведение; вторая проба НЕ выполняется (ровно два запроса, /healthz
     // не запрашивался — ошибочный фолбэк поймал бы счётчик).
     [Fact]
-    public async Task Health_Minio_Live200_NoFallback_ClusterWithDrives()
+    public async Task Health_Live200_NoFallback_ClusterWithDrives()
     {
         // Arrange — живой ownS3-контур
         var handler = new FakeS3Handler(new Dictionary<string, (HttpStatusCode, string)>

@@ -537,7 +537,7 @@ export function fetchBackupShardStorage(cluster: string, shard: string): Promise
     `/api/backups/storage/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}`);
 }
 
-// On-demand постраничный list-v2 (единственный выход панели в MinIO на запрос):
+// On-demand постраничный list-v2 (единственный выход панели в S3-хранилище на запрос):
 // пустой prefix — весь bucket; continuationToken — следующая страница.
 export function fetchBackupObjectsPage(
   prefix: string,

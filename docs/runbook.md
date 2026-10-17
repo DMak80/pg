@@ -207,7 +207,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
 | `mcr.microsoft.com/dotnet/aspnet:10.0` | runtime-стадии тех же Dockerfile'ов |
 | `minio/mc:RELEASE.2025-08-13T08-35-41Z` | WAL-агенты и бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
-| `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд, бэкап-фикстуры (MinioFixture, E2eEnvironment) |
+| `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд — переходный read-only-архив `as-minio` (снос — docs/owns3-migration.md §6) |
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |
 | `postgres:18-alpine` | интеграционные тесты бэкапов (OwnPostgres, WalSqlTests) |

@@ -13,7 +13,7 @@ public class BackupS3CaTests
 {
     // t36: цель S3ClientOptions (bucket+CA; endpoint/креды фиктивны).
     private static S3ClientOptions Opts(string? caPath = null) => new(
-        "http://minio:9000", "bkt", "ak", "sk", CaBundlePath: caPath);
+        "http://s3a:9000", "bkt", "ak", "sk", CaBundlePath: caPath);
 
     private static string NewCaPem()
     {

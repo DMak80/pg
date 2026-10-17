@@ -21,8 +21,8 @@ public class BackupsObjectsApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     // Общая раскладка: 4 объекта под demo/s1/ (две страницы по 2) + сирота в дереве.
@@ -147,8 +147,8 @@ public class BackupsSecretsApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]

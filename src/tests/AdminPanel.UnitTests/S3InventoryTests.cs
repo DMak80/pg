@@ -13,7 +13,7 @@ public class S3InventoryTests
     public void Build_FullsWalHistory_AggregatesTree()
     {
         // Arrange — полный с pg_wal-набором, два сегмента и одна история
-        var objects = new List<MinioObject>
+        var objects = new List<S3InventoryObject>
         {
             new("demo/s1/full/20260913a/base.tar", 100, 1000),
             new("demo/s1/full/20260913a/pg_wal/seg", 16, 1001),
@@ -51,7 +51,7 @@ public class S3InventoryTests
     public void Build_ForeignPrefix_CountedWithoutVerdict()
     {
         // Arrange — объект в корне bucket, короче <C>/<X>/…
-        var objects = new List<MinioObject> { new("loose/file.bin", 10, 500) };
+        var objects = new List<S3InventoryObject> { new("loose/file.bin", 10, 500) };
 
         // Act
         var inv = S3Inventory.Build(objects);
@@ -68,7 +68,7 @@ public class S3InventoryTests
     public void Build_TwoClustersShards_SortedOrdinal()
     {
         // Arrange — вставка в «неправильном» порядке (b раньше a, s2 раньше s1)
-        var objects = new List<MinioObject>
+        var objects = new List<S3InventoryObject>
         {
             new("b/s1/full/f1/x", 10, 1),
             new("a/s2/full/f1/x", 20, 1),
@@ -93,7 +93,7 @@ public class S3InventoryTests
     public void Build_LastModified_IsMaxOverObjects()
     {
         // Arrange — у второго объекта полного самый свежий lastModified
-        var objects = new List<MinioObject>
+        var objects = new List<S3InventoryObject>
         {
             new("demo/s1/full/f1/a", 10, 100),
             new("demo/s1/full/f1/b", 10, 300),
@@ -114,7 +114,7 @@ public class S3InventoryTests
     public void Build_ShardExtras_CountedInShardSizeOnly()
     {
         // Arrange — «посторонний» файл рядом с полным
-        var objects = new List<MinioObject>
+        var objects = new List<S3InventoryObject>
         {
             new("demo/s1/other.txt", 7, 1),
             new("demo/s1/full/f1/a", 10, 1),
@@ -136,7 +136,7 @@ public class S3InventoryTests
     public void Build_DirectoryMarkers_Skipped()
     {
         // Arrange — маркеры «папок» ownS3 (консоль/mc) + один реальный объект
-        var objects = new List<MinioObject>
+        var objects = new List<S3InventoryObject>
         {
             new("demo/", 0, 1),
             new("demo/s1/full/", 0, 1),

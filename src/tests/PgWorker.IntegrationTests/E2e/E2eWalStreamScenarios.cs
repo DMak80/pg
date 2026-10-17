@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2eBackupScenarios): непрерывная доставка, пересоздание агента под
 // нагрузкой, двойное архивирование (~3,5 мин суммарно).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withS3Node:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -37,7 +37,7 @@ public class E2eWalStreamScenarios
     private EtcdGateway G => Fx.Gateway;
 
     // AAA: WAL-поток (t03/t27, AC1/AC8): provisioned кластер + INSERT/pg_switch_wal
-    // → сегменты в MinIO, ключ wal ACTIVE с chain_start/last_uploaded, цепочка
+    // → сегменты в ownS3-ноде, ключ wal ACTIVE с chain_start/last_uploaded, цепочка
     // непрерывна, running-агент мастера, слот pgw_bkp_<C>_<X> на мастере, поле
     // agents в ключе (супервиз-факты per-node, t27 §3.5).
     [Fact]
@@ -72,12 +72,12 @@ public class E2eWalStreamScenarios
         // сегментов 16 МБ (без таймаутов, spec §5).
         await GenerateWalAsync(adminDsn, ct);
 
-        // BackupS3 host-клиент: воркер ходит на localhost (published порт MinIO),
+        // BackupS3 host-клиент: воркер ходит на localhost (published порт ownS3-ноды),
         // агентам отдаётся advertised (Fx.S3Endpoint = host.docker.internal:<порт>).
         var hostEndpoint = Fx.S3Endpoint;
         var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
-        // Assert 1 — бюджет 120 c: сегменты в MinIO, все без .partial (AC1)
+        // Assert 1 — бюджет 120 c: сегменты в ownS3-ноде, все без .partial (AC1)
         List<PgWorker.Backups.WalObject> listed = [];
         var uploaded = await E2eFixture.WaitForAsync(async () =>
         {
@@ -108,7 +108,7 @@ public class E2eWalStreamScenarios
                 $"wal=[{walKv?.Value ?? "-"}] backup_password={(pwKv is null ? "-" : "есть")} " +
                 $"agents=[{agentsPs.Replace('\n', ';')}] {jobLogs}");
         }
-        uploaded.Should().BeTrue("сегменты обязаны появиться в MinIO за бюджет (AC1)");
+        uploaded.Should().BeTrue("сегменты обязаны появиться в ownS3-ноде за бюджет (AC1)");
         listed.Select(o => o.Name).Should().OnlyContain(n => !n.EndsWith(".partial"));
 
         // Assert 2 — ключ wal ACTIVE и СОГЛАСОВАННЫЙ снапшот «ключ × list»: воркер
@@ -853,7 +853,7 @@ public class E2eWalStreamScenarios
         }
     }
 
-    /// <summary>Подъём полного WAL-контура сценария: окружение с MinIO, кластер,
+    /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
     /// воркер (Backups:Enabled + Wal:AgentImage), ожидание provisioning, DSN мастера.
     /// </summary>
     // Владение окружением и воркером — у Fact (DisposeAsync при любом исходе);

@@ -204,17 +204,18 @@ etcd): per-install креды — env `AdminPanel:Backups:S3:*` (arch/19 §7, в
 существующий `TimeoutSec`, R3 arch/23 §7), DTO несёт список endpoints
 (без ключей). Панель в S3 ТОЛЬКО ЧИТАЕТ — контракт
 уровня кода: интерфейс клиента содержит лишь ListBuckets/ListObjectsV2 и
-публичные health-пробы: `/minio/health/live`|`/minio/health/cluster`
+публичные health-пробы ownS3: `/s3/health/live`|`/s3/health/cluster`
 (200/503; drives-поля тела при наличии — толерантный парс); ApiOk —
-ListBuckets; LiveOk — live-проба, 404/403 → фолбэк `GET /healthz`
+ListBuckets; LiveOk — `/s3/health/live`, 404/403 → фолбэк `GET /healthz`
 (канон ownS3, без подписи; 200 → live, 503/иное → down; 403 —
 канонический ответ ownS3 на анонимный запрос вне `/healthz`/`/metrics`
 — arch/owns3/03/05 §5, 404 — несуществующий путь; фолбэк только по
 статусу ответа — мёртвый endpoint вторую пробу не крутит); ClusterOk —
-null вне ownS3-контура (404/403/нет ответа); пишущие/удаляющие операции —
+`/s3/health/cluster`, null — эндпоинт не отвечает/не поддерживается
+(404/403/нет ответа); пишущие/удаляющие операции —
 только воркер (arch/19 §4/§5). Инвентарь-тик 60 c (`IntervalSec`): ListBuckets +
 health + ОДИН полный list-v2 bucket → агрегаты дерева `<C>/<X>` в стор →
-снапшот `EtcdSnapshot.MinioStorage` (§3); построчные объекты — on-demand
+снапшот `EtcdSnapshot.S3Storage` (§3); построчные объекты — on-demand
 `GET /api/backups/objects` (пагинация, единственный прямой выход на запрос).
 Сверка S3↔etcd — отображение (полные без ключа / ключи без объектов / сироты с
 джойном на реестр /pgworker/backups/orphans): находит и удаляет сироты
@@ -239,7 +240,7 @@ sealed record EtcdSnapshot(
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
     IReadOnlyList<WorkJournalInfo> PgWorkerWork, // §2.3.1: журналы /pgworker/work/<C>
     IReadOnlyList<WorkerHealth> WorkerHealth, // §2.3.1: опрос /healthz живых инстансов
-    MinioStorageInfo? MinioStorage,   // §2.5: live-S3-инвентарь (t08), null — грань не настроена
+    S3StorageInfo? S3Storage,   // §2.5: live-S3-инвентарь (t08), null — грань не настроена
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
@@ -276,9 +277,9 @@ enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
 // инвентарь-тиком в стор, вносится refresher'ом; null — грань не настроена.
 // t36: Endpoints — цели инвентаря списком (env Endpoints; одиночный Endpoint —
 // валидный частный случай, один элемент); ключей в DTO нет.
-sealed record MinioStorageInfo(bool Configured, IReadOnlyList<string> Endpoints, string Bucket,
-    MinioHealth? Health, IReadOnlyList<string> Buckets, long UsedBytes,
-    long ObjectCount, IReadOnlyList<MinioClusterNode> Clusters,
+sealed record S3StorageInfo(bool Configured, IReadOnlyList<string> Endpoints, string Bucket,
+    S3Health? Health, IReadOnlyList<string> Buckets, long UsedBytes,
+    long ObjectCount, IReadOnlyList<S3ClusterNode> Clusters,
     IReadOnlyList<string> ForeignPrefixes, long UpdatedAtUnix,
     int ConsecutiveFailures, string? LastError);
 

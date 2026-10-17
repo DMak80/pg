@@ -72,7 +72,7 @@ echo "$storage" | jq -e 'any(.clusters[] | select(.cluster == "demo") | .shards[
   || { echo "❌ дерево инвентаря: demo/shard1 без полных"; exit 1; }
 echo "  дерево: demo/shard1, fullsCount>=1"
 
-# On-demand objects (единственный прямой выход панели в MinIO на запрос).
+# On-demand objects (единственный прямой выход панели в S3-хранилище на запрос).
 api '/api/backups/objects?prefix=demo/shard1/&maxKeys=1' | jq -e '(.items | length) == 1' >/dev/null \
   || { echo "❌ /api/backups/objects?prefix=demo/shard1/&maxKeys=1: страница не из 1 объекта"; exit 1; }
 echo "  objects: maxKeys=1 → ровно 1 объект"

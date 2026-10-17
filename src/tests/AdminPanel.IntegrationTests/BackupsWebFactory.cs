@@ -62,19 +62,19 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     /// при первом EnsureBuilt/LoginAsync.</summary>
     public string EtcdEndpoint { get; set; } = "";
 
-    /// <summary>Endpoint MinIO-контейнера сценария; null — грань выключена
+    /// <summary>Endpoint S3-хранилища сценария (ownS3-нода); null — грань выключена
     /// (AC1): секция AdminPanel:Backups не задаётся вовсе.</summary>
-    public string? MinioEndpoint { get; set; }
+    public string? StorageEndpoint { get; set; }
 
     /// <summary>Bucket фикстуры ownS3 (apm-backups-{guid}).</summary>
-    public string MinioBucket { get; set; } = "";
+    public string StorageBucket { get; set; } = "";
 
     /// <summary>Стаб API воркера для прокси-мутаций (reliability t02: policy);
     /// null — реальный гейтвей (тесты прокси ставят свой TestWorkerApi).</summary>
     public TestWorkerApi? WorkerApi { get; set; }
 
     /// <summary>Вариант AC1: хост без настроек S3-грани.</summary>
-    public static BackupsWebFactory WithoutMinio(string etcdEndpoint) => new()
+    public static BackupsWebFactory WithoutStorage(string etcdEndpoint) => new()
     {
         EtcdEndpoint = etcdEndpoint,
     };
@@ -105,10 +105,10 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
         if (EtcdEndpoint.Length > 0)
             builder.UseSetting("AdminPanel:Etcd:Endpoints:0", EtcdEndpoint);
 
-        if (MinioEndpoint is not null)
+        if (StorageEndpoint is not null)
         {
-            builder.UseSetting("AdminPanel:Backups:S3:Endpoint", MinioEndpoint);
-            builder.UseSetting("AdminPanel:Backups:S3:Bucket", MinioBucket);
+            builder.UseSetting("AdminPanel:Backups:S3:Endpoint", StorageEndpoint);
+            builder.UseSetting("AdminPanel:Backups:S3:Bucket", StorageBucket);
             builder.UseSetting("AdminPanel:Backups:S3:AccessKey", S3NodeContainerFixture.AccessKey);
             builder.UseSetting("AdminPanel:Backups:S3:SecretKey", S3NodeContainerFixture.SecretKey);
             builder.UseSetting("AdminPanel:Backups:S3:PathStyle", "true");

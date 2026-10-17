@@ -1,6 +1,6 @@
 // Грань «Хранилище бэкапов» (t08, arch/03 §3): карточки Health/Место/Buckets,
 // дерево «Кластеры → шарды» с пометками сверки, блок сирот с защитой (t04) и
-// кнопками Hold/Unhold/Delete. Данные — снапшот (live-инвентарь MinIO вносится тиком).
+// кнопками Hold/Unhold/Delete. Данные — снапшот (live-инвентарь S3-хранилища вносится тиком).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BackupsPoolModal } from './backups-storage/BackupsPoolModal';
 import {
@@ -18,7 +18,7 @@ import {
 } from '@mantine/core';
 import { useState } from 'react';
 import { Link } from 'react-router';
-import type { BackupStorageDto, EtcdSnapshotsDto, MinioHealthDto, BackupOrphanDto } from '../api/dto';
+import type { BackupStorageDto, EtcdSnapshotsDto, S3HealthDto, BackupOrphanDto } from '../api/dto';
 import { backupsQueryKeys, fetchBackupsStorage, fetchS3Pools, holdOrphan, unholdOrphan } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
@@ -70,7 +70,7 @@ export function BackupsStoragePage() {
       </Group>
       {data.inventoryError ? (
         <Alert color="yellow" title="Инвентарь устаревает">
-          Последний успешный тик инвентаря MinIO не обновлялся:{' '}
+          Последний успешный тик инвентаря S3-хранилища не обновлялся:{' '}
           {data.inventoryError}
         </Alert>
       ) : null}
@@ -101,11 +101,11 @@ export function BackupsStoragePage() {
   );
 }
 
-// Health MinIO: api/live/cluster + drives-поля при наличии (spec §4.7).
-function HealthCard({ health }: { health: MinioHealthDto | null }) {
+// Health S3: api/live/cluster + drives-поля при наличии (spec §4.7).
+function HealthCard({ health }: { health: S3HealthDto | null }) {
   return (
     <Card withBorder padding="md" radius="md" w={340}>
-      <Text fw={600} mb="xs">Health MinIO</Text>
+      <Text fw={600} mb="xs">Health S3</Text>
       {health === null ? (
         <Text c="dimmed" size="sm">Нет данных (первый тик ещё шёл)</Text>
       ) : (

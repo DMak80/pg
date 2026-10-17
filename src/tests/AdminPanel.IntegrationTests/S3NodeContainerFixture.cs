@@ -9,8 +9,8 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// СОБСТВЕННАЯ ownS3-нода одного тест-класса (t36: пул ownS3, хранилище-бэкенд
-// хранилище MinIO не поднимается; e2e-isolation §1/§3): guid-имя apm-s3-{guid} (префикс
+// СОБСТВЕННАЯ ownS3-нода одного тест-класса (t36: пул ownS3 — хранилище и есть
+// эта нода, отдельный контейнер хранилища не поднимается; e2e-isolation §1/§3): guid-имя apm-s3-{guid} (префикс
 // apm- отличает панельную серию от pgw-*), динамический хост-порт, свой bucket —
 // сценарии панели не делят хранилище ни с соседними классами, ни с чужими
 // прогонами: посев одного теста физически не виден другому. Образ — owns3:e2e,
@@ -86,6 +86,7 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
                 return;
             var root = FindRepoRoot(AppContext.BaseDirectory);
             var outDir = Path.Combine(root, "artifacts", "e2e", "owns3");
+
             var publish = new ProcessStartInfo("dotnet")
             {
                 RedirectStandardOutput = true,
@@ -99,14 +100,7 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
             publish.ArgumentList.Add("-o");
             publish.ArgumentList.Add(outDir);
             publish.ArgumentList.Add("--nologo");
-            using (var p = Process.Start(publish)!)
-            {
-                var log = await p.StandardOutput.ReadToEndAsync() +
-                          await p.StandardError.ReadToEndAsync();
-                await p.WaitForExitAsync(ct);
-                if (p.ExitCode != 0)
-                    throw new ApplicationException($"publish OwnS3.App не удался: {Tail(log)}");
-            }
+            await RunToolAsync(publish, "publish OwnS3.App", ct);
 
             var build = new ProcessStartInfo("docker")
             {
@@ -120,14 +114,7 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
             build.ArgumentList.Add("-t");
             build.ArgumentList.Add(Image);
             build.ArgumentList.Add(outDir);
-            using (var p = Process.Start(build)!)
-            {
-                var log = await p.StandardOutput.ReadToEndAsync() +
-                          await p.StandardError.ReadToEndAsync();
-                await p.WaitForExitAsync(ct);
-                if (p.ExitCode != 0)
-                    throw new ApplicationException($"build {Image} не удался: {Tail(log)}");
-            }
+            await RunToolAsync(build, $"docker build {Image}", ct);
 
             _imageReady = true;
         }
@@ -135,6 +122,35 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         {
             ImageGate.Release();
         }
+    }
+
+    // Запуск host-инструмента: ОБА перенаправленных пайпа дренируются
+    // ПАРАЛЛЕЛЬНО + бюджет 5 мин с Kill всего дерева процессов.
+    // Последовательные await ReadToEndAsync(stdout)-then-stderr — классический
+    // pipe-deadlock: ребёнок блокируется на заполненном stderr, родитель ждёт
+    // конца stdout — оба висят вечно (инцидент мерж-гейта t36: «зависший»
+    // старт интеграций при сборке owns3:e2e). Таймаут — правило быстрых падений.
+    private static async Task RunToolAsync(ProcessStartInfo psi, string what, CancellationToken ct)
+    {
+        var started = Stopwatch.GetTimestamp();
+        using var p = Process.Start(psi)!;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+        var stdoutTask = p.StandardOutput.ReadToEndAsync(timeout.Token);
+        var stderrTask = p.StandardError.ReadToEndAsync(timeout.Token);
+        try
+        {
+            await p.WaitForExitAsync(timeout.Token);
+            var log = (await stdoutTask) + (await stderrTask);
+            if (p.ExitCode != 0)
+                throw new ApplicationException($"{what} не удался (код {p.ExitCode}): {Tail(log)}");
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            p.Kill(entireProcessTree: true);
+            throw new ApplicationException($"{what} превысил бюджет 5 мин — процесс убит деревом");
+        }
+        Console.WriteLine($"[PHASE] {what}: {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} с");
     }
 
     // Хвост лога без исключения: ^2000.. на коротком логе маскирует ошибку

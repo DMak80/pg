@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E verify-джобов (t24/ревизия 8 — разбиение E2eBackupScenarios): пара
 // Verify_Ok/Verify_Corruption (~2,5 мин суммарно — под порогом класса).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withS3Node:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -39,7 +39,7 @@ public class E2eBackupVerifyScenarios
     [Fact]
     public async Task Backup_Verify_Ok_OnCreate()
     {
-        // Arrange — окружение с MinIO; кластер bkvrfy<тег прогона>; policy on_create=true
+        // Arrange — окружение с ownS3-нодой; кластер bkvrfy<тег прогона>; policy on_create=true
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-verify", withS3Node: true, ct: ct);
@@ -99,7 +99,7 @@ public class E2eBackupVerifyScenarios
         panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
     }
 
-    // AAA: порча набора (AC2): удалить объект из full/<id>/ в MinIO → policy
+    // AAA: порча набора (AC2): удалить объект из full/<id>/ в ownS3-ноде → policy
     // interval_sec мал → перепроверка → verify.state=FAILED + error; переснятия
     // в окне теста нет (full_max_age_sec велик)
 

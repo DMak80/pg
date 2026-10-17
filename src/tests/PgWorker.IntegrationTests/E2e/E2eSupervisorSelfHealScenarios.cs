@@ -40,7 +40,7 @@ public class E2eSupervisorSelfHealScenarios
     [Fact]
     public async Task Backup_ChainBroken_SelfHeals()
     {
-        // Arrange 1 — окружение bk-spr (withMinio), кластер bkspr<тег>, policy
+        // Arrange 1 — окружение bk-spr (withS3Node), кластер bkspr<тег>, policy
         //   full_max_age_sec=3600 (НЕ из-за возраста — триггер только BROKEN),
         //   verify on_create=false (не мешает), Wal VerifyIntervalSec=5,
         //   Supervisor IntervalSec=60; воркер

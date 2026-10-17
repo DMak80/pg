@@ -13,11 +13,10 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, long LastModifiedU
 /// <summary>Страница list-v2.</summary>
 public sealed record S3Page(IReadOnlyList<S3ObjectInfo> Items, string? NextContinuationToken);
 
-/// <summary>Read-only клиент MinIO/S3 панели (t08, adminpanel/02 §2.5): контракт
+/// <summary>Read-only клиент S3-хранилища (ownS3) панели (t08, adminpanel/02 §2.5): контракт
 /// уровня кода — только ListBuckets/ListObjectsV2 и публичные health-эндпоинты;
 /// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/19 §4/§5).
-/// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*;
-/// унификация etcd-каркаса — t08, 2026-09-14; MinIO-клиент выведен за её скоуп).</summary>
+/// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*).</summary>
 public interface IS3StorageClient
 {
     Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct);
@@ -194,8 +193,8 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     {
         var buckets = await ListBucketsAsync(ct);
         var live = await ProbeHealthAsync("/s3/health/live", withDrives: false, ct);
-        // ownS3-фолбэк: 404/403 = «хранилище не MinIO» (эндпоинт жив, путь
-        // не поддерживается): 404 — несуществующий путь, 403 — канонический
+        // ownS3-фолбэк: 404/403 = проба ownS3 не поддержана (эндпоинт жив,
+        // путь не поддерживается): 404 — несуществующий путь, 403 — канонический
         // ответ ownS3 на анонимный запрос вне /healthz и /metrics
         // (arch/owns3/03; пробы идут без SigV4). Повтор — по канону ownS3
         // /healthz (без подписи); 200 → live, 503/иное → down. Фолбэк

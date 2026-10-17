@@ -71,7 +71,7 @@ public sealed class S3InventoryLoop(
 
         // (1) health — факт доступности на ЭТОТ тик: реальный клиент не бросает
         // (пробы гасят исключения в S3Health); AC3: Health в сторе обновляется
-        // КАЖДЫМ тиком — у остановленного MinIO apiOk/liveOk=false, при этом
+        // КАЖДЫМ тиком — у остановленного хранилища apiOk/liveOk=false, при этом
         // инвентарь остаётся прежним (устаревающим, штамп не растёт).
         S3Health health;
         try
@@ -91,7 +91,7 @@ public sealed class S3InventoryLoop(
             if (!buckets.IsSuccess)
                 throw new ApplicationException(buckets.Error!.Message, buckets.Error);
 
-            var objects = new List<MinioObject>();
+            var objects = new List<S3InventoryObject>();
             string? token = null;
             do
             {
@@ -99,7 +99,7 @@ public sealed class S3InventoryLoop(
                 if (!page.IsSuccess)
                     throw new ApplicationException(page.Error!.Message, page.Error);
                 objects.AddRange(page.Value.Items.Select(i =>
-                    new MinioObject(i.Key, i.SizeBytes, i.LastModifiedUnix)));
+                    new S3InventoryObject(i.Key, i.SizeBytes, i.LastModifiedUnix)));
                 token = page.Value.NextContinuationToken;
             }
             while (token is not null);

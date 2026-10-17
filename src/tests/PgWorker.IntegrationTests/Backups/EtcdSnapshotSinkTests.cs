@@ -20,24 +20,24 @@ namespace PgWorker.IntegrationTests.Backups;
 public class EtcdSnapshotSinkTests
 {
     // Прямой клиент-помощник для сида/чтения объектов (AWSSDK, не тестируемый код).
-    private static AmazonS3Client SeedClient(OwnS3 minio) => new(
+    private static AmazonS3Client SeedClient(OwnS3 s3Node) => new(
         new BasicAWSCredentials(OwnS3.AccessKey, OwnS3.SecretKey),
-        new AmazonS3Config { ServiceURL = minio.HostEndpoint, ForcePathStyle = true });
+        new AmazonS3Config { ServiceURL = s3Node.HostEndpoint, ForcePathStyle = true });
 
-    private static S3ClientOptions BadS3Runtime(OwnS3 minio)
-        => minio.S3() with { Endpoint = $"http://localhost:{E2eFixture.FreePort()}" }; // закрытый порт — транзиент
+    private static S3ClientOptions BadS3Runtime(OwnS3 s3Node)
+        => s3Node.S3() with { Endpoint = $"http://localhost:{E2eFixture.FreePort()}" }; // закрытый порт — транзиент
 
-    private static async Task<EtcdSnapshotSink> SinkAsync(OwnEtcd etcd, OwnS3 minio, string instance,
+    private static async Task<EtcdSnapshotSink> SinkAsync(OwnEtcd etcd, OwnS3 s3Node, string instance,
         int retention = 28, CancellationToken ct = default)
     {
-        var s3 = new BackupS3(minio.S3());
+        var s3 = new BackupS3(s3Node.S3());
         return new EtcdSnapshotSink(s3, etcd.Gateway, [etcd.Endpoint], retention, 5, instance, 360);
     }
 
     // Чтение объекта bucket'a напрямую (проверка факта «реально лежит в S3»).
-    private static async Task<byte[]> GetObjectBytesAsync(OwnS3 minio, string key, CancellationToken ct)
+    private static async Task<byte[]> GetObjectBytesAsync(OwnS3 s3Node, string key, CancellationToken ct)
     {
-        using var client = SeedClient(minio);
+        using var client = SeedClient(s3Node);
         var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnS3.Bucket, Key = key }, ct);
         using var ms = new MemoryStream();
         await response.ResponseStream.CopyToAsync(ms, ct);
@@ -52,12 +52,12 @@ public class EtcdSnapshotSinkTests
     [Fact]
     public async Task Export_после_TakeAsync_объекты_мета_статус_OK()
     {
-        // Arrange — своё etcd + MinIO; sink; SnapshotJob с sink'ом
+        // Arrange — своё etcd + ownS3-нода; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink1", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink1", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink1", ct);
         var dir = Directory.CreateTempSubdirectory("sink-export-").FullName;
-        var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
+        var sink = await SinkAsync(etcdFx, s3NodeFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
 
         // Act
@@ -65,7 +65,7 @@ public class EtcdSnapshotSinkTests
 
         // Assert — снятие успешно; в S3 ровно пара db+meta; статус OK с фактом
         shot.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(2).And.Contain(k => k.Key.EndsWith(".db")).And.Contain(k => k.Key.EndsWith(".meta.json"));
         // Assert — канон нейминга §3.2 (фиксация от регрессии): мета-ключ
@@ -86,7 +86,7 @@ public class EtcdSnapshotSinkTests
         // meta: taken <= uploaded, instance, ревизия best-effort есть (OwnEtcd жив)
         var metaKey = listed.Single(k => k.Key.EndsWith(".meta.json")).Key;
         var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
-            await GetObjectBytesAsync(minioFx, metaKey, ct)))!;
+            await GetObjectBytesAsync(s3NodeFx, metaKey, ct)))!;
         meta.TakenUnix.Should().BeLessThanOrEqualTo(meta.UploadedUnix);
         meta.Instance.Should().Be("inst-A");
         meta.Revision.Should().NotBeNull();
@@ -100,9 +100,9 @@ public class EtcdSnapshotSinkTests
         // Arrange — своё окружение; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink2", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink2", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink2", ct);
         var dir = Directory.CreateTempSubdirectory("sink-pairs-").FullName;
-        var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
+        var sink = await SinkAsync(etcdFx, s3NodeFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
 
         // Act — два снятия с паузой 1.1 c (имена расходятся по секундам)
@@ -113,7 +113,7 @@ public class EtcdSnapshotSinkTests
         // Assert — (а) в S3 4 ключа: ДВЕ пары; локальных файлов 2
         shot1.IsSuccess.Should().BeTrue();
         shot2.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4, "второй слепок уезжает новой парой — дедупа нет (AC2)");
         Directory.GetFiles(dir, "snapshot-*.db").Should().HaveCount(2);
@@ -142,9 +142,9 @@ public class EtcdSnapshotSinkTests
         // Arrange — sink с ретенцией 2; три снятия с паузами
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink3", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink3", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink3", ct);
         var dir = Directory.CreateTempSubdirectory("sink-retain-").FullName;
-        var sink = await SinkAsync(etcdFx, minioFx, "inst-A", retention: 2, ct: ct);
+        var sink = await SinkAsync(etcdFx, s3NodeFx, "inst-A", retention: 2, ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
         await job.TakeAsync(ct);
         await Task.Delay(1100, ct);
@@ -153,14 +153,14 @@ public class EtcdSnapshotSinkTests
         await job.TakeAsync(ct);
 
         // Assert — ровно 2 пары (4 ключа); старейший id отсутствует
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4, "ретенция держит ровно N=2 пары");
         var oldestId = listed.Select(k => k.Key).Where(k => k.EndsWith(".db"))
             .Select(k => k[(EtcdExportRetention.Prefix.Length)..][..^".db".Length])
             .OrderBy(id => id, StringComparer.Ordinal).First();
         // Arrange/Act — сид сироты-meta без .db → четвёртое снятие сносит её
-        using var client = SeedClient(minioFx);
+        using var client = SeedClient(s3NodeFx);
         await client.PutObjectAsync(new PutObjectRequest
         {
             BucketName = OwnS3.Bucket,
@@ -186,9 +186,9 @@ public class EtcdSnapshotSinkTests
         // Arrange — sink на закрытый порт (S3 недоступен); SnapshotJob с ним
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink4", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink4", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink4", ct);
         var dir = Directory.CreateTempSubdirectory("sink-transient-").FullName;
-        var badS3 = new BackupS3(BadS3Runtime(minioFx));
+        var badS3 = new BackupS3(BadS3Runtime(s3NodeFx));
         var sink = new EtcdSnapshotSink(badS3, etcdFx.Gateway, [etcdFx.Endpoint], 28, 5, "inst-A", 360);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
 
@@ -211,14 +211,14 @@ public class EtcdSnapshotSinkTests
         // Arrange — слепок снят при недоступном S3 (FAILED-статус), затем живой sink
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink5", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink5", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink5", ct);
         var dir = Directory.CreateTempSubdirectory("sink-catchup-").FullName;
-        var badS3 = new BackupS3(BadS3Runtime(minioFx));
+        var badS3 = new BackupS3(BadS3Runtime(s3NodeFx));
         var brokenSink = new EtcdSnapshotSink(badS3, etcdFx.Gateway, [etcdFx.Endpoint], 28, 5, "inst-A", 360);
         var brokenJob = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, brokenSink);
         (await brokenJob.TakeAsync(ct)).IsSuccess.Should().BeTrue();
 
-        var liveSink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
+        var liveSink = await SinkAsync(etcdFx, s3NodeFx, "inst-A", ct: ct);
 
         // Act — доводка отстающей выгрузки
         var catchUp = await liveSink.CatchUpAsync(dir, ct);
@@ -227,7 +227,7 @@ public class EtcdSnapshotSinkTests
         catchUp.IsSuccess.Should().BeTrue();
         catchUp.Value.Should().BeTrue();
         var latest = Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).First();
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().Contain(k => k.Key == $"etcd/{Path.GetFileName(latest)}");
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
@@ -248,19 +248,19 @@ public class EtcdSnapshotSinkTests
         // Arrange — экспорт слепка в S3; скачивание .db и .meta.json
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink6", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink6", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink6", ct);
         var dir = Directory.CreateTempSubdirectory("sink-verify-").FullName;
-        var sink = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
+        var sink = await SinkAsync(etcdFx, s3NodeFx, "inst-A", ct: ct);
         var job = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dir, 10, 60, sink);
         var shot = await job.TakeAsync(ct);
         shot.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         var dbKey = listed.Single(k => k.Key.EndsWith(".db")).Key;
         var metaKey = listed.Single(k => k.Key.EndsWith(".meta.json")).Key;
-        var data = await GetObjectBytesAsync(minioFx, dbKey, ct);
+        var data = await GetObjectBytesAsync(s3NodeFx, dbKey, ct);
         var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
-            await GetObjectBytesAsync(minioFx, metaKey, ct)))!;
+            await GetObjectBytesAsync(s3NodeFx, metaKey, ct)))!;
         var tempFile = Path.Combine(Path.GetTempPath(), $"pgw-snap-{Guid.NewGuid():N}.db");
         await File.WriteAllBytesAsync(tempFile, data, ct);
         try
@@ -314,14 +314,14 @@ public class EtcdSnapshotSinkTests
     [Fact]
     public async Task Takeover_статус_пишет_инстанс_исполнитель()
     {
-        // Arrange — своё окружение; два sink'а с разными instance на тех же etcd+minio
+        // Arrange — своё окружение; два sink'а с разными instance на тех же etcd+S3
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink7", ct);
-        await using var minioFx = await OwnS3.StartAsync("sink7", ct);
+        await using var s3NodeFx = await OwnS3.StartAsync("sink7", ct);
         var dirA = Directory.CreateTempSubdirectory("sink-takeover-a-").FullName;
         var dirB = Directory.CreateTempSubdirectory("sink-takeover-b-").FullName;
-        var sinkA = await SinkAsync(etcdFx, minioFx, "inst-A", ct: ct);
-        var sinkB = await SinkAsync(etcdFx, minioFx, "inst-B", ct: ct);
+        var sinkA = await SinkAsync(etcdFx, s3NodeFx, "inst-A", ct: ct);
+        var sinkB = await SinkAsync(etcdFx, s3NodeFx, "inst-B", ct: ct);
         var jobA = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dirA, 10, 60, sinkA);
         var jobB = new SnapshotJob(etcdFx.Gateway, [etcdFx.Endpoint], dirB, 10, 60, sinkB);
 
@@ -333,12 +333,12 @@ public class EtcdSnapshotSinkTests
         // Assert — две пары; мета новейшего объекта — inst-B; статус OK
         shotA.IsSuccess.Should().BeTrue();
         shotB.IsSuccess.Should().BeTrue();
-        var s3 = new BackupS3(minioFx.S3());
+        var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         listed.Should().HaveCount(4);
         var newestMetaKey = $"etcd/{Path.GetFileName(shotB.Value)[..^".db".Length]}.meta.json";
         var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
-            await GetObjectBytesAsync(minioFx, newestMetaKey, ct)))!;
+            await GetObjectBytesAsync(s3NodeFx, newestMetaKey, ct)))!;
         meta.Instance.Should().Be("inst-B", "статус пишет инстанс-исполнитель (AC6)");
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
         EtcdSnapshotStatusJson.Parse(kv.Value)!.State.Should().Be("OK");

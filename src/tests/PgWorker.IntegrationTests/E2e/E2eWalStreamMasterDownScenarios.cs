@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E WAL-потока, отказ мастера (t24/ревизия 8 — разбиение E2eBackupScenarios):
 // монолитный одиночный факт (~11 мин, §7) — отдельный класс.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withS3Node:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -379,7 +379,7 @@ public class E2eWalStreamMasterDownScenarios
         }
     }
 
-    /// <summary>Подъём полного WAL-контура сценария: окружение с MinIO, кластер,
+    /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
     /// воркер (Backups:Enabled + Wal:AgentImage), ожидание provisioning, DSN мастера.
     /// </summary>
     // Владение окружением и воркером — у Fact (DisposeAsync при любом исходе);

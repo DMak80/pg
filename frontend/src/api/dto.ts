@@ -807,7 +807,7 @@ export interface ValkeyCaRotationDto {
 export type BackupReconcileStatusName = 'Ok' | 'S3Only' | 'EtcdOnly' | 'InProgress' | 'Deleting';
 
 // GET /api/backups/storage — сводка (без S3-ключей никогда — AC8).
-export interface MinioHealthDto {
+export interface S3HealthDto {
   apiOk: boolean;
   apiError: string | null;
   liveOk: boolean;
@@ -910,7 +910,7 @@ export interface BackupStorageDto {
   // t36 (adminpanel/02 §2.5): цели инвентаря списком (ноды пула), без ключей.
   endpoints: string[];
   bucket: string | null;
-  health: MinioHealthDto | null;
+  health: S3HealthDto | null;
   buckets: string[];
   etcd: BackupStorageEtcdDto | null;
   etcdSnapshots: EtcdSnapshotsDto | null;

@@ -19,7 +19,7 @@ public class WalReceiverOptionsTests
         ["SLOT"] = "pgw_bkp_c1_shard1",
         ["CLUSTER"] = "c1",
         ["SHARD"] = "shard1",
-        ["S3_ENDPOINTS"] = "http://minio:9000,http://minio2:9000",
+        ["S3_ENDPOINTS"] = "http://s3a:9000,http://s3b:9000",
         ["S3_BUCKET"] = "backups",
         ["S3_ACCESS_KEY"] = "access-key",
         ["S3_SECRET_KEY"] = "secret-key",
@@ -63,8 +63,8 @@ public class WalReceiverOptionsTests
         options.Cluster.Should().Be("c1");
         options.Shard.Should().Be("shard1");
         // t36: списки пула — порядок сохранён; без S3_READ_ENDPOINTS read=write.
-        options.S3Endpoints.Should().Equal("http://minio:9000", "http://minio2:9000");
-        options.S3ReadEndpoints.Should().Equal("http://minio:9000", "http://minio2:9000");
+        options.S3Endpoints.Should().Equal("http://s3a:9000", "http://s3b:9000");
+        options.S3ReadEndpoints.Should().Equal("http://s3a:9000", "http://s3b:9000");
         options.S3Bucket.Should().Be("backups");
         options.S3AccessKey.Should().Be("access-key");
         options.S3SecretKey.Should().Be("secret-key");

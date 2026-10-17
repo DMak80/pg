@@ -67,7 +67,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public const string JobImage = "pgworker-backup:e2e";
 
     /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3): собирается рядом с
-    /// джобовым (та же ветка withMinio) — pgworker-wal:e2e.</summary>
+    /// джобовым (та же ветка withS3Node) — pgworker-wal:e2e.</summary>
     public const string WalImage = "pgworker-wal:e2e";
 
     /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
@@ -103,7 +103,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IReadOnlyList<IContainer>? _etcdNodes;      // только фаза 1 (хост)
     private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork? _net;                             // только фаза 1 (хост)
-    private readonly IContainer? _minio;                         // только фаза 1
+    private readonly IContainer? _s3Node;                         // только фаза 1
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий (exit≠0
     // раннера / MarkFailed) — teardown ОСТАНАВЛИВАЕТ контейнеры, не удаляя:
@@ -233,7 +233,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IReadOnlyList<string> etcdAliases, string s3Alias,
         string caPem, string caKeyPem, int portFrom, int portTo,
         INetwork? net, IReadOnlyList<IContainer>? etcdNodes, IReadOnlyList<string> etcdNames,
-        IContainer? minio)
+        IContainer? s3Node)
     {
         Slug = slug;
         _runId = runId;
@@ -248,7 +248,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _net = net;
         _etcdNodes = etcdNodes;
         _etcdNames = etcdNames;
-        _minio = minio;
+        _s3Node = s3Node;
         Gateway = new EtcdGateway(_gatewayHttp);
         EtcdEndpoint = $"http://{etcdAliases[0]}:2379";
         EtcdEndpoints = etcdAliases.Select(a => $"http://{a}:2379").ToList();
@@ -531,7 +531,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var etcdNodes = new List<IContainer>();
         var etcdNames = new List<string>();
         var etcdAliases = Enumerable.Range(1, haEtcd ? 3 : 1).Select(i => $"e2e-etcd{i}").ToList();
-        IContainer? minio = null;
+        IContainer? s3Node = null;
         // Артефакты факта: host-ветка — temp хоста; раннер — ТОМ /artifacts
         // (E2eContour монтирует hostArtifacts ровно в /artifacts). Хостовый
         // путь из env внутри контейнера не существует — телеметрия per-факт
@@ -629,7 +629,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             {
                 // ownS3 в сети окружения (mc ходит по алиасу; джобы/воркер — по
                 // внутрисетевому endpoint). РАННЕР: docker CLI.
-                minio = null;
+                s3Node = null;
                 await E2eFixture.RunDockerAsync(
                 [
                     "run", "-d", "--name", $"pgw-eo-{runId}",
@@ -659,7 +659,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
             var env = new E2eEnvironment(slug, runId, netName, artifactsDir, etcdAliases,
                 withS3Node ? "e2e-owns3" : "", caPem, caKeyPem, portFrom, portTo,
-                net, etcdNodes, etcdNames, minio);
+                net, etcdNodes, etcdNames, s3Node);
             // REST-TLS CA контура: артефакт для разбора падений и ручных
             // curl-проверок контура (+ отпечаток — сверка с env воркера).
             File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
@@ -678,10 +678,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // частично поднятое окружение не оставляем (лучшими усилиями):
             // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
             // узлы etcd/ownS3 — здесь; сеть — здесь.
-            if (minio is not null)
+            if (s3Node is not null)
                 try
                 {
-                    await minio.DisposeAsync();
+                    await s3Node.DisposeAsync();
                 }
                 catch
                 {
@@ -791,7 +791,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var artifactsDir = Environment.GetEnvironmentVariable("PGW_E2E_ARTIFACTS") ?? "/artifacts";
 
         return new E2eEnvironment(slug, runId, netName, artifactsDir, aliases, s3Alias,
-            caPem, caKeyPem, portFrom, portTo, net: null, etcdNodes: null, etcdNames: [], minio: null);
+            caPem, caKeyPem, portFrom, portTo, net: null, etcdNodes: null, etcdNames: [], s3Node: null);
     }
 
     /// <summary>env-комплект раннера для этого окружения (фаза 1 → фаза 2).
@@ -1451,7 +1451,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 problems.Add($"stop контейнера {id}: {e.Message}");
             }
 
-        foreach (var container in (_etcdNodes ?? []).Concat<IContainer?>([_minio]))
+        foreach (var container in (_etcdNodes ?? []).Concat<IContainer?>([_s3Node]))
             try
             {
                 if (container is not null)

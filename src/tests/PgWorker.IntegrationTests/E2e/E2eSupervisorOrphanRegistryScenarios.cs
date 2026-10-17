@@ -38,7 +38,7 @@ public class E2eSupervisorOrphanRegistryScenarios
     [Fact]
     public async Task Backup_OrphanRegistry_TtlDelete()
     {
-        // Arrange 1 — окружение bk-orf (withMinio), кластер bkorf<тег>, воркер с
+        // Arrange 1 — окружение bk-orf (withS3Node), кластер bkorf<тег>, воркер с
         //   Supervisor { IntervalSec=60, OrphanTtlSec=120 } (сжатое время)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;

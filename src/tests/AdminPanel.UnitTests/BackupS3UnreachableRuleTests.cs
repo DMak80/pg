@@ -19,7 +19,7 @@ public class BackupS3UnreachableRuleTests
     private static EtcdSnapshot SnapshotWith(S3StorageInfo? s3)
         => TestSnapshots.Healthy(Now) with { S3Storage = s3 };
 
-    private static S3StorageInfo Minio(
+    private static S3StorageInfo Storage(
         bool configured = true, int failures = 0, string? error = null) => new(
         Configured: configured, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
@@ -45,7 +45,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_ConfiguredUnderThreshold_NoAlert()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 1, error: "down"));
+        var snapshot = SnapshotWith(Storage(failures: 1, error: "down"));
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -59,7 +59,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_TwoFailures_Warning()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 2, error: "s3 down"));
+        var snapshot = SnapshotWith(Storage(failures: 2, error: "s3 down"));
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -80,7 +80,7 @@ public class BackupS3UnreachableRuleTests
     public void Evaluate_SuccessResets_NoAlert()
     {
         // Arrange
-        var snapshot = SnapshotWith(Minio(failures: 0));
+        var snapshot = SnapshotWith(Storage(failures: 0));
 
         // Act
         var alerts = Evaluate(snapshot);

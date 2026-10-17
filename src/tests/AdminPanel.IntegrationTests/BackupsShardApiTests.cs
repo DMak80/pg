@@ -21,8 +21,8 @@ public class BackupsShardDetailsApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]
@@ -114,8 +114,8 @@ public class BackupsOrphansApiTests(
     private readonly BackupsWebFactory _factory = new()
     {
         EtcdEndpoint = etcd.Endpoint,
-        MinioEndpoint = s3.HostEndpoint,
-        MinioBucket = s3.Bucket,
+        StorageEndpoint = s3.HostEndpoint,
+        StorageBucket = s3.Bucket,
     };
 
     [Fact]

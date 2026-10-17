@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции WAL-приёмника против живого PG + MinIO (t27 Ф2, docker, динамические
+// Интеграции WAL-приёмника против живого PG + ownS3-ноды (t27 Ф2, docker, динамические
 // порты, guid-окружение OwnPostgres/OwnS3, полный teardown при любом исходе).
 // AC1: restart_lsn ≤ доставленного в S3 хвоста; AC6: обрыв S3 → backpressure →
 // восстановление без дыр; рестарт — дозасылка от хвоста; segment-size mismatch —
@@ -76,15 +76,15 @@ public class WalReceiverIntegrationTests
         }
     }
 
-    private static BackupS3 HostS3(OwnS3 minio) => new(minio.S3());
+    private static BackupS3 HostS3(OwnS3 s3Node) => new(s3Node.S3());
 
     /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты).</summary>
     private async Task<(CancellationTokenSource Cts, Task<int> Run)> StartCoreAsync(
-        OwnPostgres postgres, OwnS3 minio, string cluster, string shard)
+        OwnPostgres postgres, OwnS3 s3Node, string cluster, string shard)
     {
         var options = postgres.ReceiverOptions(
-            minio.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
-        var s3 = HostS3(minio);
+            s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
+        var s3 = HostS3(s3Node);
         var source = new PgWorker.WalReceiver.NpgsqlXLogSource(options);
         var slots = new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options);
         var cts = new CancellationTokenSource();
@@ -127,17 +127,17 @@ public class WalReceiverIntegrationTests
     [Fact]
     public async Task Доставка_сегментов_и_непрерывность()
     {
-        // Arrange — своё окружение: PG (TLS+слот) + MinIO, guid cluster/shard
+        // Arrange — своё окружение: PG (TLS+слот) + ownS3-нода, guid cluster/shard
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-delivery", ct);
-        await using var minio = await OwnS3.StartAsync("wal-it-delivery", ct);
+        await using var s3Node = await OwnS3.StartAsync("wal-it-delivery", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
-        await using var s3 = HostS3(minio);
+        await using var s3 = HostS3(s3Node);
 
         // Act — приёмник стартует (пустой префикс → старт от restart_lsn слота)
-        var (cts, run) = await StartCoreAsync(postgres, minio, cluster, shard);
+        var (cts, run) = await StartCoreAsync(postgres, s3Node, cluster, shard);
         try
         {
             // Слепой sleep старта не нужен: готовность приёмника покрыта
@@ -183,12 +183,12 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-restart", ct);
-        await using var minio = await OwnS3.StartAsync("wal-it-restart", ct);
+        await using var s3Node = await OwnS3.StartAsync("wal-it-restart", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
-        await using var s3 = HostS3(minio);
+        await using var s3 = HostS3(s3Node);
 
-        var (cts1, run1) = await StartCoreAsync(postgres, minio, cluster, shard);
+        var (cts1, run1) = await StartCoreAsync(postgres, s3Node, cluster, shard);
         await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
         await WaitUntilAsync(async () =>
             (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 2,
@@ -199,7 +199,7 @@ public class WalReceiverIntegrationTests
 
         // Act — новая WAL-нагрузка и ПОВТОРНЫЙ запуск приёмника (дозасылка от хвоста)
         await GenerateWalAsync(postgres.AdminDsn, 2, ct);
-        var (cts2, run2) = await StartCoreAsync(postgres, minio, cluster, shard);
+        var (cts2, run2) = await StartCoreAsync(postgres, s3Node, cluster, shard);
         try
         {
             await WaitUntilAsync(async () =>
@@ -228,12 +228,12 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-s3down", ct);
-        await using var minio = await OwnS3.StartAsync("wal-it-s3down", ct);
+        await using var s3Node = await OwnS3.StartAsync("wal-it-s3down", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
-        await using var s3 = HostS3(minio);
+        await using var s3 = HostS3(s3Node);
 
-        var (cts, run) = await StartCoreAsync(postgres, minio, cluster, shard);
+        var (cts, run) = await StartCoreAsync(postgres, s3Node, cluster, shard);
         try
         {
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
@@ -245,9 +245,9 @@ public class WalReceiverIntegrationTests
                 WalFileName.TryParse(namesBefore.Min()!)!.Value, namesBefore);
             var tailBefore = PgWorker.WalReceiver.S3TailResolver.EndLsn(chainBefore.LastSegment!.Value);
 
-            // Act AC6 — S3-обрыв: docker pause MinIO; бюджет спеки «≥1 мин»
+            // Act AC6 — S3-обрыв: docker pause ownS3-ноды; бюджет спеки «≥1 мин»
             TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] pause-wait 60s (S3 недоступен)");
-            await minio.PauseAsync(ct);
+            await s3Node.PauseAsync(ct);
             // Длительность сценария по AC6 (≥1 мин недоступности S3), не таймаут
             // ожидания — не увеличивать и не уменьшать.
             await Task.Delay(TimeSpan.FromSeconds(60), ct);
@@ -259,7 +259,7 @@ public class WalReceiverIntegrationTests
 
             // Act — восстановление S3: доставка доигрывается
             TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] unpause, доставка доигрывается");
-            await minio.UnpauseAsync(ct);
+            await s3Node.UnpauseAsync(ct);
             await GenerateWalAsync(postgres.AdminDsn, 2, ct);
             await WaitUntilAsync(async () =>
             {
@@ -280,7 +280,7 @@ public class WalReceiverIntegrationTests
             // Контейнер мог остаться на паузе при падении ассертов — снимаем
             try
             {
-                await minio.UnpauseAsync(CancellationToken.None);
+                await s3Node.UnpauseAsync(CancellationToken.None);
             }
             catch
             {
@@ -299,14 +299,14 @@ public class WalReceiverIntegrationTests
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var postgres = await OwnPostgres.StartAsync("wal-it-segsize", ct, initdbArgs: "--wal-segsize=32");
-        await using var minio = await OwnS3.StartAsync("wal-it-segsize", ct);
+        await using var s3Node = await OwnS3.StartAsync("wal-it-segsize", ct);
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
 
         // Act — запуск приёмника: сверка wal_segment_size → permanent-выход
         var options = postgres.ReceiverOptions(
-            minio.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
-        await using var s3 = HostS3(minio);
+            s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
+        await using var s3 = HostS3(s3Node);
         var stdout = new StringWriter();
         var code = await PgWorker.WalReceiver.WalReceiverCore.RunAsync(
             options,

@@ -8,11 +8,11 @@ namespace AdminPanel.Core;
 // SizeBytes. Все сортировки — Ordinal.
 
 /// <summary>Один объект bucket'а для агрегации (ключ, размер, lastModified).</summary>
-public sealed record MinioObject(string Key, long SizeBytes, long LastModifiedUnix);
+public sealed record S3InventoryObject(string Key, long SizeBytes, long LastModifiedUnix);
 
 public sealed partial record S3Inventory
 {
-    public static S3Inventory Build(IReadOnlyList<MinioObject> objects)
+    public static S3Inventory Build(IReadOnlyList<S3InventoryObject> objects)
     {
         long usedBytes = 0, objectCount = 0;
         var foreign = new SortedSet<string>(StringComparer.Ordinal);

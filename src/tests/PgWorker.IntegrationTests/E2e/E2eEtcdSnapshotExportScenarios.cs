@@ -41,7 +41,7 @@ public class E2eEtcdSnapshotExportScenarios
             ["PgWorker__Snapshots__Export__RetentionObjects"] = retention.ToString(),
             ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Override ?? Fx.S3Endpoint,
             ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
-            // Креды ownS3-ноды контура (минIO-наследие «minioadmin» отвергается
+            // Креды ownS3-ноды контура (дефолт «minioadmin» ownS3 отвергает
             // ownS3 — выгрузка слепков молча не ехала, полный прогон 2026-10-16:
             // snap-* 3 факта «первая выгрузка False»).
             ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
@@ -50,12 +50,12 @@ public class E2eEtcdSnapshotExportScenarios
     }
 
     // S3-цель окружения Fact'а (хост-клиент; t36 — S3ClientOptions).
-    private PgWorker.Backups.S3ClientOptions MinioS3() => new(
+    private PgWorker.Backups.S3ClientOptions OwnS3() => new(
         Fx.S3Endpoint,
         SnapshotBucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword);
 
     // Runtime-опции подсистемы на окружение Fact'а (bucket per-install).
-    private BackupsRuntimeOptions MinioRuntimeForHost() => new(
+    private BackupsRuntimeOptions OwnS3RuntimeForHost() => new(
         Enabled: true,
         S3Bucket: Bucket,
         JobImage: E2eEnvironment.JobImage,
@@ -88,7 +88,7 @@ public class E2eEtcdSnapshotExportScenarios
         // t36: креды/endpoint — литералы окружения Fact'а (S3-полей в runtime нет).
         using var client = new Amazon.S3.AmazonS3Client(
             new Amazon.Runtime.BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
-            new Amazon.S3.AmazonS3Config { ServiceURL = MinioS3().Endpoint, ForcePathStyle = true });
+            new Amazon.S3.AmazonS3Config { ServiceURL = OwnS3().Endpoint, ForcePathStyle = true });
         var response = await client.GetObjectAsync(new Amazon.S3.Model.GetObjectRequest
         {
             BucketName = SnapshotBucket,
@@ -102,7 +102,7 @@ public class E2eEtcdSnapshotExportScenarios
     private async Task<string> StatusValueAsync(CancellationToken ct)
         => (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value!.Value;
 
-    // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в MinIO,
+    // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в ownS3,
     // ключ OK с фактом, sha256 совпадает, слепок разворачиваем (etcdctl).
     [Fact]
     public async Task Export_плановый_слепок_уезжает_в_S3_ключ_OK()
@@ -123,7 +123,7 @@ public class E2eEtcdSnapshotExportScenarios
         okKey.Should().BeTrue("первый тик лидера снимает слепок и выгружает его");
         var kv = await StatusValueAsync(ct);
         kv.Should().Contain("\"interval_min\":1").And.Contain("\"last_object\":\"etcd/snapshot-");
-        // Assert — объекты в MinIO: пара db+meta (имена относительно etcd/).
+        // Assert — объекты в ownS3: пара db+meta (имена относительно etcd/).
         // Ретрай-поллинг до УСТОЙЧИВОГО листинга (t24, фейлы №14/№16/№17):
         // intervalMin=1 — в окне ожидания OK воркер успевает снять ЕЩЁ один
         // слепок, и счёт пар в листинге — зона РЕТЕНЦИЯ-факта (Export_ретенция

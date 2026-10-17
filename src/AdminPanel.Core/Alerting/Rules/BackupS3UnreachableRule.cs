@@ -39,7 +39,7 @@ public sealed class BackupS3UnreachableRule : IAlertRule
                 ["bucket"] = s3.Bucket,
             },
             SinceUnix: null, // проставляет AlertEngine по стабильному id
-            Hint: "панель не может листить bucket бэкапов: endpoints/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и MinIO; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",
+            Hint: "панель не может листить bucket бэкапов: endpoints/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и S3-хранилища; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",
             Remedy: AlertRemedy.OperatorRunbook,
             RemedyText: "проверьте доступность нод пула (AdminPanel:Backups:S3:Endpoints, креды, docker-сеть) и логи PgWorker; после восстановления алерт гаснет первым успешным тиком");
     }

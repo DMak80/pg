@@ -15,7 +15,7 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// <summary>Тонкая обёртка S3-клиента (t03): list-objects-v2 с пагинацией по
 /// префиксу `<C>/<X>/wal/` + диагностика старта (BucketExists). Загрузку делает
 /// mc внутри агента — других операций t03 не требует (spec §3.1). PathStyle —
-/// MinIO и облако одним клиентом (ForcePathStyle). Создание bucket — забота
+/// ownS3 и облако одним клиентом (ForcePathStyle). Создание bucket — забота
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
 /// t06: ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
@@ -83,7 +83,7 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
 
     // t36: цель пула (endpoint+креды одного адреса); PathStyle=true — общий
-    // MinIO/ownS3-контур (Region/PathStyle per-цель появятся с external-целями).
+    // ownS3-контур (Region/PathStyle per-цель появятся с external-целями).
     public BackupS3(S3ClientOptions options, TimeSpan? requestTimeout = null, bool pathStyle = true)
     {
         _bucket = options.Bucket;
