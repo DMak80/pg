@@ -471,7 +471,10 @@ echo "  s3worker жив ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2
 #       Политика пулов кластерам стенда не задаётся сидом — оператор выбирает
 #       пул со страницы (до выбора — алерт backup-pool-missing, канон §7).
 echo ">>> [PHASE] сид пула бэкапов backups (POST /api/s3/clusters, $(date +%s))"
-pool_body='{"name":"backups","platform":"owns3","nodes":1,"secretProfile":"BACKUPS-MAIN","placements":[{"dockerHost":"local"}],"resources":{"cpu":0.5,"memGi":1,"diskGi":5}}'
+# DTO CreateS3ClusterRequest (S3Api.cs): инстансы — списком instances (имена
+# нод + placement); nodes/placements в запросе не читаются (кластер
+# создавался пустым — прецедент мерж-гейта t36).
+pool_body='{"name":"backups","platform":"owns3","secretProfile":"BACKUPS-MAIN","instances":[{"name":"node1","placement":{"dockerHost":"local"},"resources":{"cpu":0.5,"memGi":1,"diskGi":5}}]}'
 pool_code="$("${MTLS[@]}" -o /tmp/pgw-seed-pool.json -w '%{http_code}' -X POST \
   "https://localhost:${S3W_API_HOST_PORT:-8086}/api/s3/clusters" \
   -H 'Content-Type: application/json' -d "$pool_body")"
