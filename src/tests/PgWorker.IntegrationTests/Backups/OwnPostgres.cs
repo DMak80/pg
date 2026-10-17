@@ -51,7 +51,7 @@ public sealed class OwnPostgres : IAsyncDisposable
         $"Host=localhost;Port={HostPort};Username=postgres;Password={Password};Database=postgres";
 
     /// <summary>Опции приёмника на это окружение: слот фикстуры, Cluster/Shard —
-    /// guid-значения, S3 — host-эндпоинт своего MinIO.</summary>
+    /// guid-значения, S3 — host-эндпоинт своей ownS3-ноды.</summary>
     public PgWorker.WalReceiver.WalReceiverOptions ReceiverOptions(
         string s3Endpoint, string cluster, string shard, string accessKey, string secretKey)
         => new(
@@ -63,12 +63,11 @@ public sealed class OwnPostgres : IAsyncDisposable
             Slot: Slot,
             Cluster: cluster,
             Shard: shard,
-            S3Endpoint: s3Endpoint,
-            S3Region: null,
+            S3Endpoints: [s3Endpoint],
+            S3ReadEndpoints: [s3Endpoint],
             S3Bucket: "pgw-backups-test",
             S3AccessKey: accessKey,
-            S3SecretKey: secretKey,
-            S3PathStyle: true);
+            S3SecretKey: secretKey);
 
     /// <summary>Подъём: postgres:18-alpine (образ в images.txt), pg_isready ≤ 45 c,
     /// затем TLS-раскладка + reload + физический слот immediately_reserve.

@@ -34,6 +34,7 @@ public sealed class BackupProcess(
     WorkJournal journal,
     InstallSecrets installSecrets,
     BackupsRuntimeOptions options,
+    BackupS3Factory s3Factory,
     TimeProvider time,
     ILogger<BackupProcess> logger,
     Func<CancellationToken, Task<Result>>? snapshot = null,
@@ -74,6 +75,21 @@ public sealed class BackupProcess(
         if (!creds.IsSuccess)
             return Result<ProcessOutcome>.Failed(creds.Error!);
 
+        // t36 (arch/19 §2/§4): резолв пула бэкапов — в начале тика кластера.
+        // null (policy без s3) → полный не планируется, journal не пишем
+        // (молчание = «пул не выбран», алерт backup-pool-missing — проекция
+        // панели по policy); Failed → journal waiting-backup-pool, continue
+        // (transient: пул удалён/нода не заявлена/профиль без кредов — ретраи тиком).
+        var poolResolved = await s3Factory.ResolveAsync(cluster, ct);
+        if (!poolResolved.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
+                poolResolved.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        if (poolResolved.Value is not { } pool)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+
         // Адреса нод один раз на тик (portalloc).
         var addresses = await shardEndpoints.ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
@@ -93,7 +109,7 @@ public sealed class BackupProcess(
             // S: супервизия активного (PLANNED — запуск/достарт; Running/Uploading —
             // поллинг UPLOADING/итог/vanished).
             var supervised = await SuperviseActiveAsync(
-                cluster, shard, fulls, addresses.Value, creds.Value.BackupPassword, verifyOnCreate, ct);
+                cluster, shard, fulls, addresses.Value, creds.Value.BackupPassword, verifyOnCreate, pool, ct);
             if (!supervised.IsSuccess)
                 return Result<ProcessOutcome>.Failed(supervised.Error!);
 
@@ -245,7 +261,8 @@ public sealed class BackupProcess(
             // контур: сеть поставки — спека режима T7); сбой create/start —
             // PLANNED остаётся, S-супервизия идемпотентно запустит следующим
             // тиком (spec §2.4).
-            var spec = BackupJobSpec.Build(options, cluster, shard.Name, id, jobSource, creds.Value.BackupPassword);
+            var spec = BackupJobSpec.Build(options, cluster, shard.Name, id, jobSource, creds.Value.BackupPassword,
+                EndpointsForRole(pool, role), pool.AccessKey, pool.SecretKey);
             var name = BackupNames.ContainerName(cluster, shard.Name, id);
             // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
             // spec §3.2): одиночный вызов движка не молчит дольше окна проверки —
@@ -312,7 +329,7 @@ public sealed class BackupProcess(
     private async Task<Result> SuperviseActiveAsync(
         string cluster, ShardSpec shard, IReadOnlyList<FullBackupState> fulls,
         IReadOnlyDictionary<string, NodeAddress> addresses, string backupPassword,
-        bool verifyOnCreate, CancellationToken ct)
+        bool verifyOnCreate, BackupPoolContext pool, CancellationToken ct)
     {
         foreach (var active in fulls.Where(f => f.State
                      is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading))
@@ -395,7 +412,8 @@ public sealed class BackupProcess(
                     var jobSource = options.ContourNetwork is { Length: > 0 } && source.Object is null
                         ? source with { Host = active.Node, Ports = source.Ports with { Pg = 5432 } }
                         : source;
-                    var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, jobSource, backupPassword);
+                    var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, jobSource, backupPassword,
+                        EndpointsForRole(pool, active.Role), pool.AccessKey, pool.SecretKey);
                     var launched = await LongCallPolling.EnsureAsync(
                         $"create джоба {name}",
                         async token =>
@@ -534,6 +552,11 @@ public sealed class BackupProcess(
 
         return Result.Success();
     }
+
+    // t36 (arch/19 §4): write-список по РОЛИ ИСТОЧНИКА — реплика → write_replica,
+    // fallback-мастер → write_master (порядок = приоритет записи).
+    private static IReadOnlyList<string> EndpointsForRole(BackupPoolContext pool, BackupSourceRole role)
+        => role == BackupSourceRole.Master ? pool.WriteMaster : pool.WriteReplica;
 
     // Итог зафиксирован — контейнер и staging volume джоба не нужны (arch/19 §2);
     // квота-tmpfs-джоб volume не имеет — RemoveVolumeAsync 404 = успех.

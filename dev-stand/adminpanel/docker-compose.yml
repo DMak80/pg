@@ -167,13 +167,14 @@ services:
       WORKERS_PANEL_TLS_CERT_PATH: /tls-workers/panel.crt
       WORKERS_PANEL_TLS_KEY_PATH: /tls-workers/panel.key
       WORKERS_PANEL_TLS_SERVER_CA_PATH: /tls-workers/ca.pem
-      # t41: грань «Хранилище бэкапов» — read-only инвентарь ownS3 (alias
-      # стендовой сети — deploy external-attach; `:9010` — наружу: чеки/
-      # миграция/оператор). Креды — read-only ключ panel-reader (стендовые
-      # примеры = OWNS3_ACCESS_KEYS__1__* в deploy/.env; прод — per-install
-      # env, arch/19 §7). as-minio (full-профиль) — переходный read-only-
-      # архив, см. docs/owns3-migration.md.
-      AdminPanel__Backups__S3__Endpoint: http://owns3:9000
+      # t41/t36: грань «Хранилище бэкапов» — live-инвентарь ПУЛА бэкапов
+      # (нода s3w-backups-node1 в стендовой сети — сид 00-up.sh через S3Worker;
+      # имя контейнера детерминировано: s3w-<кластер>-<инстанс>). Одиночный
+      # Endpoint — валидный частный случай списка Endpoints (02 §2.5). Креды —
+      # read-only ключ panel-reader профиля BACKUPS-MAIN
+      # (S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__* в deploy/.env;
+      # прод — per-install env, arch/19 §7).
+      AdminPanel__Backups__S3__Endpoint: http://s3w-backups-node1:9000
       AdminPanel__Backups__S3__Bucket: pgworker-backups
       AdminPanel__Backups__S3__AccessKey: panel-reader
       AdminPanel__Backups__S3__SecretKey: panel-reader-pwd

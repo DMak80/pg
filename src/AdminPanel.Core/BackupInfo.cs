@@ -24,7 +24,15 @@ public sealed record DrillInfo(
 /// читает и дефолтирует (панель PUTит полный набор через policy-API воркера).</summary>
 public sealed record BackupsPolicyInfo(
     int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
-    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays);
+    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays,
+    // t36 (arch/19 §4): секция s3 policy; null — пул не выбран (алерт
+    // backup-pool-missing), списки — имена нод пула по приоритету записи.
+    BackupsPolicyS3Info? S3 = null);
+
+/// <summary>Секция s3 policy кластера (панель — толерантный читатель;
+/// мутация — policy-API воркера, 02 §9.12).</summary>
+public sealed record BackupsPolicyS3Info(
+    string Pool, IReadOnlyList<string> WriteMaster, IReadOnlyList<string> WriteReplica);
 
 public sealed record ClusterBackupsInfo(
     string Cluster,
@@ -41,7 +49,7 @@ public sealed record ClusterBackupsInfo(
     IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null,
     // t05: restore-заявки per-shard (вход правила restore-failed).
     IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null,
-    // t08: все etcd-полные per-shard — вход MinioReconciler; null = парсер t08
+    // t08: все etcd-полные per-shard — вход S3Reconciler; null = парсер t08
     // их не собрал.
     IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null,
     // reliability t02: последний/текущий дрилл per-shard (вход правил
@@ -98,7 +106,7 @@ public sealed record BackupWalReconcile(
     string? EtcdLastSegment, long? EtcdLastUnix,
     string? S3LastObject, long? S3LastModifiedUnix);
 
-/// <summary>Итог MinioReconciler.Reconcile — чистая функция над снапшотом.</summary>
+/// <summary>Итог S3Reconciler.Reconcile — чистая функция над снапшотом.</summary>
 public sealed record BackupReconcileInfo(
     IReadOnlyList<BackupFullReconcile> Fulls,
     IReadOnlyList<BackupOrphanPrefix> OrphanPrefixes,

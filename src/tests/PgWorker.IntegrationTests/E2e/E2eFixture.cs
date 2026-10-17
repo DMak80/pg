@@ -1,38 +1,225 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
 /// <summary>
-/// Статический слой E2E-стенда: секреты e2e-установки, хелперы ожиданий и
-/// процессов, правило пересборки Release (t09). Рантайм-окружение (docker-сеть,
-/// etcd, MinIO, инстансы PgWorker) — ИЗОЛИРОВАННОЕ per-сценарий, владелец
-/// жизненного цикла — <see cref="E2eEnvironment"/> (смерть etcd-контейнера
-/// уносит и ключи: per-environment etcd снимает проблему чистки ключей).
+/// Статический слой E2E-контура: секреты e2e-установки, хелперы ожиданий и
+/// процессов, сборка статических ассетов (publish-выводы app/тестов + docker
+/// образы pgworker:e2e и pgw-e2e-runner:e2e). Рантайм-окружение (docker-сеть,
+/// etcd, ownS3, SUT-воркер-контейнер) — ИЗОЛИРОВАННОЕ per-сценарий, владелец
+/// жизненного цикла — <see cref="E2eEnvironment"/> (фаза 1) и
+/// <see cref="E2eContour"/> (двухфазный запуск).
 /// </summary>
 public static class E2eFixture
 {
-    // Секреты e2e-установки (Д7): передаются обоим процессам и SQL-пробам теста.
+    // Секреты e2e-установки (Д7): передаются воркеру и SQL-пробам теста.
     public const string SuPassword = "pgw-e2e-su";
     public const string StandbyPassword = "pgw-e2e-standby";
     public const string BucketAdminPassword = "pgw-e2e-admin";
     public const string MoverPassword = "pgw-e2e-mover";
 
-    // Хелпер ожидания условия (полл 500 мс).
-    public static async Task<bool> WaitForAsync(
-        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default)
-    {
-        var deadline = Stopwatch.StartNew();
-        while (deadline.Elapsed < timeout)
-        {
-            if (await condition())
-                return true;
-            await Task.Delay(500, ct);
-        }
+    // ===== [TIMING]: авто-хронометраж ожиданий ВСЕХ серий =====
+    // Каждое WaitForAsync пишет метку (условие/длительность/исход), ручные
+    // шаги — через TimedAsync. stderr testhost буферизует — метки копятся в
+    // очередь и докачиваются в timing.log артефактов факта при телеметрии
+    // (CollectDiagnosticsAsync); для живых хост-прогонов дублируются в stderr.
+    private static readonly ConcurrentQueue<string> TimingQueue = new();
 
-        return false;
+    internal static void Timing(string line)
+    {
+        Console.Error.WriteLine(line);
+        TimingQueue.Enqueue(line);
+    }
+
+    /// <summary>Забрать накопленные метки (докачка в timing.log телеметрии).</summary>
+    internal static IReadOnlyList<string> DrainTiming()
+    {
+        var drained = new List<string>();
+        while (TimingQueue.TryDequeue(out var line))
+            drained.Add(line);
+        return drained;
+    }
+
+    /// <summary>[TIMING]-хронометраж явного шага (ручная разметка тестов).</summary>
+    public static async Task TimedAsync(string step, Func<Task> action)
+    {
+        var sw = Stopwatch.StartNew();
+        await action();
+        Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+    }
+
+    public static async Task<T> TimedAsync<T>(string step, Func<Task<T>> action)
+    {
+        var sw = Stopwatch.StartNew();
+        var result = await action();
+        Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] {step}: {sw.Elapsed.TotalSeconds:F1}s");
+        return result;
+    }
+
+    // Хелпер ожидания условия (полл 500 мс). Авто-[TIMING]: выражение условия
+    // (CallerArgumentExpression) + длительность + исход — все серии получают
+    // хронометраж ожиданий без правки вызовов.
+    public static async Task<bool> WaitForAsync(
+        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct = default,
+        [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? what = null)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            while (sw.Elapsed < timeout)
+            {
+                if (await condition())
+                    return true;
+                await Task.Delay(500, ct);
+            }
+
+            return false;
+        }
+        finally
+        {
+            var head = (what ?? "wait").Replace("\r", "").Replace("\n", " ").Trim();
+            if (head.Length > 90)
+                head = head[..90] + "…";
+            Timing($"{DateTime.UtcNow:HH:mm:ss'Z'} [TIMING] wait({head}): {sw.Elapsed.TotalSeconds:F1}s");
+        }
+    }
+
+    /// <summary>Ожидание завершения провижининга кластера с fail-fast
+    /// «застрял»: config без state + dsn + ноды RUNNING (+ buckets/status пуст,
+    /// если передан range). Если хоть одна нода RUNNING дольше 60 с, а
+    /// config.state не снят — воркер не завершает заявку (ретраи): телеметрия
+    /// + ранний фейл вместо молчаливого выживания бюджета (прогон 2026-10-16
+    /// AC3: 310 с ожидания при живом лидере патрони). Строгая семантика серий:
+    /// shards = ["shard1","shard2"] по умолчанию; RestTls-подобные — ["shard1"].</summary>
+    public static async Task<bool> WaitProvisionedAsync(
+        E2eEnvironment fx,
+        Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
+        string cluster, CancellationToken ct,
+        string[]? shards = null,
+        Func<string, Task<System.Collections.Generic.IReadOnlyList<Shared.Etcd.Client.Kv>>>? range = null,
+        TimeSpan? budget = null)
+    {
+        shards ??= ["shard1", "shard2"];
+        var runningSince = (DateTimeOffset?)null;
+        return await WaitForAsync(async () =>
+        {
+            var config = await getOrNull($"/clusters/{cluster}/config");
+            if (config is null
+                || System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(config.Value)!
+                    .ContainsKey("state"))
+            {
+                var anyRunning = false;
+                foreach (var shard in shards)
+                {
+                    foreach (var suffix in new[] { "a", "b" })
+                    {
+                        var st = await getOrNull(
+                            $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state");
+                        if (st is { Value: "RUNNING" })
+                            anyRunning = true;
+                    }
+                }
+
+                if (anyRunning)
+                {
+                    runningSince ??= DateTimeOffset.UtcNow;
+                    if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+                    {
+                        await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
+                        throw new ApplicationException(
+                            $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
+                            + ">60 с, config.state не снят (воркер не завершает заявку — см. "
+                            + "container-pgw-ew-*.log в телеметрии fail-fast)");
+                    }
+                }
+                else
+                {
+                    runningSince = null;
+                }
+
+                return false;
+            }
+
+            foreach (var shard in shards)
+            {
+                if (await getOrNull($"/clusters/{cluster}/shards/{shard}/dsn") is null)
+                    return false;
+                foreach (var suffix in new[] { "a", "b" })
+                {
+                    var ready = await getOrNull(
+                        $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state");
+                    if (ready?.Value != "RUNNING")
+                        return false;
+                }
+            }
+
+            return range is null || (await range($"/clusters/{cluster}/buckets/status/")).Count == 0;
+        }, budget ?? TimeSpan.FromSeconds(360), ct);
+    }
+
+    /// <summary>Fail-fast-декоратор условия провижининга для перевода серий:
+    /// оборачивает ЛОКАЛЬНОЕ строгое условие серии (ProvisionedAsync) — если
+    /// оно не выполнено, а ноды RUNNING дольше 60 с при неснятом config.state
+    /// (воркер не завершает заявку, ретраи) — телеметрия + ранний фейл вместо
+    /// молчаливого выживания бюджета (прогон 2026-10-16 AC3: 310 с при живом
+    /// лидере). Пример: E2ePhase.WaitAsync(Fx, "…-provisioning",
+    ///   E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster,
+    ///       () => ProvisionedAsync(cluster)), …).</summary>
+    public static Func<Task<bool>> ProvisionStuckFailFast(
+        E2eEnvironment fx,
+        Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
+        string cluster,
+        Func<Task<bool>> baseCondition,
+        string[]? shards = null)
+    {
+        shards ??= ["shard1", "shard2"];
+        var runningSince = (DateTimeOffset?)null;
+        return async () =>
+        {
+            if (await baseCondition())
+                return true;
+
+            var config = await getOrNull($"/clusters/{cluster}/config");
+            if (config is null
+                || !System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(config.Value)!
+                    .ContainsKey("state"))
+            {
+                runningSince = null;
+                return false;
+            }
+
+            var anyRunning = false;
+            foreach (var shard in shards)
+            foreach (var suffix in new[] { "a", "b" })
+            {
+                if ((await getOrNull(
+                        $"/clusters/{cluster}/shards/{shard}/nodes/{shard}{suffix}/state"))
+                    is { Value: "RUNNING" })
+                    anyRunning = true;
+            }
+
+            if (!anyRunning)
+            {
+                runningSince = null;
+                return false;
+            }
+
+            runningSince ??= DateTimeOffset.UtcNow;
+            if (DateTimeOffset.UtcNow - runningSince > TimeSpan.FromSeconds(60))
+            {
+                await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
+                throw new ApplicationException(
+                    $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
+                    + ">60 с, config.state не снят (воркер не завершает заявку — см. "
+                    + "container-pgw-ew-*.log в телеметрии fail-fast)");
+            }
+
+            return false;
+        };
     }
 
     public static Task<string> RunDockerAsync(string[] args, CancellationToken ct = default)
@@ -41,10 +228,10 @@ public static class E2eFixture
     internal static async Task<string> RunProcessAsync(string file, string[] args, CancellationToken ct = default)
         // Дефолтный бюджет docker-CLI (ревью Фазы 7): зависший процесс обязан
         // умирать по таймауту, а не висеть вечно; обычные команды — секунды.
-        // Долгие операции (docker build) передают бюджет явно.
+        // Долгие операции (docker build/run раннера) передают бюджет явно.
         => await RunProcessAsync(file, args, ct, timeout: TimeSpan.FromMinutes(2), env: null);
 
-    /// <summary>Env вложенных dotnet-сборок (publish/build из фикстур): долгоживущие
+    /// <summary>Env вложенных dotnet-сборок (publish из фикстур): долгоживущие
     /// MSBuild/Roslyn build-server'ы и nodeReuse-ноды переживают процесс сборки и
     /// удерживают stdout-пайп навсегда — ReadToEndAsync не получает EOF (e2e-факт:
     /// wal:e2e publish висел 11 мин, app-dll — 10 мин). Отключаем обе формы
@@ -155,82 +342,77 @@ public static class E2eFixture
     }
 
     /// <summary>
-    /// Правило пересборки Release (t09, spec «фаза Г»): автосборка при каждом
-    /// прогоне E2E — устаревший зелёный бинарь маскировал регрессию 29.08–02.09.
-    /// PGW_TEST_E2E_NOBUILD=1 — обход для бисекта/отладки конкретного бинаря.
+    /// dotnet publish проекта в каталог артефактов E2E (инкрементально — секунды).
+    /// NoMsBuildReuseEnv: build-server/ноды переживают сборку и держат stdout-пайп
+    /// навсегда (e2e-факт: slnx-прогон висел 10+ мин). Бюджет 10 мин: полная
+    /// пересборка — минуты, тишина дольше бюджета = зависание (fail-fast).
     /// </summary>
-    internal static async Task EnsureAppDllAsync(string root, bool noBuild)
+    internal static async Task PublishProjectAsync(
+        string projectPath, string outDir, string tag, CancellationToken ct)
     {
-        var appDll = Path.Combine(
-            root, "src", "PgWorker.App", "bin", "Release", "net10.0", "PgWorker.App.dll");
-        if (noBuild)
-        {
-            if (!File.Exists(appDll))
-                throw new ApplicationException(
-                    $"нет {appDll} — соберите решение: dotnet build src/PgWorker.slnx -c Release"
-                    + " (или снимите PGW_TEST_E2E_NOBUILD для автосборки)");
-            return;
-        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        StaticPhase($"e2e-publish {tag}: dotnet publish (host, инкрементально)…");
+        await RunProcessAsync("dotnet",
+        [
+            "publish", projectPath, "-c", "Release", "-o", outDir, "--nologo",
+        ], ct, timeout: TimeSpan.FromMinutes(10), env: NoMsBuildReuseEnv,
+            logFile: $"/tmp/pgw-e2e-static-process-{tag}-publish.log");
+        StaticPhase($"e2e-publish {tag}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+    }
 
-        // Инкрементальный msbuild: no-op при актуальном бинаре (секунды).
-        // Не RunProcessAsync: ошибки msbuild идут в stdout, а он включает в
-        // исключение только stderr — здесь нужен хвост полного вывода в
-        // сообщении (spec «фаза Г»), а не молчаливый запуск старого бинаря.
-        // NoMsBuildReuseEnv: build-server/ноды переживают сборку и держат
-        // stdout-пайл навсегда (E2E-факт: slnx-прогон висел 10+ мин).
-        var psi = new ProcessStartInfo(
-            "dotnet", ["build", Path.Combine(root, "src", "PgWorker.slnx"), "-c", "Release"])
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        foreach (var (key, value) in NoMsBuildReuseEnv)
-            psi.EnvironmentVariables[key] = value;
-        using var build = Process.Start(psi)
-            ?? throw new ApplicationException("не удалось запустить dotnet build");
-        var stdoutTask = build.StandardOutput.ReadToEndAsync();
-        var stderrTask = build.StandardError.ReadToEndAsync();
-        // Бюджет 10 мин: инкрементальный no-op — секунды, полная пересборка —
-        // минуты; тишина дольше бюджета = зависание (fail-fast, не вечное ожидание)
-        using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+    /// <summary>
+    /// Правило пересборки Release (t09, spec «фаза Г»): автосборка при каждом
+    /// прогоне E2E — устаревший зелёный бинарь маскировал регрессию.
+    /// PGW_TEST_E2E_NOBUILD=1 — обход для бисекта/отладки конкретного бинаря:
+    /// publish-шаг пропускается, docker-образы строятся из существующих каталогов
+    /// артефактов (пустые — fail-fast с подсказкой).
+    /// </summary>
+    internal static void EnsurePublishedDir(string dir, string hint)
+    {
+        if (!Directory.Exists(dir) || Directory.EnumerateFiles(dir, "*.dll").Any() is false)
+            throw new ApplicationException(
+                $"нет publish-артефактов в {dir} — соберите их (dotnet publish) и повторите"
+                + $" (или снимите PGW_TEST_E2E_NOBUILD для автосборки). {hint}");
+    }
+
+    // [PHASE]-метка статических фаз подготовки: Console (в лог факта) + ФАЙЛ
+    // /tmp/pgw-e2e-static-phase.log — xUnit буферизует Console до конца факта,
+    // файл виден наблюдателю во время «тихих» фаз (канон e2e-launch).
+    public static void StaticPhase(string message)
+    {
+        var line = $"{DateTime.UtcNow:HH:mm:ss} [PHASE] e2e-static: {message}";
+        Console.WriteLine(line);
         try
         {
-            await build.WaitForExitAsync(budget.Token);
+            File.AppendAllText("/tmp/pgw-e2e-static-phase.log", line + Environment.NewLine);
         }
-        catch (OperationCanceledException)
+        catch
         {
-            build.Kill(entireProcessTree: true);
-            throw new ApplicationException(
-                "автосборка Release не завершилась за 10 мин — зависание (MSBuild-ноды/пайп);"
-                + " соберите вручную dotnet build src/PgWorker.slnx -c Release и повторите");
+            // файловая телеметрия — «лучшими усилиями», не роняет подготовку
         }
-        var output = await stdoutTask + await stderrTask;
-        if (build.ExitCode != 0)
-            throw new ApplicationException(
-                $"сборка Release не удалась (exit {build.ExitCode}):\n{OutputTail(output)}");
-        if (!File.Exists(appDll))
-            throw new ApplicationException(
-                $"после автосборки нет {appDll} — проверьте сборку решения\n{OutputTail(output)}");
     }
+
+    /// <summary>Таймер для [PHASE]-меток статических фаз (тайминг в итоговой строке).</summary>
+    public static System.Diagnostics.Stopwatch StaticSw()
+        => System.Diagnostics.Stopwatch.StartNew();
 
     // Последние строки вывода — для диагностики в исключении (полный лог сборки
     // в исключение не влезает, ошибки msbuild обычно в конце).
-    private static string OutputTail(string text, int lines = 30)
+    internal static string OutputTail(string text, int lines = 30)
     {
         var all = text.Split(
             ['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return string.Join("\n", all.TakeLast(lines));
     }
 
-    // Свободный хост-порт (зонд): слушаем :0 → отдаём; docker/процесс заберёт
-    // его при bind (окно гонки между release и bind ничтожно).
+    // Свободный хост-порт (зонд): слушаем :0 → отдаём. Тестовой инфраструктуре
+    // E2E-контура не нужен (публикаций на хост нет) — остаётся для не-E2E
+    // тестов (OwnS3-хелпер Backups/*).
     internal static int FreePort()
     {
-        var listener = TcpListener.Create(0);
+        var listener = System.Net.Sockets.TcpListener.Create(0);
         listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
         return port;
     }
@@ -246,37 +428,78 @@ public static class E2eFixture
     }
 }
 
-/// <summary>Запущенный инстанс PgWorker.App (имя, процесс, каталог снапшотов).
-/// Dispose идемпотентен: сценарий dispose-ит хост сам, а затем teardown
-/// окружения может попытаться ещё раз (финальная страховка).</summary>
-public sealed class HostInstance(
-    string name,
-    Process process,
-    string snapshotsDir,
-    HttpClient healthHttp,
-    StreamWriter? logWriter = null,
-    int apiPort = 0) : IAsyncDisposable
+/// <summary>Запущенный SUT-воркер — КОНТЕЙНЕР в сети контура (Вариант A,
+/// docs/e2e-isolation.md §3). Имя класса сохранено (HostInstance) — сценарии
+/// не переписываются на новый тип. Dispose идемпотентен: сценарий dispose-ит
+/// воркер сам, teardown окружения может попытаться ещё раз (страховка).</summary>
+public sealed class HostInstance : IAsyncDisposable
 {
+    private readonly E2eEnvironment _env;
     private bool _disposed;
 
-    public string Name { get; } = name;
+    public HostInstance(E2eEnvironment env, string name, string alias, string containerName)
+    {
+        _env = env;
+        Name = name;
+        Alias = alias;
+        ContainerName = containerName;
+    }
 
-    public Process Process { get; } = process;
+    public string Name { get; }
 
-    public string SnapshotsDir { get; } = snapshotsDir;
+    /// <summary>DNS-алиас воркера в сети контура (mTLS SAN, адрес API).</summary>
+    public string Alias { get; }
 
-    public int ApiPort { get; } = apiPort;   // хост-порт /healthz (проба живости из сценариев)
+    public string ContainerName { get; }
+
+    /// <summary>mTLS-адрес HTTP API воркера (внутрисетевой, раннер в той же сети).</summary>
+    public string ApiUrl => $"https://{Alias}:8443";
+
+    /// <summary>Каталог etcd-снапшотов воркера (Snapshots__Dir в контейнере
+    /// /snapshots — bind на каталог артефактов хоста; в раннере виден как
+    /// /snaps/&lt;name&gt;): сценарии читают snapshot-*.db напрямую.</summary>
+    public string SnapshotsDir => $"/snaps/{Name}";
+
+    /// <summary>Жив ли воркер (контейнер running) — семантика «процесс жив»
+    /// старого хост-инстанса (смерть контроллера, cert-сценарии).</summary>
+    public async Task<bool> IsRunningAsync(CancellationToken ct = default)
+    {
+        var ps = await E2eFixture.RunDockerAsync(
+        [
+            "ps", "--filter", $"name=^{ContainerName}$", "--format", "{{.State}}",
+        ], ct);
+        return ps.Contains("running", StringComparison.Ordinal);
+    }
+
+    /// <summary>Хвост логов воркера (docker logs) — семантика host.log старого
+    /// хост-инстанса (диагностика сценариев «что произошло» на живом воркере).</summary>
+    public async Task<string> ReadLogTailAsync(int lines = 100, CancellationToken ct = default)
+        => await E2eFixture.RunDockerAsync(["logs", "--tail", lines.ToString(), ContainerName], ct);
+
+    /// <summary>Состояние контейнера воркера (docker inspect): Status и ExitCode
+    /// (graceful self-stop сценария — exit 0; null — контейнер жив).</summary>
+    public async Task<(string Status, int? ExitCode)> InspectStateAsync(CancellationToken ct = default)
+    {
+        var raw = await E2eFixture.RunDockerAsync(
+        [
+            "inspect", "--format", "{{.State.Status}}:{{.State.ExitCode}}", ContainerName,
+        ], ct);
+        var parts = raw.Split(':', 2);
+        return parts.Length == 2 && int.TryParse(parts[1], out var code)
+            ? (parts[0], code)
+            : (raw, null);
+    }
 
     /// <summary>Мгновенный kill (смерть контроллера, AC3) — lease истекают ≤15 с.</summary>
     public void Kill()
     {
         try
         {
-            Process.Kill(entireProcessTree: true);
+            E2eFixture.RunDockerAsync(["kill", ContainerName]).GetAwaiter().GetResult();
         }
-        catch (InvalidOperationException)
+        catch (ApplicationException)
         {
-            // уже завершён
+            // уже завершён/удалён
         }
     }
 
@@ -285,22 +508,33 @@ public sealed class HostInstance(
         if (_disposed)
             return;
         _disposed = true;
-        Kill();
+        // Журнал воркера — в телеметрию ДО удаления: тест держит воркер в
+        // await using и удаляет раньше CollectDiagnostics teardown'а факта —
+        // после rm логи контейнера недоступны (прогон 2026-10-16:
+        // container-pgw-ew-*.log отсутствовал в артефактах при живых прочих).
         try
         {
-            await Process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+            var logs = await E2eFixture.RunDockerAsync(
+                ["logs", "--timestamps", ContainerName], CancellationToken.None);
+            await System.IO.File.WriteAllTextAsync(
+                System.IO.Path.Combine(_env.ArtifactsDir, $"container-{ContainerName}.log"),
+                logs);
         }
-        catch (TimeoutException)
+        catch
         {
-            // не дождались — Process.Dispose разорвёт дескрипторы
+            // телеметрия лучшими усилиями — не мешает teardown
         }
-        catch (InvalidOperationException)
+        try
         {
-            // процесс уже завершился сам (крах/kill ранее) — дескрипторы чистит Dispose
+            await E2eFixture.RunDockerAsync(["rm", "-f", ContainerName]);
         }
-
-        logWriter?.Dispose();
-        Process.Dispose();
-        _ = healthHttp; // dispose делает владелец статического клиента
+        catch (ApplicationException e) when (e.Message.Contains("No such container", StringComparison.OrdinalIgnoreCase))
+        {
+            // уже удалён (teardown окружения)
+        }
+        catch (ApplicationException e) when (e.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
+        {
+            // удаляется демоном — исход тот же
+        }
     }
 }

@@ -44,6 +44,13 @@ public static class WalReceiverMarkers
     public static string Result(bool ok, string? error, string? lastDelivered)
         => ToJson(new ResultMarker(ok, error, lastDelivered));
 
+    /// <summary>t36 (arch/19 §3): приёмник в ретрай-цикле исчерпания списка
+    /// пула — маркер в stdout (контроль воркера ставит s3-pool-exhausted в
+    /// error DEGRADED; алерт backup-pool-unreachable). Не чаще 1/5 c —
+    /// период совпадает с ретраем put.</summary>
+    public static string PoolExhausted()
+        => ToJson(new PoolExhaustedMarker());
+
     private sealed record StartingMarker([property: JsonPropertyName("phase")] string Phase = "starting");
 
     private sealed record StreamingMarker([property: JsonPropertyName("wal_start")] string WalStart)
@@ -75,4 +82,7 @@ public static class WalReceiverMarkers
         [property: JsonPropertyName("ok")] bool Ok,
         [property: JsonPropertyName("error")] string? Error = null,
         [property: JsonPropertyName("last_delivered")] string? LastDelivered = null);
+
+    private sealed record PoolExhaustedMarker(
+        [property: JsonPropertyName("pool_exhausted")] bool Exhausted = true);
 }

@@ -44,7 +44,7 @@ public class E2eScaleScenarios
             await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
 
             // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
@@ -203,7 +203,7 @@ public class E2eScaleScenarios
             await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
             var provisioned = await E2eFixture.WaitForAsync(
-                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
@@ -399,10 +399,10 @@ public class E2eScaleScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
+    private sealed record MasterInfo(string Node, string Host, string Dsn);
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
     // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
@@ -414,6 +414,23 @@ public class E2eScaleScenarios
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
+            if (i > 0 && i % 15 == 0)
+            {
+                // Диагностика ожидания мастер-ключа: что вообще есть в etcd
+                // (кластерные ключи + DCS-лок Patroni) без перезапуска прогона.
+                var dump = (await G.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct)).Value;
+                var dcs = (await G.RangeAsync(Endpoint, "/service/", ct)).Value;
+                var work = (await G.RangeAsync(Endpoint, "/pgworker/work/", ct)).Value;
+                var line =
+                    $"[diag] master-{shard}: попытка {i}: /clusters/{cluster}/* = {dump.Count}"
+                    + $" [{string.Join(", ", dump.Select(kv => kv.Key).Take(12))}];"
+                    + $" /service/* = {dcs.Count} [{string.Join(", ", dcs.Select(kv => kv.Key).Take(8))}];"
+                    + $" work = [{string.Join("; ", work.Select(kv => kv.Value[..Math.Min(120, kv.Value.Length)]))}]";
+                // Файловый канал: Console.Error раннер проглатывает (xUnit v3).
+                await File.AppendAllTextAsync(
+                    Path.Combine(Fx.ArtifactsDir, "diag.log"), line + "\n", ct);
+            }
+
             if (key is { Value.Length: > 0 })
             {
                 var addresses = await PortallocAsync(cluster);
@@ -421,18 +438,28 @@ public class E2eScaleScenarios
                              .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                              .OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
+                    var node = nodeKey.Split('/')[1];
                     try
                     {
-                        using var response = await PatroniHttp.GetAsync(
-                            $"https://localhost:{addr.Patroni}/primary", ct);
+                        var host = $"pgw-{cluster}-{shard}-{node}";
+                        // Изолированный клиент на пробу (диагностика общего
+                        // PatroniHttp: ObjectDisposedException в §8-3).
+                        using var http = Fx.NewPatroniHttpClient();
+                        using var response = await http.GetAsync(
+                            $"https://{host}:8008/primary", ct);
+                        await File.AppendAllTextAsync(
+                            Path.Combine(Fx.ArtifactsDir, "diag.log"),
+                            $"[diag] probe {node}: {(int)response.StatusCode}\n", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        var node = nodeKey.Split('/')[1];
-                        return new MasterInfo(node, addr.Pg, addr.Patroni,
-                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, host,
+                            $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
+                        await File.AppendAllTextAsync(
+                            Path.Combine(Fx.ArtifactsDir, "diag.log"),
+                            $"[diag] probe {node}: EXC {e}\n", ct);
                         // сетевой сбой пробы (рестарт/ещё не готова) — не primary
                     }
                 }
@@ -452,9 +479,9 @@ public class E2eScaleScenarios
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct))
             .Value!.Value;
-        using var http = E2eEnvironment.CreatePatroniHttpsClient();
+        var http = Fx.NewPatroniHttpClient();
         using var response = await http.SendAsync(
-            E2eEnvironment.PatroniPatch($"https://localhost:{master.PatroniPort}/config",
+            E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
                 restPassword, """{"synchronous_mode":true}"""),
             ct);
         response.IsSuccessStatusCode.Should().BeTrue(
@@ -487,7 +514,7 @@ public class E2eScaleScenarios
         {
             var master = await MasterInfoAsync(cluster, shard, ct);
             await using var con = new NpgsqlConnection(
-                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;" +
+                $"Host={master.Host};Port=5432;Database={cluster};Username=app;" +
                 $"Password={await Fx.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);

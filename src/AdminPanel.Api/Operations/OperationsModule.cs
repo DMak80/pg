@@ -211,7 +211,7 @@ public static class OperationsModule
             var result = await handler.HandleCommand<UpdateBackupsPolicyCommand, string>(
                 new UpdateBackupsPolicyCommand(cluster, request.RetentionDays, request.RetentionWeeks,
                     request.RetentionMonths, request.FullMaxAgeSec, request.VerifyOnCreate,
-                    request.DrillIntervalDays, user.Identity?.Name ?? "adminpanel"), ct);
+                    request.DrillIntervalDays, request.S3, user.Identity?.Name ?? "adminpanel"), ct);
             return result.IsSuccess ? Results.Ok(result.Value) : Error(result);
         });
 

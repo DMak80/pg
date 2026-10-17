@@ -18,7 +18,8 @@ public class VerifyJobCommandTests
         // Assert
         cmd.Should().HaveCount(3).And.HaveElementAt(0, "bash").And.HaveElementAt(1, "-c");
         var script = cmd[2];
-        script.Should().Contain("mc cp --recursive \"pgw/$PGW_BK_S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/\" \"$PGW_BK_STAGING_DIR/full/\"");
+        // t36: скачивание mc_copy_first с перебором нод пула ({A}-алиас).
+        script.Should().Contain("mc_copy_first \"{A}/$S3_BUCKET/$PGW_BK_PREFIX/full/$PGW_BK_ID/\" \"$PGW_BK_STAGING_DIR/full/\"");
         script.Should().Contain("pg_verifybackup \"$PGW_BK_STAGING_DIR/full\"");
     }
 
@@ -37,16 +38,6 @@ public class VerifyJobCommandTests
     }
 
     // AAA: McHost — scheme://ak:sk@authority с URL-escape кредов (секреты не в argv)
-    [Fact]
-    public void McHost_ФорматИEscape()
-    {
-        // Act
-        var value = VerifyJobCommand.McHost("http://minio:9000", "ak/1", "sk:2");
-
-        // Assert
-        value.Should().Be("http://ak%2F1:sk%3A2@minio:9000");
-    }
-
     // AAA: скрипт материализует S3_CA_PEM → SSL_CERT_FILE (t42, arch/19 §7)
     [Fact]
     public void Build_МатериализуетCaPem_и_SslCertFile()

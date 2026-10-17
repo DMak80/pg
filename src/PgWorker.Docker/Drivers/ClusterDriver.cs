@@ -100,6 +100,12 @@ public interface IClusterDriver
     // Живые контейнеры агентов кластера (состояние running/exited — супервиз).
     Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct);
 
+    // t36 (arch/19 §3): хвост лога wal-агента (поиск маркера pool_exhausted
+    // контролем DEGRADED). Контейнер ищется по имени на всех хостах —
+    // первый Success выигрывает (агент живёт на одном docker-хосте).
+    Task<Result<string>> BackupAgentLogsAsync(
+        string cluster, string containerName, int tailLines, CancellationToken ct);
+
     // Честная running-инспекция нод (arch/14 §5 C): InspectNodesAsync отражает
     // ФАКТ running-процесса, пустой результат = ноды нет. Plain — да; Swarm —
     // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
@@ -544,6 +550,23 @@ public sealed class PlainClusterDriver(
             .Select(n => n.TrimStart('/'))
             .Distinct()
             .ToList();
+    }
+
+    // t36: хвост лога агента — перебор хостов (404 не на этом хосте — дальше);
+    // первый Success — агент найден и прочитан.
+    public async Task<Result<string>> BackupAgentLogsAsync(
+        string cluster, string containerName, int tailLines, CancellationToken ct)
+    {
+        Result<string> last = default;
+        foreach (var engine in _engines.Values)
+        {
+            var logs = await engine.GetContainerLogsAsync(containerName, tailLines, ct);
+            if (logs.IsSuccess)
+                return logs;
+            last = logs;
+        }
+
+        return last;
     }
 
     // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый одноагентный формат,
@@ -1025,6 +1048,12 @@ public sealed class SwarmClusterDriver(
         string cluster, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(
             (IReadOnlyList<DockerContainer>)[]));
+
+    // t36: агенты в swarm не поднимаются — лог нечитаем (симметрия заглушки).
+    public Task<Result<string>> BackupAgentLogsAsync(
+        string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Failed(new ApplicationException(
+            "WAL-агенты бэкапов в Mode=Swarm не поддерживаются (arch/19 — plain-деплой)")));
 
     // Swarm: шаг пересоздания нод надзора — no-op (заглушка, симметрия
     // InspectNodesAsync): сервисы не инспектируются по env.

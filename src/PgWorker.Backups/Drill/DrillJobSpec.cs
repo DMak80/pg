@@ -15,14 +15,17 @@ public static class DrillJobSpec
     // id — идентификатор дрилла (имя контейнера/volume); backupId — РЕЗОЛВНУТЫЙ
     // валидацией полный (BACKUP_ID env: джоб качает full/<backup_id>/ — инцидент
     // E2E t05: в спеку уходил id заявки, mc «Object does not exist»).
+    // t36: s3Endpoints — read-список кластера; креды — env-профиля пула.
     public static ContainerSpec Build(
         BackupsRuntimeOptions opts, string cluster, string shard, string id,
-        string backupId, string dataDir = "/drill")
+        string backupId, IReadOnlyList<string> s3Endpoints, string s3AccessKey, string s3SecretKey,
+        string dataDir = "/drill")
     {
         var env = new Dictionary<string, string>
         {
-            [Restore.RestoreJobCommand.EnvMcHost] = Restore.RestoreJobCommand.McHost(
-                opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
+            [Restore.RestoreJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
+            [Restore.RestoreJobCommand.EnvS3AccessKey] = s3AccessKey,
+            [Restore.RestoreJobCommand.EnvS3SecretKey] = s3SecretKey,
             [Restore.RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [Restore.RestoreJobCommand.EnvSrcPrefix] = $"{cluster}/{shard}",
             [Restore.RestoreJobCommand.EnvBackupId] = backupId,

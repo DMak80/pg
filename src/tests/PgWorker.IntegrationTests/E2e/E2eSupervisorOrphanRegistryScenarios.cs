@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 
 // E2E orphan-реестра супервизора (t24/ревизия 8 — разбиение
 // E2eSupervisorScenarios; хелперы — копии): OrphanRegistry_TtlDelete.
-// E2eEnvironment (своя сеть/etcd/MinIO, динамические порты, полный teardown
+// E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
 // в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
 // кластера → wal=BROKEN → планировщик переснимает полный → цепь непрерывна от
@@ -24,7 +24,10 @@ public class E2eSupervisorOrphanRegistryScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -35,7 +38,7 @@ public class E2eSupervisorOrphanRegistryScenarios
     [Fact]
     public async Task Backup_OrphanRegistry_TtlDelete()
     {
-        // Arrange 1 — окружение bk-orf (withMinio), кластер bkorf<тег>, воркер с
+        // Arrange 1 — окружение bk-orf (withS3Node), кластер bkorf<тег>, воркер с
         //   Supervisor { IntervalSec=60, OrphanTtlSec=120 } (сжатое время)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
@@ -51,7 +54,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         //   mc-посев сиротского префикса ghost<тег>/shard1/full/20260901.../x
         //   (кластера ghost<тег> нет в /clusters/)
         var provisioned = await WaitPhaseAsync("provisioning",
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE (воркер-лидер)");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "orphan-seed");
 
@@ -104,7 +107,7 @@ public class E2eSupervisorOrphanRegistryScenarios
     private async Task RunScenarioAsync(
         string slug, Func<E2eEnvironment, Task> body, CancellationToken ct)
     {
-        var fx = await E2eEnvironment.StartAsync(slug, withMinio: true, ct: ct);
+        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
         try
         {
@@ -148,17 +151,18 @@ public class E2eSupervisorOrphanRegistryScenarios
         return ok;
     }
 
-    // Воркер самолечения: S3 на локальный MinIO, ускоренный бэкофф, ретенция
+    // Воркер самолечения: S3 на ownS3-ноду, ускоренный бэкофф, ретенция
     // выключена (IntervalSec большой — чистка не мешает сценарию), Wal-контроль
     // каждые 5 c (скорость BROKEN), сверка супервизора раз в 60 c.
     private Task<HostInstance> StartSupervisorHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -175,10 +179,11 @@ public class E2eSupervisorOrphanRegistryScenarios
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
@@ -196,12 +201,12 @@ public class E2eSupervisorOrphanRegistryScenarios
     private Task<string> RunDockerAsync(string[] args)
         => Fx.RunDockerAsync(args, TestContext.Current.CancellationToken);
 
-    // mc rm одного объекта (mc в сети MinIO окружения).
+    // mc rm одного объекта (mc в сети ownS3-ноды окружения).
     private Task McRmAsync(string key)
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc rm t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -211,7 +216,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         var output = await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc ls --recursive t/{Bucket}/{prefix} || true",
         ], TestContext.Current.CancellationToken);
         return output
@@ -225,7 +230,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && echo {content} >/tmp/f && mc cp /tmp/f t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -252,12 +257,18 @@ public class E2eSupervisorOrphanRegistryScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // без неё подсистема бэкапов кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -274,7 +285,7 @@ public class E2eSupervisorOrphanRegistryScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -291,7 +302,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):

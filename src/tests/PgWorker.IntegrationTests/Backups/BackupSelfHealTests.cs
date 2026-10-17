@@ -66,7 +66,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
-            sql, s3,
+            sql, FakePoolFactory.Single(s3),
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
@@ -76,12 +76,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
-        S3Endpoint: "http://minio",
-        S3AdvertisedEndpoint: "http://minio-agent",
         S3Bucket: "bkt",
-        S3AccessKey: "ak",
-        S3SecretKey: "sk",
-        S3PathStyle: true,
         JobImage: "pgworker-backup:test",
         StagingDir: "/backup-staging",
         WalVerifyIntervalSec: 0,
@@ -157,7 +152,8 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            Options(), TimeProvider.System, NullLogger<BackupProcess>.Instance);
+            Options(), FakePoolFactory.Single(new FakeBackupS3()), TimeProvider.System,
+            NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
         engine.Created.Should().NotBeEmpty("BROKEN лечится пересъёмом — джоб запущен");
@@ -216,6 +212,10 @@ public class BackupSelfHealTests(EtcdFixture fixture)
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
+    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(""));
+
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
         public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
         public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);

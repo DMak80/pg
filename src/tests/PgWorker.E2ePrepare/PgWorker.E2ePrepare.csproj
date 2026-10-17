@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- Ссылка на тестовый проект транзитивно включает xunit-генератор
+             точки входа — свой Program конфликтует (CS7022). -->
+        <GenerateProgramFile>false</GenerateProgramFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- build/analyzers отрезаны: без транзитивного xunit-генератора
+             точки входа (конфликт CS7022 со своим Program). -->
+        <ProjectReference Include="..\PgWorker.IntegrationTests\PgWorker.IntegrationTests.csproj"
+                          ExcludeAssets="build;buildTransitive;analyzers" />
+    </ItemGroup>
+
+</Project>

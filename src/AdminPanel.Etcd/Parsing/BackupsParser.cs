@@ -36,7 +36,7 @@ public static class BackupsParser
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
-        // t08: все etcd-полные per-shard (вход MinioReconciler и деталей шарда).
+        // t08: все etcd-полные per-shard (вход S3Reconciler и деталей шарда).
         var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;
@@ -224,9 +224,24 @@ public static class BackupsParser
                         && drillEl.ValueKind == JsonValueKind.Object)
                         drillIntervalDays = Int32Of(drillEl, "interval_days");
 
+                    // t36: секция s3 (pool + списки роли источника); битая → null
+                    // (правила backup-pool-* на мусоре молчат — как drill).
+                    BackupsPolicyS3Info? s3 = null;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("s3", out var s3El)
+                        && s3El.ValueKind == JsonValueKind.Object)
+                    {
+                        var pool = s3El.TryGetProperty("pool", out var p) && p.ValueKind == JsonValueKind.String
+                            ? p.GetString() : null;
+                        var master = StringListOf(s3El, "write_master");
+                        var replica = StringListOf(s3El, "write_replica");
+                        if (!string.IsNullOrEmpty(pool) && master is not null && replica is not null)
+                            s3 = new BackupsPolicyS3Info(pool!, master, replica);
+                    }
+
                     policiesFull[cluster] = new BackupsPolicyInfo(
                         retentionDays, retentionWeeks, retentionMonths,
-                        policies[cluster], verifyOnCreate, drillIntervalDays);
+                        policies[cluster], verifyOnCreate, drillIntervalDays, s3);
                 }
                 catch (JsonException e)
                 {
@@ -567,6 +582,23 @@ public static class BackupsParser
             : null;
 
     // reliability t02: целочисленные поля policy (days/weeks/months/interval_days).
+    // t36: массив строк из секции s3; не-массив/не-строчные элементы → null.
+    private static IReadOnlyList<string>? StringListOf(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty(name, out var el)
+            || el.ValueKind != JsonValueKind.Array)
+            return null;
+        var items = new List<string>();
+        foreach (var item in el.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+                return null;
+            items.Add(item.GetString()!);
+        }
+        return items;
+    }
+
     private static int? Int32Of(JsonElement root, string name)
         => Long(root, name) is { } v && v is >= int.MinValue and <= int.MaxValue ? (int?)v : null;
 

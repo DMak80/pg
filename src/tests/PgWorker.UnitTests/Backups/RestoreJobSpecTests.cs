@@ -13,13 +13,13 @@ public class RestoreJobSpecTests
     {
         // Arrange
         var opts = new BackupsRuntimeOptions(
-            Enabled: true, S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:dev",
+            Enabled: true, S3Bucket: "bkt",
+            JobImage: "pgworker-backup:dev",
             AgentCpu: 2, AgentMem: 4_000_000_000, RestoreRecoveryTimeoutSec: 77);
 
         // Act
         var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "pgw-c1-shard1-shard1a-data",
-            "2026-09-11T10:00:00Z", "srcc", "srcx");
+            "2026-09-11T10:00:00Z", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
@@ -37,7 +37,10 @@ public class RestoreJobSpecTests
         spec.Env!["PGW_RESTORE_DATA_DIR"].Should().Be("/restore");
         // внутри тома pgroot/data (volume-корень узла /home/postgres/pgdata)
         spec.Env!["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgroot/data");
-        spec.Env!["MC_HOST_pgwbkp"].Should().Contain("ak:sk@minio:9000");
+        // t36: env чтения — списки/креды (MC_HOST-алиасы строит скрипт).
+        spec.Env!["S3_ENDPOINTS"].Should().Be("http://m:9000");
+        spec.Env!["S3_ACCESS_KEY"].Should().Be("ak");
+        spec.Env!["S3_SECRET_KEY"].Should().Be("sk");
         spec.Hostname.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", "id9"));
         spec.Label.Should().Be("c1");
         spec.Network.Should().BeNull();
@@ -50,11 +53,10 @@ public class RestoreJobSpecTests
     public void Build_LatestTarget_EmptyTargetTime()
     {
         // Arrange
-        var opts = new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk");
+        var opts = new BackupsRuntimeOptions(S3Bucket: "bkt");
 
         // Act
-        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Env!["TARGET_TIME"].Should().BeEmpty();
@@ -67,9 +69,8 @@ public class RestoreJobSpecTests
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
         var spec = RestoreJobSpec.Build(
-            new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk") { S3CaBundlePath = caPath },
-            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+            new BackupsRuntimeOptions(S3Bucket: "bkt") { S3CaBundlePath = caPath },
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
         spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
     }
 
@@ -78,9 +79,8 @@ public class RestoreJobSpecTests
     public void Build_БезCaBundle_НетS3CaPem()
     {
         var spec = RestoreJobSpec.Build(
-            new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-                S3AccessKey: "ak", S3SecretKey: "sk"),
-            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+            new BackupsRuntimeOptions(S3Bucket: "bkt"),
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
     }
 
@@ -93,12 +93,12 @@ public class RestoreJobSpecTests
     {
         // Arrange
         var opts = new BackupsRuntimeOptions(
-            Enabled: true, S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
-            S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:dev",
+            Enabled: true, S3Bucket: "bkt",
+            JobImage: "pgworker-backup:dev",
             ContourNetwork: contour);
 
         // Act
-        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx", ["http://m:9000"], "ak", "sk");
 
         // Assert
         spec.Network.Should().Be(expectedNet);

@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 
 // E2E самолечения wal-цепочки (t24/ревизия 8 — разбиение E2eSupervisorScenarios
 // на однофактные; хелперы — копии, прецедент :385-386): ChainBroken.
-// E2eEnvironment (своя сеть/etcd/MinIO, динамические порты, полный teardown
+// E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
 // в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
 // Два сценария AC10: (1) ChainBroken_SelfHeals — дыра ВНУТРИ цепочки живого
 // кластера → wal=BROKEN → планировщик переснимает полный → цепь непрерывна от
@@ -24,7 +24,10 @@ public class E2eSupervisorSelfHealScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -37,7 +40,7 @@ public class E2eSupervisorSelfHealScenarios
     [Fact]
     public async Task Backup_ChainBroken_SelfHeals()
     {
-        // Arrange 1 — окружение bk-spr (withMinio), кластер bkspr<тег>, policy
+        // Arrange 1 — окружение bk-spr (withS3Node), кластер bkspr<тег>, policy
         //   full_max_age_sec=3600 (НЕ из-за возраста — триггер только BROKEN),
         //   verify on_create=false (не мешает), Wal VerifyIntervalSec=5,
         //   Supervisor IntervalSec=60; воркер
@@ -49,14 +52,14 @@ public class E2eSupervisorSelfHealScenarios
         var cluster = $"bkspr{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":3600,"verify":{"on_create":false}}""",
+            $$"""{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":3600,"verify":{"on_create":false},{{E2eEnvironment.PoolS3(Pool)}}}""",
             null, ct);
         await using var app = await StartSupervisorHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE; генерация WAL ДО полного (цепочка длиннее
         // одного сегмента), реальный COMPLETED полный; wal-ключ ACTIVE
         var provisioned = await WaitPhaseAsync("provisioning",
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
         var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
@@ -88,18 +91,10 @@ public class E2eSupervisorSelfHealScenarios
         // chain_start == last_uploaded (один сегмент — инцидент прогона
         // 2026-09-13: зафиксированное окно не могло набрать ≥2) — ждём, пока
         // агент унесёт цепь вперёд и в окне появится ≥2 сегмента.
-        var hostEndpoint = Fx.S3Endpoint.Replace(
-            "host.docker.internal:", "localhost:", StringComparison.Ordinal);
-        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = hostEndpoint,
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+        var hostEndpoint = Fx.S3Endpoint;
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var inChain = new List<string>();
+        List<(string Raw, string Canon)> windowCandidates = new();
         string? chainStartBefore = null;
         string? hole = null;
         string? holeRaw = null;
@@ -128,6 +123,7 @@ public class E2eSupervisorSelfHealScenarios
                 .OrderBy(x => x.Canon, StringComparer.Ordinal).ToList();
             inChain = candidates.Select(x => x.Canon).ToList();
             chainStartBefore = chainStart;
+            windowCandidates = candidates;
             if (hole is null)
             {
                 // Дыра — СЕРЕДИНА первого окна ≥2 сегментов (не хвост цепи);
@@ -155,12 +151,12 @@ public class E2eSupervisorSelfHealScenarios
         var replayTarget = LsnOf(PgWorker.Backups.WalFileName.TryParse(hole!)!.Value.Next().Name);
         var replicasPast = await WaitPhaseAsync("replicas-past-hole", async () =>
         {
-            foreach (var (_, port) in await Shard1PortsAsync(cluster))
+            foreach (var (node, port) in await Shard1PortsAsync(cluster))
             {
                 try
                 {
                     await using var conn = new NpgsqlConnection(
-                        DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
+                        DatabaseProvisioner.BuildAdminDsn($"pgw-{cluster}-shard1-{node}", port, cluster,
                             new InstallSecrets(E2eFixture.SuPassword, "", "", "")));
                     await conn.OpenAsync(ct);
                     // ВАЖНО (прогон 2026-09-13, c344501d): параметр-строка без каста
@@ -183,15 +179,80 @@ public class E2eSupervisorSelfHealScenarios
         replicasPast.Should().BeTrue(
             $"реплики шарда1 обязаны догнать дыру {hole} (LSN {replayTarget}) — " +
             "иначе среда нездорова (застрявшая реплика), логика t07 не проверяется");
-        await McRmAsync($"{cluster}/shard1/wal/{holeRaw}");
-
-        // Act 1 — WaitForAsync: wal-ключ содержит "BROKEN" (контроль каждые 5 c)
+        // Останавливаем ВСЕ агенты шарда до порчи (их по два, t07): живой агент
+        // переснимает сегмент раньше контрольного тика (5 c) — дыра заживает до
+        // BROKEN (прогон 2026-10-15: цепь осталась непрерывной). Пересъём —
+        // часть механики self-heal: супервизор на BROKEN пересоздаёт агентов.
+        var selfHealAgents = await Fx.RunDockerAsync(
+            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
+        foreach (var agentName in selfHealAgents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                     .Select(n => n.Trim()))
+            await Fx.RunDockerAsync(["stop", agentName], ct);
+        // Act 1 — порча + ожидание BROKEN (контроль 1 c). Окно дыры мало:
+        // супервизор пересоздаёт остановленных агентов за ScanInterval (1 c) и
+        // пересъём заживает дыру за секунды — если первый заход не дошёл до
+        // BROKEN (пересъём выиграл), повторяем: перечитываем окно и портим
+        // новую середину (прогон 2026-10-15: две попытки — норма).
         var brokenRaw = default(Kv?);
-        var broken = await WaitPhaseAsync("wal-broken", async () =>
+        var broken = false;
+        List<(string Raw, string Canon)> doomed = new();
+        for (var attempt = 1; attempt <= 2 && !broken; attempt++)
         {
-            brokenRaw = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
-            return brokenRaw?.Value.Contains("BROKEN") == true;
-        }, TimeSpan.FromSeconds(120), ct);
+            if (attempt > 1)
+            {
+                // Перечитываем окно цепи: chain_start/last_uploaded могли уйти.
+                var again = await WaitPhaseAsync($"wal-chain-depth-{attempt}", async () =>
+                {
+                    var walRaw2 = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+                    if (walRaw2 is null)
+                        return false;
+                    var doc2 = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(walRaw2.Value)!;
+                    var cs = doc2["chain_start_segment"].GetString();
+                    var lu = doc2["last_uploaded_segment"].GetString();
+                    if (string.IsNullOrEmpty(cs) || string.IsNullOrEmpty(lu))
+                        return false;
+                    var listed2 = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
+                    var candidates2 = listed2.Value
+                        .Select(o => o.Key.Split('/')[^1])
+                        .Select(raw => (Raw: raw, Canon: PgWorker.Backups.WalFileName.TryParse(raw)?.Name))
+                        .Where(x => x.Canon is not null)
+                        .Select(x => (x.Raw, Canon: x.Canon!))
+                        .Where(x => string.CompareOrdinal(x.Canon, cs) >= 0
+                                    && string.CompareOrdinal(x.Canon, lu) <= 0)
+                        .OrderBy(x => x.Canon, StringComparer.Ordinal).ToList();
+                    if (candidates2.Count < 2)
+                        return false;
+                    // Дыра обязана остаться глубоко в истории (≥2 после — инвариант
+                    // пересъёма: новый полный стартует выше неё).
+                    if (candidates2.Count(x => string.CompareOrdinal(
+                            x.Canon, candidates2[candidates2.Count / 2].Canon) > 0) < 2)
+                        return false;
+                    windowCandidates = candidates2;
+                    holeRaw = candidates2[candidates2.Count / 2].Raw;
+                    hole = candidates2[candidates2.Count / 2].Canon;
+                    return true;
+                }, TimeSpan.FromSeconds(120), ct);
+                if (!again)
+                    break;
+                // Гейт реплик не повторяется: реплики у кончика цепи (проверено
+                // первым заходом), новая дыра — по построению ≥2 сегмента от хвоста.
+            }
+
+            // Порча СЕРИЕЙ: hole и каждый второй после него. Первый пропуск от
+            // chain_start — hole (GapError называет его); серия переживёт
+            // пересъём пустых сегментов при рестарте агента (слот не несёт
+            // границ пустых сегментов — границы не восстановимы стримом).
+            var holeIdx = windowCandidates.FindIndex(x => x.Raw == holeRaw);
+            doomed = windowCandidates.Skip(holeIdx)
+                .Where((_, i) => i % 2 == 0).ToList();
+            foreach (var victim in doomed)
+                await McRmAsync($"{cluster}/shard1/wal/{victim.Raw}");
+            broken = await WaitPhaseAsync($"wal-broken-{attempt}", async () =>
+            {
+                brokenRaw = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+                return brokenRaw?.Value.Contains("BROKEN") == true;
+            }, TimeSpan.FromSeconds(60), ct);
+        }
         if (!broken)
             throw new ApplicationException(
                 $"wal-ключ не дошёл до BROKEN: [{brokenRaw?.Value ?? "нет ключа"}]");
@@ -200,7 +261,11 @@ public class E2eSupervisorSelfHealScenarios
         // сегмент («дыра WAL-цепочки: ожидался <hole>, найден …»)
         var brokenDoc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(brokenRaw!.Value)!;
         brokenDoc["state"].GetString().Should().Be("BROKEN");
-        brokenDoc["error"].GetString().Should().Contain(hole, "GapError называет границу дыры");
+        // GapError называет ПЕРВУЮ невосстановленную границу — при серийной порче
+        // пересъём мог восстановить начало серии (дыра в середине) до контрольного
+        // тика: границей может стать любой хвост серии.
+        brokenDoc["error"].GetString().Should().ContainAny(
+            doomed.Select(d => d.Canon).ToArray(), "GapError называет границу дыры");
         brokenDoc["chain_start_segment"].GetString().Should().NotBeNullOrEmpty("граница разрыва в chain_start");
 
         // Act 2 — новый полный с id ≠ старого (планировщик реагирует на BROKEN),
@@ -275,7 +340,7 @@ public class E2eSupervisorSelfHealScenarios
     private async Task RunScenarioAsync(
         string slug, Func<E2eEnvironment, Task> body, CancellationToken ct)
     {
-        var fx = await E2eEnvironment.StartAsync(slug, withMinio: true, ct: ct);
+        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
         try
         {
@@ -319,17 +384,18 @@ public class E2eSupervisorSelfHealScenarios
         return ok;
     }
 
-    // Воркер самолечения: S3 на локальный MinIO, ускоренный бэкофф, ретенция
+    // Воркер самолечения: S3 на ownS3-ноду, ускоренный бэкофф, ретенция
     // выключена (IntervalSec большой — чистка не мешает сценарию), Wal-контроль
     // каждые 5 c (скорость BROKEN), сверка супервизора раз в 60 c.
     private Task<HostInstance> StartSupervisorHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -337,24 +403,8 @@ public class E2eSupervisorSelfHealScenarios
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "3600",
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
             ["PgWorker__Backups__Retention__IntervalSec"] = "3600",
-            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "5",
+            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "1",
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
-        }, ct: ct);
-
-    // Воркер сценария сирот: реестр+TTL в сжатом времени; verify off.
-    private Task<HostInstance> StartOrphanHostAsync(string name, CancellationToken ct)
-        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
-        {
-            ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
-            ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
-            ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
-            ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
-            ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "120",
         }, ct: ct);
 
     private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
@@ -367,12 +417,12 @@ public class E2eSupervisorSelfHealScenarios
     private Task<string> RunDockerAsync(string[] args)
         => Fx.RunDockerAsync(args, TestContext.Current.CancellationToken);
 
-    // mc rm одного объекта (mc в сети MinIO окружения).
+    // mc rm одного объекта (mc в сети ownS3-ноды окружения).
     private Task McRmAsync(string key)
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc rm t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -382,7 +432,7 @@ public class E2eSupervisorSelfHealScenarios
         var output = await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && mc ls --recursive t/{Bucket}/{prefix} || true",
         ], TestContext.Current.CancellationToken);
         return output
@@ -396,7 +446,7 @@ public class E2eSupervisorSelfHealScenarios
         => Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                   + $" && echo {content} >/tmp/f && mc cp /tmp/f t/{Bucket}/{key}",
         ], TestContext.Current.CancellationToken);
 
@@ -423,12 +473,16 @@ public class E2eSupervisorSelfHealScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // ниже (с секцией s3 — без неё подсистема кластера молчит).
+        await Fx.SeedS3PoolAsync(Pool, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -445,7 +499,7 @@ public class E2eSupervisorSelfHealScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -462,7 +516,7 @@ public class E2eSupervisorSelfHealScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):
@@ -498,8 +552,10 @@ public class E2eSupervisorSelfHealScenarios
         return $"{bytes >> 32:X}/{bytes & 0xFFFFFFFF:X}";
     }
 
-    // Published pg-порты ОБОИХ нод шарда1 из portalloc (host опускаем — ходим
-    // с хоста по localhost, как MasterPgAsync).
+    // Внутрисетевые адреса ОБОИХ нод шарда1: СПИСОК нод — из portalloc, а
+    // порт — контейнерный 5432 (контур Варианта A без host-публикаций:
+    // portalloc-pg из раннера не слушается — connection rejected на каждой
+    // пробе; ср. MasterPgAsync — тоже внутрисетевой 5432).
     private async Task<List<(string Node, int Port)>> Shard1PortsAsync(string cluster)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}",
@@ -508,7 +564,7 @@ public class E2eSupervisorSelfHealScenarios
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         return entries
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal))
-            .Select(p => (p.Key.Split('/')[1], p.Value.GetProperty("pg").GetInt32()))
+            .Select(p => (p.Key.Split('/')[1], 5432))
             .ToList();
     }
 

@@ -15,6 +15,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
+using PgWorker.Etcd.S3;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Moves;
@@ -56,12 +57,19 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Api:AdvertiseUrl обязан быть https:// (mTLS-only API, arch/14 §1.1)")
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
-    .Validate(o => o.Backups.IsValid(),
-        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
+    // t36: Enabled=true требует непустой Bucket + хотя бы один env-профиль
+    // кредов пулов (arch/19 §7/§9 — единый endpoint записи ушёл). Профили —
+    // из DI-store (единый экземпляр с полупарами/регистрацией ниже): валидация
+    // проверяет ТО, чем приложение пользуется (new Store() в лямбде читал env
+    // мимо DI и делал валидацию несовместимой с тестовыми хостами).
+    .Validate<BackupSecretProfileStore>(
+        (o, profiles) => o.Backups.IsValid(profiles.ProfileNames.Count),
+        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один профиль PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
     // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
-    // S3-комплект из Backups:S3 (Backups:Enabled не нужен); диапазоны — всегда.
-    .Validate(o => o.Snapshots.Export.IsValid(o.Backups.S3),
-        "PgWorker:Snapshots:Export: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
+    // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (t36, env
+    // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
+    .Validate(o => o.Snapshots.Export.IsValid(),
+        "PgWorker:Snapshots:Export: Enabled=true требует полную пару PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
@@ -75,6 +83,17 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Docker:RestTls обязателен: оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
         "(per-install CA для REST-TLS нод; HTTP-режим не существует)")
     .ValidateOnStart();
+
+// t36 (arch/19 §9): полупары env-профилей кредов пулов — fail-fast старта
+// (ACCESS_KEY без SECRET_KEY — мусорный деплой, резолверу creds не бывает).
+// Единый экземпляр store: та же инстанция уходит в DI (валидация выше читает
+// её же — инвариант «валидация == то, чем пользуется резолвер»).
+var backupProfiles = new BackupSecretProfileStore();
+var halfPairs = backupProfiles.ValidateEnvPairs();
+if (halfPairs.Count > 0)
+    throw new ApplicationException(
+        $"PGW_BACKUP_S3_PROFILES__: полупары env-профилей (ACCESS_KEY и SECRET_KEY задаются вместе): {string.Join(", ", halfPairs)}");
+builder.Services.AddSingleton(backupProfiles);
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
@@ -353,7 +372,9 @@ builder.Services.AddSingleton(sp =>
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return opts.Snapshots.Export.Enabled
         ? new EtcdSnapshotSink(
-            new BackupS3(opts.BackupsRuntime()),
+            // t36: цель слепков — ОТДЕЛЬНАЯ пара PgWorker:Snapshots:Export:S3
+            // (env PGW_SNAPSHOTS_S3_*; arch/14 §6/§8 — не креды пулов бэкапов).
+            new BackupS3(EtcdSnapshotSinkFactory.Create(opts)),
             sp.GetRequiredService<IEtcdGateway>(),
             opts.Etcd.Endpoints,
             opts.Snapshots.Export.RetentionObjects,
@@ -612,6 +633,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
@@ -627,7 +649,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
@@ -664,7 +686,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IClusterDriver>(),
         sp.GetRequiredService<ShardEndpoints>(),
         sp.GetRequiredService<IWalSqlExecutor>(),
-        sp.GetRequiredService<IBackupS3>(),
+        sp.GetRequiredService<BackupS3Factory>(),
         new WalStatusWriter(sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints),
         sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
@@ -680,22 +702,38 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+// t36: пул S3 бэкапов — чтение /s3/, резолвер policy→списки, фабрика пула-клиента.
+builder.Services.AddSingleton<IS3PoolStore>(sp => new PgWorker.Etcd.S3.S3PoolStore(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Etcd.S3.S3PoolStore>()));
+builder.Services.AddSingleton(sp => new BackupPoolResolver(
+    sp.GetRequiredService<IS3PoolStore>(),
+    sp.GetRequiredService<BackupSecretProfileStore>(),
+    policyReader: new BackupPolicyReader(
+        sp.GetRequiredService<IEtcdGateway>(),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints).ReadAsync));
+builder.Services.AddSingleton(sp => new BackupS3Factory(
+    sp.GetRequiredService<BackupPoolResolver>(),
+    sp.GetRequiredService<IS3PoolStore>(),
+    sp.GetRequiredService<BackupSecretProfileStore>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3Bucket,
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3CaBundlePath,
+    // Пер-попыточный таймаут S3-запроса (arch/19 §5): половина окна watchdog.
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec / 2.0)));
 // Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
 // Enabled=false — no-op (гвард в процессе дублирует guard цикла).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IS3PoolStore>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
-// S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
-// Backups без рестарта воркера пересоздаёт клиента при первом же вызове
-// (асимметрия «выключение работает, включение нет» устранена).
-builder.Services.AddSingleton<IBackupS3, ReloadableBackupS3>();
 
 // Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup-джобы;
 // verifyObserver — counter pgworker_backup_verify_total{result}.
@@ -704,7 +742,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime(),
@@ -721,7 +759,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
@@ -738,7 +776,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSupervisorProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
@@ -753,7 +791,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphanSweeper(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IS3PoolStore>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
@@ -858,155 +897,6 @@ static InstallSecrets SecretsFromEnv()
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
 
-// S3-клиент подсистемы бэкапов с горячей конфигурацией (ревью Ф7 №3): секция
-// PgWorker:Backups читается CurrentValue при КАЖДОМ вызове; смена опций (record-
-// равенство) пересоздаёт клиента (креды/endpoint актуальны сразу после reload).
-// Enabled=false → отказ "Backups:Enabled=false" (семантика заглушки: WalStreamProcess
-// при runtime()==null уходит в стоп-семантику, не доходя до S3; ошибки list —
-// консервативный сигнал, если зовут мимо процесса).
-file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) : IBackupS3, IAsyncDisposable
-{
-    private readonly object _gate = new();
-    private (BackupsRuntimeOptions Config, BackupS3 Client)? _current;
-    private bool _disposed;
-
-    // Клиент под ТЕКУЩУЮ конфигурацию (ленивая инициализация + пересоздание);
-    // устаревший клиент диспозится ВНЕ lock (IAsyncDisposable).
-    private async ValueTask<IBackupS3> CurrentAsync()
-    {
-        BackupS3? stale = null;
-        IBackupS3 current;
-        lock (_gate)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(ReloadableBackupS3));
-            var runtime = options.CurrentValue.Backups.Enabled
-                ? options.CurrentValue.BackupsRuntime()
-                : null;
-
-            if (_current is { } pair && (runtime is null || pair.Config != runtime))
-            {
-                stale = pair.Client; // старый конфиг (креды/endpoint) неактуален
-                _current = null;
-            }
-
-            if (runtime is null)
-                current = DisabledBackupS3.Instance;
-            else
-            {
-                // Пер-попыточный таймаут — производный окна watchdog (полокна,
-                // arch/14 §6 / arch/19 §5): S3-вызов конечен, пульс S3Pulse
-                // вокруг него легитимен.
-                _current ??= (runtime, new BackupS3(runtime, TimeSpan.FromSeconds(
-                    Math.Max(1, options.CurrentValue.Loops.Watchdog.CheckIntervalSec / 2))));
-                current = _current.Value.Client;
-            }
-        }
-
-        if (stale is not null)
-            await stale.DisposeAsync();
-        return current;
-    }
-
-    public async Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
-        => await (await CurrentAsync()).BucketExistsAsync(ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
-        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
-        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListPrefixAsync(prefix, maxKeysPerTest, ct);
-
-    public async Task<Result> DeleteKeysAsync(
-        IReadOnlyList<string> keys, CancellationToken ct = default)
-        => await (await CurrentAsync()).DeleteKeysAsync(keys, ct);
-
-    public async Task<Result> PutObjectAsync(
-        string key, byte[] data, string? sha256, CancellationToken ct = default)
-        => await (await CurrentAsync()).PutObjectAsync(key, data, sha256, ct);
-
-    public async Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
-        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct);
-
-    public async Task<Result<string>> GetObjectAsync(
-        string cluster, string shard, string key, CancellationToken ct = default)
-        => await (await CurrentAsync()).GetObjectAsync(cluster, shard, key, ct);
-
-    public async Task<Result<IReadOnlyList<string>>> ListFullsAsync(
-        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-        => await (await CurrentAsync()).ListFullsAsync(cluster, shard, maxKeysPerTest, ct);
-
-    public async Task<Result<string>> DownloadTextAsync(
-        string cluster, string shard, string objectKey, CancellationToken ct = default)
-        => await (await CurrentAsync()).DownloadTextAsync(cluster, shard, objectKey, ct);
-
-    public async ValueTask DisposeAsync()
-    {
-        BackupS3? client;
-        lock (_gate)
-        {
-            _disposed = true;
-            client = _current?.Client;
-            _current = null;
-        }
-
-        if (client is not null)
-            await client.DisposeAsync();
-    }
-
-    // Заглушка выключенной подсистемы: list не зовётся штатным путём (стоп-семантика).
-    private sealed class DisabledBackupS3 : IBackupS3
-    {
-        public static readonly DisabledBackupS3 Instance = new();
-
-        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
-            => Task.FromResult(Result<bool>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
-            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
-            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result> DeleteKeysAsync(
-            IReadOnlyList<string> keys, CancellationToken ct = default)
-            => Task.FromResult(Result.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result> PutObjectAsync(
-            string key, byte[] data, string? sha256, CancellationToken ct = default)
-            => Task.FromResult(Result.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
-            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<string>> GetObjectAsync(
-            string cluster, string shard, string key, CancellationToken ct = default)
-            => Task.FromResult(Result<string>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
-            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
-            => Task.FromResult(Result<IReadOnlyList<string>>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-
-        public Task<Result<string>> DownloadTextAsync(
-            string cluster, string shard, string objectKey, CancellationToken ct = default)
-            => Task.FromResult(Result<string>.Failed(
-                new ApplicationException("Backups:Enabled=false")));
-    }
-}
 
 // WAF-тесты (PgWorker.IntegrationTests/Api): точка входа как public partial.
 public partial class Program;

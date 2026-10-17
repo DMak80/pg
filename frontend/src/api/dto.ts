@@ -807,7 +807,7 @@ export interface ValkeyCaRotationDto {
 export type BackupReconcileStatusName = 'Ok' | 'S3Only' | 'EtcdOnly' | 'InProgress' | 'Deleting';
 
 // GET /api/backups/storage — сводка (без S3-ключей никогда — AC8).
-export interface MinioHealthDto {
+export interface S3HealthDto {
   apiOk: boolean;
   apiError: string | null;
   liveOk: boolean;
@@ -853,6 +853,18 @@ export interface BackupPolicyDto {
   fullMaxAgeSec: number | null;
   verifyOnCreate: boolean | null;
   drillIntervalDays: number | null;
+  // t36: секция s3 policy (arch/19 §4); null — пул не выбран.
+  s3: { pool: string; writeMaster: string[]; writeReplica: string[] } | null;
+}
+
+// Пул S3 read-минимум (t36, adminpanel/02 §12; GET /api/backups/s3-pools) —
+// без ключей/секретов: имена/состояния нод + endpoints.
+export interface S3PoolDto {
+  name: string;
+  secretProfile: string | null;
+  active: boolean;
+  nodes: { name: string; state: string | null }[];
+  endpoints: string[];
 }
 
 export interface BackupOrphanDto {
@@ -895,9 +907,10 @@ export interface EtcdSnapshotsDto {
 export interface BackupStorageDto {
   configured: boolean;
   notConfiguredReason: string | null;
-  endpoint: string | null;
+  // t36 (adminpanel/02 §2.5): цели инвентаря списком (ноды пула), без ключей.
+  endpoints: string[];
   bucket: string | null;
-  health: MinioHealthDto | null;
+  health: S3HealthDto | null;
   buckets: string[];
   etcd: BackupStorageEtcdDto | null;
   etcdSnapshots: EtcdSnapshotsDto | null;

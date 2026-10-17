@@ -50,7 +50,7 @@ public class E2ePgtuneScenarios
 
         // Act: provisioning до Active.
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -106,7 +106,7 @@ public class E2ePgtuneScenarios
         await SeedClusterAsync(cluster, requestMem: "4Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -197,7 +197,7 @@ public class E2ePgtuneScenarios
         }
 
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("после посева обязательных заявок provisioning должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -240,7 +240,7 @@ public class E2ePgtuneScenarios
         await SeedClusterAsync(cluster, requestMem: "8Gi", ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
@@ -264,8 +264,8 @@ public class E2ePgtuneScenarios
         // Assert (а): GET /config несёт пересчитанные параметры (динамика +
         // postmaster) — тик надзора патчит DCS одним документом.
         var configUpdated = await E2eFixture.WaitForAsync(async () =>
-            await GetPatroniParameterAsync(master.PatroniPort, "shared_buffers", ct) == "4GB"
-            && await GetPatroniParameterAsync(master.PatroniPort, "effective_cache_size", ct) == "12GB",
+            await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "4GB"
+            && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "12GB",
             TimeSpan.FromSeconds(120), ct);
         configUpdated.Should().BeTrue("тик надзора обязан патчить DCS-конфиг от новой заявки; " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
@@ -282,7 +282,7 @@ public class E2ePgtuneScenarios
         // /patroni), рестарт воркером НЕ инициируется: контейнеры живы;
         // применённое значение ещё 2GB (bootstrap-расчёт).
         var pending = await E2eFixture.WaitForAsync(async () =>
-            (await GetPatroniFieldAsync(master.PatroniPort, "pending_restart", ct)) == "true",
+            (await GetPatroniFieldAsync(master.Host, "pending_restart", ct)) == "true",
             TimeSpan.FromSeconds(60), ct);
         pending.Should().BeTrue("Patroni обязан пометить postmaster-расхождение pending_restart");
         (await SqlScalarAsync(master.Dsn, "SELECT current_setting('shared_buffers')", ct))
@@ -308,8 +308,8 @@ public class E2ePgtuneScenarios
         (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "8Gi", null, ct))
             .IsSuccess.Should().BeTrue("заявка request_mem должна вернуться к 8Gi");
         var rolledBack = await E2eFixture.WaitForAsync(async () =>
-            await GetPatroniParameterAsync(master.PatroniPort, "shared_buffers", ct) == "2GB"
-            && await GetPatroniParameterAsync(master.PatroniPort, "effective_cache_size", ct) == "6GB",
+            await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "2GB"
+            && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "6GB",
             TimeSpan.FromSeconds(120), ct);
         rolledBack.Should().BeTrue("уменьшение значений тоже конвергируется (патч вниз); " +
                                    $"work={await WorkDumpAsync(cluster, ct)}");
@@ -318,7 +318,7 @@ public class E2ePgtuneScenarios
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Сид кластера в стиле панели (02 §9.1): заявки request_* опциональны —
     // сценарий отсутствия заявок сеет без них.
@@ -396,9 +396,9 @@ public class E2ePgtuneScenarios
     // ищется подстрокой: Patroni сериализует ответ json.dumps'ом С ПРОБЕЛАМИ
     // ({"shared_buffers": "4GB"}) — компактные Contains не совпадают никогда
     // (разбор по инциденту первого прогона t11, 2026-09-14).
-    private static async Task<string?> GetPatroniParameterAsync(int patroniPort, string name, CancellationToken ct)
+    private async Task<string?> GetPatroniParameterAsync(string patroniHost, string name, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/config", ct);
+        using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/config", ct);
         response.IsSuccessStatusCode.Should().BeTrue($"GET /config → HTTP {(int)response.StatusCode}");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var root = doc.RootElement;
@@ -419,9 +419,9 @@ public class E2ePgtuneScenarios
     }
 
     // Поле корня GET /patroni (например, pending_restart) raw-текстом ("true").
-    private static async Task<string?> GetPatroniFieldAsync(int patroniPort, string field, CancellationToken ct)
+    private async Task<string?> GetPatroniFieldAsync(string patroniHost, string field, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/patroni", ct);
+        using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/patroni", ct);
         if (!response.IsSuccessStatusCode)
             return null;
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -495,7 +495,7 @@ public class E2ePgtuneScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
+    private sealed record MasterInfo(string Node, string Host, string Dsn);
 
     // Мастер шарда: резолв по контракту arch/14 §5 C — проба /primary по
     // patroni-портам portalloc (приём E2eScaleScenarios.MasterInfoAsync:
@@ -512,15 +512,16 @@ public class E2ePgtuneScenarios
                              .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                              .OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
+                    var node = nodeKey.Split('/')[1];
                     try
                     {
+                        var host = $"pgw-{cluster}-{shard}-{node}";
                         using var response = await PatroniHttp.GetAsync(
-                            $"https://localhost:{addr.Patroni}/primary", ct);
+                            $"https://{host}:8008/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        var node = nodeKey.Split('/')[1];
-                        return new MasterInfo(node, addr.Pg, addr.Patroni,
-                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, host,
+                            $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
                     catch (Exception)
                     {

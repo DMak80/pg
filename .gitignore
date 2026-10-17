@@ -30,4 +30,7 @@ deploy/.env
 # Производный файл секретов нод s3worker (env_file, собирает 00-up.sh из .env;
 # прод — создаёт оператор per-install)
 deploy/s3w-node-secrets.env
+# Производный файл env-профилей кредов пулов pgworker (t36, env_file; собирает
+# 00-up.sh из .env; прод — создаёт оператор per-install)
+deploy/pgw-s3-profiles.env
 artifacts/

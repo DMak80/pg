@@ -53,7 +53,7 @@ public sealed class WalStreamLagRule(IOptions<AlertsOptions> options) : IAlertRu
                 null,
                 "проверь контейнер pgw-backup-wal-<C>-<X> и S3-доступность; воркер ретраит тиками (transient — самооздоровление, arch/19 §3)",
                 AlertRemedy.WorkerAuto,
-                "transient-деградация: exited-агент пересоздаётся супервизом воркера; висит — проверь креды backup_exec/доступность MinIO");
+                "transient-деградация: exited-агент пересоздаётся супервизом воркера; висит — проверь креды backup_exec/доступность S3-хранилища");
         }
     }
 }

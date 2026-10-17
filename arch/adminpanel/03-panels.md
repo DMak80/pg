@@ -49,7 +49,7 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `GET /api/reliability` | грань «Надёжность» (read-only): per-cluster/per-shard RPO-блок (mode wal/full/off, возраст валидного полного + id, лаг/возраст WAL, сводный RPO-потенциал, порог) и RTO-блок (последний failover/rebuild с cause/duration/ongoing, длительности последнего drill/restore); всегда 200 с пустыми секциями при выключенных подсистемах, 503 — нет снапшота |
 | `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (t08, 02 §2.5) |
 | `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
-| `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в MinIO на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
+| `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в S3-хранилище на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
 | `GET /api/workers` | грань «Воркеры»: по `pgworker`/`kafkaworker` — живые инстансы (instance, url, since, health, cert_thumbprint), ЦЕЛЕВОЙ серт из `/workers/api_tls/<worker>` (метаданные: subject, issuer, SAN, not_before/not_after, sha256-thumbprint, updated_unix/by; PEM не отдаётся) и статус применения per-instance: `applied` \| `pending restart` \| `unmanaged` (ключа нет — env-серт) \| `unknown` (инстанс без thumbprint) |
 | `POST /api/workers/{worker}/api-cert/generate` | сгенерировать self-signed серверный лист и записать в etcd (02 §9.9): без тела → 201 `{worker, thumbprint, updatedUnix, updatedBy, restartRequired:true}` \| 422 (влияет на исходящие — не записан) \| 503 |
@@ -379,7 +379,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 
 Грань «Хранилище бэкапов» (t08): `BackupStorageDto`,
 `BackupShardStorageDto`, `BackupObjectsPageDto` (+ вложенные `BackupFullDto`,
-`BackupWalDto`, `BackupOrphanDto`, `MinioHealthDto`); camelCase; S3-ключи
+`BackupWalDto`, `BackupOrphanDto`, `S3HealthDto`); camelCase; S3-ключи
 (AccessKey/SecretKey) НЕ отдаются никогда.
 
 ## 3. Панели UI
@@ -387,7 +387,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | Панель | Что показывает |
 |---|---|
 | **Login** | форма логин/пароль; ошибка 401 |
-| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит); карточка «Бэкапы»: health S3-хранилища (бейджи api/live, cluster — «n/a» вне MinIO-контура) + место (used/quota, state-бейдж OK/WARN/CRIT воркера, live-факт) — клиентская агрегация `GET /api/backups/storage` (по образцу HA-агрегации, `OverviewDto` backup-полей не содержит); карточка «Надёжность»: worst RPO-потенциал по Active-кластерам, число шардов mode=full («RPO держится только полным») и mode=off, длительность последнего failover установки — клиентская агрегация `GET /api/reliability` |
+| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит); карточка «Бэкапы»: health S3-хранилища (бейджи api/live, cluster — «n/a» вне ownS3-контура) + место (used/quota, state-бейдж OK/WARN/CRIT воркера, live-факт) — клиентская агрегация `GET /api/backups/storage` (по образцу HA-агрегации, `OverviewDto` backup-полей не содержит); карточка «Надёжность»: worst RPO-потенциал по Active-кластерам, число шардов mode=full («RPO держится только полным») и mode=off, длительность последнего failover установки — клиентская агрегация `GET /api/reliability` |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (t06, по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
 | **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; блок «Журнал воркера» — поле `work` деталей: последний op/phase/updated/last_error процесса (результат исполненной/отвергнутой заявки)), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, бейдж режима «strict»/«availability» (t06, по
@@ -402,7 +402,7 @@ Active; не-Active — контрол заблокирован с подска�
 | **Надёжность** | `/reliability` (read-only): таблица кластер×шард — RPO-колонки (возраст валидного полного с индикацией по порогу policy + id, лаг WAL сегм., возраст WAL-хвоста, «потеряем ≈ N» с индикацией источника wal/full/off; клик по id полного — переход к деталям шарда грани бэкапов) + RTO-колонки (последний failover: длительность/когда/cause/node; последний rebuild: аналогично; drill: итог+длительность; restore: итог+длительность); ongoing-значения — бейдж «идёт» с тикающей длительностью; polling — общий переключатель; форм ввода нет |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
 | **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker/ValkeyWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
-| **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets, etcd-снапшоты (reliability t08: последняя выгрузка — время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only); таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Без форм ввода |
+| **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets, etcd-снапшоты (reliability t08: последняя выгрузка — время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only); таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки; колонка «Пул» — бейдж имени пула policy либо красный «пул не выбран», кнопка «Пул бэкапов» per-кластер → модал §3.8: Select пула + два упорядоченных списка мастера/реплики из нод пула); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Единственная форма ввода — модал «Пул бэкапов» (§3.8; мутация — прокси в policy-API воркера, 02 §9.12) |
 | **S3Clusters** / **S3ClusterDetails** | модуль S3 — §12.3 (вкладки Ноды/Репликация/Связность и синхронность) |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
@@ -556,6 +556,27 @@ S3Worker (02 §9.9). В каждой:
 PEM-материалы (cert/key) в UI не отображаются и в API не отдаются — только
 метаданные.
 
+### 3.8. Форма «Пул бэкапов»
+
+Модальный диалог страницы `/backups-storage` (кнопка per-кластера в таблице
+«Кластеры → шарды», §3; Mantine Modal + Select + Checkbox — без
+DnD-библиотек). Поля:
+
+- **Select «Пул»**: Active-кластеры `/s3/clusters/` (имя + подсказка числа
+  нод; проекция — 02 §12); вариант «Не выбрано» — допустимое сохраняемое
+  значение (выключение бэкапов кластера, policy шлётся без `s3`).
+- **Два упорядоченных списка нод выбранного пула**: «Запись мастера»
+  (`write_master`) и «Запись реплики» (`write_replica`) — чекбоксами
+  (чекбокс добавляет имя в КОНЕЦ массива — приоритет; снятие удаляет),
+  порядок кнопками ↑/↓; подпись-пояснение: разные ноды мастера/реплики
+  разводят потоки записи (отказ ноды с диском не убивает оба), одна нода —
+  общий случай.
+- Сохранение — полный policy (retention + full_max_age_sec + verify +
+  drill + s3; замещение целиком — 02 §9.12) через
+  `PUT /api/clusters/{c}/backups/policy`; ошибки ProblemDetails в теле
+  модала (400 — по полям валидации воркера, 503 — «воркер/etcd
+  недоступен»); двойной клик исключён блокировкой кнопки на время мутации.
+
 ## 4. Каталог алертов (`AlertEngine`)
 
 Чистая функция `Snapshot → Alert[]`; severity: `critical` (прод горит),
@@ -587,9 +608,11 @@ PEM-материалы (cert/key) в UI не отображаются и в API 
 | `sync-standby-missing` | strict ? critical : warning (t06: strict — запись блокирована, инцидент; не-strict — предусловие переездов) | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов); Hint/Remedy (t06): для strict ремеди «запись блокирована — восстановите реплику (rebuild воркера) или выключите strict (PUT config)» | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
-| `backup-s3-unreachable` | warning | грань настроена && инвентарь-тик MinIO падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | MinIO live-тик (02 §2.5) |
+| `backup-s3-unreachable` | warning | грань настроена && S3-инвентарь-тик падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | S3 live-тик (02 §2.5) |
 | `etcd-snapshot-export-failed` | critical | `enabled=true` и `state=FAILED` — текст `error`; контроль-плейн не защищён от потери хоста | `/pgworker/etcd-snapshots` |
 | `etcd-snapshot-export-stale` | warning | `enabled=true` и (`last_uploaded_unix` отсутствует или старше `2×interval_min`, панельный дефолт 360 мин); «выгрузка молчит» (обе инстанции воркера лежат / вечный transient) | `/pgworker/etcd-snapshots` |
+| `backup-pool-missing` | critical | per-cluster: Active-кластер с включённой подсистемой, policy без секции `s3` — пул не выбран, бэкапы кластера не пишутся («только явный выбор»; Remedy: «выбери пул на странице "Хранилище бэкапов" — без выбора бэкапы кластера не пишутся») | policy-ключ `/pgworker/backups/<C>/policy` |
+| `backup-pool-unreachable` | critical | per-cluster: маркер `s3-pool-exhausted` в `error` статусов воркера — wal `DEGRADED` (приёмник в ретрай-цикле) или любой full `FAILED` (исчерпание списка/Failed-резолв пула, arch/19 §4); Remedy: «проверь ноды пула `<имя>` (/s3/): воркер не доставил запись ни на одну ноду списков» | wal/full-ключи `/pgworker/backups/<C>/<X>/…` |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
 `probe-failed` считается по целям текущего снапшота (исчезнувшая цель не

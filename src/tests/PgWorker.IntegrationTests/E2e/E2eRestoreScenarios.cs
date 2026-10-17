@@ -12,7 +12,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // E2E восстановления шарда из бэкапов (t05, spec §4 Ф5): изолированное окружение
-// E2eEnvironment (своя сеть/etcd/MinIO по guid, динамические порты, полный
+// E2eEnvironment (своя сеть/etcd/ownS3 по guid, динамические порты, полный
 // teardown с ассертом чистоты в DisposeAsync — docs/e2e-isolation.md) +
 // provisioned-кластер с включённой подсистемой бэкапов → реальный COMPLETED
 // полный + WAL-цепочка → restore-заявка (прямой PUT PLANNED-ключа, принятое
@@ -23,7 +23,10 @@ public class E2eRestoreScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -49,7 +52,7 @@ public class E2eRestoreScenarios
             await using var app = await StartRestoreHostAsync("rslatest", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
 
             // Arrange 2 — контрольные данные ДО полного (RPO-полный)
@@ -179,7 +182,7 @@ public class E2eRestoreScenarios
             await using var app = await StartRestoreHostAsync("rstime", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
 
             // Arrange 2 — данные T0 → полный COMPLETED
@@ -278,7 +281,7 @@ public class E2eRestoreScenarios
     private async Task RunScenarioAsync(
         string slug, Func<E2eEnvironment, Task> body, CancellationToken ct)
     {
-        var fx = await E2eEnvironment.StartAsync(slug, withMinio: true, ct: ct);
+        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
         try
         {
@@ -312,18 +315,19 @@ public class E2eRestoreScenarios
     }
 
     // Воркер с бэкап-комплектом (t02+t03+t05): паттерн StartBackupHostAsync —
-    // S3Endpoint = advertised (host.docker.internal:<порт>): джобы t02 берут
-    // PGW_BK_S3_ENDPOINT из сырого S3Endpoint (внутри контейнера localhost
-    // недостижим!), агенты t03 — advertised. Пороги WAL-контроля — короткие.
+    // креды пула в env-профиле, пул — policy.s3, адреса нод воркер резолвит
+    // из /s3/ (advertised host.docker.internal): full-джобы t02 получают
+    // список PGW_BK_S3_ENDPOINTS, агенты t03 — S3_ENDPOINTS/S3_READ_ENDPOINTS
+    // (внутри контейнера localhost недостижим!). Пороги WAL-контроля — короткие.
     private Task<HostInstance> StartRestoreHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint,
-            ["PgWorker__Backups__S3__AdvertisedEndpoint"] = Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
+            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -340,16 +344,9 @@ public class E2eRestoreScenarios
 
     // Host-клиент BackupS3 (порт published): ассерты S3 и DR-list.
     private PgWorker.Backups.BackupS3 HostS3Client()
-        => new(new PgWorker.Backups.BackupsRuntimeOptions
-        {
-            Enabled = true,
-            S3Endpoint = Fx.S3Endpoint.Replace(
-                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
-            S3Bucket = Bucket,
-            S3AccessKey = "minioadmin",
-            S3SecretKey = "minioadmin",
-            S3PathStyle = true,
-        });
+        => new(new PgWorker.Backups.S3ClientOptions(
+            Fx.S3Endpoint,
+            Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление Task 15:
     // прецедент E2eRotateScenarios; API-путь покрыт WAF-тестами RestoreApiTests).
@@ -673,7 +670,7 @@ public class E2eRestoreScenarios
     // Published pg-порт мастера шарда из portalloc (резолв фактического primary
     // по пробам Patroni /primary; host-клиент — localhost).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
-    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -690,7 +687,7 @@ public class E2eRestoreScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -707,7 +704,7 @@ public class E2eRestoreScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
         var entry = entries[$"{shard}/{primary}"];
-        return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.
@@ -746,5 +743,11 @@ public class E2eRestoreScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
+
+        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // без неё подсистема бэкапов кластера молчит.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 }

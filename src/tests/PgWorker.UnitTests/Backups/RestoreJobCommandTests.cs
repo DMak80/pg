@@ -18,7 +18,8 @@ public class RestoreJobCommandTests
         cmd.Should().Equal("bash", "-c", cmd[2]);
         cmd[2].Should().Contain("""{"phase":"downloading"}""");
         cmd[2].Should().Contain("""{"phase":"recovering"}""");
-        cmd[2].Should().Contain(@"mc cp --recursive ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/"" ""$PGDATA/""");
+        // t36: полный качается mc_copy_first с перебором нод пула ({A}-алиас).
+        cmd[2].Should().Contain(@"mc_copy_first ""{A}/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/"" ""$PGDATA/""");
         cmd[2].Should().Contain("chown -R 101:101");
         // пустые/транзиентные каталоги PGDATA восстанавливаются (S3 не хранит
         // пустые каталоги, pg_basebackup исключает SLRU-каталоги — pg_notify,
@@ -125,7 +126,8 @@ public class RestoreJobCommandTests
         // S3-ключи регистрозависимы, объекты записаны приёмником строчными
         // (t27-факт: первый буквенный сегмент …000a давал ложный 404)
         script.Should().Contain(@"SEG=""${1,,}""");
-        script.Should().Contain(@"exec mc cp ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG"" ""$2""");
+        // t36: restore-wal.sh — перебор нод пула с per-попыточным timeout (R3).
+        script.Should().Contain(@"timeout 30 mc cp ""pgwbkp$i/$S3_BUCKET/$SRC_PREFIX/wal/$SEG"" ""$2"" && exit 0");
         script.Should().Contain("restore_command = '/bin/bash");
         script.Should().Contain("""recovery.signal""");
     }
@@ -156,7 +158,10 @@ public class RestoreJobCommandTests
     public void Env_NamesContract()
     {
         // Act / Assert
-        RestoreJobCommand.EnvMcHost.Should().Be("MC_HOST_pgwbkp");
+        // t36: env чтения — списки/креды (MC_HOST строит скрипт из S3_ENDPOINTS).
+        RestoreJobCommand.EnvS3Endpoints.Should().Be("S3_ENDPOINTS");
+        RestoreJobCommand.EnvS3AccessKey.Should().Be("S3_ACCESS_KEY");
+        RestoreJobCommand.EnvS3SecretKey.Should().Be("S3_SECRET_KEY");
         RestoreJobCommand.EnvBucket.Should().Be("S3_BUCKET");
         RestoreJobCommand.EnvSrcPrefix.Should().Be("SRC_PREFIX");
         RestoreJobCommand.EnvBackupId.Should().Be("BACKUP_ID");

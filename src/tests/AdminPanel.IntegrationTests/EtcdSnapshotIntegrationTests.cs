@@ -65,8 +65,8 @@ public static class EtcdTestHarness
             store,
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
-            // t08: стор MinIO-инвентаря (в сценариях без MinIO-тика — пустой).
-            new AdminPanel.Probes.S3.MinioInventoryStore(),
+            // t08: стор S3-инвентаря (в сценариях без S3-тика — пустой).
+            new AdminPanel.Probes.S3.S3InventoryStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);

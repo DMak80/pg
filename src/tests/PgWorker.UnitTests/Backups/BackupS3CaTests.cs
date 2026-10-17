@@ -11,14 +11,9 @@ namespace PgWorker.UnitTests.Backups;
 // поведение. Валидация фабрики принимает цепочку настроенного CA, чужой — нет.
 public class BackupS3CaTests
 {
-    private static BackupsRuntimeOptions Opts(string? caPath = null) => new()
-    {
-        S3Endpoint = "http://minio:9000",
-        S3Bucket = "bkt",
-        S3AccessKey = "ak",
-        S3SecretKey = "sk",
-        S3CaBundlePath = caPath,
-    };
+    // t36: цель S3ClientOptions (bucket+CA; endpoint/креды фиктивны).
+    private static S3ClientOptions Opts(string? caPath = null) => new(
+        "http://s3a:9000", "bkt", "ak", "sk", CaBundlePath: caPath);
 
     private static string NewCaPem()
     {

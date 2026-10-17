@@ -6,14 +6,14 @@ namespace AdminPanel.UnitTests;
 
 // Сверка S3-инвентаря с etcd-состоянием бэкапов (t08, AC4/AC5): все ветви
 // статусов полных, сироты с джойном на реестр воркера, wal-факты без вердикта.
-public class MinioReconcilerTests
+public class S3ReconcilerTests
 {
     // AAA: объекты полного + etcd COMPLETED → Ok с обоими фактами
     [Fact]
     public void Reconcile_OkFull_BothFacts()
     {
         // Arrange — S3-полный 20260913a и etcd-ключ того же id
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("20260913a")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("20260913a")])));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -22,7 +22,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert — Ok, S3-факт и etcd-факт рядом
         var full = result.Fulls.Should().ContainSingle().Subject;
@@ -44,11 +44,11 @@ public class MinioReconcilerTests
     public void Reconcile_S3Only_NoEtcdKey()
     {
         // Arrange — объекты есть, ключа нет
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("gone")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("gone")])));
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, [], clusters, null);
+        var result = S3Reconciler.Reconcile(s3, [], clusters, null);
 
         // Assert
         var full = result.Fulls.Should().ContainSingle().Subject;
@@ -63,7 +63,7 @@ public class MinioReconcilerTests
     public void Reconcile_EtcdOnly_CompletedWithoutObjects()
     {
         // Arrange — ключ COMPLETED, в S3-шарде полных нет
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1")));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1")));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -72,7 +72,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert
         var full = result.Fulls.Should().ContainSingle().Subject;
@@ -89,7 +89,7 @@ public class MinioReconcilerTests
     public void Reconcile_ActiveNoObjects_IsInProgress()
     {
         // Arrange — две активные заявки без объектов
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1")));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1")));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1",
@@ -99,7 +99,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert — оба InProgress («идёт, объектов ещё нет»)
         result.Fulls.Should().HaveCount(2);
@@ -111,7 +111,7 @@ public class MinioReconcilerTests
     public void Reconcile_Deleting_WithLeftovers()
     {
         // Arrange — ключ DELETING и объекты ещё на месте
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("dying")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("dying")])));
         var backups = new[]
         {
             Backups("demo", fulls: Fulls("s1", new BackupFullInfo(
@@ -120,7 +120,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert
         result.Fulls.Should().ContainSingle().Which.Status
@@ -132,13 +132,13 @@ public class MinioReconcilerTests
     public void Reconcile_OrphanPrefix_WithRegistry()
     {
         // Arrange — ghost-кластера в /clusters/ нет; реестр знает ghost/s9
-        var minio = Minio(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
+        var s3 = Storage(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
         var clusters = new[] { Cluster("demo", "s1") };
         var registry = new BackupOrphansInfo(
             [new BackupOrphanInfo("ghost/s9", "shard", 50, 1, "OBSERVED")], 100);
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, [], clusters, registry);
+        var result = S3Reconciler.Reconcile(s3, [], clusters, registry);
 
         // Assert — сирота с джойном на реестр (плюс кластеровая запись ghost)
         var orphan = result.OrphanPrefixes.Should().Contain(o => o.Prefix == "ghost/s9").Subject;
@@ -154,11 +154,11 @@ public class MinioReconcilerTests
     public void Reconcile_OrphanPrefix_NotInRegistry()
     {
         // Arrange — тот же ghost/s9, реестра нет вовсе
-        var minio = Minio(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
+        var s3 = Storage(ClusterNode("ghost", ShardNode("ghost", "s9", size: 50)));
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, [], clusters, null);
+        var result = S3Reconciler.Reconcile(s3, [], clusters, null);
 
         // Assert
         var orphan = result.OrphanPrefixes.Should().Contain(o => o.Prefix == "ghost/s9").Subject;
@@ -172,13 +172,13 @@ public class MinioReconcilerTests
     public void Reconcile_RegistryEntry_WithoutS3_NotOrphan()
     {
         // Arrange — реестр помнит префикс, в S3-дереве его уже нет
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])));
         var clusters = new[] { Cluster("demo", "s1") };
         var registry = new BackupOrphansInfo(
             [new BackupOrphanInfo("ghost/s9", "shard", 50, 1, "DELETING")], 100);
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, [], clusters, registry);
+        var result = S3Reconciler.Reconcile(s3, [], clusters, registry);
 
         // Assert — расхождение увидит оператор по TTL-строке реестра, не панель
         result.OrphanPrefixes.Should().BeEmpty();
@@ -189,8 +189,8 @@ public class MinioReconcilerTests
     public void Reconcile_WalFacts_BothSides()
     {
         // Arrange — etcd отстал на сегмент: последний S3 ..02, etcd ..01
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1",
-            wal: new MinioWalNode(2, 0, 32, 950, "000000010000000000000002"))));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1",
+            wal: new S3WalNode(2, 0, 32, 950, "000000010000000000000002"))));
         var backups = new[]
         {
             Backups("demo", wal: ("s1", new WalStreamInfo(
@@ -200,7 +200,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert — оба факта в записи (вердикта нет — spec §4.4)
         var wal = result.Wal.Should().ContainSingle().Subject;
@@ -217,12 +217,12 @@ public class MinioReconcilerTests
     public void Reconcile_ShardOfKnownCluster_NotOrphan()
     {
         // Arrange — demo/s1 с владельцем в /clusters/
-        var minio = Minio(ClusterNode("demo", ShardNode("demo", "s1",
-            fulls: [Full("b1")], wal: new MinioWalNode(1, 0, 16, 100, "000000010000000000000001"))));
+        var s3 = Storage(ClusterNode("demo", ShardNode("demo", "s1",
+            fulls: [Full("b1")], wal: new S3WalNode(1, 0, 16, 100, "000000010000000000000001"))));
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, [], clusters, null);
+        var result = S3Reconciler.Reconcile(s3, [], clusters, null);
 
         // Assert — блок сирот пуст
         result.OrphanPrefixes.Should().BeEmpty();
@@ -234,8 +234,8 @@ public class MinioReconcilerTests
     [Fact]
     public void Reconcile_EtcdOnlyCluster_NoS3Objects()
     {
-        // Arrange — дерево MinIO пустое; etcd знает demo/s1: полный b1 + wal-цепочка
-        var minio = Minio();
+        // Arrange — дерево ownS3 пустое; etcd знает demo/s1: полный b1 + wal-цепочка
+        var s3 = Storage();
         var backups = new[]
         {
             Backups("demo",
@@ -248,7 +248,7 @@ public class MinioReconcilerTests
         var clusters = new[] { Cluster("demo", "s1") };
 
         // Act
-        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+        var result = S3Reconciler.Reconcile(s3, backups, clusters, null);
 
         // Assert — EtcdOnly (ключ без объектов) + wal с etcd-фактом, S3-факт пуст;
         // владельец в /clusters/ есть — сироты нет
@@ -272,22 +272,22 @@ public class MinioReconcilerTests
 
     // ——— фикстуры ———
 
-    private static MinioStorageInfo Minio(params MinioClusterNode[] clusters) => new(
-        Configured: true, Endpoint: "http://minio:9000", Bucket: "pgworker-backups",
+    private static S3StorageInfo Storage(params S3ClusterNode[] clusters) => new(
+        Configured: true, Endpoints: ["http://s3:9000"], Bucket: "pgworker-backups",
         Health: null, Buckets: ["pgworker-backups"],
         UsedBytes: clusters.Sum(c => c.SizeBytes), ObjectCount: 0,
         Clusters: clusters, ForeignPrefixes: [], UpdatedAtUnix: 1000,
         ConsecutiveFailures: 0, LastError: null);
 
-    private static MinioClusterNode ClusterNode(string cluster, params MinioShardNode[] shards) => new(
+    private static S3ClusterNode ClusterNode(string cluster, params S3ShardNode[] shards) => new(
         cluster, shards.Sum(s => s.SizeBytes), shards);
 
-    private static MinioShardNode ShardNode(
+    private static S3ShardNode ShardNode(
         string cluster, string shard, long size = 116,
-        MinioFullNode[]? fulls = null, MinioWalNode? wal = null) => new(
+        S3FullNode[]? fulls = null, S3WalNode? wal = null) => new(
         cluster, shard, size, fulls ?? [], wal);
 
-    private static MinioFullNode Full(string id) => new(id, 116, 2, 900);
+    private static S3FullNode Full(string id) => new(id, 116, 2, 900);
 
     private static ClusterInfo Cluster(string name, params string[] shards) => new(
         name, name, 1, null, ClusterState.Active,

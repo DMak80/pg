@@ -15,8 +15,7 @@ public class BackupsOptionsTests
 
         // Act / Assert — поведение воркера не меняется: подсистема выключена.
         options.Enabled.Should().BeFalse();
-        options.IsValid().Should().BeTrue();
-        options.S3.PathStyle.Should().BeTrue(); // клиент MinIO-режима (arch/19 §5)
+        options.IsValid(1).Should().BeTrue();
     }
 
     [Fact]
@@ -26,7 +25,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions { Enabled = true };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -36,37 +35,31 @@ public class BackupsOptionsTests
         var options = new BackupsOptions
         {
             Enabled = true,
+            // t36: только Bucket (креды — env-профили, arch/19 §7).
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
-                Region = null,
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue();
+        options.IsValid(1).Should().BeTrue();
     }
 
+    // t36 (arch/19 §7): конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
+    // влияют на валидность — креды только env-профилями; достаточно Bucket.
     [Fact]
-    public void Enabled_MissingSecretKey_Invalid()
+    public void Enabled_BucketOnly_ValidWithoutConfigCreds()
     {
-        // Arrange — частичная конфигурация: endpoint/bucket/key есть, секрета нет.
+        // Arrange — включили с одним Bucket (без endpoint/кредов в конфиге).
         var options = new BackupsOptions
         {
             Enabled = true,
-            S3 = new BackupsS3Options
-            {
-                Endpoint = "http://host.docker.internal:9000",
-                Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-            },
+            S3 = new BackupsS3Options { Bucket = "pgworker-backups" },
         };
 
-        // Act / Assert
-        options.IsValid().Should().BeFalse();
+        // Act / Assert — 1 env-профиль кредов → валидно.
+        options.IsValid(1).Should().BeTrue();
     }
 
     [Fact]
@@ -90,16 +83,13 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Job = new BackupsJobOptions { Image = "" },
         };
 
         // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -121,21 +111,18 @@ public class BackupsOptionsTests
         options.Staging.QuotaBytes.Should().BeNull();
         options.Agent.Cpu.Should().BeNull();
         options.Agent.Mem.Should().BeNull();
-        options.S3.Endpoint.Should().BeEmpty();
     }
 
     [Fact]
     public void ToRuntime_склеивает_все_секции_и_advertised_fallback()
     {
-        // Arrange
+        // Arrange — t36: только bucket/CA (endpoint/креды — пул и env-профили).
         var options = new BackupsOptions
         {
             Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://localhost:9000",
-                AdvertisedEndpoint = "http://host.docker.internal:9000",
-                Bucket = "b", AccessKey = "a", SecretKey = "s",
+                Bucket = "b",
             },
             Staging = new BackupsStagingOptions { Dir = "/st", QuotaBytes = 1024 },
             Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
@@ -147,27 +134,27 @@ public class BackupsOptionsTests
 
         // Assert
         runtime.JobImage.Should().Be("pgworker-backup:test");
-        runtime.AgentS3Endpoint.Should().Be("http://host.docker.internal:9000");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);
         runtime.StagingQuotaBytes.Should().Be(1024);
     }
 
+    // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
     [Fact]
-    public void ToRuntime_без_advertised_берет_endpoint_как_есть()
+    public void ToRuntime_без_endpoint_кредов_вален()
     {
         // Arrange
         var options = new BackupsOptions
         {
-            S3 = new BackupsS3Options { Endpoint = "http://minio:9000", Bucket = "b", AccessKey = "a", SecretKey = "s" },
+            S3 = new BackupsS3Options { Bucket = "b" },
         };
 
         // Act
         var runtime = options.ToRuntime();
 
         // Assert
-        runtime.AgentS3Endpoint.Should().Be("http://minio:9000");
+        runtime.S3Bucket.Should().Be("b");
         runtime.WalVerifyIntervalSec.Should().Be(30); // дефолты канона §9
         runtime.WalLagMaxSegments.Should().Be(1024);
         runtime.WalStaleSec.Should().Be(300);
@@ -202,7 +189,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — fail-fast старта.
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -215,7 +202,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -228,7 +215,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -241,7 +228,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     [Fact]
@@ -251,7 +238,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions();
 
         // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
-        options.IsValid().Should().BeTrue();
+        options.IsValid(1).Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
         options.Quota.Bytes.Should().Be(0);
@@ -307,10 +294,7 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Supervisor = new BackupsSupervisorOptions { IntervalSec = interval, OrphanTtlSec = ttl },
         };
@@ -319,7 +303,7 @@ public class BackupsOptionsTests
         options.Job.RestoreTimeoutSec = restore;
 
         // Act / Assert
-        options.IsValid().Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
     }
 
     // AAA: OrphanTtlSec=0 — валиден (только алерт, без авто-удаления)
@@ -333,7 +317,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
+        options.IsValid(1).Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
     }
 
     // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
@@ -391,7 +375,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid().Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
     }
 
     // AAA: IntervalDays=0 валиден (глобальное выключение новых запусков)
@@ -405,7 +389,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid().Should().BeTrue("0 — легитимное выключение новых запусков");
+        options.IsValid(1).Should().BeTrue("0 — легитимное выключение новых запусков");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
 
@@ -433,16 +417,13 @@ public class BackupsOptionsTests
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Endpoint = "http://host.docker.internal:9000",
                 Bucket = "pgworker-backups",
-                AccessKey = "minioadmin",
-                SecretKey = "minioadmin",
             },
             Wal = new BackupsWalOptions { AgentImage = "" },
         };
 
         // Act / Assert
-        options.IsValid().Should().BeFalse();
+        options.IsValid(1).Should().BeFalse();
     }
 
     // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)

@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E verify-джобов (t24/ревизия 8 — разбиение E2eBackupScenarios): пара
 // Verify_Ok/Verify_Corruption (~2,5 мин суммарно — под порогом класса).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -25,7 +25,10 @@ public class E2eBackupVerifyScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -36,15 +39,17 @@ public class E2eBackupVerifyScenarios
     [Fact]
     public async Task Backup_Verify_Ok_OnCreate()
     {
-        // Arrange — окружение с MinIO; кластер bkvrfy<тег прогона>; policy on_create=true
+        // Arrange — окружение с ownS3-нодой; кластер bkvrfy<тег прогона>; policy on_create=true
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-verify", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-verify", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkvrfy{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        // t36: пул + policy с секцией s3.
+        await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":0}}""", null, ct);
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":0},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkverify", ct);
 
         // Act 1 — фаза PENDING пройдена: в ключе PENDING (t02 пишет при COMPLETED)
@@ -94,7 +99,7 @@ public class E2eBackupVerifyScenarios
         panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
     }
 
-    // AAA: порча набора (AC2): удалить объект из full/<id>/ в MinIO → policy
+    // AAA: порча набора (AC2): удалить объект из full/<id>/ в ownS3-ноде → policy
     // interval_sec мал → перепроверка → verify.state=FAILED + error; переснятия
     // в окне теста нет (full_max_age_sec велик)
 
@@ -105,12 +110,14 @@ public class E2eBackupVerifyScenarios
         // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-corrupt", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-corrupt", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        // t36: пул + policy с секцией s3.
+        await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5}}""", null, ct);
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkcorrupt", ct);
 
         // Assert 1 — первый verify OK (как в маркере)
@@ -124,7 +131,7 @@ public class E2eBackupVerifyScenarios
         // Act — портим: mc rm один объект из full/<id>/ (PG_VERSION из листинга набора)
         await Fx.RunDockerAsync(
             ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-                "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+                "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                       + $" && mc rm t/{Bucket}/{cluster}/shard1/full/{id}/PG_VERSION"], ct);
 
         // Assert 2 — перепроверка по interval → FAILED + error (бюджет 180 c:
@@ -170,24 +177,23 @@ public class E2eBackupVerifyScenarios
 
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
-    // Воркер с включённой подсистемой бэкапов: S3 на локальный MinIO,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
+    // env-профиль кредов — env (t36); образ pgworker-backup:e2e, ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
-        string name, CancellationToken ct, string? s3EndpointOverride = null,
+        string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var env = new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
+        foreach (var (key, value) in Fx.BackupPoolEnv())
+            env[key] = value;
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);

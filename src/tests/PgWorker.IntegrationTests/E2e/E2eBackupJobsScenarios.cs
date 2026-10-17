@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // deprovisioning-чистка, ротация backup_exec (~3,9 мин суммарно). Факты внутри
 // класса последовательны (collection-per-class), класс — параллельная единица.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
-// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
@@ -27,7 +27,10 @@ public class E2eBackupJobsScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
@@ -42,12 +45,14 @@ public class E2eBackupJobsScenarios
         // Arrange — кластер bkshop<тег прогона> + policy (verify on_create) + воркер
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-full", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-full", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        // t36: пул + policy с секцией s3 (без неё подсистема кластера молчит).
+        await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            """{"full_max_age_sec":3600,"verify":{"on_create":true}}""", null, ct);
+            $$"""{"full_max_age_sec":3600,"verify":{"on_create":true},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkfull", ct);
 
         // Act/Assert 1 — COMPLETED на shard1 за ≤ 300 c
@@ -100,10 +105,14 @@ public class E2eBackupJobsScenarios
         // Arrange — кластер bkclean; ждём появления первой попытки (джоб жив)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-clean", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-clean", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        // t36: policy с секцией s3 — планирование полных стартует только с пулом.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
         await using var app = await StartBackupHostAsync("bkclean", ct);
         // Полл с защитой транзиента (паттерн остальных сценариев): чтение fulls
         // на старте контура может транзиентно отказать → .Value null → NRE
@@ -154,10 +163,14 @@ public class E2eBackupJobsScenarios
         // Arrange — кластер bkrot с завершённым полным; OLD backup_password
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-rot", withMinio: true, ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("bk-rot", withS3Node: true, ct: ct);
         Fx = fx;
         var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
+        // t36: policy с секцией s3 — полный (до ротации) пишется только с пулом.
+        await Fx.SeedS3PoolAsync(Pool, ct);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
         await using var app = await StartBackupHostAsync("bkrot", ct);
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
@@ -219,24 +232,23 @@ public class E2eBackupJobsScenarios
         connected.Should().BeTrue("роль backup_exec принимает новый пароль (гвард R2)");
     }
 
-    // Воркер с включённой подсистемой бэкапов: S3 на локальный MinIO,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
+    // env-профиль кредов — env (t36); образ pgworker-backup:e2e, ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
-        string name, CancellationToken ct, string? s3EndpointOverride = null,
+        string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
     {
         var env = new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
-            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
+        foreach (var (key, value) in Fx.BackupPoolEnv())
+            env[key] = value;
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);
@@ -249,12 +261,12 @@ public class E2eBackupJobsScenarios
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
-    // mc ls --recursive s3-пути кластера (mc в сети MinIO окружения — по алиасу).
+    // mc ls --recursive s3-пути кластера (mc в сети ownS3-ноды окружения — по алиасу).
     private async Task<string> McLsAsync(string path)
         => await Fx.RunDockerAsync(
         [
             "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null && mc ls --recursive t/{Bucket}/{path}",
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null && mc ls --recursive t/{Bucket}/{path}",
         ], TestContext.Current.CancellationToken);
 
     private async Task SeedClusterAsync(string cluster)

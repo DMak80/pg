@@ -16,7 +16,7 @@ public class WalReceiverSourceConnectionTests
     private static WalReceiverOptions Options() => new(
         "s1a", 5432, "backup_exec", "pw", "postgres",
         "pgw_bkp_c1_shard1", "c1", "shard1",
-        "http://minio:9000", null, "backups", "ak", "sk", true);
+        ["http://s3a:9000"], ["http://s3a:9000"], "backups", "ak", "sk");
 
     private static NpgsqlXLogSource Source(
         FakeReplicationConnection fake,

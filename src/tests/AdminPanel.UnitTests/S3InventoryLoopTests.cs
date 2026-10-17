@@ -7,25 +7,25 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Инвентарь-тик MinIO (t08): успех заполняет стор, сбой копит ConsecutiveFailures
+// Инвентарь-S3-инвентарь-тик (t08): успех заполняет стор, сбой копит ConsecutiveFailures
 // с живым прежним инвентарём, выключенная грань — no-op, маркер configured до
 // первого тика (Решение 4).
-public class MinioInventoryLoopTests
+public class S3InventoryLoopTests
 {
-    private static MinioOptions Configured() => new()
+    private static BackupsS3Options Configured() => new()
     {
         S3 =
         {
-            Endpoint = "http://minio:9000",
+            Endpoint = "http://s3:9000",
             Bucket = "pgworker-backups",
-            AccessKey = "minioadmin",
-            SecretKey = "minioadmin",
+            AccessKey = "apm-owns3-root",
+            SecretKey = "apm-owns3-root-pwd",
         },
     };
 
-    private static MinioInventoryLoop Loop(StubS3 client, IMinioInventoryStore store, MinioOptions options) =>
+    private static S3InventoryLoop Loop(StubS3 client, IS3InventoryStore store, BackupsS3Options options) =>
         new(client, store, Options.Create(options), new FixedTimeProvider(),
-            NullLogger<MinioInventoryLoop>.Instance);
+            NullLogger<S3InventoryLoop>.Instance);
 
     // AAA: успешный тик → стор заполнен (Configured, ApiOk, дерево, failures=0)
     [Fact]
@@ -34,9 +34,9 @@ public class MinioInventoryLoopTests
         // Arrange — стаб отдаёт buckets + страницу объектов demo/s1
         var client = new StubS3
         {
-            Objects = [new MinioObjectInfo("demo/s1/full/b1/base.tar", 100, 1000)],
+            Objects = [new S3ObjectInfo("demo/s1/full/b1/base.tar", 100, 1000)],
         };
-        var store = new MinioInventoryStore();
+        var store = new S3InventoryStore();
 
         // Act
         await Loop(client, store, Configured()).RunOnceAsync(CancellationToken.None);
@@ -63,13 +63,13 @@ public class MinioInventoryLoopTests
         // Arrange — первый успешный тик, затем стаб бросает
         var client = new StubS3
         {
-            Objects = [new MinioObjectInfo("demo/s1/full/b1/base.tar", 100, 1000)],
+            Objects = [new S3ObjectInfo("demo/s1/full/b1/base.tar", 100, 1000)],
         };
-        var store = new MinioInventoryStore();
+        var store = new S3InventoryStore();
         var loop = Loop(client, store, Configured());
         await loop.RunOnceAsync(CancellationToken.None);
         var previous = store.Current!;
-        client.Throw = new ApplicationException("minio down");
+        client.Throw = new ApplicationException("s3 down");
 
         // Act — два сбойных тика подряд
         await loop.RunOnceAsync(CancellationToken.None);
@@ -79,7 +79,7 @@ public class MinioInventoryLoopTests
         store.Current!.UsedBytes.Should().Be(previous.UsedBytes);
         store.Current.UpdatedAtUnix.Should().Be(previous.UpdatedAtUnix);
         store.Current.ConsecutiveFailures.Should().Be(2);
-        store.Current.LastError.Should().Contain("minio down");
+        store.Current.LastError.Should().Contain("s3 down");
     }
 
     // AAA: после сбоев первый успешный тик сбрасывает счётчик в 0
@@ -88,14 +88,14 @@ public class MinioInventoryLoopTests
     {
         // Arrange — один успех, один сбой
         var client = new StubS3 { Objects = [] };
-        var store = new MinioInventoryStore();
+        var store = new S3InventoryStore();
         var loop = Loop(client, store, Configured());
         await loop.RunOnceAsync(CancellationToken.None);
         client.Throw = new ApplicationException("down");
         await loop.RunOnceAsync(CancellationToken.None);
         store.Current!.ConsecutiveFailures.Should().Be(1);
 
-        // Act — MinIO ожил
+        // Act — ownS3-нода ожил
         client.Throw = null;
         await loop.RunOnceAsync(CancellationToken.None);
 
@@ -110,10 +110,10 @@ public class MinioInventoryLoopTests
     {
         // Arrange — грань выключена
         var client = new StubS3();
-        var store = new MinioInventoryStore();
+        var store = new S3InventoryStore();
 
         // Act
-        await Loop(client, store, new MinioOptions()).RunOnceAsync(CancellationToken.None);
+        await Loop(client, store, new BackupsS3Options()).RunOnceAsync(CancellationToken.None);
 
         // Assert
         client.Calls.Should().Be(0);
@@ -127,7 +127,7 @@ public class MinioInventoryLoopTests
     {
         // Arrange — стаб падает с первого вызова
         var client = new StubS3 { Throw = new ApplicationException("boom") };
-        var store = new MinioInventoryStore();
+        var store = new S3InventoryStore();
 
         // Act
         await Loop(client, store, Configured()).RunOnceAsync(CancellationToken.None);
@@ -138,12 +138,12 @@ public class MinioInventoryLoopTests
         store.Current.ConsecutiveFailures.Should().Be(1);
     }
 
-    // Стаб IMinioS3: счётчик вызовов, управляемый сбой, одна страница объектов.
-    private sealed class StubS3 : IMinioS3
+    // Стаб IS3StorageClient: счётчик вызовов, управляемый сбой, одна страница объектов.
+    private sealed class StubS3 : IS3StorageClient
     {
         public int Calls;
         public Exception? Throw;
-        public List<MinioObjectInfo> Objects { get; init; } = [];
+        public List<S3ObjectInfo> Objects { get; init; } = [];
 
         public Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct)
         {
@@ -162,12 +162,12 @@ public class MinioInventoryLoopTests
             return Task.FromResult(Result<S3Page>.Success(new S3Page(Objects, null)));
         }
 
-        public Task<MinioHealth> GetHealthAsync(CancellationToken ct)
+        public Task<S3Health> GetHealthAsync(CancellationToken ct)
         {
             Calls++;
             if (Throw is not null)
                 throw Throw;
-            return Task.FromResult(new MinioHealth(true, null, true, true, null));
+            return Task.FromResult(new S3Health(true, null, true, true, null));
         }
     }
 }

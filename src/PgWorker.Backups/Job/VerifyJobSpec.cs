@@ -8,21 +8,20 @@ namespace PgWorker.Backups.Job;
 // (ephemeral, чистится после итога).
 public static class VerifyJobSpec
 {
-    public static ContainerSpec Build(BackupsRuntimeOptions opts, string cluster, string shard, string id)
+    // t36: s3Endpoints — read-список (все ноды пула, порядок endpoints); креды —
+    // env-профиля пула (arch/19 §7); MC_HOST-алиасы строит скрипт из S3_ENDPOINTS.
+    public static ContainerSpec Build(BackupsRuntimeOptions opts, string cluster, string shard, string id,
+        IReadOnlyList<string> s3Endpoints, string s3AccessKey, string s3SecretKey)
     {
         var env = new Dictionary<string, string>
         {
-            [VerifyJobCommand.EnvS3Endpoint] = opts.S3Endpoint,
-            [VerifyJobCommand.EnvS3Region] = opts.S3Region ?? string.Empty,
+            [VerifyJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
             [VerifyJobCommand.EnvS3Bucket] = opts.S3Bucket,
-            [VerifyJobCommand.EnvS3AccessKey] = opts.S3AccessKey,
-            [VerifyJobCommand.EnvS3SecretKey] = opts.S3SecretKey,
+            [VerifyJobCommand.EnvS3AccessKey] = s3AccessKey,
+            [VerifyJobCommand.EnvS3SecretKey] = s3SecretKey,
             [VerifyJobCommand.EnvPrefix] = $"{cluster}/{shard}",
             [VerifyJobCommand.EnvId] = id,
             [VerifyJobCommand.EnvStagingDir] = opts.StagingDir,
-            // S3-креды — только env (arch/19 §5): mc-alias собирается скриптом из кредов
-            [VerifyJobCommand.EnvMcHostVariable] =
-                VerifyJobCommand.McHost(opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
         };
         // t42 (arch/19 §7): CA https-endpoint — PEM значением (multi-host), материализация внутри контейнера
         var caPem = BackupCaPem.ReadIfConfigured(opts);

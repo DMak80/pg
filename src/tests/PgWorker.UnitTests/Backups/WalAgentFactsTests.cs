@@ -60,17 +60,27 @@ public class WalAgentFactsTests
             f.Node == "shard1a" && f.State == WalAgentPresence.Exited);
     }
 
-    // AAA: AgentEnv передаёт S3_CA_PEM при заданном пути; без пути — не передаёт
+    // AAA: AgentEnv передаёт S3_CA_PEM при заданном пути; без пути — не передаёт;
+    // списки пула — в S3_ENDPOINTS/S3_READ_ENDPOINTS (t36, arch/19 §3).
     [Fact]
     public void AgentEnv_CaBundle_ПередачаПравильная()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "PEM-BODY");
         var withCa = WalStreamProcess.AgentEnv(
-            new BackupsRuntimeOptions { S3CaBundlePath = caPath }, "c1", "s1", "slot", "h", 5432, "pw");
+            new BackupsRuntimeOptions { S3CaBundlePath = caPath }, "c1", "s1", "slot", "h", 5432, "pw",
+            ["http://n1:9000", "http://n2:9000"], ["http://n1:9000"], "ak", "sk");
         var withoutCa = WalStreamProcess.AgentEnv(
-            new BackupsRuntimeOptions { S3CaBundlePath = null }, "c1", "s1", "slot", "h", 5432, "pw");
+            new BackupsRuntimeOptions { S3CaBundlePath = null }, "c1", "s1", "slot", "h", 5432, "pw",
+            ["http://n1:9000"], ["http://n1:9000"], "ak", "sk");
         withCa["S3_CA_PEM"].Should().Be("PEM-BODY");
         withoutCa.Should().NotContainKey("S3_CA_PEM");
+        withCa["S3_ENDPOINTS"].Should().Be("http://n1:9000,http://n2:9000");
+        withCa["S3_READ_ENDPOINTS"].Should().Be("http://n1:9000");
+        withCa["S3_ACCESS_KEY"].Should().Be("ak");
+        withCa["S3_SECRET_KEY"].Should().Be("sk");
+        withCa.Should().NotContainKey("S3_ENDPOINT");
+        withCa.Should().NotContainKey("S3_REGION");
+        withCa.Should().NotContainKey("S3_PATHSTYLE");
     }
 }
