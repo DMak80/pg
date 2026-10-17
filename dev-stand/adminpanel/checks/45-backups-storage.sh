@@ -104,7 +104,7 @@ base_policy='{"retentionDays":1,"retentionWeeks":1,"retentionMonths":1,"fullMaxA
 s3_pool_put() { docker run --rm --network "$STAND_NET" curlimages/curl:latest sh -c '
   i=0; code=0
   while [ $i -lt 3 ]; do
-    curl -fsS -c /tmp/j -X POST http://adminpanel:8080/api/auth/login -H "Content-Type: application/json" -d "{"username":"admin","password":"admin"}" >/dev/null 2>&1 || { i=$((i+1)); sleep 5; continue; }
+    curl -fsS -c /tmp/j -X POST http://adminpanel:8080/api/auth/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"admin\"}" >/dev/null 2>&1 || { i=$((i+1)); sleep 5; continue; }
     code=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/j -X PUT http://adminpanel:8080/api/clusters/demo/backups/policy -H "Content-Type: application/json" -d "$1")
     [ "$code" = 200 ] && break
     i=$((i+1)); sleep 5
