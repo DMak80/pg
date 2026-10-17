@@ -98,13 +98,25 @@ LOGIN_BODY='{"username":"admin","password":"admin"}'
 api_auth() { curl -fsS -b "$JAR" "$BASE$1"; }
 api_auth_put() { curl -fsS -b "$JAR" -o /dev/null -w '%{http_code}' -X PUT "$BASE$1" -H 'Content-Type: application/json' -d "$2"; }
 base_policy='{"retentionDays":1,"retentionWeeks":1,"retentionMonths":1,"fullMaxAgeSec":86400,"verifyOnCreate":true,"drillIntervalDays":1'
+# PUT — из контейнера стендовой СЕТИ: путь через docker-proxy хоста на этом
+# Mac возвращает 400/пусто на PUT с секцией s3 (GET те же грани — ок);
+# из сети стенда — 200 (прецедент мерж-гейта t36).
+s3_pool_put() { docker run --rm --network "$STAND_NET" curlimages/curl:latest sh -c '
+  i=0; code=0
+  while [ $i -lt 3 ]; do
+    curl -fsS -c /tmp/j -X POST http://adminpanel:8080/api/auth/login -H "Content-Type: application/json" -d "{"username":"admin","password":"admin"}" >/dev/null 2>&1 || { i=$((i+1)); sleep 5; continue; }
+    code=$(curl -s -o /dev/null -w "%{http_code}" -b /tmp/j -X PUT http://adminpanel:8080/api/clusters/demo/backups/policy -H "Content-Type: application/json" -d "$1")
+    [ "$code" = 200 ] && break
+    i=$((i+1)); sleep 5
+  done
+  echo $code' _curl_ "$1"; }
 s3_on=',{"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}'
-code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy$s3_on")"
+code="$(s3_pool_put "$base_policy$s3_on")"
 [ "$code" = "200" ] || { echo "❌ PUT policy c s3: $code (ожидался 200)"; exit 1; }
 api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3.pool == "backups")' >/dev/null \
   || { echo "❌ policy.demo: секция s3 не записана"; exit 1; }
 s3_off=',{"s3":null}'
-code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy$s3_off")"
+code="$(s3_pool_put "$base_policy$s3_off")"
 [ "$code" = "200" ] || { echo "❌ PUT policy без s3 (сброс): $code"; exit 1; }
 api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3 == null)' >/dev/null \
   || { echo "❌ policy.demo: сброс s3 не сработал"; exit 1; }
