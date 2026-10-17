@@ -15,7 +15,9 @@ namespace S3Worker.IntegrationTests.E2e;
 /// docs/e2e-launch.md): собственная docker-сеть s3w-en-{runId}, свой etcd
 /// s3w-ee-{runId}, свой воркер s3w-ew(1|2)-{runId} (образ s3worker:e2e-{runId}
 /// — свежий Release, publish НА ХОСТЕ + узкий COPY-контекст артефактов; канон
-/// E2E-образов AGENTS.md) + owns3:dev для нод (пересборка КАЖДЫЙ прогон — S8).
+/// E2E-образов AGENTS.md) + owns3:dev для нод — ВНЕШНИЙ статический ассет
+/// (репозиторий ../OwnS3, freshness контролирует разработчик пересборкой
+/// deploy/build-image.sh там; pg его не собирает — fail-fast с командой).
 /// Идентификатор прогона — полный guid во всех именах; чистка и ассерт чистоты
 /// — строго по нему. Телеметрия: docker-логи/inspect всех контейнеров и списки
 /// docker ps/volume — в /tmp/pgw-e2e-artifacts-{runId}/ ДО удаления;
@@ -23,13 +25,12 @@ namespace S3Worker.IntegrationTests.E2e;
 /// (README-cleanup.txt с own-only командами). Retry старта против гонок prune.
 /// Гейт запуска: PGW_TEST_DOCKER=1 (нет — Skip в тесте); PGW_TEST_E2E_NOBUILD=1
 /// — пропустить сборку образов (бисект: s3worker:e2e — ручной тег; owns3:dev
-/// обязан существовать — отсутствие = fail-fast с командой сборки).
+/// всегда внешний — отсутствие = fail-fast с командой сборки в ../OwnS3).
 /// </summary>
 public sealed class S3E2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private const string OwnS3Image = "owns3:dev";
-    private const string OwnS3PublishDir = "artifacts/e2e/owns3";
     private const string S3WPublishDir = "artifacts/e2e/s3worker";
     private const string WorkerImageFallback = "s3worker:e2e"; // NOBUILD-бисект
 
@@ -184,8 +185,9 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
         Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
 
-        // Статические ассеты процесса: owns3:dev (S8 — свежесть каждого прогона)
-        // и s3worker:e2e-{runId} (свежий Release, узкий COPY-контекст).
+        // Статические ассеты процесса: owns3:dev — ВНЕШНИЙ образ (репозиторий
+        // ../OwnS3, freshness контролирует разработчик пересборкой там) и
+        // s3worker:e2e-{runId} (свежий Release, узкий COPY-контекст).
         var workerImage = await BuildImagesAsync(runId);
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты).
@@ -399,18 +401,18 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         };
 
     // Сборка образов ([PHASE]-метки и тайминг — канон E2E-образов AGENTS.md):
-    // owns3:dev — publish OwnS3.App + docker build УЗКИМ контекстом артефактов;
-    // s3worker:e2e-{runId} — publish S3Worker.App + build (тег per-прогон —
-    // свежесть каждого прогона). NOBUILD=1 — только бисект: s3worker берётся
-    // из ручного тега s3worker:e2e; owns3:dev ОБЯЗАТЕЛЕН (fail-fast с командой).
+    // owns3:dev — ВНЕШНИЙ статический ассет (репозиторий ../OwnS3, freshness
+    // контролирует разработчик пересборкой deploy/build-image.sh там; pg его
+    // не собирает — fail-fast с командой); s3worker:e2e-{runId} — self-build:
+    // publish S3Worker.App + build (тег per-прогон — свежесть каждого прогона).
+    // NOBUILD=1 — только бисект: s3worker берётся из ручного тега s3worker:e2e.
     private static async Task<string> BuildImagesAsync(string runId)
     {
+        await EnsureImageAsync(OwnS3Image, "bash ../OwnS3/deploy/build-image.sh");
+
         var noBuild = Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1";
         if (noBuild)
         {
-            await EnsureImageAsync(OwnS3Image,
-                $"dotnet publish src/OwnS3.App/OwnS3.App.csproj -c Release -o {OwnS3PublishDir} && "
-                + $"docker build -f docker/OwnS3.Dockerfile -t {OwnS3Image} {OwnS3PublishDir}");
             await EnsureImageAsync(WorkerImageFallback,
                 $"dotnet publish src/S3Worker.App/S3Worker.App.csproj -c Release -o {S3WPublishDir} && "
                 + $"docker build -f docker/S3Worker.Dockerfile -t {WorkerImageFallback} {S3WPublishDir}");
@@ -419,14 +421,6 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
         var root = FindRepoRoot();
         var ct = CancellationToken.None;
-
-        var owns3T0 = Stopwatch.GetTimestamp();
-        Console.WriteLine($">>> [PHASE] e2e publish OwnS3.App ({DateTime.Now:HH:mm:ss})");
-        await RunHostAsync(root, "dotnet",
-            ["publish", "src/OwnS3.App/OwnS3.App.csproj", "-c", "Release", "-o", OwnS3PublishDir, "--nologo"], ct);
-        await RunHostAsync(root, "docker",
-            ["build", "-q", "-f", "docker/OwnS3.Dockerfile", "-t", OwnS3Image, OwnS3PublishDir], ct);
-        Console.WriteLine($">>> [PHASE] e2e owns3:dev готов ({Elapsed(owns3T0)})");
 
         var workerImage = $"s3worker:e2e-{runId}";
         var s3wT0 = Stopwatch.GetTimestamp();
@@ -442,7 +436,8 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private static string Elapsed(long startedTimestamp)
         => $"{Stopwatch.GetElapsedTime(startedTimestamp).TotalSeconds:F1}s";
 
-    // Fail-fast NOBUILD: образа нет — исключение с командой сборки (план 18.1).
+    // Fail-fast: образа нет — исключение с командой сборки (owns3:dev — внешний
+    // ассет ../OwnS3; s3worker в NOBUILD — ручной тег).
     private static async Task EnsureImageAsync(string image, string buildCommand)
     {
         var inspect = new ProcessStartInfo("docker", $"image inspect {image}")
@@ -450,7 +445,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         using var process = Process.Start(inspect)!;
         await process.WaitForExitAsync();
         if (process.ExitCode != 0)
-            throw new InvalidOperationException($"образ {image} отсутствует (PGW_TEST_E2E_NOBUILD=1) — собери: {buildCommand}");
+            throw new InvalidOperationException($"образ {image} отсутствует — собери: {buildCommand}");
     }
 
     private static async Task RunHostAsync(

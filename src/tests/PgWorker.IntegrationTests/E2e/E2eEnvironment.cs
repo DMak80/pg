@@ -51,9 +51,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// ХОСТЕ → docker/E2eRunner.Dockerfile (runtime + docker CLI + артефакты).</summary>
     public const string RunnerImage = "pgw-e2e-runner:e2e";
 
-    // Нода пула — ownS3-образ (E2E: локальная сборка publish-COPY, канон
-    // E2E-образов; в registry не кладётся — только внешние образы там).
-    public const string OwnS3Image = "owns3:e2e";
+    // Нода пула — ВНЕШНИЙ образ owns3:dev (репозиторий ../OwnS3, сборка —
+    // deploy/build-image.sh там; в registry не кладётся; pg его не собирает).
+    public const string OwnS3Image = "owns3:dev";
 
     // mc запинен существующим docker-тегом (ближайший к MC_VERSION образа
     // pgworker-backup, arch/19 §10; у docker-тегов и архивных тегов dl.min.io
@@ -1724,13 +1724,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // Образ ownS3-ноды (t36): .NET-сервис — publish НА ХОСТЕ (инкрементально,
-    // секунды), в образ — только готовый вывод (docker/OwnS3.Dockerfile,
-    // runtime-слой; канон AGENTS.md). Локальная сборка, в registry не кладётся.
+    // Образ ownS3 — ВНЕШНИЙ статический ассет (репозиторий ../OwnS3, сборка —
+    // deploy/build-image.sh там): pg его не собирает; freshness контролирует
+    // разработчик пересборкой в ../OwnS3 (устаревший образ маскирует
+    // регрессии; урок t09).
     private static async Task EnsureOwnS3ImageAsync(CancellationToken ct)
     {
         // Раннер: образ гарантированно собран фазой 1 (host-сборка — не задача
-        // раннера, SDK в контейнере нет).
+        // раннера, SDK в контейнере нет); owns3:dev — внешний ассет, его
+        // наличие обеспечивает ../OwnS3.
         if (IsInnerRunner)
             return;
         if (_owns3ImageReady)
@@ -1740,30 +1742,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             if (_owns3ImageReady)
                 return;
-            // Тест не строит образ: сборка — фаза подготовки (один процесс).
-            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
-            {
-                if (!await DockerImageExistsAsync(OwnS3Image, ct))
-                    throw new ApplicationException($"образ {OwnS3Image} отсутствует в docker. {PrepareHint}");
-                _owns3ImageReady = true;
-                return;
-            }
-            var outDir = Path.Combine(_root, "artifacts", "e2e", "owns3");
-            var sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {OwnS3Image}: dotnet publish OwnS3.App (host)…");
-            await E2eFixture.RunProcessAsync("dotnet",
-            [
-                "publish", $"{_root}/src/OwnS3.App/OwnS3.App.csproj",
-                "-c", "Release", "-o", outDir, "--nologo",
-            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-e2e-static-process-owns3-publish.log");
-            E2eFixture.StaticPhase($"e2e-image {OwnS3Image}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/owns3)…");
-            await E2eFixture.RunProcessAsync("docker",
-            [
-                "build", "-f", $"{_root}/docker/OwnS3.Dockerfile", "-t", OwnS3Image, outDir,
-            ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-owns3-build.log");
-            E2eFixture.StaticPhase($"e2e-image {OwnS3Image}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
+            if (!await DockerImageExistsAsync(OwnS3Image, ct))
+                throw new ApplicationException(
+                    "образ owns3:dev отсутствует в docker — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
             _owns3ImageReady = true;
         }
         finally

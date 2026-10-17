@@ -68,13 +68,14 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         return cluster;
     }
 
-    // Образ ownS3 (owns3:e2e-it, сборка раз на процесс) + порт 9000.
+    // Образ ownS3 — внешний owns3:dev (репозиторий ../OwnS3; проверка
+    // раз на процесс) + порт 9000.
     public string OwnS3Image => S3OwnS3Image.Tag;
 
     // NodeBootSec ≤ 100 (AGENTS.md).
     public S3ProvisioningOptions Options { get; } =
         new(HostPorts.From, HostPorts.To, NodeBootSec: 100, NodeDeadSec: 90, HealthIntervalSec: 15,
-            AdvertisedHost, "owns3:e2e-it", "pgworker-backups");
+            AdvertisedHost, "owns3:dev", "pgworker-backups");
 
     // Демо-профиль секретов рига (значения — тестовые).
     public OwnS3NodeSecrets Secrets { get; } =
@@ -106,7 +107,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         NodeClient = new OwnS3NodeClient(NodeHttp);
         var ct = TestContext.Current.CancellationToken;
         var artifactsDir = EnsureArtifactsDir();
-        await S3OwnS3Image.BuildOnceAsync(artifactsDir, ct);
+        await S3OwnS3Image.EnsureOnceAsync(artifactsDir, ct);
         await _etcd.StartAsync(ct);
         Endpoint = $"http://localhost:{_etcd.GetMappedPublicPort(2379)}";
         Gateway = new EtcdGateway(_http);
