@@ -1,7 +1,10 @@
+using System.IO.Hashing;             // Crc32
 using System.Net;
+using System.Security.Cryptography;  // SHA1/SHA256
 using Amazon.S3;
 using Amazon.S3.Model;
 using FluentAssertions;
+using OwnS3.Protocol.Auth;           // Crc32C (в System.IO.Hashing 10.x типа нет)
 
 namespace OwnS3.IntegrationTests.E2e;
 
@@ -569,6 +572,82 @@ public sealed class AwsSdkSimpleScenarios
             using var ms = new MemoryStream();
             await get.ResponseStream.CopyToAsync(ms, ct);
             ms.ToArray().Should().Equal(body);
+        }, ct);
+    }
+
+    [Fact]
+    public async Task ChecksumHeader_Put_VerifyAndReject()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        // AAA: заголовочная checksum-верификация реальным SDK (канон 02 PutObject):
+        // ВСЕ ЧЕТЫРЕ алгоритма — свойство запроса шлёт x-amz-checksum-<alg>;
+        // валидное значение → 200 + объект читается + ETag-MD5; битое → 400
+        // BadDigest от сервера. Битые значения — валидный base64 корректной длины
+        // (проверяется несовпадение суммы, не формат).
+        await OwnS3E2eEnvironment.RunScenarioAsync("s11", async fx =>
+        {
+            using var admin = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
+            using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
+            var bucket = $"os3e2e{fx.RunTag}hc";
+            var body = OwnS3E2eBytes.Deterministic(256 * 1024, 31);
+            await admin.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
+
+            // Конвенция теста = конвенция сервера: crc32 big-endian (BCL + Reverse),
+            // crc32c — OwnS3.Protocol.Auth.Crc32C (big-endian).
+            string Sum(string algorithm) => algorithm switch
+            {
+                "crc32" => Convert.ToBase64String(Crc32.Hash(body).Reverse().ToArray()),
+                "crc32c" => Convert.ToBase64String(Crc32C.Hash(body)),
+                "sha1" => Convert.ToBase64String(SHA1.HashData(body)),
+                _ => Convert.ToBase64String(SHA256.HashData(body)),
+            };
+            string WrongSum(string algorithm) => algorithm is "crc32" or "crc32c"
+                ? "AAAAAA=="                       // 4 байта, чужое значение
+                : Convert.ToBase64String(new byte[algorithm == "sha1" ? 20 : 32]);
+
+            Task<PutObjectResponse> PutAsync(string algorithm, string checksum, string key) =>
+                s3.PutObjectAsync(new PutObjectRequest
+                {
+                    BucketName = bucket, Key = key, InputStream = new MemoryStream(body),
+                    // Не-чанковый путь (hex-подпись тела): при заданном checksum-свойстве
+                    // SDK по умолчанию уходит в STREAMING-чанковый режим, где заголовочные
+                    // x-amz-checksum-* каноном игнорируются (авторитет — трейлер) —
+                    // заголовочная верификация осталась бы непроверенной.
+                    UseChunkEncoding = false,
+                    ChecksumCRC32 = algorithm == "crc32" ? checksum : null,
+                    ChecksumCRC32C = algorithm == "crc32c" ? checksum : null,
+                    ChecksumSHA1 = algorithm == "sha1" ? checksum : null,
+                    ChecksumSHA256 = algorithm == "sha256" ? checksum : null,
+                }, ct);
+
+            foreach (var algorithm in new[] { "crc32", "crc32c", "sha1", "sha256" })
+            {
+                // Act: валидная сумма
+                var put = await PutAsync(algorithm, Sum(algorithm), $"chk-{algorithm}.bin");
+
+                // Assert: 200 + объект читается + ETag hex-MD5 (не зависит от алгоритма)
+                put.HttpStatusCode.Should().Be(HttpStatusCode.OK, "алгоритм {0}", algorithm);
+                using var get = await s3.GetObjectAsync(
+                    new GetObjectRequest { BucketName = bucket, Key = $"chk-{algorithm}.bin" }, ct);
+                using var ms = new MemoryStream();
+                await get.ResponseStream.CopyToAsync(ms, ct);
+                ms.ToArray().Should().Equal(body);
+                get.ETag!.Trim('"').Should().Be(OwnS3E2eETag.Md5Hex(body));
+
+                // Act: битая сумма (валидный base64 корректной длины)
+                var rejected = await s3.Invoking(x => PutAsync(algorithm, WrongSum(algorithm), $"bad-{algorithm}.bin"))
+                    .Should().ThrowAsync<AmazonS3Exception>();
+
+                // Assert: HTTP 400, код BadDigest в теле ошибки; объект не закоммичен
+                rejected.Which.StatusCode.Should().Be(HttpStatusCode.BadRequest, "алгоритм {0}", algorithm);
+                rejected.Which.ErrorCode.Should().Be("BadDigest");
+                (await s3.Invoking(x => x.GetObjectMetadataAsync(
+                        new GetObjectMetadataRequest { BucketName = bucket, Key = $"bad-{algorithm}.bin" }, ct))
+                    .Should().ThrowAsync<AmazonS3Exception>())
+                    .Which.StatusCode.Should().Be(HttpStatusCode.NotFound, "битой put не коммитит объект");
+            }
         }, ct);
     }
 }

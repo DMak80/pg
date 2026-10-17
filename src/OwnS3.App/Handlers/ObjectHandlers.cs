@@ -32,13 +32,18 @@ public static class ObjectHandlers
             // x-amz-storage-class принимается и игнорируется (глава 02).
             var metadata = UploadMetadata(context, contentTypeDefault: "application/octet-stream");
 
-            // Тело: чанковый режим → AwsChunkedReader; hex-sha256/Content-MD5 → HashingBodyStream.
+            // Тело: чанковый режим → AwsChunkedReader (трейлер — авторитет, заголовочные
+            // x-amz-checksum-* игнорируются); hex-sha256/Content-MD5/checksum → HashingBodyStream.
             Stream body = context.Http.Body;
+            ChecksumExpectation? checksum = null;
             if (context.TryGetChunkedContext(out var chunked))
                 body = new AwsChunkedReader(body, chunked!);
+            else
+                checksum = OperationValidation.ParseChecksumHeader(context.Http.Headers);
             body = new HashingBodyStream(body,
                 Sha256HexOrNull(context),
-                context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
+                context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null,
+                checksum);
 
             // Act: отказ Storage ДО чтения тела (NoSuchBucket) не должен скрывать
             // сверки целостности конвейера — тело дочитывается и при исключении

@@ -292,7 +292,7 @@ public sealed class AwsChunkedReader : Stream
             var actual = name switch
             {
                 // .NET Crc32 отдаёт байты little-endian — канонический AWS-формат big-endian.
-                "x-amz-checksum-crc32" => Convert.ToHexString(Reverse(_crc32!.GetCurrentHash())),
+                "x-amz-checksum-crc32" => Convert.ToHexString(ChecksumConventions.Crc32BigEndian(_crc32!)),
                 "x-amz-checksum-crc32c" => Convert.ToHexString(_crc32c!.GetCurrentHash()),
                 "x-amz-checksum-sha1" => Convert.ToHexString(_sha1!.GetHashAndReset()),
                 "x-amz-checksum-sha256" => Convert.ToHexString(_sha256!.GetHashAndReset()),
@@ -315,12 +315,6 @@ public sealed class AwsChunkedReader : Stream
     {
         var parts = _ctx.Scope.Split('/');
         return (parts[0], parts[1]);
-    }
-
-    private static byte[] Reverse(byte[] bytes)
-    {
-        Array.Reverse(bytes);
-        return bytes;
     }
 
     private static bool TryParseHexSize(string hex, out int size) =>
