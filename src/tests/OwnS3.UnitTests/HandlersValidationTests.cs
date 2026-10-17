@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using OwnS3.App.Handlers;
 using OwnS3.Protocol.Errors;
 
@@ -261,5 +262,90 @@ public sealed class HandlersValidationTests
 
         // Assert
         act.Should().Throw<S3ProtocolException>().Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
+    }
+
+    // — x-amz-checksum-* PutObject: парсер ровно одного заголовка семейства —
+
+    private static IHeaderDictionary Headers(params (string Name, string Value)[] pairs)
+    {
+        var headers = new HeaderDictionary();
+        foreach (var (name, value) in pairs)
+            headers[name] = value;
+        return headers;
+    }
+
+    // Валидное значение каждого алгоритма → ожидание с тем же алгоритмом и значением.
+    [Theory]
+    [InlineData("x-amz-checksum-crc32",  "crc32",  "Ox7nCg==")]                  // вектор 6: crc32(TestVectors.PutBody)
+    [InlineData("x-amz-checksum-crc32c", "crc32c", "4waSgw==")]                  // эталон RFC 3720 (big-endian)
+    [InlineData("x-amz-checksum-sha1",   "sha1",   "2jmj7l5rSw0yVb/vlWAYkK/YBwk=")] // sha1("")
+    [InlineData("x-amz-checksum-sha256", "sha256", "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3GSuDM=")] // sha256("")
+    public void ParseChecksumHeader_SingleKnown_ReturnsExpectation(string header, string algorithm, string value)
+    {
+        // Arrange / Act
+        var expectation = OperationValidation.ParseChecksumHeader(Headers((header, value)));
+
+        // Assert: алгоритм и base64-значение распознаны (CRC-конвенция — big-endian)
+        expectation.Should().NotBeNull();
+        expectation!.Algorithm.ToString().ToLowerInvariant().Should().Be(algorithm);
+        expectation.ExpectedBase64.Should().Be(value);
+    }
+
+    // Не-base64 → InvalidArgument (каждый алгоритм); base64 неверной длины
+    // (4/4/20/32 нарушены) → InvalidArgument (каждый алгоритм).
+    [Theory]
+    [InlineData("x-amz-checksum-crc32",  "!!!not-base64!!!")]
+    [InlineData("x-amz-checksum-crc32c", "!!!not-base64!!!")]
+    [InlineData("x-amz-checksum-sha1",   "!!!not-base64!!!")]
+    [InlineData("x-amz-checksum-sha256", "!!!not-base64!!!")]
+    [InlineData("x-amz-checksum-crc32",  "AAAA")]        // 2 байта вместо 4
+    [InlineData("x-amz-checksum-crc32c", "AAAAAAAA")]    // 6 байт вместо 4
+    [InlineData("x-amz-checksum-sha1",   "Ox7nCg==")]    // 4 байта вместо 20
+    [InlineData("x-amz-checksum-sha256", "AAAA")]        // 2 байта вместо 32
+    public void ParseChecksumHeader_InvalidFormat_ThrowsInvalidArgument(string header, string value)
+    {
+        // Arrange / Act
+        var act = () => OperationValidation.ParseChecksumHeader(Headers((header, value)));
+
+        // Assert: формат-отказ с фактическим именем алгоритма в сообщении
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Message.Should().Be($"Value for {header} header is invalid.");
+    }
+
+    // Два заголовка семейства → InvalidArgument «Invalid checksum provided.» —
+    // включая пару известный+неизвестный (семейство, а не известность).
+    [Theory]
+    [InlineData("x-amz-checksum-sha256", "x-amz-checksum-crc32")]
+    [InlineData("x-amz-checksum-sha256", "x-amz-checksum-crc64nvme")]
+    public void ParseChecksumHeader_MultipleFamilyHeaders_ThrowsInvalidArgument(string first, string second)
+    {
+        // Arrange / Act
+        var act = () => OperationValidation.ParseChecksumHeader(
+            Headers((first, "Ox7nCg=="), (second, "Ox7nCg==")));
+
+        // Assert: текст ErrInvalidChecksum референса
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Message.Should().Be("Invalid checksum provided.");
+    }
+
+    // Единственный НЕизвестный алгоритм → null (игнор); пустой набор → null;
+    // x-amz-sdk-checksum-algorithm на исход не влияет (не семейство).
+    [Fact]
+    public void ParseChecksumHeader_UnknownSingleOrNullSet_ReturnsNull()
+    {
+        // Arrange / Act / Assert: единственный crc64nvme — молчаливый игнор
+        OperationValidation.ParseChecksumHeader(Headers(("x-amz-checksum-crc64nvme", "Ox7nCg==")))
+            .Should().BeNull();
+        // пустой набор
+        OperationValidation.ParseChecksumHeader(Headers()).Should().BeNull();
+        // sdk-подсказка не считается заголовком семейства и не мешает известному
+        var expectation = OperationValidation.ParseChecksumHeader(
+            Headers(("x-amz-sdk-checksum-algorithm", "SHA256"), ("x-amz-checksum-crc32", "Ox7nCg==")));
+        expectation!.Algorithm.Should().Be(ChecksumAlgorithm.Crc32);
+        expectation.ExpectedBase64.Should().Be("Ox7nCg==");
     }
 }
