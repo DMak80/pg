@@ -341,7 +341,7 @@ services:
   # ownS3 (../OwnS3/arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
   # `owns3` в стендовой сети — override `docker-compose.contour.yml`,
   # `:9010` — наружу); as-minio полного стенда — переходный read-only-архив
-  # (docs/owns3-migration.md). standalone-сервис: без etcd, без docker.sock;
+  # (../OwnS3/docs/owns3-migration.md). standalone-сервис: без etcd, без docker.sock;
   # один процесс, один том. Образ — ВНЕШНИЙ: собирается репозиторием
   # `../OwnS3` (`deploy/build-image.sh` там); pg его не собирает.
   owns3:

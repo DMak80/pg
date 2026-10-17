@@ -755,7 +755,7 @@ s3://<bucket>/<C>/<X>/
   удаления ретенции per-cluster — по `write_master`-списку (перебор при
   отказе; недоступны все мастера при живой реплике — удаление
   откладывается до ретрая следующего прохода; успешное удаление mesh
-  разносит tombstone — [owns3/07-replication.md](owns3/07-replication.md)
+  разносит tombstone — [owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md)
   §7); глобальные сверки (`used_bytes`, реестр сирот) — union по ВСЕМ
   существующим пулам `/s3/clusters/` (первый доступный endpoint каждого;
   дедуп ключей — по (пул, ключ)).

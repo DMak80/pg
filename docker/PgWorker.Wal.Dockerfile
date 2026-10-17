@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Образ WAL-агента-приёмника (t27, arch/19 §2/§3): dotnet publish НА ХОСТЕ,
 # в контейнер — ТОЛЬКО publish-вывод (runtime-слой, без sdk/исходников;
-# канон E2E-образов, по образцу docker/OwnS3.Dockerfile). CLI (узкий контекст):
+# канон E2E-образов, по образцу ../OwnS3/docker/OwnS3.Dockerfile). CLI (узкий контекст):
 #   dotnet publish src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj -c Release -o artifacts/wal/publish
 #   docker build -f docker/PgWorker.Wal.Dockerfile -t pgworker-wal:dev artifacts/wal/publish
 # Compose (контекст — корень репо, ARG указывает путь вывода):
