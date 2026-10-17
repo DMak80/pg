@@ -119,6 +119,24 @@ Identity-материал (сертификат/ключ/trust/advertised) — �
 
 ## 5. Health и метрики
 
+- **`/s3/health/cluster` — кластер-health**: готовность хранилища
+  обслуживать запись: single-режим — условия `/healthz`; EC-режим — все
+  erasure-сеты writable (онлайн-дисков сета ≥ write-кворума, глава
+  [06-erasure.md](06-erasure.md)); выполнение → **200**, невыполнение →
+  **503** (критерий — референс `ClusterCheckHandler`: health =
+  write-quorum всех сетов). Эндпоинт не требует подписи (публичная проба
+  наблюдения, прецедент `/healthz`; потребитель — ClusterOk-проба панели,
+  [adminpanel/02](../adminpanel/02-etcd-contract.md) §2.5); метод GET.
+  Тело — JSON: `healthyDrives`, `offlineDrives`, `totalDrives` (long;
+  single — healthy/offline/total = 1/0/1 по итогам touch-пробы, при
+  отказе 0/1/1; EC — по всем дискам всех сетов); `healingDrives` не
+  отдаётся (heal-проход ownS3 не per-drive — статус heal в
+  `/admin/storage`). Префикс `/s3/health/*` — служебные пути ownS3 до
+  роутинга 21 операции (запрос без подписи не падает в path-style матче
+  бакета `s3`; объекты с ключами `health/*` в бакете `s3` через эту
+  грань недоступны — прецедент `/minio/*` референса). `/s3/health/live`
+  не реализуется: панель использует фолбэк `GET /healthz` (контракт
+  панели §2.5).
 - **`/healthz` — liveness**: том смонтирован и доступен на запись +
   `volume.json` валиден (глава 04) → **200**; иначе **503**. Эндпоинт
   не требует подписи (метрика доступности, не данных).

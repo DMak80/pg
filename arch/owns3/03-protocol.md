@@ -344,9 +344,9 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 | `InvalidAccessKeyId` | 403 | accessKey не существует (раздел 1) |
 | `AccessDenied` | 403 | нет прав (глава 05); анонимный запрос; просроченный presigned |
 | `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут (заголовочная подпись); X-Amz-Date в будущем дальше now + 15 минут (presigned) |
-| `BadDigest` | 400 | несовпадение Content-MD5; несовпадение trailer-checksum |
+| `BadDigest` | 400 | несовпадение Content-MD5; несовпадение trailer-checksum; несовпадение заголовочного `x-amz-checksum-*` (PutObject, глава 02) |
 | `NoSuchUpload` | 404 | uploadId не существует / повторные Complete/Abort |
-| `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, `x-amz-copy-source-range` — невалидный или вне размера источника (обе причины в один код, как в референсе) |
+| `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, `x-amz-copy-source-range` — невалидный или вне размера источника (обе причины в один код, как в референсе); форматно-невалидный заголовок `x-amz-checksum-*` (PutObject) и более одного заголовка `x-amz-checksum-*` (глава 02) |
 | `InvalidBucketName` | 400 | имя бакета нарушает правила (раздел 6) |
 | `InvalidRequest` | 400 | неподдерживаемый `x-amz-content-sha256`; несовпадение sha256 тела; unsupported trailer header; несвязанный `x-amz-decoded-content-length` |
 | `NotImplemented` | 501 | вне-наборные грани (глава 02, раздел 1) |
