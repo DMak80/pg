@@ -40,7 +40,7 @@ done
 echo "  s3worker жив: /healthz по mTLS"
 
 # 1) Демо-кластер через API: 201 → воркер провижинит (RUNNING) ≤ NodeBootSec+запас.
-body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"nodes\":1,\"secretProfile\":\"BACKUPS-MAIN\",\"placements\":[{\"dockerHost\":\"local\"}],\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}"
+body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$("${MTLS[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
 [ "$c" = 201 ] || { echo "❌ create = $c, ожидался 201"; cat "$TMP/create.json"; exit 1; }
 echo "  create $TAG -> 201 (заявка принята)"
@@ -64,10 +64,10 @@ docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "�
 
 # 3) Валидации: невалидный name → 400; неизвестный профиль → 422.
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"nodes\":1,\"secretProfile\":\"BACKUPS-MAIN\",\"placements\":[{\"dockerHost\":\"local\"}],\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}")"
+  -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 400 ] || { echo "❌ невалидный name → $c, ожидался 400"; exit 1; }
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"nodes\":1,\"secretProfile\":\"no-such-profile\",\"placements\":[{\"dockerHost\":\"local\"}],\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}")"
+  -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"secretProfile\":\"no-such-profile\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 422 ] || { echo "❌ неизвестный профиль → $c, ожидался 422"; exit 1; }
 # /metrics домен-счётчики (spec §9): .NET-экспортер выдаёт серию после первого
 # наблюдения — проверка ПОСЛЕ операций API выше (create/400/422).
