@@ -98,11 +98,13 @@ LOGIN_BODY='{"username":"admin","password":"admin"}'
 api_auth() { curl -fsS -b "$JAR" "$BASE$1"; }
 api_auth_put() { curl -fsS -b "$JAR" -o /dev/null -w '%{http_code}' -X PUT "$BASE$1" -H 'Content-Type: application/json' -d "$2"; }
 base_policy='{"retentionDays":1,"retentionWeeks":1,"retentionMonths":1,"fullMaxAgeSec":86400,"verifyOnCreate":true,"drillIntervalDays":1'
-code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy,"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}")"
+s3_on=',{"s3":{"pool":"backups","writeMaster":["node1"],"writeReplica":["node1"]}}'
+code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy$s3_on")"
 [ "$code" = "200" ] || { echo "❌ PUT policy c s3: $code (ожидался 200)"; exit 1; }
 api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3.pool == "backups")' >/dev/null \
   || { echo "❌ policy.demo: секция s3 не записана"; exit 1; }
-code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy,"s3":null}")"
+s3_off=',{"s3":null}'
+code="$(api_auth_put /api/clusters/demo/backups/policy "$base_policy$s3_off")"
 [ "$code" = "200" ] || { echo "❌ PUT policy без s3 (сброс): $code"; exit 1; }
 api_auth /api/backups/storage | jq -e 'any(.clusters[]? | select(.cluster == "demo"); .policy.s3 == null)' >/dev/null \
   || { echo "❌ policy.demo: сброс s3 не сработал"; exit 1; }
