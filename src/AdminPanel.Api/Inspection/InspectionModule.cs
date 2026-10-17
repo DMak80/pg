@@ -36,15 +36,16 @@ public static class InspectionModule
             return ResultToHttp(result);
         });
 
-        // GET /api/backups/s3-pools (t36, adminpanel/02 §12): пулы /s3/clusters/
-        // read-минимум — Select модала «Пул бэкапов» (без ключей/секретов).
-        endpoints.MapGet("/api/backups/s3-pools", async (ISnapshotStore store, CancellationToken ct) =>
+        // GET /api/backups/s3-pools (t36, adminpanel/02 §12.4): пулы — из единого
+        // домена S3 (S3Snapshot, тот же тик) — Select модала «Пул бэкапов»
+        // (без ключей/секретов).
+        endpoints.MapGet("/api/backups/s3-pools", async (IS3SnapshotReader store, CancellationToken ct) =>
         {
             var snapshot = store.Current;
             if (snapshot is null)
                 return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
                     title: "Snapshot not ready");
-            return Results.Ok(snapshot.S3Pools ?? []);
+            return Results.Ok(S3Mappers.MapPools(snapshot.Clusters));
         });
 
         // GET /api/clusters — сводный список (arch/03 §1; spec §6.1).

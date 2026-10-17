@@ -61,9 +61,41 @@ public sealed record S3SyncPairDto(
     string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);
 public sealed record S3RotationDto(long RequestedUnix, string? RequestedBy);
 
+// Пул S3 для грани «Хранилище бэкапов» (t36, adminpanel/02 §12.4): проекция
+// ТОГО ЖЕ домена S3Snapshot — без ключей/секретов (GET /api/backups/s3-pools).
+public sealed record S3PoolDto(
+    string Name,
+    string? SecretProfile,
+    bool Active,
+    IReadOnlyList<S3PoolNodeDto> Nodes,
+    IReadOnlyList<string> Endpoints);
+
+public sealed record S3PoolNodeDto(string Name, string? State);
+
 // Core → DTO: чистые функции (arch/03 §12.2; camelCase-зеркало модели).
 public static class S3Mappers
 {
+    // Пулы для модала «Пул бэкапов» (02 §12.4): Active = state отсутствует;
+    // endpoints-строка "h1:p1,h2:p2" → упорядоченный массив (битые элементы — долой).
+    public static IReadOnlyList<S3PoolDto> MapPools(IReadOnlyList<S3ClusterInfo> clusters)
+        => [.. clusters.Select(c => new S3PoolDto(
+            c.Name,
+            c.SecretProfile,
+            c.State == S3ClusterState.Active,
+            [.. c.NodesList.Select(n => new S3PoolNodeDto(n.Name, n.State))],
+            SplitEndpoints(c.Endpoints)))];
+
+    // "h1:18001,h2:18002" → упорядоченный массив; без валидного host:port — элемент долой.
+    private static string[] SplitEndpoints(string? raw)
+        => raw is null ? []
+            : [.. raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(e =>
+                {
+                    var colon = e.LastIndexOf(':');
+                    return colon > 0 && colon < e.Length - 1
+                        && int.TryParse(e[(colon + 1)..], out var port) && port > 0;
+                })];
+
     public static IReadOnlyList<S3ClusterSummaryDto> MapSummaries(S3Snapshot snapshot)
         => [.. snapshot.Clusters.Select(c => new S3ClusterSummaryDto(
             c.Name,

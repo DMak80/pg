@@ -21,8 +21,9 @@ public sealed record EtcdSnapshot(
     BackupOrphansInfo? BackupOrphans = null,      // ключ /pgworker/backups/orphans (t07)
     S3StorageInfo? S3Storage = null,       // live-S3-инвентарь (t08, adminpanel/02 §2.5)
     WorkerApiCert? WorkerApiCert = null,         // целевой серт API PgWorker (adminpanel/02 §9.9)
-    EtcdSnapshotExportInfo? EtcdSnapshots = null, // статус выгрузки etcd-снапшотов (t08, adminpanel/02 §2.3.1)
-    IReadOnlyList<S3PoolInfo>? S3Pools = null);   // пулы /s3/clusters/ read-минимум (t36, adminpanel/02 §12)
+    EtcdSnapshotExportInfo? EtcdSnapshots = null); // статус выгрузки etcd-снапшотов (t08, adminpanel/02 §2.3.1)
+    // Пулы /s3/clusters/ в EtcdSnapshot НЕ входят: домен S3 — отдельный S3Snapshot
+    // (adminpanel/02 §12), страница бэкапов берёт пулы из него (02 §12.4).
 
 // Ключ, значение которого не удалось разобрать: виден в UI-details, кормит алерт key-malformed (t04).
 public sealed record KeyParseError(string Key, string Reason);
