@@ -109,6 +109,16 @@ public sealed class DockerOptions
     /// не создаётся/не удаляется; пусто — default bridge docker-хоста запуска.
     /// Не поддерживается в Mode=Swarm — fail-fast старта (arch/21 §2).</summary>
     public string? ContourNetwork { get; set; }
+
+    /// <summary>Fail-fast старта (arch/21 §2): ContourNetwork не поддерживается
+    /// в Mode=Swarm — сеть overlay назначает сам Swarm (канон PgWorker).</summary>
+    public void EnsureContourNetworkMode()
+    {
+        if (!string.IsNullOrWhiteSpace(ContourNetwork)
+            && string.Equals(Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+            throw new ApplicationException(
+                "ValkeyWorker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
+    }
 }
 
 /// <summary>Хост plain-режима: {Name, Endpoint} (tcp://host:2375 | unix:///var/run/docker.sock).</summary>

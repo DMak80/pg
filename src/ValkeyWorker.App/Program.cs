@@ -118,6 +118,9 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
+    // Контурная сеть (arch/21 §2): Mode=Swarm + ContourNetwork — ошибка
+    // конфигурации (сеть overlay назначает сам Swarm) — fail-fast.
+    docker.EnsureContourNetworkMode();
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
