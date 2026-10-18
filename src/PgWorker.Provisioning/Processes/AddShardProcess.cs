@@ -235,7 +235,7 @@ public sealed partial class AddShardProcess(
                 PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
-                    $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}")); // FLAG: ассертится в AddShardProcessTests.cs:369,372,379
+                    $"port range exhausted — widen PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}")); // FLAG: ассертится в AddShardProcessTests.cs:369,372,379
 
             foreach (var (merged, addr) in allocated.Value)
                 existing[merged] = addr;

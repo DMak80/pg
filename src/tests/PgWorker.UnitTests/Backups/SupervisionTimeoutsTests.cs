@@ -19,7 +19,7 @@ public class SupervisionTimeoutsTests
 
     // AAA: активный полный старше бюджета — кандидат таймаута (AC5)
     [Fact]
-    public void SelectTimedOut_ВозрастВышеBudgeta_ОтбираетАктивных()
+    public void SelectTimedOut_AgeOverBudget_PicksActive()
     {
         // Arrange — RUNNING начат 7 ч назад (бюджет 6 ч); COMPLETED/FAILED не в счёт
         var now = Unix(Now);
@@ -39,7 +39,7 @@ public class SupervisionTimeoutsTests
 
     // AAA: все активные младше бюджета → пусто (ложных таймаутов нет)
     [Fact]
-    public void SelectTimedOut_ВсеМладшеBudgeta_Пусто()
+    public void SelectTimedOut_AllYoungerThanBudget_Empty()
     {
         // Arrange — RUNNING/PLANNED начаты час назад (бюджет 6 ч)
         var now = Unix(Now);
@@ -61,7 +61,7 @@ public class SupervisionTimeoutsTests
     [InlineData(21600, 21600, false)]   // возраст = бюджету
     [InlineData(21601, 21600, true)]    // возраст = бюджет + 1 c
     [InlineData(0, 21600, false)]       // только создан
-    public void IsTimedOut_СтрогоБольше(long ageSec, long timeoutSec, bool expected)
+    public void IsTimedOut_StrictlyGreater(long ageSec, long timeoutSec, bool expected)
     {
         // Arrange
         var now = Unix(Now);

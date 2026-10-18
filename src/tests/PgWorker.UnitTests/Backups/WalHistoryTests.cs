@@ -10,7 +10,7 @@ public class WalHistoryTests
 {
     // AAA: валидный history — записи в порядке строк, LSN без изменений
     [Fact]
-    public void Parse_Валидный_возвращаетЗаписи()
+    public void Parse_Valid_ReturnsRecords()
     {
         // Arrange — 00000003.history: линия 3 ответвилась от 2, 2 — от 1
         const string content = "1\t0/2000000\tunknown\n2\t16/37D3000\tno promotion\n";
@@ -26,7 +26,7 @@ public class WalHistoryTests
 
     // AAA: строки-мусор (не 2 первых поля hex/LSN) пропускаются, не роняют разбор
     [Fact]
-    public void Parse_МусорныеСтроки_Пропускаются()
+    public void Parse_GarbageLines_Skipped()
     {
         // Arrange
         const string content = "garbage line\n\n1\t0/2000000\n";
@@ -40,7 +40,7 @@ public class WalHistoryTests
 
     // AAA: пустой/полностью битый файл — null (строгий разбор не состоялся)
     [Fact]
-    public void Parse_ПустойИлиБитый_null()
+    public void Parse_EmptyOrBroken_Null()
     {
         // Arrange / Act / Assert
         WalHistory.Parse("").Should().BeNull();
@@ -49,7 +49,7 @@ public class WalHistoryTests
 
     // AAA: parentTLI hex (формат PG — hex без 0x), LSN строго X/Y
     [Fact]
-    public void Parse_HexParentИПлохойLsn_СтрогаяВалидация()
+    public void Parse_HexParentAndBadLsn_StrictValidation()
     {
         // Arrange — parentTLI "00000001" (hex-вид, как пишет PG), битый LSN в другой строке
         const string content = "00000001\t0/2000000\n2\tNOT_AN_LSN\n";

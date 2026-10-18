@@ -164,7 +164,7 @@ public class BackupPoolResolverTests
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("ghost1").And.Contain("не в пуле");
+        result.Error!.Message.Should().Contain("ghost1").And.Contain("not in pool");
     }
 
     // AAA: нода в Nodes, но portalloc-записи нет (Host=null) → Failed «пул
@@ -186,7 +186,7 @@ public class BackupPoolResolverTests
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("east2").And.Contain("пул поднимается");
+        result.Error!.Message.Should().Contain("east2").And.Contain("pool is starting up");
     }
 
     // Фейк store: заранее собранный пул (или null — «пула нет»).

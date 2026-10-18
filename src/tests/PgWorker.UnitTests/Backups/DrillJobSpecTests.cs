@@ -73,7 +73,7 @@ public class DrillJobSpecTests
     public void LogParses_DelegatesToRestoreJobLog()
     {
         // Arrange
-        var logs = "шум pg_ctl\n{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/42\"}\n";
+        var logs = "pg_ctl noise\n{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/42\"}\n";
 
         // Act
         var markers = DrillJobLog.Parse(logs);
@@ -87,7 +87,7 @@ public class DrillJobSpecTests
 
     // AAA: CaBundlePath задан → env несёт S3_CA_PEM значением (t42, arch/19 §7)
     [Fact]
-    public void Build_CaBundle_ПередаётPemЗначением()
+    public void Build_CaBundle_PassesPemByValue()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
@@ -102,7 +102,7 @@ public class DrillJobSpecTests
 
     // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
     [Fact]
-    public void Build_БезCaBundle_НетS3CaPem()
+    public void Build_WithoutCaBundle_NoS3CaPem()
     {
         // Arrange / Act
         var spec = DrillJobSpec.Build(Opts(), "c1", "shard1", "id7", "20261001090000Z", ["http://m:9000"], "ak", "sk");
@@ -127,7 +127,7 @@ public class DrillJobSpecTests
         // Assert
         spec.Network.Should().Be(expectedNet);
         if (expectedHosts is null)
-            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+            spec.ExtraHosts.Should().BeNull("standalone mode: extra_hosts are not applied");
         else
             spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
     }

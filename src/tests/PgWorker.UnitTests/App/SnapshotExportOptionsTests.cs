@@ -20,7 +20,7 @@ public class SnapshotExportOptionsTests
 
     // AAA: дефолты — выключено, валидно при пустой паре (нулевое влияние)
     [Fact]
-    public void Выключено_по_умолчанию_валидно_без_S3()
+    public void DisabledByDefault_ValidWithoutS3()
     {
         // Act
         var valid = new SnapshotExportOptions().IsValid();
@@ -31,18 +31,18 @@ public class SnapshotExportOptionsTests
 
     // AAA: Enabled=true + полная пара — валидно даже при Backups:Enabled=false
     [Fact]
-    public void Включено_с_полной_парой_валидно()
+    public void Enabled_WithFullPair_Valid()
     {
         // Arrange
         var options = new SnapshotExportOptions { Enabled = true, S3 = S3() };
 
         // Act/Assert
-        options.IsValid().Should().BeTrue("контроль-плейн не зависит от подсистемы бэкапов PG");
+        options.IsValid().Should().BeTrue("the control plane does not depend on the PG backup subsystem");
     }
 
     // AAA: Enabled=true + пустая пара — ошибка старта (fail-fast)
     [Fact]
-    public void Включено_без_пары_невалидно()
+    public void Enabled_WithoutPair_Invalid()
     {
         // Arrange
         var options = new SnapshotExportOptions { Enabled = true, S3 = S3(full: false) };
@@ -56,7 +56,7 @@ public class SnapshotExportOptionsTests
     [InlineData(0, 300, 30)]   // RetentionObjects < 1
     [InlineData(28, 0, 30)]    // RetryIntervalSec <= 0
     [InlineData(28, 300, 0)]   // TimeoutSec <= 0
-    public void Диапазоны_невалидны_всегда(int retention, int retrySec, int timeoutSec)
+    public void Ranges_AlwaysInvalid(int retention, int retrySec, int timeoutSec)
     {
         // Arrange
         var options = new SnapshotExportOptions

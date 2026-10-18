@@ -72,7 +72,7 @@ public class MoveSqlTests
         var act = () => MoveSql.TableNames(bad);
 
         // Assert
-        act.Should().Throw<ArgumentException>("идентификаторы обязаны проходить ^[a-z][a-z0-9_]*$");
+        act.Should().Throw<ArgumentException>("identifiers must match ^[a-z][a-z0-9_]*$");
     }
 
     // AAA: схема есть на шарде — to_regnamespace (schema_exists скрипта)

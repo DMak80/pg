@@ -12,7 +12,7 @@ public class WalChainTests
     private static WalFileName Seg(uint tli, uint log, uint seg) => new(tli, log, seg);
 
     [Fact]
-    public void Сплошная_цепочка_непрерывна()
+    public void SolidChain_IsContinuous()
     {
         // Arrange
         var objects = new[]
@@ -30,7 +30,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void Дыра_внутри_цепочки_дает_разрыв_с_границами()
+    public void HoleInsideChain_GivesGapWithBounds()
     {
         // Arrange — нет 000000010000000000000002
         var objects = new[] { "000000010000000000000001", "000000010000000000000003" };
@@ -45,7 +45,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void Первый_объект_выше_старта_дает_дыру_от_стартовой_точки()
+    public void FirstObjectAboveStart_GivesHoleFromStart()
     {
         // Arrange — цепочка начинается с chainStart, а первый объект позже
         var objects = new[] { "000000010000000000000005" };
@@ -59,7 +59,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void Сегменты_раньше_старта_игнорируются()
+    public void SegmentsBeforeStart_AreIgnored()
     {
         // Arrange — хвост до chain_start (ретенция/сдвиг старта полным бэкапом)
         var objects = new[]
@@ -75,7 +75,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void Partial_сегменты_игнорируются()
+    public void PartialSegments_AreIgnored()
     {
         // Arrange
         var objects = new[]
@@ -92,7 +92,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void TLI_переход_с_history_и_повтором_последнего_сегмента_валиден()
+    public void TliSwitch_WithHistory_AndLastSegmentRepeat_IsValid()
     {
         // Arrange — failover в середине сегмента: PG перезаписывает сегмент с нового TLI
         var objects = new[]
@@ -111,7 +111,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void TLI_переход_с_history_и_следующим_сегментом_валиден()
+    public void TliSwitch_WithHistory_AndNextSegment_IsValid()
     {
         // Arrange — переключение на границе сегмента: первый новый = Next(последнего)
         var objects = new[]
@@ -129,7 +129,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void TLI_переход_без_history_разрыв()
+    public void TliSwitch_WithoutHistory_IsGap()
     {
         // Arrange
         var objects = new[]
@@ -146,7 +146,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void TLI_переход_со_скачком_мимо_точки_переключения_разрыв()
+    public void TliSwitch_JumpingOverSwitchPoint_IsGap()
     {
         // Arrange — первый сегмент нового TLI ≠ последнему/next (skip позиции)
         var objects = new[]
@@ -165,7 +165,7 @@ public class WalChainTests
 
     // AAA: сплошной диапазон [1..3] с end=3 — непрерывен, LastSegment == end
     [Fact]
-    public void CheckRange_СплошнойДиапазон_Непрерывен()
+    public void CheckRange_SolidRange_IsContinuous()
     {
         // Arrange
         var objects = new[] { "000000010000000000000001", "000000010000000000000002", "000000010000000000000003" };
@@ -180,7 +180,7 @@ public class WalChainTests
 
     // AAA: сегменты ВЫШЕ end (после точки бэкапа) не мешают — диапазон закрыт
     [Fact]
-    public void CheckRange_СегментыВышеEnd_Игнорируются()
+    public void CheckRange_SegmentsAboveEnd_AreIgnored()
     {
         // Arrange — end=2, но wal/ содержит ещё 3 и 4 (поток t03 продолжился)
         var objects = new[]
@@ -199,7 +199,7 @@ public class WalChainTests
 
     // AAA: дыра внутри [start..end] — разрыв с границами (AC3)
     [Fact]
-    public void CheckRange_ДыраДоEnd_РазрывСГраницами()
+    public void CheckRange_HoleBeforeEnd_GapWithBounds()
     {
         // Arrange — нет 2, диапазон [1..3]
         var objects = new[] { "000000010000000000000001", "000000010000000000000003" };
@@ -216,7 +216,7 @@ public class WalChainTests
     // AAA: сегмент end есть в наборе (pg_wal), но объекта wal/<end> нет — дыра
     // дублирования t02 (AC3)
     [Fact]
-    public void CheckRange_НетEndОбъектаВWal_Дыра()
+    public void CheckRange_NoEndObjectInWal_Hole()
     {
         // Arrange — wal/ обрывается на 2, end (из листинга набора) = 3
         var objects = new[] { "000000010000000000000001", "000000010000000000000002" };
@@ -231,7 +231,7 @@ public class WalChainTests
 
     // AAA: пустой wal/ при заданном end — дыра от старта
     [Fact]
-    public void CheckRange_ПустойWal_ДыраОтСтарта()
+    public void CheckRange_EmptyWal_HoleFromStart()
     {
         // Act
         var result = WalChain.CheckRange(Seg(1, 0, 1), Seg(1, 0, 2), []);
@@ -246,7 +246,7 @@ public class WalChainTests
     // AAA: fallback — без historyContents работает эвристика t03 (history-объект
     // в листинге + первый сегмент нового TLI ∈ {последний старого, Next(last)})
     [Fact]
-    public void CheckRange_ПереходБезСодержимого_Эвристика()
+    public void CheckRange_SwitchWithoutContent_Heuristic()
     {
         // Arrange — TLI 1: seg 1; TLI 2: seg 2 (== Next(1)); history-объект есть
         var objects = new[]
@@ -264,7 +264,7 @@ public class WalChainTests
     // AAA: строгий переход — switchWALLSN внутри границ (сегмент позиции == первому
     // сегменту нового TLI) → непрерывен (AC4)
     [Fact]
-    public void CheckRange_СтрогийПереход_ТочкаВГраницах_Ок()
+    public void CheckRange_StrictSwitch_PointWithinBounds_Ok()
     {
         // Arrange — первый сегмент TLI 2 = 2 (позиция 0/2000000); история: parent=1, lsn в сегменте 2
         var objects = new[] { "000000010000000000000001", "000000020000000000000002", "00000002.history" };
@@ -280,7 +280,7 @@ public class WalChainTests
     // AAA: строгий переход — точка вне границ (switchLSN указывает на сегмент 5,
     // а первый сегмент нового TLI — 2) → FAILED с границами (AC4)
     [Fact]
-    public void CheckRange_СтрогийПереход_ТочкаВнеГраниц_Дыра()
+    public void CheckRange_StrictSwitch_PointOutsideBounds_Hole()
     {
         // Arrange
         var objects = new[] { "000000010000000000000001", "000000020000000000000002", "00000002.history" };
@@ -296,7 +296,7 @@ public class WalChainTests
 
     // AAA: строгий переход — parent не совпадает (history говорит parent=5) → дыра
     [Fact]
-    public void CheckRange_СтрогийПереход_ЧужойParent_Дыра()
+    public void CheckRange_StrictSwitch_ForeignParent_Hole()
     {
         // Arrange
         var objects = new[] { "000000010000000000000001", "000000020000000000000002", "00000002.history" };
@@ -311,7 +311,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void History_без_перехода_не_влияет()
+    public void History_WithoutSwitch_HasNoEffect()
     {
         // Arrange — лишний history (файл от старого failover) — не ошибка
         var objects = new[] { "00000002.history", "000000010000000000000001", "000000010000000000000002" };
@@ -324,7 +324,7 @@ public class WalChainTests
     }
 
     [Fact]
-    public void Дыра_после_перехода_на_новый_TLI_ловится()
+    public void HoleAfterSwitchToNewTli_IsCaught()
     {
         // Arrange
         var objects = new[]
@@ -348,7 +348,7 @@ public class WalChainTests
     // с 0D (промежуточных 0B/0C не существует): перезапуск от первого сегмента
     // нового TLI делает цепь целой
     [Fact]
-    public void CheckWithRestart_ОбрезкаСтарогоTLI_ЦепьНепрерывна()
+    public void CheckWithRestart_OldTliTruncation_ChainContinuous()
     {
         // Arrange — chain_start от старого полного (tl1/09)
         var objects = new[]
@@ -368,7 +368,7 @@ public class WalChainTests
     // AAA: настоящая дыра внутри одного TLI перезапуском не маскируется —
     // другой истории нет
     [Fact]
-    public void CheckWithRestart_ДыраВнутриTLI_Деградация()
+    public void CheckWithRestart_HoleInsideTli_Degradation()
     {
         // Arrange — сегменты tl1: 09, 0B (0A пропущен)
         var objects = new[] { "000000010000000000000009", "00000001000000000000000b" };
@@ -383,7 +383,7 @@ public class WalChainTests
 
     // AAA: непрерывная цепь без TLI-переходов ведёт себя как обычный Check
     [Fact]
-    public void CheckWithRestart_НепрерывнаяЦепь_БезИзменений()
+    public void CheckWithRestart_ContinuousChain_NoChanges()
     {
         // Arrange
         var objects = new[]
@@ -403,7 +403,7 @@ public class WalChainTests
     // AAA: дыра в самом новом TLI — деградация (обрезка оправдывает только
     // границу таймлайнов, не пропуск внутри нового потока)
     [Fact]
-    public void CheckWithRestart_ДыраВНовомTLI_Деградация()
+    public void CheckWithRestart_HoleInNewTli_Degradation()
     {
         // Arrange — tl3: 0D, 0F (0E пропущен уже в новом потоке)
         var objects = new[]
@@ -424,7 +424,7 @@ public class WalChainTests
     // AAA (t18): кандидат ≥ записанной границы — контроль от кандидата
     // (новый OK-полный закрывает разрыв/поднимает точку).
     [Fact]
-    public void RatchetedStart_кандидат_выше_границы_принят()
+    public void RatchetedStart_CandidateAboveBounds_Accepted()
     {
         // Arrange — записанная граница ..05; кандидат (новейший OK-полный) ..09
         var recorded = WalFileName.TryParse("000000010000000000000005");
@@ -441,7 +441,7 @@ public class WalChainTests
     // перепроверка старшего OK→FAILED откатила кандидата — контроль остаётся
     // на прежней границе (полные ниже границы разрыва игнорируются).
     [Fact]
-    public void RatchetedStart_кандидат_ниже_границы_не_понижает()
+    public void RatchetedStart_CandidateBelowBounds_DoesNotLower()
     {
         // Arrange — записанная граница ..05; кандидат ..03
         var recorded = WalFileName.TryParse("000000010000000000000005");
@@ -457,7 +457,7 @@ public class WalChainTests
     // AAA (t18): записи нет — контроль от кандидата (первый OK-полный задаёт
     // стартовую точку; полных нет — остаётся min-объект потока у вызова).
     [Fact]
-    public void RatchetedStart_без_записи_кандидат()
+    public void RatchetedStart_NoRecord_Candidate()
     {
         // Arrange — записи нет; кандидат ..03
         var candidate = WalFileName.TryParse("000000010000000000000003");
@@ -472,7 +472,7 @@ public class WalChainTests
     // AAA (t18): кандидата нет (verify-OK-полных нет) — записанная точка
     // держится; нет и записи — null (контролю остаётся min-объект).
     [Fact]
-    public void RatchetedStart_нет_кандидата_записанная()
+    public void RatchetedStart_NoCandidate_Recorded()
     {
         // Arrange — записанная ..05; кандидата нет
         var recorded = WalFileName.TryParse("000000010000000000000005");

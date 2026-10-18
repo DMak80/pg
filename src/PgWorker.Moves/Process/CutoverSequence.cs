@@ -214,7 +214,7 @@ public sealed class CutoverSequence(
             return Result<bool>.Failed(flip.Error!); // etcd-сбой: заморозка оставлена, тик повторит (transient)
         if (flip.Value != true)
             return Result<bool>.Failed(new CutoverPermanentException(
-                "flip-conflict: routing изменился под руками — заморозка оставлена, разбор вручную"));
+                "flip-conflict: routing changed under us — freeze left in place, investigate manually"));
 
         // P12-снапшот точки «переключил на нового владельца» — best-effort (flip уже
         // случился, сбоем cutover не роняем; журнал/лог — задача вызывающего процесса).

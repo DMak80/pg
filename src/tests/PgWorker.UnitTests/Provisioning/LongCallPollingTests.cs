@@ -31,7 +31,7 @@ public sealed class LongCallPollingTests
     }
 
     [Fact]
-    public async Task ДолгийВызов_ИтерацииИдут_MarkПоФактуЛогElapsed()
+    public async Task LongCall_IterationsProgress_MarkPerIteration_ElapsedLogged()
     {
         // Arrange: вызов «висит» 3 c (медленный daemon — дольше порога сноса
         // в масштабе юнита; в проде аналогично фазе > 30 c), таймаут итерации
@@ -42,7 +42,7 @@ public sealed class LongCallPollingTests
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "create/start ноды shard1a",
+            "create/start node shard1a",
             async token =>
             {
                 calls++;
@@ -58,16 +58,16 @@ public sealed class LongCallPollingTests
         // итог — успех
         result.IsSuccess.Should().BeTrue();
         calls.Should().BeGreaterThanOrEqualTo(4);
-        progress.Marks.Should().BeGreaterThanOrEqualTo(calls, "отметка на каждую итерацию");
-        logger.Messages.Count(m => m.Contains("уже") && m.Contains("shard1a"))
+        progress.Marks.Should().BeGreaterThanOrEqualTo(calls, "a mark for each iteration");
+        logger.Messages.Count(m => m.Contains("already") && m.Contains("shard1a"))
             .Should().BeGreaterThanOrEqualTo(calls,
-                "elapsed-лог на КАЖДОЙ итерации, включая успешную (буква приказа п.4)");
-        logger.Messages.Should().Contain(m => m.Contains("успех"),
-            "завершающая успешная итерация тоже логируется с elapsed");
+                "an elapsed log on EVERY iteration, including the successful one (order letter p.4)");
+        logger.Messages.Should().Contain(m => m.Contains("success"),
+            "the final successful iteration is logged with elapsed too");
     }
 
     [Fact]
-    public async Task ОшибкаДрайвера_НаверхБезПоллинга()
+    public async Task DriverError_PropagatedUpWithoutPolling()
     {
         // Arrange: драйвер отвечает быстрой ошибкой — поллинг не крутится
         var progress = new MarkCounter();
@@ -75,7 +75,7 @@ public sealed class LongCallPollingTests
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "create/start ноды shard1a",
+            "create/start node shard1a",
             _ => { calls++; return Task.FromResult(Result.Failed(new ApplicationException("docker down"))); },
             progress, new CollectingLogger(),
             TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), CancellationToken.None);
@@ -83,18 +83,18 @@ public sealed class LongCallPollingTests
         // Assert: ошибка — наверх первым вызовом (тир повторит), отметка одна — по факту итерации
         result.IsSuccess.Should().BeFalse();
         calls.Should().Be(1);
-        progress.Marks.Should().Be(1, "отметка не ставится без фактической итерации");
+        progress.Marks.Should().Be(1, "no mark without an actual iteration");
     }
 
     [Fact]
-    public async Task БюджетИсчерпан_FailedНаверх()
+    public async Task BudgetExhausted_FailedPropagatedUp()
     {
         // Arrange: вызов никогда не завершается, бюджет 2 c < вечности
         var progress = new MarkCounter();
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "create/start ноды shard1a",
+            "create/start node shard1a",
             async token => { await Task.Delay(TimeSpan.FromHours(1), token); return Result.Success(); },
             progress, new CollectingLogger(),
             TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(2), CancellationToken.None);
@@ -102,9 +102,9 @@ public sealed class LongCallPollingTests
         // Assert: существующий бюджет — граница фазы (PatroniBootSec-семантика),
         // ошибка — не раньше исчерпания (несколько итераций успели пройти)
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("бюджет");
+        result.Error!.Message.Should().Contain("budget");
         progress.Marks.Should().BeGreaterThanOrEqualTo(2,
-            "ошибка бюджета — только после нескольких таймаут-итераций, не раньше");
+            "the budget error comes only after several timeout iterations, not earlier");
     }
 
     // AAA (spec §1.2 п.4, разбор E2E-маркера «SQL-скаляр не выполнен …
@@ -112,7 +112,7 @@ public sealed class LongCallPollingTests
     // итерационного таймаута в Result.Failed (OCE в цепочке ошибки) —
     // это «итерация не уложилась», а не ошибка: повтор до успеха на 2-й.
     [Fact]
-    public async Task ПроглоченнаяОтмена_FailedСОЧЕ_ПовторяетсяДоУспеха()
+    public async Task SwallowedCancellation_FailedWithOce_RetriedUntilSuccess()
     {
         // Arrange: таймаут итерации 300 мс; 1-й вызов «висит», ловит отмену
         // токена и возвращает Failed с OCE в цепочке (как DatabaseProvisioner);
@@ -123,7 +123,7 @@ public sealed class LongCallPollingTests
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "sql шарда shard3",
+            "sql of shard shard3",
             async token =>
             {
                 calls++;
@@ -136,7 +136,7 @@ public sealed class LongCallPollingTests
                 catch (OperationCanceledException)
                 {
                     return Result.Failed(new ApplicationException(
-                        "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                        "SQL scalar not executed [dsn]: The operation was canceled",
                         new OperationCanceledException()));
                 }
 
@@ -149,16 +149,16 @@ public sealed class LongCallPollingTests
         // elapsed-логи: таймаут-повтор + завершающая успешная
         result.IsSuccess.Should().BeTrue();
         calls.Should().Be(2);
-        logger.Messages.Should().Contain(m => m.Contains("отменена по таймауту"),
-            "итерация с проглоченной отменой логируется как таймаут-повтор");
-        logger.Messages.Should().Contain(m => m.Contains("успех"),
-            "завершающая успешная итерация логируется с elapsed");
+        logger.Messages.Should().Contain(m => m.Contains("cancelled by timeout"),
+            "an iteration with a swallowed cancellation is logged as a timeout retry");
+        logger.Messages.Should().Contain(m => m.Contains("success"),
+            "the final successful iteration is logged with elapsed");
     }
 
     // AAA (бюджет, проглоченная отмена): вызов вечно возвращает Failed с OCE —
     // повтор идёт до исчерпания бюджета, ошибка бюджета — не раньше.
     [Fact]
-    public async Task ВечнаяПроглоченнаяОтмена_БюджетИсчерпан_НеРаньше()
+    public async Task EndlessSwallowedCancellation_BudgetExhausted_NotEarlier()
     {
         // Arrange: таймаут 200 мс, бюджет 1 с (≈5 итераций); каждый вызов
         // «висит» до таймаута и возвращает Failed с OCE в цепочке
@@ -167,7 +167,7 @@ public sealed class LongCallPollingTests
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "sql шарда shard3",
+            "sql of shard shard3",
             async token =>
             {
                 calls++;
@@ -180,7 +180,7 @@ public sealed class LongCallPollingTests
                 }
 
                 return Result.Failed(new ApplicationException(
-                    "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                    "SQL scalar not executed [dsn]: The operation was canceled",
                     new OperationCanceledException()));
             },
             progress, new CollectingLogger(),
@@ -189,15 +189,15 @@ public sealed class LongCallPollingTests
         // Assert: ошибка бюджета (обработка процесса — прежняя, A5 идемпотентен),
         // не раньше нескольких итераций
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("бюджет");
+        result.Error!.Message.Should().Contain("budget");
         calls.Should().BeGreaterThanOrEqualTo(3,
-            "повторы до бюджета — ошибка не раньше исчерпания (spec §1.2 п.4)");
+            "retries up to the budget — the error comes no earlier than exhaustion (spec §1.2 p.4)");
     }
 
     // AAA (внешний ct, брошенная отмена): отмена внешнего токена пробрасывает
     // OperationCanceledException наружу немедленно — не трактуется как таймаут.
     [Fact]
-    public async Task ВнешняяОтмена_ПробросOceНаружу()
+    public async Task ExternalCancellation_OcePropagatesOut()
     {
         // Arrange: внешний токен отменён до вызова; вызов уважает токен
         using var cts = new CancellationTokenSource();
@@ -207,7 +207,7 @@ public sealed class LongCallPollingTests
         // Act + Assert: OCE наружу с первой итерации
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             LongCallPolling.EnsureAsync(
-                "create/start ноды shard1a",
+                "create/start node shard1a",
                 async token =>
                 {
                     calls++;
@@ -216,13 +216,13 @@ public sealed class LongCallPollingTests
                 },
                 new MarkCounter(), new CollectingLogger(),
                 TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), cts.Token));
-        calls.Should().Be(1, "внешняя отмена — немедленный проброс, без повторов");
+        calls.Should().Be(1, "external cancellation — immediate propagation, no retries");
     }
 
     // AAA (внешний ct, проглоченная отмена): вызов вернул Failed с OCE при
     // отменённом внешнем токене — проброс OCE, не «ошибка» и не повтор.
     [Fact]
-    public async Task ПроглоченнаяВнешняяОтмена_ПробросOceНаружу()
+    public async Task SwallowedExternalCancellation_OcePropagatesOut()
     {
         // Arrange: внешний токен отменён; вызов глотает OCE в Result.Failed
         using var cts = new CancellationTokenSource();
@@ -232,7 +232,7 @@ public sealed class LongCallPollingTests
         // Act + Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             LongCallPolling.EnsureAsync(
-                "sql шарда shard3",
+                "sql of shard shard3",
                 async token =>
                 {
                     calls++;
@@ -245,7 +245,7 @@ public sealed class LongCallPollingTests
                     }
 
                     return Result.Failed(new ApplicationException(
-                        "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                        "SQL scalar not executed [dsn]: The operation was canceled",
                         new OperationCanceledException()));
                 },
                 new MarkCounter(), new CollectingLogger(),
@@ -257,7 +257,7 @@ public sealed class LongCallPollingTests
     // сработавшем итерационном таймауте — наверх как есть, без повторов
     // (поллинг ловит молчание, не сбои).
     [Fact]
-    public async Task ОшибкаНеотменногоХарактера_НаверхБезПовторов()
+    public async Task NonCancellationError_PropagatedUpWithoutRetries()
     {
         // Arrange: таймаут 200 мс; вызов «висит», ловит отмену токена, но
         // возвращает FAILED с ошибкой валидации (OCE в цепочке НЕТ)
@@ -265,7 +265,7 @@ public sealed class LongCallPollingTests
 
         // Act
         var result = await LongCallPolling.EnsureAsync(
-            "sql шарда shard3",
+            "sql of shard shard3",
             async token =>
             {
                 calls++;
@@ -277,15 +277,15 @@ public sealed class LongCallPollingTests
                 {
                 }
 
-                return Result.Failed(new ApplicationException("хост не в таблице Docker:Hosts"));
+                return Result.Failed(new ApplicationException("host is not in the Docker:Hosts table"));
             },
             new MarkCounter(), new CollectingLogger(),
             TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(5), CancellationToken.None);
 
         // Assert: ошибка наверх первым вызовом (тик повторит), поллинг не крутится
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("хост не в таблице");
-        calls.Should().Be(1, "неотменная ошибка — наверх без повторов (spec §1.2 п.4а)");
+        result.Error!.Message.Should().Contain("host is not in the table");
+        calls.Should().Be(1, "a non-cancellation error goes up without retries (spec §1.2 p.4a)");
     }
 
     // Локальная копия образца Shared.Core.UnitTests: счётчик StopApplication.
@@ -299,7 +299,7 @@ public sealed class LongCallPollingTests
     }
 
     [Fact]
-    public async Task Связка_ПоллингИдёт_WatchdogНеСносит_ВисящийВызовБезИтераций_Сносит()
+    public async Task Integration_PollingAlive_WatchdogSpares_StuckCallWithoutIterations_Kills()
     {
         // Arrange: HealthState + виталити PgWorker (порог от опций: 2×1=2 c —
         // масштабированный аналог продового 2×15=30 c) + LoopWatchdog (механика
@@ -334,7 +334,7 @@ public sealed class LongCallPollingTests
         }
 
         // Assert 1: сноса нет — активность обновляется, возраст < StaleAfter
-        lifetime.StopCalls.Should().Be(0, "итерации поллинга — не зависание (критерий 8)");
+        lifetime.StopCalls.Should().Be(0, "polling iterations are not a hang (criterion 8)");
 
         // Act 2: «висящий вызов» — отметок нет 5 c (возраст snapshot > grace 4 c +
         // окно; reconcile последней отметки 3 c назад у порога — первым сработает
@@ -342,7 +342,7 @@ public sealed class LongCallPollingTests
         await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         // Assert 2: снос при возрасте активности > StaleAfter (механика прежняя)
-        lifetime.StopCalls.Should().Be(1, "висящий вызов без итераций — снос (критерий 8)");
+        lifetime.StopCalls.Should().Be(1, "a stuck call without iterations is killed (criterion 8)");
         cts.Cancel();
     }
 }

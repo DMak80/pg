@@ -64,7 +64,7 @@ public static class CreateClusterValidator
             errors.Add(new("buckets", $"buckets: integer {CreateClusterLimits.MinBuckets}..{CreateClusterLimits.MaxBuckets}"));
         if (request.Shards is < CreateClusterLimits.MinShards or > CreateClusterLimits.MaxShards
             || request.Shards > request.Buckets)
-            errors.Add(new("shards", $"шарды: целое {CreateClusterLimits.MinShards}..{CreateClusterLimits.MaxShards} и не больше бакетов"));
+            errors.Add(new("shards", $"shards: integer {CreateClusterLimits.MinShards}..{CreateClusterLimits.MaxShards} and not more than buckets"));
         if (request.Replicas is < CreateClusterLimits.MinReplicas or > CreateClusterLimits.MaxReplicas)
             errors.Add(new("replicas", $"replicas: integer {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
         // t06: strict-режим требует sync-standby → replicas ≥ 2; отсутствие опции = true.

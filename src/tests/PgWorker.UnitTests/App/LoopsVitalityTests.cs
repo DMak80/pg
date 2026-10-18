@@ -37,7 +37,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_ПорогНеЗависитОтИнтерваловЦиклов_E2E_30_а_не_36()
+    public void Snapshot_ThresholdIndependentOfLoopIntervals_E2E_30_Not36()
     {
         // Arrange: E2E-параметры scan=1/keepalive=1 — прежняя формула давала
         // 2×(3×1+15)=36 c (диагноз: healthz-порог 18 в формуле); новая — 30 c
@@ -55,7 +55,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_КастомныйПорог_ОтОпцийWatchdog()
+    public void Snapshot_CustomThreshold_FromWatchdogOptions()
     {
         // Arrange: Multiplier=3, CheckIntervalSec=20 → порог 60 c (конфигурируемость
         // прежняя — окном и множителем, без healthz)
@@ -74,7 +74,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_ПульсСнаБезТика_ЖивостьБезТика()
+    public void Snapshot_PulseWithoutTick_AliveWithoutTick()
     {
         // Arrange: сон snapshot-лидера — только пульс активности, тика нет
         var health = new HealthState(TimeProvider.System);
@@ -92,7 +92,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_ТикПозднееПульса_ПозднейшийФакт()
+    public void Snapshot_TickLaterThanPulse_LatestFactWins()
     {
         // Arrange: пульс сна, затем тик снимка ПОЗЖЕ пульса — виталити отдаёт тик
         var clock = new FakeTimeProvider { Now = DateTimeOffset.UnixEpoch.AddHours(1) };

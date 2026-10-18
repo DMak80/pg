@@ -21,7 +21,7 @@ internal sealed class FixedOptionsMonitor(PgWorkerOptions value) : IOptionsMonit
 internal sealed class DeadEtcd : IEtcdGateway
 {
     private static Result<T> Fail<T>()
-        => Result<T>.Failed(new HttpRequestException("etcd недоступен"));
+        => Result<T>.Failed(new HttpRequestException("etcd unreachable"));
 
     public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         => Task.FromResult(Fail<IReadOnlyList<Kv>>());
@@ -30,10 +30,10 @@ internal sealed class DeadEtcd : IEtcdGateway
         => Task.FromResult(Fail<Kv?>());
 
     public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 
     public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 
     public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         => Task.FromResult(Fail<TxnResult>());
@@ -42,10 +42,10 @@ internal sealed class DeadEtcd : IEtcdGateway
         => Task.FromResult(Fail<long>());
 
     public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 
     public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 
     public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Fail<byte[]>());
@@ -60,8 +60,8 @@ internal sealed class DeadEtcd : IEtcdGateway
         => Task.FromResult(Fail<IReadOnlyList<EtcdAlarm>>());
 
     public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 
     public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
-        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd unreachable")));
 }

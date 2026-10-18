@@ -31,7 +31,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void Один_сегмент_по_кускам_закрывается_последним_чанком()
+    public void OneSegment_InChunks_IsClosedByLastChunk()
     {
         // Arrange — 4 чанка по 4 MiB от границы LSN 0; header первого сегмента tli=1
         var assembler = new SegmentAssembler(0);
@@ -46,7 +46,7 @@ public class WalReceiverSegmentAssemblerTests
             var chunkClosed = assembler.Append(new XLogChunk((ulong)(i * 4 * Mib), data));
             // Assert — до последнего чанка ничего не закрыто
             if (i < 3)
-                chunkClosed.Should().BeEmpty($"после {i + 1}-го из 4 чанков сегмент не закрыт");
+                chunkClosed.Should().BeEmpty($"after chunk {i + 1} of 4 the segment is not closed");
             closed.AddRange(chunkClosed);
         }
 
@@ -62,7 +62,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void Чанк_пересекает_границу_сплит_и_добивка()
+    public void Chunk_CrossesBoundary_SplitAndPadding()
     {
         // Arrange — ассемблер от 0; один чанк 20 MiB
         var assembler = new SegmentAssembler(0);
@@ -89,7 +89,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void Старт_с_середины_сегмента_головной_отброшен_имя_от_границы()
+    public void StartMidSegment_HeadDiscarded_NameFromBoundary()
     {
         // Arrange — startLsn = 5 MiB (середина сегмента [0, 16 MiB)); до ближайшей
         // границы 16 MiB — 11 MiB отбрасывания
@@ -116,7 +116,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void TLI_из_заголовка_и_наследование_следующим_сегментом()
+    public void Tli_FromHeader_AndInheritanceByNextSegment()
     {
         // Arrange — сегмент с header tli=2 на границе 0
         var assembler = new SegmentAssembler(0);
@@ -139,7 +139,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void Разрыв_WalStart_внутренняя_ошибка()
+    public void WalStartGap_InternalError()
     {
         // Arrange — ассемблер от 0, первый чанк принят
         var assembler = new SegmentAssembler(0);
@@ -153,7 +153,7 @@ public class WalReceiverSegmentAssemblerTests
     }
 
     [Fact]
-    public void Математика_имён_сверена_с_WalFileName_на_переходе_log()
+    public void NameMath_CrossChecked_WithWalFileName_AtLogRollover()
     {
         // Arrange — граница сегмента seg=0xFF: LSN 0/FF000000; следующий сегмент —
         // log+1, seg 0 (0x100000000). startLsn ровно на границе.

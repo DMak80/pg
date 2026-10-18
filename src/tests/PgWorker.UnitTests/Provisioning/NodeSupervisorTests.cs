@@ -187,8 +187,8 @@ public class NodeSupervisorTests
         // Assert — декларация/пробы/эвакуационный рубикон прошли мимо шарда
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.EnsuredNodes.Should().BeEmpty("шард в restore — декларацию не восстанавливаем");
-        outcome.Value.DeadShards.Should().BeEmpty("шард в restore — не кандидат эвакуации");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("shard in restore — do not restore the declaration");
+        outcome.Value.DeadShards.Should().BeEmpty("shard in restore — not an evacuation candidate");
     }
 
     [Fact]
@@ -248,7 +248,7 @@ public class NodeSupervisorTests
         // Assert — устаревший ключ удалён надзором
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover",
-            "ключ про другого лидера — исполнен или устарел, не должен висеть");
+            "a key about another leader — executed or stale, must not linger");
     }
 
     [Fact]
@@ -291,7 +291,7 @@ public class NodeSupervisorTests
         var failover = rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover").WhoseValue.Value;
         failover.Should().Contain("\"leader\":\"shard1a\"").And.Contain("\"member\":");
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/leader",
-            "мёртвый лидер-лок снят — кандидат промоутится в пределах loop_wait, не ttl");
+            "dead leader lock removed — the candidate is promoted within loop_wait, not ttl");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
@@ -389,7 +389,7 @@ public class NodeSupervisorTests
         rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1b");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1b");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1b/state"].Value
-            .Should().Be("REBUILDING", "UNREACHABLE того же тика затирал бы REBUILDING (гонка снапшота)");
+            .Should().Be("REBUILDING", "an UNREACHABLE of the same tick would overwrite REBUILDING (snapshot race)");
     }
 
     [Fact]
@@ -413,10 +413,10 @@ public class NodeSupervisorTests
         // Assert — switchover отправлен лидеру, docker не тронут, маркер ждёт
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         switchover.Should().Contain("POST /switchover");
-        rig.Driver.RemovedNodes.Should().BeEmpty("мягко: сначала переезд лидерства, снос — следующим тиком");
+        rig.Driver.RemovedNodes.Should().BeEmpty("soft: leadership moves first, removal on the next tick");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value
-            .Should().Be("TO_RECREATE", "ожившая нода не отменяет заявку оператора на пересоздание");
+            .Should().Be("TO_RECREATE", "a revived node does not cancel the operator's recreation request");
     }
 
     [Fact]
@@ -445,7 +445,7 @@ public class NodeSupervisorTests
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
         rig.Etcd.Store.Should().NotContainKey("/clusters/shop/shards/shard1/nodes/shard1a/recreate",
-            "маркер режима исполнен и убран");
+            "mode marker executed and removed");
     }
 
     [Fact]
@@ -493,7 +493,7 @@ public class NodeSupervisorTests
         // Assert: никаких HA-мутаций и docker-мутаций, нода отмечена UNREACHABLE
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover",
-            "контейнер running — смерти процесса нет, ускорять нечего");
+            "container is running — no process death, nothing to accelerate");
         rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
         rig.Driver.RemovedNodes.Should().BeEmpty();
         rig.Driver.EnsuredNodes.Should().BeEmpty();
@@ -525,8 +525,8 @@ public class NodeSupervisorTests
         var failover = rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover").WhoseValue.Value;
         failover.Should().Contain("\"leader\":\"shard1a\"").And.Contain("\"member\":");
         rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/leader",
-            "мёртвый лидер-лок снят — кандидат промоутится в пределах loop_wait, не ttl (бюджет ≤5с)");
-        rig.Driver.RemovedNodes.Should().BeEmpty("rebuild лидера — не наш путь, только ускорение выборов");
+            "dead leader lock removed — the candidate is promoted within loop_wait, not ttl (budget ≤5s)");
+        rig.Driver.RemovedNodes.Should().BeEmpty("leader rebuild is not our way — only accelerating the election");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
@@ -610,7 +610,7 @@ public class NodeSupervisorTests
 
         // Assert — PATCH не звался вовсе
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        patches.Should().BeEmpty("конфиг уже канонический — мутаций нет");
+        patches.Should().BeEmpty("the config is already canonical — no mutations");
     }
 
     // AAA (t11, spec §4.4): живой /config расходится по ПАРАМЕТРАМ (заявка 8Gi,
@@ -761,7 +761,7 @@ public class NodeSupervisorTests
 
         // Assert
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        patches.Should().BeEmpty("конфиг недоступен — транзиент, патча нет");
+        patches.Should().BeEmpty("config unavailable — transient, no patch");
     }
 
 
@@ -874,7 +874,7 @@ public class NodeSupervisorTests
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         foreach (var node in new[] { "shard2a", "shard2b", "shard2c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard2/nodes/{node}/state"].Value
-                .Should().Be("NOT_INITIALIZED", $"{node} — домен AddShardProcess");
+                .Should().Be("NOT_INITIALIZED", $"{node} — AddShardProcess domain");
     }
 
     [Fact]
@@ -897,8 +897,8 @@ public class NodeSupervisorTests
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
-                .Should().Be("QUARANTINED", $"{node} — карантин держится до разбора (E3)");
-        rig.Driver.EnsuredNodes.Should().BeEmpty("карантинные ноды не пересоздаются");
+                .Should().Be("QUARANTINED", $"{node} — quarantine holds until investigated (E3)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("quarantined nodes are not recreated");
     }
 
     [Fact]
@@ -1022,7 +1022,7 @@ public class NodeSupervisorTests
         // Assert: дубль не создан (guard self-healing off при пустом docker-списке),
         // состояние нод не PROVISIONING, failover-ключи HA-контура не тронуты.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.EnsuredNodes.Should().BeEmpty("guard: object-нода вне домена EnsureNode");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("guard: object node is outside the EnsureNode domain");
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
                 .Should().NotBe("PROVISIONING");
@@ -1046,7 +1046,7 @@ public class NodeSupervisorTests
 
         // Assert: ни EnsureNode, ни PROVISIONING — self-healing off (R9).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.EnsuredNodes.Should().BeEmpty("мёртвый object не rebuild'ится (R9)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("a dead object is not rebuilt (R9)");
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
                 .Should().NotBe("PROVISIONING");
@@ -1069,12 +1069,12 @@ public class NodeSupervisorTests
 
         // Assert: state остаётся RUNNING (не UNREACHABLE), трек недоступности пуст.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        sql.Scalars.Should().Contain(s => s.Sql == "SELECT 1", "живость object-ноды — SQL-проба");
+        sql.Scalars.Should().Contain(s => s.Sql == "SELECT 1", "object node liveness is an SQL probe");
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
-                .Should().Be("RUNNING", "SQL жив — PG жив");
+                .Should().Be("RUNNING", "SQL alive — PG alive");
         var track = await rig.Journal.ReadUnreachableAsync("shop", CancellationToken.None);
-        track.Value.Should().BeEmpty("ни одна нода не ушла в трек недоступности");
+        track.Value.Should().BeEmpty("no node entered the unreachability track");
     }
 
     // AAA (spec §3.4): мёртвая усыновлённая нода (SQL тоже падает) дольше
@@ -1089,7 +1089,7 @@ public class NodeSupervisorTests
         var sql = new Fakes.FakeSql
         {
             ScalarResultByDsn = dsn => dsn.Contains("Port=15000;")
-                ? Result<object?>.Failed(new ApplicationException("PG недоступен"))
+                ? Result<object?>.Failed(new ApplicationException("PG unreachable"))
                 : Result<object?>.Success(1L),
         };
         var rig = await NewRig(
@@ -1108,7 +1108,7 @@ public class NodeSupervisorTests
         // Assert: state=UNREACHABLE, docker не тронут (rebuild поднял бы второй Patroni).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
-        rig.Driver.RemovedNodes.Should().BeEmpty("усыновлённые не пересоздаются (R9)");
+        rig.Driver.RemovedNodes.Should().BeEmpty("adopted nodes are not recreated (R9)");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
     }
 
@@ -1134,10 +1134,10 @@ public class NodeSupervisorTests
 
         // Assert: контейнер не пересоздан; журнал содержит recreate-external (оператору).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.RemovedNodes.Should().BeEmpty("self-healing off для object-нод (R9)");
+        rig.Driver.RemovedNodes.Should().BeEmpty("self-healing off for object nodes (R9)");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         journalPhases.Should().Contain(p => p.Contains("recreate-external"),
-            "журнал сообщает: пересоздание усыновлённой ноды — вручную");
+            "journal says: recreating an adopted node is manual");
     }
 
     // AAA (spec §3.4, R8): шарды с object-нодами не сверяются reconciler'ом —
@@ -1683,7 +1683,7 @@ public class NodeSupervisorTests
         // Assert: нода мертва по пробе, но rebuild усыновлённых не выполняется
         // (гвард adopted) — rebuild-факта нет; failover-факта тоже нет (не лидер)
         var state = await WorkStateOf(rig);
-        state!.LastRebuild.Should().BeNull("усып. нода мертва по SQL, но rebuild-гвард её исключает");
+        state!.LastRebuild.Should().BeNull("the asleep node is SQL-dead, but the rebuild guard excludes it");
         state.LastFailover.Should().BeNull();
     }
 
@@ -1704,9 +1704,9 @@ public class NodeSupervisorTests
         // Assert: механика не изменилась — failover-маркер поставлен; фактов нет
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover",
-            "TO_REMOVE не отключает ускорение — гвард только на записи фактов");
+            "TO_REMOVE does not disable acceleration — the guard is on fact writing only");
         var state = await WorkStateOf(rig);
-        state!.LastFailover.Should().BeNull("TO_REMOVE — демонтируемое, фактов нет");
+        state!.LastFailover.Should().BeNull("TO_REMOVE — being dismantled, no facts");
         state.LastRebuild.Should().BeNull();
     }
 
@@ -1765,15 +1765,15 @@ public class NodeSupervisorTests
         // stop/rm через движок (volume жив — RemoveNodeAsync не звался).
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
-        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b", "TLS-нода не кандидат");
+        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b", "TLS node is not a candidate");
         rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be(Fakes.FakeSecretEnsurer.RestPassword, "пара — из результата ensure, не снапшота");
+            .Should().Be(Fakes.FakeSecretEnsurer.RestPassword, "the pair comes from the ensure result, not the snapshot");
         rig.Driver.NodeEnvs["shard1/shard1a"].Should().ContainKey(RestRotation.EnvCert);
         rig.Driver.NodeEnvs["shard1/shard1a"][RestRotation.EnvPasswordHash]
             .Should().Be(RestRotation.PasswordHash(Fakes.FakeSecretEnsurer.RestPassword));
         engine.Stopped.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
-        engine.RemovedVolumes.Should().BeEmpty("volume сохраняется (не RemoveNodeAsync)");
+        engine.RemovedVolumes.Should().BeEmpty("volume is preserved (not RemoveNodeAsync)");
         rig.Driver.RemovedNodes.Should().BeEmpty();
         // ensure-вызов в начале тика подтверждается интеграционным тестом
         // задачи 23 (живой etcd); здесь — стаб FakeSecretEnsurer без записи.
@@ -1814,7 +1814,7 @@ public class NodeSupervisorTests
         // Act-1: тик — switchover, сноса нет.
         var result1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
         result1.IsSuccess.Should().BeTrue(result1.Error?.ToString());
-        rig.Driver.EnsuredNodes.Should().BeEmpty("живой лидер не сносится в первом тике (soft)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("a live leader is not removed on the first tick (soft)");
         engine.Stopped.Should().BeEmpty();
 
         // Act-2: лидер переехал — следующий тик сносит и пересоздает ноду.
@@ -1955,8 +1955,8 @@ public class NodeSupervisorTests
 
         // Assert: мутации REST подавлены (PATCH/switchover), фаза skip в журнале.
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        patches.Should().Be(0, "PATCH /config подавлен в окне ротации");
-        posts.Should().Be(0, "soft-switchover подавлен в окне ротации");
+        patches.Should().Be(0, "PATCH /config suppressed during the rotation window");
+        posts.Should().Be(0, "soft-switchover suppressed during the rotation window");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().BeOneOf("dcs-converge-skipped-rest-window", "recreate-skipped-rest-window");
     }
@@ -1997,7 +1997,7 @@ public class NodeSupervisorTests
         // Act-1: тик — только switchover (одно действие), снос — следующим тиком.
         var result1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
         result1.IsSuccess.Should().BeTrue(result1.Error?.ToString());
-        rig.Driver.EnsuredNodes.Should().BeEmpty("живой лидер — сперва switchover");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("live leader — switchover first");
 
         // Assert-1: кред switchover — пара фактического поколения ноды (ключ,
         // OLD до txn): effective=NEW дала бы вечный 401 на ноде со OLD.
@@ -2005,7 +2005,7 @@ public class NodeSupervisorTests
         var decoded = Encoding.UTF8.GetString(
             Convert.FromBase64String(switchCredentials.Single()));
         decoded.Should().Be($"patroni:{Fakes.FakeSecretEnsurer.RestPassword}",
-            "switchover — кред поколения НОДЫ (ключ etcd), не pending");
+            "switchover uses the NODE generation credential (etcd key), not pending");
 
         // Act-2: лидер переехал — снос и пересоздание с NEW-парой (pending).
         rig.Etcd.Store["/service/shop-shard1/leader"] =
@@ -2015,7 +2015,7 @@ public class NodeSupervisorTests
 
         // Assert-2: EnsureNode — пара НОВОГО поколения (pending).
         rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be("New0Pass00000000000000000000000B", "env нового поколения — pending");
+            .Should().Be("New0Pass00000000000000000000000B", "the new generation env is pending");
     }
 
     // AAA (t22 рев.3, П1): 401-отказ switchover в окне НЕ роняет окно навсегда —
@@ -2056,15 +2056,15 @@ public class NodeSupervisorTests
 
         // Act-1: тик с 401 — транзиент-фейл (тиковый ретрай), окно живо.
         var result1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
-        result1.IsSuccess.Should().BeFalse("401 — транзиент-фейл тика, ретрай циклом");
-        rig.Driver.EnsuredNodes.Should().BeEmpty("сноса не было");
+        result1.IsSuccess.Should().BeFalse("401 — a transient tick failure, the loop retries");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("no removal happened");
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
-            .Should().Be("New0Pass00000000000000000000000B", "окно не сброшено отказом");
+            .Should().Be("New0Pass00000000000000000000000B", "the window was not reset by the failure");
 
         // Act-2: повторный тик — switchover проходит, окно продолжает закрываться.
         var result2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
         result2.IsSuccess.Should().BeTrue(result2.Error?.ToString());
-        attempts.Should().BeGreaterOrEqualTo(2, "тиковый ретрай switchover");
+        attempts.Should().BeGreaterOrEqualTo(2, "tick-level switchover retry");
     }
 
     // AAA (t22 рев.3, §5.10): легаси-http лидер входа конвергенции — https-проба
@@ -2089,7 +2089,7 @@ public class NodeSupervisorTests
         // (Фаза wait-witness перезатирается финальной супервизионной записью
         // тика «supervising» — свидетельство ожидания behavioural: сноса нет.)
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        rig.Driver.EnsuredNodes.Should().BeEmpty("без свидетеля сноса нет");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("no witness — no removal");
         engine.Stopped.Should().BeEmpty();
     }
 
@@ -2120,7 +2120,7 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         engine.Stopped.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
-        engine.RemovedVolumes.Should().BeEmpty("volume сохраняется");
+        engine.RemovedVolumes.Should().BeEmpty("volume is preserved");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
             .Should().Be(Fakes.FakeSecretEnsurer.RestPassword);

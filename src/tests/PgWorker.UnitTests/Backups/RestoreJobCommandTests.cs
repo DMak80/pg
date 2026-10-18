@@ -35,7 +35,7 @@ public class RestoreJobCommandTests
         cmd[2].IndexOf("chown -R 101:101", StringComparison.Ordinal)
             .Should().BeGreaterThan(
                 cmd[2].IndexOf("local all all trust", StringComparison.Ordinal),
-                "все созданные под root файлы обязаны получить владельца 101");
+                "all files created under root must get owner 101");
     }
 
     // AAA: цель latest — без recovery_target_time; восстановление auto.conf после stop.
@@ -93,12 +93,12 @@ public class RestoreJobCommandTests
         script.IndexOf("sed -i '/^archive_mode", StringComparison.Ordinal)
             .Should().BeGreaterThan(
                 script.IndexOf("mv \"$AUTO.orig\" \"$AUTO\"", StringComparison.Ordinal),
-                "вычистка применяется к возвращённому pristine auto.conf");
+                "the cleanup is applied to the returned pristine auto.conf");
         // chown — ПОСЛЕ sed: sed -i пересоздаёт файл под root
         script.IndexOf("chown 101:101 \"$AUTO\"", StringComparison.Ordinal)
             .Should().BeGreaterThan(
                 script.IndexOf("sed -i '/^archive_mode", StringComparison.Ordinal),
-                "sed -i пересоздаёт файл под root — владелец 101 возвращается после");
+                "sed -i recreates the file under root — owner 101 is restored afterwards");
     }
 
     // AAA: пути каталогов — из env-контракта джоба с дефолтами Spilo-layout (§3.3).
@@ -150,7 +150,7 @@ public class RestoreJobCommandTests
         script.IndexOf(@"rm -f ""$PGDATA/standby.signal""", StringComparison.Ordinal)
             .Should().BeLessThan(
                 script.IndexOf(@": > ""$PGDATA/recovery.signal""", StringComparison.Ordinal),
-                "режим старта определяется сигналами до запуска postmaster");
+                "the start mode is determined by signals before postmaster starts");
     }
 
     // AAA: env-имена контракта джоба (§3.3) — константы для спеки (Task 5).
@@ -173,7 +173,7 @@ public class RestoreJobCommandTests
 
     // AAA: скрипт материализует S3_CA_PEM → SSL_CERT_FILE (t42, arch/19 §7)
     [Fact]
-    public void Build_МатериализуетCaPem_и_SslCertFile()
+    public void Build_MaterializesCaPem_And_SslCertFile()
     {
         RestoreJobCommand.Build()[2].Should().Contain("S3_CA_PEM").And.Contain("SSL_CERT_FILE");
     }

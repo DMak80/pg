@@ -52,8 +52,8 @@ public class PgParametersCanonTests
         var desktop = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Desktop, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        desktop["wal_level"].Should().Be("minimal", "вход обязан нести PGTune-ветвь wal_level");
-        desktop["max_wal_senders"].Should().Be("0", "вход обязан нести PGTune-ветвь max_wal_senders");
+        desktop["wal_level"].Should().Be("minimal", "the input must carry the PGTune wal_level branch");
+        desktop["max_wal_senders"].Should().Be("0", "the input must carry the PGTune max_wal_senders branch");
 
         // Act
         var desired = PgParametersCanon.Desired(desktop, null);

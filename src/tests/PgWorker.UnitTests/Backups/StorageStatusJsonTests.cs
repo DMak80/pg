@@ -11,7 +11,7 @@ public class StorageStatusJsonTests
 {
     // С квотой: used_bytes/quota_bytes/used_percent/state/updated_unix.
     [Fact]
-    public void С_квотой_все_поля()
+    public void WithQuota_AllFields()
     {
         // Arrange — статус с квотой 100, занято 30 (30%), OK
         var status = new StorageStatus(30, 100, 30, StorageState.Ok, 1_760_000_000);
@@ -29,7 +29,7 @@ public class StorageStatusJsonTests
 
     // Квота 0 → полей квоты/процентов нет, state=OK.
     [Fact]
-    public void Без_квоты_полей_квоты_нет()
+    public void WithoutQuota_NoQuotaFields()
     {
         // Arrange — статус без квоты
         var status = new StorageStatus(123, 0, null, StorageState.Ok, 1_760_000_000);
@@ -49,7 +49,7 @@ public class StorageStatusJsonTests
     [InlineData(StorageState.Warn, "WARN")]
     [InlineData(StorageState.Crit, "CRIT")]
     [InlineData(StorageState.Ok, "OK")]
-    public void Имена_состояний(StorageState state, string expected)
+    public void StateNames(StorageState state, string expected)
     {
         // Arrange — состояние задано параметром
 

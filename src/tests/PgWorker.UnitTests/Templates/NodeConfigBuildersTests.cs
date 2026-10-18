@@ -73,7 +73,7 @@ public class NodeConfigBuildersTests
         env["SSL_RESTAPI_PRIVATE_KEY"].Should().Be(rest.KeyPem);
         env["SSL_RESTAPI_CA"].Should().Be(rest.CaPem);
         env["SSL_RESTAPI_CERTIFICATE"].Should().Contain("-----BEGIN CERTIFICATE-----");
-        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Contain("\n", "PEM с реальными переносами строк");
+        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Contain("\n", "PEM with real line breaks");
     }
 
     [Fact]

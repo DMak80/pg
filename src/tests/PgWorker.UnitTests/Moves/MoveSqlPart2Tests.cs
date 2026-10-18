@@ -268,7 +268,7 @@ public class MoveSqlPart2Tests
         var createSub = () => MoveSql.CreateSubscription(bad, "host=h", "pub_b42", copyData: true, failover: true);
 
         // Assert
-        freeze.Should().Throw<ArgumentException>("роль — идентификатор SQL");
-        createSub.Should().Throw<ArgumentException>("имя подписки — идентификатор SQL");
+        freeze.Should().Throw<ArgumentException>("the role is an SQL identifier");
+        createSub.Should().Throw<ArgumentException>("the subscription name is an SQL identifier");
     }
 }

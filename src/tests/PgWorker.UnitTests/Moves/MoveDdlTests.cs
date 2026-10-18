@@ -80,7 +80,7 @@ public class MoveDdlTests
         driver.ContainerExecs[0].Container.Should().Be("as-s2a");
         driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
             ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_13", "demo"]);
-        driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не звался");
+        driver.Executed.Should().BeEmpty("the canonical ExecNodeAsync was not called");
     }
 
     // AAA (adopt-repair §3.3): внешний ли исполнитель подписок — object-нода в portalloc
@@ -113,8 +113,8 @@ public class MoveDdlTests
         var act = () => ddl.DumpAsync("shop", "shard1", "shard1a", "shop", bad, CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>("имя бакета подставляется в shell-команду");
-        driver.Executed.Should().BeEmpty("exec не должен уходить с невалидным идентификатором");
+        await act.Should().ThrowAsync<ArgumentException>("the bucket name is substituted into a shell command");
+        driver.Executed.Should().BeEmpty("exec must not go out with an invalid identifier");
     }
 
     // AAA: psql-метакоманды (\restrict/\unrestrict — pg_dump PG17.2+/18) вырезаются
@@ -138,9 +138,9 @@ public class MoveDdlTests
         // Assert
         apply.IsSuccess.Should().BeTrue();
         var sent = sql.Calls.Should().ContainSingle().Subject.Sql;
-        sent.Should().NotContain("\\restrict", "метакоманды psql не должны попадать в SQL-батч");
-        sent.Should().NotContain("\\unrestrict", "метакоманды psql не должны попадать в SQL-батч");
-        sent.Should().Contain("CREATE SCHEMA bucket_42;", "SQL дампа сохраняется");
+        sent.Should().NotContain("\\restrict", "psql meta-commands must not reach the SQL batch");
+        sent.Should().NotContain("\\unrestrict", "psql meta-commands must not reach the SQL batch");
+        sent.Should().Contain("CREATE SCHEMA bucket_42;", "the dump SQL is preserved");
     }
 
     // AAA: dump-провал драйвера прокидывается (shard недоступен — transient тика)
@@ -212,7 +212,7 @@ public class MoveDdlTests
         var equal = await ddl.InventoryMatchesAsync("Host=src", "Host=dst", "bucket_42", CancellationToken.None);
 
         // Assert
-        equal.Value.Should().BeTrue("инвентарии источник/приёмник совпали");
+        equal.Value.Should().BeTrue("source/target inventories matched");
 
         // Arrange — приёмник потерял sequence (дрейф P5)
         sql.ListResult = dsn => Result<IReadOnlyList<string>>.Success(
@@ -222,8 +222,8 @@ public class MoveDdlTests
         var differs = await ddl.InventoryMatchesAsync("Host=src", "Host=dst", "bucket_42", CancellationToken.None);
 
         // Assert
-        differs.Value.Should().BeFalse("неполная копия — мораторий DDL нарушен");
-        sql.Calls.Should().HaveCount(4, "по два List-запроса на каждую сверку");
+        differs.Value.Should().BeFalse("an incomplete copy — the DDL moratorium is violated");
+        sql.Calls.Should().HaveCount(4, "two List queries per verification");
     }
 
     // AAA: сбой чтения инвентаря — Failed (transient тика), не ложное «сошлось»
@@ -241,6 +241,6 @@ public class MoveDdlTests
         var match = await ddl.InventoryMatchesAsync("Host=src", "Host=dst", "bucket_42", CancellationToken.None);
 
         // Assert
-        match.IsSuccess.Should().BeFalse("недоступный шард — не «сошлось», а сбой");
+        match.IsSuccess.Should().BeFalse("an unreachable shard is not \"matched\" but a failure");
     }
 }

@@ -58,7 +58,7 @@ public class BackupJobsCleanerTests
             return Task.FromResult(Result.Success());
         }
 
-        private static NotSupportedException NotSupported() => new("не используется в тестах чистки");
+        private static NotSupportedException NotSupported() => new("not used in the cleanup tests");
 
         public Task<Result> PingAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct) => throw NotSupported();
@@ -82,7 +82,7 @@ public class BackupJobsCleanerTests
 
     // AAA: чистка D1 убирает и full-, и verify-джобы кластера с их volumes (t04)
     [Fact]
-    public async Task Remove_чищает_full_и_verify_джобы_сVolumes()
+    public async Task Remove_CleansFull_AndVerifyJobs_WithVolumes()
     {
         // Arrange — движок с full-джобом (t02) и verify-джобом (t04) кластера c1
         var engine = new FakeCleanerEngine
@@ -110,7 +110,7 @@ public class BackupJobsCleanerTests
     // AAA (reliability t02, AC4/D1): drill-префикс в чистке — контейнер и volume
     // одно имя (pgw-backup-drill-<C>-<X>-<id>), оба сносятся тем же проходом.
     [Fact]
-    public async Task Remove_чищает_drill_джобы_сVolumes()
+    public async Task Remove_CleansDrillJobs_WithVolumes()
     {
         // Arrange — движок с drill-джобом кластера c1 и чужим drill-джобом c2.
         var engine = new FakeCleanerEngine

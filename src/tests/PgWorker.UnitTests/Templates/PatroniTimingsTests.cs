@@ -33,11 +33,11 @@ public class PatroniTimingsTests
         spilo.Should().Contain($"ttl: {PatroniTimings.Ttl}")
             .And.Contain($"loop_wait: {PatroniTimings.LoopWait}")
             .And.Contain($"retry_timeout: {PatroniTimings.RetryTimeout}");
-        selfPatch.Should().BeNull("канон конвергентен сам с собой");
-        PatroniTimings.Ttl.Should().BeGreaterThanOrEqualTo(20, "пол Patroni 4.x: ttl≥20");
+        selfPatch.Should().BeNull("the canon is convergent with itself");
+        PatroniTimings.Ttl.Should().BeGreaterThanOrEqualTo(20, "Patroni 4.x floor: ttl≥20");
         PatroniTimings.LoopWait.Should().BeGreaterThanOrEqualTo(1);
         PatroniTimings.RetryTimeout.Should().BeGreaterThanOrEqualTo(3);
         (PatroniTimings.LoopWait + 2 * PatroniTimings.RetryTimeout)
-            .Should().BeLessThanOrEqualTo(PatroniTimings.Ttl, "правило loop_wait+2*retry_timeout≤ttl");
+            .Should().BeLessThanOrEqualTo(PatroniTimings.Ttl, "the rule loop_wait+2*retry_timeout≤ttl");
     }
 }

@@ -58,7 +58,7 @@ public class ClusterDriverTests
         {
             Calls.Add(("ensure-network", name));
             return Task.FromResult(EnsureNetworkFailure
-                ? Result.Failed(new ApplicationException("docker POST /networks/create ответил 409: already exists"))
+                ? Result.Failed(new ApplicationException("docker POST /networks/create responded 409: already exists"))
                 : Result.Success());
         }
 
@@ -97,7 +97,7 @@ public class ClusterDriverTests
             Calls.Add(("inspect-container", id));
             return Task.FromResult(Inspects.TryGetValue(id, out var inspect)
                 ? Result<DockerContainerInspect>.Success(inspect)
-                : Result<DockerContainerInspect>.Failed(new ApplicationException($"инспект {id} недоступен (стаб)")));
+                : Result<DockerContainerInspect>.Failed(new ApplicationException($"inspect {id} unavailable (stub)")));
         }
 
         public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
@@ -687,7 +687,7 @@ public class ClusterDriverTests
     // префикс + имя кластера; единая сеть делала DNS-зону общей для всех
     // кластеров docker-хоста (перекрёстная видимость чужих алиасов).
     [Fact]
-    public void NetworkName_имя_сети_кластера_пер_кластерный_префикс()
+    public void NetworkName_PerClusterPrefix()
     {
         // Arrange / Act — kfw-паттерн: префикс + имя кластера
         // Assert
@@ -698,7 +698,7 @@ public class ClusterDriverTests
     // AAA (t24, arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
     // pgw-net-<C>, спека контейнера несёт её же — «нода в сети кластера».
     [Fact]
-    public async Task EnsureNode_сеть_и_спека_пер_кластера()
+    public async Task EnsureNode_Network_AndSpec_PerCluster()
     {
         // Arrange
         var engine = new FakeEngine();
@@ -718,7 +718,7 @@ public class ClusterDriverTests
     // портов, но в ЧУЖОЙ сети (наследие единой pgw-net) подключается к сети
     // кластера docker network connect; пересоздание недопустимо (нода с данными).
     [Fact]
-    public async Task EnsureNode_нода_в_чужой_сети_подключается_к_кластерной()
+    public async Task EnsureNode_NodeInForeignNetwork_JoinsClusterNetwork()
     {
         // Arrange — контейнер на месте, порты совпадают с планом, сеть старая
         var engine = new FakeEngine
@@ -747,7 +747,7 @@ public class ClusterDriverTests
     // AAA (t24, arch/14 §2.1): нода уже в сети кластера — идемпотентность,
     // никаких connect/create.
     [Fact]
-    public async Task EnsureNode_нода_в_сети_кластера_идемпотентна()
+    public async Task EnsureNode_NodeInClusterNetwork_IsIdempotent()
     {
         // Arrange
         var engine = new FakeEngine
@@ -915,7 +915,7 @@ public class ClusterDriverTests
     // мастера не видит (pg_receivewal-рестарт-луп); лечение — пересоздание
     // (stateless) со staging-volume, новый агент создаётся в pgw-net-<C>.
     [Fact]
-    public async Task EnsureBackupAgent_агент_в_чужой_сети_пересоздаётся()
+    public async Task EnsureBackupAgent_AgentInForeignNetwork_IsRecreated()
     {
         // Arrange — агент жив, но в старой единой сети
         var engine = new FakeEngine
@@ -944,7 +944,7 @@ public class ClusterDriverTests
     // AAA (t24, arch/14 §2.1): демонтаж сети кластера — только когда объектов
     // кластера не осталось; чужие контейнеры кластера держат сеть живой.
     [Fact]
-    public async Task RemoveNode_живые_объекты_кластера_держат_сеть()
+    public async Task RemoveNode_LiveClusterObjects_KeepNetwork()
     {
         // Arrange — после удаления ноды в кластере остаётся живая нода другого шарда
         var engine = new FakeEngine
@@ -1174,7 +1174,7 @@ public class ClusterDriverTests
     }
 
     [Fact]
-    public async Task EnsureBackupAgent_advertised_хост_резолвится_в_единственный_движок()
+    public async Task EnsureBackupAgent_AdvertisedHost_ResolvesToSingleEngine()
     {
         // Arrange — advertised-режим dev-стенда: portalloc несёт advertised-имя,
         // движок один (ревью Ф4-2 №3: без fallback подъём агента в стенде падал бы
@@ -1203,7 +1203,7 @@ public class ClusterDriverTests
     }
 
     [Fact]
-    public async Task ListBackupAgents_и_фильтр_ListNodeObjects_агенты_не_ноды()
+    public async Task ListBackupAgents_And_ListNodeObjectsFilter_AgentsAreNotNodes()
     {
         // Arrange — живой агент + нода кластера: ListNodeObjectsAsync обязан
         // вернуть ТОЛЬКО ноду (агенты — не ноды, их жизнью управляет WalStreamProcess).

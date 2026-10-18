@@ -63,7 +63,7 @@ public class BackupStatusJsonTests
 
     // AAA: FAILED-verify сериализуется с error и checked_unix (канон arch/19 §4)
     [Fact]
-    public void Serialize_VerifyFailed_ErrorИCheckedUnix()
+    public void Serialize_VerifyFailed_ErrorAndCheckedUnix()
     {
         // Arrange
         var full = new FullBackupState("20260911120000Z", FullBackupStatus.Completed, "n1",
@@ -83,7 +83,7 @@ public class BackupStatusJsonTests
 
     // AAA: verify без error — поля error в JSON нет (опционально, как остальные nullable)
     [Fact]
-    public void Serialize_VerifyБезError_ПоляНет()
+    public void Serialize_VerifyWithoutError_NoField()
     {
         // Arrange
         var full = new FullBackupState("20260911120000Z", FullBackupStatus.Completed, "n1",

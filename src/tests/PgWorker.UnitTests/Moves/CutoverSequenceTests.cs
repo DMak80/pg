@@ -59,10 +59,10 @@ public class CutoverSequenceTests
         fake.ScalarResolver = sql => sql switch
         {
             var s when s.Contains("string_agg(format('%I.%I'") => "bucket_42.\"items\"",
-            var s when s.Contains("pg_current_wal_lsn") => lsn ?? throw new ApplicationException("LSN не читается"),
+            var s when s.Contains("pg_current_wal_lsn") => lsn ?? throw new ApplicationException("LSN is not readable"),
             var s when s.Contains("bool_and(active") => caughtUp,
-            var s when s.Contains("ELSE last_value - 1 END") => issued ?? throw new ApplicationException("issued не читается"),
-            var s when s.Contains("THEN last_value + 1") => next ?? throw new ApplicationException("sequence на приёмнике отсутствует"),
+            var s when s.Contains("ELSE last_value - 1 END") => issued ?? throw new ApplicationException("issued is not readable"),
+            var s when s.Contains("THEN last_value + 1") => next ?? throw new ApplicationException("sequence missing on the target"),
             var s when s.Contains("count(*) FROM bucket_42.") =>
                 fake.LastDsn == MoveRig.SrcDsn ? srcRows : dstRows,
             _ => 0L,
@@ -87,22 +87,22 @@ public class CutoverSequenceTests
             CancellationToken.None, ct => { ctx.Snapshots.Add(1); return Task.FromResult(Result.Success()); });
 
         // Assert
-        flip.Value.Should().BeTrue("полный cutover прошёл");
+        flip.Value.Should().BeTrue("the full cutover passed");
         ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("LOCK TABLE"),
-            "заморозка — транзакционный батч с барьером LOCK на источнике");
+            "the freeze is a transactional batch with a LOCK barrier on the source");
         ctx.Sql.Calls.Should().NotContain(c => c.Sql.Contains("GRANT INSERT"),
-            "успешный cutover НЕ размораживает: старый шард остаётся замороженным (P1-призраки)");
+            "a successful cutover does NOT unfreeze: the old shard stays frozen (P1-ghosts)");
         ctx.Sql.Calls.Should().NotContain(c => c.Sql.Contains("setval"),
-            "next (101) > issued (100) — setval не нужен");
+            "next (101) > issued (100) — setval is not needed");
         ctx.StatusHistory.Should().Contain(s => s.State == MoveStates.Frozen && s.Phase == "frozen",
-            "статус FROZEN/frozen фиксировал паузу роутера");
-        ctx.StatusHistory.Should().Contain(s => s.Phase == "verify", "сверке строк предшествовала фаза verify");
-        ctx.StatusHistory.Should().Contain(s => s.Phase == "flip", "перед flip — фаза flip");
+            "the FROZEN/frozen status recorded the router pause");
+        ctx.StatusHistory.Should().Contain(s => s.Phase == "verify", "the row verification was preceded by the verify phase");
+        ctx.StatusHistory.Should().Contain(s => s.Phase == "flip", "the flip phase precedes flip");
         ctx.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
-            "атомарный flip перевёл routing");
+            "the atomic flip switched routing");
         ctx.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "flip удалил статус-ключ той же txn (нет ключа = ACTIVE)");
-        ctx.Snapshots.Should().HaveCount(1, "снапшот-точка после flip");
+            "flip deleted the status key in the same txn (no key = ACTIVE)");
+        ctx.Snapshots.Should().HaveCount(1, "snapshot point after flip");
     }
 
     // AAA: lock_timeout во всех попытках заморозки — transient freeze-failed, не permanent
@@ -111,23 +111,23 @@ public class CutoverSequenceTests
     {
         // Arrange — FreezeLockTries=3 (дефолт), пауза 0
         var sql = CutoverSql();
-        sql.TransactionalResult = _ => Result.Failed(new ApplicationException("lock_timeout: писатель держит таблицу"));
+        sql.TransactionalResult = _ => Result.Failed(new ApplicationException("lock_timeout: a writer holds the table"));
         var ctx = NewCtx(sql);
 
         // Act
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
 
         // Assert
-        flip.IsSuccess.Should().BeFalse("заморозка не удалась — cutover сорван");
+        flip.IsSuccess.Should().BeFalse("the freeze failed — the cutover is broken off");
         flip.Error.Should().NotBeOfType<CutoverPermanentException>(
-            "живой писатель — transient: заявка жива, тики повторят");
+            "a live writer is transient: the request is alive, ticks will retry");
         ctx.Sql.Calls.Count(c => c.Sql.Contains("REVOKE INSERT")).Should().Be(3,
-            "ровно FreezeLockTries попыток заморозки");
+            "exactly FreezeLockTries freeze attempts");
         var status = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.State.Should().Be(MoveStates.Syncing);
-        status.Value.Phase.Should().Be("freeze-failed", "фаза отказа — freeze-failed");
+        status.Value.Phase.Should().Be("freeze-failed", "the failure phase is freeze-failed");
         ctx.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
-            "routing не тронут — flip не было");
+            "routing untouched — no flip happened");
     }
 
     // AAA: слот не догоняет за CutoverTimeoutSec — разморозка + transient catchup-timeout
@@ -142,13 +142,13 @@ public class CutoverSequenceTests
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), slow, CancellationToken.None);
 
         // Assert
-        flip.IsSuccess.Should().BeFalse("слот не подтвердил LSN — cutover сорван");
-        flip.Error.Should().NotBeOfType<CutoverPermanentException>("репликация продолжает догонять — transient");
+        flip.IsSuccess.Should().BeFalse("the slot never confirmed the LSN — the cutover is broken off");
+        flip.Error.Should().NotBeOfType<CutoverPermanentException>("replication is still catching up — transient");
         ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("GRANT INSERT"),
-            "источник разморожен (GRANT-симметрия)");
+            "the source is unfrozen (GRANT symmetry)");
         var status = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be("catchup-timeout");
-        status.Value!.State.Should().Be(MoveStates.Syncing, "переезд жив: заявка остаётся");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "the move is alive: the request remains");
     }
 
     // AAA: чтение LSN упало — разморозка + transient lsn-failed
@@ -164,7 +164,7 @@ public class CutoverSequenceTests
         // Assert
         flip.IsSuccess.Should().BeFalse();
         flip.Error.Should().NotBeOfType<CutoverPermanentException>();
-        ctx.Sql.Calls.Should().Contain(c => c.Sql.Contains("GRANT INSERT"), "заморозка снята");
+        ctx.Sql.Calls.Should().Contain(c => c.Sql.Contains("GRANT INSERT"), "the freeze is released");
         var status = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be("lsn-failed");
     }
@@ -180,9 +180,9 @@ public class CutoverSequenceTests
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
 
         // Assert
-        flip.IsSuccess.Should().BeFalse("setval невозможен без sequence на приёмнике");
-        flip.Error.Should().NotBeOfType<CutoverPermanentException>("отсутствие sequence — transient (починят и повторят)");
-        ctx.Sql.Calls.Should().Contain(c => c.Sql.Contains("GRANT INSERT"), "заморозка снята");
+        flip.IsSuccess.Should().BeFalse("setval is impossible without the sequence on the target");
+        flip.Error.Should().NotBeOfType<CutoverPermanentException>("a missing sequence is transient (fix and retry)");
+        ctx.Sql.Calls.Should().Contain(c => c.Sql.Contains("GRANT INSERT"), "the freeze is released");
         var status = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be("sequences-failed");
     }
@@ -198,15 +198,15 @@ public class CutoverSequenceTests
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
 
         // Assert
-        flip.IsSuccess.Should().BeFalse("лаг 0 не гарантирует полноту копии (P8)");
+        flip.IsSuccess.Should().BeFalse("lag 0 does not guarantee copy completeness (P8)");
         flip.Error.Should().BeOfType<CutoverPermanentException>(
-            "дефектная копия — переезд не вылечить ретраями");
-        flip.Error!.Message.Should().Contain("abort", "подсказка оператору — abort + повторный move");
+            "a defective copy cannot be fixed by retries");
+        flip.Error!.Message.Should().Contain("abort", "operator hint — abort + a new move");
         ctx.Sql.Calls.Should().Contain(c => c.Sql.Contains("GRANT INSERT"),
-            "разморозка при verify-failed сделана (репликация жива)");
+            "the unfreeze on verify-failed is done (replication is alive)");
         var status = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be("verify-failed");
-        status.Value!.State.Should().Be(MoveStates.Syncing, "ключ остаётся: переезд живёт до abort");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "the key remains: the move lives until abort");
     }
 
     // AAA: routing изменился под руками — flip-conflict: PERMANENT, заморозка ОСТАВЛЕНА
@@ -220,12 +220,12 @@ public class CutoverSequenceTests
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
 
         // Assert
-        flip.IsSuccess.Should().BeFalse("compare по routing=cur обязан не сойтись");
-        flip.Error.Should().BeOfType<CutoverPermanentException>("конфликт контрол-плейна — разбор вручную");
+        flip.IsSuccess.Should().BeFalse("compare on routing=cur must not converge");
+        flip.Error.Should().BeOfType<CutoverPermanentException>("a control-plane conflict — manual investigation");
         ctx.Sql.Calls.Should().NotContain(c => c.Sql.Contains("GRANT INSERT"),
-            "заморозка НЕ снята: P1-призраки не должны ожить до разбора");
+            "the freeze is NOT released: P1-ghosts must not come alive before the investigation");
         ctx.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard9",
-            "чужое значение не перезатёрто");
+            "the foreign value is not overwritten");
     }
 
     // AAA: sequence приёмника отстаёт — setval ТОЛЬКО вперёд, до выданного на источнике
@@ -239,9 +239,9 @@ public class CutoverSequenceTests
         var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
 
         // Assert
-        flip.Value.Should().BeTrue("setval довёл счётчик — cutover продолжился");
+        flip.Value.Should().BeTrue("setval advanced the counter — the cutover continued");
         ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql == """SELECT setval('bucket_42."seq1"', 100, true)""",
-            "setval на приёмнике со значением источника (P6: только вперёд)");
+            "setval on the target with the source value (P6: forward only)");
     }
 
     // AAA: DropStatusOnFail (rollback) — fail-путь удаляет статус-ключ (нет ключа = ACTIVE)
@@ -258,6 +258,6 @@ public class CutoverSequenceTests
         // Assert
         flip.IsSuccess.Should().BeFalse();
         ctx.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "rollback-откат до flip = бакет снова ACTIVE (нет ключа)");
+            "a rollback before flip = the bucket is ACTIVE again (no key)");
     }
 }

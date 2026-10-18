@@ -164,7 +164,7 @@ public class ShardEndpointsTests
         addresses.Value.Should().HaveCount(3);
         addresses.Value["shard1/shard1a"].Host.Should().Be("h1");
         addresses.Value["shard1/shard1a"].Ports.Pg.Should().Be(15000);
-        empty.Value.Should().BeEmpty("нет ключа portalloc — адресов нет");
+        empty.Value.Should().BeEmpty("no portalloc key — no addresses");
     }
 
     // AAA: master-ключ → адрес ноды по ИМЕНИ (перенос ResolveMasterAsync из эвакуатора)
@@ -183,7 +183,7 @@ public class ShardEndpointsTests
 
         // Assert
         master.Value.Should().NotBeNull();
-        master.Value!.Host.Should().Be("h1", "master-ключ назвал ноду shard1a — она на хосте h1");
+        master.Value!.Host.Should().Be("h1", "the master key named node shard1a — it is on host h1");
         master.Value.Ports.Pg.Should().Be(15000);
     }
 
@@ -204,7 +204,7 @@ public class ShardEndpointsTests
 
         // Assert
         master.Value.Should().NotBeNull();
-        master.Value!.Host.Should().Be("h2", "host h2 в master-ключе — единственная нода шарда на нём: shard1b");
+        master.Value!.Host.Should().Be("h2", "host h2 is in the master key — the only shard node on it is shard1b");
         master.Value.Ports.Pg.Should().Be(15001);
     }
 
@@ -251,7 +251,7 @@ public class ShardEndpointsTests
         var master = await endpoints.ResolveMasterAsync("shop", Shard1(null), addresses.Value, CancellationToken.None);
 
         // Assert
-        master.Value.Should().BeNull("ни master-ключа, ни Patroni-ответа — мастера нет");
+        master.Value.Should().BeNull("neither a master key nor a Patroni answer — there is no master");
     }
 
     // AAA (adopt-repair §3.3): master-ключа нет — HA-leader контура называет
@@ -317,6 +317,6 @@ public class ShardEndpointsTests
 
         // Assert: приоритет master-ключа — резолв по нему (цепочка spec §3.3).
         master.Value.Should().NotBeNull();
-        master.Value!.Ports.Pg.Should().Be(15000, "master-ключ назвал shard1a, HA-leader (shard1b) проиграл");
+        master.Value!.Ports.Pg.Should().Be(15000, "the master key named shard1a; the HA-leader (shard1b) lost");
     }
 }

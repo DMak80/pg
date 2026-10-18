@@ -583,7 +583,7 @@ public sealed class ProvisioningProcess(
                     .Where((n, i) => presences[i] == DataPresence.Present).Select(n => n.Name));
                 if (alive.Length > 0)
                     return Result<WaitPatroniOutcome>.Failed(new ApplicationException(
-                        $"{scope}: данные есть (ноды {alive}), лидера нет {placementOpts.PatroniBootSec} с — разбор оператора: чистка scope уничтожила бы данные")); // FLAG: ассертится в ProvisioningProcessTests.cs:437,894
+                        $"{scope}: data is present (nodes {alive}), no leader for {placementOpts.PatroniBootSec} s — operator investigation: wiping the scope would destroy data")); // FLAG: ассертится в ProvisioningProcessTests.cs:437,894
 
                 return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.Waiting); // Unknown: утрата не доказана — новый бюджет
             }

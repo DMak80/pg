@@ -85,7 +85,7 @@ public class AbortSequenceTests
             {
                 var name = s["DROP SUBSCRIPTION ".Length..];
                 if (subDropAttempts.Add(name))
-                    return Result.Failed(new ApplicationException("источник подписки недоступен"));
+                    return Result.Failed(new ApplicationException("subscription source unavailable"));
                 removedSubs.Add(name); // локальный срез после slot_name=NONE: слот — сирота
             }
             else if (s.StartsWith("DROP PUBLICATION "))
@@ -105,7 +105,7 @@ public class AbortSequenceTests
         {
             var dsn = sql.LastDsn;
             if (a.Shard2Down && dsn == MoveRig.DstDsn)
-                throw new ApplicationException("shard2 (admin) недоступен");
+                throw new ApplicationException("shard2 (admin) unreachable");
             return s switch
             {
                 var x when x == "SELECT 1" => 1L, // доступность шарда (scan_artifacts)
@@ -160,7 +160,7 @@ public class AbortSequenceTests
             if (s.Contains("DROP SUBSCRIPTION"))
             {
                 rig.Events.Add("drop-sub");
-                return Result.Failed(new ApplicationException("источник подписки недоступен"));
+                return Result.Failed(new ApplicationException("subscription source unavailable"));
             }
             return Result.Success();
         };
@@ -170,16 +170,16 @@ public class AbortSequenceTests
             SnapOf("shard1"), "bucket_42", AbortRequest(), rig.Claims, rig.Clock, Opt, CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("срез не прошёл — transient, повтор тика продолжит");
+        tick.IsSuccess.Should().BeFalse("the cut failed — transient, a repeated tick will continue");
         var raw = rig.Etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value;
         var j = AbortJournal.Parse(raw).Value!;
-        j.Phase.Should().Be("db-cleanup", "журнал записан до попытки SQL и не перетёрт");
+        j.Phase.Should().Be("db-cleanup", "the journal was written before the SQL attempt and not overwritten");
         j.Plan.Should().Contain(p => p.Kind == "sub" && p.Name == "sub_bucket_42",
-            "план включает найденные подписки");
+            "the plan includes the discovered subscriptions");
         j.Plan.Should().Contain(p => p.Kind == "schema" && p.Shard == "shard2",
-            "схема не-владельца — в плане уборки");
+            "the non-owner schema is in the cleanup plan");
         rig.Events.IndexOf("journal").Should().BeLessThan(rig.Events.IndexOf("drop-sub"),
-            "★ запись журнала — строго ДО первой манипуляции с БД");
+            "★ the journal entry is strictly BEFORE the first DB manipulation");
     }
 
     // AAA: недоступный шард — инвентаризация неполна: журнал ABORTING/blocked с
@@ -195,12 +195,12 @@ public class AbortSequenceTests
             SnapOf("shard1"), "bucket_42", AbortRequest(), rig.Claims, rig.Clock, Opt, CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("с неполной картиной уборку не начинаем");
+        tick.IsSuccess.Should().BeFalse("with an incomplete picture we do not start cleanup");
         var j = AbortJournal.Parse(rig.Etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value).Value!;
         j.Phase.Should().Be("blocked");
-        j.UnreachableShards.Should().Contain("shard2", "заблокировавший шард — в журнале");
+        j.UnreachableShards.Should().Contain("shard2", "the blocking shard is in the journal");
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("DROP SUBSCRIPTION"),
-            "манипуляций с БД не было");
+            "no DB manipulations happened");
     }
 
     // AAA: свежий статус без force — mover возможно жив: Transient-ожидание,
@@ -217,10 +217,10 @@ public class AbortSequenceTests
             CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("защита от убийства живого переезда");
-        tick.Error!.Message.Should().Contain("AbortMinAgeSec", "подсказка: force ломает защиту");
+        tick.IsSuccess.Should().BeFalse("protection against killing a live move");
+        tick.Error!.Message.Should().Contain("AbortMinAgeSec", "hint: force bypasses the protection");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.State.Should().Be(MoveStates.Syncing, "переезд ещё жив — ABORTING не пишем");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "the move is still alive — ABORTING is not written");
     }
 
     // AAA: force + полный набор артефактов — уборка в порядке скрипта (subs →
@@ -237,11 +237,11 @@ public class AbortSequenceTests
             SnapOf("shard2"), "bucket_42", AbortRequest(), rig.Claims, rig.Clock, Opt, CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "уборка завершена");
+        tick.Value.Should().Be(ProcessOutcome.Done, "cleanup finished");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "статус-ключ удалён — бакет снова ACTIVE у владельца");
+            "the status key is deleted — the bucket is ACTIVE again at the owner");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "своя заявка (op=abort) удалена");
+            "its own request (op=abort) is deleted");
         var sqls = rig.Sql.Calls.Select(c => c.Sql).ToList();
         var firstDropSub = new[] { "DROP SUBSCRIPTION sub_bucket_42_rb", "DROP SUBSCRIPTION sub_bucket_42" }
             .Min(name => sqls.IndexOf(name));
@@ -252,14 +252,14 @@ public class AbortSequenceTests
             .Min(name => sqls.IndexOf(name));
         var grant = sqls.FindIndex(s => s.Contains("GRANT INSERT"));
         var dropSchema = sqls.IndexOf("DROP SCHEMA bucket_42 CASCADE");
-        lastDropSub.Should().BeLessThan(firstSlotDrop, "подписки срезаются до слотов");
-        firstSlotDrop.Should().BeLessThan(firstDropPub, "слоты — до публикаций");
-        firstDropPub.Should().BeLessThan(grant, "публикации — до re-GRANT владельца");
-        grant.Should().BeLessThan(dropSchema, "разморозка владельца — до удаления схем");
+        lastDropSub.Should().BeLessThan(firstSlotDrop, "subscriptions are cut before slots");
+        firstSlotDrop.Should().BeLessThan(firstDropPub, "slots — before publications");
+        firstDropPub.Should().BeLessThan(grant, "publications — before the owner re-GRANT");
+        grant.Should().BeLessThan(dropSchema, "owner unfreeze — before schema removal");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql.Contains("GRANT INSERT"),
-            "владелец (shard2) разморожен");
+            "the owner (shard2) is unfrozen");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql == "DROP SCHEMA bucket_42 CASCADE",
-            "схема срезана на не-владельце (shard1)");
+            "the schema is cut on the non-owner (shard1)");
     }
 
     // AAA: routing уже указывает на target (flip прошёл, статус завис) без force —
@@ -277,9 +277,9 @@ public class AbortSequenceTests
 
         // Assert
         tick.IsSuccess.Should().BeFalse();
-        tick.Error!.Message.Should().Contain("force", "подсказка: abort станет доведением перевода");
+        tick.Error!.Message.Should().Contain("force", "hint: abort would become move finalization");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "permanent-отказ удаляет заявку");
+            "a permanent refusal deletes the request");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
     }
@@ -301,11 +301,11 @@ public class AbortSequenceTests
         tick.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
             && c.Sql == """SELECT setval('bucket_42."seq1"', 100, true)""",
-            "setval владельцу до выданного на старом шарде (только вперёд)");
+            "setval for the owner up to the value issued on the old shard (forward only)");
         var sqls = rig.Sql.Calls.Select(c => c.Sql).ToList();
         sqls.IndexOf("""SELECT setval('bucket_42."seq1"', 100, true)""").Should()
             .BeLessThan(sqls.IndexOf("DROP SCHEMA bucket_42 CASCADE"),
-                "доведение — ДО удаления старой схемы (иначе issued читать неоткуда)");
+                "finalization — BEFORE the old schema is dropped (otherwise issued cannot be read)");
     }
 
     // AAA: схема ВЛАДЕЛЬЦА никогда не дропается — DROP SCHEMA только на не-владельце
@@ -323,7 +323,7 @@ public class AbortSequenceTests
         // Assert
         tick.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.Calls.Where(c => c.Sql.Contains("DROP SCHEMA")).Should().ContainSingle()
-            .Which.Dsn.Should().Be(MoveRig.SrcDsn, "DROP SCHEMA — только с DSN не-владельца (shard1)");
+            .Which.Dsn.Should().Be(MoveRig.SrcDsn, "DROP SCHEMA — only with the non-owner DSN (shard1)");
     }
 
     // AAA: контрольная инвентаризация нашла остаток — журнал ABORTING/failed + Transient
@@ -338,10 +338,10 @@ public class AbortSequenceTests
             SnapOf("shard1"), "bucket_42", AbortRequest(), rig.Claims, rig.Clock, Opt, CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("остаток после уборки — внимание оператора");
+        tick.IsSuccess.Should().BeFalse("a leftover after cleanup — operator attention");
         var j = AbortJournal.Parse(rig.Etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value).Value!;
         j.Phase.Should().Be("failed");
-        j.LastError.Should().Contain("pub_bucket_42", "остаток назван в журнале");
+        j.LastError.Should().Contain("pub_bucket_42", "the leftover is named in the journal");
     }
 
     // Детерминированные часы (защита свежести по updated_unix, Д12).

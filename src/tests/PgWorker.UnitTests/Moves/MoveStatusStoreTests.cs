@@ -35,7 +35,7 @@ public class MoveStatusStoreTests
         var got = await store.GetAsync("shop", "bucket_42", CancellationToken.None);
 
         // Assert
-        got.Value.Should().BeNull("нет статус-ключа = бакет ACTIVE");
+        got.Value.Should().BeNull("no status key = bucket ACTIVE");
     }
 
     // AAA: flip — атомарная txn: routing → новый + delete status (скрипт etcd_flip)
@@ -52,9 +52,9 @@ public class MoveStatusStoreTests
         var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", ct: CancellationToken.None);
 
         // Assert
-        flipped.Value.Should().BeTrue("routing соответствовал cur");
+        flipped.Value.Should().BeTrue("routing matched cur");
         etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2");
-        etcd.Store.ContainsKey(MoveNames.StatusKey("shop", "bucket_42")).Should().BeFalse("статус-ключ удалён той же txn");
+        etcd.Store.ContainsKey(MoveNames.StatusKey("shop", "bucket_42")).Should().BeFalse("the status key was deleted by the same txn");
     }
 
     // AAA: flip с пост-flip статусом (rollback-доведение, ревью №1) — атомарная
@@ -74,11 +74,11 @@ public class MoveStatusStoreTests
         var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", postFlip, CancellationToken.None);
 
         // Assert
-        flipped.Value.Should().BeTrue("routing соответствовал cur");
+        flipped.Value.Should().BeTrue("routing matched cur");
         etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
-            "routing перевёрнут той же txn");
+            "routing was flipped by the same txn");
         etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value.Should().Be(postFlip.Serialize(),
-            "фаза доведения положена атомарно с flip — не отдельным put");
+            "the finalization phase is put atomically with flip — not a separate put");
     }
 
     // AAA: конкурентный flip (routing изменился под руками) — Succeeded=false, всё нетронуто
@@ -94,7 +94,7 @@ public class MoveStatusStoreTests
         var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", ct: CancellationToken.None);
 
         // Assert
-        flipped.Value.Should().BeFalse("compare по routing=cur обязан не сойтись");
+        flipped.Value.Should().BeFalse("compare on routing=cur must not converge");
         etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard9");
     }
 }

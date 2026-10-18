@@ -11,7 +11,7 @@ public class EtcdExportMetaJsonTests
     // AAA: полный формат — revision присутствует; uploaded_unix — ФАКТИЧЕСКОЕ время
     // put'а объекта (в отличие от «покрытия» last_uploaded_unix статус-ключа, §3.2)
     [Fact]
-    public void Serialize_полный_формат()
+    public void Serialize_FullFormat()
     {
         // Act
         var json = EtcdSnapshotMetaJson.Serialize(new EtcdSnapshotMeta("abc123", 2048, 42, 1759330000, 1759330001, "inst-A"));
@@ -23,7 +23,7 @@ public class EtcdExportMetaJsonTests
 
     // AAA: revision=null — поле ОПУСКАЕТСЯ (best-effort ревизии, слепок не виноват)
     [Fact]
-    public void Serialize_без_ревизии_опускает_поле()
+    public void Serialize_WithoutRevision_OmitsField()
     {
         // Act
         var json = EtcdSnapshotMetaJson.Serialize(new EtcdSnapshotMeta("abc", 1, null, 2, 3, "i"));
@@ -33,7 +33,7 @@ public class EtcdExportMetaJsonTests
 
     // AAA: парсинг 1:1; битый → null
     [Fact]
-    public void Parse_круговорот_и_битый()
+    public void Parse_Roundtrip_AndBroken()
     {
         // Arrange
         var meta = new EtcdSnapshotMeta("abc123", 2048, null, 1759330000, 1759330001, "inst-A");

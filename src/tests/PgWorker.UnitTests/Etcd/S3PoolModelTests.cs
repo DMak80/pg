@@ -20,7 +20,7 @@ public class S3PoolModelTests
     [Fact]
     public void ParseEndpoints_ToleratesGarbage()
     {
-        var parsed = S3PoolModel.ParseEndpoints("h1:18001,,noport,x:нечисло");
+        var parsed = S3PoolModel.ParseEndpoints("h1:18001,,noport,x:notanumber");
         parsed.Should().Equal("h1:18001");
     }
 

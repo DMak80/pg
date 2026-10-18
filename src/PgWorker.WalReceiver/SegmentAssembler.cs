@@ -33,8 +33,8 @@ public sealed class SegmentAssembler(ulong startLsn)
     {
         if (chunk.WalStart != _lastAppended)
             throw new ApplicationException(
-                $"разрыв потока WAL: WalStart {WalReceiverMarkers.LsnText(chunk.WalStart)} " +
-                $"≠ ожидаемого {WalReceiverMarkers.LsnText(_lastAppended)}");
+                $"WAL stream gap: WalStart {WalReceiverMarkers.LsnText(chunk.WalStart)} " +
+                $"≠ expected {WalReceiverMarkers.LsnText(_lastAppended)}");
 
         var closed = new List<ClosedSegment>();
         var data = chunk.Data.Span;

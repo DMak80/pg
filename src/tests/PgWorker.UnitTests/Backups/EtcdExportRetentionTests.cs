@@ -14,7 +14,7 @@ public class EtcdExportRetentionTests
 
     // AAA: 3 пары при N=2 — старейшая пара (db+meta) к удалению, ровно 2 остаются
     [Fact]
-    public void Select_сверх_лимита_старейшая_пара_к_удалению()
+    public void Select_OverLimit_OldestPair_ForDeletion()
     {
         // Arrange
         var objects = new[] { Obj("etcd/snapshot-20261001-010000.db"), Obj("etcd/snapshot-20261001-010000.meta.json"),
@@ -30,7 +30,7 @@ public class EtcdExportRetentionTests
 
     // AAA: пар не больше лимита — ничего не удаляется (guard ≥1 по построению)
     [Fact]
-    public void Select_в_пределах_лимита_пусто()
+    public void Select_WithinLimit_Empty()
     {
         // Arrange
         var objects = new[] { Obj("etcd/snapshot-20261001-010000.db"), Obj("etcd/snapshot-20261001-010000.meta.json") };
@@ -44,7 +44,7 @@ public class EtcdExportRetentionTests
 
     // AAA: одиночный .meta.json без .db — мусор ретенции, сносится даже в пределах лимита
     [Fact]
-    public void Select_одиночная_meta_мусор()
+    public void Select_SingleMeta_Garbage()
     {
         // Arrange
         var objects = new[] { Obj("etcd/snapshot-20261001-010000.db"), Obj("etcd/snapshot-20261001-010000.meta.json"),
@@ -59,7 +59,7 @@ public class EtcdExportRetentionTests
 
     // AAA: посторонние ключи префикса не трогаются
     [Fact]
-    public void Select_чужие_ключи_не_трогает()
+    public void Select_ForeignKeys_Untouched()
     {
         // Arrange
         var objects = new[] { Obj("etcd/README"), Obj("etcd/snapshot-20261001-010000.db"), Obj("etcd/snapshot-20261001-010000.meta.json") };

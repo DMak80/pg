@@ -250,7 +250,7 @@ public class BackupProcessTests
         public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
-        private static NotSupportedException NotSupported() => new("не используется в тестах бэкапов");
+        private static NotSupportedException NotSupported() => new("not used in the backup tests");
 
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
@@ -375,7 +375,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // COMPLETED → LastValidUnix его finished; verify-FAILED → null; max_age —
     // эффективная политика тика (дефолт конфига при отсутствии policy-ключа)
     [Fact]
-    public async Task Tick_ПередаётНаблюдателюВозрастПолных()
+    public async Task Tick_PassesObserverFullsAge()
     {
         // Arrange — шард с валидным COMPLETED (finished=T); дефолт FullMaxAgeSec=86400
         var seen = new List<(string Cluster,
@@ -403,8 +403,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         seen[0].Shards.Should().ContainKey("shard1")
             .WhoseValue.LastValidUnix.Should().Be(finished);
         seen[0].Shards["shard1"].MaxAgeSec.Should().Be(86_400);
-        seen[1].Shards["shard1"].LastValidUnix.Should().BeNull("verify FAILED — не валиден");
-        seen[1].Shards["shard1"].MaxAgeSec.Should().Be(86_400, "порог пишется всегда");
+        seen[1].Shards["shard1"].LastValidUnix.Should().BeNull("verify FAILED — not valid");
+        seen[1].Shards["shard1"].MaxAgeSec.Should().Be(86_400, "the threshold is always written");
     }
 
     // AAA: G3 — due (COMPLETED нет): PLANNED → контейнер (env backup_exec,
@@ -541,7 +541,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA (код-ревью B3): аудируемая фаза create/start джоба передаёт progress —
     // итерации поллинга дают Mark (окно без progress = молчание для watchdog).
     [Fact]
-    public async Task Аудируемый_create_джоба_итерации_дают_Mark()
+    public async Task AuditableCreateJob_IterationsGiveMark()
     {
         // Arrange — «медленный daemon отпускает»: первые 2 create висят 2.5 c
         // (дольше таймаута итерации — пол 1 c из Math.Max(TicksPerSecond, window/2)
@@ -560,9 +560,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // джоб при этом создан и запущен (повтор идемпотентен)
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         marks.Marks.Should().BeGreaterThanOrEqualTo(3,
-            "итерации поллинга аудируемой фазы дают Mark (spec §1.2 п.4)");
-        rig.Engine.Created.Should().NotBeEmpty("джоб создан после таймаут-итераций");
-        rig.Engine.Started.Should().NotBeEmpty("старт после идемпотентного повтора");
+            "polling iterations of the auditable phase give a Mark (spec §1.2 p.4)");
+        rig.Engine.Created.Should().NotBeEmpty("the job was created after timeout iterations");
+        rig.Engine.Started.Should().NotBeEmpty("started after the idempotent retry");
     }
 
     // AAA: pg_hba-гвард на усвоенной ноде (object) — exec в её контейнер,
@@ -590,7 +590,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert — exec ушёл в object-контейнеры, pgw-путь не звался
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Sql.Scalars.Should().NotBeEmpty("гвард G2 исполнен (мастер резолвится по byName)");
+        rig.Sql.Scalars.Should().NotBeEmpty("the G2 guard executed (master is resolved byName)");
         rig.Driver.ContainerExecCalls.Select(c => c.Container).Should().BeEquivalentTo(["as-shard1a", "as-shard1b"]);
         rig.Driver.ExecNodeCalls.Should().BeEmpty();
     }
@@ -598,7 +598,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA (AC5): RUNNING-полный с «вечным» контейнером старше 6 ч → контейнер/volume
     // удалены, статус FAILED "job-timeout…", переснятие по бэкоффу
     [Fact]
-    public async Task Супервиз_полный_старше_бюджета_FAILED_jobtimeout_и_переснятие()
+    public async Task Supervise_FullOlderThanBudget_FailedJobtimeout_AndReshoot()
     {
         // Arrange — активный RUNNING started = now-7h (бюджет 6 ч дефолт);
         // FakeBackupEngine держит running-контейнер без result-логов («вечный»)
@@ -638,7 +638,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         outcome2.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Keys
             .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"))
-            .Should().HaveCount(2, "переснятие — НОВЫЙ id, старая FAILED-запись — история");
+            .Should().HaveCount(2, "a reshoot uses a NEW id — the old FAILED record is history");
     }
 
     // AAA: инвариант одного активного — при RUNNING (живой джоб) новую попытку
@@ -729,7 +729,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA (AC1): wal-ключ BROKEN → планировщик создаёт новый полный, даже если
     // последний COMPLETED свежий (инвариант одного активного/бэкофф — как всегда)
     [Fact]
-    public async Task Тик_при_BROKEN_wal_планирует_пересъём()
+    public async Task Tick_OnBrokenWal_PlansReshoot()
     {
         // Arrange — COMPLETED ..42 (5 мин назад) + BROKEN с границей ..44 ВЫШЕ
         // старого полного (дыра выше ..44): ..42 разрыв НЕ покрывает — пересъём нужен
@@ -757,16 +757,16 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         var fullKeys = rig.Etcd.Store.Keys
             .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/")).ToList();
-        fullKeys.Should().ContainSingle("новый полный запланирован");
-        fullKeys.Single().Should().NotContain("20260908030000Z", "id новый — не переснятый старый");
-        rig.Engine.Created.Should().NotBeEmpty("джоб пересъёма запущен");
+        fullKeys.Should().ContainSingle("a new full is planned");
+        fullKeys.Single().Should().NotContain("20260908030000Z", "a new id — not the re-shot old one");
+        rig.Engine.Created.Should().NotBeEmpty("the reshoot job is started");
     }
 
     // AAA (t07, arch/19 §2 — прогон 2026-09-13): COMPLETED-полный с wal_start ≥
     // границы разрыва УЖЕ покрывает BROKEN — повторный пересъём не планируется
     // (иначе шторм пересъёмов каждый тик, контроль не успевает заживить)
     [Fact]
-    public async Task Тик_при_BROKEN_покрытом_полным_пересъёма_нет()
+    public async Task Tick_OnBrokenCoveredByFull_NoReshoot()
     {
         // Arrange — COMPLETED ..46 (старт выше границы разрыва ..42) + BROKEN ..42
         var rig = await NewRig();
@@ -791,7 +791,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert — нового полного нет: разрыв покрыт, заживление — за контролем (§3)
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"),
-            "пересъём поверх покрывающего полного — шторм");
+            "a reshoot on top of a covering full is a storm");
         rig.Engine.Created.Should().BeEmpty();
     }
 
@@ -915,7 +915,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
             out _);
         parsed.Value[0].Shards["shard1"].Full.Single().State.Should().Be(FullBackupStatus.Running);
-        rig.Engine.Created.Should().BeEmpty("повторного create быть не должно");
+        rig.Engine.Created.Should().BeEmpty("there must be no repeated create");
     }
 
     // AAA: running-джоб напечатал uploading-маркер → state=UPLOADING +
@@ -1066,7 +1066,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert — попытка не потеряна: статус и ключи нетронуты
         outcome.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"),
-            "статус живёт в аргументе тика; в etcd его пишет только успешная супервизия");
+            "the status lives in the tick argument; only a successful supervision writes it to etcd");
         rig.Engine.Removed.Should().BeEmpty();
         rig.Engine.RemovedVolumes.Should().BeEmpty();
     }
@@ -1103,7 +1103,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // пропускается (движок не тронут), journal несёт пометку. До t13 такой
     // джоб застревал в вечном RUNNING и держал инвариант «один активный».
     [Fact]
-    public async Task Источник_исчез_при_возрасте_свыше_бюджета_FAILED_без_cleanup()
+    public async Task SourceVanished_AgeOverBudget_FailedWithoutCleanup()
     {
         // Arrange — RUNNING started = now-7h (бюджет 6 ч дефолт), node = shard1z:
         // ноды нет в portalloc (источник исчез навсегда), порт-аллок жив
@@ -1127,18 +1127,18 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var failed = parsed.Value[0].Shards["shard1"].Full.Single();
         failed.State.Should().Be(FullBackupStatus.Failed);
         failed.Error.Should().Contain("job-timeout");
-        rig.Engine.Removed.Should().BeEmpty("источник недоступен — cleanup пропущен (t13 AC3)");
+        rig.Engine.Removed.Should().BeEmpty("source unavailable — cleanup skipped (t13 AC3)");
         rig.Engine.RemovedVolumes.Should().BeEmpty();
         var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
         entry.Phase.Should().Be("job-timeout/shard1/20260908030000Z");
-        entry.LastError.Should().Contain("job-timeout").And.Contain("cleanup пропущен");
+        entry.LastError.Should().Contain("job-timeout").And.Contain("cleanup skipped");
     }
 
     // AAA (t13 AC3): возраст свыше бюджета + list-отказ (transient источника
     // при доступном portalloc/engine): FAILED всё равно ставится — возраст
     // самодостаточен; cleanup пропускается с пометкой в той же journal-записи
     [Fact]
-    public async Task List_отказ_при_возрасте_свыше_бюджета_FAILED_и_cleanup_пропущен()
+    public async Task ListFails_AgeOverBudget_FailedAndCleanupSkipped()
     {
         // Arrange — RUNNING started = now-7h на живой ноде shard1a, контейнер
         // running («вечный» джоб), но list по движку падает (transport-отказ)
@@ -1164,10 +1164,10 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var failed = parsed.Value[0].Shards["shard1"].Full.Single();
         failed.State.Should().Be(FullBackupStatus.Failed);
         failed.Error.Should().Contain("job-timeout");
-        rig.Engine.Removed.Should().BeEmpty("list-отказ — cleanup пропущен (t13 AC3)");
+        rig.Engine.Removed.Should().BeEmpty("list failure — cleanup skipped (t13 AC3)");
         rig.Engine.RemovedVolumes.Should().BeEmpty();
         var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
         entry.Phase.Should().Be("job-timeout/shard1/20260908030000Z");
-        entry.LastError.Should().Contain("cleanup пропущен");
+        entry.LastError.Should().Contain("cleanup skipped");
     }
 }

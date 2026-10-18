@@ -99,7 +99,7 @@ public static class LongCallPolling
 
     private static Result BudgetExhausted(string phase, TimeSpan budget, int attempt)
         => Result.Failed(new ApplicationException(
-            $"фаза {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан ({attempt} итераций)")); // FLAG: ассертится в LongCallPollingTests.cs:105,192
+            $"phase {phase}: budget {budget.TotalSeconds:F0} s exhausted ({attempt} iterations)")); // FLAG: ассертится в LongCallPollingTests.cs:105,192
 
     // Отмена в цепочке ошибки (само исключение или любое InnerException):
     // вызов-обёртка конвертирует OCE в Result.Failed («The operation was

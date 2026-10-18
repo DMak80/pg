@@ -64,7 +64,7 @@ public class WalReceiverTailTests
     }
 
     [Fact]
-    public void Непрерывная_цепочка_хвост_конец_последнего()
+    public void ContinuousChain_TailIsLastEnd()
     {
         // Arrange
         var tail = Resolve(
@@ -79,7 +79,7 @@ public class WalReceiverTailTests
     }
 
     [Fact]
-    public void Дыра_хвост_конец_непрерывной_части()
+    public void Hole_TailIsEndOfContinuousPart()
     {
         // Arrange — сегменты 1, 2, 4 (сегмент 3 отсутствует)
         var tail = Resolve(
@@ -92,14 +92,14 @@ public class WalReceiverTailTests
     }
 
     [Fact]
-    public void Пустой_префикс_null()
+    public void EmptyPrefix_Null()
     {
         // Arrange / Act / Assert
         Resolve().Should().BeNull();
     }
 
     [Fact]
-    public void TLI_переход_с_history_цепочка_непрерывна()
+    public void TliSwitch_WithHistory_ChainContinuous()
     {
         // Arrange — последний сегмент TLI 1 (seg 1), history TLI 2,
         // первый сегмент TLI 2 (seg 2 == Next(1))
@@ -113,7 +113,7 @@ public class WalReceiverTailTests
     }
 
     [Fact]
-    public void EndLsn_согласован_с_WalFileName()
+    public void EndLsn_Consistent_WithWalFileName()
     {
         // Arrange
         var parsed = WalFileName.TryParse("000000010000000000000002")!.Value;

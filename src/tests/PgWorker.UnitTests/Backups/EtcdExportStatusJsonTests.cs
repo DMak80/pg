@@ -11,7 +11,7 @@ public class EtcdExportStatusJsonTests
     // AAA: OK-ключ — полный формат канона §3.1; last_uploaded_unix — метка
     // ПОКРЫТОГО слепка, не время put-запроса (§3.1)
     [Fact]
-    public void Ok_полный_формат()
+    public void Ok_FullFormat()
     {
         // Act
         var json = EtcdSnapshotStatusJson.Ok(
@@ -31,7 +31,7 @@ public class EtcdExportStatusJsonTests
 
     // AAA: FAILED сохраняет поля последнего успеха (оператор видит, насколько отстал)
     [Fact]
-    public void Failed_сохраняет_поля_последнего_успеха()
+    public void Failed_KeepsLastSuccessFields()
     {
         // Arrange
         var lastOk = EtcdSnapshotStatusJson.Parse(EtcdSnapshotStatusJson.Ok(
@@ -49,7 +49,7 @@ public class EtcdExportStatusJsonTests
 
     // AAA: Failed без прошлого успеха — поля факта отсутствуют, enabled/interval/error есть
     [Fact]
-    public void Failed_без_прошлого_успеха_минимальный_формат()
+    public void Failed_WithoutLastSuccess_MinimalFormat()
     {
         // Act
         var json = EtcdSnapshotStatusJson.Failed(null, "boom", 360);
@@ -63,7 +63,7 @@ public class EtcdExportStatusJsonTests
 
     // AAA: парсинг толерантен к отсутствующим полям; битый JSON → null
     [Fact]
-    public void Parse_толерантный_и_битый()
+    public void Parse_Tolerant_AndBroken()
     {
         // Act/Assert — валидный минимальный ключ
         var parsed = EtcdSnapshotStatusJson.Parse("""{"enabled":true,"state":"OK","interval_min":60}""");
@@ -72,7 +72,7 @@ public class EtcdExportStatusJsonTests
         status.State.Should().Be("OK");
         status.LastUploadedUnix.Should().BeNull();
         // Act/Assert — битый JSON → null (панель/парсер молчат)
-        EtcdSnapshotStatusJson.Parse("{не json").Should().BeNull();
+        EtcdSnapshotStatusJson.Parse("{not json").Should().BeNull();
     }
 
     // AAA: IsBehind — FAILED/ключа нет/локальный новее подтверждённого покрытия
@@ -82,7 +82,7 @@ public class EtcdExportStatusJsonTests
     [InlineData("FAILED", 1759330100, 1759330000, true)]   // FAILED — всегда отстаёт
     [InlineData("OK", 1759330100, 1759330000, true)]       // локальный слепок снят позже покрытия
     [InlineData("OK", 1759330000, 1759330100, false)]      // покрытие свежее локального — здорово
-    public void IsBehind_детект(string state, long localTaken, long uploaded, bool expected)
+    public void IsBehind_Detects(string state, long localTaken, long uploaded, bool expected)
     {
         // Arrange
         EtcdSnapshotStatus? status = new(true, state, uploaded, null, "abc", 1, 360, null);
@@ -96,21 +96,21 @@ public class EtcdExportStatusJsonTests
 
     // AAA: ключа нет вовсе (включённая опция) — отстаёт; статус выключен — нет
     [Fact]
-    public void IsBehind_нет_ключа_или_выключен()
+    public void IsBehind_NoKey_OrDisabled()
     {
         // Act/Assert
-        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("ключа нет при включённой опции — выгрузка отстаёт");
+        EtcdSnapshotStatus.IsBehind(null, 1759330100).Should().BeTrue("no key while the option is enabled — the upload lags");
         EtcdSnapshotStatus.IsBehind(new EtcdSnapshotStatus(false, "FAILED", null, null, null, null, 360, null), 1759330100)
-            .Should().BeFalse("enabled=false — доводка не нужна");
+            .Should().BeFalse("enabled=false — no catch-up needed");
     }
 
     // AAA: таймстемп имени слепка (yyyyMMdd-HHmmss, UTC — формат SnapshotJob)
     [Fact]
-    public void TakenUnixFromName_из_имени_файла()
+    public void TakenUnixFromName_FromFileName()
     {
         // Act/Assert
         EtcdSnapshotStatus.TakenUnixFromName("snapshot-20261001-120000.db")
             .Should().Be(new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds());
-        EtcdSnapshotStatus.TakenUnixFromName("иное.db").Should().BeNull();
+        EtcdSnapshotStatus.TakenUnixFromName("other.db").Should().BeNull();
     }
 }

@@ -30,7 +30,7 @@ public class WalReceiverSourceConnectionTests
     }
 
     [Fact]
-    public async Task Повторный_OpenAsync_ГаситПрежнееСоединение()
+    public async Task RepeatedOpenAsync_KillsPreviousConnection()
     {
         // Arrange — источник с фейк-фабрикой; два цикла OpenAsync (модель
         // transient-переподключения: обрыв источника → новый цикл).
@@ -48,7 +48,7 @@ public class WalReceiverSourceConnectionTests
     }
 
     [Fact]
-    public async Task Сбой_StartReplication_ГаситСломанноеСоединение()
+    public async Task StartReplicationFailure_KillsBrokenConnection()
     {
         // Arrange — фейк с запрограммированным сбоем START_REPLICATION.
         var fake = new FakeReplicationConnection();
@@ -61,11 +61,11 @@ public class WalReceiverSourceConnectionTests
         // Assert — сбой отражён, соединение погашено (0 живых): следующий
         // цикл OpenAsync создаст свежее, а не переиспользует сломанное.
         start.IsSuccess.Should().BeFalse();
-        fake.Disposed.Should().Be(fake.Opened, "сломанное соединение обязано умереть сразу");
+        fake.Disposed.Should().Be(fake.Opened, "the broken connection must die immediately");
     }
 
     [Fact]
-    public async Task Серия_Сбоев_Старта_Не_КопитСоединения()
+    public async Task SeriesOfStartFailures_DoesNotAccumulateConnections()
     {
         // Arrange — модель худшего случая ревью: «Open ок → Start fail → 5 с →
         // повтор» многократно (мастер недоступен для стрима долгое время).
@@ -113,7 +113,7 @@ public class WalReceiverSourceConnectionTests
         public Task SendStatusUpdate(CancellationToken ct) => Task.CompletedTask;
 
         public Task<TimelineHistoryFile> TimelineHistory(uint tli, CancellationToken ct)
-            => throw new NotSupportedException("fake: history не нужен в этих тестах");
+            => throw new NotSupportedException("fake: history is not needed in these tests");
 
         public ValueTask DisposeAsync()
         {

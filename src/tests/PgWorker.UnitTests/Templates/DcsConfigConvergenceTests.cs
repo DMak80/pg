@@ -342,6 +342,6 @@ public class DcsConfigConvergenceTests
         var desired = PgParametersCanon.Desired(tuning, null);
         lines.Select(p => p.Name).Should().Equal(desired.Select(p => p.Name));
         DcsConfigConvergence.DivergencePatch(config, syncStrict: false, desired).Should()
-            .BeNull("bootstrap и конвергенция строят параметры из одного набора");
+            .BeNull("bootstrap and convergence build parameters from one set");
     }
 }

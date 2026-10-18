@@ -43,7 +43,7 @@ public class WalReceiverOptionsTests
         => WalReceiverEnv.Parse(k => env.GetValueOrDefault(k), out errors);
 
     [Fact]
-    public void Полный_валидный_набор_парсится_все_поля_на_месте()
+    public void FullValidSet_Parses_AllFieldsInPlace()
     {
         // Arrange
         var env = Valid();
@@ -83,7 +83,7 @@ public class WalReceiverOptionsTests
     [InlineData("S3_BUCKET")]
     [InlineData("S3_ACCESS_KEY")]
     [InlineData("S3_SECRET_KEY")]
-    public void Отсутствие_обязательного_ключа_null_и_ошибка_с_именем_ключа(string key)
+    public void MissingRequiredKey_Null_AndErrorWithKeyName(string key)
     {
         // Arrange
         var env = Without(key);
@@ -97,7 +97,7 @@ public class WalReceiverOptionsTests
     }
 
     [Fact]
-    public void Пустое_значение_обязательного_ключа_ошибка()
+    public void EmptyRequiredKeyValue_Error()
     {
         // Arrange
         var env = With("PG_HOST", "");
@@ -115,7 +115,7 @@ public class WalReceiverOptionsTests
     [InlineData("0")]
     [InlineData("70000")]
     [InlineData("-1")]
-    public void PG_PORT_вне_диапазона_ошибка(string port)
+    public void PG_PORT_OutOfRange_Error(string port)
     {
         // Arrange
         var env = With("PG_PORT", port);
@@ -130,7 +130,7 @@ public class WalReceiverOptionsTests
 
     // AAA (t36): S3_ENDPOINTS парсится в список с сохранением порядка.
     [Fact]
-    public void S3_ENDPOINTS_порядок_сохранён()
+    public void S3_ENDPOINTS_OrderPreserved()
     {
         // Arrange — три uri в заданном порядке + отдельный read-список.
         var env = With("S3_ENDPOINTS", "http://a:9000,http://b:9000,http://c:9000");
@@ -148,7 +148,7 @@ public class WalReceiverOptionsTests
 
     // AAA (t36): отсутствие S3_ENDPOINTS — ошибка permanent (код 5 в Program).
     [Fact]
-    public void S3_ENDPOINTS_отсутствует_ошибка()
+    public void S3_ENDPOINTS_Missing_Error()
     {
         // Arrange
         var env = Without("S3_ENDPOINTS");
@@ -163,7 +163,7 @@ public class WalReceiverOptionsTests
 
     // AAA (t36): пустой S3_ENDPOINTS (только запятые) — тоже ошибка.
     [Fact]
-    public void S3_ENDPOINTS_пустой_ошибка()
+    public void S3_ENDPOINTS_Empty_Error()
     {
         // Arrange
         var env = With("S3_ENDPOINTS", ",, ");
@@ -177,7 +177,7 @@ public class WalReceiverOptionsTests
     }
 
     [Fact]
-    public void Секреты_не_попадают_в_текст_ошибок()
+    public void Secrets_NeverAppearInErrorText()
     {
         // Arrange — порт невалиден, оба секрета в env (но текст ошибки должен
         // строиться без значений секретов при любом раскладе)
@@ -195,7 +195,7 @@ public class WalReceiverOptionsTests
 
     // AAA: S3_CA_PEM опционален — без него S3CaPem null (http-endpoint, прежний контракт)
     [Fact]
-    public void Parse_БезS3CaPem_ДаетNull()
+    public void Parse_WithoutS3CaPem_YieldsNull()
     {
         WalReceiverEnv.Parse(k => Valid().TryGetValue(k, out var v) ? v : null, out _)
             !.S3CaPem.Should().BeNull();
@@ -203,7 +203,7 @@ public class WalReceiverOptionsTests
 
     // AAA: S3_CA_PEM передан — попадает в опции значением
     [Fact]
-    public void Parse_S3CaPem_Значение()
+    public void Parse_S3CaPem_Value()
     {
         var parsed = WalReceiverEnv.Parse(k => With("S3_CA_PEM", "PEM-BODY").TryGetValue(k, out var v) ? v : null, out _);
         parsed!.S3CaPem.Should().Be("PEM-BODY");

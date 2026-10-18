@@ -45,7 +45,7 @@ public class RetentionPlannerTests
     // AC1: дневная гранула — все COMPLETED последних retention.days календарных
     // суток UTC (включая текущую) остаются, Delete пуст.
     [Fact]
-    public void Дневные_все_свежие_остаются()
+    public void Dailies_AllFresh_Kept()
     {
         // Arrange — полные за сегодня/вчера/позавчера при days=7
         var fulls = new[]
@@ -66,7 +66,7 @@ public class RetentionPlannerTests
     // AC1: недельная точка — ПОСЛЕДНИЙ (max started_unix) COMPLETED ISO-недели,
     // не первый.
     [Fact]
-    public void Недельная_точка_последний_в_неделе()
+    public void Weekly_Point_LastInWeek()
     {
         // Arrange — два полных в одной ISO-неделе старше дневного окна (days=1);
         // 2026-08-19 и 2026-08-21 — ISO-неделя 34 ISO-2026
@@ -87,7 +87,7 @@ public class RetentionPlannerTests
 
     // AC1: месячная точка — ПОСЛЕДНИЙ COMPLETED календарного месяца.
     [Fact]
-    public void Месячная_точка_последний_в_месяце()
+    public void Monthly_Point_LastInMonth()
     {
         // Arrange — два полных в июне 2026, days=1/weeks=0/months=1
         var policy = new BackupPolicy(1, 0, 1, 86400, false);
@@ -108,7 +108,7 @@ public class RetentionPlannerTests
     // AC1: граница ISO-недель — воскресенье и понедельник в РАЗНЫХ группах;
     // остаётся свежайшая (понедельник).
     [Fact]
-    public void Граница_недели()
+    public void WeekBoundary()
     {
         // Arrange — 2026-08-23 (вс, ISO-неделя 34) и 2026-08-24 (пн, неделя 35)
         var policy = new BackupPolicy(1, 1, 0, 86400, false);
@@ -128,7 +128,7 @@ public class RetentionPlannerTests
 
     // AC1: граница месяцев — июль и август в разных группах.
     [Fact]
-    public void Граница_месяца()
+    public void MonthBoundary()
     {
         // Arrange — 2026-07-31 и 2026-08-01, months=1
         var policy = new BackupPolicy(1, 0, 1, 86400, false);
@@ -153,7 +153,7 @@ public class RetentionPlannerTests
     // 05.01 удержан, Delete = [2024-12-30]. Багованная (d.Year): две группы
     // занимают оба слота weeks=2 → Delete = [] — ассерт падает.
     [Fact]
-    public void Годовая_граница_ISO_недели()
+    public void YearBoundary_IsoWeek()
     {
         // Arrange — days=1, weeks=2, months=0; now = 2025-01-08 (ср)
         var policy = new BackupPolicy(1, 2, 0, 86400, false);
@@ -177,7 +177,7 @@ public class RetentionPlannerTests
     // Корректно: одна группа → Delete = [2026-12-28]; баг: две группы →
     // Delete = [] — ассерт падает.
     [Fact]
-    public void Годовая_граница_ISO_недели_53()
+    public void YearBoundary_IsoWeek53()
     {
         // Arrange — days=1, weeks=2, months=0; now = 2027-01-04 (пн)
         var policy = new BackupPolicy(1, 2, 0, 86400, false);
@@ -199,7 +199,7 @@ public class RetentionPlannerTests
     // AC1: weeks=0 исключает недельную гранулу — старые полные вне дневного
     // окна удаляются (guard не удерживает: есть свежий в Keep).
     [Fact]
-    public void Weeks0_исключает_гранулу()
+    public void Weeks0_ExcludesGranule()
     {
         // Arrange — days=1/weeks=0/months=0: свежий полный (удержит guard и
         // даст непустой Keep) + три старых (3 недели назад)
@@ -223,7 +223,7 @@ public class RetentionPlannerTests
     // Активные (PLANNED/RUNNING/UPLOADING) и DELETING — вне отбора: «свежие»
     // активные не спасают старые COMPLETED.
     [Fact]
-    public void Активные_и_DELETING_вне_отбора()
+    public void Active_And_DELETING_Excluded()
     {
         // Arrange — COMPLETED 30 дней назад + Running/Uploading/Planned/Deleting
         // с сегодняшними датами; days=1/weeks=0/months=0
@@ -244,7 +244,7 @@ public class RetentionPlannerTests
 
     // AC2 (guard): единственный COMPLETED просрочен — остаётся, Delete пуст.
     [Fact]
-    public void Guard_единственный_просроченный_остается()
+    public void Guard_OnlyExpired_Kept()
     {
         // Arrange — один COMPLETED 40 дней назад, days=1/weeks=0/months=0
         var policy = new BackupPolicy(1, 0, 0, 86400, false);
@@ -261,7 +261,7 @@ public class RetentionPlannerTests
     // AC2 (ревью Ф4 №5): guard «≥1 COMPLETED» держится и над verify-FAILED —
     // единственный COMPLETED с verify.state=FAILED не удаляется.
     [Fact]
-    public void Guard_единственный_Completed_VerifyFailed_остается()
+    public void Guard_OnlyCompleted_VerifyFailed_Kept()
     {
         // Arrange — один COMPLETED 40 дней назад с verify=FAILED
         var policy = new BackupPolicy(1, 0, 0, 86400, false);
@@ -281,7 +281,7 @@ public class RetentionPlannerTests
 
     // Guard: самый свежий COMPLETED — всегда в Keep, даже вне любого окна.
     [Fact]
-    public void Guard_самый_свежий_всегда_в_Keep()
+    public void Guard_Freshest_AlwaysInKeep()
     {
         // Arrange — старая пачка + свежий «вчера 23:59» при days=1 (вне
         // дневного окна «сегодня»)
@@ -303,7 +303,7 @@ public class RetentionPlannerTests
 
     // Порядок Delete: verify-FAILED — первыми, далее по возрастанию started_unix.
     [Fact]
-    public void VerifyFailed_первые_в_Delete()
+    public void VerifyFailed_FirstInDelete()
     {
         // Arrange — days=1/weeks=0/months=0: свежий полный в дневном окне
         // (держит guard) + два кандидата вне окон: старший OK и младший FAILED
@@ -325,7 +325,7 @@ public class RetentionPlannerTests
 
     // Пустой вход — пустой выход (без исключений).
     [Fact]
-    public void Пустой_набор()
+    public void EmptySet()
     {
         // Arrange — пустой список полных
 
@@ -339,7 +339,7 @@ public class RetentionPlannerTests
 
     // Политика 0/0/0: дневная гранула удерживает свежий, старый уходит.
     [Fact]
-    public void Политика_0_0_0_с_guard()
+    public void Policy_0_0_0_WithGuard()
     {
         // Arrange — days=1/weeks=0/months=0; один COMPLETED сегодня + один 40 дней
         var policy = new BackupPolicy(1, 0, 0, 86400, false);
@@ -357,9 +357,9 @@ public class RetentionPlannerTests
         delete.Should().BeEquivalentTo(["ancient"]);
     }
 
-    // Високосность: 2028-02-29 — валидная дата календаря UTC, февраль без сбоев.
+    // LeapYear: 2028-02-29 — валидная дата календаря UTC, февраль без сбоев.
     [Fact]
-    public void Високосность()
+    public void LeapYear()
     {
         // Arrange — now = 2028-02-29 12:00Z, полные 2028-02-28 и 2028-02-01;
         // политика 7/4/6: 28-е в дневном окне, 01-е — точка февраля
@@ -383,7 +383,7 @@ public class RetentionPlannerTests
 
     // Строго ниже cutoff — на удаление; сам cutoff/выше/дальше — не входят.
     [Fact]
-    public void Сегменты_ниже_cutoff_удалены()
+    public void Segments_BelowCutoff_Removed()
     {
         // Arrange — cutoff = tli1/log0/seg5; объекты seg3, seg4 (ниже), seg5
         // (сам cutoff), seg6, segFF (выше)
@@ -409,7 +409,7 @@ public class RetentionPlannerTests
 
     // Переход log-границы: позиция сравнивается как log·256+seg, а не посегментно.
     [Fact]
-    public void Граница_log_сег_FF()
+    public void LogSegFF_Boundary()
     {
         // Arrange — cutoff = tli1/log1/seg0; FF (log0/seg255) — позиция 255 < 256
         var cutoff = new WalFileName(1, 1, 0);
@@ -425,7 +425,7 @@ public class RetentionPlannerTests
     // TLI ниже — удаляются; TLI выше позицией ниже cutoff — НЕ трогаются
     // (консервативность: контроль t03 объекты чужого TLI игнорирует).
     [Fact]
-    public void TLI_ниже_удалены_выше_не_тронуты()
+    public void TLI_Below_Removed_Above_Untouched()
     {
         // Arrange — cutoff = tli2/log0/seg3; tli1 ниже, tli3 выше (позиция ниже)
         var cutoff = new WalFileName(2, 0, 3);
@@ -444,7 +444,7 @@ public class RetentionPlannerTests
 
     // .history старых TLI — на удаление; cutoff-TLI и новее, .partial, мусор — живы.
     [Fact]
-    public void History_старых_TLI_удалены()
+    public void History_OfOldTLIs_Removed()
     {
         // Arrange — cutoff tli=2: history1 (ниже) удалён, history2/history3 живы;
         // .partial и нераспознаваемое имя не трогаются
@@ -469,7 +469,7 @@ public class RetentionPlannerTests
 
     // Квота 0/не задана → OK без процентов.
     [Fact]
-    public void Квота_0_без_процентов()
+    public void Quota_0_NoPercent()
     {
         // Arrange — used=123, квота не задана
 
@@ -489,7 +489,7 @@ public class RetentionPlannerTests
     [InlineData(800, StorageState.Warn)] // ровно 80%
     [InlineData(900, StorageState.Crit)] // ровно 90%
     [InlineData(990, StorageState.Crit)] // 99%
-    public void Пороги_Warn_Crit(long used, StorageState expected)
+    public void Thresholds_Warn_Crit(long used, StorageState expected)
     {
         // Arrange — квота 1000, пороги 80/90
 
@@ -506,7 +506,7 @@ public class RetentionPlannerTests
 
     // Держим последние keepFailed, старейшие — на удаление.
     [Fact]
-    public void Prune_держит_последние_KeepFailed()
+    public void Prune_Keeps_LastKeepFailed()
     {
         // Arrange — 30 FAILED с нарастающим started_unix, keepFailed=20
         var fulls = new List<FullBackupState>();
@@ -518,7 +518,7 @@ public class RetentionPlannerTests
 
         // Assert — ровно 10 старейших, по возрастанию started_unix
         pruned.Should().HaveCount(10);
-        pruned.Should().BeInAscendingOrder(x => x, because: "порядок исполнения — старейшие вперёд");
+        pruned.Should().BeInAscendingOrder(x => x, because: "execution order — oldest first");
         pruned[0].Should().Be("f00");
         pruned[^1].Should().Be("f09");
     }
@@ -526,7 +526,7 @@ public class RetentionPlannerTests
     // AAA: чистка FAILED до KeepFailed не сбрасывает бэкофф t02 — окно попытки
     // остаётся MaxSec-capped и на полной, и на почищенной истории (AC5).
     [Fact]
-    public void Prune_до_KeepFailed_не_меняет_BackoffPassed()
+    public void Prune_UpToKeepFailed_DoesNotTouchBackoffPassed()
     {
         // Arrange — 30 FAILED после последнего COMPLETED (BaseSec=300, MaxSec=3600)
         var fulls = new List<FullBackupState> { Full("done", Now.AddDays(-3)) };
@@ -552,7 +552,7 @@ public class RetentionPlannerTests
     // now = ср 2026-09-09 (ISO-неделя 37: пн 07.09); предыдущая неделя W36 =
     // 31.08–06.09; предыдущий месяц — август.
     [Fact]
-    public void Дефолт_1_1_1_ровно_три_позиции()
+    public void Default_1_1_1_ExactlyThreeSlots()
     {
         // Arrange — суточный ряд: 08.09 (последний, W37), 07.09 (W37),
         // 06.09 (вс — последний W36), 04.09 (пт W36), 01.09 (вт W36),
@@ -583,7 +583,7 @@ public class RetentionPlannerTests
     // текущую ISO-неделю — вчерашний полный (W37) удерживается только guard
     // последнего, недельная точка = последний W36 (канон §4 п.1 «предыдущих»).
     [Fact]
-    public void Недельный_слот_не_уходит_на_текущую_неделю()
+    public void WeeklySlot_NotSpentOnCurrentWeek()
     {
         // Arrange — days=1/weeks=1/months=0; вчера 08.09 (W37) и 06.09 (W36)
         var policy = new BackupPolicy(1, 1, 0, 86400, false);
@@ -605,7 +605,7 @@ public class RetentionPlannerTests
     // Дискриминация бага «слот на текущем периоде»: месячный слот НЕ уходит на
     // текущий месяц — точка = последний ПРЕДЫДУЩЕГО месяца.
     [Fact]
-    public void Месячный_слот_не_уходит_на_текущий_месяц()
+    public void MonthlySlot_NotSpentOnCurrentMonth()
     {
         // Arrange — days=1/weeks=0/months=1; 01.09 (текущий месяц, самый свежий)
         // и 31.08 (последний августа)
@@ -630,7 +630,7 @@ public class RetentionPlannerTests
     // AC2: точка = wal_start новейшего (по started_unix) OK-полного — недельная/
     // месячная (старые OK) на неё НЕ влияют.
     [Fact]
-    public void LatestVerifiedWalStart_новейший_OK_полный()
+    public void LatestVerifiedWalStart_FreshestOkFull()
     {
         // Arrange — месячный OK ..01, недельный OK ..02, последний OK ..08
         var fulls = new[]
@@ -653,7 +653,7 @@ public class RetentionPlannerTests
     // AC3: verify не OK (PENDING/FAILED/отсутствует) — полные не кандидаты;
     // ни одного OK → null (прунинг no-op).
     [Fact]
-    public void LatestVerifiedWalStart_без_OK_полных_null()
+    public void LatestVerifiedWalStart_NoOkFulls_Null()
     {
         // Arrange — последний PENDING, старший FAILED, третий без verify вовсе
         var fulls = new[]
@@ -675,7 +675,7 @@ public class RetentionPlannerTests
     // AC3-гвард: новейший по времени полный не прошёл verify (PENDING/FAILED,
     // в т.ч. перепроверка OK→FAILED) — точка держится на предыдущем OK.
     [Fact]
-    public void LatestVerifiedWalStart_непроверенный_новый_держит_предыдущий_OK()
+    public void LatestVerifiedWalStart_UnverifiedNew_KeepsPreviousOk()
     {
         // Arrange — OK недельной давности ..03 и вчерашний FAILED ..08
         var fulls = new[]
@@ -697,7 +697,7 @@ public class RetentionPlannerTests
     // Дефективный wal_start у новейшего OK (ручная правка ключа) — пропускается,
     // берётся следующий OK ниже (defensiveness парсера, без исключений).
     [Fact]
-    public void LatestVerifiedWalStart_битый_wal_start_пропущен()
+    public void LatestVerifiedWalStart_BrokenWalStart_Skipped()
     {
         // Arrange — новейший OK с мусорным wal_start, старший OK валиден
         var fulls = new[]

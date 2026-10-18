@@ -51,6 +51,6 @@ public class UpdateClusterConfigHandlerTests
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeOfType<ClusterConcurrentWriteException>();
         etcd.Store["/clusters/shop/config"].Value
-            .Should().Contain("\"synchronous_mode_strict\":true", "конкурентная запись победила");
+            .Should().Contain("\"synchronous_mode_strict\":true", "the concurrent write won");
     }
 }

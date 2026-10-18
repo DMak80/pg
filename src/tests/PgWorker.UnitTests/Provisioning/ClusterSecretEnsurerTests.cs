@@ -63,7 +63,7 @@ public class ClusterSecretEnsurerTests
         result.IsSuccess.Should().BeTrue();
         result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
         etcd.Store["/clusters/shop/rest_password"].Value.Should().Be("OldRestPass0000000000000000000000A");
-        etcd.Txns.Should().BeEmpty("полный набор — txn не нужен");
+        etcd.Txns.Should().BeEmpty("a full set — no txn needed");
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public class ClusterSecretEnsurerTests
         etcd.Txns.Should().ContainSingle();
         var compare = etcd.Txns.Single().Compare.Single();
         compare.Key.Should().Be("/clusters/shop/rest_password");
-        compare.Arg.Should().Be(" ", "compare по фактическому raw пустого значения");
+        compare.Arg.Should().Be(" ", "compare on the actual raw of the empty value");
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class ClusterSecretEnsurerTests
         result.Value.BucketAdmin.Password.Should().Be("OldBaPass000000000000000000000A");
         result.Value.BackupPassword.Should().Be("OldBackupPass0000000000000000000A");
         result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
-        etcd.Txns.Should().BeEmpty("существующие ключи не переписываются txn");
+        etcd.Txns.Should().BeEmpty("existing keys are not rewritten by a txn");
     }
 
     [Fact]

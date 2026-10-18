@@ -13,7 +13,7 @@ public class SupervisorPlannerTests
 {
     // AAA (AC6): full/<id>/ в S3 без etcd-ключа — мусор; с ключом (любой state) — нет
     [Fact]
-    public void SelectUnownedFulls_только_без_ключа()
+    public void SelectUnownedFulls_OnlyWithoutKey()
     {
         // Arrange
         var etcd = new[]
@@ -34,7 +34,7 @@ public class SupervisorPlannerTests
 
     // AAA: пустой S3 — пусто; ключей нет вовсе — ВСЕ S3-id мусор (выбора нет)
     [Fact]
-    public void SelectUnownedFulls_ПустыеСписки()
+    public void SelectUnownedFulls_EmptyLists()
     {
         // Arrange
         var etcd = new[]

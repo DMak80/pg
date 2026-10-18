@@ -23,8 +23,8 @@ public class MoveRequestsStoreTests
         var list = await StoreOf(etcd).ListAsync("shop", CancellationToken.None);
 
         // Assert
-        list.Value.Requests.Should().HaveCount(2, "чужой кластер не попадает в выборку");
-        list.Value.ParseErrors.Should().BeEmpty("все ключи валидны");
+        list.Value.Requests.Should().HaveCount(2, "a foreign cluster does not enter the selection");
+        list.Value.ParseErrors.Should().BeEmpty("all keys are valid");
     }
 
     // AAA (adopt-repair §3.5 MR1): синтетическая заявка put-if-absent НЕ
@@ -45,7 +45,7 @@ public class MoveRequestsStoreTests
 
         // Assert: вернула false; значение ключа — исходное (операторское).
         put.IsSuccess.Should().BeTrue();
-        put.Value.Should().BeFalse("txn NotExists проиграна — ключ занят оператором");
+        put.Value.Should().BeFalse("the txn NotExists was lost — the key is taken by the operator");
         etcd.Store[MoveNames.MoveKey("shop", "bucket_3")].Value.Should().Be(raw);
     }
 
@@ -63,7 +63,7 @@ public class MoveRequestsStoreTests
 
         // Assert: true, заявка читается.
         put.IsSuccess.Should().BeTrue();
-        put.Value.Should().BeTrue("ключ был свободен — txn сошлась");
+        put.Value.Should().BeTrue("the key was free — the txn converged");
         var list = await StoreOf(etcd).ListAsync("shop", CancellationToken.None);
         list.Value.Requests.Should().ContainSingle().Which.Request.RequestedBy.Should().Be("pgworker-repair");
     }
@@ -113,10 +113,10 @@ public class MoveRequestsStoreTests
         var list = await StoreOf(etcd).ListAsync("shop", CancellationToken.None);
 
         // Assert
-        list.IsSuccess.Should().BeTrue("битая заявка — не ошибка тика, её увидит оператор в логе");
+        list.IsSuccess.Should().BeTrue("a broken request is not a tick error — the operator will see it in the log");
         list.Value.Requests.Should().BeEmpty();
         list.Value.ParseErrors.Should().ContainSingle().Which.Should().Contain("/pgworker/moves/shop/bucket_9",
-            "ошибка называет ключ по имени");
+            "the error names the key");
     }
 
     // AAA: старейшая выбирается и при битых соседях — ошибки едут рядом (ревью №2)
@@ -133,8 +133,8 @@ public class MoveRequestsStoreTests
 
         // Assert
         oldest.Value.Request!.Value.Bucket.Should().Be("bucket_1",
-            "битая заявка не мешает выбору старейшей валидной");
+            "the broken request does not prevent picking the oldest valid one");
         oldest.Value.ParseErrors.Should().ContainSingle().Which.Should().Contain("bucket_9",
-            "ошибка битого ключа не теряется");
+            "the broken key error is not lost");
     }
 }

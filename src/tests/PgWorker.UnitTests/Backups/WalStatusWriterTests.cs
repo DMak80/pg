@@ -21,7 +21,7 @@ public class WalStatusWriterTests
         "000000010000000000000005", 1757500000, 3, null);
 
     [Fact]
-    public void ToJson_формат_канона_snake_case()
+    public void ToJson_CanonicalFormat_SnakeCase()
     {
         // Arrange / Act
         var json = WalStatusWriter.ToJson(Sample());
@@ -39,7 +39,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public void ToJson_error_null_опускается_degraded_несет_error()
+    public void ToJson_ErrorNull_Omitted_DegradedCarriesError()
     {
         // Arrange
         var degraded = Sample(WalStreamStatus.Degraded) with { Error = "дыра WAL-цепочки: ожидался X" };
@@ -55,7 +55,7 @@ public class WalStatusWriterTests
 
     // AAA: BROKEN пишется как "BROKEN" и читается обратно (контракт arch/19 §4, t07)
     [Fact]
-    public void ToJson_StateBroken_ПишетBROKEN()
+    public void ToJson_StateBroken_WritesBROKEN()
     {
         // Arrange — состояние разрыва цепочки с границей в chain_start
         var state = new WalStreamState(
@@ -73,7 +73,7 @@ public class WalStatusWriterTests
     // AAA: ключ с state=BROKEN читается парсером обратно в Broken (roundtrip
     // через публичный путь записи/чтения — по образцу тестов файла)
     [Fact]
-    public async Task Parse_БрокенКлюч_ЧитаетBroken()
+    public async Task Parse_BrokenKey_ReadsBroken()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
@@ -93,7 +93,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task WriteIfChanged_новый_ключ_пишется_и_читается_парсером_t01()
+    public async Task WriteIfChanged_NewKey_WrittenAndReadByParser_t01()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
@@ -109,7 +109,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task WriteIfChanged_повтор_без_изменений_не_пишет()
+    public async Task WriteIfChanged_RepeatUnchanged_DoesNotWrite()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
@@ -128,7 +128,7 @@ public class WalStatusWriterTests
 
     // AAA: writer с Agents → JSON содержит agents в канонической форме
     [Fact]
-    public void ToJson_с_Agents_содержит_поле()
+    public void ToJson_WithAgents_ContainsField()
     {
         // Arrange — два агента per-node: мастер running, sync exited
         var state = Sample() with { Agents =
@@ -147,7 +147,7 @@ public class WalStatusWriterTests
 
     // AAA: без Agents поле НЕ пишется (обратно совместимо, опционально)
     [Fact]
-    public void ToJson_без_Agents_поля_нет()
+    public void ToJson_WithoutAgents_NoField()
     {
         // Arrange / Act
         var json = WalStatusWriter.ToJson(Sample());
@@ -158,7 +158,7 @@ public class WalStatusWriterTests
 
     // AAA: парсинг старого JSON (без agents) → Agents == null (AC7)
     [Fact]
-    public async Task Parse_старый_JSON_без_agents_Agents_null()
+    public async Task Parse_OldJson_WithoutAgents_AgentsNull()
     {
         // Arrange — «старый» воркер: ключ без agents
         var gateway = new FakeEtcdGateway();
@@ -176,7 +176,7 @@ public class WalStatusWriterTests
 
     // AAA: парсинг JSON с agents → список на месте (roundtrip running/exited/absent)
     [Fact]
-    public async Task Parse_с_agents_список_на_месте()
+    public async Task Parse_WithAgents_ListIntact()
     {
         // Arrange
         var state = Sample() with { Agents =
@@ -203,7 +203,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task WriteIfChanged_изменение_state_перезаписывает()
+    public async Task WriteIfChanged_StateChange_Overwrites()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
@@ -220,7 +220,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task ReadAsync_нет_ключа_null()
+    public async Task ReadAsync_MissingKey_Null()
     {
         // Arrange / Act
         var read = await Writer.ReadAsync("nope", "shardX", ct: TestContext.Current.CancellationToken);
@@ -231,7 +231,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task WriteIfChanged_отказ_первого_endpoint_failover_на_второй()
+    public async Task WriteIfChanged_FirstEndpointFails_FailoverToSecond()
     {
         // Arrange — «плохой» endpoint отвечает отказом, «хороший» — живой
         // (ревью Ф4-2 №4: отказ endpoints[0] не должен ронять запись при живых остальных)
@@ -255,7 +255,7 @@ public class WalStatusWriterTests
     private sealed class FirstEndpointFailsGateway(IEtcdGateway inner, string badEndpoint) : IEtcdGateway
     {
         private Result<T> Fail<T>(string endpoint) =>
-            Result<T>.Failed(new ApplicationException($"endpoint {endpoint} недоступен"));
+            Result<T>.Failed(new ApplicationException($"endpoint {endpoint} unreachable"));
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
             => endpoint == badEndpoint
@@ -269,12 +269,12 @@ public class WalStatusWriterTests
 
         public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.PutAsync(endpoint, key, value, lease, ct);
 
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
 
         public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
@@ -289,12 +289,12 @@ public class WalStatusWriterTests
 
         public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.LeaseRevokeAsync(endpoint, lease, ct);
 
         public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.LeaseKeepaliveAsync(endpoint, lease, ct);
 
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
@@ -315,12 +315,12 @@ public class WalStatusWriterTests
 
         public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.CompactAsync(endpoint, revision, ct);
 
         public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} недоступен")))
+                ? Task.FromResult(Result.Failed(new ApplicationException($"endpoint {endpoint} unreachable")))
                 : inner.DefragmentAsync(endpoint, ct);
     }
 }

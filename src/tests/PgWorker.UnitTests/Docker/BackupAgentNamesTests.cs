@@ -9,7 +9,7 @@ namespace PgWorker.UnitTests.Docker;
 public class BackupAgentNamesTests
 {
     [Fact]
-    public void Имена_канонические_per_node()
+    public void Names_Canonical_PerNode()
     {
         // Arrange / Act / Assert
         BackupAgentNames.Container("shop", "shard1", "shard1a")
@@ -18,7 +18,7 @@ public class BackupAgentNamesTests
     }
 
     [Fact]
-    public void Имена_начинаются_с_pgw_и_отличимы_от_нод()
+    public void Names_StartWithPgw_AndDistinctFromNodes()
     {
         // Arrange / Act
         var container = BackupAgentNames.Container("shop", "shard1", "shard1a");

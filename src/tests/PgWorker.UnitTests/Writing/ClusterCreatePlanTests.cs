@@ -62,7 +62,7 @@ public class CreateClusterValidatorTests
         var errors = CreateClusterValidator.Validate(request);
 
         // Assert
-        errors.Should().Contain(e => e.Field == "shards" && e.Message.Contains("бакетов"));
+        errors.Should().Contain(e => e.Field == "shards" && e.Message.Contains("buckets"));
     }
 
     [Fact]

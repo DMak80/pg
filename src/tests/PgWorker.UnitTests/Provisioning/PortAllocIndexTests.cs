@@ -40,7 +40,7 @@ public class PortAllocIndexTests
     {
         // Arrange: сосед с битым JSON + валидный сосед.
         var etcd = new Fakes.FakeEtcd();
-        etcd.Seed("/pgworker/portalloc/broken", "{не-json}");
+        etcd.Seed("/pgworker/portalloc/broken", "{not-json}");
         etcd.Seed("/pgworker/portalloc/good",
             """{"s1/n1":{"host":"h1","pg":15010,"patroni":18010,"doorman":16510}}""");
         var index = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);

@@ -56,7 +56,7 @@ public class WalReceiverCoreTests
             }
 
             return Task.FromResult(Result.Failed(
-                new ApplicationException($"S3 put {key}: тестовый отказ транспорта")));
+                new ApplicationException($"S3 put {key}: test transport failure")));
         }
 
         public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
@@ -138,7 +138,7 @@ public class WalReceiverCoreTests
                 if (ThrowOnStreamExhausted && !ThrownOnce)
                 {
                     ThrownOnce = true;
-                    throw new IOException("тестовый обрыв транспорта");
+                    throw new IOException("test transport drop");
                 }
 
                 yield break; // сервер закрыл поток — transient-переподключение
@@ -166,7 +166,7 @@ public class WalReceiverCoreTests
         public Task<Result<ulong>> ReadRestartLsnAsync(string slot, CancellationToken ct)
             => Task.FromResult(restartLsn is { } lsn
                 ? Result<ulong>.Success(lsn)
-                : Result<ulong>.Failed(new ApplicationException($"слот {slot} отсутствует")));
+                : Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing")));
     }
 
     private static async Task<(int Code, string Output)> RunAsync(
@@ -189,11 +189,11 @@ public class WalReceiverCoreTests
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }
 
-        Assert.Fail($"условие не выполнилось за бюджет ожидания; debug: {debug?.Invoke() ?? "нет"}");
+        Assert.Fail($"the condition was not met within the wait budget; debug: {debug?.Invoke() ?? "none"}");
     }
 
     [Fact]
-    public async Task Feedback_инвариант_подтверждение_только_после_put()
+    public async Task Feedback_Invariant_ConfirmationOnlyAfterPut()
     {
         // Arrange — 3 сегмента; отмена после появления 3-го в S3
         var source = new FakeXLogSource();
@@ -223,7 +223,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task Backpressure_отказ_S3_замирает_поток_и_доигрывается()
+    public async Task Backpressure_S3Failure_FreezesStream_AndFinishesInFlight()
     {
         // Arrange — 3 сегмента; УСТОЙЧИВЫЙ отказ put сегмента ...000001 (до починки)
         var source = new FakeXLogSource();
@@ -244,8 +244,8 @@ public class WalReceiverCoreTests
         // Act/Assert — backpressure: enumerator не двигается (put ...000001 в ретрае),
         // подтверждение не уходит за доставленное
         await Task.Delay(150, TestContext.Current.CancellationToken); // несколько retry-интервалов (20 мс)
-        source.MoveNextCalls.Should().Be(frozen, "чтение потока остановлено до доставки сегмента ...000001");
-        source.ConfirmedLsn.Should().Be(EndLsn(0), "подтверждение не опережает доставленное");
+        source.MoveNextCalls.Should().Be(frozen, "stream reading is stopped before delivering segment ...000001");
+        source.ConfirmedLsn.Should().Be(EndLsn(0), "confirmation never gets ahead of what was delivered");
         s3.Objects.Keys.Should().NotContain(stuckKey);
 
         // Act — починка S3 (снятие отказа): доставка доигрывается
@@ -260,7 +260,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task Рестарт_дозасылает_от_хвоста_S3()
+    public async Task Restart_ResendsFromS3Tail()
     {
         // Arrange — в S3 уже есть сегменты ...000000–...000001 (от предыдущего запуска)
         var s3 = new FakeS3();
@@ -284,7 +284,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task TLI_переход_history_put_и_history_missing()
+    public async Task TliSwitch_HistoryPut_AndHistoryMissing()
     {
         // Arrange — сегмент ...000000 (TLI 1), сегмент ...000001 с header TLI 2, история доступна
         var source = new FakeXLogSource();
@@ -307,7 +307,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task TLI_переход_без_history_маркер_и_без_put()
+    public async Task TliSwitch_WithoutHistory_Marker_AndNoPut()
     {
         // Arrange — история рантаймом не экспонируется (null)
         var source = new FakeXLogSource();
@@ -330,7 +330,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task Permanent_segment_size_mismatch_код_3()
+    public async Task Permanent_SegmentSizeMismatch_Code3()
     {
         // Arrange
         var source = new FakeXLogSource { SegmentSizeMismatch = true };
@@ -344,11 +344,11 @@ public class WalReceiverCoreTests
         // Assert
         code.Should().Be(3);
         output.Should().Contain("wal_segment_size");
-        source.OpenCalls.Should().Be(1, "permanent — без ретраев");
+        source.OpenCalls.Should().Be(1, "permanent — no retries");
     }
 
     [Fact]
-    public async Task Permanent_слот_отсутствует_код_4()
+    public async Task Permanent_SlotMissing_Code4()
     {
         // Arrange — пустой S3 и слота нет
         var source = new FakeXLogSource();
@@ -366,7 +366,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task Reconnect_после_обрыва_потока()
+    public async Task Reconnect_AfterStreamDrop()
     {
         // Arrange — сегмент ...000000, обрыв, затем сегмент ...000001 в очереди;
         // tail-резолв после reconnect
@@ -395,7 +395,7 @@ public class WalReceiverCoreTests
     }
 
     [Fact]
-    public async Task Разрыв_LSN_потока_перманентный_код_6()
+    public async Task StreamLsnGap_Permanent_Code6()
     {
         // Arrange — чанки с дырой в WalStart
         var source = new FakeXLogSource();
@@ -410,6 +410,6 @@ public class WalReceiverCoreTests
 
         // Assert
         code.Should().Be(6);
-        output.Should().Contain("разрыв");
+        output.Should().Contain("gap");
     }
 }

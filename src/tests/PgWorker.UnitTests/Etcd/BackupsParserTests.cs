@@ -125,7 +125,7 @@ public class BackupsParserTests
     // min COMPLETED (ниже границы разрыва), ключ замерал в BROKEN, планировщик
     // штормовал пересъёмами (walKeyExists=false при живом ключе).
     [Fact]
-    public void Parse_WalBroken_StateBroken_ПоляЦелы()
+    public void Parse_WalBroken_StateBroken_FieldsIntact()
     {
         // Arrange — живой BROKEN-ключ шарда (граница разрыва в chain_start).
         var kvs = new List<Kv>
@@ -144,7 +144,7 @@ public class BackupsParserTests
         result.IsSuccess.Should().BeTrue();
         errors.Should().BeEmpty();
         var s1 = result.Value.Should().ContainSingle().Subject.Shards["s1"];
-        s1.Wal.Should().NotBeNull("BROKEN — валидное состояние, ключ не отбрасывается");
+        s1.Wal.Should().NotBeNull("BROKEN is a valid state — the key is not discarded");
         s1.Wal!.State.Should().Be(WalStreamStatus.Broken);
         s1.Wal.Slot.Should().Be("pgw_bkp_demo_s1");
         s1.Wal.ChainStartSegment.Should().Be("000000010000000000000029");
@@ -197,7 +197,7 @@ public class BackupsParserTests
 
     // AAA: verify.error читается из full-ключа; interval_sec — из policy-ключа
     [Fact]
-    public void Parse_VerifyErrorИIntervalSec_Читаются()
+    public void Parse_VerifyErrorAndIntervalSec_AreRead()
     {
         // Arrange
         var kvs = new[]
@@ -221,7 +221,7 @@ public class BackupsParserTests
 
     // AAA: старые записи (verify без error, policy без interval_sec) парсятся — обратная совместимость
     [Fact]
-    public void Parse_СтарыеЗаписи_БезНовыхПолей_Ок()
+    public void Parse_OldRecords_WithoutNewFields_Ok()
     {
         // Arrange
         var kvs = new[]
@@ -452,9 +452,9 @@ public class BackupsParserTests
         // Arrange
         var kvs = new List<Kv>
         {
-            new("/pgworker/backups/c1/x1/drill", "{битый", 1),
+            new("/pgworker/backups/c1/x1/drill", "{broken", 1),
             new("/pgworker/backups/c1/x2/drill",
-                """{"state":"НЕИЗВЕСТНОЕ","id":"id1","backup_id":"b1","started_unix":1}""", 2),
+                """{"state":"UNKNOWN","id":"id1","backup_id":"b1","started_unix":1}""", 2),
         };
 
         // Act
@@ -565,7 +565,7 @@ public class BackupsParserS3Tests
         var kvs = new List<Kv>
         {
             new("/pgworker/backups/c1/policy",
-                """{"retention":{"days":7},"full_max_age_sec":86400,"s3":"мусор"}""", 1),
+                """{"retention":{"days":7},"full_max_age_sec":86400,"s3":"garbage"}""", 1),
         };
 
         // Act

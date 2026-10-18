@@ -138,11 +138,11 @@ internal static class MoveRig
         {
             var dsn = fake.LastDsn;
             if (p.SrcAdminDown && dsn == SrcDsn)
-                throw new ApplicationException("shard1 (admin) недоступен");
+                throw new ApplicationException("shard1 (admin) unreachable");
             if (p.DstAdminDown && dsn == DstDsn)
-                throw new ApplicationException("shard2 (admin) недоступен");
+                throw new ApplicationException("shard2 (admin) unreachable");
             if (p.MoverDown && dsn == MoverDsn)
-                throw new ApplicationException("shard1 (mover) недоступен");
+                throw new ApplicationException("shard1 (mover) unreachable");
 
             return sql switch
             {
@@ -166,7 +166,7 @@ internal static class MoveRig
                 // Проверка пустоты схемы приёмника: первый скаляр — генератор, второй — сумма строк.
                 var s when s.Contains("coalesce(string_agg('(SELECT count(*)") => p.EmptySchemaGen switch
                 {
-                    null => throw new ApplicationException("схема приёмника не пустая — генератор не звался"),
+                    null => throw new ApplicationException("target schema not empty — the generator was not called"),
                     var gen => gen,
                 },
                 var s when s.Contains("(SELECT count(*)") => p.EmptySchemaRows,
@@ -230,7 +230,7 @@ internal static class MoveRig
         if (claim)
         {
             var claimed = await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-            claimed.Value.Should().BeTrue("клэйм кластера обязан пройти на пустом FakeEtcd");
+            claimed.Value.Should().BeTrue("the cluster claim must pass on an empty FakeEtcd");
         }
 
         var journal = new WorkJournal("/pgworker", etcd, [Ep]);

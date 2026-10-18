@@ -10,7 +10,7 @@ public class VerifyJobCommandTests
 {
     // AAA: Cmd = bash -c script; скрипт качает full/<id>/ 1:1 и зовёт pg_verifybackup
     [Fact]
-    public void Build_BashСкрипт_КачаетИВерифицирует()
+    public void Build_BashScript_DownloadsAndVerifies()
     {
         // Act
         var cmd = VerifyJobCommand.Build();
@@ -25,7 +25,7 @@ public class VerifyJobCommandTests
 
     // AAA: протокол — phase-маркеры download/verify и result-JSON ok/error; exit 1 при провале
     [Fact]
-    public void Build_ПротоколResultJson_иФазы()
+    public void Build_ResultJsonProtocol_AndPhases()
     {
         // Act
         var script = VerifyJobCommand.Build()[2];
@@ -40,7 +40,7 @@ public class VerifyJobCommandTests
     // AAA: McHost — scheme://ak:sk@authority с URL-escape кредов (секреты не в argv)
     // AAA: скрипт материализует S3_CA_PEM → SSL_CERT_FILE (t42, arch/19 §7)
     [Fact]
-    public void Build_МатериализуетCaPem_и_SslCertFile()
+    public void Build_MaterializesCaPem_And_SslCertFile()
     {
         VerifyJobCommand.Build()[2].Should().Contain("S3_CA_PEM").And.Contain("SSL_CERT_FILE");
     }

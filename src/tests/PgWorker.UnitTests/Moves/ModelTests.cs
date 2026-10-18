@@ -66,7 +66,7 @@ public class ModelTests
         var parsed = MoveRequest.Parse("bucket_42", raw);
 
         // Assert
-        parsed.IsSuccess.Should().BeFalse("битая заявка не должна молча съедаться");
+        parsed.IsSuccess.Should().BeFalse("a broken request must not be silently swallowed");
     }
 
     // AAA: имена ключей/артефактов — конвенция скриптов

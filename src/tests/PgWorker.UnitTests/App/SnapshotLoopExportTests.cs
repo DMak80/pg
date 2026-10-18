@@ -27,7 +27,7 @@ public class SnapshotLoopExportTests
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
         {
             if (PutObjectFails)
-                return Task.FromResult(Result.Failed(new ApplicationException("S3 недоступен (инъекция)")));
+                return Task.FromResult(Result.Failed(new ApplicationException("S3 unavailable (injection)")));
             Objects[key] = data;
             return Task.FromResult(Result.Success());
         }
@@ -57,7 +57,7 @@ public class SnapshotLoopExportTests
 
     // AAA: доводка перед снятием — локальный слепок с FAILED-статусом доезжает в S3
     [Fact]
-    public async Task Тик_доводит_отстающую_выгрузку()
+    public async Task Tick_FinishesLaggingUpload()
     {
         // Arrange — etcd-фейк (снимает [1,2,3]), каталог с уже снятым слепком,
         // статус-ключ FAILED (прошлый транзиент), sink на памяти
@@ -66,7 +66,7 @@ public class SnapshotLoopExportTests
         var fileName = $"snapshot-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.db";
         await File.WriteAllBytesAsync(Path.Combine(dir, fileName), [1, 2, 3], TestContext.Current.CancellationToken);
         await etcd.PutAsync(Ep, EtcdSnapshotStatusJson.Key,
-            EtcdSnapshotStatusJson.Failed(null, "S3 был недоступен", 360), null, TestContext.Current.CancellationToken);
+            EtcdSnapshotStatusJson.Failed(null, "S3 was unavailable", 360), null, TestContext.Current.CancellationToken);
         var s3 = new MemoryS3();
         var sink = new EtcdSnapshotSink(s3, etcd, [Ep], 28, 5, "inst-A", 360);
 
@@ -78,7 +78,7 @@ public class SnapshotLoopExportTests
         var caught = await WaitUntilAsync(() => s3.Objects.ContainsKey($"etcd/{fileName}"));
 
         // Assert — новейший локальный файл доехал ДО/вместе со снятием; статус OK
-        caught.Should().BeTrue("доводка обязана выгрузить новейший локальный слепок (spec §3.5 п.1)");
+        caught.Should().BeTrue("the catch-up must upload the newest local snapshot (spec §3.5 p.1)");
         await loop.StopAsync(CancellationToken.None);
     }
 
@@ -88,13 +88,13 @@ public class SnapshotLoopExportTests
     // слепок 1 (встроенный export падает, статус FAILED) → короткий сон 1 c →
     // тик 2: слепок 2. Второй файл = строгое доказательство короткого межтика.
     [Fact]
-    public async Task Сон_при_отставании_RetryIntervalSec()
+    public async Task Sleep_WhenLagging_RetryIntervalSec()
     {
         // Arrange — FAILED-статус, том пуст, S3-фейк с отказом put (статус не чинится)
         var etcd = new Provisioning.Fakes.FakeEtcd();
         var dir = Directory.CreateTempSubdirectory("loop-retry-").FullName;
         await etcd.PutAsync(Ep, EtcdSnapshotStatusJson.Key,
-            EtcdSnapshotStatusJson.Failed(null, "транзиент", 360), null, TestContext.Current.CancellationToken);
+            EtcdSnapshotStatusJson.Failed(null, "transient", 360), null, TestContext.Current.CancellationToken);
         var s3 = new MemoryS3 { PutObjectFails = true };
         var sink = new EtcdSnapshotSink(s3, etcd, [Ep], 28, 5, "inst-A", 360);
 
@@ -108,20 +108,20 @@ public class SnapshotLoopExportTests
             Directory.GetFiles(dir, "snapshot-*.db").Length >= 2, budgetMs: 15_000);
 
         // Assert
-        second.Should().BeTrue("сон при отставании — RetryIntervalSec=1 c, не SnapshotIntervalMin=360");
+        second.Should().BeTrue("when lagging the sleep is RetryIntervalSec=1 s, not SnapshotIntervalMin=360");
         await loop.StopAsync(CancellationToken.None);
     }
 
     // AAA (крайний случай, §3.5 п.3): FAILED при ПУСТОМ томе — выгрузка отстаёт
     // (CatchUpAsync → true без re-export): сон короткий, не 360-минутный
     [Fact]
-    public async Task CatchUp_пустой_том_FAILED_отстаёт()
+    public async Task CatchUp_EmptyVolume_FAILED_Lags()
     {
         // Arrange — FAILED-статус, локальных слепков нет (догонять нечего)
         var etcd = new Provisioning.Fakes.FakeEtcd();
         var dir = Directory.CreateTempSubdirectory("loop-empty-").FullName;
         await etcd.PutAsync(Ep, EtcdSnapshotStatusJson.Key,
-            EtcdSnapshotStatusJson.Failed(null, "транзиент", 360), null, TestContext.Current.CancellationToken);
+            EtcdSnapshotStatusJson.Failed(null, "transient", 360), null, TestContext.Current.CancellationToken);
         var sink = new EtcdSnapshotSink(new MemoryS3(), etcd, [Ep], 28, 5, "inst-A", 360);
 
         // Act
@@ -129,18 +129,18 @@ public class SnapshotLoopExportTests
 
         // Assert — отстаёт (true, без ошибки): SnapshotLoop уйдёт в RetryIntervalSec
         catchUp.IsSuccess.Should().BeTrue();
-        catchUp.Value.Should().BeTrue("FAILED держит короткий сон даже при пустом томе");
+        catchUp.Value.Should().BeTrue("FAILED keeps the short sleep even with an empty volume");
     }
 
     // AAA (круг 7, §3.5 п.3): ПЕРВЫЙ транзиент S3 в момент TakeAsync — статус
     // ДО тика здоров (OK), слепок снят, встроенный экспорт падает и пишет
     // FAILED уже ПОСЛЕ расчёта «до» — повторный расчёт после TakeAsync обязан
     // дать короткий сон: второй слепок в пределах RetryIntervalSec, не 360 мин.
-    // (Отличие от кейса Сон_при_отставании_RetryIntervalSec: там статус
+    // (Отличие от кейса Sleep_WhenLagging_RetryIntervalSec: там статус
     // предзасеян FAILED — короткий сон виден и по старому расчёту «до»;
     // здесь короткий сон доказывает ИМЕННО повторный расчёт после снятия.)
     [Fact]
-    public async Task Первый_транзиент_в_тике_TakeAsync_сон_короткий()
+    public async Task FirstTransient_InTick_TakeAsync_SleepIsShort()
     {
         // Arrange — ЗДОРОВЫЙ статус OK (прошлая выгрузка успешна, отставания
         // нет), том пуст, S3-фейк с отказом put: тик 1 снимет слепок,
@@ -164,7 +164,7 @@ public class SnapshotLoopExportTests
             Directory.GetFiles(dir, "snapshot-*.db").Length >= 2, budgetMs: 15_000);
 
         // Assert
-        second.Should().BeTrue("первый транзиент в тике TakeAsync — повторный расчёт даёт сон RetryIntervalSec=1 c, не SnapshotIntervalMin=360 (spec §3.5 п.3)");
+        second.Should().BeTrue("the first transient in the TakeAsync tick — the recomputed sleep is RetryIntervalSec=1 s, not SnapshotIntervalMin=360 (spec §3.5 p.3)");
         await loop.StopAsync(CancellationToken.None);
     }
 

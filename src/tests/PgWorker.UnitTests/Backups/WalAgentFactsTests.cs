@@ -18,7 +18,7 @@ public class WalAgentFactsTests
         => new($"id-{node}", [BackupAgentNames.Container(cluster, shard, node)], state, "img");
 
     [Fact]
-    public void Build_Из_Листинга_Running_Exited_Absent()
+    public void Build_FromListing_Running_Exited_Absent()
     {
         // Arrange — листинг: агент мастера running, агенты sync exited,
         // третьей ноды контейнера нет вовсе.
@@ -43,7 +43,7 @@ public class WalAgentFactsTests
     }
 
     [Fact]
-    public void Build_Матчит_Старый_Формат_Имени_С_Косой()
+    public void Build_MatchesOldNameFormat_WithSlash()
     {
         // Arrange — движок отдал имя с ведущей «/» (устаревший формат листинга).
         var (cluster, shard) = ("c1", "shard1");
@@ -63,7 +63,7 @@ public class WalAgentFactsTests
     // AAA: AgentEnv передаёт S3_CA_PEM при заданном пути; без пути — не передаёт;
     // списки пула — в S3_ENDPOINTS/S3_READ_ENDPOINTS (t36, arch/19 §3).
     [Fact]
-    public void AgentEnv_CaBundle_ПередачаПравильная()
+    public void AgentEnv_CaBundle_PassedCorrectly()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "PEM-BODY");

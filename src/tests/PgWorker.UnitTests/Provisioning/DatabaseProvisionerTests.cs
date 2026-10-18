@@ -49,7 +49,7 @@ public class DatabaseProvisionerTests
         // pg_monitor для bucket_admin — в BuildRoleExecSql (DO-блок, не guard-SELECT)
         var execSql = string.Join("\n", DatabaseProvisioner.BuildRoleExecSql());
         execSql.Should().Contain("pg_monitor").And.Contain("bucket_admin");
-        sql.Should().NotContain("pg_monitor", "pg_monitor — в BuildRoleExecSql, не в guard-SELECT");
+        sql.Should().NotContain("pg_monitor", "pg_monitor belongs to BuildRoleExecSql, not the guard-SELECT");
     }
 
     [Fact]

@@ -81,7 +81,7 @@ public sealed class MoveProcess(
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"moves {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"moves {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         var oldest = await requests.OldestAsync(cluster, ct);
         if (!oldest.IsSuccess)
@@ -90,7 +90,7 @@ public sealed class MoveProcess(
         // Битые заявки молча висеть не должны (ревью №2, план Task 3 Step 3):
         // парсинг их уже пропустил — громко называем ключ оператору.
         foreach (var parseError in oldest.Value.ParseErrors)
-            logger?.LogWarning("moves {cluster}: {error} — исправь или удали ключ", cluster, parseError);
+            logger?.LogWarning("moves {cluster}: {error} — fix or delete the key", cluster, parseError);
 
         if (oldest.Value.Request is null)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // заявок нет
@@ -137,10 +137,10 @@ public sealed class MoveProcess(
         // блокировал бы G3 до разбора заявки; переезды ИЗ него разрешены).
         if (dstShard?.ToRemove == true)
             return await RejectAsync(cluster, bucket,
-                $"шард-приёмник '{to}' помечен к удалению — выберите другую цель", ct);
+                $"target shard '{to}' is marked for removal — choose another target", ct);
         if (dstShard?.Dsn is null)
             return await RejectAsync(cluster, bucket,
-                $"шард-приёмник '{to}' ещё не поднят (add-shard не завершён)", ct);
+                $"target shard '{to}' is not up yet (add-shard not finished)", ct);
         if (srcShard?.Dsn is null)
             return await RejectAsync(cluster, bucket,
                 $"source shard '{owner}' is not registered (no dsn key)", ct);
@@ -164,7 +164,7 @@ public sealed class MoveProcess(
                 // гварда ABORTING).
                 case { } when prev.Phase == MovePhases.RollbackPostFlip:
                     return await RejectAsync(cluster, bucket,
-                        "завершается доведение отката (rollback-post-flip) — сначала дожди его завершения", ct);
+                        "a rollback-post-flip is being finalized — wait for it to complete first", ct);
                 case MoveStates.Syncing or MoveStates.Frozen when prev.Target == to:
                     ownMove = true;
                     startedUnix = prev.StartedUnix; // resume: возраст переезда сохраняется
@@ -284,8 +284,8 @@ public sealed class MoveProcess(
                 return await FailTransientAsync(cluster, rows.Error!, ct);
             if (ToLong(rows.Value) != 0)
                 return await RejectAsync(cluster, bucket, ownMove
-                    ? $"схема на '{to}' не пустая ({ToLong(rows.Value)} строк) — данные прошлого запуска; abort и заводи переезд заново"
-                    : $"схема на '{to}' не пустая ({ToLong(rows.Value)} строк) — остатки данных, а не сорванный DDL; DROP SCHEMA и запускай без resume", ct);
+                    ? $"schema on '{to}' is not empty ({ToLong(rows.Value)} rows) — data from a previous run; abort and start the move anew"
+                    : $"schema on '{to}' is not empty ({ToLong(rows.Value)} rows) — leftover data, not a broken DDL; DROP SCHEMA and run without resume", ct);
         }
 
         var pubRb = await sql.ScalarAsync(dstDsn, MoveSql.PubExists(MoveNames.PubRb(bucket)), ct);
@@ -730,7 +730,7 @@ public sealed class MoveProcess(
             returnedDsn, MoveSql.Unfreeze(bucket, MoveNames.AppRole), ct);
         if (!unfrozen.IsSuccess)
             return await FailTransientAsync(cluster, new ApplicationException(
-                $"откат прошёл (routing='{returned}'), но владельца не разморозить: {unfrozen.Error!.Message} — повторный тик доведёт GRANT (фаза rollback-post-flip)"), ct, op);
+                $"rollback completed (routing='{returned}'), but the owner cannot be unfrozen: {unfrozen.Error!.Message} — a repeated tick will finish the GRANT (rollback-post-flip phase)"), ct, op);
 
         // Завершение: del статус-ключа (= ACTIVE) + del заявки + журнал done.
         var statusDeleted = await status.DeleteAsync(cluster, bucket, ct);
@@ -788,7 +788,7 @@ public sealed class MoveProcess(
             // t06 §5.5: старый шард демонтирован (артефакты исчезли вместе с
             // volume) — убирать нечего; отказ перманентный с подсказкой.
             return await RejectAsync(cluster, bucket,
-                $"шард '{old}' удалён — убирать нечего (артефакты исчезли вместе с volume)", ct, op);
+                $"shard '{old}' was removed — nothing to clean up (artifacts vanished with the volume)", ct, op);
         }
 
         if (ownerShard?.Dsn is null)

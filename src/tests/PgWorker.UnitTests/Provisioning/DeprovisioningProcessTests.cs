@@ -142,7 +142,7 @@ public class DeprovisioningProcessTests
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Keys.Should().NotContain(k =>
             k.StartsWith(MoveNames.MovesPrefix("shop"), StringComparison.Ordinal),
-            "заявки переездов не переживают удаление кластера");
+            "move requests do not survive cluster deletion");
     }
 
     // AAA: журналы эвакуаций не переживают удаление кластера (t06 §5.6, Д12)
@@ -162,7 +162,7 @@ public class DeprovisioningProcessTests
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Etcd.Store.Keys.Should().NotContain(k =>
             k.StartsWith("/pgworker/evacuations/shop/", StringComparison.Ordinal),
-            "журналы эвакуаций не переживают удаление кластера");
+            "evacuation journals do not survive cluster deletion");
     }
 
     // AAA: D2 t02 — deprovisioning убивает джобы бэкапов и чистит их префикс etcd
@@ -182,7 +182,7 @@ public class DeprovisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
         rig.Etcd.Store.Should().NotContainKey("/pgworker/backups/shop/s1/full/20260910030000Z",
-            "префикс бэкапов не переживает кластер");
+            "the backup prefix does not survive the cluster");
     }
 
     // AAA: D1/D2 t05 — restore-джобы убиты тем же RemoveBackupJobsAsync-путём,
@@ -203,7 +203,7 @@ public class DeprovisioningProcessTests
         rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
         rig.Etcd.Store.Keys.Should().NotContain(k =>
             k.StartsWith("/pgworker/backups/shop/", StringComparison.Ordinal),
-            "весь префикс бэкапов, включая restore/<id>, не переживает кластер");
+            "the whole backup prefix, including restore/<id>, does not survive the cluster");
     }
 
     [Fact]

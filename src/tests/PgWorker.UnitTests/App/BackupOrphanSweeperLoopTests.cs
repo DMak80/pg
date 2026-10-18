@@ -154,6 +154,6 @@ public sealed class BackupOrphanSweeperLoopTests
 
         // Assert: пульс Activity отмечен И новее единственного тика итерации —
         // S3-проход висит, но канал активен (арх/14 §6, зеркально snapshot).
-        activity.Should().NotBeNull("висящий S3-проход обязан пульсировать активностью");
+        activity.Should().NotBeNull("a hanging S3 pass must pulse activity");
     }
 }

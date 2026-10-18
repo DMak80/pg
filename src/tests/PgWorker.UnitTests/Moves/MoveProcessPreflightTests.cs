@@ -24,7 +24,7 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "пустой префикс заявок — работы нет");
+        tick.Value.Should().Be(ProcessOutcome.Done, "empty request prefix — nothing to do");
     }
 
     // AAA: клэйм кластера не наш — мутации запрещены (инвариант spec §4.3)
@@ -38,12 +38,12 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("без клэйма мутации запрещены");
-        tick.Error!.Message.Should().Contain("клэйм", "отказ обязан быть понятным оператору");
-        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка не тронута");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"), "статус не создан");
-        rig.Etcd.Store.Should().NotContainKey("/pgworker/work/shop", "журнал не писался");
-        rig.SnapshotCalls.Should().BeEmpty("снапшот не брался");
+        tick.IsSuccess.Should().BeFalse("mutations are forbidden without a claim");
+        tick.Error!.Message.Should().Contain("claim", "the refusal must be understandable to an operator");
+        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request untouched");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"), "status not created");
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/work/shop", "journal not written");
+        rig.SnapshotCalls.Should().BeEmpty("no snapshot taken");
     }
 
     // AAA: зелёный префлайт — SYNCING/ddl + обязательный стартовый снапшот (P12)
@@ -57,14 +57,14 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.InProgress, "переезд начался, продолжится тиками");
-        rig.SnapshotCalls.Should().HaveCount(1, "стартовый снапшот move-<bucket>-start обязателен (P12)");
+        tick.Value.Should().Be(ProcessOutcome.InProgress, "the move started, continues in ticks");
+        rig.SnapshotCalls.Should().HaveCount(1, "the start snapshot move-<bucket>-start is mandatory (P12)");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.State.Should().Be(MoveStates.Syncing, "бакет в переезде");
-        status.Value.Phase.Should().Be("ddl", "первая фаза после префлайта — перенос DDL");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "bucket is being moved");
+        status.Value.Phase.Should().Be("ddl", "the first phase after preflight is DDL transfer");
         status.Value.Owner.Should().Be("shard1");
         status.Value.Target.Should().Be("shard2");
-        status.Value.StartedUnix.Should().BeGreaterThan(0, "стартовое время зафиксировано");
+        status.Value.StartedUnix.Should().BeGreaterThan(0, "start time is recorded");
     }
 
     // AAA: цель = текущий владелец — перманентный отказ, заявка удаляется
@@ -79,12 +79,12 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("переезд в себя — ошибка заявки");
-        tick.Error!.Message.Should().Contain("shard1", "причина отказа называет цель");
+        tick.IsSuccess.Should().BeFalse("a move to itself is a ticket error");
+        tick.Error!.Message.Should().Contain("shard1", "the refusal reason names the target");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "перманентный отказ удаляет заявку (spec §4.1)");
+            "a permanent refusal deletes the request (spec §4.1)");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.Phase.Should().Be("rejected", "отказ зафиксирован в work-журнале");
+        work.Value!.Phase.Should().Be("rejected", "refusal recorded in the work journal");
         work.Value.LastError.Should().Contain("shard1");
     }
 
@@ -100,9 +100,9 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("move не стартует поверх незавершённого abort");
-        tick.Error!.Message.Should().Contain("abort", "подсказка оператору — завершить уборку");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        tick.IsSuccess.Should().BeFalse("a move does not start on top of an unfinished abort");
+        tick.Error!.Message.Should().Contain("abort", "operator hint — finish the cleanup");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
     // AAA: уже идёт переезд в ДРУГУЮ цель — перманентный отказ (один переезд на бакет)
@@ -117,9 +117,9 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("цель действующего переезда не меняется заявкой");
-        tick.Error!.Message.Should().Contain("shard3", "причина называет цель идущего переезда");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        tick.IsSuccess.Should().BeFalse("the target of an active move is not changed by a ticket");
+        tick.Error!.Message.Should().Contain("shard3", "the reason names the target of the active move");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
     // AAA: resume того же переезда — started_unix наследуется (возраст переезда сохраняется)
@@ -134,11 +134,11 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.InProgress, "переезд продолжается");
+        tick.Value.Should().Be(ProcessOutcome.InProgress, "the move continues");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.State.Should().Be(MoveStates.Syncing);
         status.Value.Target.Should().Be("shard2");
-        status.Value.StartedUnix.Should().Be(111, "started_unix наследуется при продолжении");
+        status.Value.StartedUnix.Should().Be(111, "started_unix is inherited on resume");
     }
 
     // AAA: wal_level ≠ logical на источнике — факт-несоответствие, перманентный отказ
@@ -152,9 +152,9 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("без logical-репликации переезд невозможен");
-        tick.Error!.Message.Should().Contain("wal_level", "причина называет настройку");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        tick.IsSuccess.Should().BeFalse("without logical replication a move is impossible");
+        tick.Error!.Message.Should().Contain("wal_level", "the reason names the setting");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
     }
@@ -170,7 +170,7 @@ public class MoveProcessPreflightTests
         var names = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        names.IsSuccess.Should().BeFalse("пустые sync-имена — remote_apply вырождается");
+        names.IsSuccess.Should().BeFalse("empty sync names — remote_apply degenerates");
         names.Error!.Message.Should().Contain("synchronous_standby_names");
 
         // Arrange — имена есть, но sync/quorum-реплик нет
@@ -180,8 +180,8 @@ public class MoveProcessPreflightTests
         var count = await rig2.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        count.IsSuccess.Should().BeFalse("нет живого sync-standby — P8 не выполняется");
-        rig2.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        count.IsSuccess.Should().BeFalse("no live sync-standby — P8 is not satisfied");
+        rig2.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
     // AAA: источник недоступен — transient: заявка живёт, тики повторят
@@ -195,13 +195,13 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("недоступность — не отказ заявки, а сбой тика");
+        tick.IsSuccess.Should().BeFalse("unreachability is not a ticket refusal but a tick failure");
         rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "transient-сбой заявку не удаляет");
+            "a transient failure does not delete the request");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "переезд не начат — статуса нет");
+            "move not started — no status");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.LastError.Should().NotBeNullOrEmpty("сбой зафиксирован в work.last_error");
+        work.Value!.LastError.Should().NotBeNullOrEmpty("failure recorded in work.last_error");
     }
 
     // AAA: стартовый снапшот не удался — переезд не начинается, тик повторяет пробу
@@ -210,25 +210,25 @@ public class MoveProcessPreflightTests
     {
         // Arrange — первая проба снапшота падает, вторая succeeds
         var rig = await MoveRig.NewAsync(
-            snapshotResults: Result.Failed(new ApplicationException("снапшот не удался")));
+            snapshotResults: Result.Failed(new ApplicationException("snapshot failed")));
 
         // Act
         var first = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        first.IsSuccess.Should().BeFalse("без стартового снапшота переезд не начинается (P12)");
+        first.IsSuccess.Should().BeFalse("without a start snapshot the move does not begin (P12)");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.State.Should().Be(MoveStates.Syncing, "статус-ключ остался SYNCING");
-        status.Value.Phase.Should().Be("waiting-snapshot", "фаза ждёт снапшот-точку");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "status key remained SYNCING");
+        status.Value.Phase.Should().Be("waiting-snapshot", "the phase waits for the snapshot point");
 
         // Act — повторный тик снова пробует снапшот (теперь успешно)
         var second = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        second.Value.Should().Be(ProcessOutcome.InProgress, "после снапшота переезд начался");
-        rig.SnapshotCalls.Should().HaveCount(2, "повтор тика снова пробует снапшот");
+        second.Value.Should().Be(ProcessOutcome.InProgress, "after the snapshot the move began");
+        rig.SnapshotCalls.Should().HaveCount(2, "a repeated tick tries the snapshot again");
         var after = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        after.Value!.Phase.Should().Be("ddl", "фаза продвинулась за точку снапшота");
+        after.Value!.Phase.Should().Be("ddl", "the phase advanced past the snapshot point");
     }
 
     // AAA: схема на приёмнике без подписки — только resume и только ПУСТАЯ схема
@@ -242,8 +242,8 @@ public class MoveProcessPreflightTests
         var noResume = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        noResume.IsSuccess.Should().BeFalse("остаток сорванного запуска — не молча продолжать");
-        noResume.Error!.Message.Should().Contain("resume", "подсказка — resume или DROP SCHEMA");
+        noResume.IsSuccess.Should().BeFalse("a leftover of a broken run — do not continue silently");
+        noResume.Error!.Message.Should().Contain("resume", "hint — resume or DROP SCHEMA");
 
         // Arrange — resume=true, но схема НЕ пустая (остатки данных)
         var rig2 = await MoveRig.NewAsync(new MoveRig.PreflightSql(
@@ -256,10 +256,10 @@ public class MoveProcessPreflightTests
         var nonEmpty = await rig2.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        nonEmpty.IsSuccess.Should().BeFalse("copy_data=true в непустую схему даст дубликаты");
-        nonEmpty.Error!.Message.Should().Contain("не пустая");
+        nonEmpty.IsSuccess.Should().BeFalse("copy_data=true into a non-empty schema will produce duplicates");
+        nonEmpty.Error!.Message.Should().Contain("not empty");
         rig2.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "перманентный отказ удаляет заявку");
+            "a permanent refusal deletes the request");
     }
 
     // AAA: свой статус SYNCING/ddl + схема на приёмнике (M1 успел, M2 упал transient) —
@@ -281,10 +281,10 @@ public class MoveProcessPreflightTests
 
         // Assert
         tick.Value.Should().Be(ProcessOutcome.InProgress,
-            "схема на приёмнике — продукт нашего M1: transient-сбой M2 не должен убивать переезд");
-        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка жива");
+            "the schema on the target is a product of our M1: a transient M2 failure must not kill the move");
+        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"), "the request is alive");
         rig.Sql.Calls.Should().Contain(c => c.Sql.Contains("(SELECT count(*)"),
-            "пустота схемы на приёмнике проверена перед продолжением");
+            "target schema emptiness was checked before continuing");
     }
 
     // AAA: свой статус + НЕ пустая схема на приёмнике (данные прошлого запуска) —
@@ -305,9 +305,9 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("copy_data=true в непустую схему даст дубликаты");
-        tick.Error!.Message.Should().Contain("abort", "подсказка — abort и новый переезд");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        tick.IsSuccess.Should().BeFalse("copy_data=true into a non-empty schema will produce duplicates");
+        tick.Error!.Message.Should().Contain("abort", "hint — abort and a new move");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
     // AAA: схемы бакета нет на источнике — перманентный отказ (ревью №5)
@@ -321,11 +321,11 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("нечего переносить — источник без схемы бакета");
-        tick.Error!.Message.Should().Contain("shard1", "причина называет владельца");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+        tick.IsSuccess.Should().BeFalse("nothing to transfer — the source has no bucket schema");
+        tick.Error!.Message.Should().Contain("shard1", "the reason names the owner");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.Phase.Should().Be("rejected", "отказ в журнале");
+        work.Value!.Phase.Should().Be("rejected", "refusal in the journal");
     }
 
     // AAA: пробы mover-роли идут по mover-DSN; роль без REPLICATION — перманентный отказ (ревью №2)
@@ -339,13 +339,13 @@ public class MoveProcessPreflightTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("mover без REPLICATION не сможет подписаться");
-        tick.Error!.Message.Should().Contain("REPLICATION", "причина называет атрибут роли");
+        tick.IsSuccess.Should().BeFalse("a mover without REPLICATION will not be able to subscribe");
+        tick.Error!.Message.Should().Contain("REPLICATION", "the reason names the role attribute");
         var probes = rig.Sql.Calls.Where(c => c.Sql is "SELECT 1" || c.Sql.Contains("rolsuper")).ToList();
-        probes.Should().HaveCountGreaterThanOrEqualTo(2, "две пробы: доступность + атрибут роли");
+        probes.Should().HaveCountGreaterThanOrEqualTo(2, "two probes: reachability + role attribute");
         probes.Should().OnlyContain(c => c.Dsn == MoveRig.MoverDsn,
-            "обе пробы обязаны идти по DSN роли bucket_mover, а не по admin-DSN");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+            "both probes must go over the bucket_mover role DSN, not the admin DSN");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
     // ---------- Отказы M0 t06 (spec §5.5) ----------
@@ -375,12 +375,12 @@ public class MoveProcessPreflightTests
 
         // Assert — Reject: заявка удалена, SQL не звался, подсказка оператору
         tick.IsSuccess.Should().BeFalse();
-        tick.Error!.Message.Should().Contain("помечен к удалению");
+        tick.Error!.Message.Should().Contain("marked for removal");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
-        work.Value.LastError.Should().Contain("помечен к удалению");
-        rig.Sql.Calls.Should().BeEmpty("отказ до любых SQL-проб");
+        work.Value.LastError.Should().Contain("marked for removal");
+        rig.Sql.Calls.Should().BeEmpty("refusal before any SQL probes");
     }
 
     // AAA: цель без dsn (add-shard не завершён) — уточнённый отказ с подсказкой
@@ -403,7 +403,7 @@ public class MoveProcessPreflightTests
 
         // Assert — заявка удалена; причина называет незавершённый add-shard
         tick.IsSuccess.Should().BeFalse();
-        tick.Error!.Message.Should().Contain("ещё не поднят (add-shard не завершён)");
+        tick.Error!.Message.Should().Contain("not up yet (add-shard not finished)");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
     }
 
@@ -421,8 +421,8 @@ public class MoveProcessPreflightTests
 
         // Assert — перманентный отказ с подсказкой; заявка удалена
         tick.IsSuccess.Should().BeFalse();
-        tick.Error!.Message.Should().Contain("удалён — убирать нечего");
+        tick.Error!.Message.Should().Contain("removed — nothing to clean up");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
-        rig.Sql.Calls.Should().BeEmpty("SQL-уборки не было — артефактов нет");
+        rig.Sql.Calls.Should().BeEmpty("no SQL cleanup happened — no artifacts");
     }
 }

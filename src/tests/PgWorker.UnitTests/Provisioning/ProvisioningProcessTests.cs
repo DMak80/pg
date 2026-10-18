@@ -434,7 +434,7 @@ public class ProvisioningProcessTests
         // Assert: фейл с серией fail_count=1 и retry_not_before=now+5; ноды созданы (P2.1 успел).
         first.IsSuccess.Should().BeFalse();
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.LastError.Should().Contain("разбор оператора");
+        work.Value!.LastError.Should().Contain("operator investigation");
         work.Value.FailCount.Should().Be(1);
         work.Value.RetryNotBeforeUnix.Should().BeGreaterThan(work.Value.UpdatedUnix - 1);
         (work.Value.RetryNotBeforeUnix!.Value - work.Value.UpdatedUnix).Should().Be(5);
@@ -891,7 +891,7 @@ public class ProvisioningProcessTests
         // Assert: фейл с текстом оператора; scope shard1 НЕ тронут (initialize цел).
         outcome.IsSuccess.Should().BeFalse();
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.LastError.Should().Contain("разбор оператора");
+        work.Value!.LastError.Should().Contain("operator investigation");
         rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/initialize");
     }
 

@@ -62,7 +62,7 @@ public class ReconcileLoopTests
         // (RangeFault) → тик проваливается (ErrorDelayMs=200 — детерминированное
         // окно ошибки для поллинга); затем etcd «оживает».
         var etcd = new Fakes.FakeEtcd();
-        etcd.RangeFault = _ => new ApplicationException("etcd недоступен");
+        etcd.RangeFault = _ => new ApplicationException("etcd unreachable");
         var options = new FixedOptionsMonitor(new PgWorkerOptions
         {
             Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
@@ -133,7 +133,7 @@ public class ReconcileLoopTests
         processes.Deprovisioned.Should().Equal("shop");
         processes.Provisioned.Should().BeEmpty();
         processes.Supervised.Should().BeEmpty();
-        processes.Moved.Should().BeEmpty("TO_REMOVE не обрабатывает заявки переездов (spec §5.3)");
+        processes.Moved.Should().BeEmpty("TO_REMOVE does not process move requests (spec §5.3)");
         processes.Scaled.Should().BeEmpty();
     }
 

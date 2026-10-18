@@ -125,7 +125,7 @@ public class DockerEngineExecTests
         var result = await driver.ExecNodeAsync("shop", "shard1", "shard1a", ["true"], CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeFalse("контейнера нет — exec невозможен");
+        result.IsSuccess.Should().BeFalse("no container — exec is impossible");
         result.Error!.Message.Should().Contain("pgw-shop-shard1-shard1a");
     }
 

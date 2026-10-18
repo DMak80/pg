@@ -272,8 +272,8 @@ public class ClusterSecretRotatorTests
             .Where(e => e.Sql.Contains("ALTER ROLE \"app\" PASSWORD"))
             .Select(e => e.Dsn).ToList();
         alterDsns.Should().HaveCount(2);
-        alterDsns.Should().Contain(dsn => dsn.Contains("Port=15002"), "мастер shard1 — shard1b (doorman 16502)");
-        alterDsns.Should().NotContain(dsn => dsn.Contains("Port=15000"), "shard1a — реплика, ALTER на ней невозможен");
+        alterDsns.Should().Contain(dsn => dsn.Contains("Port=15002"), "shard1 master is shard1b (doorman 16502)");
+        alterDsns.Should().NotContain(dsn => dsn.Contains("Port=15000"), "shard1a is a replica — ALTER is impossible there");
     }
 
     [Fact]
@@ -446,8 +446,8 @@ public class ClusterSecretRotatorTests
 
         // Assert: pending не изменился (та же пара в полёте).
         var pending2 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
-        pending2.Should().Be(pending1, "регенерация между тиками обнуляла бы прогресс rolling");
-        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop", "заявка жива");
+        pending2.Should().Be(pending1, "regeneration between ticks would reset the rolling progress");
+        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop", "the request is alive");
     }
 
     // AAA (в): все ноды несут hash(NEW) → txn: compare rest_password==OLD,
@@ -468,7 +468,7 @@ public class ClusterSecretRotatorTests
         (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .Value.Should().Be(ProcessOutcome.Done);
         var pending = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
-        pending.Should().NotBeNull("тик 1 зафиксировал пару, txn не было");
+        pending.Should().NotBeNull("tick 1 recorded the pair, no txn yet");
 
         // Act: rolling завершён — повторный тик несёт txn-коммит.
         rig.Driver.InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(rig.Etcd, shard, node);
@@ -479,7 +479,7 @@ public class ClusterSecretRotatorTests
         rig.Etcd.Store["/clusters/shop/rest_password"].Value.Should().Be(pending);
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.RestPending.Should().BeNull("фаза done сбрасывает pending");
+        work.Value!.RestPending.Should().BeNull("the done phase resets pending");
         work.Value.Phase.Should().Be("done");
     }
 
@@ -514,7 +514,7 @@ public class ClusterSecretRotatorTests
         outcome.IsSuccess.Should().BeFalse();
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("commit-conflict");
-        work.Value.RestPending.Should().BeNull("повторный проход — со свежей парой");
+        work.Value.RestPending.Should().BeNull("the repeated pass uses a fresh pair");
     }
 
     // AAA (д): потеря pending (журнал перезаписан без поля) — свежая пара,
@@ -577,11 +577,11 @@ public class ClusterSecretRotatorTests
     // Общий ассерт коммита: заявка снята, ключ rest_password — NEW, pending сброшен.
     private static async Task AssertWindowCommittedAsync(Rig rig)
     {
-        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop", "окно закрыто txn-коммитом");
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop", "the window is closed by the txn commit");
         rig.Etcd.Store["/clusters/shop/rest_password"].Value
             .Should().MatchRegex("^[A-Za-z0-9]{32}$");
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
-            .Should().BeNull("фаза done сбросила окно");
+            .Should().BeNull("the done phase dropped the window");
     }
 
     // AAA: restore-шард (PLANNED/RUNNING/REJOINING — те же факты, что надзор)
@@ -647,7 +647,7 @@ public class ClusterSecretRotatorTests
 
         // Assert: object-ноды пропущены гейтом — txn коммитит.
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
-        inspected.Should().BeEmpty("object-ноды не инспектируются");
+        inspected.Should().BeEmpty("object nodes are not inspected");
         await AssertWindowCommittedAsync(rig);
     }
 

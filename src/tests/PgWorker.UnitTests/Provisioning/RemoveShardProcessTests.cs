@@ -85,9 +85,9 @@ public class RemoveShardProcessTests
         // драйвер чистил restore-джобы шарда
         outcome.IsSuccess.Should().BeTrue();
         rig.Puts.Should().Contain($"/pgworker/backups/shop/shard1/restore/{opId}",
-            "отмена: put FAILED-статуса до чистки ключей");
+            "cancel: the FAILED status is put before the key cleanup");
         rig.Etcd.Store.Should().NotContainKey($"/pgworker/backups/shop/shard1/restore/{opId}",
-            "демонтаж завершён — ключ не переживает (шаг 4)");
+            "the teardown is finished — the key does not survive (step 4)");
         rig.Driver.RemovedRestoreJobs.Should().Contain(("shop", "shard1"));
     }
 
@@ -160,7 +160,7 @@ public class RemoveShardProcessTests
         outcome.Value.Should().Be(ProcessOutcome.InProgress);
         var work = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
         work.Phase.Should().Be("blocked-G4");
-        work.LastError.Should().Contain("незавершённый переезд");
+        work.LastError.Should().Contain("unfinished bucket move");
         rig.Etcd.Store.ContainsKey("/clusters/shop/shards/shard1/state").Should().BeTrue();
         rig.Driver.RemovedNodes.Should().BeEmpty();
     }

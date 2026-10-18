@@ -10,7 +10,7 @@ namespace PgWorker.UnitTests.Backups;
 public class WalReceiverMarkersTests
 {
     [Fact]
-    public void Starting_ровно_ожидаемый_json()
+    public void Starting_ExactlyExpectedJson()
     {
         // Arrange / Act
         var json = WalReceiverMarkers.Starting();
@@ -20,7 +20,7 @@ public class WalReceiverMarkersTests
     }
 
     [Fact]
-    public void Streaming_содержит_wal_start_в_PG_формате()
+    public void Streaming_ContainsWalStart_InPgFormat()
     {
         // Arrange
         var lsn = (1UL << 32) | 0xABC00000;
@@ -34,7 +34,7 @@ public class WalReceiverMarkersTests
     }
 
     [Fact]
-    public void Delivering_содержит_имя_сегмента()
+    public void Delivering_ContainsSegmentName()
     {
         // Arrange
         const string segment = "000000010000000000000001";
@@ -48,7 +48,7 @@ public class WalReceiverMarkersTests
     }
 
     [Fact]
-    public void Heartbeat_формат_X_Y_hex()
+    public void Heartbeat_X_Y_hex_Format()
     {
         // Arrange
         var confirmed = 0x1234_0000_0000UL;
@@ -61,7 +61,7 @@ public class WalReceiverMarkersTests
     }
 
     [Fact]
-    public void Result_ok_без_ошибки_и_с_последним_сегментом()
+    public void Result_ok_NoError_AndLastSegment()
     {
         // Arrange
         const string last = "000000010000000000000005";
@@ -77,10 +77,10 @@ public class WalReceiverMarkersTests
     }
 
     [Fact]
-    public void Result_fail_содержит_ошибку_без_секретов()
+    public void Result_fail_ContainsError_WithoutSecrets()
     {
         // Arrange
-        const string error = "обязательный env PG_PASSWORD пуст; обязательный env S3_SECRET_KEY пуст";
+        const string error = "required env PG_PASSWORD is empty; required env S3_SECRET_KEY is empty";
 
         // Act
         var json = WalReceiverMarkers.Result(false, error, null);

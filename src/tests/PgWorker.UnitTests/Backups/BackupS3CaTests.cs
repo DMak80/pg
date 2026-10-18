@@ -56,7 +56,7 @@ public class BackupS3CaTests
 
     // AAA: валидный файл CA — BackupS3 создаётся (фабрика с CA не бросает)
     [Fact]
-    public void СCaBundle_КонструкторОк()
+    public void WithCaBundle_ConstructorOk()
     {
         var s3 = new BackupS3(Opts(WriteCaFile()));
         s3.Should().NotBeNull();
@@ -64,15 +64,15 @@ public class BackupS3CaTests
 
     // AAA: нечитаемый файл CA — исключение с путём в диагностике (fail-fast)
     [Fact]
-    public void СБитымПутем_Исключение()
+    public void WithBrokenPath_Exception()
     {
         var act = () => new BackupS3(Opts(Path.Combine(Path.GetTempPath(), $"s3ca-no-{Guid.NewGuid():N}.pem")));
-        act.Should().Throw<InvalidOperationException>().WithMessage("*не читается*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*not readable*");
     }
 
     // AAA: без пути — прежнее поведение, фабрика не ставится
     [Fact]
-    public void БезCaBundle_КонструкторОк_ФабрикаНеСтавится()
+    public void WithoutCaBundle_ConstructorOk_FactoryNotInstalled()
     {
         var s3 = new BackupS3(Opts());
         s3.Should().NotBeNull();
@@ -81,7 +81,7 @@ public class BackupS3CaTests
     // AAA: фабрика строит HttpClient; валидация принимает цепочку настроенного
     // CA и отвергает цепочку чужого CA (механизм доверия S3CaBundlePath)
     [Fact]
-    public void Фабрика_CallbackПринимаетСвойCa_ЧужойОтвергает()
+    public void Factory_CallbackAcceptsOwnCa_RejectsForeign()
     {
         // Arrange: два независимых CA; фабрика доверяет только своему
         var (ownCa, ownServer, ownChain) = NewSignedPair();
@@ -91,8 +91,8 @@ public class BackupS3CaTests
         // Act / Assert
         using (own.CreateHttpClient(new Amazon.S3.AmazonS3Config()))
         {
-            own.ValidateCertificate(ownServer, ownChain).Should().BeTrue("цепочка настроенного CA доверена");
-            own.ValidateCertificate(otherServer, otherChain).Should().BeFalse("чужой CA отвергается");
+            own.ValidateCertificate(ownServer, ownChain).Should().BeTrue("the configured CA chain is trusted");
+            own.ValidateCertificate(otherServer, otherChain).Should().BeFalse("a foreign CA is rejected");
         }
     }
 

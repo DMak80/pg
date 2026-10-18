@@ -30,18 +30,18 @@ public class MoveProcessPhasesTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.InProgress, "после M3 copy ещё идёт");
+        tick.Value.Should().Be(ProcessOutcome.InProgress, "after M3 the copy is still running");
         rig.Driver.Executed.Should().ContainSingle().Which.Cmd.Should().BeEquivalentTo(
             ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"],
-            "DDL берётся pg_dump'ом из мастер-контейнера источника");
-        rig.Driver.Executed[0].Node.Should().Be("shard1/shard1a", "exec идёт в мастер-ноду источника");
+            "DDL is taken by pg_dump from the source master container");
+        rig.Driver.Executed[0].Node.Should().Be("shard1/shard1a", "exec goes to the source master node");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql == "-- ddl",
-            "DDL применён батчем на приёмнике");
+            "DDL is applied as a batch on the target");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql.Contains("GRANT USAGE ON SCHEMA bucket_42 TO app"),
-            "базовые гранты app-роли выданы на приёмнике");
+            "basic app-role grants are issued on the target");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.Phase.Should().Be(MovePhases.CopyWait, "тик доехал до ожидания initial copy");
-        status.Value.StartedUnix.Should().Be(111, "started_unix наследуется сквозь фазы");
+        status.Value!.Phase.Should().Be(MovePhases.CopyWait, "the tick reached the initial copy wait");
+        status.Value.StartedUnix.Should().Be(111, "started_unix is inherited across phases");
     }
 
     // AAA: инвентарь источник/приёмник расходится — мораторий DDL (P5) нарушен: permanent
@@ -58,10 +58,10 @@ public class MoveProcessPhasesTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("дефектную копию нельзя доверять cutover'у");
-        tick.Error!.Message.Should().Contain("inventory-mismatch", "причина — расходление инвентаря P5");
+        tick.IsSuccess.Should().BeFalse("a defective copy cannot be trusted by the cutover");
+        tick.Error!.Message.Should().Contain("inventory-mismatch", "the reason is the P5 inventory divergence");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "перманентный отказ удаляет заявку");
+            "a permanent refusal deletes the request");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
         work.Value.LastError.Should().Contain("inventory-mismatch");
@@ -88,11 +88,11 @@ public class MoveProcessPhasesTests
         tick.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
             && c.Sql == "CREATE PUBLICATION pub_bucket_42 FOR TABLES IN SCHEMA bucket_42",
-            "публикация создаётся на источнике");
+            "the publication is created on the source");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql ==
             "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw sslmode=require target_session_attrs=read-write' PUBLICATION pub_bucket_42 " +
             $"WITH (copy_data = true, {failoverOption}synchronous_commit = remote_apply)",
-            "подписка на приёмнике: mover-conninfo источника, remote_apply и конфигурируемый failover");
+            "the subscription on the target: source mover-conninfo, remote_apply and configurable failover");
     }
 
     // AAA: подписка уже есть (resume) — CREATE SUBSCRIPTION не выполняется
@@ -109,7 +109,7 @@ public class MoveProcessPhasesTests
         // Assert
         tick.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("CREATE SUBSCRIPTION sub_bucket_42"),
-            "подписка существует — создание идемпотентно пропущено");
+            "the subscription exists — its creation is idempotently skipped");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be(MovePhases.CopyWait);
     }
@@ -141,7 +141,7 @@ public class MoveProcessPhasesTests
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql ==
             "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw sslmode=require target_session_attrs=read-write' PUBLICATION pub_bucket_42 " +
             "WITH (copy_data = true, failover = true, synchronous_commit = remote_apply)",
-            "внешний приёмник получает адреса dsn-ключа без подмены advertised");
+            "the external target gets the dsn-key addresses without the advertised substitution");
     }
 
     // AAA (adopt-repair §3.3): канонический приёмник — подмена advertised-хоста
@@ -161,7 +161,7 @@ public class MoveProcessPhasesTests
         tick.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql.Contains(
             "CONNECTION 'host=host.docker.internal,host.docker.internal port=15000,15001"),
-            "канонический приёмник — подмена advertised издателя работает");
+            "the canonical target — the publisher advertised substitution works");
     }
 
     // AAA (adopt-repair §3.3): усыновлённый источник — mover-пробы M0 идут по
@@ -188,9 +188,9 @@ public class MoveProcessPhasesTests
         tick.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Sql.Calls.Should().Contain(c => c.Sql == "SELECT 1" && c.Dsn ==
             "Host=h1;Port=15000;Database=shop;Username=bucket_mover;Password=mov-pw;SSL Mode=Require;Trust Server Certificate=true",
-            "усыновлённый источник: mover-проба по адресу мастера из portalloc");
+            "adopted source: the mover probe goes to the master address from portalloc");
         rig.Sql.Calls.Should().NotContain(c => c.Dsn == MoveRig.MoverDsn,
-            "multi-host dsn-ключ из воркера не резолвим для object-шардов");
+            "the multi-host dsn key is not resolvable from the worker for object shards");
     }
 
     // AAA (adopt-repair §3.3, exec-fallback): мастер источника — object-нода:
@@ -218,7 +218,7 @@ public class MoveProcessPhasesTests
         rig.Driver.ContainerExecs[0].Container.Should().Be("as-shard1a");
         rig.Driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
             ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_42", "shop"]);
-        rig.Driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не зывается у object-ноды");
+        rig.Driver.Executed.Should().BeEmpty("the canonical ExecNodeAsync is not called for an object node");
     }
 
     // AAA: подписка не готова («1/3») — тик ждёт: InProgress, статус SYNCING/copy-wait
@@ -233,7 +233,7 @@ public class MoveProcessPhasesTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.InProgress, "initial copy идёт — ждём тиками");
+        tick.Value.Should().Be(ProcessOutcome.InProgress, "the initial copy is running — we wait in ticks");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.State.Should().Be(MoveStates.Syncing);
         status.Value.Phase.Should().Be(MovePhases.CopyWait);
@@ -254,7 +254,7 @@ public class MoveProcessPhasesTests
         tick.Value.Should().Be(ProcessOutcome.InProgress);
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be(MovePhases.CutoverWait,
-            "initial copy завершён — ждём cutover-тик");
+            "the initial copy is finished — waiting for the cutover tick");
     }
 
     // AAA: каждый тик copy-wait переписывает статус-ключ с обновлённым updated_unix
@@ -279,10 +279,10 @@ public class MoveProcessPhasesTests
         first.Value.Should().Be(ProcessOutcome.InProgress);
         second.Value.Should().Be(ProcessOutcome.InProgress);
         afterSecond.Value!.UpdatedUnix.Should().BeGreaterThan(afterFirst.Value!.UpdatedUnix,
-            "updated_unix обязан двигаться каждым тиком — по нему abort отличает живой mover");
+            "updated_unix must advance with every tick — abort uses it to tell a live mover");
         afterSecond.Value.State.Should().Be(afterFirst.Value!.State);
-        afterSecond.Value.Phase.Should().Be(afterFirst.Value.Phase, "фаза не менялась — всё ещё copy");
-        afterSecond.Value.StartedUnix.Should().Be(111, "старт переезда не сдвигается");
+        afterSecond.Value.Phase.Should().Be(afterFirst.Value.Phase, "the phase did not change — still copy");
+        afterSecond.Value.StartedUnix.Should().Be(111, "the move start does not shift");
     }
 
     // AAA: битая заявка в сторе — тик НЕ падает: warning с именем ключа попадает
@@ -301,15 +301,15 @@ public class MoveProcessPhasesTests
 
         // Assert
         tick.Value.Should().Be(ProcessOutcome.InProgress,
-            "битая заявка — не сбой тика; валидная заявка обработана (M0 пройден)");
+            "a broken request is not a tick failure; the valid request was processed (M0 passed)");
         logger.Entries.Should().Contain(e =>
             e.Level == LogLevel.Warning && e.Text.Contains("/pgworker/moves/shop/bucket_9"),
-            "предупреждение называет битый ключ по имени");
+            "the warning names the broken key");
         logger.Entries.Should().Contain(e =>
-            e.Level == LogLevel.Warning && e.Text.Contains("исправь или удали ключ"),
-            "подсказка оператору — что делать с битым ключом");
+            e.Level == LogLevel.Warning && e.Text.Contains("fix or delete the key"),
+            "operator hint — what to do with the broken key");
         rig.Etcd.Store.ContainsKey(MoveNames.MoveKey("shop", "bucket_9")).Should().BeTrue(
-            "ключ не удаляется автоматически — битую заявку правит оператор");
+            "the key is not deleted automatically — the operator fixes the broken request");
     }
 
     // Сдвигаемые часы для детерминированного updated_unix (TimeProvider-хук процесса).

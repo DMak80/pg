@@ -130,8 +130,8 @@ public class BucketEvacuatorTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/evacuations/shop/"),
-            "вход общий: ни плана эвакуации, ни E3-карантина быть не должно");
-        rig.Sql.Executed.Should().BeEmpty("схемы бакетов на целевых шардах не создавались");
+            "common entry: there must be neither an evacuation plan nor an E3 quarantine");
+        rig.Sql.Executed.Should().BeEmpty("bucket schemas were not created on the target shards");
         rig.Etcd.Store["/pgworker/work/shop"].Value.Should().Contain("skipped-restore");
     }
 

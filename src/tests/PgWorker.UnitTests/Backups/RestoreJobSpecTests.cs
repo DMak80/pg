@@ -64,7 +64,7 @@ public class RestoreJobSpecTests
 
     // AAA: CaBundlePath задан → S3_CA_PEM значением (t42, arch/19 §7)
     [Fact]
-    public void Build_CaBundle_ПередаётPemЗначением()
+    public void Build_CaBundle_PassesPemByValue()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
@@ -76,7 +76,7 @@ public class RestoreJobSpecTests
 
     // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
     [Fact]
-    public void Build_БезCaBundle_НетS3CaPem()
+    public void Build_WithoutCaBundle_NoS3CaPem()
     {
         var spec = RestoreJobSpec.Build(
             new BackupsRuntimeOptions(S3Bucket: "bkt"),
@@ -103,7 +103,7 @@ public class RestoreJobSpecTests
         // Assert
         spec.Network.Should().Be(expectedNet);
         if (expectedHosts is null)
-            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+            spec.ExtraHosts.Should().BeNull("standalone mode: extra_hosts are not applied");
         else
             spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
     }

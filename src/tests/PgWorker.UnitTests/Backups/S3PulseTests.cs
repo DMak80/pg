@@ -21,7 +21,7 @@ public sealed class S3PulseTests
         for (var i = 0; i < 100 && !condition(); i++)
             await Task.Delay(20, TestContext.Current.CancellationToken);
         if (!condition())
-            throw new Xunit.Sdk.XunitException($"не дождались: {what}");
+            throw new Xunit.Sdk.XunitException($"did not wait out: {what}");
     }
 
     // AAA: висящий вызов — пульс Mark'ает по расписанию (≥2 отметки при
@@ -36,7 +36,7 @@ public sealed class S3PulseTests
         // Act: запускаем и ждём двух отметок (≤~2 с бюджет полла)
         var task = S3Pulse.CallAsync(
             progress, _ => tcs.Task, CancellationToken.None, TimeSpan.FromMilliseconds(20));
-        await WaitForAsync(() => progress.Marks >= 2, "пульс обязан Mark'ать ≥2 раз за висящий вызов");
+        await WaitForAsync(() => progress.Marks >= 2, "the pulse must Mark at least 2 times during a hanging call");
 
         // Assert: вызов ещё в полёте, завершаем — результат проходит насквозь.
         tcs.SetResult(Result<int>.Success(42));
@@ -78,7 +78,7 @@ public sealed class S3PulseTests
         // Act
         var task = S3Pulse.CallAsync(
             progress, _ => tcs.Task, CancellationToken.None, TimeSpan.FromMilliseconds(20));
-        await WaitForAsync(() => progress.Marks >= 2, "негенерик-пульс тоже Mark'ает");
+        await WaitForAsync(() => progress.Marks >= 2, "the non-generic pulse Marks too");
         tcs.SetResult(Result.Success());
 
         // Assert

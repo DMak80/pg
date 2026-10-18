@@ -155,7 +155,7 @@ public class MoveOpsHandlersTests
         RollbackBucketsValidator.Validate(new RollbackBucketsRequest([]))
             .Should().ContainSingle(e => e.Field == "buckets");
         RollbackBucketsValidator.Validate(new RollbackBucketsRequest([0, 0]))
-            .Should().ContainSingle(e => e.Message.Contains("дубликаты"));
+            .Should().ContainSingle(e => e.Message.Contains("duplicate"));
         RollbackBucketsValidator.Validate(new RollbackBucketsRequest([0, 1]))
             .Should().BeEmpty();
     }

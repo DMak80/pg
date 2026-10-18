@@ -20,7 +20,7 @@ public class BackupPlannerTests
 
     // AAA: COMPLETED+verify FAILED не даёт свежести → IsDue=true (AC6)
     [Fact]
-    public void IsDue_СвежийНоБитыйПолный_Due()
+    public void IsDue_FreshButBrokenFull_Due()
     {
         // Arrange — COMPLETED час назад (в окне), но verify FAILED
         var fulls = new[]
@@ -31,12 +31,12 @@ public class BackupPlannerTests
 
         // Act / Assert
         BackupPlanner.IsDue(fulls, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
-            .Should().BeTrue("проваленный verify свежестью не считается");
+            .Should().BeTrue("a failed verify does not count as freshness");
     }
 
     // AAA: валидный = verify null | PENDING | OK — все три дают свежесть
     [Fact]
-    public void IsDue_ВсеВидыВалидных_ГасятDue()
+    public void IsDue_AllValidKinds_ExtinguishDue()
     {
         // Arrange — три конфигурации свежего COMPLETED (час назад, окно 86400)
         var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
@@ -56,7 +56,7 @@ public class BackupPlannerTests
     // AAA: бэкофф n считает и verify-фейлы: COMPLETED+FAILED-verify после последнего
     // валидного — попытка, окно растёт (AC6)
     [Fact]
-    public void BackoffPassed_VerifyФейлУвеличиваетN()
+    public void BackoffPassed_VerifyFailIncrementsN()
     {
         // Arrange — старый валидный COMPLETED (2 дня назад) + свежий COMPLETED с
         // verify FAILED (100 c назад), Base=300
@@ -87,7 +87,7 @@ public class BackupPlannerTests
     // wal-ключе (WalStream восстанавливает ключ быстрее тика — инцидент гейта);
     // полный НОВЕЕ restore — НЕ due.
     [Fact]
-    public void IsDue_ПолныйСтарееRestore_Due_НезависимоОтWalКлюча()
+    public void IsDue_FullOlderThanRestore_Due_IndependentOfWalKey()
     {
         // Arrange — валидный COMPLETED за час до restore; restore завершён 5 мин назад
         var fulls = new[]
@@ -99,13 +99,13 @@ public class BackupPlannerTests
 
         // Act / Assert — живой wal-ключ больше не гасит due: факт restore сильнее
         BackupPlanner.IsDue(fulls, 86400, Unix(Now), restoreFinished)
-            .Should().BeTrue("полный описывает прежнюю жизнь шарда — переснимается");
+            .Should().BeTrue("the full describes the shard's former life — it is re-shot");
         BackupPlanner.IsDue(fulls, 86400, Unix(Now), restoreFinished)
             .Should().BeTrue();
     }
 
     [Fact]
-    public void IsDue_ПолныйНовееRestore_НеDue()
+    public void IsDue_FullNewerThanRestore_NotDue()
     {
         // Arrange — restore час назад, свежий переснятый полный 5 минут назад
         var restoreFinished = Unix(Now.AddHours(-1));
@@ -152,7 +152,7 @@ public class BackupPlannerTests
     // донесённом сегменте (инвариант «поднятый шард имеет валидную цепочку
     // или свежий полный», arch/19 §2).
     [Fact]
-    public void IsDue_NoWalKey_СвежийПолный_ГаситDue()
+    public void IsDue_NoWalKey_FreshFull_ExtinguishesDue()
     {
         // Arrange — COMPLETED 5 минут назад; wal-ключ ещё не появился
         // (первый закрытый сегмент не донесён) — контекст отсутствия ключа
@@ -161,7 +161,7 @@ public class BackupPlannerTests
 
         // Act / Assert
         BackupPlanner.IsDue(fulls, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
-            .Should().BeFalse("свежий COMPLETED уже заведёт цепочку — пересъём бессмыслен");
+            .Should().BeFalse("a fresh COMPLETED will already start the chain — a reshoot is pointless");
     }
 
     // AAA: живой wal-ключ — прежнее rolling-правило по возрасту
@@ -238,7 +238,7 @@ public class BackupPlannerTests
 
     // AAA: BROKEN-цепочка → due безусловно, даже при свежем валидном полном (AC1)
     [Fact]
-    public void IsDue_WalChainBroken_DueБезусловно()
+    public void IsDue_WalChainBroken_DueUnconditionally()
     {
         // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=BROKEN
         var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
@@ -251,13 +251,13 @@ public class BackupPlannerTests
         // Act / Assert
         BackupPlanner.IsDue(fulls, 86400, Unix(Now),
                 walChainBroken: true)
-            .Should().BeTrue("разрыв цепочки лечится только пересъёмом полного");
+            .Should().BeTrue("a chain gap is only cured by re-shooting the full");
     }
 
     // AAA: transient-деградация НЕ триггерит пересъём (AC3): walChainBroken=false
     // при несвежем полном — due по возрасту, при свежем — не due
     [Fact]
-    public void IsDue_WalChainBrokenFalse_СвежийПолный_НеDue()
+    public void IsDue_WalChainBrokenFalse_FreshFull_NotDue()
     {
         // Arrange — свежий валидный COMPLETED, wal жив (ACTIVE/DEGRADED — не важно)
         var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
@@ -269,7 +269,7 @@ public class BackupPlannerTests
         // Act / Assert
         BackupPlanner.IsDue(fulls, 86400, Unix(Now),
                 walChainBroken: false)
-            .Should().BeFalse("DEGRADED по lag/тишине — transient, пересъём не триггерит");
+            .Should().BeFalse("DEGRADED due to lag/silence — transient, no reshoot is triggered");
     }
 
     // AAA: id — YYYYMMDDHHMMSSZ UTC; коллизия в пределах шарда → суффикс
@@ -303,7 +303,7 @@ public class BackupPlannerTests
     // AAA: t14 — unix последнего валидного: COMPLETED с verify FAILED не считается,
     // finished_unix приоритетен, толерантность started_unix как в IsDue
     [Fact]
-    public void LastValidUnix_ПоследнийВалидный_finished_или_started()
+    public void LastValidUnix_LastValid_finished_Or_started()
     {
         // Arrange — старый валидный (без verify), новее — COMPLETED c verify FAILED
         var validFinished = Unix(Now.AddHours(-2));
@@ -321,7 +321,7 @@ public class BackupPlannerTests
 
     // AAA: t14 — валидного нет вовсе (только FAILED-статусы/verify) → null
     [Fact]
-    public void LastValidUnix_ВалидныхНет_null()
+    public void LastValidUnix_NoValidOnes_Null()
     {
         // Arrange
         var fulls = new[]
@@ -337,7 +337,7 @@ public class BackupPlannerTests
 
     // AAA: t14 — finished_unix отсутствует → толерантно started_unix (образец IsDue)
     [Fact]
-    public void LastValidUnix_БезFinished_БерётStarted()
+    public void LastValidUnix_WithoutFinished_TakesStarted()
     {
         // Arrange — COMPLETED ещё без finished_unix (аномалия ключа)
         var started = Unix(Now.AddHours(-1));

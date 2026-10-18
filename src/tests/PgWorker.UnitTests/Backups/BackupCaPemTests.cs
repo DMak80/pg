@@ -29,7 +29,7 @@ public class BackupCaPemTests
     {
         var path = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         var act = () => BackupCaPem.ReadIfConfigured(new BackupsRuntimeOptions { S3CaBundlePath = path });
-        act.Should().Throw<InvalidOperationException>().WithMessage("*не читается*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*not readable*");
     }
 
     // AAA: пустой файл — исключение
@@ -39,6 +39,6 @@ public class BackupCaPemTests
         var path = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(path, "  \n");
         var act = () => BackupCaPem.ReadIfConfigured(new BackupsRuntimeOptions { S3CaBundlePath = path });
-        act.Should().Throw<InvalidOperationException>().WithMessage("*пуст*");
+        act.Should().Throw<InvalidOperationException>().WithMessage("*empty*");
     }
 }

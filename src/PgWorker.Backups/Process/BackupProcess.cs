@@ -368,13 +368,13 @@ public sealed class BackupProcess(
                 string cleanupNote = "";
                 if (engine is null)
                 {
-                    cleanupNote = "; cleanup пропущен: источник недоступен";
+                    cleanupNote = "; cleanup skipped: source unavailable";
                 }
                 else
                 {
                     var cleanupList = await engine.ListContainersAsync(name, all: true, ct);
                     if (!cleanupList.IsSuccess)
-                        cleanupNote = "; cleanup пропущен: источник недоступен";
+                        cleanupNote = "; cleanup skipped: source unavailable";
                     else if (cleanupList.Value.Any(c => c.Names.Contains(name)))
                         await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct); // kill+rm контейнера и volume
                 }

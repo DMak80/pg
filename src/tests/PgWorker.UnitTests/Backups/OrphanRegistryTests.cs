@@ -29,7 +29,7 @@ public class OrphanRegistryTests
     // AAA (AC7): группировка — посторонние корневые объекты вне реестра;
     // размеры по всем префиксам нашей формы
     [Fact]
-    public void GroupPrefixes_только_нашей_формы_и_детект_полных()
+    public void GroupPrefixes_OurShapeOnly_AndFullDetection()
     {
         // Arrange — объекты c1/s1/full/A/x, c1/s1/wal/seg, чужой root.txt
         var objects = new List<S3ObjectInfo>
@@ -46,13 +46,13 @@ public class OrphanRegistryTests
         // Assert — размеры {["c1/s1"]=сумма}, чужие ключи не сгруппированы
         grouped.Sizes.Should().HaveCount(1);
         grouped.Sizes["c1/s1"].Should().Be(46);
-        grouped.FullPrefixes.Should().BeEmpty("manifest-критерия здесь нет");
+        grouped.FullPrefixes.Should().BeEmpty("no manifest criterion here");
     }
 
     // AAA (AC1/AC9): детект валидных полных из list-ключей — только
     // full/<id>/backup_manifest (5 сегментов, 3-й full, последний backup_manifest)
     [Fact]
-    public void GroupPrefixes_детектирует_полные_по_manifest()
+    public void GroupPrefixes_DetectsFulls_ByManifest()
     {
         // Arrange — в префиксе c1/s1 есть manifest, в c2/s2 — только base.tar
         var objects = new List<S3ObjectInfo>
@@ -76,7 +76,7 @@ public class OrphanRegistryTests
 
     // AAA (AC7): merge переносит first_seen (TTL от первого наблюдения)
     [Fact]
-    public void Merge_ПереноситFirstSeen()
+    public void Merge_CarriesFirstSeen()
     {
         // Arrange — current: c2/s3 OBSERVED first_seen=T0; observed: c2/s3 новый size
         var current = new OrphanRegistry.Registry(
@@ -91,16 +91,16 @@ public class OrphanRegistryTests
         // Assert — first_seen=T0, size обновлён, state OBSERVED
         merged.Orphans.Should().ContainSingle();
         var e = merged.Orphans[0];
-        e.FirstSeenUnix.Should().Be(Unix(NowT.AddDays(-2)), "TTL от первого наблюдения");
+        e.FirstSeenUnix.Should().Be(Unix(NowT.AddDays(-2)), "TTL from the first observation");
         e.SizeBytes.Should().Be(150);
         e.State.Should().Be(OrphanState.Observed);
-        e.Kind.Should().Be("cluster", "кластера c2 нет в live → сирота уровня кластера");
+        e.Kind.Should().Be("cluster", "cluster c2 is absent from live → cluster-level orphan");
     }
 
     // AAA (AC1): merge — has_valid_full из свежего наблюдения; ненаблюдаемый
     // сирота сохраняет прежнее значение (transient list не роняет защиту)
     [Fact]
-    public void Merge_HasValidFull_свежее_наблюдение_и_перенос()
+    public void Merge_HasValidFull_FreshObservation_AndCarry()
     {
         // Arrange — current: две записи, обе с has_valid_full=true
         var current = new OrphanRegistry.Registry(
@@ -117,12 +117,12 @@ public class OrphanRegistryTests
 
         // Assert — наблюдаемый пересчитан в false, ненаблюдаемый перенёс true
         merged.Orphans.Single(e => e.Prefix == "c1/s1").HasValidFull.Should().BeFalse();
-        merged.Orphans.Single(e => e.Prefix == "c2/s2").HasValidFull.Should().BeTrue("защита переживает transient list");
+        merged.Orphans.Single(e => e.Prefix == "c2/s2").HasValidFull.Should().BeTrue("the protection survives a transient list");
     }
 
     // AAA (AC7): воскресение владельца гасит запись (и отменяет DELETING)
     [Fact]
-    public void Merge_ВоскресшийВладелец_ЗаписьГаснет()
+    public void Merge_RevivedOwner_RecordExtinguished()
     {
         // Arrange — DELETING-запись c2/s3; владелец воскрес (шард жив)
         var current = new OrphanRegistry.Registry(
@@ -135,13 +135,13 @@ public class OrphanRegistryTests
             current, observed, new HashSet<string>(), Shards(("c2", "s3")), Clusters("c2"), Now);
 
         // Assert — записи нет (доводка отменена)
-        merged.Orphans.Should().BeEmpty("владелец появился в etcd — запись гаснет");
+        merged.Orphans.Should().BeEmpty("the owner appeared in etcd — the record is extinguished");
     }
 
     // AAA (AC7): TTL-кандидат — DELETING-доводка приоритетна; без неё —
     // просроченный OBSERVED; ttl=0 → null при отсутствии DELETING
     [Fact]
-    public void SelectTtlCandidate_ДоводкаПриоритетна_ПотомTtl()
+    public void SelectTtlCandidate_FinalizationPrioritized_ThenTtl()
     {
         // Arrange — OBSERVED просрочен (8 сут при ttl 7 сут) + DELETING-запись
         var registry = new OrphanRegistry.Registry(
@@ -168,7 +168,7 @@ public class OrphanRegistryTests
 
     // AAA (AC1/AC2/AC3): TTL-отбор исключает защищённых; ttl=0 — только доводка
     [Fact]
-    public void SelectTtlCandidate_защищённые_не_кандидаты()
+    public void SelectTtlCandidate_ProtectedAreNotCandidates()
     {
         // Arrange — три просроченных OBSERVED: с полным, с hold, чистый
         var registry = new OrphanRegistry.Registry(
@@ -213,15 +213,15 @@ public class OrphanRegistryTests
         json.Should().NotContain("\"UpdatedUnix\"");
 
         // битый JSON / неизвестный state → null
-        OrphanRegistry.Parse("{не json").Should().BeNull();
+        OrphanRegistry.Parse("{not json").Should().BeNull();
         OrphanRegistry.Parse("""{"orphans":[{"prefix":"a/b","kind":"shard","size_bytes":1,"first_seen_unix":1,"state":"???"}],"updated_unix":1}""")
-            .Should().BeNull("неизвестный state — битый ключ");
+            .Should().BeNull("unknown state — a broken key");
     }
 
     // AAA (AC9): старый JSON без has_valid_full парсится (поле → false); roundtrip
     // с полем симметричен; SameOrphans чувствителен к изменению has_valid_full
     [Fact]
-    public void Parse_без_поля_HasValidFull_false_и_SameOrphans_чувствителен()
+    public void Parse_WithoutHasValidFullField_False_AndSameOrphansSensitive()
     {
         // Arrange — реестр, записанный старым кодом (без has_valid_full)
         var legacy = """{"orphans":[{"prefix":"a/b","kind":"shard","size_bytes":1,"first_seen_unix":1,"state":"OBSERVED"}],"updated_unix":1}""";
@@ -229,7 +229,7 @@ public class OrphanRegistryTests
         // Act / Assert — парсится, поле false
         var parsed = OrphanRegistry.Parse(legacy);
         parsed.Should().NotBeNull();
-        parsed!.Orphans[0].HasValidFull.Should().BeFalse("старый ключ — ближайший проход пересчитает");
+        parsed!.Orphans[0].HasValidFull.Should().BeFalse("an old key — the nearest pass will recompute");
 
         // roundtrip нового формата: has_valid_full сериализуется и читается
         var registry = new OrphanRegistry.Registry(
@@ -239,12 +239,12 @@ public class OrphanRegistryTests
         OrphanRegistry.SameOrphans(registry, OrphanRegistry.Parse(json)!).Should().BeTrue();
         OrphanRegistry.SameOrphans(registry, new OrphanRegistry.Registry(
             [new OrphanEntry("a/b", "shard", 1, 1, OrphanState.Observed)], 2)).Should()
-            .BeFalse("изменение has_valid_full — повод для put");
+            .BeFalse("a has_valid_full change is a reason to put");
     }
 
     // AAA (AC6): ключи/JSON hold-заявки канона arch/19 §4
     [Fact]
-    public void HoldDelete_ключи_и_JSON_канона()
+    public void HoldDelete_Keys_AndCanonicalJson()
     {
         // Act
         var holdKey = OrphanRegistry.HoldKey("c1/s1");
@@ -262,7 +262,7 @@ public class OrphanRegistryTests
     // AAA: SameOrphans — updated_unix не входит в сравнение (put только при
     // изменении записей)
     [Fact]
-    public void SameOrphans_UpdatedUnix_Не_Входит()
+    public void SameOrphans_UpdatedUnix_NotIncluded()
     {
         // Arrange
         var orphans = new List<OrphanEntry>
@@ -273,16 +273,16 @@ public class OrphanRegistryTests
         var b = new OrphanRegistry.Registry(orphans, Now + 600);
 
         // Act / Assert
-        OrphanRegistry.SameOrphans(a, b).Should().BeTrue("различие только в updated_unix");
+        OrphanRegistry.SameOrphans(a, b).Should().BeTrue("the only difference is updated_unix");
         var changed = new OrphanRegistry.Registry(
         [new OrphanEntry("g1/s1", "cluster", 11, Now, OrphanState.Observed)], Now);
-        OrphanRegistry.SameOrphans(a, changed).Should().BeFalse("size изменился — нужен put");
+        OrphanRegistry.SameOrphans(a, changed).Should().BeFalse("size changed — a put is needed");
     }
 
     // AAA (t08): объекты etcd/* не группируются реестром сирот — префикс служебный,
     // не форма <C>/<X>/ (ключи короче 3 сегментов); реестр пуст (spec §3.2, AC8)
     [Fact]
-    public void GroupPrefixes_объекты_etcd_мимо_реестра()
+    public void GroupPrefixes_EtcdObjects_OutsideRegistry()
     {
         // Arrange
         var objects = new[]

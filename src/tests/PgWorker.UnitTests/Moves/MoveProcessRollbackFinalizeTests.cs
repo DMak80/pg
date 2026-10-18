@@ -53,21 +53,21 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "откат завершён");
+        tick.Value.Should().Be(ProcessOutcome.Done, "rollback finished");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
-            "зеркальный cutover вернул владельца");
+            "the mirrored cutover returned the owner");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "flip удалил статус-ключ (нет ключа = ACTIVE)");
+            "flip deleted the status key (no key = ACTIVE)");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "успех — заявка удалена");
+            "success — request deleted");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
             && c.Sql == "DROP SUBSCRIPTION sub_bucket_42_rb",
-            "обратная подписка срезана на вернувшемся владельце");
+            "the reverse subscription is cut on the returned owner");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
             && c.Sql == "DROP PUBLICATION pub_bucket_42_rb",
-            "обратная публикация удалена на бывшем владельце");
+            "the reverse publication is dropped on the former owner");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("GRANT INSERT"),
-            "вернувшийся владелец разморожен (обязательный пост-шаг)");
+            "the returned owner is unfrozen (mandatory post-step)");
     }
 
     // AAA: transient-сбой разморозки ПОСЛЕ flip — flip атомарно оставляет фазу
@@ -101,7 +101,7 @@ public class MoveProcessRollbackFinalizeTests
         rig.Sql.ExecuteResult = s =>
         {
             if (rig.Sql.LastDsn == MoveRig.SrcDsn && s.Contains("GRANT INSERT") && unfreezeBroken)
-                return Result.Failed(new ApplicationException("владелец недоступен (transient)"));
+                return Result.Failed(new ApplicationException("owner unavailable (transient)"));
             if (s == "DROP SUBSCRIPTION sub_bucket_42_rb")
                 subRbGone = true;
             if (s == "DROP PUBLICATION pub_bucket_42_rb")
@@ -113,18 +113,18 @@ public class MoveProcessRollbackFinalizeTests
         var tick1 = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert — transient: заявка жива, фаза доведения ПЕРСИСТИРОВАНА (маркер «flip был»)
-        tick1.IsSuccess.Should().BeFalse("сбой разморозки — не успех тика");
-        tick1.Error!.Message.Should().Contain("не разморозить", "причина — transient разморозки");
+        tick1.IsSuccess.Should().BeFalse("an unfreeze failure is not a tick success");
+        tick1.Error!.Message.Should().Contain("cannot be unfrozen", "the reason is the transient unfreeze");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
-            "flip прошёл до сбоя — routing уже вернулся");
+            "flip happened before the failure — routing already returned");
         rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "transient-сбой оставляет заявку живой");
+            "a transient failure keeps the request alive");
         rig.Etcd.Store.Should().ContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "фаза rollback-post-flip записана — повторный тик отличит доведение от нового отката");
+            "the rollback-post-flip phase is recorded — a repeated tick distinguishes finalization from a new rollback");
         var status = MoveStatus.Parse(rig.Etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value);
-        status.Value.Phase.Should().Be(MovePhases.RollbackPostFlip, "фаза доведения отката");
-        status.Value.Owner.Should().Be("shard1", "владелец после flip — вернувшийся шард");
-        status.Value.Target.Should().Be("shard2", "target — бывший владелец (остатки доберёт finalize)");
+        status.Value.Phase.Should().Be(MovePhases.RollbackPostFlip, "rollback finalization phase");
+        status.Value.Owner.Should().Be("shard1", "the owner after flip is the returned shard");
+        status.Value.Target.Should().Be("shard2", "target — former owner (finalize will clean the leftovers)");
 
         // Act — тик 2 (свежий снапшот: routing=shard1): доведение без повторного cutover
         unfreezeBroken = false;
@@ -132,18 +132,18 @@ public class MoveProcessRollbackFinalizeTests
         var tick2 = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert — GRANT доведён, заявка Done/удалена, статус снят (= ACTIVE)
-        tick2.Value.Should().Be(ProcessOutcome.Done, "доведение завершает откат");
+        tick2.Value.Should().Be(ProcessOutcome.Done, "finalization completes the rollback");
         var retickCalls = rig.Sql.Calls.Skip(callsAfterTick1).ToList();
         retickCalls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("GRANT INSERT"),
-            "разморозка владельца доведена повторным тиком");
+            "owner unfreeze completed by the repeated tick");
         retickCalls.Should().NotContain(c => c.Sql.Contains("REVOKE"),
-            "повторного cutover (заморозки) не было — только пост-шаги");
+            "no repeated cutover (freeze) — only post-steps");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "успех — заявка удалена");
+            "success — request deleted");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "нет ключа = ACTIVE — семантика сохранена после доведения");
+            "no key = ACTIVE — semantics preserved after finalization");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.Phase.Should().Be("done", "журнал фиксирует завершение отката");
+        work.Value!.Phase.Should().Be("done", "the journal records the rollback completion");
     }
 
     // AAA: откат доводится (фаза rollback-post-flip в статус-ключе) — параллельная
@@ -161,12 +161,12 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("move не резюмируется в cutover поверх доведения отката");
-        tick.Error!.Message.Should().Contain("откат", "подсказка — сначала довести откат");
+        tick.IsSuccess.Should().BeFalse("a move is not resumed into cutover on top of rollback finalization");
+        tick.Error!.Message.Should().Contain("rollback", "hint — finish the rollback first");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
-            "routing не тронут — повторного flip не было");
+            "routing untouched — no repeated flip");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "permanent-отказ удаляет заявку");
+            "a permanent refusal deletes the request");
     }
 
     // AAA: обратной подписки нет нигде — permanent «откат только полным re-copy»
@@ -181,10 +181,10 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("без обратной подписки отката нет — только re-copy");
-        tick.Error!.Message.Should().Contain("re-copy", "подсказка: повторный move после abort");
+        tick.IsSuccess.Should().BeFalse("without the reverse subscription there is no rollback — only re-copy");
+        tick.Error!.Message.Should().Contain("re-copy", "hint: a new move after abort");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "permanent-отказ удаляет заявку");
+            "a permanent refusal deletes the request");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
     }
@@ -209,7 +209,7 @@ public class MoveProcessRollbackFinalizeTests
                 return Result.Success();
             dropCalls++;
             return dropCalls == 1
-                ? Result.Failed(new ApplicationException("источник подписки недоступен"))
+                ? Result.Failed(new ApplicationException("subscription source unavailable"))
                 : Result.Success();
         };
         FinalizeLayer(rig.Sql, subOnOwner: true, mainSlotOnOld: true, orphanSlotActive: false);
@@ -218,7 +218,7 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "локальный срез достаточен для уборки");
+        tick.Value.Should().Be(ProcessOutcome.Done, "a local cut is enough for cleanup");
         var sqls = rig.Sql.Calls.Select(c => c.Sql).ToList();
         sqls.Should().ContainInOrder(
         [
@@ -226,7 +226,7 @@ public class MoveProcessRollbackFinalizeTests
             "ALTER SUBSCRIPTION sub_bucket_42 SET (slot_name = NONE)",
             "DROP SUBSCRIPTION sub_bucket_42",
             "SELECT pg_drop_replication_slot('sub_bucket_42')",
-        ], "fallback-цепочка среза локально + добивание слота-сироты на источнике");
+        ], "fallback chain: local cut + killing the orphan slot on the source");
     }
 
     // AAA: finalize убирает артефакты в порядке скрипта — подписки → публикации →
@@ -246,9 +246,9 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "артефакты убраны за один тик");
+        tick.Value.Should().Be(ProcessOutcome.Done, "artifacts cleaned in one tick");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "успех — заявка удалена");
+            "success — request deleted");
         var sqls = rig.Sql.Calls.Select(c => c.Sql).ToList();
         sqls.Should().ContainInOrder(
         [
@@ -258,7 +258,7 @@ public class MoveProcessRollbackFinalizeTests
             "DROP PUBLICATION pub_bucket_42_rb",
             "SELECT pg_drop_replication_slot('sub_bucket_42_sync_1234')",
             "DROP SCHEMA bucket_42 CASCADE",
-        ], "порядок: подписки (держат слоты/WAL) → публикации → слоты → схема");
+        ], "order: subscriptions (they hold slots/WAL) → publications → slots → schema");
     }
 
     // AAA: активный orphan-слот пропускается (кто-то читает) — но схема дропается
@@ -276,15 +276,15 @@ public class MoveProcessRollbackFinalizeTests
         var tick = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "активный слот — предупреждение, не блокер");
+        tick.Value.Should().Be(ProcessOutcome.Done, "an active slot is a warning, not a blocker");
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("pg_drop_replication_slot"),
-            "активный слот не дропается — разберётся оператор");
+            "an active slot is not dropped — the operator will handle it");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
             && c.Sql == "DROP SCHEMA bucket_42 CASCADE",
-            "схема дропается независимо от слота (поведение скрипта)");
+            "the schema is dropped regardless of the slot (script behavior)");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.LastError.Should().Contain("sub_bucket_42_sync_1234",
-            "пропуск активного слота — громко в журнал");
+            "skipping an active slot is loud in the journal");
     }
 
     // Слой «артефакты после move» поверх префлайт-резолвера: у владельца (shard2)

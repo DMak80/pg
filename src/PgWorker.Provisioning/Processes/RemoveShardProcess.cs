@@ -189,7 +189,7 @@ public sealed class RemoveShardProcess(
         "G2" => "shard is not declared — nothing to remove",
         "G3" => $"shard has {snap.Routing.Count(r => r.Owner == shard.Name)} buckets (routing) — " +
                 "move them explicitly first (requests /pgworker/moves/, moves UI — t07)",
-        "G4" => "незавершённый переезд бакета — завершите/отмените", // FLAG: ассертится в RemoveShardProcessTests.cs:163
+        "G4" => "unfinished bucket move — finish or cancel it first", // FLAG: ассертится в RemoveShardProcessTests.cs:163
         "G5" => "there are move requests referencing the shard — wait for them to be resolved",
         "G6" => "shard is quarantined after evacuation — investigate the data first (t05 runbook)",
         "G7" => "cannot remove the last shard — delete the cluster for a full teardown",

@@ -32,28 +32,28 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "переезд завершён, auto-finalize поставлена");
+        tick.Value.Should().Be(ProcessOutcome.Done, "the move finished, auto-finalize is queued");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
-            "атомарный flip перевёл routing на приёмник");
+            "the atomic flip switched routing to the target");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "flip удалил статус-ключ той же txn (нет ключа = ACTIVE)");
+            "flip deleted the status key in the same txn (no key = ACTIVE)");
         // Auto-finalize: заявка заменена на finalize (не удалена)
         rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "auto-finalize: заявка заменена на op=finalize, не удалена");
+            "auto-finalize: the request is replaced with op=finalize, not deleted");
         rig.Etcd.Store[MoveNames.MoveKey("shop", "bucket_42")].Value.Should().Contain("\"op\":\"finalize\"",
-            "заявка перезаписана как finalize");
+            "the request is rewritten as finalize");
         rig.Etcd.Store[MoveNames.MoveKey("shop", "bucket_42")].Value.Should().Contain("\"old_shard\":\"shard1\"",
-            "finalize знает старый шард");
+            "finalize knows the old shard");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
             && c.Sql == "DROP SUBSCRIPTION sub_bucket_42",
-            "прямая подписка срезана на новом владельце");
+            "the direct subscription is cut on the new owner");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
             && c.Sql == "CREATE PUBLICATION pub_bucket_42_rb FOR TABLES IN SCHEMA bucket_42",
-            "обратная публикация — на новом владельце");
+            "the reverse publication is on the new owner");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql ==
             "CREATE SUBSCRIPTION sub_bucket_42_rb CONNECTION 'host=h1,h2 port=15002,15003 dbname=shop user=bucket_mover password=mov-pw sslmode=require target_session_attrs=read-write' PUBLICATION pub_bucket_42_rb " +
             "WITH (copy_data = false, failover = true, synchronous_commit = remote_apply)",
-            "обратная подписка — на старом владельце: conninfo приёмника, БЕЗ initial copy");
+            "the reverse subscription is on the old owner: target conninfo, WITHOUT initial copy");
     }
 
     // AAA: transient-отказ cutover (слот не догоняет) — заявка ЖИВА, статус
@@ -70,14 +70,14 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("cutover сорван — тик Failed");
+        tick.IsSuccess.Should().BeFalse("the cutover is broken off — the tick Failed");
         tick.Error.Should().NotBeOfType<CutoverPermanentException>(
-            "репликация продолжает догонять — transient, ретраи тиками");
+            "replication is still catching up — transient, tick retries");
         rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "transient НЕ удаляет заявку");
+            "transient does NOT delete the request");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.State.Should().Be(MoveStates.Syncing, "переезд жив: состояние SYNCING");
-        status.Value.Phase.Should().Be("catchup-timeout", "фаза отказа записана cutover'ом");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "the move is alive: state SYNCING");
+        status.Value.Phase.Should().Be("catchup-timeout", "the failure phase is recorded by the cutover");
     }
 
     // AAA: verify-failed (сверка строк не сошлась) — PERMANENT: заявка удалена,
@@ -93,15 +93,15 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("дефектная копия — переезд не вылечить ретраями");
+        tick.IsSuccess.Should().BeFalse("a defective copy cannot be fixed by retries");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "permanent-отказ удаляет заявку");
+            "a permanent refusal deletes the request");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
         work.Value.LastError.Should().Contain("abort",
-            "подсказка оператору: abort + повторный move");
+            "operator hint: abort + a new move");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
-        status.Value!.State.Should().Be(MoveStates.Syncing, "ключ остаётся: переезд живёт до abort");
+        status.Value!.State.Should().Be(MoveStates.Syncing, "the key remains: the move lives until abort");
         status.Value.Phase.Should().Be("verify-failed");
     }
 
@@ -119,17 +119,17 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.IsSuccess.Should().BeFalse("compare по routing обязан не сойтись");
+        tick.IsSuccess.Should().BeFalse("compare on routing must not converge");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "permanent-отказ удаляет заявку");
+            "a permanent refusal deletes the request");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("rejected");
-        work.Value.LastError.Should().Contain("заморозка оставлена",
-            "подсказка: заморозка не снята — разбор вручную");
+        work.Value.LastError.Should().Contain("freeze left in place",
+            "hint: the freeze is not released — manual investigation");
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("GRANT INSERT"),
-            "заморозка НЕ снята: P1-призраки не должны ожить до разбора");
+            "the freeze is NOT released: P1-ghosts must not come alive before the investigation");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard9",
-            "чужое значение routing не перезатёрто");
+            "the foreign routing value is not overwritten");
     }
 
     // AAA: сбой DROP SUBSCRIPTION на M5 НЕ отменяет flip — last_error в журнал,
@@ -140,20 +140,20 @@ public class MoveProcessCutoverTests
         // Arrange — источник прямой подписки недоступен (DROP не проходит)
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(), runtime: Fast);
         MoveRig.CutoverLayer(rig.Sql);
-        rig.Sql.ExecuteResult = _ => Result.Failed(new ApplicationException("источник подписки недоступен"));
+        rig.Sql.ExecuteResult = _ => Result.Failed(new ApplicationException("subscription source unavailable"));
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "flip состоялся — move завершён, auto-finalize поставлена");
+        tick.Value.Should().Be(ProcessOutcome.Done, "flip happened — the move is finished, auto-finalize is queued");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("done");
         work.Value.LastError.Should().Contain("finalize",
-            "подсказка: остатки прямой подписки добьёт finalize");
+            "hint: finalize will clean the direct subscription leftovers");
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("CREATE PUBLICATION pub_bucket_42_rb")
             || c.Sql.Contains("CREATE SUBSCRIPTION sub_bucket_42_rb"),
-            "обратная подписка НЕ создаётся, пока прямая не срезана (анти-петля)");
+            "the reverse subscription is NOT created while the direct one is not cut (anti-loop)");
     }
 
     // AAA: skip_reverse — обратной подписки нет (откат только полным re-copy)
@@ -172,10 +172,10 @@ public class MoveProcessCutoverTests
         // Assert
         tick.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.Calls.Should().Contain(c => c.Sql == "DROP SUBSCRIPTION sub_bucket_42",
-            "прямая подписка срезана независимо от skip_reverse");
+            "the direct subscription is cut regardless of skip_reverse");
         rig.Sql.Calls.Should().NotContain(c => c.Sql.Contains("CREATE PUBLICATION pub_bucket_42_rb")
             || c.Sql.Contains("CREATE SUBSCRIPTION sub_bucket_42_rb"),
-            "skip_reverse: pub_rb/sub_rb не создаются");
+            "skip_reverse: pub_rb/sub_rb are not created");
     }
 
     // AAA: resume из FROZEN/flip (смерть инстанса посреди cutover) — повтор
@@ -192,12 +192,12 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "повтор cutover довёл переезд, auto-finalize поставлена");
+        tick.Value.Should().Be(ProcessOutcome.Done, "the cutover retry finished the move, auto-finalize is queued");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("REVOKE INSERT"),
-            "заморозка идемпотентно повторена");
+            "the freeze was idempotently repeated");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
-            "flip перевёл routing");
+            "flip switched routing");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
-            "статус-ключ удалён flip'ом");
+            "the status key was deleted by flip");
     }
 }

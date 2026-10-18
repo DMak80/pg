@@ -114,7 +114,7 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void ToRuntime_склеивает_все_секции_и_advertised_fallback()
+    public void ToRuntime_MergesAllSections_AndAdvertisedFallback()
     {
         // Arrange — t36: только bucket/CA (endpoint/креды — пул и env-профили).
         var options = new BackupsOptions
@@ -142,7 +142,7 @@ public class BackupsOptionsTests
 
     // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
     [Fact]
-    public void ToRuntime_без_endpoint_кредов_вален()
+    public void ToRuntime_WithoutEndpointCreds_IsValid()
     {
         // Arrange
         var options = new BackupsOptions
@@ -162,7 +162,7 @@ public class BackupsOptionsTests
 
     // AAA: CaBundlePath прокидывается в runtime (t42, arch/19 §7) — null по умолчанию
     [Fact]
-    public void ToRuntime_склеивает_CaBundlePath()
+    public void ToRuntime_Carries_CaBundlePath()
     {
         var options = new PgWorkerOptions
         {
@@ -172,7 +172,7 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void ToRuntime_без_CaBundle_дает_null()
+    public void ToRuntime_WithoutCaBundle_YieldsNull()
     {
         new BackupsOptions().ToRuntime().S3CaBundlePath.Should().BeNull();
     }
@@ -232,7 +232,7 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void Дефолты_валиды_и_каноничны()
+    public void Defaults_Valid_AndCanonical()
     {
         // Arrange — дефолтная секция (appsettings без ретенции/квоты).
         var options = new BackupsOptions();
@@ -247,7 +247,7 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void ToRuntime_несёт_ретенцию_и_квоту()
+    public void ToRuntime_CarriesRetention_AndQuota()
     {
         // Arrange — экзотические значения всех новых полей.
         var options = new BackupsOptions
@@ -285,7 +285,7 @@ public class BackupsOptionsTests
     [InlineData(600, 604800, 0, 21600, 86400)]     // FullTimeoutSec = 0
     [InlineData(600, 604800, 21600, -5, 86400)]    // VerifyTimeoutSec < 0
     [InlineData(600, 604800, 21600, 21600, 0)]     // RestoreTimeoutSec = 0
-    public void IsValid_ОтрицательныеБюджеты_FailFast(
+    public void IsValid_NegativeBudgets_FailFast(
         int interval, long ttl, int full, int verify, int restore)
     {
         // Arrange
@@ -303,12 +303,12 @@ public class BackupsOptionsTests
         options.Job.RestoreTimeoutSec = restore;
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("negative/zero budgets are garbage config");
     }
 
     // AAA: OrphanTtlSec=0 — валиден (только алерт, без авто-удаления)
     [Fact]
-    public void IsValid_TtlZero_Валиден()
+    public void IsValid_TtlZero_Valid()
     {
         // Arrange — дефолты + TTL сирот 0 (авто-удаление выключено)
         var options = new BackupsOptions
@@ -317,12 +317,12 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
+        options.IsValid(1).Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
     }
 
     // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
     [Fact]
-    public void Дефолты_супервизора_и_бюджетов_каноничны()
+    public void Supervisor_AndBudgets_Defaults_Canonical()
     {
         // Arrange
         var options = new BackupsOptions();
@@ -375,7 +375,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid(1).Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
+        options.IsValid(1).Should().BeFalse("negative Drill budgets are garbage config");
     }
 
     // AAA: IntervalDays=0 валиден (глобальное выключение новых запусков)
@@ -389,7 +389,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeTrue("0 — легитимное выключение новых запусков");
+        options.IsValid(1).Should().BeTrue("0 is a legitimate switch-off of new runs");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
 
@@ -397,7 +397,7 @@ public class BackupsOptionsTests
 
     // AAA: дефолт образа wal-агента — pgworker-wal:dev (arch/19 §9)
     [Fact]
-    public void Wal_AgentImage_Дефолт_каноничен()
+    public void Wal_AgentImage_Default_IsCanonical()
     {
         // Arrange
         var options = new BackupsOptions();
@@ -409,7 +409,7 @@ public class BackupsOptionsTests
 
     // AAA: Enabled=true с пустым AgentImage — мусорный конфиг (fail-fast старта)
     [Fact]
-    public void Wal_AgentImage_Пустой_Invalid()
+    public void Wal_AgentImage_Empty_Invalid()
     {
         // Arrange — включили с полным S3-комплектом, но образ агента не задан
         var options = new BackupsOptions
@@ -428,7 +428,7 @@ public class BackupsOptionsTests
 
     // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)
     [Fact]
-    public void Wal_AgentImage_ToRuntime_переносит()
+    public void Wal_AgentImage_ToRuntime_Carries()
     {
         // Arrange
         var options = new BackupsOptions

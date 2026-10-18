@@ -78,7 +78,7 @@ public class HealthTests
 
         // Assert — сервис жив, но требует внимания
         result.Status.Should().Be(HealthStatus.Degraded);
-        result.Data["etcd"].ToString().Should().Contain("недоступен");
+        result.Data["etcd"].ToString().Should().Contain("unreachable");
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public class HealthTests
 
         // Assert — не тикавшие циклы дают Degraded
         result.Status.Should().Be(HealthStatus.Degraded);
-        result.Data["loops"].ToString().Should().Contain("reconcile=нет тиков");
+        result.Data["loops"].ToString().Should().Contain("reconcile=no ticks");
     }
 
     [Fact]
@@ -152,7 +152,7 @@ public class HealthTests
         {
             Inited = true,
             Working = true,
-            StatusError = Result.Failed(new ApplicationException("тик не прошёл")),
+            StatusError = Result.Failed(new ApplicationException("the tick failed")),
         };
 
         // Act

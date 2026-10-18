@@ -43,7 +43,7 @@ public class BackupJobSpecTests
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
         spec.Hostname.Should().Be("pgw-backup-full-demo-s1-20260910030000Z");
-        spec.Ports.Should().BeEmpty("джоб — клиент без публикации портов");
+        spec.Ports.Should().BeEmpty("the job is a client without published ports");
         spec.Env!["PGW_BK_DSN"].Should().Be(
             "host=host.docker.internal port=15432 user=backup_exec password=pw sslmode=require");
         spec.Env!["PGW_BK_ID"].Should().Be("20260910030000Z");
@@ -56,7 +56,7 @@ public class BackupJobSpecTests
         spec.Env!["PGW_BK_PREFIX"].Should().Be("demo/s1");
         spec.Env!["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
         spec.ExtraHosts.Should().Contain("host.docker.internal:host-gateway")
-            .And.Contain("local:host-gateway", "зарезервированное имя docker-хоста стенда");
+            .And.Contain("local:host-gateway", "the reserved name of the stand docker host");
         spec.Label.Should().Be("demo");
     }
 
@@ -97,7 +97,7 @@ public class BackupJobSpecTests
     // (креды только env), Cmd — полная замена ENTRYPOINT, лимиты Agent { Cpu, Mem },
     // портов нет, restart no (t04, arch/19 §5, spec §3.2)
     [Fact]
-    public void VerifyJobSpec_EnvContract_и_Контейнер()
+    public void VerifyJobSpec_EnvContract_And_Container()
     {
         // Arrange
         var opts = new BackupsRuntimeOptions
@@ -121,7 +121,7 @@ public class BackupJobSpecTests
         spec.Env!["PGW_BK_ID"].Should().Be("20260911120000Z");
         spec.Env!["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
         spec.Cmd.Should().BeEquivalentTo(VerifyJobCommand.Build(), o => o.WithStrictOrdering());
-        spec.CpuCores.Should().Be(0.5, "лимиты Agent { Cpu, Mem } — как у джоба t02 (spec §3.2)");
+        spec.CpuCores.Should().Be(0.5, "Agent { Cpu, Mem } limits — same as the t02 job (spec §3.2)");
         spec.MemoryBytes.Should().Be(536870912);
         spec.Ports.Should().BeEmpty();
         spec.RestartPolicy.Should().Be("no");
@@ -131,7 +131,7 @@ public class BackupJobSpecTests
 
     // AAA: квота staging → tmpfs size=; без квоты → named volume
     [Fact]
-    public void VerifyJobSpec_Квота_Tmpfs()
+    public void VerifyJobSpec_TmpfsQuota()
     {
         // Arrange
         var opts = new BackupsRuntimeOptions { StagingQuotaBytes = 1024, StagingDir = "/backup-staging" };
@@ -148,7 +148,7 @@ public class BackupJobSpecTests
 
     // AAA: CaBundlePath задан → env несёт S3_CA_PEM значением PEM (t42, arch/19 §7)
     [Fact]
-    public void Build_CaBundle_ПередаётPemЗначением()
+    public void Build_CaBundle_PassesPemByValue()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
@@ -160,7 +160,7 @@ public class BackupJobSpecTests
 
     // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
     [Fact]
-    public void Build_БезCaBundle_НетS3CaPem()
+    public void Build_WithoutCaBundle_NoS3CaPem()
     {
         var spec = BackupJobSpec.Build(_opts, "demo", "s1", "id1",
             new NodeAddress("h", new NodePorts(5432, 8008, 6432)), "pw",
@@ -170,7 +170,7 @@ public class BackupJobSpecTests
 
     // AAA: verify-спека — CaBundlePath задан → S3_CA_PEM значением; без — нет
     [Fact]
-    public void VerifyJobSpec_CaBundle_ПередаётPemЗначением()
+    public void VerifyJobSpec_CaBundle_PassesPemByValue()
     {
         var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
         File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
@@ -179,7 +179,7 @@ public class BackupJobSpecTests
     }
 
     [Fact]
-    public void VerifyJobSpec_БезCaBundle_НетS3CaPem()
+    public void VerifyJobSpec_WithoutCaBundle_NoS3CaPem()
     {
         var spec = VerifyJobSpec.Build(_opts, "c1", "s1", "id1", ["http://m:9000"], "ak", "sk");
         spec.Env!.Should().NotContainKey("S3_CA_PEM");
@@ -204,7 +204,7 @@ public class BackupJobSpecTests
         // Assert
         spec.Network.Should().Be(expectedNet);
         if (expectedHosts is null)
-            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+            spec.ExtraHosts.Should().BeNull("standalone mode: extra_hosts are not applied");
         else
             spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
     }
@@ -224,7 +224,7 @@ public class BackupJobSpecTests
         // Assert
         spec.Network.Should().Be(expectedNet);
         if (expectedHosts is null)
-            spec.ExtraHosts.Should().BeNull("контур-режим: extra_hosts не применяются");
+            spec.ExtraHosts.Should().BeNull("standalone mode: extra_hosts are not applied");
         else
             spec.ExtraHosts.Should().BeEquivalentTo(expectedHosts);
     }

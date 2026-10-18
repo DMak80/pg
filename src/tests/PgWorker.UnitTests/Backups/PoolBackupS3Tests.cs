@@ -237,7 +237,7 @@ public class PoolBackupS3Tests
         // (breaker) и ушёл на n2.
         first.IsSuccess.Should().BeTrue();
         second.IsSuccess.Should().BeTrue();
-        t1.Calls.Should().Be(1, "после отказа n1 исключена из перебора на окно");
+        t1.Calls.Should().Be(1, "after a failure n1 is excluded from the rotation for the window");
         t2.Calls.Should().Be(2);
     }
 
@@ -262,7 +262,7 @@ public class PoolBackupS3Tests
 
         // Assert — n1 вернулась в перебор (зонд), результат — успех от n2.
         third.IsSuccess.Should().BeTrue();
-        t1.Calls.Should().Be(2, "истечение окна вернуло цель в перебор");
+        t1.Calls.Should().Be(2, "window expiry returned the target to the rotation");
         t2.Calls.Should().Be(3);
     }
 
@@ -304,7 +304,7 @@ public class PoolBackupS3Tests
         // Assert — оба раза n1 опрошена (окно не открылось), значение — со второй.
         first.Value.Should().Be("body");
         second.Value.Should().Be("body");
-        t1.Calls.Should().Be(2, "NotFound не открывает breaker — цель жива");
+        t1.Calls.Should().Be(2, "NotFound does not open the breaker — the target is alive");
         t2.Calls.Should().Be(2);
     }
 

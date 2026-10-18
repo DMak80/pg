@@ -366,17 +366,17 @@ public class AddShardProcessTests
 
         // Assert — перманентная подсказка оператору; декларация жива, docker не трогаем
         outcome.IsSuccess.Should().BeFalse();
-        outcome.Error!.Message.Should().Contain("расширьте PortRange");
+        outcome.Error!.Message.Should().Contain("widen PortRange");
         var work = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
         work.Phase.Should().Be("planning");
-        work.LastError.Should().Contain("расширьте PortRange");
+        work.LastError.Should().Contain("widen PortRange");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store.ContainsKey("/clusters/shop/shards/shard3/replicas").Should().BeTrue();
 
         // Act 2 — повторный тик с теми же порогами: тот же отказ (ретраи тиками)
         var again = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
         again.IsSuccess.Should().BeFalse();
-        again.Error!.Message.Should().Contain("расширьте PortRange");
+        again.Error!.Message.Should().Contain("widen PortRange");
     }
 
     // AAA: A5 — SQL-фаза нового шарда ensure'ит app_params его нод и перечитывает

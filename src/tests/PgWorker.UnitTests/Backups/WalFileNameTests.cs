@@ -10,7 +10,7 @@ public class WalFileNameTests
     [Theory]
     [InlineData("000000010000000000000001", 1u, 0u, 1u)]
     [InlineData("0000000200000001000000FE", 2u, 1u, 0xFEu)]
-    public void TryParse_корректные_сегменты(string name, uint tli, uint log, uint seg)
+    public void TryParse_ValidSegments(string name, uint tli, uint log, uint seg)
     {
         // Arrange / Act
         var parsed = WalFileName.TryParse(name);
@@ -30,14 +30,14 @@ public class WalFileNameTests
     [InlineData("0000000100000000000000ZZ")]          // не hex
     [InlineData("backup_manifest")]
     [InlineData("")]
-    public void TryParse_не_сегменты_дает_null(string name)
+    public void TryParse_NotSegments_YieldsNull(string name)
     {
         // Arrange / Act / Assert
         WalFileName.TryParse(name).Should().BeNull();
     }
 
     [Fact]
-    public void TryParse_регистронезависим()
+    public void TryParse_CaseInsensitive()
     {
         // Arrange / Act
         var parsed = WalFileName.TryParse("0000000100000000000000AB");
@@ -51,7 +51,7 @@ public class WalFileNameTests
     [InlineData("000000010000000000000001.partial", true)]
     [InlineData("000000010000000000000001", false)]
     [InlineData("00000002.history", false)]
-    public void IsPartial_только_partial_суффикс(string name, bool expected)
+    public void IsPartial_OnlyPartialSuffix(string name, bool expected)
     {
         // Arrange / Act / Assert
         WalFileName.IsPartial(name).Should().Be(expected);
@@ -60,7 +60,7 @@ public class WalFileNameTests
     [Theory]
     [InlineData("00000002.history", 2u)]
     [InlineData("00000010.history", 16u)]
-    public void TryParseHistory_валидные(string name, uint tli)
+    public void TryParseHistory_Valid(string name, uint tli)
     {
         // Arrange / Act
         var parsed = WalFileName.TryParseHistory(name);
@@ -73,14 +73,14 @@ public class WalFileNameTests
     [InlineData("000000010000000000000001")]
     [InlineData("00000002.histories")]
     [InlineData("2.history")]
-    public void TryParseHistory_невалидные_дает_null(string name)
+    public void TryParseHistory_Invalid_YieldsNull(string name)
     {
         // Arrange / Act / Assert
         WalFileName.TryParseHistory(name).Should().BeNull();
     }
 
     [Fact]
-    public void Next_инкремент_сегмента()
+    public void Next_SegmentIncrement()
     {
         // Arrange
         var segment = WalFileName.TryParse("000000010000000000000001")!.Value;
@@ -90,7 +90,7 @@ public class WalFileNameTests
     }
 
     [Fact]
-    public void Next_переход_0xFF_переносит_log()
+    public void Next_0xFFOverflow_CarriesIntoLog()
     {
         // Arrange — seg=0xFF: следующий = log+1, seg=0 (arch/19 §3)
         var segment = WalFileName.TryParse("0000000100000000000000FF")!.Value;
@@ -100,7 +100,7 @@ public class WalFileNameTests
     }
 
     [Fact]
-    public void DistanceTo_разница_в_сегментах_через_log()
+    public void DistanceTo_SegmentDifference_AcrossLog()
     {
         // Arrange — (log=0,seg=254) → (log=2,seg=1): 2*256+1-254 = 259
         var from = WalFileName.TryParse("0000000100000000000000FE")!.Value;
@@ -112,7 +112,7 @@ public class WalFileNameTests
     }
 
     [Fact]
-    public void FromLsn_сегмент_16MB()
+    public void FromLsn_Segment16MB()
     {
         // Arrange — LSN 0/3000000 при wal_segment_size=16MB: segId=3 → log=0, seg=3
         // Act
