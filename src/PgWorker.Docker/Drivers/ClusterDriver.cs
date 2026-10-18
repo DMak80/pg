@@ -246,7 +246,7 @@ public sealed class PlainClusterDriver(
             // а не ключ движка; валидация старта гарантирует единственный хост.
             if (advertisedHost is not { Length: > 0 } || addr.Host != advertisedHost || _engines.Count != 1)
                 return Result.Failed(new ApplicationException(
-                    $"хост {addr.Host} не в таблице Docker:Hosts (кластер {topology.Cluster}/{nodeName})"));
+                    $"host {addr.Host} not in the Docker:Hosts table (cluster {topology.Cluster}/{nodeName})"));
             engine = _engines.Values.Single();
         }
 
@@ -392,7 +392,7 @@ public sealed class PlainClusterDriver(
                         || !error.Message.Contains("active endpoints", StringComparison.Ordinal))
                     {
                         Console.Error.WriteLine(
-                            $"pgw: сеть кластера {NetworkName(cluster)} не удалена при демонтаже: {error.Message}");
+                            $"pgw: cluster network {NetworkName(cluster)} not removed during teardown: {error.Message}");
                         break;
                     }
 
@@ -428,7 +428,7 @@ public sealed class PlainClusterDriver(
             // гарантирует единственный хост — fallback на него.
             if (advertisedHost is not { Length: > 0 } || host != advertisedHost || _engines.Count != 1)
                 return Result.Failed(new ApplicationException(
-                    $"хост {host} не в таблице Docker:Hosts (агент {cluster}/{shard}/{node})"));
+                    $"host {host} not in the Docker:Hosts table (agent {cluster}/{shard}/{node})"));
             engine = _engines.Values.Single();
         }
 
@@ -704,7 +704,7 @@ public sealed class PlainClusterDriver(
                 return exec.Value;
             }
 
-            throw new ApplicationException($"контейнер '{containerName}' не найден на хостах драйвера");
+            throw new ApplicationException($"container '{containerName}' not found on driver hosts");
         });
     }
 
@@ -756,8 +756,8 @@ public sealed class PlainClusterDriver(
     {
         if (restCertificates is null)
             throw new ApplicationException(
-                "BuildSpec: RestCertificateCache не передан драйверу — REST-TLS материал ноды " +
-                "обязателен (HTTP-режим провижининга не существует, arch/14 §2.1)");
+                "BuildSpec: RestCertificateCache was not passed to the driver — node REST-TLS material " +
+                "is mandatory (HTTP provisioning mode does not exist, arch/14 §2.1)");
         var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var env = new Dictionary<string, string>(
             SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, nodeName,
@@ -976,7 +976,7 @@ public sealed class SwarmClusterDriver(
                 throw nodes.Error!;
             var target = nodes.Value.FirstOrDefault(n => n.Hostname == addr.Host);
             if (target is null)
-                throw new ApplicationException($"swarm-нода с Hostname={addr.Host} не найдена");
+                throw new ApplicationException($"swarm node with Hostname={addr.Host} not found");
 
             // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (t22: без
             // кеша внутренний BuildSpec упал бы fail-fast'ом REST-TLS).
@@ -1017,7 +1017,7 @@ public sealed class SwarmClusterDriver(
     public Task<Result> EnsureBackupAgentAsync(
         string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
         => Task.FromResult(Result.Failed(new ApplicationException(
-            "WAL-агенты бэкапов в Mode=Swarm не поддерживаются (arch/19 — plain-деплой)")));
+            "backup WAL agents are not supported in Mode=Swarm (arch/19 — plain deploy)")));
 
     public async Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
     {
@@ -1053,7 +1053,7 @@ public sealed class SwarmClusterDriver(
     public Task<Result<string>> BackupAgentLogsAsync(
         string cluster, string containerName, int tailLines, CancellationToken ct)
         => Task.FromResult(Result<string>.Failed(new ApplicationException(
-            "WAL-агенты бэкапов в Mode=Swarm не поддерживаются (arch/19 — plain-деплой)")));
+            "backup WAL agents are not supported in Mode=Swarm (arch/19 — plain deploy)")));
 
     // Swarm: шаг пересоздания нод надзора — no-op (заглушка, симметрия
     // InspectNodesAsync): сервисы не инспектируются по env.
@@ -1093,7 +1093,7 @@ public sealed class SwarmClusterDriver(
                 t.State == "running" && t.ContainerId is { Length: > 0 });
             if (running is null)
                 throw new ApplicationException(
-                    $"контейнер ноды {cluster}/{shard}/{node} не найден (нет running-таска)");
+                    $"node container {cluster}/{shard}/{node} not found (no running task)");
 
             var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
             if (!exec.IsSuccess)
@@ -1123,7 +1123,7 @@ public sealed class SwarmClusterDriver(
                 t.State == "running" && t.ContainerId is { Length: > 0 });
             if (running is null)
                 throw new ApplicationException(
-                    $"контейнер '{containerName}' не найден (нет running-таска)");
+                    $"container '{containerName}' not found (no running task)");
 
             var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
             if (!exec.IsSuccess)
