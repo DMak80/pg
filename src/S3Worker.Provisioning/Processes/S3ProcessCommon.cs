@@ -142,7 +142,7 @@ public static class S3ProcessCommon
             return Result<string?>.Success(string.IsNullOrWhiteSpace(value) ? null : value.Trim());
         }
 
-        return Result<string?>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<string?>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Запись state ноды (failover по endpoints).
@@ -158,7 +158,7 @@ public static class S3ProcessCommon
             last = put;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Claimed-check: мутации — только держателем живого клэйма (arch/17 S5).
@@ -166,7 +166,7 @@ public static class S3ProcessCommon
         => claims.IsMine(cluster)
             ? Result.Success()
             : Result.Failed(new ApplicationException(
-                $"{op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
     /// <summary>
     /// Завершающее окно D/E (spec §2.2, arch/23 §2 после правки): RMW
@@ -272,10 +272,10 @@ public static class S3ProcessCommon
             return txn.Value.Succeeded
                 ? Result.Success()
                 : Result.Failed(new ApplicationException(
-                    $"{key} изменился под нами — ретрай тиком"));
+                    $"{key} changed underneath us — retried next tick"));
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Failover-чтение ключа (первый успешный endpoint).
@@ -291,7 +291,7 @@ public static class S3ProcessCommon
             last = read;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     /// <summary>

@@ -175,14 +175,14 @@ public sealed class SecretRotator(
             return Result<NodeAddress>.Failed(current.Error!);
         if (current.Value is not { } kv)
             return Result<NodeAddress>.Failed(new ApplicationException(
-                $"rotate-secrets {cluster}/{node}: записи portalloc нет"));
+                $"rotate-secrets {cluster}/{node}: no portalloc entry"));
         try
         {
             var alloc = S3ProcessCommon.ParsePortAlloc(kv.Value);
             return alloc.TryGetValue(node, out var addr)
                 ? Result<NodeAddress>.Success(addr)
                 : Result<NodeAddress>.Failed(new ApplicationException(
-                    $"rotate-secrets {cluster}/{node}: ноды нет в portalloc"));
+                    $"rotate-secrets {cluster}/{node}: node not in portalloc"));
         }
         catch (JsonException ex)
         {
@@ -201,6 +201,6 @@ public sealed class SecretRotator(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

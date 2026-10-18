@@ -139,7 +139,7 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteKeyAsync(string key, CancellationToken ct)
@@ -153,6 +153,6 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

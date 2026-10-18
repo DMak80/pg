@@ -49,7 +49,7 @@ public sealed class ProvisioningProcess(
         // Мутации — только держателем живого клэйма (arch/17 S5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"provisioning {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"provisioning {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // Снапшот P12 «до» (после claim — порт P12: точка изменения).
         if (snapshot is not null)
@@ -82,7 +82,7 @@ public sealed class ProvisioningProcess(
         // (диагностика без значений; оператор чинит env — тик повторит).
         if (!secrets.TryGet(snap.Config!.SecretProfile!, out var nodeSecrets, out var secretDiagnostic))
             return Fail(cluster, new ApplicationException(
-                $"профиль секретов {snap.Config.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
+                $"secret profile {snap.Config.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
 
         // P2: создать контейнеры нод (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, planned.Value, nodeSecrets!, ct);
@@ -342,7 +342,7 @@ public sealed class ProvisioningProcess(
                 // Не готов: бюджет с первого наблюдения (диагностика, не клэйм).
                 if (bootWait.Exceeded(cluster, options.NodeBootSec))
                     return Result<bool>.Failed(new ApplicationException(
-                        $"кластер {cluster}: нода {node} не ожила за бюджет {options.NodeBootSec} с"));
+                        $"cluster {cluster}: node {node} did not come up within budget {options.NodeBootSec} s"));
                 return Result<bool>.Success(false);
             }
         }
@@ -420,7 +420,7 @@ public sealed class ProvisioningProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"config {key} изменился с момента чтения (compare mod_revision не сошёлся) — ретрай тиком"));
+                $"config {key} changed since read (compare mod_revision mismatch) — retried next tick"));
 
         return Result.Success();
     }
@@ -481,7 +481,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -498,7 +498,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Канонический config после provisioning: state отсутствует (arch/23 §2.1,

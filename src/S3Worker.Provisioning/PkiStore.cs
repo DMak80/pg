@@ -103,7 +103,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
         string caPublicKeyPem;
         using (var caDoc = JsonDocument.Parse(caJson))
             caPublicKeyPem = caDoc.RootElement.GetProperty("publicKeyPem").GetString()
-                ?? throw new InvalidOperationException("CreateCa: пустой publicKeyPem");
+                ?? throw new InvalidOperationException("CreateCa: empty publicKeyPem");
         var caAnchor = new PeerTrustAnchor(cluster, caPublicKeyPem);
         var (orchCert, orchKeyPem) = PeerCertificateAuthority.IssueServer(
             "orchestrator", caAnchor, caPem, at, expiresDays: 0);
@@ -148,11 +148,11 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             using var doc = JsonDocument.Parse(kv.Value);
             var root = doc.RootElement;
             var name = root.GetProperty("name").GetString()
-                ?? throw new InvalidOperationException("поле name пусто");
+                ?? throw new InvalidOperationException("field name is empty");
             var publicKeyPem = root.GetProperty("publicKeyPem").GetString()
-                ?? throw new InvalidOperationException("поле publicKeyPem пусто");
+                ?? throw new InvalidOperationException("field publicKeyPem is empty");
             var privateKeyPem = root.GetProperty("private_key_pem").GetString()
-                ?? throw new InvalidOperationException("поле private_key_pem пусто");
+                ?? throw new InvalidOperationException("field private_key_pem is empty");
 
             // Целостность: приватный ключ соответствует публичному (по образцу
             // PeerIdentityLoader — нормализация \r\n); из него можно выпускать.
@@ -162,7 +162,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             if (!string.Equals(exported.Replace("\r\n", "\n"),
                     publicKeyPem.Replace("\r\n", "\n"), StringComparison.Ordinal))
                 throw new InvalidOperationException(
-                    "приватный ключ CA не соответствует publicKeyPem (материал несогласован)");
+                    "CA private key does not match publicKeyPem (material is inconsistent)");
 
             return Result<ClusterCaMaterial?>.Success(
                 new ClusterCaMaterial(new PeerTrustAnchor(name, publicKeyPem), privateKeyPem));
@@ -171,7 +171,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             or InvalidOperationException or FormatException or CryptographicException)
         {
             return Result<ClusterCaMaterial?>.Failed(new ApplicationException(
-                $"pki {S3ProcessCommon.ClusterPkiCaKey(cluster)}: битый/несогласованный материал CA — {ex.Message}"));
+                $"pki {S3ProcessCommon.ClusterPkiCaKey(cluster)}: corrupt/inconsistent CA material — {ex.Message}"));
         }
     }
 
@@ -201,13 +201,13 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             using var doc = JsonDocument.Parse(kv.Value);
             var root = doc.RootElement;
             var certificateJson = root.GetProperty("certificate").GetString()
-                ?? throw new InvalidOperationException("поле certificate пусто");
+                ?? throw new InvalidOperationException("field certificate is empty");
             var privateKeyPem = root.GetProperty("private_key_pem").GetString()
-                ?? throw new InvalidOperationException("поле private_key_pem пусто");
+                ?? throw new InvalidOperationException("field private_key_pem is empty");
 
             var cert = PeerCertificate.FromJson(certificateJson);
             if (cert.IsExpired(clock.GetUtcNow()))
-                throw new InvalidOperationException($"сертификат {cert.Name} истёк");
+                throw new InvalidOperationException($"certificate {cert.Name} expired");
 
             // Целостность: приватный ключ соответствует публичному ключу сертификата.
             using var ecdsa = ECDsa.Create();
@@ -216,7 +216,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             if (!string.Equals(exported.Replace("\r\n", "\n"),
                     cert.PublicKeyPem.Replace("\r\n", "\n"), StringComparison.Ordinal))
                 throw new InvalidOperationException(
-                    $"приватный ключ не соответствует сертификату {cert.Name}");
+                    $"private key does not match certificate {cert.Name}");
 
             // Верификация против CA СВОЕГО кластера (изоляция trust-доменов).
             // CA отсутствует — материал не виним (EnsureClusterPki различит ветку
@@ -227,7 +227,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             if (ca.Value is { } caMaterial
                 && !PeerCertificateAuthority.Verify(cert, caMaterial.Ca, clock.GetUtcNow()))
                 throw new InvalidOperationException(
-                    $"сертификат {cert.Name} не проходит верификацию CA кластера {cluster}");
+                    $"certificate {cert.Name} fails CA verification of cluster {cluster}");
 
             return Result<IssuedPkiMaterial?>.Success(new IssuedPkiMaterial(cert, certificateJson, privateKeyPem));
         }
@@ -235,7 +235,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             or InvalidOperationException or FormatException or CryptographicException)
         {
             return Result<IssuedPkiMaterial?>.Failed(new ApplicationException(
-                $"pki {key}: битый/несогласованный материал — {ex.Message}"));
+                $"pki {key}: corrupt/inconsistent material — {ex.Message}"));
         }
     }
 
@@ -264,7 +264,7 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             return reread.IsSuccess && reread.Value is { } winner
                 ? Result<IssuedPkiMaterial>.Success(winner)
                 : Result<IssuedPkiMaterial>.Failed(reread.IsSuccess
-                    ? new ApplicationException($"pki {key}: проиграна txn put-if-absent, материал исчез")
+                    ? new ApplicationException($"pki {key}: lost txn put-if-absent race, material has disappeared")
                     : reread.Error!);
         }
 
@@ -282,6 +282,6 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
             last = txn;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

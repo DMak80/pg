@@ -113,7 +113,7 @@ public sealed class MeshGovernanceProcess(
                     Host(addresses.Value, x), Port(addresses.Value, x), nodeSecrets!, ct);
                 if (!status.IsSuccess)
                 {
-                    warnings.Add($"status {x}: {status.Error!.Message} — транзиент");
+                    warnings.Add($"status {x}: {status.Error!.Message} — transient");
                     continue;
                 }
 
@@ -185,7 +185,7 @@ public sealed class MeshGovernanceProcess(
             }
             if (material.Value is not { } issued)
             {
-                warnings.Add($"deny {name}: материала pki нет — имя пропущено");
+                warnings.Add($"deny {name}: no pki material — name skipped");
                 continue;
             }
 
@@ -201,7 +201,7 @@ public sealed class MeshGovernanceProcess(
                 continue;
             if (!addresses.TryGetValue(x, out var xAddress))
             {
-                warnings.Add($"deny {x}: адреса нет в portalloc — транзиент");
+                warnings.Add($"deny {x}: no address in portalloc — transient");
                 continue;
             }
 
@@ -216,12 +216,12 @@ public sealed class MeshGovernanceProcess(
             {
                 // 403 — trust не принят: transient, тик повторит (§3.4).
                 pushedAny = true; // фаза deny-pushed честно отражает попытку доведения
-                warnings.Add($"deny {x}: trust не принят (403) — ретрай тиком");
+                warnings.Add($"deny {x}: trust not accepted (403) — retried next tick");
                 _deny.Add(1, new KeyValuePair<string, object?>("result", "transient"));
             }
             else
             {
-                warnings.Add($"deny {x}: {push.Error!.Message} — транзиент");
+                warnings.Add($"deny {x}: {push.Error!.Message} — transient");
                 _deny.Add(1, new KeyValuePair<string, object?>("result", "transient"));
             }
         }
@@ -241,7 +241,7 @@ public sealed class MeshGovernanceProcess(
             // правило, что endpoints; §3.5 граница G).
             if (!addresses.TryGetValue(mismatch.Y, out var bAddress))
             {
-                warnings.Add($"join {mismatch.X}→{mismatch.Y}: адреса нет в portalloc — транзиент");
+                warnings.Add($"join {mismatch.X}→{mismatch.Y}: no address in portalloc — transient");
                 _join.Add(1, new KeyValuePair<string, object?>("result", "transient"));
                 return Result<string>.Success("waiting-join");
             }
@@ -267,11 +267,11 @@ public sealed class MeshGovernanceProcess(
                         Host(addresses, mismatch.X), Port(addresses, mismatch.X), nodeSecrets, mismatch.Y, ct);
                     _join.Add(1, new KeyValuePair<string, object?>("result", "conflict"));
                     _delete.Add(1, new KeyValuePair<string, object?>("result", deleted.IsSuccess && deleted.Value ? "cleaned" : "transient"));
-                    warnings.Add($"join {mismatch.X}→{mismatch.Y}: конфликт имени — target снесён, повтор следующим тиком");
+                    warnings.Add($"join {mismatch.X}→{mismatch.Y}: name conflict — target removed, retried next tick");
                     return Result<string>.Success("cleaned-targets");
                 default: // Refused / Transient
                     _join.Add(1, new KeyValuePair<string, object?>("result", "transient"));
-                    return await WaitingAsync(cluster, $"join {mismatch.X}→{mismatch.Y}: отказ/недоступен — ретрай тиком", ct);
+                    return await WaitingAsync(cluster, $"join {mismatch.X}→{mismatch.Y}: refused/unavailable — retried next tick", ct);
             }
         }
 
@@ -287,7 +287,7 @@ public sealed class MeshGovernanceProcess(
             if (removed.IsSuccess && removed.Value)
                 cleaned++;
             else if (!removed.IsSuccess)
-                warnings.Add($"delete-target {side}/{name}: {removed.Error!.Message} — транзиент");
+                warnings.Add($"delete-target {side}/{name}: {removed.Error!.Message} — transient");
         }
 
         _delete.Add(1, new KeyValuePair<string, object?>("result", cleaned > 0 ? "cleaned" : "transient"));

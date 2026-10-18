@@ -40,13 +40,13 @@ public sealed class PortAllocHealer(
             return Result<NodeAddress>.Failed(inspection.Error!); // слепота — не лечим
         if (inspection.Value is not { } found)
             return Result<NodeAddress>.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}/{node}: контейнера нет — порт не выдумываем (S7)"));
+                $"healing-portalloc {cluster}/{node}: no container — not inventing a port (S7)"));
 
         // Реконструированный порт обязан лежать в portalloc-диапазоне конфигурации:
         // вне его — мусорный inspect, запись сломала бы аллокатор.
         if (found.S3HostPort < options.PortRangeFrom || found.S3HostPort >= options.PortRangeTo)
             return Result<NodeAddress>.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}/{node}: published-порт {found.S3HostPort} вне диапазона {options.PortRangeFrom}–{options.PortRangeTo}"));
+                $"healing-portalloc {cluster}/{node}: published port {found.S3HostPort} outside range {options.PortRangeFrom}–{options.PortRangeTo}"));
 
         // journal-before-manipulations: фаза ДО первого txn.
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
@@ -77,7 +77,7 @@ public sealed class PortAllocHealer(
                     return Result<NodeAddress>.Failed(reread.Error!);
                 if (!reread.Value.TryGetValue(node, out var foreign))
                     return Result<NodeAddress>.Failed(new ApplicationException(
-                        $"healing-portalloc {cluster}/{node}: проигранный txn без записи соседа"));
+                        $"healing-portalloc {cluster}/{node}: lost txn without neighbor entry"));
                 return Result<NodeAddress>.Success(foreign);
             }
         }
@@ -96,7 +96,7 @@ public sealed class PortAllocHealer(
         if (foreignBusy.IsSuccess && foreignBusy.Value.Contains(found.S3HostPort))
         {
             await journal.WritePhaseAsync(cluster, Op, "reconstructed-warning", claims.InstanceId,
-                $"порт {found.S3HostPort} уже в portalloc чужого кластера", ct);
+                $"port {found.S3HostPort} already in portalloc of a foreign cluster", ct);
         }
 
         return Result<NodeAddress>.Success(new NodeAddress(found.Host, found.S3HostPort));
@@ -121,7 +121,7 @@ public sealed class PortAllocHealer(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(S3ProcessCommon.ParsePortAlloc(kv.Value));
         }
 
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -135,6 +135,6 @@ public sealed class PortAllocHealer(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -119,7 +119,7 @@ public sealed class NodeSupervisor(
                 {
                     if (!recreated)
                     {
-                        warnings.Add($"лимиты контейнера {node} расходятся с декларацией — пересоздание");
+                        warnings.Add($"container limits of {node} diverge from declaration — recreating");
                         var rebuilt = await RecreateAsync(snap, node, address.Value, nodeSecrets!, "limits drift", ct);
                         if (!rebuilt.IsSuccess)
                             return rebuilt.Error!;
@@ -128,7 +128,7 @@ public sealed class NodeSupervisor(
                         continue;
                     }
 
-                    warnings.Add($"лимиты {node} расходятся — отложено до следующего тика");
+                    warnings.Add($"limits of {node} diverge — deferred to next tick");
                     continue;
                 }
             }
@@ -167,7 +167,7 @@ public sealed class NodeSupervisor(
             // (PROVISIONING грузится — бюджет молчания надзора не стартует).
             if (!supervisable)
             {
-                warnings.Add($"PROVISIONING {node} молчит — трек надзора заморожен");
+                warnings.Add($"PROVISIONING {node} silent — supervision track frozen");
                 continue;
             }
 
@@ -250,7 +250,7 @@ public sealed class NodeSupervisor(
             return Result<NodeAddress>.Failed(reread.Error!);
         if (reread.Value is not { } fresh)
             return Result<NodeAddress>.Failed(new ApplicationException(
-                $"supervise {cluster}/{node}: адрес реконструирован, записи portalloc нет"));
+                $"supervise {cluster}/{node}: address reconstructed, no portalloc entry"));
 
         try
         {
@@ -258,7 +258,7 @@ public sealed class NodeSupervisor(
             return alloc.TryGetValue(node, out var addr)
                 ? Result<NodeAddress>.Success(addr)
                 : Result<NodeAddress>.Failed(new ApplicationException(
-                    $"supervise {cluster}/{node}: записи ноды нет в portalloc после реконструкции"));
+                    $"supervise {cluster}/{node}: no node entry in portalloc after reconstruction"));
         }
         catch (JsonException ex)
         {
@@ -325,7 +325,7 @@ public sealed class NodeSupervisor(
             return await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId,
                 (await journal.ReadUnreachableAsync(cluster, ct)).Value ?? new Dictionary<string, long>(),
-                $"pki {cluster}: {clusterPki.Error!.Message} — пересоздание {node} отложено", ct);
+                $"pki {cluster}: {clusterPki.Error!.Message} — recreation of {node} deferred", ct);
         }
         var nodePki = await pki.EnsureNodePkiAsync(cluster, node, clusterPki.Value.Ca, ct);
         if (!nodePki.IsSuccess)
@@ -333,7 +333,7 @@ public sealed class NodeSupervisor(
             return await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId,
                 (await journal.ReadUnreachableAsync(cluster, ct)).Value ?? new Dictionary<string, long>(),
-                $"pki {cluster}/{node}: {nodePki.Error!.Message} — пересоздание отложено", ct);
+                $"pki {cluster}/{node}: {nodePki.Error!.Message} — recreation deferred", ct);
         }
 
         var env = envComposer.Compose(
@@ -366,7 +366,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -380,7 +380,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // usage-ключ (arch/23 §2.1 — snake_case).

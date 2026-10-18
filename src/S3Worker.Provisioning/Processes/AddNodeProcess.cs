@@ -62,7 +62,7 @@ public sealed class AddNodeProcess(
         // Гварды Active-кластера: предел 1..9 (arch/23 §2) по фактическому составу.
         if (snap.Nodes.Count >= 9)
             return Fail(cluster, node.Node, new ApplicationException(
-                $"add-node {cluster}/{node.Node}: фактических нод {snap.Nodes.Count} — предел 9"), "guard-limit");
+                $"add-node {cluster}/{node.Node}: actual nodes {snap.Nodes.Count} — limit 9"), "guard-limit");
 
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
@@ -77,7 +77,7 @@ public sealed class AddNodeProcess(
         // Профиль: без кред нода не создаётся (permanent до починки env).
         if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
             return Fail(cluster, node.Node, new ApplicationException(
-                $"профиль секретов {snap.Config?.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
+                $"secret profile {snap.Config?.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
 
         // Mini-A фаза 1: placement + portalloc довыделение под locks (P1).
         var planned = await PlanNodeAsync(snap, node, ct);
@@ -225,7 +225,7 @@ public sealed class AddNodeProcess(
                     return Result<NodeAddress>.Failed(reread.Error!);
                 if (!reread.Value.TryGetValue(node.Node, out var foreignAddress))
                     return Result<NodeAddress>.Failed(new ApplicationException(
-                        $"add-node {cluster}/{node.Node}: проигранный txn без записи соседа"));
+                        $"add-node {cluster}/{node.Node}: lost txn without neighbor entry"));
                 return Result<NodeAddress>.Success(foreignAddress);
             }
 
@@ -305,7 +305,7 @@ public sealed class AddNodeProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -319,6 +319,6 @@ public sealed class AddNodeProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -44,7 +44,7 @@ public sealed class RemoveNodeProcess(
         // 1) последняя нода — пул не может быть пуст (arch/23 §2: nodes 1..9);
         if (snap.Nodes.Count <= 1)
             return await RejectAsync(cluster, node.Node,
-                "последняя нода кластера — вывод запрещён (снимите заявку или удалите кластер)", ct);
+                "last node of the cluster — removal forbidden (withdraw the request or delete the cluster)", ct);
 
         // 2) «мёртвые остальные»: живых RUNNING-нод кроме выводимой нет →
         // вывод рвёт последнюю точку записи пула (arch/24 §5 E).
@@ -53,7 +53,7 @@ public sealed class RemoveNodeProcess(
             .ToList();
         if (aliveOthers.Count == 0)
             return await RejectAsync(cluster, node.Node,
-                "нет живых RUNNING-нод кроме выводимой — вывод не рвёт последнюю точку записи", ct);
+                "no live RUNNING nodes besides the one being removed — removal would break the last write point", ct);
 
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
@@ -171,7 +171,7 @@ public sealed class RemoveNodeProcess(
             return txn.Error!;
         return txn.Value.Succeeded
             ? Result.Success()
-            : Result.Failed(new ApplicationException($"{key} изменился под нами — ретрай тиком"));
+            : Result.Failed(new ApplicationException($"{key} changed underneath us — retried next tick"));
     }
 
     // Разбор denylist (битое значение — пустой список: перезапись восстановит).
@@ -226,7 +226,7 @@ public sealed class RemoveNodeProcess(
             return txn.Value.Succeeded
                 ? Result.Success()
                 : Result.Failed(new ApplicationException(
-                    $"{key} изменился под нами — ретрай тиком"));
+                    $"{key} changed underneath us — retried next tick"));
         }
         finally
         {
@@ -265,7 +265,7 @@ public sealed class RemoveNodeProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -279,6 +279,6 @@ public sealed class RemoveNodeProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -127,7 +127,7 @@ public sealed class SecretProfileStore(Func<string?, string?>? getenv = null, IE
     // Диагностика без значений: строка профилей.
     internal static string Describe(IReadOnlyList<string> profiles)
     {
-        var builder = new StringBuilder("доступные профили: ");
+        var builder = new StringBuilder("available profiles: ");
         builder.Append(string.Join(", ", profiles));
         return builder.ToString();
     }

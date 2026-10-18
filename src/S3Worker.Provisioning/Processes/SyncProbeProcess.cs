@@ -114,7 +114,7 @@ public sealed class SyncProbeProcess(
         {
             if (!addresses.Value.TryGetValue(node, out var addr))
             {
-                warnings.Add($"{node}: адреса нет в portalloc — транзиент");
+                warnings.Add($"{node}: no address in portalloc — transient");
                 continue;
             }
 
@@ -269,8 +269,8 @@ public sealed class SyncProbeProcess(
     {
         if (!addresses.TryGetValue(from, out var fromAddr) || !addresses.TryGetValue(to, out var toAddr))
         {
-            warnings.Add($"пара {from}↔{to}: адреса нет в portalloc — транзиент");
-            return new PairOutcome(0, 0, null, 0, $"пара {from}↔{to}: адреса нет в portalloc");
+            warnings.Add($"pair {from}↔{to}: no address in portalloc — transient");
+            return new PairOutcome(0, 0, null, 0, $"pair {from}↔{to}: no address in portalloc");
         }
 
         var fromHost = options.AdvertisedHost ?? fromAddr.Host;
@@ -288,7 +288,7 @@ public sealed class SyncProbeProcess(
             if (pagesFrom >= options.SyncMaxPages || pagesTo >= options.SyncMaxPages)
             {
                 return new PairOutcome(0, 0, null, 0,
-                    $"листинг пары {from}↔{to} превышает бюджет страниц");
+                    $"listing of pair {from}↔{to} exceeds page budget");
             }
 
             progress?.Mark(); // долгая фаза: таймаут грани до 7.5 с
@@ -302,8 +302,8 @@ public sealed class SyncProbeProcess(
             if (!fromPageResult.IsSuccess || !toPageResult.IsSuccess)
             {
                 var detail = fromPageResult.Error?.Message ?? toPageResult.Error!.Message;
-                warnings.Add($"sync-report {from}/{to}: {detail} — транзиент");
-                return new PairOutcome(0, 0, null, 0, $"пара {from}↔{to}: sync-report недоступен");
+                warnings.Add($"sync-report {from}/{to}: {detail} — transient");
+                return new PairOutcome(0, 0, null, 0, $"pair {from}↔{to}: sync-report unavailable");
             }
 
             fromPage = fromPageResult.Value!;
@@ -360,7 +360,7 @@ public sealed class SyncProbeProcess(
         {
             if (!addresses.TryGetValue(to, out _))
             {
-                warnings.Add($"status {to}: адреса нет в portalloc — транзиент");
+                warnings.Add($"status {to}: no address in portalloc — transient");
             }
             else
             {
@@ -369,7 +369,7 @@ public sealed class SyncProbeProcess(
                 if (status.IsSuccess)
                     statusCache[to] = status.Value!.Neighbors;
                 else
-                    warnings.Add($"status {to}: {status.Error!.Message} — транзиент");
+                    warnings.Add($"status {to}: {status.Error!.Message} — transient");
             }
         }
 
@@ -395,8 +395,8 @@ public sealed class SyncProbeProcess(
     // Единый формат диагностики несвёрнутой пары (spec §3.3).
     private static string ListingFailureText(ListingFailure failure, string from, string to)
         => failure == ListingFailure.Budget
-            ? $"листинг пары {from}↔{to} превышает бюджет страниц"
-            : $"пара {from}↔{to}: листинг недоступен";
+            ? $"listing of pair {from}↔{to} exceeds page budget"
+            : $"pair {from}↔{to}: listing unavailable";
 
     // Полный постраничный листинг стороны (diff): словарь (key, modTime) → size,
     // счётчик страниц СВОЕЙ стороны (бюджет на сторону — независим) и вид отказа.
@@ -417,7 +417,7 @@ public sealed class SyncProbeProcess(
             pages++;
             if (!page.IsSuccess)
             {
-                warnings.Add($"листинг {host}:{port}: {page.Error!.Message} — транзиент");
+                warnings.Add($"listing {host}:{port}: {page.Error!.Message} — transient");
                 return (map, pages, ListingFailure.Transport);
             }
 
@@ -502,7 +502,7 @@ public sealed class SyncProbeProcess(
             last = put;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteWithFailoverAsync(string key, CancellationToken ct)
@@ -516,7 +516,7 @@ public sealed class SyncProbeProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // portalloc-чтение (образец MeshGovernanceProcess.ReadPortAllocAsync).
