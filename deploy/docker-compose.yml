@@ -171,6 +171,10 @@ x-valkeyworker-env: &valkeyworker-env
   # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
   # клиентами (arch/21 §2 advertised-правило).
   ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+  # Сеть контура (симметрия PgWorker/S3Worker, arch/21 §2): задана → контейнеры
+  # vwk-нод создаются в ней одной (стенд — adminpanel-stand-net); пусто —
+  # прод-режим (default bridge docker-хоста запуска).
+  ValkeyWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
   # HTTP API воркера (arch/21 §1.1): advertise-URL https:// в /valkeyworker/api/<id>,
   # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false).
   VWK_API_TLS_CERT_PATH: /tls/server.crt
