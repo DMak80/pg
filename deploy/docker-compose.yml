@@ -9,10 +9,10 @@
 # не-HA прогон — один endpoint.
 x-pgworker-env: &pgworker-env
   # Обязательные секреты установки (Д7): не в git, не в etcd.
-  PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
-  PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?задайте секрет}
-  PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
-  PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
+  PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?set the secret}
+  PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?set the secret}
+  PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?set the secret}
+  PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?set the secret}
   # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
   # HA-контур контроль-плейна (t09, arch/04 §8): список ВСЕХ клиентских URL;
   # дефолты — стендовые публикации (as-etcd-1/2/3), прод переопределяет в
@@ -210,7 +210,7 @@ x-s3worker-env: &s3worker-env
   # ноды и по имени сети); пусто — прод-режим (de-facto-сеть docker-хоста).
   S3Worker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
   # per-install bucket (arch/19 §5; env S3W_BUCKET — fail-fast старта).
-  S3Worker__Bucket: ${S3W_BUCKET:?задайте bucket per-install}
+  S3Worker__Bucket: ${S3W_BUCKET:?set a per-install bucket}
   # HTTP API воркера (arch/24 §1.1): mTLS-серты из /tls (env-фоллбек до
   # ключа /workers/api_tls/s3worker от панели t34), демо-сид за флагом.
   S3W_API_TLS_CERT_PATH: /tls/server.crt
@@ -352,8 +352,8 @@ services:
       # портовой ряд (канон 05 §6); внутри контейнера канонический 9000.
       - "${OWNS3_HOST_PORT:-9010}:9000"
     environment:
-      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
-      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?set the secret}
+      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?set the secret}
       # Статические ключи (../OwnS3/arch/owns3/05 §2): writer подсистемы бэкапов
       # (= PGW_BACKUP_S3_* — один комплект, arch/19 §7) + read-only панель.
       # Пустые значения безопасны: сервис читает их напрямую и стоп на
@@ -388,8 +388,8 @@ services:
       # продолжение портового ряда ownS3 (single 9010 → EC 9011, канон 05 §8)
       - "${OWNS3_EC_HOST_PORT:-9011}:9000"
     environment:
-      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
-      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?set the secret}
+      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?set the secret}
       OWNS3_DATA_DIR: /data1,/data2,/data3,/data4
       OWNS3_EC_SET_SIZE: "4"
       OWNS3_EC_PARITY: "1"
@@ -416,18 +416,18 @@ services:
     ports:
       - "${OWNS3_MESH1_HOST_PORT:-9012}:9000"
     environment:
-      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
-      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?set the secret}
+      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?set the secret}
       OWNS3_HOST_ID: mesh-node-1
       # Исходящий peer-ключ УЗЛА 1 (его подпись резолвится у соседа как mesh-node-1)
-      OWNS3_ACCESS_KEYS__2__ACCESSKEY: ${OWNS3_MESH_PEER1_ACCESSKEY:?задайте peer-ключ узла 1}
-      OWNS3_ACCESS_KEYS__2__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?задайте peer-ключ узла 1}
+      OWNS3_ACCESS_KEYS__2__ACCESSKEY: ${OWNS3_MESH_PEER1_ACCESSKEY:?set the peer key of node 1}
+      OWNS3_ACCESS_KEYS__2__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?set the peer key of node 1}
       OWNS3_ACCESS_KEYS__2__POLICY: replication
       OWNS3_REPLICATION_TARGETS__0__NAME: mesh-node-2
       OWNS3_REPLICATION_TARGETS__0__ENDPOINT: http://owns3-m2:9000
       # Креды СОСЕДА (узла 2) — их источник предъявляет при подписи
-      OWNS3_REPLICATION_TARGETS__0__ACCESSKEY: ${OWNS3_MESH_PEER2_ACCESSKEY:?задайте peer-ключ узла 2}
-      OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER2_SECRETKEY:?задайте peer-ключ узла 2}
+      OWNS3_REPLICATION_TARGETS__0__ACCESSKEY: ${OWNS3_MESH_PEER2_ACCESSKEY:?set the peer key of node 2}
+      OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER2_SECRETKEY:?set the peer key of node 2}
     volumes:
       - owns3-m1-data:/data
   owns3-m2:
@@ -437,17 +437,17 @@ services:
     ports:
       - "${OWNS3_MESH2_HOST_PORT:-9013}:9000"
     environment:
-      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?задайте секрет}
-      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
+      OWNS3_ROOT_USER: ${OWNS3_ROOT_USER:?set the secret}
+      OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?set the secret}
       OWNS3_HOST_ID: mesh-node-2
       # Исходящий peer-ключ УЗЛА 2
-      OWNS3_ACCESS_KEYS__2__ACCESSKEY: ${OWNS3_MESH_PEER2_ACCESSKEY:?задайте peer-ключ узла 2}
-      OWNS3_ACCESS_KEYS__2__SECRETKEY: ${OWNS3_MESH_PEER2_SECRETKEY:?задайте peer-ключ узла 2}
+      OWNS3_ACCESS_KEYS__2__ACCESSKEY: ${OWNS3_MESH_PEER2_ACCESSKEY:?set the peer key of node 2}
+      OWNS3_ACCESS_KEYS__2__SECRETKEY: ${OWNS3_MESH_PEER2_SECRETKEY:?set the peer key of node 2}
       OWNS3_ACCESS_KEYS__2__POLICY: replication
       OWNS3_REPLICATION_TARGETS__0__NAME: mesh-node-1
       OWNS3_REPLICATION_TARGETS__0__ENDPOINT: http://owns3-m1:9000
-      OWNS3_REPLICATION_TARGETS__0__ACCESSKEY: ${OWNS3_MESH_PEER1_ACCESSKEY:?задайте peer-ключ узла 1}
-      OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?задайте peer-ключ узла 1}
+      OWNS3_REPLICATION_TARGETS__0__ACCESSKEY: ${OWNS3_MESH_PEER1_ACCESSKEY:?set the peer key of node 1}
+      OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?set the peer key of node 1}
     volumes:
       - owns3-m2-data:/data
 

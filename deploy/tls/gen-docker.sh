@@ -32,6 +32,6 @@ issue() { # name cn eku san
 issue pgworker-docker pgworker  clientAuth "DNS:pgworker"
 issue docker-server    "$HOST"   serverAuth "$SAN"
 chmod 600 docker-ca.key ./*.key 2>/dev/null || true
-echo "✓ docker-пакет pgw-docker-ca: docker-ca.pem, pgworker-docker.*, docker-server.* (SAN: $SAN)"
-echo "  демон: dockerd --tlsverify --tlscacert=docker-ca.pem --tlscert=docker-server.crt --tlskey=docker-server.key"
-echo "  воркер: PGW_DOCKER_TLS_CA_PATH=docker-ca.pem PGW_DOCKER_TLS_{CERT,KEY}_PATH=pgworker-docker.{crt,key}"
+echo "✓ pgw-docker-ca docker package: docker-ca.pem, pgworker-docker.*, docker-server.* (SAN: $SAN)"
+echo "  daemon: dockerd --tlsverify --tlscacert=docker-ca.pem --tlscert=docker-server.crt --tlskey=docker-server.key"
+echo "  worker: PGW_DOCKER_TLS_CA_PATH=docker-ca.pem PGW_DOCKER_TLS_{CERT,KEY}_PATH=pgworker-docker.{crt,key}"

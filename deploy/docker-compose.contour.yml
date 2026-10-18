@@ -9,7 +9,7 @@ name: deploy
 
 networks:
   contour:
-    name: ${PGW_CONTOUR_NETWORK:?задайте PGW_CONTOUR_NETWORK (имя стендовой сети)}
+    name: ${PGW_CONTOUR_NETWORK:?set PGW_CONTOUR_NETWORK (stand network name)}
     external: true
   # Объявление базового файла снимается: сеть pgw-metrics на стенде не
   # создаётся (ни один сервис после override на неё не ссылается).

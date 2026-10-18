@@ -70,4 +70,4 @@ fi
 [ -f prometheus.crt ] || issue prometheus prometheus clientAuth ""
 [ -f healthcheck.crt ] || issue healthcheck healthcheck clientAuth ""
 chmod 600 ca.key ./*.key
-echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
+echo "✓ kfw-install-ca TLS package: ca.pem, server.* (kafkaworker+valkeyworker+s3worker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
