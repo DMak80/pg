@@ -20,7 +20,7 @@ public class SigV4GetSignerTests
         new(2026, 1, 15, 10, 30, 0, TimeSpan.Zero);
 
     [Fact]
-    public void Sign_ДетерминированныйВектор_ТочнаяЗаголовочнаяПодпись()
+    public void Sign_DeterministicVector_ExactHeaderSignature()
     {
         // Arrange: фиксированные дата/креды/путь; ожидание — независимый пересчёт.
         const string path = "/admin/storage";
@@ -59,11 +59,11 @@ public class SigV4GetSignerTests
     }
 
     [Fact]
-    public void Sign_ДругаяДатаИлиКреды_ДругаяПодпись()
+    public void Sign_DifferentDateOrCreds_DifferentSignature()
     {
         // Arrange: два сигна с разными секретами.
         var first = SigV4GetSigner.Sign("/admin/storage", "h1:9000", AccessKey, SecretKey, "us-east-1", FixedTime);
-        var second = SigV4GetSigner.Sign("/admin/storage", "h1:9000", AccessKey, "другой-секрет", "us-east-1", FixedTime);
+        var second = SigV4GetSigner.Sign("/admin/storage", "h1:9000", AccessKey, "other-secret", "us-east-1", FixedTime);
 
         // Assert: подпись чувствительна к кредам (санити двойной реализации).
         first.Authorization.Should().NotBe(second.Authorization);
@@ -76,7 +76,7 @@ public class SigV4GetSignerTests
     [InlineData("POST")]
     [InlineData("DELETE")]
     [InlineData("PUT")]
-    public void Sign_МетодВCanonicalRequest(string method)
+    public void Sign_MethodInCanonicalRequest(string method)
     {
         // Arrange: двойная реализация для фактического метода.
         const string path = "/admin/replication/join";
@@ -112,7 +112,7 @@ public class SigV4GetSignerTests
     // (roundtrip — CanonicalRequestBuilder включает RawQuery в подпись; sync-report
     // с marker требует канонизации query, spec t33 §3.6).
     [Fact]
-    public void SignRequest_СCanonicalQuery_ПроходитСерверныйВерификатор()
+    public void SignRequest_WithCanonicalQuery_PassesServerVerifier()
     {
         // Arrange: подпись с query; на проводе — та же закодированная строка.
         const string query = "bucket=b&marker=m%2Fnext";
@@ -143,7 +143,7 @@ public class SigV4GetSignerTests
     // AAA: подпись БЕЗ query на запросе С query → SignatureDoesNotMatch
     // (сервер включает RawQuery в canonical request — расхождение строк).
     [Fact]
-    public void SignRequest_БезQueryНаЗапросеСQuery_SignatureDoesNotMatch()
+    public void SignRequest_NoQueryOnRequestWithQuery_SignatureDoesNotMatch()
     {
         // Arrange: подпись с пустой query, запрос несёт marker.
         var signed = SigV4GetSigner.SignRequest(
@@ -174,7 +174,7 @@ public class SigV4GetSignerTests
     // EncodeValue кодирует (%21%27%28%29%2A): roundtrip обязан сходиться
     // (иначе sync-report навсегда SignatureDoesNotMatch для таких страниц).
     [Fact]
-    public void SignRequest_МаркерССпецсимволамиRFC3986_ПроходитВерификатор()
+    public void SignRequest_MarkerWithRfc3986SpecialChars_PassesVerifier()
     {
         // Arrange: query через CanonicalQuery (per-символьное кодирование,
         // семантически равно серверному UriEncoding.EncodeValue).
@@ -207,7 +207,7 @@ public class SigV4GetSignerTests
     // AAA: CanonicalQuery — сортировка Ordinal, null/пустые значения не шлются,
     // спецсимволы кодируются RFC 3986 (совместимость с EncodeQuery сервера).
     [Fact]
-    public void CanonicalQuery_СортировкаИФильтрПустых()
+    public void CanonicalQuery_OrdinalSortAndEmptyFilter()
     {
         // Arrange: пары в неупорядоченном виде, часть — пустые/null.
         var query = SigV4GetSigner.CanonicalQuery(

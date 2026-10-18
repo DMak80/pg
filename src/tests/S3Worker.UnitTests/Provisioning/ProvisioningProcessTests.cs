@@ -97,7 +97,7 @@ public class ProvisioningProcessTests
     // AAA: P2 — PKI-выпуск (pki/ca, pki/orchestrator, nodes/<I>/pki в FakeEtcd)
     // и env контейнера с репликационным материалом (spec §3.6, §8.1.3–8.1.4).
     [Fact]
-    public async Task P2_PKIКлючиВEtcd_EnvСРепликацией()
+    public async Task P2_PkiKeysInEtcd_EnvWithReplication()
     {
         // Arrange: заявка N=2, здоровье обеих нод живое.
         var rig = Rig.New();
@@ -124,7 +124,7 @@ public class ProvisioningProcessTests
 
     // AAA: повторный provisioning — PKI-материал тот же (идемпотентность if-absent).
     [Fact]
-    public async Task ПовторныйProvisioning_PKIМатериалТотЖе()
+    public async Task RepeatProvisioning_PkiMaterialUnchanged()
     {
         // Arrange: HappyPath-тиком pki выпущен.
         var rig = Rig.New();
@@ -147,7 +147,7 @@ public class ProvisioningProcessTests
     // AAA: 0-инстансовый provisioning — P1–P4 без docker-мутаций, endpoints НЕ
     // пишется, config nodes=0 без state (arch/23 §2, arch/24 §5 A).
     [Fact]
-    public async Task ProvisioningНольИнстансов_EndpointsНеПишется()
+    public async Task ProvisioningZeroInstances_EndpointsNotWritten()
     {
         // Arrange: заявка с nodes=0 и без инстансных ключей.
         var rig = Rig.New();
@@ -182,7 +182,7 @@ public class ProvisioningProcessTests
 
     // AAA: P0 — клэйм не взяли → никаких записей.
     [Fact]
-    public async Task P0_БезКлэйма_НикакихЗаписей()
+    public async Task P0_NoClaim_NoWrites()
     {
         // Arrange: процесс без клэйма кластера.
         var rig = Rig.New();
@@ -198,7 +198,7 @@ public class ProvisioningProcessTests
 
     // AAA: P0 — клэйм взяли → journal started.
     [Fact]
-    public async Task P0_СКлэймом_JournalStarted()
+    public async Task P0_WithClaim_JournalStarted()
     {
         // Arrange: клэйм захвачен заранее.
         var rig = Rig.New();
@@ -218,7 +218,7 @@ public class ProvisioningProcessTests
     // AAA: гонка TO_REMOVE посреди — перечитка config → безопасная остановка
     // без docker-мутаций.
     [Fact]
-    public async Task ГонкаToRemove_БезопаснаяОстановка()
+    public async Task ToRemoveRace_SafeShutdown()
     {
         // Arrange: клэйм + config уже TO_REMOVE.
         var rig = Rig.New();
@@ -239,7 +239,7 @@ public class ProvisioningProcessTests
     // AAA: P1 — ноль кандидатов placement → transient Failed, journal с пустым
     // перечнем кандидатов.
     [Fact]
-    public async Task P1_НольКандидатов_TransientFailed()
+    public async Task P1_ZeroCandidates_TransientFailed()
     {
         // Arrange: клэйм; docker-хостов нет (пустой список).
         var rig = Rig.New();
@@ -255,13 +255,13 @@ public class ProvisioningProcessTests
         var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
         journal.Value!.Phase.Should().Be("planning");
-        journal.Value.LastError.Should().Contain("ноль кандидатов");
+        journal.Value.LastError.Should().Contain("zero candidates");
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
     // AAA: P1 — порт-клэйм занят → journal waiting-portalloc-lock, без аллокаций.
     [Fact]
-    public async Task P1_PortallocLockЗанят_Waiting()
+    public async Task P1_PortallocLockTaken_Waiting()
     {
         // Arrange: чужой держатель portalloc-клэйма.
         var rig = Rig.New();
@@ -283,7 +283,7 @@ public class ProvisioningProcessTests
 
     // AAA: P1 — неполный профиль → permanent Failed c диагностикой без значений.
     [Fact]
-    public async Task P1_НеполныйПрофиль_FailedБезЗначений()
+    public async Task P1_IncompleteProfile_FailedWithoutValues()
     {
         // Arrange: профиль без ROOT_PASSWORD.
         var env = new Dictionary<string, string?>
@@ -314,13 +314,13 @@ public class ProvisioningProcessTests
         var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
         journal.Value!.Phase.Should().Be("invalid-secret-profile");
-        journal.Value.LastError.Should().Contain("неполон").And.NotContain("pw");
+        journal.Value.LastError.Should().Contain("incomplete").And.NotContain("pw");
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
     // AAA: happy-путь P1–P5: plan → ensure → health → bucket → endpoints/config.
     [Fact]
-    public async Task HappyPath_ЗаявкаДоActive()
+    public async Task HappyPath_RequestToActive()
     {
         // Arrange: клэйм, живой health, 2 хоста.
         var rig = Rig.New(advertised: "host.docker.internal");
@@ -364,7 +364,7 @@ public class ProvisioningProcessTests
 
     // AAA: идемпотентность повторного прогона — порты стабильны.
     [Fact]
-    public async Task ПовторныйПрогон_ПортыСтабильны()
+    public async Task RepeatRun_PortsStable()
     {
         // Arrange: первый прогон прошёл (active), второй — тот же процесс.
         var rig = Rig.New(advertised: "host.docker.internal");
@@ -393,7 +393,7 @@ public class ProvisioningProcessTests
     // AAA: P2 — health не отвечает в бюджет → InProgress (waiting-nodes),
     // state=PROVISIONING записан, docker-нода создана.
     [Fact]
-    public async Task HealthМолчит_InProgressБезБлока()
+    public async Task HealthSilent_InProgressWithoutBlocking()
     {
         // Arrange: клэйм; health всегда false.
         var rig = Rig.New();
@@ -423,7 +423,7 @@ public class ProvisioningProcessTests
     // бюджет boot-ожидания с нуля (нет мгновенного permanent-фейла по старому
     // since того же процесса воркера).
     [Fact]
-    public async Task ДепровижинСбрасываетБюджетBootОжидания()
+    public async Task DeprovisionResetsBootWaitBudget()
     {
         // Arrange: health молчит; общий бюджет у provisioning/deprovision;
         // клэйм и живые docker-хосты.

@@ -54,7 +54,7 @@ public class RemoveNodeProcessTests
     // AAA: happy-путь: REMOVING → снос (контейнер+volume) → del ключей ноды →
     // portalloc без node2 → endpoints = 1 адрес → config.nodes = 1 → done.
     [Fact]
-    public async Task ВыводНоды_ПолныйЦикл()
+    public async Task NodeRemoval_FullCycle()
     {
         // Arrange
         var (process, etcd, driver, claims) = NewRig();
@@ -80,7 +80,7 @@ public class RemoveNodeProcessTests
 
     // AAA: гвард «последняя нода» → отказ фазы (journal), без мутаций.
     [Fact]
-    public async Task ПоследняяНода_Отказ()
+    public async Task LastNode_Rejected()
     {
         // Arrange: кластер из одной ноды с маркером TO_REMOVE.
         var (process, etcd, driver, claims) = NewRig();
@@ -111,7 +111,7 @@ public class RemoveNodeProcessTests
     // AAA: вывод инстанса чистит pki-ключ (имя освобождается — §3.2) и имя из
     // denylist кластера (иначе deny-доведение потеряет publicKeyPem — §3.4).
     [Fact]
-    public async Task Вывод_ЧиститPki_ИДенайлист()
+    public async Task Removal_CleansPki_AndDenylist()
     {
         // Arrange: node2 заявлен TO_REMOVE; в etcd pki node2 и denylist с node2.
         var (process, etcd, driver, claims) = NewRig();
@@ -132,7 +132,7 @@ public class RemoveNodeProcessTests
 
     // AAA: гвард «мёртвые остальные»: живых RUNNING кроме выводимой нет → отказ.
     [Fact]
-    public async Task МёртвыеОстальные_Отказ()
+    public async Task DeadRemainder_Rejected()
     {
         // Arrange: node1 UNREACHABLE (не RUNNING), node2 TO_REMOVE.
         var (process, etcd, driver, claims) = NewRig();
@@ -150,7 +150,7 @@ public class RemoveNodeProcessTests
 
     // AAA: повторный прогон при актуальном nodes — no-op (config не переписан).
     [Fact]
-    public async Task ПовторныйПрогон_NoOp()
+    public async Task RepeatRun_NoOp()
     {
         // Arrange: вывод node2 уже отработан (config.nodes=1, node2 удалён);
         // заявки нет.

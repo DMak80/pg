@@ -197,7 +197,7 @@ public sealed class AddNodeProcess(
                 node.Placement ?? new S3NodePlacement(null, null, null), hosts.Value, out var candidates);
             if (!resolved.IsSuccess)
                 return Result<NodeAddress>.Failed(new ApplicationException(
-                    $"placement {cluster}/{node.Node}: ноль кандидатов; перечень: [{string.Join(", ", candidates)}]"));
+                    $"placement {cluster}/{node.Node}: zero candidates; list: [{string.Join(", ", candidates)}]"));
 
             var allocated = PortAllocator.Allocate(
                 new PlacementPlan([new NodePlacement(cluster, node.Node, resolved.Value)]),

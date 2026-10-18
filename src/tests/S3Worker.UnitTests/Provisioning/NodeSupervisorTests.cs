@@ -80,7 +80,7 @@ public class NodeSupervisorTests
     // AAA: контейнер снесён (inspect → null) → пересоздание на том же placed_on,
     // state=PROVISIONING; volume не тронут (removeVolume=false).
     [Fact]
-    public async Task КонтейнерСнесён_ПересозданиеНаТомЖеХосте()
+    public async Task ContainerRemoved_RecreatedOnSameHost()
     {
         // Arrange: объект docker отсутствует (положительное свидетельство).
         var rig = Rig.New();
@@ -102,7 +102,7 @@ public class NodeSupervisorTests
     // unless-stopped его не поднимет) → пересоздание (S7: не-running по
     // инспекции — положительное свидетельство), а не вечный UNREACHABLE.
     [Fact]
-    public async Task КонтейнерОстановлен_Пересоздание()
+    public async Task ContainerStopped_Recreated()
     {
         // Arrange: docker-объект есть, но не running.
         var rig = Rig.New();
@@ -122,7 +122,7 @@ public class NodeSupervisorTests
 
     // AAA: одно пересоздание за тик — вторая снесённая нода следующим тиком.
     [Fact]
-    public async Task ОдноПересозданиеЗаТик()
+    public async Task OneRecreationPerTick()
     {
         // Arrange: две ноды, обе снесены.
         var rig = Rig.New();
@@ -156,7 +156,7 @@ public class NodeSupervisorTests
 
     // AAA: health ок + state=PROVISIONING → RUNNING.
     [Fact]
-    public async Task ПровижинингПрошёл_ПробаЖива_Running()
+    public async Task ProvisioningDone_HealthAlive_Running()
     {
         // Arrange: нода PROVISIONING, docker-объект и health живы.
         var rig = Rig.New();
@@ -172,7 +172,7 @@ public class NodeSupervisorTests
 
     // AAA: health молчит дольше NodeDeadSec → UNREACHABLE; деструктива нет.
     [Fact]
-    public async Task МолчаниеДольшеПорога_UnreachableБезДеструктива()
+    public async Task SilenceBeyondThreshold_UnreachableNoDestructive()
     {
         // Arrange: порог 5 с; первый тик при молчании ставит first_seen = T0.
         var rig = Rig.New(nodeDeadSec: 5);
@@ -194,7 +194,7 @@ public class NodeSupervisorTests
 
     // AAA: слепой inspect (драйвер Failed) → никаких действий (ошибка тика).
     [Fact]
-    public async Task СлепойInspect_НикакихДействий()
+    public async Task BlindInspect_NoActions()
     {
         // Arrange: docker-хост молчит.
         var rig = Rig.New();
@@ -213,7 +213,7 @@ public class NodeSupervisorTests
     // AAA: usage-сбор — ключа нет → проба грани → put snake_case; ошибка грани
     // — транзиент (тик Success).
     [Fact]
-    public async Task UsageСбор_SnakeCase_Ошибка_Транзиент()
+    public async Task UsageCollection_SnakeCase_Fault_Transient()
     {
         // Arrange: usage-ключа нет; грань жива.
         var rig = Rig.New();
@@ -237,7 +237,7 @@ public class NodeSupervisorTests
     // AAA: лимиты контейнера ≠ декларации → пересоздание с новыми лимитами
     // (rolling; в бюджете «одно пересоздание за тик»).
     [Fact]
-    public async Task РесурсыРасходятся_ПересозданиеСНовымиЛимитами()
+    public async Task ResourcesDiverge_RecreatedWithNewLimits()
     {
         // Arrange: docker-факт 2 ядра против декларации 1.
         var rig = Rig.New();
@@ -257,7 +257,7 @@ public class NodeSupervisorTests
 
     // AAA: ноды NOT_INITIALIZED надзор не трогает.
     [Fact]
-    public async Task НодыЧужихПроцессов_НеТрогаются()
+    public async Task ForeignProcessNodes_Untouched()
     {
         // Arrange: нода NOT_INITIALIZED (заявка), docker-объекта нет.
         var rig = Rig.New();

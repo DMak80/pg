@@ -29,7 +29,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_ПорогНеЗависитОтИнтерваловЦиклов()
+    public void Snapshot_ThresholdIndependentOfLoopIntervals()
     {
         // Arrange: E2E-параметры scan=1/keepalive=1 — порог от опций watchdog
         var options = new FixedOptionsMonitor(new S3WorkerOptions
@@ -46,7 +46,7 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
-    public void Snapshot_КастомныйПорог_ОтОпцийWatchdog()
+    public void Snapshot_CustomThreshold_FromWatchdogOptions()
     {
         // Arrange: Multiplier=3, CheckIntervalSec=20 → порог 60 c
         var options = new FixedOptionsMonitor(new S3WorkerOptions

@@ -53,7 +53,7 @@ public class DeprovisioningProcessTests
     // AAA: X0–X3 happy-путь: REMOVING маркеры, docker снос, чистка etcd,
     // journal done, клэйм снят явно.
     [Fact]
-    public async Task X0_X3_ПолныйДемонтаж()
+    public async Task X0_X3_FullTeardown()
     {
         // Arrange: Active-кластер под TO_REMOVE.
         var (process, etcd, driver, claims) = NewRig();
@@ -82,7 +82,7 @@ public class DeprovisioningProcessTests
     // AAA: X1 — маркеры REMOVING стоят ДО docker-фазы; docker-сбой → etcd
     // НЕ тронут (порядок «docker → etcd»), ретрай тиком.
     [Fact]
-    public async Task DockerФазаСбой_МаркерыСтоят_EtcdНеТронут()
+    public async Task DockerPhaseFails_MarkersSet_EtcdUntouched()
     {
         // Arrange: remove-фаза ломается обёрткой (docker-хост недоступен).
         var (process, etcd, driver, claims) = NewRig();
@@ -120,7 +120,7 @@ public class DeprovisioningProcessTests
             => inner.EnsureNodeAsync(spec, contourNetwork, ct);
 
         public Task<Result> RemoveNodeAsync(string cluster, string node, bool removeVolume, CancellationToken ct)
-            => Task.FromResult(Result.Failed(new ApplicationException("docker-хост недоступен")));
+            => Task.FromResult(Result.Failed(new ApplicationException("docker host unavailable")));
 
         public Task<Result<Shared.Docker.NodeLimits?>> NodeResourcesAsync(string cluster, string node, CancellationToken ct)
             => inner.NodeResourcesAsync(cluster, node, ct);
@@ -137,7 +137,7 @@ public class DeprovisioningProcessTests
 
     // AAA: без клэйма — никаких записей.
     [Fact]
-    public async Task БезКлэйма_НикакихЗаписей()
+    public async Task NoClaim_NoWrites()
     {
         // Arrange: демонтажная заявка, клэйм НЕ наш.
         var (process, etcd, driver, _) = NewRig();

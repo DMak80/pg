@@ -27,7 +27,7 @@ public static class PlacementResolver
 
         if (candidates.Count == 0)
             return Result<string>.Failed(new ApplicationException(
-                "placement: ноль кандидатов по селектору (см. журнал фазы P1)"));
+                "placement: zero candidates for the selector (see P1 phase journal)"));
 
         return Result<string>.Success(candidates[0]);
     }

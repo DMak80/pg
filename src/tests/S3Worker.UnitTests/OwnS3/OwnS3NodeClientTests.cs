@@ -445,7 +445,7 @@ public class OwnS3NodeClientTests
     // AAA: probe 200 → парсинг camelCase-отчёта; rttMs отсутствует у непинганутого
     // пира → null (owns3/07 §2 — rttMs только при полученном ответе).
     [Fact]
-    public async Task Probe_ПарсингОтвета()
+    public async Task Probe_ResponseParsing()
     {
         // Arrange
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -475,7 +475,7 @@ public class OwnS3NodeClientTests
 
     // AAA: probe 500 → Failed с диагностикой «probe» (транзиент — нода не опрошена).
     [Fact]
-    public async Task Probe_НеОтветилаНода_Failed()
+    public async Task Probe_NodeNotResponding_Failed()
     {
         // Arrange
         var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)));
@@ -491,7 +491,7 @@ public class OwnS3NodeClientTests
     // AAA: sync-report 200 → страница с nextMarker; пустой/отсутствующий nextMarker
     // → null (конец листинга); query фактического запроса несёт bucket/marker.
     [Fact]
-    public async Task SyncReport_СтраницаИКонец()
+    public async Task SyncReport_PageAndEnd()
     {
         // Arrange: первая страница отдаёт nextMarker:"k2", вторая — без него.
         var call = 0;
@@ -529,7 +529,7 @@ public class OwnS3NodeClientTests
 
     // AAA: sync-report 503 → Failed (транзиент свёртки — пара не сверена).
     [Fact]
-    public async Task SyncReport_НеДостигнут_Failed()
+    public async Task SyncReport_Unreachable_Failed()
     {
         // Arrange
         var client = NewClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
@@ -544,7 +544,7 @@ public class OwnS3NodeClientTests
     // AAA: ListObjectsV2 по loopback (AWSSDK строит свой HttpClient): страница
     // записей (key, modTimeUnixMs, size) + продолжение; финальная страница — без токена.
     [Fact]
-    public async Task ListEntries_СтраницаИКонец()
+    public async Task ListEntries_PageAndEnd()
     {
         // Arrange: XML ListObjectsV2 — первая страница с NextContinuationToken, вторая без.
         var expectedModMs = new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds();
@@ -575,7 +575,7 @@ public class OwnS3NodeClientTests
     // AAA: status 200 c per-neighbor счётчиками → Neighbors разобраны, NeighborNames —
     // те же имена в порядке ответа (совместимость G: проекция сохраняется).
     [Fact]
-    public async Task ReplicationStatus_PerNeighborИNeighborNames()
+    public async Task ReplicationStatus_PerNeighborAndNeighborNames()
     {
         // Arrange: два соседа с разными fetchQueueDepth.
         var handler = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)

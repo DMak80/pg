@@ -25,7 +25,7 @@ public class PortAllocHealerTests
     }
 
     [Fact]
-    public async Task НодаБезPortalloc_ЖивойКонтейнер_РеконструкцияPutIfAbsent()
+    public async Task NodeWithoutPortalloc_LiveContainer_ReconstructPutIfAbsent()
     {
         // Arrange: portalloc-ключа нет; контейнер жив на published-порту.
         var (healer, etcd, driver, _) = NewRig();
@@ -46,7 +46,7 @@ public class PortAllocHealerTests
     }
 
     [Fact]
-    public async Task ЗаписьУжеЕсть_ВеткаБезТранзакций()
+    public async Task EntryAlreadyExists_NoTxnBranch()
     {
         // Arrange: portalloc-запись есть — advertise стабилен.
         var (healer, etcd, driver, _) = NewRig();
@@ -62,7 +62,7 @@ public class PortAllocHealerTests
     }
 
     [Fact]
-    public async Task КонтейнераНет_FailedПортНеВыдумываем()
+    public async Task ContainerMissing_FailedNoPortInvented()
     {
         // Arrange: ни portalloc, ни контейнера (S7-свидетельство) —
         // новая аллокация — дело вызывающего (P1), не healer'а.
@@ -77,7 +77,7 @@ public class PortAllocHealerTests
     }
 
     [Fact]
-    public async Task InspectНедоступен_FailedБезРеконструкции()
+    public async Task InspectUnavailable_FailedNoReconstruction()
     {
         // Arrange: docker-хост молчит (слепой inspect).
         var (healer, _, driver, _) = NewRig();

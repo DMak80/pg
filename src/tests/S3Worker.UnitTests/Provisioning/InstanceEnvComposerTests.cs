@@ -12,7 +12,7 @@ namespace S3Worker.UnitTests.Provisioning;
 public class InstanceEnvComposerTests
 {
     [Fact]
-    public void Compose_ПолныйНаборEnv()
+    public void Compose_FullEnvSet()
     {
         // Arrange: креды профиля + материал инстанса + trust-anchor CA.
         var secrets = new OwnS3NodeSecrets("root-u", "root-p",

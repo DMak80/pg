@@ -73,7 +73,7 @@ public class MeshGovernanceTests
 
     // AAA: недостающая пара → join на a с endpoint b из portalloc.
     [Fact]
-    public async Task НедостающаяПара_JoinСEndpointИзPortalloc()
+    public async Task MissingPair_JoinWithEndpointFromPortalloc()
     {
         // Arrange: links {east1,east2}, фактические составы пусты.
         var rig = Rig.New();
@@ -94,7 +94,7 @@ public class MeshGovernanceTests
 
     // AAA: AdvertisedHost приоритетнее host из portalloc в endpoint join.
     [Fact]
-    public async Task Join_AdvertisedHostПриоритет()
+    public async Task Join_AdvertisedHostPriority()
     {
         // Arrange
         var rig = Rig.New(advertisedHost: "s3.example");
@@ -111,7 +111,7 @@ public class MeshGovernanceTests
 
     // AAA: лишняя запись (links пуст — полный разрыв) → delete на ОБЕИХ сторонах.
     [Fact]
-    public async Task ЛишняяЗапись_DeleteОбеСтороны()
+    public async Task ExtraEntry_DeleteBothSides()
     {
         // Arrange: фактические соседи есть, декларация links отсутствует (null).
         var rig = Rig.New();
@@ -131,7 +131,7 @@ public class MeshGovernanceTests
     // AAA: deny-инстанс — полная изоляция: join с ним не зовётся, его записи у
     // соседей и свои сносятся одной delete-парой (arch/24 §5 G п.3, §9.2).
     [Fact]
-    public async Task DenyИнстанс_Изоляция_СносЗаписей()
+    public async Task DenyInstance_Isolation_RecordsRemoved()
     {
         // Arrange: east2 в denylist, связь декларирована, факт — связь жива
         // (запись east2 у east1; у east2 — запись east1).
@@ -155,7 +155,7 @@ public class MeshGovernanceTests
 
     // AAA: join → 409 → delete конфликтной стороны; повторным тиком join повторяется.
     [Fact]
-    public async Task Join409_DeleteКонфликтнойСтороны_ПовторСледующимТиком()
+    public async Task Join409_DeleteConflictingSide_RetriedNextTick()
     {
         // Arrange: первый тик — Conflict, второй — Joined.
         var rig = Rig.New();
@@ -182,7 +182,7 @@ public class MeshGovernanceTests
 
     // AAA: не-RUNNING сосед — ожидание (нет join); после RUNNING — join.
     [Fact]
-    public async Task НеРаннингСосед_Ожидание_ПотомJoin()
+    public async Task NotRunningNeighbor_Wait_ThenJoin()
     {
         // Arrange: east2 PROVISIONING — связи с ним не доводятся.
         var rig = Rig.New();
@@ -208,7 +208,7 @@ public class MeshGovernanceTests
 
     // AAA: deny-перезапись отправлена ВСЕМ RUNNING — полный entries с publicKeyPem.
     [Fact]
-    public async Task DenyДоведение_ВсемRunning_СPublicKeyPem()
+    public async Task DenyPush_ToAllRunning_WithPublicKeyPem()
     {
         // Arrange: west1 в denylist, материал pki west1 выпущен воркером.
         var rig = Rig.New();
@@ -239,7 +239,7 @@ public class MeshGovernanceTests
 
     // AAA: одна структурная операция за тик (два расхождения → первая по Ordinal).
     [Fact]
-    public async Task ОднаструктурнаяОперацияЗаТик()
+    public async Task OneStructuralOperationPerTick()
     {
         // Arrange: два недостающих соседа у east1 (east2, west1), составы пусты.
         var rig = Rig.New();
@@ -259,13 +259,13 @@ public class MeshGovernanceTests
 
     // AAA: битый links (parseError снапшота) — применения нет, диагностика в journal.
     [Fact]
-    public async Task БитыйLinks_НеПрименяется_ДиагностикаВJournal()
+    public async Task BrokenLinks_NotApplied_DiagnosticsInJournal()
     {
         // Arrange: Links null (битое значение), parseError от парсера.
         var rig = Rig.New();
         SeedPortAlloc(rig.Etcd, "east1", "east2");
         rig.NodeClient.Status = new S3Worker.Core.OwnS3.OwnS3ReplicationStatus(true, ["east2"]);
-        var snap = Snap(parseError: "/s3/clusters/demo/links: битый JSON");
+        var snap = Snap(parseError: "/s3/clusters/demo/links: invalid JSON");
 
         // Act: лишних записей при пустом (не применённом) графе НЕ сносим —
         // битая часть не применяется вовсе (ни join, ни delete).
@@ -276,12 +276,12 @@ public class MeshGovernanceTests
         rig.NodeClient.MeshCalls.Should().NotContain(c => c.Op == "join");
         rig.NodeClient.MeshCalls.Should().NotContain(c => c.Op == "delete-target");
         var journal = await rig.Journal.ReadAsync("demo", TestContext.Current.CancellationToken);
-        journal.Value!.LastError.Should().Contain("битый JSON");
+        journal.Value!.LastError.Should().Contain("invalid JSON");
     }
 
     // AAA: 0 RUNNING — no-op (idle).
     [Fact]
-    public async Task НольRunning_NoOp()
+    public async Task ZeroRunning_NoOp()
     {
         // Arrange: инстансы NOT_INITIALIZED.
         var rig = Rig.New();

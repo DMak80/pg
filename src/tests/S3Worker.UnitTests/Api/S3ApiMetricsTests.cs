@@ -10,7 +10,7 @@ namespace S3Worker.UnitTests.Api;
 public class S3ApiMetricsTests
 {
     [Fact]
-    public void Track_ИнкрементСТегами()
+    public void Track_IncrementWithTags()
     {
         // Arrange: Meter + слушатель с собирающим списком.
         using var meter = new Meter("S3Worker.Test");

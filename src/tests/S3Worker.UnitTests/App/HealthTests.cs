@@ -35,7 +35,7 @@ public class HealthTests
         // Assert: структура, не исключение — секция etcd отдаст Degraded с данными.
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeAssignableTo<Exception>();
-        result.Error!.Message.Should().Contain("etcd-проба");
+        result.Error!.Message.Should().Contain("etcd probe");
     }
 
     [Fact]

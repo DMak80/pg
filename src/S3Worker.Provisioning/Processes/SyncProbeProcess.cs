@@ -61,7 +61,7 @@ public sealed class SyncProbeProcess(
         // (образец G); заявка живёт — исполнится после починки env.
         if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var creds, out var secretDiagnostic))
             return await IdleAsync(
-                cluster, deleteRequest: false, warning: $"профиль секретов недоступен: {secretDiagnostic}", ct);
+                cluster, deleteRequest: false, warning: $"secret profile unavailable: {secretDiagnostic}", ct);
 
         // Заявка + прошлый connectivity (гейт). Отказ чтения etcd → Failed
         // (ретрай тиком, заявка жива).

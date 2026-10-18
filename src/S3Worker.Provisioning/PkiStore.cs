@@ -91,9 +91,9 @@ public sealed class PkiStore(IEtcdGateway gateway, string[] endpoints, TimeProvi
         // Оркестратор есть, CA нет → восстановить нечем (см. сводку).
         if (existingOrch is not null)
             return Result<(ClusterCaMaterial, IssuedPkiMaterial)>.Failed(new ApplicationException(
-                $"pki {cluster}: приватный ключ CA невосстановим, перевыпуск CA разорвал бы " +
-                "trust-домен (сертификат оркестратора подписан неизвестным CA; " +
-                "инстансы держат прежний OWNS3_REPLICATION_TRUST_CA)"));
+                $"pki {cluster}: CA private key is unrecoverable, reissuing the CA would break the " +
+                "trust domain (the orchestrator certificate is signed by an unknown CA; " +
+                "instances keep the previous OWNS3_REPLICATION_TRUST_CA)"));
 
         // Обоих нет: выпуск пары + txn put-if-absent обеих; проигрыш → re-read
         // (первый записавший — истина) и повторный проход по тем же веткам.

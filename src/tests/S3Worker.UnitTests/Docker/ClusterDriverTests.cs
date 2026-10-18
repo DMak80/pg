@@ -154,7 +154,7 @@ public class ClusterDriverTests
         }
 
         // Остальные члены union — вне сценариев этого файла.
-        private static NotImplementedException NotUsed() => new("движок-дублёр: маршрут вне сценария теста");
+        private static NotImplementedException NotUsed() => new("test-double engine: route outside test scenario");
 
         public Task<Result> PingAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct) => throw NotUsed();

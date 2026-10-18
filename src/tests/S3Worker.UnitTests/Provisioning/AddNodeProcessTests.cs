@@ -79,7 +79,7 @@ public class AddNodeProcessTests
     // AAA: mini-A + завершающее окно: node3 RUNNING, endpoints с третьим
     // адресом, config.nodes актуализирован (txn mod_revision).
     [Fact]
-    public async Task ЗаявкаНоды_MiniA_ИТопология()
+    public async Task NodeRequest_MiniA_AndTopology()
     {
         // Arrange
         var (process, etcd, driver, nodeClient, claims) = NewRig();
@@ -104,7 +104,7 @@ public class AddNodeProcessTests
     // AAA: идемпотентность — nodes уже равен фактическому составу →
     // config-txn не выполняется (no-op; mod_revision не меняется).
     [Fact]
-    public async Task ConfigУжеАктуален_NoOp()
+    public async Task ConfigAlreadyActual_NoOp()
     {
         // Arrange: config.nodes=3 уже; заявка node3 есть (повторный тик).
         var (process, etcd, driver, _, claims) = NewRig();
@@ -122,7 +122,7 @@ public class AddNodeProcessTests
     // AAA: mini-A — env инстанса собирается композером (OWNS3_REPLICATION_*),
     // имя берётся из декларации (не node<k>).
     [Fact]
-    public async Task AddNode_EnvСРепликацией_ИмяИзДекларации()
+    public async Task AddNode_EnvWithReplication_NameFromDeclaration()
     {
         // Arrange: заявка node3 (имя произвольное «west1») на Active-кластере.
         var (process, etcd, driver, nodeClient, claims) = NewRig();
@@ -157,7 +157,7 @@ public class AddNodeProcessTests
 
     // AAA: без клэйма — никаких docker-мутаций.
     [Fact]
-    public async Task БезКлэйма_НикакихМутаций()
+    public async Task NoClaim_NoMutations()
     {
         // Arrange: клэйм чужой.
         var (process, etcd, driver, _, claims) = NewRig();

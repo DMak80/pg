@@ -213,7 +213,7 @@ public static class S3ProcessCommon
         catch (JsonException)
         {
             // битый config — актуализировать нечем, тик повторит после починки
-            return Result.Failed(new ApplicationException($"config {configKey}: битый JSON"));
+            return Result.Failed(new ApplicationException($"config {configKey}: invalid JSON"));
         }
 
         var canonical = SerializeCanonicalConfig(platform, addresses.Count, secretProfile, createdUnix, state);

@@ -13,7 +13,7 @@ public class PortAllocIndexTests
         => new(etcd, ["http://etcd:2379"], NullLogger<S3Worker.Provisioning.Processes.PortAllocIndex>.Instance);
 
     [Fact]
-    public async Task ДваКластера_ОбъединениеПортовЧужих()
+    public async Task TwoClusters_ForeignPortMerge()
     {
         // Arrange: два portalloc, свой — exceptCluster.
         var etcd = new Fakes.FakeEtcd();
@@ -31,7 +31,7 @@ public class PortAllocIndexTests
     }
 
     [Fact]
-    public async Task БитыйJsonСоседа_ИгнорСЛогом()
+    public async Task NeighborBrokenJson_IgnoredWithLog()
     {
         // Arrange: валидный сосед + битый сосед.
         var etcd = new Fakes.FakeEtcd();

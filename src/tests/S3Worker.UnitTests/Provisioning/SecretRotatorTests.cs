@@ -88,7 +88,7 @@ public class SecretRotatorTests
 
     // AAA: заявки нет → no-op (ветка не активна).
     [Fact]
-    public async Task ЗаявкиНет_NoOp()
+    public async Task NoTicket_NoOp()
     {
         // Arrange
         var rig = Rig.New();
@@ -105,7 +105,7 @@ public class SecretRotatorTests
     // AAA: невалидный профиль → journal-отказ (постоянный), заявка жива,
     // пересозданий нет.
     [Fact]
-    public async Task ПрофильНевалиден_JournalОтказ_ЗаявкаЖива()
+    public async Task InvalidProfile_JournalFailure_TicketStays()
     {
         // Arrange: профиль не задан в env вовсе.
         var rig = Rig.New();
@@ -135,7 +135,7 @@ public class SecretRotatorTests
 
     // AAA: тик 1 — node1 (Ordinal-первая с чужим env) пересоздана; одна за тик.
     [Fact]
-    public async Task Тик1_ОднаНода()
+    public async Task Tick1_OneNode()
     {
         // Arrange: обе ноды с чужим env.
         var rig = Rig.New();
@@ -162,7 +162,7 @@ public class SecretRotatorTests
     // переходит к следующей: node1 доведена, node2 пересоздана (одно
     // пересоздание за тик; живление — etcd-запись, не docker-мутация).
     [Fact]
-    public async Task Тик2_Ожила_ДоводитИПереходитКСледующей()
+    public async Task Tick2_Revived_AdvancesToNext()
     {
         // Arrange: после тика 1 — node1 PROVISIONING, env уже новый;
         // node2 всё ещё с чужим env; health-грань отвечает OK.
@@ -193,7 +193,7 @@ public class SecretRotatorTests
     // AAA: wait-семантика — node1 пересоздана, health молчит (не ожила):
     // тик 2 НЕ трогает node2 (rolling: ожидание, не параллельный снос).
     [Fact]
-    public async Task Тик2_НеоживлённаяДержитСледующую()
+    public async Task Tick2_NotRevived_HoldsNext()
     {
         // Arrange: после тика 1 — node1 PROVISIONING (не RUNNING), env уже новый;
         // node2 всё ещё с чужим env; health-грань молчит.
@@ -230,7 +230,7 @@ public class SecretRotatorTests
 
     // AAA: все ноды приведены → del заявки + journal done.
     [Fact]
-    public async Task ВсеПриведены_ЗаявкаГасится()
+    public async Task AllConverged_TicketCleared()
     {
         // Arrange: env обеих нод — новый профиль, обе RUNNING.
         var rig = Rig.New();
@@ -253,7 +253,7 @@ public class SecretRotatorTests
     // пересозданий (регрессия: Split("__")[2] давал имя поля вместо индекса —
     // сверка всегда false, пересоздание каждый тик).
     [Fact]
-    public async Task ПрофильСAccessKey_СверкаПоИндексу_БезПересозданий()
+    public async Task ProfileWithAccessKey_IndexBasedMatch_NoRecreations()
     {
         // Arrange: профиль с access key #0; env обеих нод несёт тот же ключ,
         // root-пара — новая; обе RUNNING.
@@ -309,10 +309,10 @@ public class SecretRotatorTests
 
     // AAA: значения секретов не появляются в journal-фазах.
     [Fact]
-    public async Task СекретыНеВЖурнале()
+    public async Task SecretsNotInJournal()
     {
         // Arrange: пароль «суперсекрет» в env воркера; ноды с чужим env.
-        const string password = "суперсекрет-значение";
+        const string password = "supersecret-value";
         var rig = Rig.New();
         rig.Secrets = new SecretProfileStore(
             name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? NewUser

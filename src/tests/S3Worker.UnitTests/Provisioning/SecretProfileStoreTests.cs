@@ -30,7 +30,7 @@ public class SecretProfileStoreTests
     };
 
     [Fact]
-    public void ПолныйПрофиль_TryGetИToContainerEnv()
+    public void FullProfile_TryGetAndToContainerEnv()
     {
         // Arrange: профиль backups-main: root-пара + ключи 0..1.
         var store = Store(FullProfile());
@@ -52,7 +52,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void ТолькоРутПара_ВалидноБезКлючей()
+    public void RootPairOnly_ValidWithoutKeys()
     {
         // Arrange: access keys опциональны.
         var store = Store(new Dictionary<string, string?>
@@ -71,7 +71,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void ПрофильОтсутствует_ДиагностикаСоСпискомИмен()
+    public void ProfileMissing_DiagnosticWithNamesList()
     {
         // Arrange: есть другой профиль.
         var store = Store(FullProfile("other"));
@@ -86,7 +86,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void ПолупараRoot_ValidateEnvPairsВозвращаетПрофиль()
+    public void HalfRootPair_ValidateEnvPairsReturnsProfile()
     {
         // Arrange: ROOT_USER есть, ROOT_PASSWORD нет.
         var store = Store(new Dictionary<string, string?>
@@ -102,7 +102,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void AccessKeyБезТройки_ПрофильНевалиден()
+    public void AccessKeyWithoutTriple_ProfileInvalid()
     {
         // Arrange: ключ 0 без SECRETKEY/POLICY — неполный профиль (permanent P1).
         var store = Store(new Dictionary<string, string?>
@@ -118,11 +118,11 @@ public class SecretProfileStoreTests
         // Assert: отказ с диагностикой без значений.
         ok.Should().BeFalse();
         secrets.Should().BeNull();
-        diagnostic.Should().Contain("неполный access key #0").And.NotContain(AccessKey);
+        diagnostic.Should().Contain("incomplete access key #0").And.NotContain(AccessKey);
     }
 
     [Fact]
-    public void ПолицаВнеДопустимых_ПрофильНевалиден()
+    public void PolicyOutsideAllowed_ProfileInvalid()
     {
         // Arrange: policy ≠ read-write|read-only.
         var store = Store(new Dictionary<string, string?>
@@ -143,7 +143,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void ДиагностикиБезЗначений()
+    public void DiagnosticsWithoutValues()
     {
         // Arrange: полупара + неполный ключ — обе диагностики в одном сторе.
         var values = new Dictionary<string, string?>
@@ -165,7 +165,7 @@ public class SecretProfileStoreTests
     }
 
     [Fact]
-    public void ProfileNames_ПереченьИзДвух()
+    public void ProfileNames_ListOfTwo()
     {
         // Arrange: два профиля в env.
         var store = Store(FullProfile("a"), FullProfile("b").Keys.Concat(FullProfile("a").Keys));

@@ -33,7 +33,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task ПовторныйEnsureCluster_ТотЖеМатериал()
+    public async Task RepeatEnsureCluster_SameMaterial()
     {
         // Arrange: свежий etcd — первый ensure выпускает пару CA+оркестратор.
         var (store, etcd, _) = Rig();
@@ -54,7 +54,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task СертификатОркестратораБессрочный_ИмяКластера()
+    public async Task OrchestratorCertificateUnlimited_ClusterName()
     {
         // Arrange/Act: выпуск пары кластера.
         var (store, _, _) = Rig();
@@ -68,7 +68,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task ЧастичноеПредсуществование_CAЕсть_ОркестраторДобирается()
+    public async Task PartialPreexistence_CaExists_OrchestratorAdopted()
     {
         // Arrange: в etcd предзаполнен только pki/ca (валидный материал).
         var (store, etcd, time) = Rig();
@@ -88,11 +88,11 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task ЧастичноеПредсуществование_ОркестраторЕсть_ОтказБезВыпускаСА()
+    public async Task PartialPreexistence_OrchestratorExists_FailsWithoutIssuingCa()
     {
         // Arrange: предзаполнен только pki/orchestrator (подписан ЧУЖИМ CA — CA нет).
         var (store, etcd, time) = Rig();
-        var foreignCa = NewCa("другой-домен");
+        var foreignCa = NewCa("other-domain");
         var (cert, keyPem) = PeerCertificateAuthority.IssueServer(
             "orchestrator", foreignCa.Ca, foreignCa.CaPrivateKeyPem, time.GetUtcNow(), expiresDays: 0);
         etcd.Seed(S3ProcessCommon.OrchestratorPkiKey(Cluster),
@@ -103,12 +103,12 @@ public class PkiStoreTests
 
         // Assert: Failed с диагностикой «ключ CA невосстановим»; CA не создаётся.
         ensured.IsSuccess.Should().BeFalse();
-        ensured.Error!.Message.Should().Contain("невосстановим");
+        ensured.Error!.Message.Should().Contain("unrecoverable");
         etcd.Store.Keys.Should().NotContain(S3ProcessCommon.ClusterPkiCaKey(Cluster));
     }
 
     [Fact]
-    public async Task EnsureNodePki_ПовторТотЖеМатериал_ПроходитVerifyСвоегоСА()
+    public async Task EnsureNodePki_RepeatSameMaterial_PassesOwnCaVerify()
     {
         // Arrange: пара кластера выпущена.
         var (store, _, time) = Rig();
@@ -126,7 +126,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task ИзоляцияTrustДоменов_ЧужойСАНеПринимает()
+    public async Task TrustDomainIsolation_ForeignCaRejected()
     {
         // Arrange: два кластера с собственными CA.
         var (store, _, time) = Rig();
@@ -143,7 +143,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public async Task ПодменаКлючаВEtcd_TryReadFailed()
+    public async Task SwappedKeyInEtcd_TryReadFailed()
     {
         // Arrange: материал инстанса выпущен, затем ключ в etcd подменён материалом чужого CA.
         var (store, etcd, time) = Rig();
@@ -160,11 +160,11 @@ public class PkiStoreTests
 
         // Assert: сертификат не проходит верификацию CA кластера (подмена) — Failed.
         read.IsSuccess.Should().BeFalse();
-        read.Error!.Message.Should().Contain("верификацию");
+        read.Error!.Message.Should().Contain("CA verification");
     }
 
     [Fact]
-    public async Task TryRead_ОтсутствующийКлюч_Null()
+    public async Task TryRead_MissingKey_Null()
     {
         // Arrange: пустой etcd.
         var (store, _, _) = Rig();
@@ -181,7 +181,7 @@ public class PkiStoreTests
     }
 
     [Fact]
-    public void ФорматCaJson_КанонArch23()
+    public void CaJsonFormat_CanonicalArch23()
     {
         // Arrange: материал CA.
         var material = NewCa(Cluster);

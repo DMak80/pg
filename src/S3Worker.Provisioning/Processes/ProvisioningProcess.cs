@@ -209,7 +209,7 @@ public sealed class ProvisioningProcess(
                 if (!resolved.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(
                         new ApplicationException(
-                            $"placement {cluster}/{node.Node}: ноль кандидатов; перечень: [{string.Join(", ", candidates)}]"));
+                            $"placement {cluster}/{node.Node}: zero candidates; list: [{string.Join(", ", candidates)}]"));
                 placements.Add(new NodePlacement(cluster, node.Node, resolved.Value));
                 var placedOn = await PutAsync(S3ProcessCommon.NodePlacedOnKey(cluster, node.Node), resolved.Value, ct);
                 if (!placedOn.IsSuccess)

@@ -172,7 +172,7 @@ public static class S3SnapshotParser
             using var doc = JsonDocument.Parse(raw);
             if (doc.RootElement.ValueKind != JsonValueKind.Array)
             {
-                errors.Add("/links: битый JSON links");
+                errors.Add("/links: invalid JSON links");
                 return null;
             }
 
@@ -183,7 +183,7 @@ public static class S3SnapshotParser
                     || !TryReadString(item, "a", out var a)
                     || !TryReadString(item, "b", out var b))
                 {
-                    errors.Add("/links: битый JSON links");
+                    errors.Add("/links: invalid JSON links");
                     return null;
                 }
 
@@ -194,7 +194,7 @@ public static class S3SnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add("/links: битый JSON links");
+            errors.Add("/links: invalid JSON links");
             return null;
         }
     }
@@ -209,7 +209,7 @@ public static class S3SnapshotParser
             using var doc = JsonDocument.Parse(raw);
             if (doc.RootElement.ValueKind != JsonValueKind.Array)
             {
-                errors.Add("/denylist: битый JSON denylist");
+                errors.Add("/denylist: invalid JSON denylist");
                 return null;
             }
 
@@ -218,7 +218,7 @@ public static class S3SnapshotParser
             {
                 if (item.ValueKind != JsonValueKind.String)
                 {
-                    errors.Add("/denylist: битый JSON denylist");
+                    errors.Add("/denylist: invalid JSON denylist");
                     return null;
                 }
 
@@ -229,7 +229,7 @@ public static class S3SnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add("/denylist: битый JSON denylist");
+            errors.Add("/denylist: invalid JSON denylist");
             return null;
         }
     }

@@ -93,7 +93,7 @@ public class SyncProbeTests
     // ==================== 1. Матрица connectivity (§8.1.1) ====================
 
     [Fact]
-    public async Task Матрица_ЗеркальныеТаргеты_OkПолнаяМатрица()
+    public async Task Matrix_MirrorTargets_OkFullMatrix()
     {
         // Arrange: оба probe-ответа с взаимными reachable-таргетами.
         var rig = Rig.New();
@@ -112,7 +112,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Матрица_ОдинOffline_Degraded()
+    public async Task Matrix_OneOffline_Degraded()
     {
         // Arrange: у east2 пинг east1 не отвечает (reachable=false).
         var rig = Rig.New();
@@ -131,7 +131,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Матрица_ВсеОффлайн_Down()
+    public async Task Matrix_AllOffline_Down()
     {
         // Arrange: оба линка offline (живых нет).
         var rig = Rig.New();
@@ -149,7 +149,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Матрица_ТаргетоВНет_OkПустаяМатрица()
+    public async Task Matrix_NoTargets_OkEmptyMatrix()
     {
         // Arrange: у обоих targets пуст — «никому не настроено» = OK, sync SYNCED.
         var rig = Rig.New();
@@ -170,7 +170,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Матрица_ОтказПробы_СтрокиНет_ProbeError()
+    public async Task Matrix_ProbeFails_RowMissing_ProbeError()
     {
         // Arrange: probe east1 не ответит (не запрограммирован → Failed); east2
         // отвечает, пинг соседа мёртв.
@@ -195,7 +195,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Матрица_НольОтветивших_DownPlusProbeError()
+    public async Task Matrix_ZeroResponders_DownPlusProbeError()
     {
         // Arrange: оба probe-вызова Failed (транспорт).
         var rig = Rig.New();
@@ -214,7 +214,7 @@ public class SyncProbeTests
     // ==================== 2. Пары (§8.1.2) ====================
 
     [Fact]
-    public async Task Пары_ЗеркальныеОднаПара()
+    public async Task Pairs_MirroredOnePair()
     {
         // Arrange: зеркальные targets → одна нормализованная пара.
         var rig = Rig.New();
@@ -233,7 +233,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Пары_НезеркальныйТаргет_ОднаПара()
+    public async Task Pairs_UnmirroredTarget_OnePair()
     {
         // Arrange: target есть только у east1 — пара всё равно одна (объединение).
         var rig = Rig.New();
@@ -255,7 +255,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Пары_НетПар_Synced()
+    public async Task Pairs_NoPairs_Synced()
     {
         // Arrange: targets пусты у всех — pairs пуст.
         var rig = Rig.New();
@@ -275,7 +275,7 @@ public class SyncProbeTests
     // ==================== 3. Сверка (§8.1.3) ====================
 
     [Fact]
-    public async Task Сверка_РавныеСтраницы_Synced00()
+    public async Task Compare_EqualPages_Synced00()
     {
         // Arrange: две равные страницы (nextMarker → вторая, конец) у обеих сторон.
         var rig = Rig.New();
@@ -304,7 +304,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Сверка_РасхождениеНаВторойСтранице_DiffЛистингов()
+    public async Task Compare_DiffOnSecondPage_ListingDiff()
     {
         // Arrange: первая страница равна, вторая различается → diff листингов:
         // east1 3 записи, east2 — одна общая → missing 2, lag_bytes = их суммарный объём.
@@ -338,7 +338,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Сверка_ТотЖеКлючДругойModTime_ИMissingИExtra()
+    public async Task Compare_SameKeyOtherModTime_MissingAndExtra()
     {
         // Arrange: ключ k с разными modTime у сторон — элемент сверки (key, modTime)
         // попадает в ОБА счётчика.
@@ -361,7 +361,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Сверка_НезависимыеБюджетыСторон_ПараСверена()
+    public async Task Compare_IndependentSideBudgets_PairReconciled()
     {
         // Arrange: SyncMaxPages=4; прет-чек израсходовал по 2 страницы на сторону,
         // from-листинг — 2 страницы (бюджет стороны исчерпан почти полностью),
@@ -407,7 +407,7 @@ public class SyncProbeTests
     // ==================== 4. Вердикты (§8.1.4) ====================
 
     [Fact]
-    public async Task Вердикт_ОчередьНепуста_Lagging()
+    public async Task Verdict_QueueNotEmpty_Lagging()
     {
         // Arrange: устойчивое расхождение (2/2 как в прошлом прогоне), НО
         // fetch-очередь приёмника east2 непуста → свидетельство прогресса.
@@ -432,7 +432,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Вердикт_Сокращение_ПрошлогоЛаггинг()
+    public async Task Verdict_ShrinkingBacklog_Lagging()
     {
         // Arrange: прошлый прогон 5 расхождений, сейчас 2 — догон сокращается.
         var rig = Rig.New();
@@ -451,7 +451,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Вердикт_НетПрогресса_Diverged()
+    public async Task Verdict_NoProgress_Diverged()
     {
         // Arrange: расхождение устойчиво (2 → 2), очередь пуста — «дыра».
         var rig = Rig.New();
@@ -472,7 +472,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Вердикт_ПервыйПрогонБезПрошлого_Lagging()
+    public async Task Verdict_FirstRunNoHistory_Lagging()
     {
         // Arrange: прошлого значения нет, очередь пуста — свидетельства
         // устойчивости нет → lagging (НЕ diverged).
@@ -491,7 +491,7 @@ public class SyncProbeTests
     // ==================== 5. Бюджет страниц (§8.1.5) ====================
 
     [Fact]
-    public async Task Бюджет_ЦепочкаСтраниц_ПараНеСверена_Lagging()
+    public async Task Budget_PageChain_PairNotReconciled_Lagging()
     {
         // Arrange: 21+ равных страниц с непустым nextMarker при SyncMaxPages=20 —
         // бюджет исчерпан, пара не сверена.
@@ -516,13 +516,13 @@ public class SyncProbeTests
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store["/s3/clusters/demo/sync"].Value.Should().Be(
             "{\"state\":\"LAGGING\",\"checked_unix\":" + now +
-            ",\"pairs\":[],\"last_error\":\"листинг пары east1↔east2 превышает бюджет страниц\"}");
+            ",\"pairs\":[],\"last_error\":\"listing of pair east1↔east2 exceeds page budget\"}");
     }
 
     // ==================== 6. Гейт/заявка (§8.1.6) ====================
 
     [Fact]
-    public async Task Гейт_СвежийКлючБезЗаявки_ТихийТик()
+    public async Task Gate_FreshKeyNoRequest_SilentTick()
     {
         // Arrange: connectivity свежий (checked_unix = now), заявки нет.
         var rig = Rig.New();
@@ -542,7 +542,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Гейт_Истёк_Прогон()
+    public async Task Gate_Expired_Run()
     {
         // Arrange: checked_unix старше SyncIntervalSec (60 с) на 61.
         var rig = Rig.New();
@@ -561,7 +561,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Заявка_ПрогонИDel()
+    public async Task Request_RunAndDelete()
     {
         // Arrange: заявка /s3worker/probes/demo стоит (гейт неважен).
         var rig = Rig.New();
@@ -582,7 +582,7 @@ public class SyncProbeTests
     }
 
     [Fact]
-    public async Task Заявка_FailedПрогонаЖива()
+    public async Task Request_FailedRunRequestStays()
     {
         // Arrange: отказ put connectivity — прогон Failed, заявка обязана жить.
         var rig = Rig.New();
@@ -590,7 +590,7 @@ public class SyncProbeTests
         SeedMirrorProbe(rig.NodeClient);
         rig.Etcd.Seed("/s3worker/probes/demo", """{"requested_unix":1,"requested_by":"e2e-op"}""");
         rig.Etcd.PutFault = key => key == "/s3/clusters/demo/connectivity"
-            ? new ApplicationException("etcd недоступен")
+            ? new ApplicationException("etcd unavailable")
             : null;
 
         // Act 1
@@ -616,7 +616,7 @@ public class SyncProbeTests
     // ==================== 8. 0 RUNNING (§3.5 п.1) ====================
 
     [Fact]
-    public async Task НольRunning_Idle_ЗаявкаСнесена_КлючиНеПишутся()
+    public async Task ZeroRunning_Idle_RequestDeleted_KeysNotWritten()
     {
         // Arrange: инстансы NOT_INITIALIZED; заявка стоит.
         var rig = Rig.New();
@@ -642,7 +642,7 @@ public class SyncProbeTests
     // ==================== 9. Профиль недоступен ====================
 
     [Fact]
-    public async Task ПрофильНедоступен_Idle_ЗаявкаЖива()
+    public async Task ProfileUnavailable_Idle_RequestStays()
     {
         // Arrange: профиль секретов не задан в env — грани недостижимы.
         var rig = Rig.New();
@@ -658,7 +658,7 @@ public class SyncProbeTests
         rig.NodeClient.ProbeCalls.Should().BeEmpty();
         var journal = await rig.Journal.ReadAsync("demo", TestContext.Current.CancellationToken);
         journal.Value!.Phase.Should().Be("idle");
-        journal.Value.LastError.Should().Contain("профиль секретов недоступен");
+        journal.Value.LastError.Should().Contain("secret profile unavailable");
     }
 
     // Расходящаяся пара: зеркальные probe-ответы (пара east1/east2), sync-report

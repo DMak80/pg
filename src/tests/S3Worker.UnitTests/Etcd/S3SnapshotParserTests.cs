@@ -110,7 +110,7 @@ public class S3SnapshotParserTests
     }
 
     [Fact]
-    public void Parse_ConnectivitySync_НеUnknown_КластерЦел()
+    public void Parse_ConnectivitySync_NotUnknown_ClusterIntact()
     {
         // Arrange — ключи наблюдения зонда t33 (arch/23 §3) и вовсе неизвестный
         var kvs = new[]
@@ -297,8 +297,8 @@ public class S3SnapshotParserTests
         var cluster = result.Value.Clusters.Single();
         cluster.Links.Should().BeNull();
         cluster.DenyList.Should().BeNull();
-        cluster.ParseError.Should().Contain("/links: битый JSON");
-        cluster.ParseError.Should().Contain("/denylist: битый JSON");
+        cluster.ParseError.Should().Contain("/links: invalid JSON");
+        cluster.ParseError.Should().Contain("/denylist: invalid JSON");
         cluster.Config.Should().NotBeNull();
     }
 
@@ -316,7 +316,7 @@ public class S3SnapshotParserTests
 
         // Assert
         cluster.Links.Should().BeNull();
-        cluster.ParseError.Should().Contain("/links: битый JSON");
+        cluster.ParseError.Should().Contain("/links: invalid JSON");
     }
 
     [Fact]

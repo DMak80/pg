@@ -10,7 +10,7 @@ namespace S3Worker.UnitTests.Provisioning;
 public class S3ProcessCommonTests
 {
     [Fact]
-    public void КлючиПутиТочны()
+    public void KeysPathsExact()
     {
         // Arrange + Act + Assert: пути arch/23 §8 один в один.
         S3ProcessCommon.ConfigKey("c").Should().Be("/s3/clusters/c/config");
@@ -27,7 +27,7 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void ParseResources_КанонИМусор()
+    public void ParseResources_CanonicalAndJunk()
     {
         // Arrange: каноническая декларация и мусорная строка.
         var canonical = new S3NodeResources("2", "4Gi", "200Gi");
@@ -64,7 +64,7 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void PortAlloc_RoundtripКаноническогоФормата()
+    public void PortAlloc_RoundtripCanonicalFormat()
     {
         // Arrange: формат arch/23 §8 {"node<k>":{"host":"h","s3":18001}}.
         var alloc = new Dictionary<string, NodeAddress>
@@ -83,7 +83,7 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void ParseEndpoint_ПерваяПараИДефолтПорта()
+    public void ParseEndpoint_FirstPairAndDefaultPort()
     {
         // Arrange: канонический endpoints и адрес без порта.
         const string endpoints = "h1:18001,h2:18002";
@@ -100,7 +100,7 @@ public class S3ProcessCommonTests
     // ============ зонды t33: ключи/сериализаторы/парсеры (arch/23 §3/§8) ============
 
     [Fact]
-    public void КлючиЗондаТочны()
+    public void ProbeKeysExact()
     {
         // Arrange + Act + Assert: пути arch/23 §3/§8 один в один.
         S3ProcessCommon.ConnectivityKey("c").Should().Be("/s3/clusters/c/connectivity");
@@ -109,7 +109,7 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void Connectivity_КаноническийПорядокПолей()
+    public void Connectivity_CanonicalFieldOrder()
     {
         // Arrange: те же данные в словарях, узлы/таргеты в ОБРАТНОМ порядке —
         // проверка Ordinal-сортировки сериализатора.
@@ -120,15 +120,15 @@ public class S3ProcessCommonTests
         };
 
         // Act
-        var json = S3ProcessCommon.SerializeConnectivity("DEGRADED", 1760156900, links, "east3: таймаут");
+        var json = S3ProcessCommon.SerializeConnectivity("DEGRADED", 1760156900, links, "east3: timeout");
 
         // Assert: строгая строка канона (порядок полей/узлов, probe_error последним).
         json.Should().Be(
-            """{"state":"DEGRADED","checked_unix":1760156900,"links":{"east1":{"east2":"offline"},"east2":{"east1":"ok"}},"probe_error":"east3: таймаут"}""");
+            """{"state":"DEGRADED","checked_unix":1760156900,"links":{"east1":{"east2":"offline"},"east2":{"east1":"ok"}},"probe_error":"east3: timeout"}""");
     }
 
     [Fact]
-    public void Sync_КаноническийПорядокПолей()
+    public void Sync_CanonicalFieldOrder()
     {
         // Arrange: пара с лагами (обратный порядок списка — сортировка (From,To))
         // и два SYNCED-варианта без опциональных полей.
@@ -138,14 +138,14 @@ public class S3ProcessCommonTests
         };
 
         // Act
-        var lagging = S3ProcessCommon.SerializeSync("LAGGING", 1760156900, pairs, "листинг недоступен");
+        var lagging = S3ProcessCommon.SerializeSync("LAGGING", 1760156900, pairs, "listing unavailable");
         var synced = S3ProcessCommon.SerializeSync("SYNCED", 1760156900,
             [new S3ProcessCommon.SyncPairValue("east1", "east2", 0, 0, null, 0)]);
         var noPairs = S3ProcessCommon.SerializeSync("SYNCED", 1760156900, []);
 
         // Assert: строгие строки канона; lag_objects=0 не пишется; last_error только непустой.
         lagging.Should().Be(
-            """{"state":"LAGGING","checked_unix":1760156900,"pairs":[{"from":"east1","to":"east2","missing":3,"extra":0,"lag_bytes":1048576,"lag_objects":3}],"last_error":"листинг недоступен"}""");
+            """{"state":"LAGGING","checked_unix":1760156900,"pairs":[{"from":"east1","to":"east2","missing":3,"extra":0,"lag_bytes":1048576,"lag_objects":3}],"last_error":"listing unavailable"}""");
         synced.Should().Be(
             """{"state":"SYNCED","checked_unix":1760156900,"pairs":[{"from":"east1","to":"east2","missing":0,"extra":0}]}""");
         noPairs.Should().Be(
@@ -153,11 +153,11 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void ParseCheckedUnix_Гейт()
+    public void ParseCheckedUnix_Gate()
     {
         // Arrange: валидное значение, битый JSON, значение без поля, пустота.
         const string valid = """{"state":"OK","checked_unix":1760156900}""";
-        const string broken = "{не-json";
+        const string broken = "{not-json";
         const string noField = """{"state":"OK"}""";
 
         // Act
@@ -174,13 +174,13 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
-    public void ParseSyncDiscrepancies_Прогресс()
+    public void ParseSyncDiscrepancies_Progress()
     {
         // Arrange: пары с missing/extra, пара без полей (пропускается), битый JSON.
         const string valid = """
             {"state":"LAGGING","checked_unix":1,"pairs":[{"from":"east1","to":"east2","missing":5,"extra":1},{"from":"a","to":"b"}]}
             """;
-        const string broken = "{не-json";
+        const string broken = "{not-json";
 
         // Act
         var parsed = S3ProcessCommon.ParseSyncDiscrepancies(valid);

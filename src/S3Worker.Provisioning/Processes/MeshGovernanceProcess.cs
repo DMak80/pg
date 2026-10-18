@@ -50,7 +50,7 @@ public sealed class MeshGovernanceProcess(
         // Креды профиля: без них админ-грань недостижима — диагностический skip
         // (по образцу надзора; оператор чинит env — тик повторит).
         if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
-            return await SkipAsync(cluster, $"профиль секретов недоступен: {secretDiagnostic}", ct);
+            return await SkipAsync(cluster, $"secret profile unavailable: {secretDiagnostic}", ct);
 
         // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);
@@ -65,13 +65,13 @@ public sealed class MeshGovernanceProcess(
             return await SkipAsync(cluster, null, ct);
 
         // Битые декларации (parseError снапшота при наличии ключа) — не применяем.
-        var linksError = snap.ParseError?.Contains("/links: битый JSON", StringComparison.Ordinal) == true;
-        var denyError = snap.ParseError?.Contains("/denylist: битый JSON", StringComparison.Ordinal) == true;
+        var linksError = snap.ParseError?.Contains("/links: invalid JSON", StringComparison.Ordinal) == true;
+        var denyError = snap.ParseError?.Contains("/denylist: invalid JSON", StringComparison.Ordinal) == true;
         var warnings = new List<string>();
         if (linksError)
-            warnings.Add("links: битый JSON — граф не применяется (диагностика в parseError)");
+            warnings.Add("links: invalid JSON — graph not applied (diagnostics in parseError)");
         if (denyError)
-            warnings.Add("denylist: битый JSON — отзовы не применяются");
+            warnings.Add("denylist: invalid JSON — revocations not applied");
 
         // DenyList-декларация (битая — пустая: не применяется, arch/23 §9) —
         // общая для deny-доведения и сверки состава.

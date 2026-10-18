@@ -57,7 +57,7 @@ public sealed class SecretProfileStore(Func<string?, string?>? getenv = null, IE
         var rootPassword = _getenv($"{Prefix}{profile}__ROOT_PASSWORD");
         if (string.IsNullOrEmpty(rootUser) || string.IsNullOrEmpty(rootPassword))
         {
-            diagnostic = $"профиль {profile} не найден или неполон (нужны ROOT_USER/ROOT_PASSWORD); доступны: {string.Join(", ", ProfileNames)}";
+            diagnostic = $"profile {profile} not found or incomplete (ROOT_USER/ROOT_PASSWORD required); available: {string.Join(", ", ProfileNames)}";
             return false;
         }
 
@@ -75,7 +75,7 @@ public sealed class SecretProfileStore(Func<string?, string?>? getenv = null, IE
             if (string.IsNullOrEmpty(accessKey) || string.IsNullOrEmpty(secretKey)
                 || (policy != "read-write" && policy != "read-only"))
             {
-                diagnostic = $"профиль {profile}: неполный access key #{i} (нужны ACCESSKEY, SECRETKEY и POLICY=read-write|read-only)";
+                diagnostic = $"profile {profile}: incomplete access key #{i} (ACCESSKEY, SECRETKEY and POLICY=read-write|read-only required)";
                 return false;
             }
 

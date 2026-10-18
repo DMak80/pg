@@ -53,7 +53,7 @@ public sealed class NodeSupervisor(
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId, existingTrack.Value ?? new Dictionary<string, long>(),
-                $"профиль секретов недоступен: {secretDiagnostic} — пересоздание отложено", ct);
+                $"secret profile unavailable: {secretDiagnostic} — recreation deferred", ct);
             return skip.IsSuccess ? Result.Success() : skip;
         }
 

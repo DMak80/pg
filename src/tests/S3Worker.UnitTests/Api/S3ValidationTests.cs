@@ -19,7 +19,7 @@ public class S3ValidationTests
         name, platform, secretProfile, instances, new S3ResourcesDto(cpu, memGi, diskGi));
 
     [Fact]
-    public void ВалиднаяЗаявка_БезОшибок()
+    public void ValidRequest_NoErrors()
     {
         // Arrange + Act: 0 инстансов и 2 именованных — обе декларации валидны.
         var empty = S3ClusterValidator.Validate(Valid(instances: []));
@@ -31,7 +31,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Name_ГраницыДлины()
+    public void Name_LengthBounds()
     {
         // Arrange: 63 символа ок / 64 нет; дефис запрещён.
         var ok = S3ClusterValidator.Validate(Valid(name: new string('a', 63)));
@@ -45,7 +45,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Platform_Minio_Отклонён()
+    public void Platform_Minio_Rejected()
     {
         // Arrange + Act
         var errors = S3ClusterValidator.Validate(Valid(platform: "minio"));
@@ -55,7 +55,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Instances_Больше9_Отклонён()
+    public void Instances_MoreThan9_Rejected()
     {
         // Arrange: 10 инстансов — структурный предел 0..9.
         var instances = Enumerable.Range(0, 10).Select(i => Instance($"n{i}")).ToList();
@@ -68,7 +68,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void InstanceName_ПаттернРезервДубль()
+    public void InstanceName_PatternReservedDuplicate()
     {
         // Arrange: паттерн-нарушение; резерв orchestrator; дубль имени в теле.
         var badPattern = S3ClusterValidator.Validate(Valid(instances: [Instance("9bad")]));
@@ -82,7 +82,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void InstancePlacement_ОбязателенКаждому()
+    public void InstancePlacement_RequiredForEach()
     {
         // Arrange: у второго инстанса пустой placement.
         var instances = new[] { Instance("east1"), new S3InstanceDto("east2", new S3PlacementDto(null, null, null), null) };
@@ -95,7 +95,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void InstanceResources_PerInstance_Границы()
+    public void InstanceResources_PerInstance_Bounds()
     {
         // Arrange: per-instance cpu вне диапазона (fallback общий валиден).
         var instances = new[] { Instance("east1", new S3ResourcesDto(100m, 1, 10)) };
@@ -108,7 +108,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Cpu_Границы()
+    public void Cpu_Bounds()
     {
         // Arrange: 0.01/64 ок, 0.005/65 нет.
         S3ClusterValidator.Validate(Valid(cpu: 0.01m)).Should().BeEmpty();
@@ -120,7 +120,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void MemDisk_Границы()
+    public void MemDisk_Bounds()
     {
         // Arrange: 1/65536 ок, 0/65537 нет.
         S3ClusterValidator.Validate(Valid(memGi: 1, diskGi: 65536)).Should().BeEmpty();
@@ -131,7 +131,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void ПрофильНеЗадан_Ошибка()
+    public void ProfileNotSet_Error()
     {
         // Arrange + Act
         var errors = S3ClusterValidator.Validate(Valid(secretProfile: " "));
@@ -145,7 +145,7 @@ public class S3ValidationTests
     private static readonly string[] Names = ["east1", "east2", "west1"];
 
     [Fact]
-    public void Links_ВалидныйГраф_БезОшибок()
+    public void Links_ValidGraph_NoErrors()
     {
         // Arrange + Act: частичный граф — полнота/симметричность не контролируются.
         var errors = S3LinksValidator.Validate(
@@ -156,7 +156,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Links_НесуществующееИмя_400()
+    public void Links_UnknownName_400()
     {
         // Arrange + Act
         var errors = S3LinksValidator.Validate([new S3LinkDto("east1", "ghost")], Names);
@@ -166,7 +166,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Links_AРавноB_400()
+    public void Links_AEqualsB_400()
     {
         // Arrange + Act
         var errors = S3LinksValidator.Validate([new S3LinkDto("east1", "east1")], Names);
@@ -176,7 +176,7 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void Links_ДубльПары_400()
+    public void Links_DuplicatePair_400()
     {
         // Arrange + Act: прямой и зеркальный дубли — обе 400.
         var straight = S3LinksValidator.Validate(

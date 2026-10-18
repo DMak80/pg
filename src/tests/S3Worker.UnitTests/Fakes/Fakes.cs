@@ -239,7 +239,7 @@ internal static class Fakes
         public Task<Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<S3Worker.Docker.Drivers.S3HostAttributes>>.Success(
                 HostsFault
-                    ? throw new ApplicationException("docker-хосты недоступны")
+                    ? throw new ApplicationException("docker hosts unavailable")
                     : Hosts));
 
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
@@ -266,7 +266,7 @@ internal static class Fakes
         {
             if (InspectFault)
                 return Task.FromResult(Result<S3Worker.Docker.Drivers.S3NodeInspection?>.Failed(
-                    new ApplicationException("docker-хост молчит")));
+                    new ApplicationException("docker host silent")));
 
             return Task.FromResult(Result<S3Worker.Docker.Drivers.S3NodeInspection?>.Success(
                 Nodes.TryGetValue($"{cluster}/{node}", out var f)
@@ -339,7 +339,7 @@ internal static class Fakes
         public Task<Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>> GetUsageAsync(
             string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
             => Task.FromResult(UsageFault
-                ? Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Failed(new ApplicationException("грань usage недоступна"))
+                ? Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Failed(new ApplicationException("usage endpoint unavailable"))
                 : Result<S3Worker.Core.OwnS3.OwnS3NodeUsage>.Success(Usage));
 
         public Task<Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>> GetReplicationStatusAsync(
@@ -396,7 +396,7 @@ internal static class Fakes
             return Task.FromResult(ProbeByPort.TryGetValue(port, out var report)
                 ? Result<S3Worker.Core.OwnS3.OwnS3ProbeReport>.Success(report)
                 : Result<S3Worker.Core.OwnS3.OwnS3ProbeReport>.Failed(
-                    new ApplicationException("probe не запрограммирован")));
+                    new ApplicationException("probe not programmed")));
         }
 
         public Task<Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>> GetSyncReportPageAsync(
@@ -407,7 +407,7 @@ internal static class Fakes
                 SyncReportPages.TryGetValue(port, out var pages) && pages.TryGetValue(marker ?? "", out var page)
                     ? Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>.Success(page)
                     : Result<S3Worker.Core.OwnS3.OwnS3SyncReportPage>.Failed(
-                        new ApplicationException("страница sync-report не запрограммирована")));
+                        new ApplicationException("sync-report page not programmed")));
         }
 
         public Task<Result<S3Worker.Core.OwnS3.OwnS3ListPage>> ListObjectEntriesAsync(
@@ -422,7 +422,7 @@ internal static class Fakes
             return Task.FromResult(Listings.TryGetValue(port, out var entries)
                 ? Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Success(new(entries, null))
                 : Result<S3Worker.Core.OwnS3.OwnS3ListPage>.Failed(
-                    new ApplicationException("листинг не запрограммирован")));
+                    new ApplicationException("listing not programmed")));
         }
     }
 }
