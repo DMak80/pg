@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Подъём полного стенда (профили full + kafka + valkey + metrics) до рабочего
-# состояния, по порядку: ГАРАНТИРОВАННАЯ зачистка контура (90-down.sh -v —
+# Подъём стенда = ЯДРО + ПАНЕЛЬ на пустом контуре (профили kafka + valkey +
+# metrics), по порядку: ГАРАНТИРОВАННАЯ зачистка контура (90-down.sh -v —
 # каждый запуск = новое окружение, базовые правила §13 п.2) → publish-фазы
-# образов ([PHASE]: SdGenerator, wal-агент; остальные — compose build;
-# owns3 — ВНЕШНИЙ образ из ../OwnS3, fail-fast ниже)
-# → стендовый compose (владелец сети adminpanel-stand-net) → deploy-контур
-# (contour-override: воркеры + ownS3) → bucket-сид ownS3 → POST /api/clusters
-# (канонический demo движком) → панель + прометей. Управление кафкой входит в
-# стенд всегда (не только e2e-гейтом): без воркера kafka-домен панели глух —
-# отсюда «глупые» алерты и разборы.
+# образов ([PHASE]: SdGenerator, wal-агент, S3Worker; остальные — compose
+# build) → стендовый compose (владелец сети adminpanel-stand-net) →
+# deploy-контур contour-override (воркеры) → wait-on-healthy (etcd-кворум,
+# healthz/lease-ключи воркеров ×2, панель, прометей). Никакие ресурсы НЕ
+# создаются и никакие сиды НЕ наливаются — ресурсы (PG-кластеры, S3-пулы,
+# valkey/kafka демо) создаёт оператор вручную через панель.
+# Управление кафкой входит в стенд всегда (не только e2e-гейтом): без
+# воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
@@ -47,11 +48,6 @@ printf '[{"targets": ["pgworker:8080", "pgworker-2:8080"]}]\n' \
 for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ no $bin in PATH"; exit 1; }
 done
-
-# ownS3: ВНЕШНИЙ образ (репозиторий ../OwnS3) — pg его не собирает; нет
-# образа — падаем сразу с подсказкой (сборка: ../OwnS3/deploy/build-image.sh).
-docker image inspect owns3:dev >/dev/null 2>&1 \
-  || { echo "❌ image owns3:dev missing — build it in ../OwnS3: bash ../OwnS3/deploy/build-image.sh"; exit 1; }
 
 # mTLS API воркеров (t03, arch/16 §1.1 / arch/21 §1.1): per-install TLS-пакет —
 # gen.sh идемпотентен ПОФАЙЛОВО (ca.pem жив — клиентские/pgserver не трогаются;
@@ -100,8 +96,8 @@ echo ">>> [PHASE] S3Worker publish ready ($(date +%H:%M:%S))"
 # deploy/.env в .gitignore; t41: стенд задаёт PGW_CONTOUR_NETWORK/
 # METRICS-ключи = стендовая сеть — шаблон уже несёт).
 [ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
-# Синхронизация хост-порта API в .env: пересоздания pgworker из чеков
-# (05-seed force-recreate) в свежих оболочках интерполируют compose из .env —
+# Синхронизация хост-порта API в .env: пересоздания pgworker из сид-прогонов
+# (force-recreate) в свежих оболочках интерполируют compose из .env —
 # bind обязан совпасть с уже занятой публикацией (чеки порт читают из .env).
 if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
   sed -i.bak "s/^PGW_API_HOST_PORT=.*/PGW_API_HOST_PORT=$PGW_API_HOST_PORT/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
@@ -154,12 +150,12 @@ grep -E '^S3W_NODE_SECRETS__' "$ROOT/deploy/.env" > "$ROOT/deploy/s3w-node-secre
 # t36: env-профили кредов пулов pgworker (arch/19 §7) — в .env без блока
 # дописываются ЦЕЛИКОМ (прежний .env от старого шаблона блока не несёт;
 # свежий .env — копия .env.example — уже несёт). Имя профиля = secretProfile
-# сида пула ниже (BACKUPS-MAIN).
+# пула бэкапов (BACKUPS-MAIN).
 if ! grep -q '^PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=' "$ROOT/deploy/.env"; then
 cat >> "$ROOT/deploy/.env" <<'EOF'
 
-# Профиль кредов пула бэкапов (t36, arch/19 §7): имя = secretProfile сида
-# пула «backups» (00-up.sh); ключ — writer-комплект OWNS3_ACCESS_KEYS__0.
+# Профиль кредов пула бэкапов (t36, arch/19 §7): имя = secretProfile пула
+# «backups»; ключ — writer-комплект OWNS3_ACCESS_KEYS__0.
 PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=pgw-backups-writer
 PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__SECRET_KEY=pgw-backups-writer-pwd
 EOF
@@ -186,57 +182,34 @@ if grep -q '^PgWorker__Loops__ScanIntervalSec=' "$ROOT/deploy/.env"; then
   sed -i.bak '/^PgWorker__Loops__ScanIntervalSec=/d' "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
 fi
 
-echo ">>> bringing up the stand (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
+echo ">>> bringing up the stand (docker compose --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
 # держит публикацию после удаления старого контейнера; при пересборке образа
 # recreate стабилен — ID меняется метаданными даже на кэшированных слоях) —
 # ретрай compose up, иначе подъём падает на «port is already allocated».
 compose_up_ok=0
 for _ in 1 2 3; do
-  if docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build 2>&1 | tail -5; then
+  if docker compose --profile kafka --profile valkey --profile metrics up -d --build 2>&1 | tail -5; then
     compose_up_ok=1; break
   fi
   echo "  compose up failed (port not released after recreate) — pausing 10 s"; sleep 10
 done
 [ "$compose_up_ok" = 1 ] || { echo "❌ stand failed to come up after 3 attempts (docker compose logs kafkaworker)"; exit 1; }
 
-# deploy-контур (воркеры + owns3) — в стендовую сеть (контур-override t41;
-# владелец сети adminpanel-stand-net — стендовый compose выше, deploy
-# подключается external; отдельная pgw-metrics не создаётся). force-recreate
-# + --build: свежий процесс из свежего образа надёжнее (кеш DNS/коннектов
-# умершего etcd); healthz/api-ключи — ниже в §1b.
+# deploy-контур (воркеры) — в стендовую сеть (контур-override t41; владелец
+# сети adminpanel-stand-net — стендовый compose выше, deploy подключается
+# external; отдельная pgw-metrics не создаётся). force-recreate + --build:
+# свежий процесс из свежего образа надёжнее (кеш DNS/коннектов умершего
+# etcd); healthz/api-ключи — ниже в §1b.
 pg_up_ok=0
 for _ in 1 2 3; do
   if ( cd "$ROOT/deploy" && docker compose -f docker-compose.yml -f docker-compose.contour.yml \
-       --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 owns3 s3worker s3worker-2 2>&1 | tail -2 ); then
+       --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 s3worker s3worker-2 2>&1 | tail -2 ); then
     pg_up_ok=1; break
   fi
   echo "  deploy up failed (port not released after recreate) — pausing 15 s"; sleep 15
 done
 [ "$pg_up_ok" = 1 ] || { echo "❌ deploy contour failed to come up after 3 attempts (docker logs deploy-pgworker-1)"; exit 1; }
-
-# ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
-#     deploy/.env, дефолт 9010).
-OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
-OWNS3_PORT="${OWNS3_PORT:-9010}"
-for i in $(seq 1 30); do curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 && break; sleep 2; done
-curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
-  || { echo "❌ owns3 did not come alive within 60 s (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
-echo "  owns3 alive (http://localhost:${OWNS3_PORT}/healthz)"
-
-# ownS3 (t39/t36): bucket СЛЕПКОВ etcd — идемпотентный сид root-кредами
-# (спецификация §7: standalone owns3 остаётся целью слепков — отдельная пара
-# PGW_SNAPSHOTS_S3_* со своим bucket; bucket пулов создаёт S3Worker, сюда
-# бэкапы больше не пишутся). Ephemeral mc ходит через хост-публикацию
-# (прецедент чека 46); стоит ДО проверок pgworker.
-OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
-OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
-docker run --rm --add-host host.docker.internal:host-gateway \
-  --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
-  -c "mc alias set own http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
-      && mc mb --ignore-existing own/pgworker-etcd-snapshots >/dev/null" \
-  || { echo "❌ bucket pgworker-etcd-snapshots not created in ownS3 (:${OWNS3_PORT})"; exit 1; }
-echo "  bucket pgworker-etcd-snapshots ready in ownS3 (:${OWNS3_PORT})"
 
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
@@ -261,7 +234,7 @@ echo "  image pgworker-backup:dev ready"
 #     в DCS по тому же advertise. Порядок подъёма: стендовый компоуз —
 #     владелец сети adminpanel-stand-net (выше); deploy-контур подключается
 #     к ней external (contour-override). Здесь — проверки живости (нужен
-#     собранный etcd-кворум выше); demo создаётся ниже (1c, POST /api/clusters).
+#     собранный etcd-кворум выше).
 MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
@@ -280,149 +253,6 @@ done
 [ "${pgw_api_keys:-0}" -ge 2 ] \
   || { echo "❌ /pgworker/api/ contains ${pgw_api_keys:-0} keys (<2) — second instance does not publish AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
 echo "  pgworker alive ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; /pgworker/api/ keys: ${pgw_api_keys})"
-
-# 1c) Канонический demo (t41, arch/adminpanel/04 §2.2): декларация ЧЕРЕЗ API
-#     воркера (mTLS healthcheck-парой): движок провижинит Spilo-ноды с
-#     Patroni в стендовой сети, portalloc-порты, схемы bucket_*, → Active.
-#     Идемпотентность: живой config → 409 (перезапуск 00-up на живом стенде —
-#     no-op); пересборка demo — полный цикл (90-down.sh -v → 00-up.sh).
-echo ">>> [PHASE] creating cluster demo (POST /api/clusters, $(date +%H:%M:%S))"
-conv_t0="$(date +%s)"   # старт конвергенции: ДО POST (пороги — дельты от него)
-create_code="$(curl -s -o /tmp/pgw-create-demo.json -w '%{http_code}' -m 10 \
-  --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
-  --key "$ROOT/deploy/tls/healthcheck.key" \
-  -X POST "https://localhost:${PGW_API_HOST_PORT:-8080}/api/clusters" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"demo","buckets":16,"shards":2,"replicas":2,"requestCpu":2,"requestMem":2,"requestDisk":100}')"
-case "$create_code" in
-  201) echo "  demo: request accepted (201)";;
-  409) echo "  demo already exists (409) — skipping creation";;
-  *) { echo "❌ POST /api/clusters → $create_code"; cat /tmp/pgw-create-demo.json; exit 1; };;
-esac
-
-# Wait-гейт конвергенции (arch/14: Active = config без NOT_INITIALIZED, все
-# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 90 c — общий потолок; ранее
-# обнаружение отказа — детектор стагнации 45 c без продвижения НИ ОДНОГО
-# порога подфазы (норма: самое длинное «молчание» на живом подъёме ~41 c —
-# patroni REST → streaming, pg_basebackup реплик). Пофазовая телеметрия с
-# [PHASE]-метками в журнал + phases.log: сеть/контейнеры → Patroni REST
-# per-node → leader-ключ → реплики streaming → снятие status-ключей → Active
-# + суммарная строка. Отказ (потолок/стагнация) — немедленный abort со
-# сбором диагностики (логи воркера, контейнеры нод, последние [PHASE]).
-echo ">>> [PHASE] waiting for demo convergence (budget 90 s, stagnation 45 s, $(date +%H:%M:%S))"
-demo_ready() {
-  conf="$(ect get /clusters/demo/config --print-value-only 2>/dev/null || true)"
-  [ -n "$conf" ] && ! echo "$conf" | grep -q '"state":"NOT_INITIALIZED"' || return 1
-  for s in shard1 shard2; do
-    for n in a b; do
-      [ "$(ect get "/clusters/demo/shards/$s/nodes/$s$n/state" --print-value-only 2>/dev/null)" = "RUNNING" ] || return 1
-    done
-  done
-  [ -z "$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null)" ] || return 1
-}
-# Порог подфазы: первый вызов фиксирует метку и печатает [PHASE] с дельтой
-# от conv_t0; повторные — no-op (порог уже достигнут). Каждое продвижение
-# двигает conv_last_progress — база детектора стагнации.
-conv_mark() {
-  local var="$1" label="$2"
-  [ -n "${!var:-}" ] && return 0
-  local now; now="$(date +%s)"
-  printf -v "$var" '%s' "$now"
-  conv_last_progress="$now"
-  phase "demo: $label — $((now - conv_t0)) c"
-}
-# Дельта порога от conv_t0; незакрытый порог — прочерк (не «отрицательное время»).
-conv_delta() {
-  local v="$1"
-  [ -n "${!v:-}" ] && echo "$(( ${!v} - conv_t0 ))" || echo "-"
-}
-# Подфаза 1: первый контейнер ноды demo в RUNNING (движок create/start).
-demo_containers_up() { [ -n "$(docker ps -q --filter name='^pgw-demo-' 2>/dev/null)" ]; }
-# Хост-порт Patroni REST (8008) ноды из её публикаций portalloc (пусто — нет).
-patroni_rest_port() {
-  docker port "$1" 8008 2>/dev/null | awk -F: '/:/{print $NF}' | tail -1
-}
-# Подфаза 2: REST каждой ноды отвечает /cluster (TLS per-install; -k —
-# телеметрия подъёма, не проверка PKI). Нод ещё нет → порог НЕ достигнут
-# (пустой список — не успех).
-demo_patroni_ok() {
-  local cs c p
-  cs="$(docker ps --filter name='^pgw-demo-' --format '{{.Names}}')"
-  [ -n "$cs" ] || return 1
-  for c in $cs; do
-    p="$(patroni_rest_port "$c")"
-    [ -n "$p" ] || return 1
-    curl -skf -m 2 "https://localhost:${p}/cluster" 2>/dev/null | grep -q '"members"' || return 1
-  done
-}
-# Подфаза 3: leader-ключи обоих шардов (Patroni select leader, DCS etcd).
-demo_leader_ok() {
-  local s
-  for s in shard1 shard2; do
-    [ -n "$(ect get "/clusters/demo/shards/$s/master" --print-value-only 2>/dev/null)" ] || return 1
-  done
-}
-# Подфаза 4: у каждого шарда есть стримящая реплика (member state=streaming
-# в /cluster; форма ответа Patroni — с пробелом и без, grep-Eq покрывает).
-demo_streaming_ok() {
-  local s c p found out
-  for s in shard1 shard2; do
-    found=""
-    for c in $(docker ps --filter "name=pgw-demo-$s-" --format '{{.Names}}'); do
-      p="$(patroni_rest_port "$c")"
-      [ -n "$p" ] || continue
-      out="$(curl -sk -m 2 "https://localhost:${p}/cluster" 2>/dev/null || true)"
-      if echo "$out" | grep -Eq '"state": ?"streaming"'; then found=1; break; fi
-    done
-    [ -n "$found" ] || return 1
-  done
-}
-t_containers=""; t_patroni=""; t_leader=""; t_streaming=""; t_status=""
-seen_status_keys=""
-conv_last_progress="$conv_t0"
-conv_deadline=$((conv_t0 + 90))
-conv_idle_max=45
-# Диагностика отказа: состояние контейнеров нод + хвост лога воркера +
-# незакрытые пороги. Печатается ДО любого abort — «почему встало» видно
-# без повторного прогона (канон телеметрии e2e-launch).
-conv_fail_diag() {
-  local why="$1" next
-  echo "❌ demo did not converge: $why"
-  echo "--- demo node containers:"
-  docker ps -a --filter name='pgw-demo-' --format '{{.Names}}\t{{.Status}}' || true
-  echo "--- deploy-pgworker-1 log tail:"
-  docker logs --tail 25 deploy-pgworker-1 2>&1 | tail -12 || true
-  echo "--- unclosed thresholds:"
-  for pair in "t_containers:network/containers" "t_patroni:patroni REST" \
-              "t_leader:leader keys" "t_streaming:replicas streaming" "t_status:status keys"; do
-    next="${pair%%:*}"
-    [ -z "${!next:-}" ] && echo "  not reached: ${pair#*:}"
-  done
-}
-while [ "$(date +%s)" -lt "$conv_deadline" ]; do
-  [ -n "$t_containers" ] || { demo_containers_up && conv_mark t_containers "network/containers: first pgw-demo-* RUNNING"; }
-  [ -n "$t_patroni" ] || { demo_patroni_ok && conv_mark t_patroni "patroni REST: all nodes answer /cluster"; }
-  [ -n "$t_leader" ] || { demo_leader_ok && conv_mark t_leader "leader keys shard1+shard2"; }
-  [ -n "$t_streaming" ] || { demo_streaming_ok && conv_mark t_streaming "replicas streaming"; }
-  status_keys_now="$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null || true)"
-  [ -n "$status_keys_now" ] && seen_status_keys=1
-  if [ -z "$t_status" ] && [ -n "$seen_status_keys" ] && [ -z "$status_keys_now" ]; then
-    conv_mark t_status "bucket status keys removed"
-  fi
-  demo_ready && break
-  # Детектор стагнации: ни один порог не продвигался дольше conv_idle_max —
-  # отказ обнаружен рано, не дожидаясь общего потолка.
-  if [ "$(( $(date +%s) - conv_last_progress ))" -gt "$conv_idle_max" ]; then
-    conv_fail_diag "stagnation — no subphase progress for more than ${conv_idle_max} s (90 s budget not reached)"
-    exit 1
-  fi
-  sleep 1
-done
-demo_ready || { conv_fail_diag "90 s budget exhausted"; exit 1; }
-[ -n "$t_status" ] || t_status="$(date +%s)"   # сняты быстрее первого опроса — порог = гейт
-conv_done="$(date +%s)"
-phase "demo: convergence $((conv_done - conv_t0)) s (phases: network/containers $(conv_delta t_containers), patroni $(conv_delta t_patroni), leader $(conv_delta t_leader), streaming $(conv_delta t_streaming), status $(conv_delta t_status))"
-echo "  demo: Active, nodes RUNNING, bucket status keys removed (shard1/shard2 × a/b)"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
 #    /kafkaworker/instances/ (два инстанса = два ключа каждого вида).
@@ -471,45 +301,6 @@ done
   || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
 echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; /s3worker/api/ keys: ${s3w_keys})"
 
-# 7c-2) Сид пула бэкапов (t36, spec §4.6/§7): S3-кластер «backups» из одной
-#       ноды через API живого s3worker (mTLS healthcheck-парой, образец 75);
-#       идемпотентен: живой Active-кластер → 409 (пропуск). S3Worker сам
-#       провижинит ownS3-ноду (порт из ряда S3W), создаст per-install bucket
-#       (S3W_BUCKET, P3) и напишет /s3/clusters/backups/{config,nodes,endpoints}.
-#       Политика пулов кластерам стенда не задаётся сидом — оператор выбирает
-#       пул со страницы (до выбора — алерт backup-pool-missing, канон §7).
-echo ">>> [PHASE] seeding backups pool (POST /api/s3/clusters, $(date +%s))"
-# DTO CreateS3ClusterRequest (S3Api.cs): инстансы — списком instances (имена
-# нод + placement); nodes/placements в запросе не читаются (кластер
-# создавался пустым — прецедент мерж-гейта t36).
-pool_body='{"name":"backups","platform":"owns3","secretProfile":"BACKUPS-MAIN","instances":[{"name":"node1","placement":{"dockerHost":"local"},"resources":{"cpu":0.5,"memGi":1,"diskGi":5}}]}'
-pool_code="$("${MTLS[@]}" -o /tmp/pgw-seed-pool.json -w '%{http_code}' -X POST \
-  "https://localhost:${S3W_API_HOST_PORT:-8086}/api/s3/clusters" \
-  -H 'Content-Type: application/json' -d "$pool_body")"
-case "$pool_code" in
-  201) echo "  backups pool: request accepted (201)";;
-  409) echo "  backups pool already exists (409) — skipping";;
-  *) { echo "❌ POST /api/s3/clusters → $pool_code"; cat /tmp/pgw-seed-pool.json; exit 1; };;
-esac
-pool_ready=0
-for i in $(seq 1 50); do
-  [ "$(ect get /s3/clusters/backups/nodes/node1/state --print-value-only 2>/dev/null)" = "RUNNING" ] \
-    && [ -n "$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)" ] \
-    && { pool_ready=1; break; }
-  sleep 2
-done
-[ "$pool_ready" = 1 ] \
-  || { echo "❌ backups pool not ready within 100 s (node1 RUNNING + endpoints; docker logs deploy-s3worker-1)"; exit 1; }
-echo "  backups pool: node1 RUNNING, endpoints=$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)"
-
-# 7d) valkey-сид (t03): демо-кластер demo наливается ЧЕРЕЗ API живого воркера —
-#     метрика spec §8.1: после ПОЛНОГО 00-up.sh панель /valkey уже показывает
-#     demo (Active, RUNNING, endpoints, live) — без отдельного запуска чека.
-#     05-seed.sh идемпотентен (SeedDemoHandler: живой config → 200 no-op),
-#     wait до Active — внутри seed-функции; прецедент — pg-контур (00-up.sh
-#     сам наливает pg-сид через API pgworker). Воркер продолжает жить.
-"$PWD/checks/05-seed.sh" valkey
-
 # 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
 #    /api/healthz опубликован на :5050.
 for i in $(seq 1 60); do curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 && break; sleep 1; done
@@ -524,4 +315,4 @@ curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev
   || { echo "❌ prometheus not ready within 60 s (docker compose logs prometheus)"; exit 1; }
 echo "  prometheus ready (:${METRICS_PROMETHEUS_PORT:-9090})"
 
-echo "✓ stand is up (full system: adminpanel + PG + kafka + valkey + PgWorker + monitoring, single contour)"
+echo "✓ stand is up (core + panel; resources are created manually via the panel)"
