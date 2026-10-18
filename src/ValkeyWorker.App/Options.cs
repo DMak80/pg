@@ -104,6 +104,11 @@ public sealed class DockerOptions
     public PortRangeOptions PortRange { get; set; } = new();
 
     public DockerImagesOptions Images { get; set; } = new();
+
+    /// <summary>Стенд/E2E: ноды создаются в сети контура поставки; сеть воркером
+    /// не создаётся/не удаляется; пусто — default bridge docker-хоста запуска.
+    /// Не поддерживается в Mode=Swarm — fail-fast старта (arch/21 §2).</summary>
+    public string? ContourNetwork { get; set; }
 }
 
 /// <summary>Хост plain-режима: {Name, Endpoint} (tcp://host:2375 | unix:///var/run/docker.sock).</summary>

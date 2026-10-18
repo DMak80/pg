@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Shared.Core;
+using Shared.Docker;
 using ValkeyWorker.Docker.Drivers;
 using Xunit;
 
@@ -128,7 +129,7 @@ public class ClusterDriverEnvTests
         var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
 
         // Act
-        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), null, CancellationToken.None);
 
         // Assert — env из spec в ContainerSpec (без Binds: томов в модели нет).
         result.IsSuccess.Should().BeTrue();
@@ -136,6 +137,60 @@ public class ClusterDriverEnvTests
         engine.CreatedSpec!.Env.Should().BeEquivalentTo(SampleEnv);
         engine.CreatedSpec.Binds.Should().BeNull();
         engine.CreatedSpec.Cmd.Should().BeEquivalentTo(["sh", "-c", "umask 077; exec valkey-server"]);
+    }
+
+    // AAA: Plain — контур-сеть (стенд/сценарий) доезжает до Network спецификации
+    // нового контейнера.
+    [Fact]
+    public async Task Plain_EnsureNode_ContourNetwork_SetsNetwork()
+    {
+        // Arrange — контейнера нет; движок-дублёр запоминает spec создания.
+        var engine = new StubEngine();
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), "contour", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec!.Network.Should().Be("contour");
+    }
+
+    // AAA: Plain — контурная сеть не задана (прод/умолчание) — прежнее
+    // поведение: Network=null (default bridge docker-хоста запуска).
+    [Fact]
+    public async Task Plain_EnsureNode_NoContourNetwork_NetworkNull()
+    {
+        // Arrange
+        var engine = new StubEngine();
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), null, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec!.Network.Should().BeNull();
+    }
+
+    // AAA: Plain — идемпотентность: существующий контейнер НЕ пересоздаётся
+    // (контурная сеть применяется только к новому контейнеру).
+    [Fact]
+    public async Task Plain_EnsureNode_ExistingContainer_NotRecreated_WithContourNetwork()
+    {
+        // Arrange — контейнер vwk-c1-node1 уже есть (running).
+        var engine = new StubEngine
+        {
+            Containers = [new DockerContainer("id1", ["vwk-c1-node1"], "running", "valkey/valkey:9.1.2")],
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new StubFactory(engine));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), "contour", CancellationToken.None);
+
+        // Assert — create не вызван (CreatedSpec остался null).
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().BeNull();
     }
 
     [Fact]
@@ -209,7 +264,7 @@ public class ClusterDriverEnvTests
         var driver = new SwarmClusterDriver("fake://manager", new StubFactory(engine));
 
         // Act
-        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Spec(SampleEnv), null, CancellationToken.None);
 
         // Assert — env в Template сервиса; имя vwk-c1-node1; без Binds.
         result.IsSuccess.Should().BeTrue();

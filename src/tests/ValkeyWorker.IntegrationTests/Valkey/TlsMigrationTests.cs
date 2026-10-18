@@ -42,7 +42,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         var created = await fx.Driver.EnsureNodeAsync(new(
             cluster, "node1", ValkeyClusterFixture.DockerHost, port, fx.Options.NodeImage, plainArgs,
             1m, 1024L * 1024 * 1024),
-            ct);
+            null, ct);
         created.IsSuccess.Should().BeTrue(created.Error?.Message);
         await fx.PutAsync($"/valkey/clusters/{cluster}/endpoints", $"localhost:{port}");
         await fx.PutAsync($"/valkey/clusters/{cluster}/nodes/node1/state", "RUNNING");
@@ -114,7 +114,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         (await fx.Driver.EnsureNodeAsync(new(
             cluster, "node1", ValkeyClusterFixture.DockerHost, port, fx.Options.NodeImage, plainArgs,
             1m, 1024L * 1024 * 1024),
-            ct)).IsSuccess.Should().BeTrue();
+            null, ct)).IsSuccess.Should().BeTrue();
 
         var migrator = new TlsMigrator(
             fx.Gateway, [fx.Endpoint], fx.Driver, claims, fx.NewJournal(),

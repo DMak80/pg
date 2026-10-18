@@ -55,8 +55,11 @@ public interface IClusterDriver
     Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct);
 
     // Идемпотентно создать ноду (plain: контейнер vwk-<C>-node<k>; swarm:
-    // сервис с constraint node.id==<id>, publish mode=host).
-    Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct);
+    // сервис с constraint node.id==<id>, publish mode=host). contourNetwork —
+    // сеть контура поставки/сценария: применяется ТОЛЬКО к новому контейнеру
+    // plain-режима (null — default bridge docker-хоста запуска); воркер сеть
+    // не создаёт и не удаляет.
+    Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, string? contourNetwork, CancellationToken ct);
 
     // Остановить и удалить ноду (томов нет; 404 = успех).
     Task<Result> RemoveNodeAsync(string cluster, string nodeName, CancellationToken ct);
@@ -151,7 +154,7 @@ public sealed class PlainClusterDriver(
         });
     }
 
-    public async Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct)
+    public async Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, string? contourNetwork, CancellationToken ct)
     {
         if (!_engines.TryGetValue(spec.Host, out var engine))
             return Result.Failed(new ApplicationException(
@@ -182,7 +185,10 @@ public sealed class PlainClusterDriver(
                 LabelKey: LabelKey,
                 Label: spec.Cluster,
                 // TLS-материал — env контейнера (VALKEY_TLS_{CERT,KEY,CA}).
-                Env: spec.Env);
+                Env: spec.Env,
+                // Сеть контура: null — default bridge; только при создании
+                // (существующий контейнер не трогается).
+                Network: contourNetwork);
 
             var created = await engine.CreateContainerAsync(containerSpec, name, ct);
             if (!created.IsSuccess)
@@ -354,8 +360,10 @@ public sealed class SwarmClusterDriver(
     public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
         => _engine.BusyPortsAsync(ct);
 
-    public async Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct)
+    public async Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, string? contourNetwork, CancellationToken ct)
     {
+        // contourNetwork не используется: сеть overlay назначает сам Swarm
+        // (Mode=Swarm + ContourNetwork отсечён fail-fast старта, arch/21 §2).
         return await Result.FromAsync(async () =>
         {
             // constraint: node.id==<id>, id ищем по Hostname==spec.Host.

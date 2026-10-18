@@ -184,7 +184,7 @@ public sealed class TlsMigrator(
             NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
             Env: NodeTlsProvisioner.BuildNodeTlsEnv(
-                creds.CaPem, creds.CaKey, "node1", options.AdvertisedClientHost ?? address.Host)), ct);
+                creds.CaPem, creds.CaKey, "node1", options.AdvertisedClientHost ?? address.Host)), options.ContourNetwork, ct);
         if (!ensured.IsSuccess)
             return ensured;
 

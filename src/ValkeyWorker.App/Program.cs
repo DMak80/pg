@@ -341,7 +341,9 @@ static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvision
     opts.Thresholds.NodeDeadSec,
     opts.AdvertisedClientHost,
     opts.Docker.Images.Node,
-    opts.Thresholds.RotationTicketTimeoutSec);
+    opts.Thresholds.RotationTicketTimeoutSec,
+    // Контурная сеть нод (arch/21 §2): пусто → null — прежнее поведение.
+    opts.Docker.ContourNetwork is { Length: > 0 } ? opts.Docker.ContourNetwork : null);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)

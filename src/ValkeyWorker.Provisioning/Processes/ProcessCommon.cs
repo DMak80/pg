@@ -28,7 +28,8 @@ public sealed record ValkeyProvisioningOptions(
     int NodeDeadSec,
     string? AdvertisedClientHost,
     string NodeImage,
-    int RotationTicketTimeoutSec = 3600)
+    int RotationTicketTimeoutSec = 3600,
+    string? ContourNetwork = null)
 {
     public static ValkeyProvisioningOptions Default { get; } =
         new(17000, 17999, 120, 90, null, "valkey/valkey:9.1.2", 3600);
