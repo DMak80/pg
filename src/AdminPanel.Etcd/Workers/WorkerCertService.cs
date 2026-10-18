@@ -23,14 +23,14 @@ public sealed class WorkerCertAlreadyManagedException(string worker)
 
 // 404: ключа нет (DELETE, spec §4.2).
 public sealed class WorkerCertNotFoundException(string worker)
-    : Exception($"ключ /workers/api_tls/{worker} не найден");
+    : Exception($"key /workers/api_tls/{worker} not found");
 
 // 404: неизвестный воркер (worker ∈ pgworker|kafkaworker|valkeyworker|s3worker,
 // spec §3.3 п.4; valkeyworker — t03, s3worker — arch/adminpanel/02 §9.9). Гвардится
 // сервисом ДО KeyOf во ВСЕХ write-методах (и рестарт-хендлером панели): мусорный
 // ключ /workers/api_tls/<foo> в etcd не пишется никогда.
 public sealed class WorkerNotFoundException(string worker)
-    : Exception($"неизвестный воркер {worker} (ожидался pgworker|kafkaworker|valkeyworker|s3worker)");
+    : Exception($"unknown worker {worker} (expected pgworker|kafkaworker|valkeyworker|s3worker)");
 
 // Итог записи: воркер + метаданные записанного серта.
 public sealed record WorkerCertWriteResult(string Worker, WorkerApiCert Meta);
@@ -67,7 +67,7 @@ public sealed class WorkerCertService(
         catch (Exception e)
         {
             throw new WorkerCertInvalidException(
-                $"PEM-пара невалидна (синтаксис или ключ не соответствует серту): {e.Message}");
+                $"invalid PEM pair (syntax or key does not match the certificate): {e.Message}");
         }
 
         using var _ = cert;
@@ -78,7 +78,7 @@ public sealed class WorkerCertService(
         if (new DateTimeOffset(cert.NotBefore.ToUniversalTime(), TimeSpan.Zero) > now
             || new DateTimeOffset(cert.NotAfter.ToUniversalTime(), TimeSpan.Zero) <= now)
             throw new WorkerCertInvalidException(
-                $"срок действия: NotBefore {cert.NotBefore:u} ≤ now < NotAfter {cert.NotAfter:u} — сейчас {now:u}");
+                $"validity: NotBefore {cert.NotBefore:u} ≤ now < NotAfter {cert.NotAfter:u} — now is {now:u}");
 
         // SAN-коллекция — заодно для метаданных; проверку правила 6 (есть SAN)
         // делаем ПОСЛЕ правил 1–3: CA/EKU-кандидат обязан получать 422
@@ -94,7 +94,7 @@ public sealed class WorkerCertService(
         if (cert.Extensions.OfType<X509BasicConstraintsExtension>()
             .Any(bc => bc.CertificateAuthority))
             throw new WorkerCertAffectsOutgoingException(
-                "сертификат — CA (BasicConstraints CA=TRUE)");
+                "certificate is a CA (BasicConstraints CA=TRUE)");
 
         // Правило 2: EKU задан → serverAuth есть, clientAuth нет.
         var eku = cert.Extensions.OfType<X509EnhancedKeyUsageExtension>().FirstOrDefault();
@@ -103,7 +103,7 @@ public sealed class WorkerCertService(
             var oids = eku.EnhancedKeyUsages.Cast<Oid>().Select(o => o.Value).ToHashSet();
             if (!oids.Contains(ServerAuthOid.Value) || oids.Contains(ClientAuthOid.Value))
                 throw new WorkerCertAffectsOutgoingException(
-                    "EKU не содержит serverAuth либо пригоден в исходящих (clientAuth)");
+                    "EKU does not contain serverAuth or is usable for outgoing (clientAuth)");
         }
 
         // Правило 3: sha256 не совпадает ни с одним известным материалом доверия/исходящих.
@@ -112,13 +112,13 @@ public sealed class WorkerCertService(
         {
             if (known == thumbprint)
                 throw new WorkerCertAffectsOutgoingException(
-                    "sha256-отпечаток совпадает с известным материалом доверия/исходящих установки "
-                    + "(per-cluster CA kafka-кластера или серты панели)");
+                    "sha256 thumbprint matches known trust/outgoing material of the installation "
+                    + "(per-cluster CA of kafka cluster or panel certificates)");
         }
 
         // Правило 6: есть хотя бы один SAN (DNS или IP).
         if (san.Count == 0)
-            throw new WorkerCertInvalidException("нет ни одного SAN (DNS или IP)");
+            throw new WorkerCertInvalidException("no SAN entries at all (DNS or IP)");
 
         return new WorkerApiCert(
             thumbprint, cert.Subject, cert.Issuer, san,
@@ -295,7 +295,7 @@ public sealed class WorkerCertService(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints is not set");
     }
 
     // Failover по endpoint'ам панели: первый успешный ответ выигрывает.
@@ -310,6 +310,6 @@ public sealed class WorkerCertService(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints is not set");
     }
 }

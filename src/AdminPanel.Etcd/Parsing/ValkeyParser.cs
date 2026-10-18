@@ -126,7 +126,7 @@ public static class ValkeyParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /valkeyworker/rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /valkeyworker/rotations/<cluster>"));
                 continue;
             }
 
@@ -137,7 +137,7 @@ public static class ValkeyParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -149,7 +149,7 @@ public static class ValkeyParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -169,7 +169,7 @@ public static class ValkeyParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /valkeyworker/ca_rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /valkeyworker/ca_rotations/<cluster>"));
                 continue;
             }
 
@@ -180,7 +180,7 @@ public static class ValkeyParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -191,7 +191,7 @@ public static class ValkeyParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -212,7 +212,7 @@ public static class ValkeyParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /valkeyworker/ticket_outcomes/<cluster>"));
+                errors.Add(new(kv.Key, "expected /valkeyworker/ticket_outcomes/<cluster>"));
                 continue;
             }
 
@@ -226,7 +226,7 @@ public static class ValkeyParser
                 var finished = JsonValues.ReadLong(root, "finished_unix");
                 if (kind is null || outcome is null || requested is null || finished is null)
                 {
-                    errors.Add(new(kv.Key, "нет обязательных полей kind/outcome/requested_unix/finished_unix"));
+                    errors.Add(new(kv.Key, "missing required fields kind/outcome/requested_unix/finished_unix"));
                     continue;
                 }
 
@@ -239,7 +239,7 @@ public static class ValkeyParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -280,7 +280,7 @@ public static class ValkeyParser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/valkey/clusters/{cluster}/config", "битый JSON config"));
+            errors.Add(new KeyParseError($"/valkey/clusters/{cluster}/config", "broken config JSON"));
             return (0, 0, "", null, ValkeyClusterState.Active);
         }
     }
@@ -303,7 +303,7 @@ public static class ValkeyParser
                     cpu = cpuValue;
                 else
                     errors.Add(new KeyParseError(
-                        $"/valkey/clusters/{cluster}/nodes/{acc.Name}/resources", "поле cpu не число"));
+                        $"/valkey/clusters/{cluster}/nodes/{acc.Name}/resources", "cpu field is not a number"));
 
                 memGi = ParseGi(JsonValues.ReadString(root, "mem"));
                 diskGi = ParseGi(JsonValues.ReadString(root, "disk"));
@@ -311,7 +311,7 @@ public static class ValkeyParser
             catch (JsonException)
             {
                 errors.Add(new KeyParseError(
-                    $"/valkey/clusters/{cluster}/nodes/{acc.Name}/resources", "битый JSON resources"));
+                    $"/valkey/clusters/{cluster}/nodes/{acc.Name}/resources", "broken resources JSON"));
             }
         }
 

@@ -29,7 +29,7 @@ public static class ModuleExtensions
                 if (seconds <= 0)
                 {
                     sp.GetRequiredService<ILogger<EtcdGateway>>()
-                       .LogWarning("AdminPanel:Etcd:RequestTimeoutSeconds <= 0 — использую 2 c");
+                       .LogWarning("AdminPanel:Etcd:RequestTimeoutSeconds <= 0 — using 2 s");
                     seconds = 2;
                 }
 

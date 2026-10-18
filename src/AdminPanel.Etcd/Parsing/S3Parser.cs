@@ -151,7 +151,7 @@ public static class S3Parser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /s3worker/rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /s3worker/rotations/<cluster>"));
                 continue;
             }
 
@@ -162,7 +162,7 @@ public static class S3Parser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -171,7 +171,7 @@ public static class S3Parser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -219,7 +219,7 @@ public static class S3Parser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/config", "битый JSON config"));
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/config", "broken config JSON"));
             return ("", 0, "", null, S3ClusterState.Active);
         }
     }
@@ -253,7 +253,7 @@ public static class S3Parser
         catch (JsonException)
         {
             errors.Add(new KeyParseError(
-                $"/s3/clusters/{cluster}/nodes/{node}/placement", "битый JSON placement"));
+                $"/s3/clusters/{cluster}/nodes/{node}/placement", "broken placement JSON"));
             return null;
         }
     }
@@ -273,7 +273,7 @@ public static class S3Parser
                 || !decimal.TryParse(cpuRaw, NumberStyles.Number, CultureInfo.InvariantCulture, out var cpu))
             {
                 errors.Add(new KeyParseError(
-                    $"/s3/clusters/{cluster}/nodes/{node}/resources", "поле cpu не число"));
+                    $"/s3/clusters/{cluster}/nodes/{node}/resources", "cpu field is not a number"));
                 return null;
             }
 
@@ -282,7 +282,7 @@ public static class S3Parser
             if (memGi is null || diskGi is null)
             {
                 errors.Add(new KeyParseError(
-                    $"/s3/clusters/{cluster}/nodes/{node}/resources", "mem/disk не формата <int>Gi"));
+                    $"/s3/clusters/{cluster}/nodes/{node}/resources", "mem/disk not in <int>Gi format"));
                 return null;
             }
 
@@ -291,7 +291,7 @@ public static class S3Parser
         catch (JsonException)
         {
             errors.Add(new KeyParseError(
-                $"/s3/clusters/{cluster}/nodes/{node}/resources", "битый JSON resources"));
+                $"/s3/clusters/{cluster}/nodes/{node}/resources", "broken resources JSON"));
             return null;
         }
     }
@@ -313,7 +313,7 @@ public static class S3Parser
             {
                 errors.Add(new KeyParseError(
                     $"/s3/clusters/{cluster}/nodes/{node}/usage",
-                    "нет обязательных полей used_bytes/total_bytes/updated_unix"));
+                    "missing required fields used_bytes/total_bytes/updated_unix"));
                 return null;
             }
 
@@ -322,7 +322,7 @@ public static class S3Parser
         catch (JsonException)
         {
             errors.Add(new KeyParseError(
-                $"/s3/clusters/{cluster}/nodes/{node}/usage", "битый JSON usage"));
+                $"/s3/clusters/{cluster}/nodes/{node}/usage", "broken usage JSON"));
             return null;
         }
     }
@@ -347,7 +347,7 @@ public static class S3Parser
             using var doc = JsonDocument.Parse(raw);
             if (doc.RootElement.ValueKind != JsonValueKind.Array)
             {
-                errors.Add(new KeyParseError($"/s3/clusters/{cluster}/links", "значение не массив"));
+                errors.Add(new KeyParseError($"/s3/clusters/{cluster}/links", "value is not an array"));
                 return [];
             }
 
@@ -357,7 +357,7 @@ public static class S3Parser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/links", "битый JSON links"));
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/links", "broken links JSON"));
             return [];
         }
     }
@@ -373,7 +373,7 @@ public static class S3Parser
             using var doc = JsonDocument.Parse(raw);
             if (doc.RootElement.ValueKind != JsonValueKind.Array)
             {
-                errors.Add(new KeyParseError($"/s3/clusters/{cluster}/denylist", "значение не массив"));
+                errors.Add(new KeyParseError($"/s3/clusters/{cluster}/denylist", "value is not an array"));
                 return [];
             }
 
@@ -383,7 +383,7 @@ public static class S3Parser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/denylist", "битый JSON denylist"));
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/denylist", "broken denylist JSON"));
             return [];
         }
     }
@@ -420,7 +420,7 @@ public static class S3Parser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/connectivity", "битый JSON connectivity"));
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/connectivity", "broken connectivity JSON"));
             return null;
         }
     }
@@ -456,7 +456,7 @@ public static class S3Parser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/sync", "битый JSON sync"));
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/sync", "broken sync JSON"));
             return null;
         }
     }

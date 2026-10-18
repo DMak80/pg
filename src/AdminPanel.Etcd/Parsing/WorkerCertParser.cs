@@ -25,7 +25,7 @@ public static class WorkerCertParser
             if (root.ValueKind != JsonValueKind.Object
                 || !root.TryGetProperty("cert_pem", out var certPem)
                 || certPem.ValueKind != JsonValueKind.String)
-                return new(null, new(key, "нет поля cert_pem"));
+                return new(null, new(key, "missing cert_pem field"));
 
             using var cert = X509Certificate2.CreateFromPem(certPem.GetString()!);
             var san = new List<string>();
@@ -53,11 +53,11 @@ public static class WorkerCertParser
         }
         catch (JsonException e)
         {
-            return new(null, new(key, $"битый JSON: {e.Message}"));
+            return new(null, new(key, $"broken JSON: {e.Message}"));
         }
         catch (Exception e) when (e is ArgumentException or CryptographicException or FormatException)
         {
-            return new(null, new(key, $"битый PEM сертификата: {e.Message}"));
+            return new(null, new(key, $"broken certificate PEM: {e.Message}"));
         }
     }
 

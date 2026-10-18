@@ -31,7 +31,7 @@ public static class WorkJournalParser
             var cluster = kv.Key[(kv.Key.LastIndexOf('/') + 1)..];
             if (cluster.Length == 0)
             {
-                errors.Add(new(kv.Key, "пустое имя кластера в ключе"));
+                errors.Add(new(kv.Key, "empty cluster name in key"));
                 continue;
             }
 
@@ -41,7 +41,7 @@ public static class WorkJournalParser
                 var root = doc.RootElement;
                 if (root.ValueKind != JsonValueKind.Object)
                 {
-                    errors.Add(new(kv.Key, "значение не JSON-объект"));
+                    errors.Add(new(kv.Key, "value is not a JSON object"));
                     continue;
                 }
 
@@ -64,7 +64,7 @@ public static class WorkJournalParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -97,7 +97,7 @@ public static class WorkJournalParser
             || !el.TryGetProperty("cause", out var causeEl) || causeEl.ValueKind != JsonValueKind.String
             || !el.TryGetProperty("detected_unix", out var detectedEl) || detectedEl.ValueKind != JsonValueKind.Number)
         {
-            errors.Add(new(key, $"поле {name} битое: ожидается объект shard/node/cause/detected_unix"));
+            errors.Add(new(key, $"field {name} is broken: expected shard/node/cause/detected_unix object"));
             return false;
         }
 

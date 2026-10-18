@@ -42,7 +42,7 @@ public sealed class SnapshotRefresher(
         var seconds = options.Value.RefreshIntervalSeconds;
         if (seconds <= 0)
         {
-            logger.LogWarning("AdminPanel:Etcd:RefreshIntervalSeconds <= 0 — использую 3 c");
+            logger.LogWarning("AdminPanel:Etcd:RefreshIntervalSeconds <= 0 — using 3 s");
             seconds = 3;
         }
 
@@ -62,7 +62,7 @@ public sealed class SnapshotRefresher(
         if (!_endpointsWarned && endpoints.Length == 0)
         {
             // один warning на серии отказов — не шумим в логах каждым тиком (spec §3.12)
-            logger.LogWarning("AdminPanel:Etcd:Endpoints не задан или невалиден — etcd-данные недоступны");
+            logger.LogWarning("AdminPanel:Etcd:Endpoints is not set or invalid — etcd data unavailable");
             _endpointsWarned = true;
         }
 
@@ -70,13 +70,13 @@ public sealed class SnapshotRefresher(
         var previous = store.Current;
 
         if (endpoints.Length == 0)
-            return FailTick(previous, [], now, "AdminPanel:Etcd:Endpoints не задан или невалиден");
+            return FailTick(previous, [], now, "AdminPanel:Etcd:Endpoints is not set or invalid");
 
         // 1. Статусы персонально по всем endpoints — параллельно (arch/02 §4 п.1).
         var statuses = await Task.WhenAll(endpoints.Select(e => StatusOfAsync(e, ct)));
         var alive = statuses.Where(s => s.Reachable).ToArray();
         if (alive.Length == 0)
-            return FailTick(previous, statuses, now, "нет живых endpoints etcd");
+            return FailTick(previous, statuses, now, "no alive etcd endpoints");
 
         // 2. Активный: sticky с прошлого тика, иначе первый живой (arch/02 §4 п.1).
         var active = alive.FirstOrDefault(e => e.Url == _activeEndpoint) ?? alive[0];
@@ -118,7 +118,7 @@ public sealed class SnapshotRefresher(
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
             || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess
             || !etcdSnapshotsKv.IsSuccess)
-            return FailTick(previous, statuses, now, "KV-чтения etcd не удались");
+            return FailTick(previous, statuses, now, "etcd KV reads failed");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
         var clustersParsed = ClustersParser.Parse(clustersKv.Value);
@@ -214,7 +214,7 @@ public sealed class SnapshotRefresher(
         }
 
         return Result<T>.Failed(new EtcdUnreachableException(
-            $"все живые endpoints не ответили: {last?.Message}"));
+            $"all alive endpoints failed to answer: {last?.Message}"));
     }
 
     // Отказ тика: свежий Etcd-статус + прежние данные/BuiltAtUtc (spec §3.9).

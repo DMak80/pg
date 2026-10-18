@@ -35,7 +35,7 @@ public sealed class ValkeySnapshotRefresher(
         var seconds = valkeyOptions.Value.RefreshIntervalSeconds;
         if (seconds <= 0)
         {
-            logger.LogWarning("AdminPanel:Valkey:RefreshIntervalSeconds <= 0 — использую 3 c");
+            logger.LogWarning("AdminPanel:Valkey:RefreshIntervalSeconds <= 0 — using 3 s");
             seconds = 3;
         }
 
@@ -61,7 +61,7 @@ public sealed class ValkeySnapshotRefresher(
         var endpoints = etcdOptions.Value.Endpoints.Where(IsValidEndpoint).ToArray();
         if (!_endpointsWarned && endpoints.Length == 0)
         {
-            logger.LogWarning("AdminPanel:Etcd:Endpoints не задан или невалиден — valkey-данные недоступны");
+            logger.LogWarning("AdminPanel:Etcd:Endpoints is not set or invalid — valkey data unavailable");
             _endpointsWarned = true;
         }
 
@@ -69,7 +69,7 @@ public sealed class ValkeySnapshotRefresher(
         var previous = store.Current;
 
         if (endpoints.Length == 0)
-            return FailTick(previous, now, "AdminPanel:Etcd:Endpoints не задан или невалиден");
+            return FailTick(previous, now, "AdminPanel:Etcd:Endpoints is not set or invalid");
 
         var active = _activeEndpoint is not null && endpoints.Contains(_activeEndpoint)
             ? _activeEndpoint
@@ -83,7 +83,7 @@ public sealed class ValkeySnapshotRefresher(
         var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !caRotationsKv.IsSuccess
             || !ticketOutcomesKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess)
-            return FailTick(previous, now, "KV-чтения etcd не удались");
+            return FailTick(previous, now, "etcd KV reads failed");
 
         _activeEndpoint = active;
 
@@ -174,7 +174,7 @@ public sealed class ValkeySnapshotRefresher(
         }
 
         return Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(
-            $"все endpoints не ответили на range {prefix}: {last?.Message}"));
+            $"all endpoints failed to answer range {prefix}: {last?.Message}"));
     }
 
     // Отказ тика: прежние данные/BuiltAtUtc, Reachable=false, счётчик растёт.

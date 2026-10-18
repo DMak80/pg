@@ -114,7 +114,7 @@ public static class ClustersParser
                     if (TryBucketId(segments[5], out var id))
                         acc.Routing[id] = kv.Value;
                     else
-                        errors.Add(new KeyParseError(kv.Key, "нечисловой id бакета в имени ключа"));
+                        errors.Add(new KeyParseError(kv.Key, "non-numeric bucket id in key name"));
                     break;
                 }
 
@@ -124,7 +124,7 @@ public static class ClustersParser
                     if (TryBucketId(segments[5], out var id))
                         acc.StatusRaw[id] = kv.Value;
                     else
-                        errors.Add(new KeyParseError(kv.Key, "нечисловой id бакета в имени ключа"));
+                        errors.Add(new KeyParseError(kv.Key, "non-numeric bucket id in key name"));
                     break;
                 }
 
@@ -132,7 +132,7 @@ public static class ClustersParser
                 {
                     var heal = ParseHeal(kv.Key, kv.Value);
                     if (heal is null)
-                        errors.Add(new KeyParseError(kv.Key, "битый JSON heal-записи"));
+                        errors.Add(new KeyParseError(kv.Key, "broken heal entry JSON"));
                     else
                         acc.Heals.Add(heal);
                     break;
@@ -202,7 +202,7 @@ public static class ClustersParser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/clusters/{cluster}/config", "битый JSON config"));
+            errors.Add(new KeyParseError($"/clusters/{cluster}/config", "broken config JSON"));
             return (null, 0, null, ClusterState.Active, true);
         }
     }
@@ -216,11 +216,11 @@ public static class ClustersParser
             if (int.TryParse(shard.ReplicasRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
                 replicas = parsed;
             else
-                errors.Add(new KeyParseError(prefix + "replicas", "значение не целое число"));
+                errors.Add(new KeyParseError(prefix + "replicas", "value is not an integer"));
         }
 
         if (shard.Master == string.Empty)
-            errors.Add(new KeyParseError(prefix + "master", "пустое значение"));
+            errors.Add(new KeyParseError(prefix + "master", "empty value"));
 
         var nodes = shard.Nodes
             .OrderBy(n => n.Name, StringComparer.Ordinal)
@@ -265,7 +265,7 @@ public static class ClustersParser
             {
                 errors.Add(new KeyParseError(
                     $"/clusters/{acc.Name}/buckets/status/bucket_{id}",
-                    "битый JSON или неизвестное state"));
+                    "broken JSON or unknown state"));
             }
 
             result.Add(new BucketInfo(id, owner, state, move));

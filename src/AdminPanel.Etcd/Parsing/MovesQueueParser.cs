@@ -26,7 +26,7 @@ public static class MovesQueueParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 5 || segments[3].Length == 0 || segments[4].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /pgworker/moves/<cluster>/<bucket>"));
+                errors.Add(new(kv.Key, "expected /pgworker/moves/<cluster>/<bucket>"));
                 continue;
             }
 
@@ -43,14 +43,14 @@ public static class MovesQueueParser
                     || !root.TryGetProperty("op", out var op)
                     || op.ValueKind != JsonValueKind.String)
                 {
-                    errors.Add(new(kv.Key, "нет поля op"));
+                    errors.Add(new(kv.Key, "missing op field"));
                     continue;
                 }
 
                 var opName = op.GetString()!;
                 if (opName is not ("move" or "rollback" or "finalize" or "abort"))
                 {
-                    errors.Add(new(kv.Key, $"неизвестный op: '{opName}'"));
+                    errors.Add(new(kv.Key, $"unknown op: '{opName}'"));
                     continue;
                 }
 
@@ -65,7 +65,7 @@ public static class MovesQueueParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 

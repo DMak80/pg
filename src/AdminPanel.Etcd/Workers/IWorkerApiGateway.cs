@@ -7,7 +7,7 @@ public sealed record WorkerApiResult(int StatusCode, string? Body);
 /// Живых ключей api нет / все URL недоступны → 503-ветка панели.
 /// </summary>
 public sealed class WorkerApiUnavailableException(string worker)
-    : Exception($"API воркера {worker} недоступен: живых ключей доступа нет или все инстансы не отвечают");
+    : Exception($"Worker API {worker} unavailable: no live access keys or all instances are not responding");
 
 /// <summary>
 /// Per-instance итог broadcast-вызова (spec §3.3 п.2): Response — любой

@@ -25,12 +25,12 @@ public static class EtcdSnapshotsParser
             var interval = JsonValues.ReadInt(root, "interval_min");
             var error = JsonValues.ReadString(root, "error");
             if (state is not null and not ("OK" or "FAILED"))
-                return (null, [new KeyParseError(kv.Key, $"неизвестный state статуса выгрузки: {state}")]);
+                return (null, [new KeyParseError(kv.Key, $"unknown export status state: {state}")]);
             return (new EtcdSnapshotExportInfo(enabled, state, uploaded, lastObject, sha, size, interval, error), []);
         }
         catch (System.Text.Json.JsonException ex)
         {
-            return (null, [new KeyParseError(kv.Key, $"битый JSON статуса выгрузки etcd-снапшотов: {ex.Message}")]);
+            return (null, [new KeyParseError(kv.Key, $"broken etcd-snapshots export status JSON: {ex.Message}")]);
         }
     }
 }

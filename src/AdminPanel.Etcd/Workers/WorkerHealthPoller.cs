@@ -29,7 +29,7 @@ public sealed class WorkerHealthPoller(
         var value = options.Value;
         if (!value.HealthEnabled)
         {
-            logger.LogInformation("AdminPanel:Workers:HealthEnabled=false — опрос /healthz не запускается");
+            logger.LogInformation("AdminPanel:Workers:HealthEnabled=false — /healthz polling is not started");
             return;
         }
 

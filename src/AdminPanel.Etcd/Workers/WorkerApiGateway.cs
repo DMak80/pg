@@ -99,7 +99,7 @@ public sealed class WorkerApiGateway(
             }
             catch (TaskCanceledException e) when (!ct.IsCancellationRequested)
             {
-                results.Add(new(endpoint.InstanceId, null, $"таймаут: {e.Message}"));
+                results.Add(new(endpoint.InstanceId, null, $"timeout: {e.Message}"));
             }
         }
 
@@ -130,6 +130,6 @@ public sealed class WorkerApiGateway(
         "kafkaworker" => kafkaStore.Current?.WorkerEndpoints,
         "valkeyworker" => valkeyStore.Current?.WorkerEndpoints,
         "s3worker" => s3Store.Current?.WorkerEndpoints,
-        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker|valkeyworker|s3worker"),
+        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "expected pgworker|kafkaworker|valkeyworker|s3worker"),
     };
 }

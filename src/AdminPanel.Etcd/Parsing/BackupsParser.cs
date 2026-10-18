@@ -72,8 +72,8 @@ public static class BackupsParser
                     var by = String(root, isHold ? "set_by" : "requested_by");
                     if (unix is null || by is null)
                         errors.Add(new(kv.Key, isHold
-                            ? "битый hold-ключ сироты (set_unix/set_by)"
-                            : "битый ключ заявки сироты (requested_unix/requested_by)"));
+                            ? "broken orphan hold key (set_unix/set_by)"
+                            : "broken orphan delete request key (requested_unix/requested_by)"));
                     else if (isHold)
                         holds[orphanPrefix] = new OrphanHoldInfo(orphanPrefix, unix.Value, by);
                     else
@@ -81,7 +81,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON hold/заявки сироты: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken orphan hold/delete request JSON: {e.Message}"));
                 }
 
                 continue;
@@ -105,7 +105,7 @@ public static class BackupsParser
                         _ => (BackupStorageState?)null,
                     };
                     if (used is null || updated is null || state is null)
-                        errors.Add(new(kv.Key, "битый storage-статус (used_bytes/updated_unix/state)"));
+                        errors.Add(new(kv.Key, "broken storage status (used_bytes/updated_unix/state)"));
                     else
                         storage = new BackupStorageInfo(
                             used.Value, Long(root, "quota_bytes"), Double(root, "used_percent"),
@@ -113,7 +113,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON storage: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken storage JSON: {e.Message}"));
                 }
 
                 continue;
@@ -135,7 +135,7 @@ public static class BackupsParser
                         || !root.TryGetProperty("orphans", out var list)
                         || list.ValueKind != JsonValueKind.Array)
                     {
-                        errors.Add(new(kv.Key, "битый ключ orphans (orphans/updated_unix)"));
+                        errors.Add(new(kv.Key, "broken orphans key (orphans/updated_unix)"));
                     }
                     else
                     {
@@ -163,7 +163,7 @@ public static class BackupsParser
 
                         if (malformed)
                             errors.Add(new(kv.Key,
-                                "битая запись сироты (prefix/kind/size_bytes/first_seen_unix/state)"));
+                                "broken orphan entry (prefix/kind/size_bytes/first_seen_unix/state)"));
                         else
                         {
                             orphansEntries = entries;
@@ -173,7 +173,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON orphans: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken orphans JSON: {e.Message}"));
                 }
 
                 continue;
@@ -245,7 +245,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON policy: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken policy JSON: {e.Message}"));
                 }
 
                 continue;
@@ -262,7 +262,7 @@ public static class BackupsParser
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object)
                     {
-                        errors.Add(new(kv.Key, "drill-статус не JSON-объект"));
+                        errors.Add(new(kv.Key, "drill status is not a JSON object"));
                         continue;
                     }
 
@@ -274,7 +274,7 @@ public static class BackupsParser
                     var started = Long(root, "started_unix");
                     if (state is null || id is null || backupId is null || started is null)
                     {
-                        errors.Add(new(kv.Key, "битый drill-статус (state/id/backup_id/started_unix)"));
+                        errors.Add(new(kv.Key, "broken drill status (state/id/backup_id/started_unix)"));
                         continue;
                     }
 
@@ -287,7 +287,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON drill: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken drill JSON: {e.Message}"));
                 }
 
                 continue;
@@ -304,7 +304,7 @@ public static class BackupsParser
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object)
                     {
-                        errors.Add(new(kv.Key, "wal-статус не JSON-объект"));
+                        errors.Add(new(kv.Key, "wal status is not a JSON object"));
                         continue;
                     }
 
@@ -312,7 +312,7 @@ public static class BackupsParser
                     var unix = Long(root, "last_uploaded_unix");
                     if (state is null || unix is null)
                     {
-                        errors.Add(new(kv.Key, "битый wal-статус (state/last_uploaded_unix)"));
+                        errors.Add(new(kv.Key, "broken wal status (state/last_uploaded_unix)"));
                         continue;
                     }
 
@@ -329,7 +329,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON wal: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken wal JSON: {e.Message}"));
                 }
 
                 continue;
@@ -346,7 +346,7 @@ public static class BackupsParser
                     var root = doc.RootElement;
                     if (root.ValueKind != JsonValueKind.Object)
                     {
-                        errors.Add(new(kv.Key, "restore-статус не JSON-объект"));
+                        errors.Add(new(kv.Key, "restore status is not a JSON object"));
                         continue;
                     }
 
@@ -359,7 +359,7 @@ public static class BackupsParser
                     var requested = Long(root, "requested_unix");
                     if (state is null || requested is null)
                     {
-                        errors.Add(new(kv.Key, "битый restore-статус (state/requested_unix)"));
+                        errors.Add(new(kv.Key, "broken restore status (state/requested_unix)"));
                         continue;
                     }
 
@@ -375,7 +375,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON restore: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken restore JSON: {e.Message}"));
                 }
 
                 continue;
@@ -419,7 +419,7 @@ public static class BackupsParser
                                            && verifyStateEl.GetString() == "FAILED";
                             if (!verifyFailed && verifyStateEl.ValueKind == JsonValueKind.String
                                 && verifyStateEl.GetString() is not ("OK" or "PENDING"))
-                                errors.Add(new(kv.Key, "неизвестное verify.state — verify игнор"));
+                                errors.Add(new(kv.Key, "unknown verify.state — verify ignored"));
                         }
 
                         // t08: полный факт per-full (BackupFullInfo) — state читается
@@ -472,7 +472,7 @@ public static class BackupsParser
                             var started = Long(root, "started_unix");
                             if (started is null)
                             {
-                                errors.Add(new(kv.Key, "битый DELETING-полный (started_unix обязателен)"));
+                                errors.Add(new(kv.Key, "broken DELETING full backup (started_unix required)"));
                             }
                             else
                             {
@@ -488,7 +488,7 @@ public static class BackupsParser
                 }
                 catch (JsonException e)
                 {
-                    errors.Add(new(kv.Key, $"битый JSON full: {e.Message}"));
+                    errors.Add(new(kv.Key, $"broken full backup JSON: {e.Message}"));
                 }
             }
         }

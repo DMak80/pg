@@ -31,7 +31,7 @@ public static class WorkerEndpointsParser
             var instanceId = kv.Key[(kv.Key.LastIndexOf('/') + 1)..];
             if (instanceId.Length == 0)
             {
-                errors.Add(new(kv.Key, "пустой id инстанса в ключе"));
+                errors.Add(new(kv.Key, "empty instance id in key"));
                 continue;
             }
 
@@ -43,7 +43,7 @@ public static class WorkerEndpointsParser
                     || !root.TryGetProperty("url", out var url)
                     || url.ValueKind != JsonValueKind.String)
                 {
-                    errors.Add(new(kv.Key, "нет поля url"));
+                    errors.Add(new(kv.Key, "missing url field"));
                     continue;
                 }
 
@@ -61,7 +61,7 @@ public static class WorkerEndpointsParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 

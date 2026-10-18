@@ -157,7 +157,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/rotations/<cluster>"));
                 continue;
             }
 
@@ -168,7 +168,7 @@ public static class KafkaParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -177,7 +177,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -196,7 +196,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/admin_rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/admin_rotations/<cluster>"));
                 continue;
             }
 
@@ -207,7 +207,7 @@ public static class KafkaParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -216,7 +216,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -235,7 +235,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/ca_rotations/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/ca_rotations/<cluster>"));
                 continue;
             }
 
@@ -246,7 +246,7 @@ public static class KafkaParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -255,7 +255,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -275,7 +275,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/ticket_outcomes/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/ticket_outcomes/<cluster>"));
                 continue;
             }
 
@@ -289,7 +289,7 @@ public static class KafkaParser
                 var finished = JsonValues.ReadLong(root, "finished_unix");
                 if (kind is null || outcome is null || requested is null || finished is null)
                 {
-                    errors.Add(new(kv.Key, "нет обязательных полей kind/outcome/requested_unix/finished_unix"));
+                    errors.Add(new(kv.Key, "missing required fields kind/outcome/requested_unix/finished_unix"));
                     continue;
                 }
 
@@ -302,7 +302,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -320,7 +320,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/rebalances/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/rebalances/<cluster>"));
                 continue;
             }
 
@@ -331,7 +331,7 @@ public static class KafkaParser
                 var requested = JsonValues.ReadLong(root, "requested_unix");
                 if (requested is null)
                 {
-                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    errors.Add(new(kv.Key, "missing requested_unix field"));
                     continue;
                 }
 
@@ -340,7 +340,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -359,7 +359,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/reassignments/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/reassignments/<cluster>"));
                 continue;
             }
 
@@ -372,7 +372,7 @@ public static class KafkaParser
                 var updated = JsonValues.ReadLong(root, "updated_unix");
                 if (mode is null || remaining is null || updated is null)
                 {
-                    errors.Add(new(kv.Key, "нет обязательных полей mode/partitions_remaining/updated_unix"));
+                    errors.Add(new(kv.Key, "missing required fields mode/partitions_remaining/updated_unix"));
                     continue;
                 }
 
@@ -387,7 +387,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -405,7 +405,7 @@ public static class KafkaParser
             var segments = kv.Key.Split('/');
             if (segments.Length != 4 || segments[3].Length == 0)
             {
-                errors.Add(new(kv.Key, "ожидается /kafkaworker/regens/<cluster>"));
+                errors.Add(new(kv.Key, "expected /kafkaworker/regens/<cluster>"));
                 continue;
             }
 
@@ -417,7 +417,7 @@ public static class KafkaParser
                 var remaining = JsonValues.ReadInt(root, "brokers_remaining");
                 if (total is null || remaining is null)
                 {
-                    errors.Add(new(kv.Key, "нет полей brokers_total/brokers_remaining"));
+                    errors.Add(new(kv.Key, "missing brokers_total/brokers_remaining fields"));
                     continue;
                 }
 
@@ -429,7 +429,7 @@ public static class KafkaParser
             }
             catch (JsonException e)
             {
-                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+                errors.Add(new(kv.Key, $"broken JSON: {e.Message}"));
             }
         }
 
@@ -477,7 +477,7 @@ public static class KafkaParser
             var requested = JsonValues.ReadLong(root, "requested_unix");
             if (requested is null)
             {
-                errors.Add(new KeyParseError(key, "нет поля requested_unix"));
+                errors.Add(new KeyParseError(key, "missing requested_unix field"));
                 return null;
             }
 
@@ -494,7 +494,7 @@ public static class KafkaParser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError(key, "битый JSON заявки"));
+            errors.Add(new KeyParseError(key, "broken ticket JSON"));
             return null;
         }
     }
@@ -525,7 +525,7 @@ public static class KafkaParser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/kafka/clusters/{cluster}/config", "битый JSON config"));
+            errors.Add(new KeyParseError($"/kafka/clusters/{cluster}/config", "broken config JSON"));
             return (0, 0, 0, 0, 0, null, KafkaClusterState.Active);
         }
     }
@@ -546,19 +546,19 @@ public static class KafkaParser
                     cpu = cpuValue;
                 else
                     errors.Add(new KeyParseError(
-                        $"/kafka/clusters/{cluster}/brokers/{acc.Name}/resources", "поле cpu не число"));
+                        $"/kafka/clusters/{cluster}/brokers/{acc.Name}/resources", "cpu field is not a number"));
 
                 memGi = ParseGi(JsonValues.ReadString(root, "mem"));
                 diskGi = ParseGi(JsonValues.ReadString(root, "disk"));
                 if (memGi is null || diskGi is null)
                     errors.Add(new KeyParseError(
                         $"/kafka/clusters/{cluster}/brokers/{acc.Name}/resources",
-                        "поле mem/disk не в формате <n>Gi"));
+                        "mem/disk field is not in <n>Gi format"));
             }
             catch (JsonException)
             {
                 errors.Add(new KeyParseError(
-                    $"/kafka/clusters/{cluster}/brokers/{acc.Name}/resources", "битый JSON resources"));
+                    $"/kafka/clusters/{cluster}/brokers/{acc.Name}/resources", "broken resources JSON"));
             }
         }
 
@@ -600,7 +600,7 @@ public static class KafkaParser
         }
         catch (JsonException)
         {
-            errors.Add(new KeyParseError($"/kafka/clusters/{cluster}/topics/{topic}", "битый JSON топика"));
+            errors.Add(new KeyParseError($"/kafka/clusters/{cluster}/topics/{topic}", "broken topic JSON"));
             return null;
         }
     }
