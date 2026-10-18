@@ -104,7 +104,7 @@ public class DockerEngineExecTests
         var result = await engine.ExecAsync("cid1", ["pg_dump"], CancellationToken.None);
 
         // Assert
-        result.IsSuccess.Should().BeFalse("exit != 0 — команда не выполнилась");
+        result.IsSuccess.Should().BeFalse("exit != 0 — the command did not succeed");
         result.Error!.Message.Should().Contain("exit 1");
         result.Error!.Message.Should().Contain("boom: relation not found");
     }

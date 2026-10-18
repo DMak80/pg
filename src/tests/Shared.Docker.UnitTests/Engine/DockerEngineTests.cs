@@ -346,7 +346,7 @@ public class DockerEngineTests
         url.Should().StartWith("/v1.44/services?filters=");
         var filters = Uri.UnescapeDataString(url[("/v1.44/services?filters=".Length)..]);
         filters.Should().Be("""{"name":["s3w-c1-"]}""",
-            "валидный JSON-фильтр name (рассыпавшиеся кавычки → 400 invalid filter на реальном Engine API)");
+            "valid JSON name filter (broken quotes → 400 invalid filter on a real Engine API)");
         using var doc = JsonDocument.Parse(filters); // и парсится как JSON
         doc.RootElement.GetProperty("name")[0].GetString().Should().Be("s3w-c1-");
     }

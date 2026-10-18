@@ -14,7 +14,7 @@ public class DockerEngineServiceBodyTests
         => JsonSerializer.SerializeToElement(DockerEngine.BuildServiceBody(spec));
 
     [Fact]
-    public void BuildServiceBody_LabelNaOboihUrovnyah()
+    public void BuildServiceBody_LabelOnBothLevels()
     {
         // Arrange: сервис с label-парой кластера (spec-шаблон несёт LabelKey/Label).
         var spec = new ServiceSpec(
@@ -41,7 +41,7 @@ public class DockerEngineServiceBodyTests
     }
 
     [Fact]
-    public void BuildServiceBody_BezLabela_PustyeServiceLabels()
+    public void BuildServiceBody_NoLabel_EmptyServiceLabels()
     {
         // Arrange: сервис без label-пары (LabelKey/Label optional в спеке).
         var spec = new ServiceSpec(
