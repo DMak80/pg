@@ -128,7 +128,7 @@ public sealed class OwnPostgres : IAsyncDisposable
             "install -m 600 -o postgres -g postgres /tmp/pgw-tls/server.key /var/lib/postgresql/tls/server.key && " +
             "install -m 644 -o postgres -g postgres /tmp/pgw-tls/server.crt /var/lib/postgresql/tls/server.crt",
         }, ct);
-        install.ExitCode.Should().Be(0, $"раскладка TLS: {install.Stderr}");
+        install.ExitCode.Should().Be(0, $"the TLS layout: {install.Stderr}");
 
         await ExecAsync("ALTER SYSTEM SET ssl = 'on'", ct);
         await ExecAsync("ALTER SYSTEM SET ssl_cert_file = '/var/lib/postgresql/tls/server.crt'", ct);
@@ -177,7 +177,7 @@ public sealed class OwnPostgres : IAsyncDisposable
         await using var command = conn.CreateCommand();
         command.CommandText = $"SELECT restart_lsn::text FROM pg_replication_slots WHERE slot_name = '{Slot}'";
         var raw = (string?)(await command.ExecuteScalarAsync(ct));
-        raw.Should().NotBeNull($"слот {Slot} обязан существовать");
+        raw.Should().NotBeNull($"the slot {Slot} must exist");
         var parts = raw!.Split('/');
         return (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
                | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
@@ -209,6 +209,6 @@ public sealed class OwnPostgres : IAsyncDisposable
             ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name={ContainerName}"],
             CancellationToken.None);
         left.Should().BeEmpty(
-            $"{Slug}: teardown окружения неполный — остался контейнер {ContainerName}");
+            $"{Slug}: the environment teardown is incomplete — container {ContainerName} is left");
     }
 }

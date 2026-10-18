@@ -134,6 +134,6 @@ public class RecreateRotateApiTests(PgApiFixture fixture)
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
         problem.GetProperty("title").GetString().Should().Be("Recreate rejected");
-        problem.GetProperty("detail").GetString().Should().Contain("последняя");
+        problem.GetProperty("detail").GetString().Should().Contain("the last one");
     }
 }

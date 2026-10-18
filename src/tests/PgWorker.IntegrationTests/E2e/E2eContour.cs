@@ -49,9 +49,9 @@ public static class E2eContour
         DockerTrait.SkipIfUnavailable();
         var testCase = TestContext.Current.TestCase
             ?? throw new ApplicationException(
-                "E2E-факт вне TestContext — оркестрация двухфазного контура невозможна");
+                "an E2E fact outside TestContext — orchestrating the two-phase contour is impossible");
         var classFqn = testCase.TestClassName
-            ?? throw new ApplicationException("TestClassName не определён");
+            ?? throw new ApplicationException("TestClassName is not defined");
 
         // Фоновая задача: оркестрация переживает завершение фактов класса
         // (teardown контура обязан доиграть); токен — не токен факта.
@@ -60,8 +60,8 @@ public static class E2eContour
 
         var outcome = await run.WaitAsync(ct);
         if (!outcome.Ok)
-            throw new ApplicationException($"класс {classFqn}: {outcome.Error}");
-        Assert.Skip($"класс исполнен в раннере (журнал: {outcome.ArtifactsDir}/runner.log)");
+            throw new ApplicationException($"class {classFqn}: {outcome.Error}");
+        Assert.Skip($"the class is executed in the runner (log: {outcome.ArtifactsDir}/runner.log)");
     }
 
     /// <summary>Оркестрация КЛАССА по явному имени (класс-фикстуры:
@@ -80,7 +80,7 @@ public static class E2eContour
             RunClassAsync(classFqn, slug, withS3Node, haEtcd)));
         var outcome = await run.WaitAsync(ct);
         if (!outcome.Ok)
-            throw new ApplicationException($"класс {classFqn}: {outcome.Error}");
+            throw new ApplicationException($"class {classFqn}: {outcome.Error}");
     }
 
     private static async Task<ClassRunOutcome> RunClassAsync(
@@ -129,7 +129,7 @@ public static class E2eContour
         // Периметр класса: сеть + host-пути + CA (etcd/ownS3/mc/воркеры — per-факт).
         var contour = await E2eEnvironment.CreateClassNetworkAsync(slug, ct);
         var runnerName = $"pgw-er-{Guid.NewGuid().ToString("N")[..12]}";
-        Console.WriteLine($"[PHASE] e2e-contour {slug}: запуск раннера {runnerName} (класс {fqn})…");
+        Console.WriteLine($"[PHASE] e2e-contour {slug}: starting the runner {runnerName} (class {fqn})…");
 
         // Блокирующий run: exit code контейнера = исход факта. RunProcessAsync
         // при exit≠0 раннера бросает ApplicationException («… → N: …») — это
@@ -205,16 +205,16 @@ public static class E2eContour
         // НИЧЕГО не проверил. Падаем, а не докладываем успех.
         if (failure is null && runnerLog.Contains("Total: 0", StringComparison.Ordinal))
             failure = new ApplicationException(
-                $"раннер не нашёл ни одного теста по фильтру «{fqn}» — оркестрация сломана");
+                $"the runner found no tests for the filter \"{fqn}\" — the orchestration is broken");
 
         // Сеть класса — после раннера (контейнеры уже удалены/остановлены).
         await E2eEnvironment.DeleteClassNetworkAsync(contour.NetName, CancellationToken.None);
 
         if (failure is not null)
             throw new ApplicationException(
-                $"e2e[{slug}]: раннер завершился с ошибкой ({fqn}); хвост журнала:\n"
+                $"e2e[{slug}]: the runner finished with an error ({fqn}); log tail:\n"
                 + Tail(runnerLog, 60)
-                + $"\n(полный журнал и телеметрия: {contour.ArtifactsDir})", failure);
+                + $"\n(full log and telemetry: {contour.ArtifactsDir})", failure);
 
         LastContourArtifactsDir = contour.ArtifactsDir;
         E2eTiming.Step(classSw, "class-done");

@@ -69,18 +69,18 @@ public class E2eSecondInstanceScenarios
                     var instances = (await RangeAsync("/pgworker/instances/")).Count;
                     return $"api={api}, instances={instances}";
                 });
-            bothUp.Should().BeTrue("оба контейнерных инстанса обязаны опубликовать дискавери-ключи за 100 c");
+            bothUp.Should().BeTrue("both container instances must publish the discovery keys within 100 s");
 
             // ---------- Arrange: живой кластер + add-декларация shard3 ----------
             await SeedClusterAsync(cluster);
             var provisioned = await E2ePhase.WaitAsync(Fx, "si2-provisioning",
                 E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
+            provisioned.Should().BeTrue("provisioning of the cluster must reach Active before add starts");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
             var a3Started = await E2ePhase.WaitAsync(Fx, "si2-a3-started",
                 () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
-            a3Started.Should().BeTrue("первый инстанс должен начать A3 (появился контейнер shard3)");
+            a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // ---------- Act: docker kill ПЕРВОГО контейнера воркера ----------
             // --restart no: не воскреснет сам — доносит ТОЛЬКО выживший.
@@ -94,26 +94,26 @@ public class E2eSecondInstanceScenarios
                 {
                     var a = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3a/state"))?.Value ?? "-";
                     var b = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3b/state"))?.Value ?? "-";
-                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "нет" : "есть";
-                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "absent" : "present";
+                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
                     return $"shard3: {a}/{b}, dsn={dsn}, work={Trunc(work)}";
                 });
             finished.Should().BeTrue(
-                $"выживший контейнер должен донести shard3 после takeover; work={await WorkDumpAsync(cluster, ct)}");
+                $"the surviving container must carry shard3 after the takeover; work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-", all: true);
-            containers.Should().HaveCount(2, "контейнеров нового шарда ровно 2 (нет дублей после takeover)");
+            containers.Should().HaveCount(2, "exactly 2 containers of the new shard (no duplicates after the takeover)");
 
             var apiKeys = await RangeAsync("/pgworker/api/");
-            apiKeys.Should().HaveCount(1, "после kill первого жив ровно один дискавери-ключ (lease погас)");
-            (await RangeAsync("/pgworker/instances/")).Should().HaveCount(1, "instance-ключ первого погас вместе с lease");
+            apiKeys.Should().HaveCount(1, "after killing the first exactly one discovery key is alive (the lease expired)");
+            (await RangeAsync("/pgworker/instances/")).Should().HaveCount(1, "the instance key of the first expired together with its lease");
             var survivor = apiKeys[0].Key.Split('/')[^1];
 
             var claim = (await GetOrNullAsync($"/pgworker/claims/{cluster}"))?.Value;
-            claim.Should().NotBeNull("клэйм живого кластера обязан существовать после takeover");
+            claim.Should().NotBeNull("the claim of the live cluster must exist after the takeover");
             using (var doc = JsonDocument.Parse(claim!))
                 doc.RootElement.GetProperty("instance").GetString().Should().Be(survivor,
-                    "клэйм кластера держит выживший инстанс — надзор мигрировал вторым (work-журнал: фазы доигрывает instance-ид из клэйма)");
+                    "the cluster claim is held by the surviving instance — supervision migrated second (work journal: the phases are finished by the instance id from the claim)");
 
             // ---------- Teardown-подготовка (успех): свои контейнеры ----------
             // Образ общий (pgworker:e2e) — НЕ удаляется.
@@ -214,7 +214,7 @@ public class E2eSecondInstanceScenarios
         => (await G.RangeAsync(Endpoint, prefix, TestContext.Current.CancellationToken)).Value;
 
     private async Task<string> WorkDumpAsync(string cluster, CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
 
     // Кластер Active: config без state, dsn всех нод, ноды RUNNING, статусов нет.
     private async Task<bool> ProvisionedAsync(string cluster)

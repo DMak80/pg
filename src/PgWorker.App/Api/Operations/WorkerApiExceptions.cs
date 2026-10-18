@@ -83,7 +83,7 @@ public sealed class ShardNotFoundException(string cluster, string shard)
 public sealed class ShardRemoveBlockedException(string reason) : Exception(reason)
 {
     public static ShardRemoveBlockedException Buckets(int count)
-        => new($"на шарде {count} бакетов — сначала явно перевезите (UI переездов — t07)");
+        => new($"shard has {count} buckets — move them explicitly first (moves UI — t07)");
 
     public static ShardRemoveBlockedException UnfinishedMove()
         => new("unfinished bucket move — complete or cancel it");
@@ -113,7 +113,7 @@ public sealed class MoveTargetRemovingException(string cluster, string shard)
 
 // Бакет не годен для переезда с источника: не его владелец / не ACTIVE / вне диапазона.
 public sealed class BucketNotOnSourceException(int bucket, string? owner, string state)
-    : Exception($"бакет {bucket} не доступен для переезда (владелец: {owner ?? "—"}, состояние: {state})");
+    : Exception($"bucket {bucket} is not available for move (owner: {owner ?? "—"}, state: {state})");
 
 // На бакете уже стоит иная заявка — чужие не перезаписываем (arch/02 §9.7 п.3).
 public sealed class MoveRequestConflictException(string bucket, string op, string? to)
@@ -136,13 +136,13 @@ public sealed class MoveOpValidationException(IReadOnlyList<ValidationError> err
 public sealed class BucketNotActiveForMoveOpException(string message) : Exception(message)
 {
     public static BucketNotActiveForMoveOpException RollbackOrFinalize(string op, int bucket, string? owner, string state)
-        => new($"{op} bucket_{bucket} возможен только из ACTIVE (владелец: {owner ?? "—"}, состояние: {state})");
+        => new($"{op} bucket_{bucket} is only possible from ACTIVE (owner: {owner ?? "—"}, state: {state})");
 
     public static BucketNotActiveForMoveOpException AbortActive(int bucket)
         => new($"bucket bucket_{bucket} is ACTIVE — nothing to abort; post-flip artifacts are cleaned up by finalize");
 
     public static BucketNotActiveForMoveOpException AbortNotInitialized(int bucket)
-        => new($"бакет bucket_{bucket} NOT_INITIALIZED — начальное состояние создаваемого кластера, не переезд");
+        => new($"bucket bucket_{bucket} is NOT_INITIALIZED — initial state of a cluster being created, not a move");
 
     public static BucketNotActiveForMoveOpException OutOfRange(string op, int bucket)
         => new($"bucket {bucket} is out of range or has no routing — operation {op} is not possible");
@@ -150,7 +150,7 @@ public sealed class BucketNotActiveForMoveOpException(string message) : Exceptio
 
 // Finalize: выбранный шард — текущий владелец, убирать нечего (02 §9.7.3) — 409.
 public sealed class FinalizeTargetIsOwnerException(string cluster, int bucket, string shard)
-    : Exception($"шард {cluster}/{shard} — текущий владелец bucket_{bucket}, убирать нечего");
+    : Exception($"shard {cluster}/{shard} is the current owner of bucket_{bucket}, nothing to remove");
 
 // Abort: статус-ключ свежий, mover возможно жив (02 §9.7.4; порт текста AbortSequence) — 409.
 public sealed class MoveStatusFreshException(long ageSec, long thresholdSec)
@@ -158,11 +158,11 @@ public sealed class MoveStatusFreshException(long ageSec, long thresholdSec)
 
 // Abort: routing уже указывает на target — доведение осознанно (02 §9.7.4) — 409.
 public sealed class MoveAlreadyFlippedException(string target)
-    : Exception($"routing уже указывает на target '{target}' — похоже, flip прошёл, а статус-ключ остался; такой abort станет уборкой СТАРОГО шарда (как finalize) — осознанно: force");
+    : Exception($"routing already points to target '{target}' — the flip seems completed while the status key remains; such an abort would clean up the OLD shard (like finalize) — deliberate: force");
 
 // Отмена заявки: ключа /pgworker/moves/<C>/<bucket> нет (02 §9.7.5) — 404.
 public sealed class MoveTicketNotFoundException(string cluster, string bucket)
-    : Exception($"заявки /pgworker/moves/{cluster}/{bucket} нет");
+    : Exception($"move request /pgworker/moves/{cluster}/{bucket} not found");
 
 // Живая заявка ротации уже стоит: не перезаписываем (отмена — runbook/etcdctl).
 public sealed class RotationAlreadyRequestedException(string cluster)
@@ -182,7 +182,7 @@ public sealed class NodeNotFoundException(string scope, string node)
 
 // Последняя живая нода: пересоздание невозможно (нет источника для basebackup).
 public sealed class LastNodeException(string scope, string node)
-    : Exception($"нода {node} — последняя в скопе {scope}, пересоздание невозможно")
+    : Exception($"node {node} is the last one in scope {scope}, recreation is not possible")
 {
     public string Node { get; } = node;
 }

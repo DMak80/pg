@@ -95,10 +95,10 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
         // оба объекта; чужие не включаются.
         var leftContainers = await RunDockerAsync(
             $"ps -a --filter name={_runId} --format {{{{.Names}}}}");
-        leftContainers.Should().BeEmpty("teardown окружения неполный: остался контейнер");
+        leftContainers.Should().BeEmpty("the environment teardown is incomplete: a container is left");
         var leftNetworks = await RunDockerAsync(
             $"network ls --filter name={_runId} --format {{{{.Names}}}}");
-        leftNetworks.Should().BeEmpty("teardown окружения неполный: осталась сеть");
+        leftNetworks.Should().BeEmpty("the environment teardown is incomplete: a network is left");
     }
 
     // Stop/rm контейнера и rm сети — идемпотентно при любом исходе
@@ -157,7 +157,7 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
+        throw new InvalidOperationException($"etcd at {Endpoint} did not come up within 30 s");
     }
 
     // docker CLI (опознание СВОИХ артефактов в ассерте чистоты).

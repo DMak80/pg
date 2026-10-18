@@ -58,7 +58,7 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
         [new NodeSpec("shard1", "s1a", NodeState.Running), new NodeSpec("shard1", "s1b", NodeState.Running)]);
 
     [Fact]
-    public async Task Sync_член_резолвится_в_s1b()
+    public async Task SyncMemberResolvesToS1b()
     {
         // Arrange — Patroni отдаёт sync-реплику s1b
         var ct = TestContext.Current.CancellationToken;
@@ -73,11 +73,11 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
         // Assert
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         result.Value.Should().NotBeNull();
-        result.Value!.Ports.Pg.Should().Be(16002, "адрес sync-ноды s1b из portalloc");
+        result.Value!.Ports.Pg.Should().Be(16002, "the sync node s1b address from portalloc");
     }
 
     [Fact]
-    public async Task Без_sync_члена_null_без_fallback()
+    public async Task WithoutSyncMemberNullNoFallback()
     {
         // Arrange — Patroni: мастер + реплика без sync-флага
         var ct = TestContext.Current.CancellationToken;
@@ -91,11 +91,11 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
 
         // Assert — null — УСПЕХ (не Failed): второй агент поднимется тиком
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().BeNull("fallback на мастера для sync-источника запрещён");
+        result.Value.Should().BeNull("fallback to the master for a sync source is forbidden");
     }
 
     [Fact]
-    public async Task Патрони_недоступен_null_не_Failed()
+    public async Task PatroniUnavailableNullNotFailed()
     {
         // Arrange — порт-заглушка, никто не слушает
         var ct = TestContext.Current.CancellationToken;
@@ -113,7 +113,7 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
 
     // DRY: ResolveBackupSourceAsync — sync ?? мастер (поведение t02 не меняется)
     [Fact]
-    public async Task ResolveBackupSource_sync_приоритет_и_fallback_мастер()
+    public async Task ResolveBackupSourceSyncPriorityAndMasterFallback()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -133,6 +133,6 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
         withSync.IsSuccess.Should().BeTrue();
         withSync.Value!.Ports.Pg.Should().Be(16002);
         withoutSync.IsSuccess.Should().BeTrue();
-        withoutSync.Value!.Ports.Pg.Should().Be(16001, "fallback на мастера сохранён");
+        withoutSync.Value!.Ports.Pg.Should().Be(16001, "the master fallback is preserved");
     }
 }

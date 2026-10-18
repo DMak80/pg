@@ -55,7 +55,7 @@ public class E2eDrillScenarios
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("полный обязан сняться");
+        completed.Should().BeTrue("the full must be taken");
 
         // Act 2 — дрилл дошёл до SUCCEEDED и довёл снос (чистый итог: phase снят)
         // — бюджет 600 c: скачать + накат; phase снимается тиком сноса ПОСЛЕ
@@ -89,7 +89,7 @@ public class E2eDrillScenarios
                 }
                 catch (Exception e)
                 {
-                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                    hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
             await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt",
@@ -98,17 +98,17 @@ public class E2eDrillScenarios
                 TestContext.Current.CancellationToken);
         }
 
-        succeeded.Should().BeTrue("первый дрилл стартует немедленно и обязан выйти из recovery");
+        succeeded.Should().BeTrue("the first drill starts immediately and must leave recovery");
 
         // Assert — restored_to_lsn в ключе; чистый итог: без phase
         var drill = (await G.GetAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/drill", ct)).Value!.Value;
-        drill.Should().Contain("\"restored_to_lsn\":\"", "LSN восстановления фиксируется");
-        drill.Should().NotContain("phase", "чистый терминальный итог — контур снесён");
+        drill.Should().Contain("\"restored_to_lsn\":\"", "the restore LSN is recorded");
+        drill.Should().NotContain("phase", "a clean terminal outcome — the contour is torn down");
 
         // Assert — прод-ноды шарда живы весь дрилл (AC2: изоляция — Patroni-контур не тронут)
         var nodes = await Fx.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-shard1-"], ct);
-        nodes.Length.Should().BeGreaterThan(0, "дрилл не демонтирует прод-ноды шарда (state RUNNING)");
+        nodes.Length.Should().BeGreaterThan(0, "the drill does not dismantle the prod nodes of the shard (state RUNNING)");
 
         // Assert — контейнер и volume дрилла отсутствуют (ассерт чистоты, AC4/AC2)
         var cleaned = await E2eFixture.WaitForAsync(async () =>
@@ -119,7 +119,7 @@ public class E2eDrillScenarios
                 ["volume", "ls", "-q", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
             return containers.Length == 0 && volumes.Length == 0;
         }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("drill-контур сносится после итога");
+        cleaned.Should().BeTrue("the drill contour is torn down after the outcome");
 
         // Assert — оба парсера без ошибок; панельные правила молчат на успехе (AC5)
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
@@ -130,10 +130,10 @@ public class E2eDrillScenarios
         var panelCluster = panel.Clusters.Single(c => c.Cluster == cluster);
         var failedAlerts = new AdminPanel.Core.Alerting.Rules.BackupDrillFailedRule().Evaluate(
             SnapshotWith(panelCluster, cluster, "shard1"), DefaultAlertContext()).ToList();
-        failedAlerts.Should().BeEmpty("SUCCEEDED — без алерта провала");
+        failedAlerts.Should().BeEmpty("SUCCEEDED — no failure alert");
         var staleAlerts = new AdminPanel.Core.Alerting.Rules.BackupDrillStaleRule().Evaluate(
             SnapshotWith(panelCluster, cluster, "shard1"), DefaultAlertContext()).ToList();
-        staleAlerts.Should().BeEmpty("свежий SUCCEEDED — без алерта молчания");
+        staleAlerts.Should().BeEmpty("a fresh SUCCEEDED — no silence alert");
     }
 
     // AAA (AC1/AC3/AC5): дыра WAL-цепочки → валидационный FAILED без джоба
@@ -162,9 +162,9 @@ public class E2eDrillScenarios
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("полный обязан сняться");
+        completed.Should().BeTrue("the full must be taken");
         var before = await G.GetAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/drill", ct);
-        before.Value.Should().BeNull("IntervalDays=0 — запусков нет");
+        before.Value.Should().BeNull("IntervalDays=0 — no runs");
 
         // Arrange — цепочка после wal_start хвостом ≥2 сегментов: idle-DB закрывает
         // сегмент 16 МБ минутами, поэтому форсируем pg_switch_wal на мастере.
@@ -240,7 +240,7 @@ public class E2eDrillScenarios
             var agentsDiag = await Fx.RunDockerAsync(
                 ["ps", "-a", "--format", "{{.Names}} {{.State}}", "--filter", $"name=pgw-backup-wal-{cluster}-"], ct);
             throw new ApplicationException(
-                $"жертва {victim.Name} не доставлена: " +
+                $"the victim {victim.Name} was not delivered: " +
                 $"walObjects=[{string.Join(",", walObjectsDiag.IsSuccess ? walObjectsDiag.Value.Select(o => o.Name) : [])}] " +
                 $"wal=[{walKvDiag?.Value ?? "-"}] " +
                 $"journal=[{workKvDiag?.Value[..Math.Min(400, workKvDiag?.Value.Length ?? 0)]}] " +
@@ -258,12 +258,12 @@ public class E2eDrillScenarios
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
         var agentNames = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(n => n.Trim()).ToList();
-        agentNames.Should().NotBeEmpty("агенты shard1 живы — предусловие стопа");
+        agentNames.Should().NotBeEmpty("the shard1 agents are alive — a stop precondition");
         foreach (var agentName in agentNames)
             await Fx.RunDockerAsync(["stop", agentName], ct);
 
         (await corruptS3.DeleteKeysAsync([$"{cluster}/shard1/wal/{victim.Name}"], ct))
-            .IsSuccess.Should().BeTrue("сегмент-жертва обязан удалиться");
+            .IsSuccess.Should().BeTrue("the victim segment must be removed");
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":false},"drill":{"interval_days":1},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         // Гейт ФАКТИЧЕСКОГО удаления (не только 200-OK batch-delete): жертва
@@ -276,7 +276,7 @@ public class E2eDrillScenarios
             return list.IsSuccess && list.Value.All(o => o.Name != victim.Name);
         }, TimeSpan.FromSeconds(15), ct);
         victimGone.Should().BeTrue(
-            $"batch-delete вернул успех, но жертва {victim.Name} жива в листинге — дыры нет, дрилл увидит целую цепь");
+            $"the batch-delete returned success but the victim {victim.Name} is alive in the listing — there is no gap, the drill will see an intact chain");
 
         // Assert — валидационный FAILED. Глушим пересоздания: агент-перезаливка
         // закрывает дыру за секунды — пока FAILED не записан, агенты шарда
@@ -303,7 +303,7 @@ public class E2eDrillScenarios
             var fullsNow = await FullKeysAsync(cluster, "shard1");
             var walNow = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
             throw new ApplicationException(
-                $"валидационный FAILED не зафиксирован: drill=[{drillKv?.Value ?? "-"}] " +
+                $"the validation FAILED was not recorded: drill=[{drillKv?.Value ?? "-"}] " +
                 $"journal=[{workKv?.Value[..Math.Min(400, workKv?.Value.Length ?? 0)]}] " +
                 $"wal=[{walKv?.Value ?? "-"}] " +
                 $"fulls=[{string.Join(";", fullsNow.Select(f => f.Value[..Math.Min(120, f.Value.Length)]))}] " +
@@ -316,21 +316,21 @@ public class E2eDrillScenarios
         // Границы динамические (жертва — сам wal_start, Act выше): «ожидался» —
         // wal_start жертвы, «найден» — ближайший доставленный сегмент после неё.
         var after = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
-        after.IsSuccess.Should().BeTrue("лист wal после порчи доступен");
+        after.IsSuccess.Should().BeTrue("the wal listing after the corruption is available");
         var found = after.Value
             .Select(o => o.Name)
             .Where(n => string.CompareOrdinal(n, victim.Name) > 0)
             .OrderBy(n => n, StringComparer.Ordinal)
             .FirstOrDefault();
-        found.Should().NotBeNull("после жертвы есть более поздний сегмент — дыра имеет «найдено»");
-        drill.Should().Contain(victim.Name, "граница дыры — wal_start")
-            .And.Contain(found!, "граница дыры — найденный сегмент")
-            .And.NotContain("phase", "без джоба — чистый итог");
+        found.Should().NotBeNull("after the victim there is a later segment — the gap has its found side");
+        drill.Should().Contain(victim.Name, "the gap boundary — wal_start")
+            .And.Contain(found!, "the gap boundary — the found segment")
+            .And.NotContain("phase", "no job — a clean outcome");
 
         // Assert — контейнеров дрилла нет вовсе (джоб не запускался).
         var containers = await Fx.RunDockerAsync(
             ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-        containers.Should().BeEmpty("джоб не запускался — валидационный отказ");
+        containers.Should().BeEmpty("the job did not run — the validation refusal");
 
         // Assert — панельный алерт провала горит на фактических kvs кластера.
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
@@ -338,7 +338,7 @@ public class E2eDrillScenarios
             .Clusters.Single(c => c.Cluster == cluster);
         var alerts = new AdminPanel.Core.Alerting.Rules.BackupDrillFailedRule().Evaluate(
             SnapshotWith(panelCluster, cluster, "shard1"), DefaultAlertContext()).ToList();
-        alerts.Should().ContainSingle(a => a.Kind == "backup-drill-failed", "провал дрилла — critical-алерт");
+        alerts.Should().ContainSingle(a => a.Kind == "backup-drill-failed", "a drill failure — a critical alert");
     }
 
     // Минимальный снапшот панели для правил дрилла («панельный алерт» в E2E:
@@ -441,7 +441,7 @@ public class E2eDrillScenarios
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -468,7 +468,7 @@ public class E2eDrillScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);

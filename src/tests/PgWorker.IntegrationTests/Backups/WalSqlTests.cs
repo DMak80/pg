@@ -16,7 +16,7 @@ public class WalSqlTests
     private const string Password = "pgw-test-su";
 
     [Fact]
-    public async Task Probe_EnsureAlive_Recreate_идемпотентны_на_живом_и_отсутствующем_слоте()
+    public async Task ProbeEnsureAliveRecreateIdempotentOnLiveAndMissingSlot()
     {
         // Arrange
         DockerTrait.SkipIfUnavailable();
@@ -45,20 +45,20 @@ public class WalSqlTests
 
         // Assert
         before.Value.Exists.Should().BeFalse();
-        before.Value.WalStatus.Should().BeNull("строки нет — статус отсутствует");
+        before.Value.WalStatus.Should().BeNull("no row — the status is absent");
         ensured.IsSuccess.Should().BeTrue();
-        again.IsSuccess.Should().BeTrue("повтор при живом слоте — идемпотентность");
+        again.IsSuccess.Should().BeTrue("a repeat with a live slot — idempotency");
         probe.Value.Exists.Should().BeTrue();
-        probe.Value.WalStatus.Should().NotBe("lost", "свежий reserved-слот жив");
+        probe.Value.WalStatus.Should().NotBe("lost", "a fresh reserved slot is alive");
         wal.IsSuccess.Should().BeTrue();
         wal.Value.Lsn.Should().MatchRegex("^[0-9A-F]+/[0-9A-F]+$");
         wal.Value.Tli.Should().BeGreaterThanOrEqualTo(1);
-        recreatedMissing.IsSuccess.Should().BeTrue("drop отсутствующего (undefined_object) — норм");
+        recreatedMissing.IsSuccess.Should().BeTrue("dropping a missing slot (undefined_object) is fine");
         probeOther.Value.Exists.Should().BeTrue();
     }
 
     [Fact]
-    public async Task Lost_слот_зонд_видит_lost_EnsureSlotAlive_лечит_идемпотентно()
+    public async Task LostSlotProbeSeesLostEnsureSlotAliveHealsIdempotently()
     {
         // Arrange — OwnPostgres: физический reserved-слот фикстуры при старте
         DockerTrait.SkipIfUnavailable();
@@ -82,7 +82,7 @@ public class WalSqlTests
         (await sql.EnsureSlotAliveAsync(postgres.AdminDsn, OwnPostgres.Slot, ct))
             .IsSuccess.Should().BeTrue();
         (await postgres.ReadRestartLsnAsync(ct)).Should().Be(lsnBefore,
-            "живой слот ensure-alive не трогает (spec §3.1: жив — не трогать)");
+            "a live slot is not touched by ensure-alive (spec §3.1: alive — do not touch)");
 
         // Act 2 — доводим слот до lost: циклы 64 MiB INSERT + pg_switch_wal + CHECKPOINT
         var lost = false;
@@ -111,17 +111,17 @@ public class WalSqlTests
         }
 
         // Assert 2 — зонд видит lost (критерий 4)
-        lost.Should().BeTrue("64 MiB WAL при потолке 16 MiB + checkpoint обязаны срезать слот");
+        lost.Should().BeTrue("64 MiB WAL at a 16 MiB ceiling + a checkpoint must cut the slot");
 
         // Act 3 — лечение: EnsureSlotAlive → recreate; повтор — идемпотентность
         (await sql.EnsureSlotAliveAsync(postgres.AdminDsn, OwnPostgres.Slot, ct))
             .IsSuccess.Should().BeTrue();
         (await sql.EnsureSlotAliveAsync(postgres.AdminDsn, OwnPostgres.Slot, ct))
-            .IsSuccess.Should().BeTrue("повтор на свежем слоте — идемпотентность");
+            .IsSuccess.Should().BeTrue("a repeat on a fresh slot — idempotency");
 
         // Assert 3 — слот жив (не lost), существует
         var healed = await sql.SlotProbeAsync(postgres.AdminDsn, OwnPostgres.Slot, ct);
         healed.Value.Exists.Should().BeTrue();
-        healed.Value.WalStatus.Should().NotBe("lost", "recreate возвращает живой reserved-слот");
+        healed.Value.WalStatus.Should().NotBe("lost", "recreate returns a live reserved slot");
     }
 }

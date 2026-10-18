@@ -59,13 +59,13 @@ public class E2eBackupJobsScenarios
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("полный бэкап должен дойти до COMPLETED");
+        completed.Should().BeTrue("the full backup must reach COMPLETED");
 
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
         status["state"].GetString().Should().Be("COMPLETED");
         var walSeg = status["wal_start_segment"].GetString();
-        walSeg.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+        walSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
         status["node"].GetString().Should().NotBeNullOrEmpty();
         status["role"].GetString().Should().BeOneOf("replica", "master");
         status["started_unix"].GetInt64().Should().BeGreaterThan(0);
@@ -79,7 +79,7 @@ public class E2eBackupJobsScenarios
         listing.Should().Contain($"full/{id}/backup_manifest");
         listing.Should().Contain($"full/{id}/PG_VERSION");
         listing.Should().Contain($"full/{id}/pg_wal/");
-        listing.Should().Contain($"wal/{walSeg}", "закрытый сегмент набора -X stream дублируется в wal/-префикс");
+        listing.Should().Contain($"wal/{walSeg}", "the closed segment of the -X stream set is duplicated into the wal/ prefix");
 
         // Assert 3 — чистка: контейнера и staging volume нет. COMPLETED пишется
         // в etcd ДО CleanupJobAsync (BackupProcess.PutAsync → CleanupJobAsync) —
@@ -95,7 +95,7 @@ public class E2eBackupJobsScenarios
             ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
             return stagingVolumes.Length == 0;
         }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("ephemeral-джоб и staging volume удаляются после итога");
+        cleaned.Should().BeTrue("the ephemeral job and staging volume are removed after the outcome");
     }
 
     // AAA: deprovisioning не переживают джобы и префикс /pgworker/backups/<C>/
@@ -128,7 +128,7 @@ public class E2eBackupJobsScenarios
                 return false; // транзиент чтения — попытка повторится поллом
             }
         }, TimeSpan.FromSeconds(300), ct);
-        started.Should().BeTrue("подсистема должна начать первую попытку");
+        started.Should().BeTrue("the subsystem must start the first attempt");
 
         // Act — state=TO_REMOVE (панель-семантика §4.2)
         var config = await G.GetAsync(Endpoint, $"/clusters/{cluster}/config", ct);
@@ -152,7 +152,7 @@ public class E2eBackupJobsScenarios
             ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
             return volumes.Length == 0;
         }, TimeSpan.FromSeconds(180), ct);
-        cleaned.Should().BeTrue("deprovisioning должен убрать джобы, volume и префикс бэкапов");
+        cleaned.Should().BeTrue("deprovisioning must remove the jobs, volumes and the backup prefix");
     }
 
     // AAA: ротация per-cluster секретов включает backup_exec: NEW-пароль
@@ -175,7 +175,7 @@ public class E2eBackupJobsScenarios
         var completed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("до ротации должен быть завершённый полный (G2 жил каждый тик)");
+        completed.Should().BeTrue("before the rotation there must be a completed full (G2 alive on every tick)");
 
         var oldPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
 
@@ -198,10 +198,10 @@ public class E2eBackupJobsScenarios
             var ticketKv = await GetOrNullAsync($"/pgworker/rotations/{cluster}");
             var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
             throw new ApplicationException(
-                $"ротация не завершилась: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"the rotation did not finish: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
                 $"ticket=[{ticketKv?.Value ?? "-"}] password_changed={(pwKv!.Value != oldPassword)}");
         }
-        rotated.Should().BeTrue("ротация должна перезаписать backup_password и закрыть заявку");
+        rotated.Should().BeTrue("the rotation must overwrite backup_password and close the request");
         var newPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
 
         // Assert 2 — NEW-пароль подключается user=backup_exec к мастеру shard1:
@@ -229,7 +229,7 @@ public class E2eBackupJobsScenarios
                 return false; // failover-окно/рестарт — повторим
             }
         }, TimeSpan.FromSeconds(60), ct);
-        connected.Should().BeTrue("роль backup_exec принимает новый пароль (гвард R2)");
+        connected.Should().BeTrue("the backup_exec role accepts the new password (the R2 guard)");
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и

@@ -155,7 +155,7 @@ public abstract class E2eBackupPoolScenarios
             done = (await FullKeysAsync(cluster, "shard1")).FirstOrDefault(f => f.Value.Contains("COMPLETED"));
             return done is not null;
         }, TimeSpan.FromSeconds(300), ct);
-        completed.Should().BeTrue("полный обязан дойти до COMPLETED");
+        completed.Should().BeTrue("the full must reach COMPLETED");
         return done!;
     }
 
@@ -257,11 +257,11 @@ public abstract class E2eBackupPoolScenarios
         string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var probeAttempt = 0;
-        var probeSummary = "проб не было";
+        var probeSummary = "no probes were made";
         var resolved = await E2eFixture.WaitForAsync(async () =>
         {
             probeAttempt++;
@@ -293,7 +293,7 @@ public abstract class E2eBackupPoolScenarios
             probeSummary = $"attempt {probeAttempt}: [{string.Join("; ", lines)}]";
             return false;
         }, TimeSpan.FromSeconds(240), ct);
-        resolved.Should().BeTrue($"primary шарда обязан определиться пробами Patroni (:8008); {probeSummary}");
+        resolved.Should().BeTrue($"the shard primary must be resolved by Patroni probes (:8008); {probeSummary}");
         return ($"pgw-{cluster}-{shard}-{primary}", 5432, primary!);
     }
 
@@ -326,8 +326,8 @@ public abstract class E2eBackupPoolScenarios
         }, budget, ct);
         if (!done || status!["state"].GetString() == "FAILED")
             throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
-                + (status is null ? "ключа нет" : status["state"].GetString())
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
                 + (status is { } s && s.TryGetValue("error", out var err) ? $", error={err.GetString()}" : ""));
         return status!;
     }
@@ -368,7 +368,7 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
             await using var app = await StartPoolHostAsync("pac1", ct);
             var provisioned = await TimedAsync(
                 "ac1 provision", () => WaitProvisionedAsync(cluster, ct));
-            provisioned.Should().BeTrue("provisioning до окна наблюдения");
+            provisioned.Should().BeTrue("provisioning before the observation window");
 
             // Act/Assert 1 — «пул не выбран» = молчание: full-ключей нет за
             // окно наблюдения. Окно = ×1.25 от ожидаемого нормального времени
@@ -379,7 +379,7 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
             await TimedAsync("ac1 silence-window-13s",
                 () => Task.Delay(TimeSpan.FromSeconds(13), ct));
             (await FullKeysAsync(cluster, "shard1")).Should().BeEmpty(
-                "policy без s3 — подсистема кластера не пишет (arch/19 §4)");
+                "no s3 in policy — the cluster subsystem does not write (arch/19 §4)");
 
             // Act 2 — policy с секцией s3 (применяется следующим тиком).
             await TimedAsync("ac1 policy-s3", () => G.PutAsync(Endpoint, PolicyKey(cluster),
@@ -391,7 +391,7 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
             var id = done.Key.Split('/').Last();
             var listing = await McLsOnNodeAsync(ep1, $"{cluster}/shard1/");
             listing.Should().Contain($"full/{id}/backup_manifest",
-                "объекты полного — на ноде пула (инспекция по endpoint ноды)");
+                "the full backup objects are on the pool node (inspection by the node endpoint)");
         }
         catch
         {
@@ -431,7 +431,7 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
             await using var app = await StartPoolHostAsync("pac2", ct);
             var provisioned = await TimedAsync(
                 "ac2 provision", () => WaitProvisionedAsync(cluster, ct));
-            provisioned.Should().BeTrue("provisioning до wal-фазы");
+            provisioned.Should().BeTrue("provisioning before the wal phase");
 
             // WAL-нагрузка ПЕРВАЯ (Patroni выбирает sync при живом потоке —
             // прецедент E2eWalStreamScenarios), оба агента поднимаются.
@@ -442,29 +442,29 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             var bothAgents = await TimedAsync(
                 "ac2 both-wal-agents", () => WaitBothWalAgentsAsync(cluster, ct));
-            bothAgents.Should().BeTrue("master- и sync-агенты живы (sync выбран)");
+            bothAgents.Should().BeTrue("master and sync agents are alive (sync elected)");
             await TimedAsync("ac2 generate-wal", () => GenerateWalAsync(adminDsn, ct));
             var uploaded = await TimedAsync(
                 "ac2 wal-uploaded-node1", () => WaitWalUploadedAsync(cluster, ep1, ct));
-            uploaded.Should().BeTrue("мастер-агент доставил сегменты на node1");
+            uploaded.Should().BeTrue("the master agent delivered segments to node1");
 
             // Act/Assert — полный с реплики: role=replica, объекты на node2,
             // на node1 префикса full/ нет.
             var done = await TimedAsync(
                 "ac2 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
-            status["role"].GetString().Should().Be("replica", "sync-реплика выбрана — источник полного реплика");
+            status["role"].GetString().Should().Be("replica", "the sync replica is elected — the full backup source is a replica");
             var id = done.Key.Split('/').Last();
             var onNode2 = await McLsOnNodeAsync(ep2, $"{cluster}/shard1/");
             onNode2.Should().Contain($"full/{id}/backup_manifest",
-                "write_replica=[node2] — полный доставлен на вторую ноду");
+                "write_replica=[node2] — the full is delivered to the second node");
             var keysOnNode1 = await McKeysOnNodeAsync(ep1, $"{cluster}/shard1/");
             keysOnNode1.Should().NotContain(k => k.StartsWith($"full/{id}/"),
-                "write_master не участвует в записи репликового полного");
+                "write_master does not participate in writing the replica full");
             // Каждый агент доставил сегменты на свою ноду (list по endpoint каждой).
-            keysOnNode1.Should().Contain(k => k.StartsWith("wal/"), "master-агент пишет на node1");
+            keysOnNode1.Should().Contain(k => k.StartsWith("wal/"), "the master agent writes on node1");
             (await McKeysOnNodeAsync(ep2, $"{cluster}/shard1/"))
-                .Should().Contain(k => k.StartsWith("wal/"), "sync-агент пишет на node2");
+                .Should().Contain(k => k.StartsWith("wal/"), "the sync agent writes on node2");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
         }
@@ -511,11 +511,11 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
             var bothAgents = await TimedAsync(
                 "ac3 both-wal-agents", () => WaitBothWalAgentsAsync(cluster, ct));
-            bothAgents.Should().BeTrue("оба агента подняты");
+            bothAgents.Should().BeTrue("both agents are raised");
             var ep1 = HostPort(Fx.S3Endpoint);
             var uploaded = await TimedAsync(
                 "ac3 wal-uploaded", () => WaitWalUploadedAsync(cluster, ep1, ct));
-            uploaded.Should().BeTrue("оба потока доставляют сегменты на единственную ноду");
+            uploaded.Should().BeTrue("both streams deliver segments to the single node");
             var done = await TimedAsync(
                 "ac3 full-completed", () => WaitCompletedFullAsync(cluster, ct));
             done.Should().NotBeNull();
@@ -523,7 +523,7 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
             // Act/Assert — restore latest из пула: COMPLETED.
             var restore = await TimedAsync(
                 "ac3 restore-latest", () => RestoreLatestAsync(cluster, "shard1", ct));
-            restore["state"].GetString().Should().Be("COMPLETED", "restore из однонодового пула");
+            restore["state"].GetString().Should().Be("COMPLETED", "restore from a single-node pool");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
         }
@@ -568,10 +568,10 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("агенты до отказа ноды");
+            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("agents before the node failure");
             var ep1 = HostPort(Fx.S3Endpoint);
             (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
-                "сегменты доставлены на node1 до инъекции отказа");
+                "segments are delivered to node1 before the failure injection");
 
             // Act A — стоп node1: мастер-агент доезжает до node2.
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
@@ -587,7 +587,7 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
                 return onNode2.Count > 0;
             }, TimeSpan.FromSeconds(300), ct);
             survived.Should().BeTrue(
-                "стрим продолжился на node2 (перебор списка записи, RPO: слот подтверждён после put)");
+                "the stream continued on node2 (walking the write list, RPO: the slot is confirmed after the put)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
             // Act B — список [node1]: рестарт воркера (агенты пересоздаются с новым
@@ -597,7 +597,7 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             var app2 = await StartPoolHostAsync("pac4b", ct);
             await using var app2Owner = app2;
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("агенты с новым env подняты");
+            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("agents with the new env are raised");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
             var degraded = await E2eFixture.WaitForAsync(async () =>
             {
@@ -605,14 +605,14 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
                 return read is { IsSuccess: true } && read.Value is { State: WalStreamStatus.Degraded }
                     && read.Value.Error?.Contains("s3-pool-exhausted", StringComparison.Ordinal) == true;
             }, TimeSpan.FromSeconds(300), ct);
-            degraded.Should().BeTrue("исчерпание списка — DEGRADED с маркером s3-pool-exhausted");
+            degraded.Should().BeTrue("list exhaustion — DEGRADED with the s3-pool-exhausted marker");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
             var healed = await E2eFixture.WaitForAsync(async () =>
             {
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 return read is { IsSuccess: true } && read.Value is { State: WalStreamStatus.Active };
             }, TimeSpan.FromSeconds(300), ct);
-            healed.Should().BeTrue("подъём ноды — самозаживление в ACTIVE (ретрай-цикл)");
+            healed.Should().BeTrue("raising the node — self-healing back to ACTIVE (retry loop)");
             await load.CancelAsync();
             try { await loader; } catch { /* фон остановлен */ }
         }
@@ -657,10 +657,10 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             using var load = new CancellationTokenSource();
             var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("оба агента до promote");
+            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("both agents before the promote");
             await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
             (await WaitWalUploadedAsync(cluster, ep1, ct)).Should().BeTrue(
-                "сегменты TLI 1 доставлены до promote");
+                "TLI 1 segments are delivered before the promote");
 
             // Act — потеря мастера → promote реплики (механика .history —
             // образец E2eWalStreamPromoteScenarios).
@@ -681,7 +681,7 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
                 {
                     return false;
                 }
-            }, TimeSpan.FromSeconds(120), ct)).Should().BeTrue("новый мастер вышел из recovery — switch выполнен");
+            }, TimeSpan.FromSeconds(120), ct)).Should().BeTrue("the new master left recovery — the switch is done");
 
             // Assert — новый мастер пишет на ноду master-списка: .history и/или
             // свежие сегменты TLI 2 появляются на node1; цепочка ACTIVE непрерывна.
@@ -704,14 +704,14 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
                 return WalChain.CheckWithRestart(chainStart.Value, names).IsContinuous;
             }, TimeSpan.FromSeconds(300), ct);
             switched.Should().BeTrue(
-                "агент новой роли пишет на ноду master-списка (node1), .history в S3, цепочка непрерывна");
+                "the agent of the new role writes to the master-list node (node1), .history in S3, the chain is continuous");
             // На нode2 мастер-поток после promote не пишется: .history только на node1.
             var historyOnNode2 = await McKeysOnNodeAsync(ep2, $"{cluster}/shard1/wal/");
             historyOnNode2.Count(k => k.EndsWith(".history", StringComparison.Ordinal))
                 .Should().BeLessThan(
                     (await McKeysOnNodeAsync(ep1, $"{cluster}/shard1/wal/"))
                     .Count(k => k.EndsWith(".history", StringComparison.Ordinal)),
-                "новый TLI-переход обслуживает master-список (node1)");
+                "the new TLI switch is served by the master list (node1)");
             await load.CancelAsync();
             try { await loader; } catch { /* фон умер вместе с мастером — ожидаемо */ }
         }
@@ -771,7 +771,7 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).
             var restore = await RestoreLatestAsync(cluster, "shard1", ct);
             restore["state"].GetString().Should().Be("COMPLETED",
-                "перебор ReadAll доезжает до живой ноды пула (mesh-копия)");
+                "the ReadAll walkover reaches a live pool node (mesh copy)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
         }
         catch
@@ -824,12 +824,12 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value
                     .Contains("\"state\":\"OK\"") == true,
                 TimeSpan.FromSeconds(120), ct);
-            ok.Should().BeTrue("слепочная пара обслуживает экспорт");
+            ok.Should().BeTrue("the snapshot pair serves the export");
             var listing = await Fx.RunMcAsync(
                 $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                 + $" && mc ls --recursive t/{SnapshotBucket}/etcd/ || true", ct);
             listing.Should().Contain(".db").And.Contain(".meta.json",
-                "пара слепка — в СВОЁМ bucket с префиксом etcd/");
+                "the snapshot pair — in its OWN bucket with the etcd/ prefix");
 
             // Act 2 — Enabled БЕЗ пары: процесс падает стартом (fail-fast),
             // диагностика называет секцию.
@@ -838,8 +838,8 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
                 {
                     ["PgWorker__Snapshots__Export__Enabled"] = "true",
                 }, ct: ct));
-            thrown.Message.Should().Contain("не поднялся за",
-                "воркер не обслуживает API (fail-fast старта; текст секции — в логах воркера, артефакты)");
+            thrown.Message.Should().Contain("did not come up within",
+                "the worker does not serve the API (start fail-fast; the section text is in the worker logs, artifacts)");
         }
         catch
         {
@@ -891,31 +891,31 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             var (code, body) = await PutPolicyApiAsync(api, app, cluster, 
                 """{"full_max_age_sec":3600,"s3":{"pool":"ghost","write_master":["node1"],"write_replica":["node1"]}}""", ct);
             code.Should().Be(System.Net.HttpStatusCode.BadRequest);
-            body.Should().Contain("ghost").And.Contain("s3.pool", "ошибка — по полю s3.pool");
+            body.Should().Contain("ghost").And.Contain("s3.pool", "the error is on the s3.pool field");
             (code, body) = await PutPolicyApiAsync(api, app, cluster,
                 """{"full_max_age_sec":3600,"s3":{"pool":"toremove","write_master":["node1"],"write_replica":["node1"]}}""", ct);
-            code.Should().Be(System.Net.HttpStatusCode.BadRequest, "пул в TO_REMOVE — 400");
+            code.Should().Be(System.Net.HttpStatusCode.BadRequest, "pool in TO_REMOVE — 400");
             (code, body) = await PutPolicyApiAsync(api, app, cluster,
                 $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\",\"write_master\":[\"nosuch\"],\"write_replica\":[\"node1\"]}}}}", ct);
             code.Should().Be(System.Net.HttpStatusCode.BadRequest);
-            body.Should().Contain("nosuch", "ошибка называет ноду вне пула");
+            body.Should().Contain("nosuch", "the error names a node outside the pool");
             (code, _) = await PutPolicyApiAsync(api, app, cluster,
                 $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\",\"write_master\":[\"node1\",\"node1\"],\"write_replica\":[\"node1\"]}}}}", ct);
-            code.Should().Be(System.Net.HttpStatusCode.BadRequest, "дубликат в списке — 400");
+            code.Should().Be(System.Net.HttpStatusCode.BadRequest, "a duplicate in the list — 400");
             (code, body) = await PutPolicyApiAsync(api, app, cluster,
                 $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\",\"write_master\":[],\"write_replica\":[\"node1\"]}}}}", ct);
             code.Should().Be(System.Net.HttpStatusCode.BadRequest);
-            body.Should().Contain("s3.write_master", "пустой список — 400 по полю");
+            body.Should().Contain("s3.write_master", "empty list — 400 on the field");
             // Инстанс заявлен (placement есть), portalloc-записи нет — policy ВАЛИДНА
             // (адрес появится при provisioning, API не отвечает 400 — spec §4.3).
             (code, _) = await PutPolicyApiAsync(api, app, cluster,
                 """{"full_max_age_sec":3600,"s3":{"pool":"claiming","write_master":["node1"],"write_replica":["node1"]}}""", ct);
-            ((int)code).Should().BeInRange(200, 299, $"заявленная без portalloc нода не инвалидирует policy: {body}");
+            ((int)code).Should().BeInRange(200, 299, $"a declared node without portalloc does not invalidate the policy: {body}");
             // Возврат рабочей policy (замещение целиком).
             string finalBody;
             (code, finalBody) = await PutPolicyApiAsync(api, app, cluster,
                 $"{{\"full_max_age_sec\":3600,\"s3\":{{\"pool\":\"{Pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}}}", ct);
-            ((int)code).Should().BeInRange(200, 299, $"валидная policy принимается: {finalBody}");
+            ((int)code).Should().BeInRange(200, 299, $"a valid policy is accepted: {finalBody}");
 
             // Act 2 — DR: полный лежит в пуле «bkpool» (node1 жив); чтение DR-источника
             // задаётся source_pool. Сносим контур кластера и поднимаем заново
@@ -931,9 +931,9 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
                 var left = await G.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct);
                 return left.IsSuccess && left.Value.Count == 0;
             }, TimeSpan.FromSeconds(300), ct);
-            deprovisioned.Should().BeTrue("контур A снесён — данные только в S3");
+            deprovisioned.Should().BeTrue("contour A is torn down — data only in S3");
             await SeedClusterAsync(cluster);
-            (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue("кластер поднят заново (пустые шарды)");
+            (await WaitProvisionedAsync(cluster, ct)).Should().BeTrue("the cluster is raised anew (empty shards)");
 
             // source_pool: чтение из «bkpool», собственный пул кластера — bkpool2.
             var restoreId = $"{DateTimeOffset.UtcNow:yyyyMMddHHmmss}Z-shard1";
@@ -945,7 +945,7 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             var restore = await WaitRestoreAsync(cluster, "shard1", restoreId,
                 TimeSpan.FromSeconds(420), ct);
             restore["state"].GetString().Should().Be("COMPLETED",
-                "DR-restore читает из source_pool (чужой префикс — другой пул)");
+                "the DR-restore reads from source_pool (a foreign prefix — another pool)");
         }
         catch
         {

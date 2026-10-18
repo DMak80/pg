@@ -60,14 +60,14 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
     // AAA (AC7): префикс исчезнувшего шарда → OBSERVED в реестре; повторный проход
     // переносит first_seen (не сбрасывает)
     [Fact]
-    public async Task Проход_сирота_в_реестре_first_seen_переносится()
+    public async Task SweepOrphanInRegistryFirstSeenCarriedOver()
     {
         // Arrange — лидер взят; сирота ghost/s1; объектов владельца в /clusters/ нет
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
         var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
-        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue("лидерство — предусловие прохода");
+        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue("leadership is a sweep precondition");
         var sweeper = BuildSweeper(s3, claims, clock);
 
         // Act 1 — первый проход
@@ -88,13 +88,13 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
         // Assert 2 — first_seen ПЕРЕнесён (не сброшен на now)
         var after = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
-        after.FirstSeenUnix.Should().Be(entry.FirstSeenUnix, "TTL от первого наблюдения");
+        after.FirstSeenUnix.Should().Be(entry.FirstSeenUnix, "TTL from the first observation");
         after.SizeBytes.Should().Be(entry.SizeBytes);
     }
 
     // AAA (AC7): TTL истёк (сжатое время) → DELETING → объекты удалены → запись удалена
     [Fact]
-    public async Task Проход_TTL_истёк_удаляет_префикс_и_запись()
+    public async Task SweepTtlExpiredRemovesPrefixAndRecord()
     {
         // Arrange — сирота в реестре с first_seen 2 минуты назад (ttl 60 c)
         var ct = TestContext.Current.CancellationToken;
@@ -114,12 +114,12 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar");
         s3.PrefixObjects.Should().BeEmpty();
         var registry = await ReadRegistryAsync();
-        registry!.Orphans.Should().BeEmpty("удаление подтверждено — запись погашена");
+        registry!.Orphans.Should().BeEmpty("the removal is confirmed — the record is retired");
     }
 
     // AAA (AC7): OrphanTtlSec=0 — реестр живёт, удаления нет
     [Fact]
-    public async Task Проход_TtlZero_только_реестр()
+    public async Task SweepTtlZeroRegistryOnly()
     {
         // Arrange — ttl=0 (только алерт); сирота давно
         var ct = TestContext.Current.CancellationToken;
@@ -135,13 +135,13 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты живы; запись осталась OBSERVED (авто-удаление выключено)
-        s3.DeletedKeys.Should().BeEmpty("OrphanTtlSec=0 — только алерт панели");
+        s3.DeletedKeys.Should().BeEmpty("OrphanTtlSec=0 — only the panel alert");
         (await ReadRegistryAsync())!.Orphans.Should().ContainSingle();
     }
 
     // AAA (AC7): воскресение владельца (шард снова заявлен в /clusters/) — запись гаснет
     [Fact]
-    public async Task Проход_владелец_воскрес_запись_гаснет()
+    public async Task SweepOwnerResurrectedRecordRetired()
     {
         // Arrange — сирота ghost/s1 в реестре; затем кластер ghost/shard s1 заявлен
         var ct = TestContext.Current.CancellationToken;
@@ -162,14 +162,14 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — запись гаснет (объекты НЕ удаляются — владелец жив)
-        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("владелец воскрес — запись гаснет");
-        s3.DeletedKeys.Should().BeEmpty("доводка DELETING отменяется");
+        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("the owner is resurrected — the record is retired");
+        s3.DeletedKeys.Should().BeEmpty("the DELETING finalization is cancelled");
     }
 
     // AAA: не-лидер ничего не пишет (гвард IsLeader в SweepAsync — проверка
     // вызовом без лидерства: ключ реестра не появился)
     [Fact]
-    public async Task Проход_без_лидерства_не_пишет()
+    public async Task SweepWithoutLeadershipWritesNothing()
     {
         // Arrange — лидерство НЕ брали (TryBecomeLeaderAsync не звали)
         var ct = TestContext.Current.CancellationToken;
@@ -179,12 +179,12 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var sweeper = BuildSweeper(s3, claims);
 
         // Act
-        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue("не-лидер — тихий no-op");
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue("non-leader — a silent no-op");
 
         // Assert — ключа реестра нет, объекты живы
         var kv = await fixture.Gateway.GetAsync(
             fixture.Endpoint, OrphanRegistry.Key, ct);
-        kv.Value.Should().BeNull("реестр пишет только глобальный лидер");
+        kv.Value.Should().BeNull("only the global leader writes the registry");
         s3.DeletedKeys.Should().BeEmpty();
     }
 
@@ -206,7 +206,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
     // AAA (AC1): сирота с валидным полным (backup_manifest) переживает истёкший
     // TTL — автоправило «последнего полного»: автоматика не удаляет НИКОГДА
     [Fact]
-    public async Task Проход_полный_в_префиксе_держит_сироту_после_TTL()
+    public async Task SweepFullInPrefixKeepsOrphanAfterTtl()
     {
         // Arrange — сирота с manifest-объектом (критерий валидного полного)
         var ct = TestContext.Current.CancellationToken;
@@ -224,14 +224,14 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
         entry.Prefix.Should().Be("ghost/s1");
         entry.State.Should().Be(OrphanState.Observed);
-        entry.HasValidFull.Should().BeTrue("manifest в префиксе — валидный полный");
+        entry.HasValidFull.Should().BeTrue("a manifest in the prefix — a valid full");
 
         // Act 2 — время вперёд за TTL; проход
         clock.Now = clock.Now.AddMinutes(2);
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert 2 — объекты живы (автоправило), запись осталась OBSERVED с защитой
-        s3.DeletedKeys.Should().BeEmpty("сирота с валидным полным автоматикой не удаляется");
+        s3.DeletedKeys.Should().BeEmpty("an orphan with a valid full is not removed by the automation");
         var after = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
         after.State.Should().Be(OrphanState.Observed);
         after.HasValidFull.Should().BeTrue();
@@ -239,7 +239,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
     // AAA (AC2): hold-флаг оператора держит незащищённую сироту от TTL-удаления
     [Fact]
-    public async Task Проход_hold_держит_незащищённую_сироту()
+    public async Task SweepHoldKeepsUnprotectedOrphan()
     {
         // Arrange — сирота без полных в реестре; затем hold-ключ
         var ct = TestContext.Current.CancellationToken;
@@ -256,7 +256,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты живы, запись жива (hold исключил из TTL-отбора)
-        s3.DeletedKeys.Should().BeEmpty("hold держит сироту");
+        s3.DeletedKeys.Should().BeEmpty("hold keeps the orphan");
         (await ReadRegistryAsync())!.Orphans.Should().ContainSingle(e => e.Prefix == "ghost/s1");
         (await KeyExistsAsync(OrphanRegistry.HoldKey("ghost/s1"))).Should().BeTrue();
     }
@@ -264,7 +264,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
     // AAA (AC3): снятие hold (unhold) возвращает сироту под общие правила —
     // истёкший TTL без иных защит → удаление ближайшим проходом
     [Fact]
-    public async Task Проход_unhold_возвращает_под_TTL()
+    public async Task SweepUnholdReturnsUnderTtl()
     {
         // Arrange — сирота без полных; hold; время за TTL — проход держит
         var ct = TestContext.Current.CancellationToken;
@@ -277,7 +277,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         await PutHoldAsync("ghost/s1");
         clock.Now = clock.Now.AddMinutes(2);
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
-        s3.DeletedKeys.Should().BeEmpty("под hold удаления нет");
+        s3.DeletedKeys.Should().BeEmpty("under hold there is no removal");
 
         // Act — unhold (del hold-ключа) и ещё проход (время не двигаем — TTL истёк)
         await fixture.Gateway.DeleteAsync(
@@ -286,13 +286,13 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
         // Assert — объекты удалены, запись погашена
         s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar");
-        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("unhold — удаление ближайшим проходом");
+        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("unhold — removal by the nearest sweep");
     }
 
     // AAA (AC4): заявка явного удаления минует hold и автоправило; после
     // доводки запись и ключ заявки гасятся вместе
     [Fact]
-    public async Task Проход_заявка_удаляет_защищённую_и_гасится()
+    public async Task SweepRequestRemovesProtectedAndRetires()
     {
         // Arrange — сирота с manifest И hold; затем заявка delete
         var ct = TestContext.Current.CancellationToken;
@@ -313,15 +313,15 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         // Assert — объекты удалены, записи нет, ключа заявки нет
         s3.DeletedKeys.Should().Contain("ghost/s1/full/20260911110000Z/base.tar")
             .And.Contain("ghost/s1/full/20260911110000Z/backup_manifest");
-        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("заявка удаляет защищённую сироту");
+        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("the request removes the protected orphan");
         (await KeyExistsAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should()
-            .BeFalse("заявка гасится вместе с записью");
+            .BeFalse("the request is retired together with the record");
     }
 
     // AAA (AC5): воскресший владелец гасит и запись, и hold, и заявку —
     // удаление живого префикса не происходит
     [Fact]
-    public async Task Проход_воскресший_владелец_гасит_hold_и_заявку()
+    public async Task SweepResurrectedOwnerRetiresHoldAndRequest()
     {
         // Arrange — сирота без полных в реестре; hold + заявка; затем воскресение
         var ct = TestContext.Current.CancellationToken;
@@ -343,16 +343,16 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
 
         // Assert — записи/hold/заявки нет, объекты живы (удаление живого исключено)
-        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("владелец воскрес — запись гаснет");
-        (await KeyExistsAsync(OrphanRegistry.HoldKey("ghost/s1"))).Should().BeFalse("hold гасит санитар");
-        (await KeyExistsAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should().BeFalse("заявку гасит санитар");
-        s3.DeletedKeys.Should().BeEmpty("живой префикс не удаляется");
+        (await ReadRegistryAsync())!.Orphans.Should().BeEmpty("the owner is resurrected — the record is retired");
+        (await KeyExistsAsync(OrphanRegistry.HoldKey("ghost/s1"))).Should().BeFalse("hold is retired by the sweeper");
+        (await KeyExistsAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should().BeFalse("the request is retired by the sweeper");
+        s3.DeletedKeys.Should().BeEmpty("a live prefix is not removed");
     }
 
     // AAA (AC5/спека §2 п.6): санитар — hold/заявки с префиксом вне merged-реестра
     // (несирота) гасятся, «висящих» флагов не копится
     [Fact]
-    public async Task Проход_санитар_чистит_чужие_ключи()
+    public async Task SweepSweeperCleansForeignKeys()
     {
         // Arrange — S3 пуст (реестр после merge пуст); hold+заявка на чужой other/s9
         var ct = TestContext.Current.CancellationToken;
@@ -377,7 +377,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
     // AAA (AC1, transient list): ненаблюдаемый сирота сохраняет has_valid_full —
     // защита переживает моргание list bucket
     [Fact]
-    public async Task Проход_ненаблюдаемый_сирота_сохраняет_has_valid_full()
+    public async Task SweepUnobservedOrphanKeepsHasValidFull()
     {
         // Arrange — сирота с manifest; первый проход фиксирует защиту
         var ct = TestContext.Current.CancellationToken;
@@ -396,16 +396,16 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
 
         // Assert — запись жива, HasValidFull остался true, удаления нет
         var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
-        entry.HasValidFull.Should().BeTrue("защита переживает transient list");
+        entry.HasValidFull.Should().BeTrue("the protection survives a transient list");
         entry.State.Should().Be(OrphanState.Observed);
-        s3.DeletedKeys.Should().BeEmpty("кандидата нет — удаления нет");
+        s3.DeletedKeys.Should().BeEmpty("no candidate — no removal");
     }
 
     // AAA (t36, arch/19 §5): дедуп union-листинга — по (пул, ключ): одинаковый
     // ключ в двух пулах учитывается КАЖДОЙ пул-копией (размер реестра = сумма
     // по пулам); дедуп по голому ключу схлопывал бы межпулевые дубли
     [Fact]
-    public async Task Проход_ключ_в_двух_пулах_учитывается_дважды()
+    public async Task SweepKeyInTwoPoolsCountedTwice()
     {
         // Arrange — сирота ghost/s1 (объект 100 байт); оба пула листят ОДИН фейк
         var ct = TestContext.Current.CancellationToken;
@@ -425,6 +425,6 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         // Assert — запись одна (префикс общий), размер = 100+100: обе пул-копии в union
         var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
         entry.Prefix.Should().Be("ghost/s1");
-        entry.SizeBytes.Should().Be(200, "дедуп по (пул, ключ) — межпулевый дубль не схлопнут");
+        entry.SizeBytes.Should().Be(200, "dedup by (pool, key) — a cross-pool duplicate is not collapsed");
     }
 }

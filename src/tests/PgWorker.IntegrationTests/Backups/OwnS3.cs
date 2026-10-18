@@ -112,7 +112,7 @@ public sealed class OwnS3 : IAsyncDisposable
             await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0)
                 throw new ApplicationException(
-                    "образ owns3:dev отсутствует — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
+                    "image owns3:dev is missing — build it in ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
             _imageReady = true;
         }
         finally
@@ -177,6 +177,6 @@ public sealed class OwnS3 : IAsyncDisposable
             ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name={ContainerName}"],
             CancellationToken.None);
         left.Should().BeEmpty(
-            $"{Slug}: teardown окружения неполный — остался контейнер {ContainerName}");
+            $"{Slug}: the environment teardown is incomplete — container {ContainerName} is left");
     }
 }

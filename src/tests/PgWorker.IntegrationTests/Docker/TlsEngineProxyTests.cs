@@ -78,7 +78,7 @@ public class TlsEngineProxyTests
         }
 
         ping.IsSuccess.Should().BeTrue(
-            "TLS-прокси к Engine API жив (последняя ошибка: {0})", ping.Error?.Message);
+            "the TLS proxy to the Engine API is alive (last error: {0})", ping.Error?.Message);
         var listed = await engine.ListContainersAsync("pgw-tls-proxy-test", all: false, TestContext.Current.CancellationToken);
         listed.IsSuccess.Should().BeTrue();
 

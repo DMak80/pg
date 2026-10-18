@@ -80,14 +80,14 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                 var parts = new List<string>();
                 foreach (var shard in new[] { "shard1", "shard2" })
                 {
-                    var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "нет" : "есть";
+                    var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "absent" : "present";
                     var a = (await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}a/state"))?.Value ?? "-";
                     var b = (await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}b/state"))?.Value ?? "-";
                     parts.Add($"{shard}: {a}/{b}, dsn={dsn}");
                 }
                 return string.Join("; ", parts);
             });
-        provisioned.Should().BeTrue($"provisioning {Cluster} должен дойти до DONE");
+        provisioned.Should().BeTrue($"provisioning {Cluster} must reach DONE");
 
         var shard1 = await MasterInfoAsync("shard1", ct);
         var shard2 = await MasterInfoAsync("shard2", ct);
@@ -96,8 +96,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         await EnableSyncModeAsync("shard1", ct);
         await EnableSyncModeAsync("shard2", ct);
 
-        (await RoutingAsync("bucket_0", ct)).Should().Be("shard1", "bucket_0 на shard1");
-        (await RoutingAsync("bucket_1", ct)).Should().Be("shard2", "bucket_1 на shard2");
+        (await RoutingAsync("bucket_0", ct)).Should().Be("shard1", "bucket_0 on shard1");
+        (await RoutingAsync("bucket_1", ct)).Should().Be("shard2", "bucket_1 on shard2");
         output.WriteLine("E1: provisioning done");
     }
 
@@ -124,8 +124,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         var moved = await E2ePhase.WaitAsync(Fx, "move-routing-flip",
             () => RoutingIsAsync("bucket_0", "shard2", ct), TimeSpan.FromSeconds(120), ct);
-        moved.Should().BeTrue($"move должен завершиться; routing={await RoutingAsync("bucket_0", ct)}, " +
-                              $"status={await StatusAsync("bucket_0", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
+        moved.Should().BeTrue($"the move must finish; routing={await RoutingAsync("bucket_0", ct)}, " +
+                              $"status={await StatusAsync("bucket_0", ct) ?? "absent"}, work={await WorkDumpAsync(ct)}");
 
         // Детерминизация (t09, гонка E2-kill ↔ M6-REPLACE): routing+статус
         // сменяются РАНЬШЕ, чем воркер допишет REPLACE на finalize — между ними
@@ -137,8 +137,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             var req = await GetOrNullAsync(MoveNames.MoveKey(Cluster, "bucket_0"));
             return req?.Value.Contains("\"op\":\"finalize\"", StringComparison.Ordinal) == true;
         }, TimeSpan.FromSeconds(15), ct);
-        replacedOnFinalize.Should().BeTrue($"перед kill заявка должна стать finalize (M6 REPLACE); " +
-                                           $"заявка={await MovesDumpAsync(ct)}, work={await WorkDumpAsync(ct)}");
+        replacedOnFinalize.Should().BeTrue($"before the kill the request must become finalize (M6 REPLACE); " +
+                                           $"request={await MovesDumpAsync(ct)}, work={await WorkDumpAsync(ct)}");
 
         // НEMЕДЛЕННО убиваем контроллер: auto-finalize не должен удалить схему на shard1
         // до завершения проверок FROZEN/counts/sequence/ghost.
@@ -150,16 +150,16 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         var sawDenied = await E2ePhase.WaitAsync(Fx, "move-frozen-denied",
             () => Task.FromResult(load.Snapshot().Any(e => !e.Ok)), TimeSpan.FromSeconds(20), ct);
-        sawDenied.Should().BeTrue("нагрузка обязана упереться в заморозку P1 (42501)");
+        sawDenied.Should().BeTrue("the load must hit the P1 freeze (42501)");
         var firstDenied = load.Snapshot().First(e => !e.Ok);
         var okAfter = await E2ePhase.WaitAsync(Fx, "move-frozen-resumed",
             () => Task.FromResult(load.Snapshot().Any(e => e.Ok && e.TsMs >= firstDenied.TsMs)),
             TimeSpan.FromSeconds(20), ct);
-        okAfter.Should().BeTrue("после flip нагрузка обязана продолжить запись у нового владельца");
+        okAfter.Should().BeTrue("after the flip the load must keep writing to the new owner");
         var firstOkAfter = load.Snapshot().First(e => e.Ok && e.TsMs >= firstDenied.TsMs);
         TimeSpan.FromMilliseconds(firstOkAfter.TsMs - firstDenied.TsMs)
-            .Should().BeLessOrEqualTo(TimeSpan.FromSeconds(15), "окно FROZEN ≤ 15с (AC3)");
-        firstOkAfter.Port.Should().Be(0, "первая запись после flip — у владельца shard2 (порт в событии больше не адрес)");
+            .Should().BeLessOrEqualTo(TimeSpan.FromSeconds(15), "the FROZEN window ≤ 15 s (AC3)");
+        firstOkAfter.Port.Should().Be(0, "the first write after the flip is by the shard2 owner (the port is no longer in the event)");
         output.WriteLine("E2: FROZEN OK, checking counts/sequence/ghost...");
 
         load.Pause();
@@ -179,18 +179,18 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                 var c2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
                 return $"src={c1}, dst={c2}";
             });
-        aligned.Should().BeTrue("обратная репликация sub_rb должна догнать");
+        aligned.Should().BeTrue("the sub_rb back-replication must catch up");
 
         var count1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
         var count2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
-        count1.Should().Be(count2, "counts источника/приёмника совпадают (P8)");
-        long.Parse(count1).Should().BeGreaterThanOrEqualTo(50, "нагрузочные строки не потеряны");
+        count1.Should().Be(count2, "source/replica counts match (P8)");
+        long.Parse(count1).Should().BeGreaterThanOrEqualTo(50, "no load rows are lost");
 
         var issued = long.Parse(await SqlScalarAsync(shard1.Dsn,
             "SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM bucket_0.items_id_seq", ct));
         var nextOnNew = long.Parse(await SqlScalarAsync(shard2.Dsn,
             "SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM bucket_0.items_id_seq", ct));
-        nextOnNew.Should().BeGreaterThan(issued, "sequence-инвариант (P6)");
+        nextOnNew.Should().BeGreaterThan(issued, "sequence invariant (P6)");
 
         PostgresException? ghostError = null;
         try
@@ -199,8 +199,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             await cmd.ExecuteNonQueryAsync(ct);
         }
         catch (PostgresException e) { ghostError = e; }
-        ghostError.Should().NotBeNull("призрак-P1: write в старой сессии обязан упасть");
-        ghostError!.SqlState.Should().Be("42501", "заморозка срезает write (permission denied)");
+        ghostError.Should().NotBeNull("the P1 ghost: write in the old session must fail");
+        ghostError!.SqlState.Should().Be("42501", "the freeze cuts off the write (permission denied)");
         await load.StopAsync();
         output.WriteLine("E2: counts/sequence/ghost OK");
     }
@@ -212,18 +212,18 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         var ct = TestContext.Current.CancellationToken;
         output.WriteLine("E3: starting host for auto-finalize...");
 
-        (await RoutingAsync("bucket_0", ct)).Should().Be("shard2", "E2 переехал bucket_0 на shard2");
+        (await RoutingAsync("bucket_0", ct)).Should().Be("shard2", "E2 moved bucket_0 to shard2");
 
         Host = await Fx.StartHostAsync("m2", ct: ct);
 
         var autoFin = await E2ePhase.WaitAsync(Fx, "move-auto-finalize",
             () => ArtifactsCleanAsync("shard1", "bucket_0", schemaMustBeAbsent: true, ct),
             TimeSpan.FromSeconds(120), ct);
-        autoFin.Should().BeTrue($"auto-finalize должен вычистить shard1; " +
+        autoFin.Should().BeTrue($"auto-finalize must clean up shard1; " +
                                 $"artifacts={await ArtifactsDumpAsync("shard1", "bucket_0", ct)}, work={await WorkDumpAsync(ct)}");
         (await ArtifactsCleanAsync("shard2", "bucket_0", schemaMustBeAbsent: false, ct))
-            .Should().BeTrue("у владельца (shard2) схема bucket_0 жива, артефактов нет");
-        (await MovesDumpAsync(ct)).Should().Be("нет", "auto-finalize завершён — заявка удалена");
+            .Should().BeTrue("the owner (shard2) has the live bucket_0 schema, no artifacts");
+        (await MovesDumpAsync(ct)).Should().Be("absent", "auto-finalize is complete — the request is removed");
         output.WriteLine("E3: auto-finalize done (shard1 cleaned)");
     }
 
@@ -239,7 +239,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         var syncing = await E2ePhase.WaitAsync(Fx, "move-abort-syncing",
             async () => (await StatusAsync("bucket_1", ct))?.Contains("SYNCING") == true,
             TimeSpan.FromSeconds(60), ct);
-        syncing.Should().BeTrue("переезд bucket_1 должен войти в SYNCING до отмены");
+        syncing.Should().BeTrue("the bucket_1 move must enter SYNCING before the cancel");
 
         await PutMoveRequestAsync("bucket_1",
             $$"""{"op":"abort","force":true,"requested_unix":{{NowUnix()}}}""", ct);
@@ -249,18 +249,18 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         var aborted = await E2ePhase.WaitAsync(Fx, "move-abort-done",
             async () => await StatusAsync("bucket_1", ct) is null, TimeSpan.FromSeconds(180), ct);
-        aborted.Should().BeTrue($"abort должен довестись новым контроллером (takeover); " +
-                                $"status={await StatusAsync("bucket_1", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
+        aborted.Should().BeTrue($"the abort must be carried out by the new controller (takeover); " +
+                                $"status={await StatusAsync("bucket_1", ct) ?? "absent"}, work={await WorkDumpAsync(ct)}");
 
         var shard2 = await MasterInfoAsync("shard2", ct);
         (await ArtifactsCleanAsync("shard1", "bucket_1", schemaMustBeAbsent: true, ct))
-            .Should().BeTrue($"после abort на shard1 артефактов bucket_1 нет; " +
+            .Should().BeTrue($"after the abort there are no bucket_1 artifacts on shard1; " +
                              $"artifacts={await ArtifactsDumpAsync("shard1", "bucket_1", ct)}");
         (await ArtifactsCleanAsync("shard2", "bucket_1", schemaMustBeAbsent: false, ct))
-            .Should().BeTrue($"у владельца (shard2) схема bucket_1 жива, артефактов нет; " +
+            .Should().BeTrue($"the owner (shard2) has the live bucket_1 schema, no artifacts; " +
                              $"artifacts={await ArtifactsDumpAsync("shard2", "bucket_1", ct)}");
         (await TryInsertAppAsync(shard2.Host, "bucket_1", ct))
-            .Should().BeTrue("после abort бакет ACTIVE: запись владельцем работает (AC6-abort)");
+            .Should().BeTrue("after the abort the bucket is ACTIVE: writing by the owner works (AC6-abort)");
         output.WriteLine("E4: abort+takeover done");
     }
 
@@ -277,10 +277,10 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         var deprovisioned = await E2ePhase.WaitAsync(Fx, "move-deprovisioning",
             () => DeprovisionedAsync(), TimeSpan.FromSeconds(180), ct);
-        deprovisioned.Should().BeTrue("deprovisioning должен убрать кластер целиком");
+        deprovisioned.Should().BeTrue("deprovisioning must remove the cluster entirely");
 
         (await RangeAsync(MoveNames.MovesPrefix(Cluster)))
-            .Should().BeEmpty($"заявки {MoveNames.MovesPrefix(Cluster)} не переживают кластер (D2, AC8)");
+            .Should().BeEmpty($"the requests {MoveNames.MovesPrefix(Cluster)} do not outlive the cluster (D2, AC8)");
 
         if (Host is not null)
             await Host.DisposeAsync();
@@ -299,7 +299,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
     private async Task PutMoveRequestAsync(string bucket, string json, CancellationToken ct)
         => (await G.PutAsync(Endpoint, MoveNames.MoveKey(Cluster, bucket), json, null, ct))
-            .IsSuccess.Should().BeTrue($"заявка {bucket} должна записаться в etcd");
+            .IsSuccess.Should().BeTrue($"the request {bucket} must be written to etcd");
 
     private async Task<string?> RoutingAsync(string bucket, CancellationToken ct)
         => (await GetOrNullAsync(MoveNames.RoutingKey(Cluster, bucket)))?.Value;
@@ -311,12 +311,12 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         => await RoutingAsync(bucket, ct) == shard && await StatusAsync(bucket, ct) is null;
 
     private async Task<string> WorkDumpAsync(CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value ?? "нет";
+        => (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value ?? "absent";
 
     private async Task<string> MovesDumpAsync(CancellationToken ct)
     {
         var kvs = await RangeAsync(MoveNames.MovesPrefix(Cluster));
-        return kvs.Count == 0 ? "нет" : string.Join("; ", kvs.Select(k => $"{k.Key.Split('/')[^1]}={k.Value}"));
+        return kvs.Count == 0 ? "absent" : string.Join("; ", kvs.Select(k => $"{k.Key.Split('/')[^1]}={k.Value}"));
     }
 
     // ===== Сид кластера/бакетов =====
@@ -375,14 +375,14 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                 return false; // PG ещё не готов/разовый сброс транспорта — повторим
             }
         }, TimeSpan.FromSeconds(60), ct))
-            .Should().BeTrue($"сид {bucket} должен примениться к мастеру ({adminDsn})");
+            .Should().BeTrue($"the seed {bucket} must be applied to the master ({adminDsn})");
     }
 
     private async Task SetToRemoveAsync()
     {
         var ct = TestContext.Current.CancellationToken;
         var current = await GetOrNullAsync($"/clusters/{Cluster}/config");
-        current.Should().NotBeNull("конфиг кластера обязан существовать до TO_REMOVE");
+        current.Should().NotBeNull("the cluster config must exist before TO_REMOVE");
         var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(current!.Value!)!;
         doc["state"] = JsonSerializer.SerializeToElement("TO_REMOVE");
         await G.PutAsync(Endpoint, $"/clusters/{Cluster}/config", JsonSerializer.Serialize(doc), null, ct);
@@ -475,7 +475,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
             await Task.Delay(1000, ct);
         }
-        throw new ApplicationException($"мастер {Cluster}/{shard} не найден за 60 с");
+        throw new ApplicationException($"master {Cluster}/{shard} not found within 60 s");
     }
 
     private async Task EnableSyncModeAsync(string shard, CancellationToken ct)
@@ -491,7 +491,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                 restPassword, """{"synchronous_mode":true}"""),
             ct);
         response.IsSuccessStatusCode.Should().BeTrue(
-            $"Patroni {shard} должен принять PATCH /config (получили HTTP {(int)response.StatusCode})");
+            $"Patroni {shard} must accept the PATCH /config (got HTTP {(int)response.StatusCode})");
 
         var synced = await E2ePhase.WaitAsync(Fx, "move-sync-mode", async () =>
         {
@@ -501,7 +501,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                 "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')", ct);
             return !string.IsNullOrWhiteSpace(names) && long.Parse(count) >= 1;
         }, TimeSpan.FromSeconds(60), ct);
-        synced.Should().BeTrue($"у мастера {shard} должен появиться sync-standby после PATCH");
+        synced.Should().BeTrue($"the master {shard} must have a sync-standby after the PATCH");
     }
 
     // DSN приложения: пароль — из etcd-ключа /clusters/<C>/app_password

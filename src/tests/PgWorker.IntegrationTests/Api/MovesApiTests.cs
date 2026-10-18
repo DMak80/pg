@@ -110,6 +110,6 @@ public class MovesApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("не доступен для переезда");
+        problem.GetProperty("detail").GetString().Should().Contain("is not available for move");
     }
 }

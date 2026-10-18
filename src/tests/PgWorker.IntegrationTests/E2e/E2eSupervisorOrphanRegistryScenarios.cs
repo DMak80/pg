@@ -55,7 +55,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         //   (кластера ghost<тег> нет в /clusters/)
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning обязан дойти до DONE (воркер-лидер)");
+        provisioned.Should().BeTrue("provisioning must reach DONE (the worker leader)");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "orphan-seed");
 
         // Act 1 — реестр: WaitFor ключа orphans с ghost<тег>/shard1 + OBSERVED
@@ -68,7 +68,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         }, TimeSpan.FromSeconds(180), ct);
         if (!observed)
             throw new ApplicationException(
-                $"сирота не попала в реестр: [{orphansRaw?.Value ?? "нет ключа"}]");
+                $"the orphan did not land in the registry: [{orphansRaw?.Value ?? "no key"}]");
 
         // Act 2 — TTL 120 c + проходы 60 c: объекты удалены (mc ls пуст) И записи нет
         var swept = await WaitPhaseAsync("orphan-ttl-delete", async () =>
@@ -82,7 +82,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         }, TimeSpan.FromSeconds(420), ct);
         if (!swept)
             throw new ApplicationException(
-                $"сирота не удалена по TTL: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}] " +
+                $"the orphan was not removed by the TTL: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}] " +
                 $"mc ls=[{string.Join(";", await McLsAsync($"{ghost}/shard1/"))}]");
 
         // Assert — first_seen переносился (запись жила ≥ 2 прохода) — покрыт
@@ -130,7 +130,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         var completed = await WaitPhaseAsync("first-full-completed",
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), TestContext.Current.CancellationToken);
-        completed.Should().BeTrue("реальный полный обязан дойти до COMPLETED");
+        completed.Should().BeTrue("the real full must reach COMPLETED");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         return done.Key.Split('/').Last();
     }
@@ -273,7 +273,7 @@ public class E2eSupervisorOrphanRegistryScenarios
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -300,7 +300,7 @@ public class E2eSupervisorOrphanRegistryScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
@@ -344,7 +344,7 @@ public class E2eSupervisorOrphanRegistryScenarios
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}",
             TestContext.Current.CancellationToken);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         return entries
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal))

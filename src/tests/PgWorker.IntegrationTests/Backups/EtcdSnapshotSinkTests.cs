@@ -50,7 +50,7 @@ public class EtcdSnapshotSinkTests
     // AAA: снятие вызывает sink — в S3 пара db+meta по канону нейминга, статус
     // OK с фактом, sha256 совпадает; объекты etcd/* видны list'ом всего bucket.
     [Fact]
-    public async Task Export_после_TakeAsync_объекты_мета_статус_OK()
+    public async Task ExportAfterTakeAsyncObjectsMetaStatusOk()
     {
         // Arrange — своё etcd + ownS3-нода; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
@@ -82,7 +82,7 @@ public class EtcdSnapshotSinkTests
         // — база used_bytes ключа storage (t06 считает list ""; ср. BackupS3Tests:189)
         var wholeBucket = (await s3.ListPrefixAsync("", ct: ct)).Value!;
         wholeBucket.Select(o => o.Key).Should().Contain(listed.Select(o => o.Key),
-            "объекты etcd/ входят в used_bytes — list всего bucket их видит");
+            "the etcd/ objects are counted in used_bytes — a whole-bucket list sees them");
         // meta: taken <= uploaded, instance, ревизия best-effort есть (OwnEtcd жив)
         var metaKey = listed.Single(k => k.Key.EndsWith(".meta.json")).Key;
         var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
@@ -95,7 +95,7 @@ public class EtcdSnapshotSinkTests
     // AAA (AC2): каждый слепок — НОВАЯ пара db+meta (дедупа нет); покрытие
     // продвигается вторым слепком; IsBehind=false — сон лидера остаётся плановым.
     [Fact]
-    public async Task Каждый_слепок_выгружается_новой_парой()
+    public async Task EachSnapshotIsUploadedByNewPair()
     {
         // Arrange — своё окружение; sink; SnapshotJob с sink'ом
         var ct = TestContext.Current.CancellationToken;
@@ -115,7 +115,7 @@ public class EtcdSnapshotSinkTests
         shot2.IsSuccess.Should().BeTrue();
         var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
-        listed.Should().HaveCount(4, "второй слепок уезжает новой парой — дедупа нет (AC2)");
+        listed.Should().HaveCount(4, "the second snapshot leaves as a new pair — no dedup (AC2)");
         Directory.GetFiles(dir, "snapshot-*.db").Should().HaveCount(2);
         // Assert — (б) статус OK, покрытие = метка ВТОРОГО слепка, факт — его
         var secondName = Path.GetFileName(shot2.Value);
@@ -126,18 +126,18 @@ public class EtcdSnapshotSinkTests
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
         var status = EtcdSnapshotStatusJson.Parse(kv.Value)!;
         status.State.Should().Be("OK");
-        status.LastUploadedUnix.Should().Be(taken2, "покрытие продвинуто вторым слепком (§3.1)");
+        status.LastUploadedUnix.Should().Be(taken2, "the coverage is advanced by the second snapshot (§3.1)");
         status.LastObject.Should().Be($"etcd/{secondName}");
         status.LastSha256.Should().Be(Sha256Hex(await File.ReadAllBytesAsync(shot2.Value, ct)));
         status.SizeBytes.Should().Be((await File.ReadAllBytesAsync(shot2.Value, ct)).LongLength);
         // Assert — (в) отставания нет: сон лидера остаётся SnapshotIntervalMin
         EtcdSnapshotStatus.IsBehind(status, taken2).Should().BeFalse(
-            "каждый успешный проход sink'а продвигает покрытие (инвариант §3.5 п.1)");
+            "every successful sink pass advances the coverage (§3.5 item 1 invariant)");
     }
 
     // AAA (AC4): ретенция — ровно N пар, старейшие снесены; сирота-meta — мусор.
     [Fact]
-    public async Task Ретенция_сверх_лимита_старейшие_пары_снесены()
+    public async Task RetentionOverLimitOldestPairsRemoved()
     {
         // Arrange — sink с ретенцией 2; три снятия с паузами
         var ct = TestContext.Current.CancellationToken;
@@ -155,7 +155,7 @@ public class EtcdSnapshotSinkTests
         // Assert — ровно 2 пары (4 ключа); старейший id отсутствует
         var s3 = new BackupS3(s3NodeFx.S3());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
-        listed.Should().HaveCount(4, "ретенция держит ровно N=2 пары");
+        listed.Should().HaveCount(4, "the retention keeps exactly N=2 pairs");
         var oldestId = listed.Select(k => k.Key).Where(k => k.EndsWith(".db"))
             .Select(k => k[(EtcdExportRetention.Prefix.Length)..][..^".db".Length])
             .OrderBy(id => id, StringComparer.Ordinal).First();
@@ -174,14 +174,14 @@ public class EtcdSnapshotSinkTests
         shot4.IsSuccess.Should().BeTrue();
         var after = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         after.Should().NotContain(k => k.Key == "etcd/snapshot-20260101-000000.meta.json",
-            "одиночная meta без .db — мусор ретенции (AC4)");
+            "a lone meta without .db — retention garbage (AC4)");
         after.Should().HaveCount(4);
         after.Should().NotContain(k => k.Key.EndsWith($"{oldestId}.db"));
     }
 
     // AAA (AC3): S3-транзиент не роняет снятие; статус FAILED + непустая ошибка.
     [Fact]
-    public async Task Транзиент_S3_не_роняет_снятие_статус_FAILED()
+    public async Task TransientS3DoesNotFailSnapshotStatusFailed()
     {
         // Arrange — sink на закрытый порт (S3 недоступен); SnapshotJob с ним
         var ct = TestContext.Current.CancellationToken;
@@ -196,7 +196,7 @@ public class EtcdSnapshotSinkTests
         var shot = await job.TakeAsync(ct);
 
         // Assert — снятие успешно (локальный файл — истина снятия), статус FAILED
-        shot.IsSuccess.Should().BeTrue("сбой выгрузки — транзиент, снятие не роняется (spec §2.3)");
+        shot.IsSuccess.Should().BeTrue("an upload failure is transient, the snapshot does not fail (spec §2.3)");
         File.Exists(shot.Value).Should().BeTrue();
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
         var status = EtcdSnapshotStatusJson.Parse(kv.Value)!;
@@ -206,7 +206,7 @@ public class EtcdSnapshotSinkTests
 
     // AAA (AC3): доводка — новейший локальный слепок доезжает в S3, статус OK.
     [Fact]
-    public async Task Доводка_CatchUp_выгружает_новейший_локальный()
+    public async Task CatchUpFinalizationUploadsNewestLocal()
     {
         // Arrange — слепок снят при недоступном S3 (FAILED-статус), затем живой sink
         var ct = TestContext.Current.CancellationToken;
@@ -243,7 +243,7 @@ public class EtcdSnapshotSinkTests
     // restore (restore верифицирует sha256 при разворачивании — финальный
     // барьер).
     [Fact]
-    public async Task Верификация_целостности_status_и_restore()
+    public async Task IntegrityVerificationStatusAndRestore()
     {
         // Arrange — экспорт слепка в S3; скачивание .db и .meta.json
         var ct = TestContext.Current.CancellationToken;
@@ -275,7 +275,7 @@ public class EtcdSnapshotSinkTests
             // «<hash>, <revision>, <ключи>, <размер>». Эмпирика 3.5.x: status
             // hash печатает, но НЕ сверяет — целостность им не доказывается.
             verdict.Should().MatchRegex("^[0-9a-f]{8}, \\d+, \\d+, .+",
-                "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
+                "a valid snapshot from S3 passes etcdctl snapshot status (AC5): hash/keys/size");
 
             // Act (б) — порча байта; перезаписать temp → cp поверх
             data[100] ^= 0xFF;
@@ -285,7 +285,7 @@ public class EtcdSnapshotSinkTests
             // Assert (б-1) — ручная сверка sha256 с .meta.json: расхождение
             // (операторский барьер runbook-шага 2 — ловит порчу ДО restore)
             Sha256Hex(data).Should().NotBe(meta.Sha256,
-                "порченный файл обязан расходиться с sha256 из .meta.json (AC5)");
+                "a corrupted file must diverge from the sha256 in .meta.json (AC5)");
 
             // Assert (б-2) — restore-верификация: провал разворачивания. Нюанс etcd
             // 3.5.x: snapshot status hash только ПЕЧАТАЕТ (проверено на живом
@@ -300,9 +300,9 @@ public class EtcdSnapshotSinkTests
                 ["exec", etcdFx.ContainerName, "etcdutl", "snapshot", "restore", "/tmp/bad.db",
                  "--data-dir", "/tmp/restore-bad"], ct))
                 .Should().ThrowAsync<ApplicationException>(
-                    "порченный слепок обязан провалить restore-верификацию sha256 (AC5)");
+                    "a corrupted snapshot must fail the restore sha256 verification (AC5)");
             corrupt.Which.Message.Should().Contain("sha256",
-                "restore отвергает слепок расхождением sha256 — финальный барьер целостности (AC5)");
+                "restore rejects a snapshot by a sha256 divergence — the final integrity barrier (AC5)");
         }
         finally
         {
@@ -312,7 +312,7 @@ public class EtcdSnapshotSinkTests
 
     // AAA (AC6): takeover — статус-выгрузку пишет инстанс-исполнитель (в мете).
     [Fact]
-    public async Task Takeover_статус_пишет_инстанс_исполнитель()
+    public async Task TakeoverStatusWrittenByExecutingInstance()
     {
         // Arrange — своё окружение; два sink'а с разными instance на тех же etcd+S3
         var ct = TestContext.Current.CancellationToken;
@@ -339,7 +339,7 @@ public class EtcdSnapshotSinkTests
         var newestMetaKey = $"etcd/{Path.GetFileName(shotB.Value)[..^".db".Length]}.meta.json";
         var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
             await GetObjectBytesAsync(s3NodeFx, newestMetaKey, ct)))!;
-        meta.Instance.Should().Be("inst-B", "статус пишет инстанс-исполнитель (AC6)");
+        meta.Instance.Should().Be("inst-B", "the status is written by the executing instance (AC6)");
         var kv = (await etcdFx.Gateway.GetAsync(etcdFx.Endpoint, EtcdSnapshotStatusJson.Key, ct)).Value!;
         EtcdSnapshotStatusJson.Parse(kv.Value)!.State.Should().Be("OK");
     }

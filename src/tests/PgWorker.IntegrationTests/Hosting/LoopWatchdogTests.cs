@@ -153,6 +153,6 @@ public sealed class LoopWatchdogTests
         // watchdog armed в данных /healthz (AC2/AC4)
         stopping.Task.IsCompleted.Should().BeFalse();
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        report.Entries["pgworker"].Data["watchdog"].ToString().Should().Be("armed; stale=нет");
+        report.Entries["pgworker"].Data["watchdog"].ToString().Should().Be("armed; stale=none");
     }
 }

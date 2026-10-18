@@ -34,7 +34,7 @@ public class BackupEngineTests
             }
             await Task.Delay(500, ct);
         }
-        name.Should().NotBeNull("контейнер обязан выйти за 15 c");
+        name.Should().NotBeNull("the container must exit within 15 s");
 
         var logs = await engine.GetContainerLogsAsync(name!, tail: 100, ct);
         var inspect = await engine.InspectContainerAsync(name!, ct);
@@ -90,7 +90,7 @@ public class BackupEngineTests
         // Assert — tmpfs смонтирован, extra_hosts зарезолвился, удаление идемпотентно.
         created.IsSuccess.Should().BeTrue(created.Error?.ToString());
         started.IsSuccess.Should().BeTrue(started.Error?.ToString());
-        exited.Should().NotBeNull("контейнер обязан выйти");
+        exited.Should().NotBeNull("the container must exit");
         logs.Value.Should().Contain("tmpfs on /backup-staging");
         logs.Value.Should().Contain("host.docker.internal");
         removed.IsSuccess.Should().BeTrue();

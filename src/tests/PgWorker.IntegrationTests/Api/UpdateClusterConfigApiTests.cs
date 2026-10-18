@@ -69,7 +69,7 @@ public class UpdateClusterConfigApiTests(PgApiFixture fixture)
 
         // Assert
         second.StatusCode.Should().Be(HttpStatusCode.NoContent);
-        (await ConfigModRevisionAsync("cfg2")).Should().Be(revisionBefore, "204 без записи");
+        (await ConfigModRevisionAsync("cfg2")).Should().Be(revisionBefore, "204 without a write");
     }
 
     // AAA: включение strict при шардe replicas=1 → 400 errors.syncStrict.

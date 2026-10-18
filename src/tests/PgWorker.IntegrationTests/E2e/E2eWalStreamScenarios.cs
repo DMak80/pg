@@ -49,7 +49,7 @@ public class E2eWalStreamScenarios
         if (!E2eEnvironment.IsInnerRunner
             && !File.Exists(Path.Combine(
                 E2eFixture.FindRoot(AppContext.BaseDirectory), "docker", "PgWorker.Backup.Dockerfile")))
-            Assert.Skip("docker/PgWorker.Backup.Dockerfile отсутствует — общий образ джобов/агентов приходит из t02");
+            Assert.Skip("docker/PgWorker.Backup.Dockerfile is missing — the shared job/agent image comes from t02");
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("wal-stream", withS3Node: true, ct: ct);
         Fx = fx;
@@ -59,7 +59,7 @@ public class E2eWalStreamScenarios
 
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning должен дойти до DONE до WAL-нагрузки");
+        provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
 
         // Мастер shard1 (published pg-порт) + admin/superuser-DSN: нагрузка и
         // pg_switch_wal (superuser-only) выполняются одним соединением — как
@@ -95,7 +95,7 @@ public class E2eWalStreamScenarios
             var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
             var agentsPs = await Fx.RunDockerAsync(
                 ["ps", "-a", "--format", "{{.Names}} {{.State}}", "--filter", $"name=pgw-backup-wal-{cluster}-"], ct);
-            var jobLogs = "(агентов нет)";
+            var jobLogs = "(no agents)";
             foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 var name = line.Split(' ')[0];
@@ -104,11 +104,11 @@ public class E2eWalStreamScenarios
             }
 
             throw new ApplicationException(
-                $"сегменты не доставлены: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
-                $"wal=[{walKv?.Value ?? "-"}] backup_password={(pwKv is null ? "-" : "есть")} " +
+                $"segments not delivered: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"wal=[{walKv?.Value ?? "-"}] backup_password={(pwKv is null ? "-" : "present")} " +
                 $"agents=[{agentsPs.Replace('\n', ';')}] {jobLogs}");
         }
-        uploaded.Should().BeTrue("сегменты обязаны появиться в ownS3-ноде за бюджет (AC1)");
+        uploaded.Should().BeTrue("segments must appear on the ownS3 node within the budget (AC1)");
         listed.Select(o => o.Name).Should().OnlyContain(n => !n.EndsWith(".partial"));
 
         // Assert 2 — ключ wal ACTIVE и СОГЛАСОВАННЫЙ снапшот «ключ × list»: воркер
@@ -129,12 +129,12 @@ public class E2eWalStreamScenarios
             listed = [.. list.Value];
             return listed.Select(o => o.Name).Contains(wal.LastUploadedSegment);
         }, TimeSpan.FromSeconds(120), ct);
-        consistent.Should().BeTrue("ключ wal обязан перейти в ACTIVE (AC2) и совпасть с S3-фактом");
+        consistent.Should().BeTrue("the wal key must become ACTIVE (AC2) and match the S3 fact");
         wal.Slot.Should().Be($"pgw_bkp_{cluster}_shard1");
         wal.MasterNode.Should().NotBeEmpty();
         wal.ChainStartSegment.Should().NotBeEmpty();
         (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - wal.LastUploadedUnix!.Value)
-            .Should().BeLessThan(120, "last_uploaded_unix свежий (поток жив)");
+            .Should().BeLessThan(120, "last_uploaded_unix is fresh (the stream is alive)");
 
         // Assert 3 — цепочка непрерывна от chain_start (AC3-факт): поллинг —
         // одиночный list ловит момент частичной доставки (сегменты грузятся
@@ -149,7 +149,7 @@ public class E2eWalStreamScenarios
             var check = PgWorker.Backups.WalChain.Check(chainStart, listed.Select(o => o.Name));
             return check.IsContinuous;
         }, TimeSpan.FromSeconds(120), ct);
-        continuous.Should().BeTrue("цепочка от chain_start обязана стать непрерывной");
+        continuous.Should().BeTrue("the chain from chain_start must become continuous");
 
         // Assert 4 — running-агент МАСТЕРА (per-node имя t27) + слот на мастере (AC1)
         var (_, _, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
@@ -167,20 +167,20 @@ public class E2eWalStreamScenarios
                    && facts.Any(a =>
                        a.Node == masterNode && a.State == PgWorker.Etcd.Parsing.WalAgentPresence.Running);
         }, TimeSpan.FromSeconds(30), ct);
-        agentsInKey.Should().BeTrue("agents-факты пишутся супервизом (t27): мастер running");
+        agentsInKey.Should().BeTrue("agents facts are written by the supervisor (t27): master running");
         await using var adminConn = new NpgsqlConnection(adminDsn);
         await adminConn.OpenAsync(ct);
         await using var slotCmd = new NpgsqlCommand(
             "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = @slot)",
             adminConn) { Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_shard1" } } };
-        ((bool)(await slotCmd.ExecuteScalarAsync(ct))!).Should().BeTrue("слот создан воркером на мастере (AC1)");
+        ((bool)(await slotCmd.ExecuteScalarAsync(ct))!).Should().BeTrue("the slot is created by the worker on the master (AC1)");
 
         // Assert 5 — каркасный парсер t01/t02 читает wal-ключ без parseErrors (AC2)
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty(
-            $"парсер обязан читать ключи воркера (в т.ч. wal с agents t27): " +
-            $"ключи=[{string.Join("; ", kvs.Select(k => k.Key))}] ошибки=[{string.Join("; ", parseErrors)}]");
+            $"the parser must read the worker keys (incl. wal with agents t27): " +
+            $"keys=[{string.Join("; ", kvs.Select(k => k.Key))}] errors=[{string.Join("; ", parseErrors)}]");
         parsed.Value.Should().Contain(b => b.Cluster == cluster);
     }
 
@@ -267,7 +267,7 @@ public class E2eWalStreamScenarios
                                     || l.Contains("WalStreamProcess", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("pgw-backup-wal", StringComparison.OrdinalIgnoreCase)
                                     || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
-                                    || l.Contains("клэйм", StringComparison.OrdinalIgnoreCase))
+                                    || l.Contains("claim", StringComparison.OrdinalIgnoreCase))
                                 .ToList();
                             // Полный хвост (120 строк, без фильтров) — полный контекст
                             return $"[{h.Name}] OPS({opLines.Count}):\n{string.Join("\n", opLines)}" +
@@ -276,21 +276,21 @@ public class E2eWalStreamScenarios
                         }
                         catch (Exception e)
                         {
-                            return $"<host.log недоступен: {e.Message}>";
+                            return $"<host.log unavailable: {e.Message}>";
                         }
                     }))
-                    : "<hosts нет>";
+                    : "<no hosts>";
                 throw new ApplicationException(
-                    "первая доставка не случилась за бюджет: " +
+                    "the first delivery did not happen within the budget: " +
                     $"agents=[{agentsPs.Replace('\n', ';')}] wal=[{walKv?.Value ?? "-"}] " +
                     $"journal=[{workKv?.Value?[..Math.Min(400, workKv.Value?.Length ?? 0)]}] " +
                     $"claim=[{claimKv?.Value ?? "-"}] {agentLogs}\nHOST.LOG:\n{hostLog}");
             }
 
-            firstList.Should().BeTrue("первая доставка до пересоздания");
+            firstList.Should().BeTrue("the first delivery before recreation");
             firstListCount.Should().BeGreaterThan(0);
             var idBefore = await AgentContainerIdAsync(agentName, ct);
-            idBefore.Should().NotBeNullOrEmpty($"агент мастера {agentName} обязан быть жив");
+            idBefore.Should().NotBeNullOrEmpty($"master agent {agentName} must be alive");
 
             // Act — docker rm -f агента мастера ПОД нагрузкой
             Console.WriteLine($"[PHASE] wal-ac2: docker rm -f {agentName}");
@@ -302,7 +302,7 @@ public class E2eWalStreamScenarios
                 var id = await AgentContainerIdAsync(agentName, ct);
                 return id is not null && id != idBefore;
             }, TimeSpan.FromSeconds(120), ct);
-            recreated.Should().BeTrue("супервиз тика обязан пересоздать агента (restart-policy no)");
+            recreated.Should().BeTrue("the tick supervisor must recreate the agent (restart-policy no)");
 
             // ≥1 новый сегмент после рескрета; цепочка непрерывна (WalChain union)
             var grew = await E2eFixture.WaitForAsync(async () =>
@@ -310,7 +310,7 @@ public class E2eWalStreamScenarios
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return list.IsSuccess && list.Value.Count > firstListCount;
             }, TimeSpan.FromSeconds(120), ct);
-            grew.Should().BeTrue("новый агент досыпает от хвоста S3 — доставка продолжается");
+            grew.Should().BeTrue("the new agent catches up from the S3 tail — delivery continues");
 
             // Ключ: BROKEN НЕ возникал весь сценарий (поллинг срезом); финал ACTIVE
             PgWorker.Etcd.Parsing.WalStreamStatus? sawStatus = null;
@@ -326,8 +326,8 @@ public class E2eWalStreamScenarios
             }, TimeSpan.FromSeconds(120), ct);
             sawStatus.Should().NotBe(
                 PgWorker.Etcd.Parsing.WalStreamStatus.Broken,
-                "доставка от хвоста S3 исключает дыру — BROKEN запрещён (AC2)");
-            backActive.Should().BeTrue("ключ wal возвращается в ACTIVE");
+                "delivery from the S3 tail rules out a gap — BROKEN is forbidden (AC2)");
+            backActive.Should().BeTrue("the wal key returns to ACTIVE");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             list.IsSuccess.Should().BeTrue();
             var wal = await writer.ReadAsync(cluster, "shard1", ct);
@@ -335,7 +335,7 @@ public class E2eWalStreamScenarios
             var chain = PgWorker.Backups.WalChain.Check(
                 PgWorker.Backups.WalFileName.TryParse(wal.Value!.ChainStartSegment)!.Value,
                 list.Value.Select(o => o.Name));
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
         }
         catch (Exception ex)
         {
@@ -402,13 +402,13 @@ public class E2eWalStreamScenarios
             var patroniState = await PatroniClusterDumpAsync(cluster, ct);
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             throw new ApplicationException(
-                "два агента не поднялись: " +
+                "the two agents did not come up: " +
                 $"agents=[{agentsPs.Replace('\n', ';')}] wal=[{walKv?.Value?[..Math.Min(600, walKv.Value?.Length ?? 0)]}] " +
                 $"work=[{workKv?.Value?[..Math.Min(1200, workKv.Value?.Length ?? 0)]}] " +
                 $"patroni={patroniState[..Math.Min(700, patroniState.Length)]}");
         }
 
-        bothAgents.Should().BeTrue("двойная архивация: агенты мастера и sync-standby (AC3)");
+        bothAgents.Should().BeTrue("dual archiving: master and sync-standby agents (AC3)");
 
         // Нагрузка + доставка: сегменты растут, ключ ACTIVE, agents — обе ноды
         await GenerateWalAsync(adminDsn, ct);
@@ -425,7 +425,7 @@ public class E2eWalStreamScenarios
                 .Select(a => a.Node).ToHashSet();
             return nodes is { Count: >= 2 };
         }, TimeSpan.FromSeconds(180), ct);
-        delivered.Should().BeTrue("ключ ACTIVE + agents обеих нод (AC3)");
+        delivered.Should().BeTrue("key ACTIVE + agents of both nodes (AC3)");
 
         // Цепочка непрерывна от chain_start (union одного префикса)
         var wal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
@@ -434,7 +434,7 @@ public class E2eWalStreamScenarios
         var chain = PgWorker.Backups.WalChain.Check(
             PgWorker.Backups.WalFileName.TryParse(wal.ChainStartSegment)!.Value,
             list.Value.Select(o => o.Name));
-        chain.IsContinuous.Should().BeTrue(chain.GapError ?? "union-цепочка непрерывна");
+        chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the union chain is continuous");
 
         // Слоты pgw_bkp_<C>_shard1 на ОБОИХ нодах (published pg-порты из portalloc)
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
@@ -453,7 +453,7 @@ public class E2eWalStreamScenarios
                 Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_shard1" } },
             };
             ((bool)(await cmd.ExecuteScalarAsync(ct))!)
-                .Should().BeTrue($"слот существует на ноде {key} (AC3, per-instance)");
+                .Should().BeTrue($"the slot exists on node {key} (AC3, per-instance)");
 
             // AC1-инвариант каждого источника (буква критерия «каждого»):
             // restart_lsn слота ≤ конца последнего доставленного в S3 сегмента —
@@ -469,14 +469,14 @@ public class E2eWalStreamScenarios
             var restartLsn = (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
                              | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
             var fresh = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
-            fresh.IsSuccess.Should().BeTrue("AC1-зонд: свежий list хвоста");
+            fresh.IsSuccess.Should().BeTrue("AC1 probe: fresh list of the tail");
             var tail = fresh.Value
                 .Select(o => PgWorker.Backups.WalFileName.TryParse(o.Name))
                 .Where(w => w is not null).Select(w => w!.Value)
                 .OrderByDescending(w => (long)w.Log * 256 + w.Seg).First();
             restartLsn.Should().BeLessOrEqualTo(
                 PgWorker.WalReceiver.S3TailResolver.EndLsn(tail),
-                $"AC1 на ноде {key}: restart_lsn {restartRaw} ≤ конца доставленного {tail.Name}");
+                $"AC1 on node {key}: restart_lsn {restartRaw} ≤ the delivered end {tail.Name}");
         }
         }
         catch (Exception ex)
@@ -534,7 +534,7 @@ public class E2eWalStreamScenarios
                 return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                     .Count(l => l.EndsWith("running")) >= 2;
             }, TimeSpan.FromSeconds(300), ct);
-            bothAgents.Should().BeTrue("двойная архивация — оба агента обязаны подняться");
+            bothAgents.Should().BeTrue("dual archiving — both agents must come up");
 
             // Малый потолок WAL под слотом на мастере (динамика reload — без рестарта)
             await using (var conn = new NpgsqlConnection(adminDsn))
@@ -554,12 +554,12 @@ public class E2eWalStreamScenarios
                 return read.IsSuccess
                        && read.Value is { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active };
             }, TimeSpan.FromSeconds(120), ct);
-            before.Should().BeTrue("до потери — ключ ACTIVE");
+            before.Should().BeTrue("before the loss — key ACTIVE");
             var beforeWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
 
             // Act 1 — снос агента мастера + стоп воркера (супервиз не вернёт агента
             // до воспроизведения lost; sync-агент жив — доставка продолжается)
-            Console.WriteLine($"[PHASE] wal-t19: docker rm -f {agentName} + kill воркера");
+            Console.WriteLine($"[PHASE] wal-t19: docker rm -f {agentName} + worker kill");
             await Fx.RunDockerAsync(["rm", "-f", agentName], ct);
             app.Kill();
 
@@ -586,12 +586,12 @@ public class E2eWalStreamScenarios
                 }
                 return await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) == "lost";
             }, TimeSpan.FromSeconds(180), ct);
-            Console.WriteLine($"[PHASE] wal-t19: слот мастера lost={lost} (бюджет 180 c)");
-            lost.Should().BeTrue("64 MiB WAL при потолке 16 MiB + checkpoint обязаны срезать слот мастера");
+            Console.WriteLine($"[PHASE] wal-t19: master slot lost={lost} (budget 180 s)");
+            lost.Should().BeTrue("64 MiB WAL at a 16 MiB ceiling + a checkpoint must cut the master slot");
 
             // Act 3 — возврат воркера: тик лечит (recreate слота + журнал slot-recreate,
             // супервиз поднимает агента мастера; клэйм убитого истекает ≤ 15-20 c)
-            Console.WriteLine("[PHASE] wal-t19: старт воркера — автолечение");
+            Console.WriteLine("[PHASE] wal-t19: worker start — self-healing");
             await using var app2Owner = await StartWalHostAsync("wal-t19b", ct);
 
             // Assert 1 — журнальная фаза slot-recreate
@@ -600,13 +600,13 @@ public class E2eWalStreamScenarios
                 var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
                 return workKv?.Value?.Contains("slot-recreate/shard1") == true;
             }, TimeSpan.FromSeconds(120), ct);
-            journaled.Should().BeTrue("воркер обязан записать фазу slot-recreate (spec §3.2)");
+            journaled.Should().BeTrue("the worker must record the slot-recreate phase (spec §3.2)");
 
             // Assert 2 — слот мастера жив (не lost)
             var healed = await E2eFixture.WaitForAsync(
                 async () => await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) is not ("lost" or null),
                 TimeSpan.FromSeconds(120), ct);
-            healed.Should().BeTrue("recreate возвращает живой слот");
+            healed.Should().BeTrue("recreate returns a live slot");
 
             // Assert 3 — агент мастера снова running (супервиз)
             var agentBack = await E2eFixture.WaitForAsync(async () =>
@@ -615,7 +615,7 @@ public class E2eWalStreamScenarios
                     ["ps", "--filter", $"name=^{agentName}$", "--format", "{{.State}}"], ct);
                 return ps.Trim() == "running";
             }, TimeSpan.FromSeconds(120), ct);
-            agentBack.Should().BeTrue("супервиз поднимает агента мастера после recreate");
+            agentBack.Should().BeTrue("the supervisor raises the master agent after recreate");
 
             // Assert 4 — ключ wal: BROKEN не возникал (поллинг срезом), финал ACTIVE;
             // last_uploaded СТРОГО растёт от «до потери» (sync доставлял + мастер вернулся)
@@ -631,14 +631,14 @@ public class E2eWalStreamScenarios
                 return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(180), ct);
             sawStatus.Should().NotBe(PgWorker.Etcd.Parsing.WalStreamStatus.Broken,
-                "lost одного источника при живом втором — BROKEN запрещён (критерий 5)");
-            recovered.Should().BeTrue("ключ обязан вернуться в ACTIVE");
+                "lost on one source while the other is alive — BROKEN is forbidden (criterion 5)");
+            recovered.Should().BeTrue("the key must return to ACTIVE");
             var afterWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
             var beforeSeg = PgWorker.Backups.WalFileName.TryParse(beforeWal.LastUploadedSegment)!.Value;
             var afterSeg = PgWorker.Backups.WalFileName.TryParse(afterWal.LastUploadedSegment)!.Value;
             ((long)afterSeg.Log * 256 + afterSeg.Seg).Should().BeGreaterThan(
                 (long)beforeSeg.Log * 256 + beforeSeg.Seg,
-                "last_uploaded_segment растёт без дыры (живой sync достраивал хвост)");
+                "last_uploaded_segment grows without a gap (the live sync was building the tail)");
 
             // Assert 5 — цепочка WalChain непрерывна от chain_start
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -646,7 +646,7 @@ public class E2eWalStreamScenarios
             var chain = PgWorker.Backups.WalChain.Check(
                 PgWorker.Backups.WalFileName.TryParse(afterWal.ChainStartSegment)!.Value,
                 list.Value.Select(o => o.Name));
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна после автолечения");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous after self-healing");
         }
         catch (Exception ex)
         {
@@ -702,7 +702,7 @@ public class E2eWalStreamScenarios
     private async Task<uint> PrimaryTimelineAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
         // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
@@ -788,7 +788,7 @@ public class E2eWalStreamScenarios
                             || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("repair", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("provision ", StringComparison.OrdinalIgnoreCase)
-                            || l.Contains("эвакуа", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("evacuat", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("REBUILDING", StringComparison.OrdinalIgnoreCase))
                         .ToList();
                     hostLog += $"\n== {host.Name} OPS({opLines.Count}):\n{string.Join("\n", opLines)}" +
@@ -797,7 +797,7 @@ public class E2eWalStreamScenarios
                 }
                 catch (Exception e)
                 {
-                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                    hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
             var agentLogs = "";
@@ -814,7 +814,7 @@ public class E2eWalStreamScenarios
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
                 $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
             await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt", dump);
-            Console.WriteLine($"[DIAG] дамп: /tmp/pgw-diag-{cluster}.txt");
+            Console.WriteLine($"[DIAG] dump: /tmp/pgw-diag-{cluster}.txt");
         }
         catch
         {
@@ -845,11 +845,11 @@ public class E2eWalStreamScenarios
                 }
             }
 
-            return "<ни одна нода shard1 не отвечает /cluster>";
+            return "<no shard1 node responds on /cluster>";
         }
         catch (Exception e)
         {
-            return $"<patroni недоступен: {e.Message}>";
+            return $"<patroni unavailable: {e.Message}>";
         }
     }
 
@@ -865,8 +865,8 @@ public class E2eWalStreamScenarios
         Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
         var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
-        Console.WriteLine($"[PHASE] {slug}: окружение поднято за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c (вкл. Release-сборку и образы)");
+        Console.WriteLine($"[PHASE] {slug}: environment raised in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s (incl. Release build and images)");
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
@@ -875,9 +875,9 @@ public class E2eWalStreamScenarios
         // бюджета); зелёный путь не меняется — опрос выходит по факту DONE.
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(600), ct);
-        provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
-        Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
+        provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
+        Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -969,7 +969,7 @@ public class E2eWalStreamScenarios
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -996,7 +996,7 @@ public class E2eWalStreamScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);
@@ -1007,7 +1007,7 @@ public class E2eWalStreamScenarios
     private async Task<string?> SlotWalStatusAsync(string cluster, string shard, string node, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         var dsn = DatabaseProvisioner.BuildAdminDsn($"pgw-{cluster}-{shard}-{node}", 5432,
             cluster, new InstallSecrets(E2eFixture.SuPassword, "", "", ""));

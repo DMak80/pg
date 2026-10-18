@@ -118,7 +118,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
     // завершения пересъёма (etcd-ключ COMPLETED с wal_start выше границы + объекты
     // S3) → WalStream контроль → ACTIVE + агент поднят
     [Fact]
-    public async Task Дыра_BROKEN_пересъём_и_заживление_сквозным_циклом()
+    public async Task GapBrokenRetakeAndHealingThroughFullLoop()
     {
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("sh1");
@@ -156,7 +156,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
-        engine.Created.Should().NotBeEmpty("BROKEN лечится пересъёмом — джоб запущен");
+        engine.Created.Should().NotBeEmpty("BROKEN is healed by retaking — the job is started");
 
         // Arrange 3 — симуляция завершения пересъёма: etcd-ключ COMPLETED нового id
         // с wal_start=..05 + объекты S3 5..6 (цепь от нового полного непрерывна)

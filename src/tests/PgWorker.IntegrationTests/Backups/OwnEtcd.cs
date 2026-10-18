@@ -108,7 +108,7 @@ public sealed class OwnEtcd : IAsyncDisposable
         }
 
         throw new InvalidOperationException(
-            $"etcd {ContainerName} не поднялся за 30 c (попыток {attempts}, латентность последней пробы {lastLatencyMs:0} мс)");
+            $"etcd {ContainerName} did not come up within 30 s (attempts {attempts}, last probe latency {lastLatencyMs:0} ms)");
     }
 
     /// <summary>Teardown при любом исходе: стоп/rm СВОЕГО контейнера (ключи умирают
@@ -130,6 +130,6 @@ public sealed class OwnEtcd : IAsyncDisposable
             ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name={ContainerName}"],
             CancellationToken.None);
         left.Should().BeEmpty(
-            $"{Slug}: teardown окружения неполный — остался контейнер {ContainerName}");
+            $"{Slug}: the environment teardown is incomplete — container {ContainerName} is left");
     }
 }

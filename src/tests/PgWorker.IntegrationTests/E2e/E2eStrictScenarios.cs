@@ -48,7 +48,7 @@ public class E2eStrictScenarios
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
                 TimeSpan.FromSeconds(360), ct,
                 progress: ProvisioningProgressAsync);
-            provisioned.Should().BeTrue("кластер поднялся");
+            provisioned.Should().BeTrue("the cluster came up");
 
             // Ожидание Active: P4 provisioning переписывает config каноническим
             // JSON БЕЗ поля state (arch/14 §5 A, Д1) — мутация разрешена только
@@ -56,8 +56,8 @@ public class E2eStrictScenarios
             // какой state висит (t29 §3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
                 await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
-                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "нет (Active)"}");
-            active.Should().BeTrue("кластер перешёл в Active (config без state)");
+                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "absent (Active)"}");
+            active.Should().BeTrue("the cluster became Active (config without state)");
 
             // Assert 1 (bootstrap): SPILO_CONFIGURATION первой ноды несёт
             // synchronous_mode_strict: true (t06 — значение из config кластера).
@@ -70,7 +70,7 @@ public class E2eStrictScenarios
             // pretty-JSON с пробелами, подстрочный поиск ненадёжен).
             var addresses = await PortallocAsync(Cluster);
             var shard1a = addresses["shard1/shard1a"];
-            (await PatroniSyncStrictAsync($"pgw-{Cluster}-shard1-shard1a", ct)).Should().BeTrue("bootstrap принёс strict в DCS");
+            (await PatroniSyncStrictAsync($"pgw-{Cluster}-shard1-shard1a", ct)).Should().BeTrue("bootstrap brought strict into the DCS");
 
             // Акт подготовки к ассерту «без рестартов»: StartedAt нод кластера
             // и набор контейнеров фиксируются ДО мутации.
@@ -84,7 +84,7 @@ public class E2eStrictScenarios
             using var client = ApiClient(serverThumb);
             var put = await client.PutAsJsonAsync($"{apiUrl}/api/clusters/{Cluster}/config",
                 new { synchronousModeStrict = false }, ct);
-            put.StatusCode.Should().Be(HttpStatusCode.NoContent, "мутация принята (204)");
+            put.StatusCode.Should().Be(HttpStatusCode.NoContent, "the mutation is accepted (204)");
 
             // Assert 4 (конвергенция): в пределах нескольких тиков надзора
             // GET /config несёт false — БЕЗ рестартов нод (набор контейнеров тот
@@ -98,25 +98,25 @@ public class E2eStrictScenarios
                 {
                     var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
                     if (work is null)
-                        return "work=нет";
+                        return "work=absent";
                     try
                     {
                         using var doc = JsonDocument.Parse(work);
                         var phase = doc.RootElement.TryGetProperty("phase", out var p) ? p.GetString() : "-";
                         var err = doc.RootElement.TryGetProperty("last_error", out var e) ? e.GetString() : null;
-                        return $"work.phase={phase}, strict-патч={(err is not null && err.Contains("synchronous_mode_strict", StringComparison.Ordinal) ? "есть" : "нет")}";
+                        return $"work.phase={phase}, strict-patch={(err is not null && err.Contains("synchronous_mode_strict", StringComparison.Ordinal) ? "present" : "absent")}";
                     }
                     catch (JsonException)
                     {
-                        return "work=<не-JSON>";
+                        return "work=<not-JSON>";
                     }
                 });
-            converged.Should().BeTrue("конвергенция DCS привела /config к false");
+            converged.Should().BeTrue("the DCS convergence brought /config back to false");
 
             var startedAtAfter = await StartedAtAsync(nodes, ct);
-            startedAtAfter.Keys.Should().Equal(startedAtBefore.Keys, "набор контейнеров не менялся (нет рестартов)");
+            startedAtAfter.Keys.Should().Equal(startedAtBefore.Keys, "the container set did not change (no restarts)");
             foreach (var (name, startedAt) in startedAtAfter)
-                startedAt.Should().Be(startedAtBefore[name], $"нода {name} не перезапускалась (StartedAt прежний)");
+                startedAt.Should().Be(startedAtBefore[name], $"node {name} was not restarted (StartedAt unchanged)");
 
             var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))!.Value;
             // Журнал фаз — JSON (WorkJournal): вложенный diff-патч лежит в
@@ -160,15 +160,15 @@ public class E2eStrictScenarios
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
                 TimeSpan.FromSeconds(360), ct,
                 progress: ProvisioningProgressAsync);
-            provisioned.Should().BeTrue("кластер поднялся (в т.ч. однорепликный shard2)");
+            provisioned.Should().BeTrue("the cluster came up (incl. the single-replica shard2)");
 
             // Ожидание Active: PUT разрешён только Active-кластерам (config без
             // state — P4 provisioning, arch/14 §5 A), иначе 409; прогресс-тик —
             // какой state висит (t29 §3.10).
             var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
                 await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
-                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "нет (Active)"}");
-            active.Should().BeTrue("кластер перешёл в Active (config без state)");
+                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "absent (Active)"}");
+            active.Should().BeTrue("the cluster became Active (config without state)");
 
             // Act — включение strict кластеру с однорепликным шардом.
             var (apiUrl, serverThumb) = await WaitForDiscoveryAsync(ct);
@@ -267,7 +267,7 @@ public class E2eStrictScenarios
     private async Task<bool?> PatroniSyncStrictAsync(string patroniHost, CancellationToken ct)
     {
         using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/config", ct);
-        response.IsSuccessStatusCode.Should().BeTrue("Patroni /config доступен");
+        response.IsSuccessStatusCode.Should().BeTrue("Patroni /config is reachable");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         return doc.RootElement.TryGetProperty("synchronous_mode_strict", out var strict)
             && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
@@ -338,8 +338,8 @@ public class E2eStrictScenarios
             return url is not null;
         }, TimeSpan.FromSeconds(30), ct,
             progress: async () => $"api-keys={(await G.RangeAsync(Endpoint, "/pgworker/api/", ct)).Value.Count}");
-        found.Should().BeTrue("дискавери-ключ API воркера обязан появиться");
-        thumb.Should().NotBeNullOrEmpty("воркер публикует thumbprint применённого серта");
+        found.Should().BeTrue("the worker API discovery key must appear");
+        thumb.Should().NotBeNullOrEmpty("the worker publishes the thumbprint of the applied certificate");
         return (url!, thumb!);
     }
 
@@ -356,7 +356,7 @@ public class E2eStrictScenarios
             for (var i = 0; i < replicas; i++)
                 states.Add((await GetOrNullAsync(
                     $"/clusters/{Cluster}/shards/{shard}/nodes/{shard}{(char)('a' + i)}/state"))?.Value ?? "-");
-            var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "нет" : "есть";
+            var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "absent" : "present";
             parts.Add($"{shard}: [{string.Join(",", states)}] dsn={dsn}");
         }
         return string.Join("; ", parts);

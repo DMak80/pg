@@ -64,7 +64,7 @@ public class E2eBackupVerifyScenarios
                 ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
             return containers.Length > 0;
         }, TimeSpan.FromSeconds(180), ct);
-        sawPending.Should().BeTrue("on_create: verify обязан стартовать (PENDING в ключе / контейнер pgw-backup-verify-*)");
+        sawPending.Should().BeTrue("on_create: verify must start (PENDING in the key / pgw-backup-verify-* container)");
 
         // Act 2 — ждём verify.state=OK (бюджет 300 c: полный ~минуты + verify-скачивание)
         var verified = await E2eFixture.WaitForAsync(async () =>
@@ -72,7 +72,7 @@ public class E2eBackupVerifyScenarios
             TimeSpan.FromSeconds(300), ct);
 
         // Assert 1 — OK + checked_unix (фаза PENDING зафиксирована Act 1)
-        verified.Should().BeTrue("on_create: verify должен дойти до OK (AC1)");
+        verified.Should().BeTrue("on_create: verify must reach OK (AC1)");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
         status["verify"].GetProperty("state").GetString().Should().Be("OK");
@@ -87,7 +87,7 @@ public class E2eBackupVerifyScenarios
                 ["volume", "ls", "-q", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
             return containers.Length == 0 && volumes.Length == 0;
         }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("verify-джоб и volume сносятся после итога (AC8)");
+        cleaned.Should().BeTrue("the verify job and volume are torn down after the outcome (AC8)");
 
         // Assert 3 — воркерный и панельный парсеры читают без parseErrors (AC1);
         // Kv общий (Shared.Etcd.Client, t08) — тот же набор подаётся в оба парсера
@@ -124,7 +124,7 @@ public class E2eBackupVerifyScenarios
         var firstOk = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
             TimeSpan.FromSeconds(300), ct);
-        firstOk.Should().BeTrue("исходный набор валиден");
+        firstOk.Should().BeTrue("the original set is valid");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
 
@@ -139,10 +139,10 @@ public class E2eBackupVerifyScenarios
         var failed = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"FAILED"""")),
             TimeSpan.FromSeconds(180), ct);
-        failed.Should().BeTrue("порча набора обязана дать verify FAILED (AC2)");
+        failed.Should().BeTrue("corrupting the set must yield verify FAILED (AC2)");
         var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;
-        corruptedStatus["verify"].GetProperty("error").GetString().Should().NotBeNullOrEmpty("причина pg_verifybackup — в verify.error");
+        corruptedStatus["verify"].GetProperty("error").GetString().Should().NotBeNullOrEmpty("the pg_verifybackup reason is in verify.error");
 
         // Assert 3 — в момент провала verify переснятие не УСПЕЛО завершиться.
         // Точная механика (задача 11): после verify FAILED валидных полных нет →
@@ -151,7 +151,7 @@ public class E2eBackupVerifyScenarios
         // новая ПОПЫТКА (PLANNED/RUNNING-ключ) допустима, но полный снимается
         // минуты → COMPLETED в момент этого ассерта обязан быть один.
         (await FullKeysAsync(cluster, "shard1")).Count(f => f.Value.Contains("COMPLETED"))
-            .Should().Be(1, "новый COMPLETED-полный не успевает появиться в момент провала verify");
+            .Should().Be(1, "a new COMPLETED full does not manage to appear at the moment verify fails");
     }
 
     // ===== Дрилл восстановимости (reliability t02, spec Фаза 5) =====

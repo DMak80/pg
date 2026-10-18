@@ -122,7 +122,7 @@ public class ShardsApiTests(PgApiFixture fixture)
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
         problem.GetProperty("title").GetString().Should().Be("Shard remove rejected");
-        problem.GetProperty("detail").GetString().Should().Contain("бакетов");
+        problem.GetProperty("detail").GetString().Should().Contain("buckets");
     }
 
     // AAA (t06, spec §6.6): strict-кластер + replicas=1 → 400 errors.replicas.

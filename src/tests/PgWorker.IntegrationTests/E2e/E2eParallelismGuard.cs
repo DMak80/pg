@@ -35,7 +35,7 @@ internal static class E2eParallelismGuard
         var live = Interlocked.Decrement(ref _live);
         Gate.Release();
         if (live < 0)
-            Console.Error.WriteLine($"e2e[{slug}]: [E2E-PARALLELISM] Release без Acquire — дисбаланс слотов");
+            Console.Error.WriteLine($"e2e[{slug}]: [E2E-PARALLELISM] Release without Acquire — slot imbalance");
     }
 
     /// <summary>Регистрация живого контура (после успешного подъёма):
@@ -45,9 +45,9 @@ internal static class E2eParallelismGuard
         var live = Interlocked.Increment(ref _live);
         if (live > MaxLiveEnvironments && Interlocked.Exchange(ref _warned, 1) == 0)
         {
-            var line = $"{DateTime.UtcNow:HH:mm:ss} [E2E-PARALLELISM] e2e[{slug}]: живых E2E-контуров {live} > канона"
+            var line = $"{DateTime.UtcNow:HH:mm:ss} [E2E-PARALLELISM] e2e[{slug}]: live E2E contours {live} > canon"
                 + $" {MaxLiveEnvironments} (PGW_E2E_MAX_CONTOURS / docs/e2e-launch.md §5)"
-                + " — прогон вне стабильного канона: результаты требуют этой пометки.";
+                + " — the run is outside the stable canon: the results require this marking.";
             Console.Error.WriteLine(line);
             try
             {

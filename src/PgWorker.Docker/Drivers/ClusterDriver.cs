@@ -621,7 +621,7 @@ public sealed class PlainClusterDriver(
                 return exec.Value;
             }
 
-            throw new ApplicationException($"контейнер ноды {name} не найден (нет running-контейнера ни на одном хосте)");
+            throw new ApplicationException($"node container {name} not found (no running container on any host)");
         });
     }
 

@@ -57,7 +57,7 @@ public class E2eWalStreamPromoteScenarios
             ], ct);
             return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("оба агента до promote");
+        bothAgents.Should().BeTrue("both agents before the promote");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
         await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1 до promote
@@ -71,7 +71,7 @@ public class E2eWalStreamPromoteScenarios
             await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
             var (newMasterHost, newMasterPort, _) = await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
             var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
-            tli.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
+            tli.Should().BeGreaterThanOrEqualTo(2u, "failover opens a new timeline");
 
             // TLI-граница обязана попасть в ЗАКРЫТЫЙ сегмент: фоновый лоадер умер
             // вместе со старым мастером, idle-база закрывает сегмент минутами —
@@ -87,11 +87,11 @@ public class E2eWalStreamPromoteScenarios
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 if (!listed.IsSuccess || listed.Value.Count == 0)
-                    return "listing=пусто";
+                    return "listing=empty";
                 var names = listed.Value.Select(o => o.Name).ToList();
                 var maxTli = names.Where(n => !n.EndsWith(".history", StringComparison.Ordinal))
                     .Select(n => Convert.ToUInt32(n[..8], 16)).DefaultIfEmpty(0u).Max();
-                return $"objects={names.Count}, maxTli=0x{maxTli:x}, history={(names.Any(n => n.EndsWith(".history", StringComparison.Ordinal)) ? "есть" : "нет")}";
+                return $"objects={names.Count}, maxTli=0x{maxTli:x}, history={(names.Any(n => n.EndsWith(".history", StringComparison.Ordinal)) ? "present" : "absent")}";
             };
 
             // Assert — .history нового TLI в S3 (приёмник запрашивает TIMELINE_HISTORY)
@@ -100,7 +100,7 @@ public class E2eWalStreamPromoteScenarios
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
             }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
-            history.Should().BeTrue($"wal/{tli:x8}.history загружен приёмником (AC5)");
+            history.Should().BeTrue($"wal/{tli:x8}.history is uploaded by the receiver (AC5)");
 
             // Цепочка склеена через TLI-переход; ключ ACTIVE
             var glueOk = await E2ePhase.WaitAsync(Fx, "wal-chain-glued", async () =>
@@ -117,7 +117,7 @@ public class E2eWalStreamPromoteScenarios
                 return chain.IsContinuous
                     && read.Value.State == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
-            glueOk.Should().BeTrue("цепочка CheckWithRestart непрерывна, ключ ACTIVE (AC5)");
+            glueOk.Should().BeTrue("the CheckWithRestart chain is continuous, the key ACTIVE (AC5)");
         }
         catch (Exception ex)
         {
@@ -154,7 +154,7 @@ public class E2eWalStreamPromoteScenarios
     private async Task<uint> PrimaryTimelineAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
         // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
@@ -241,7 +241,7 @@ public class E2eWalStreamPromoteScenarios
                             || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("repair", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("provision ", StringComparison.OrdinalIgnoreCase)
-                            || l.Contains("эвакуа", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("evacuat", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("REBUILDING", StringComparison.OrdinalIgnoreCase))
                         .ToList();
                     hostLog += $"\n== {host.Name} OPS({opLines.Count}):\n{string.Join("\n", opLines)}" +
@@ -250,7 +250,7 @@ public class E2eWalStreamPromoteScenarios
                 }
                 catch (Exception e)
                 {
-                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                    hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
             var agentLogs = "";
@@ -270,7 +270,7 @@ public class E2eWalStreamPromoteScenarios
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
             await File.WriteAllTextAsync(dumpPath, dump);
-            Console.WriteLine($"[DIAG] дамп: {dumpPath}");
+            Console.WriteLine($"[DIAG] dump: {dumpPath}");
         }
         catch
         {
@@ -301,11 +301,11 @@ public class E2eWalStreamPromoteScenarios
                 }
             }
 
-            return "<ни одна нода shard1 не отвечает /cluster>";
+            return "<no shard1 node responds on /cluster>";
         }
         catch (Exception e)
         {
-            return $"<patroni недоступен: {e.Message}>";
+            return $"<patroni unavailable: {e.Message}>";
         }
     }
 
@@ -321,16 +321,16 @@ public class E2eWalStreamPromoteScenarios
         Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
         var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
-        Console.WriteLine($"[PHASE] {slug}: окружение поднято за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c (вкл. Release-сборку и образы)");
+        Console.WriteLine($"[PHASE] {slug}: environment raised in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s (incl. Release build and images)");
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
-        Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
+        provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
+        Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -422,7 +422,7 @@ public class E2eWalStreamPromoteScenarios
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2ePhase.WaitAsync(Fx, "wal-master-resolved", async () =>
@@ -449,7 +449,7 @@ public class E2eWalStreamPromoteScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);

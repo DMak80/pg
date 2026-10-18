@@ -109,6 +109,6 @@ public sealed class EtcdFixture : IAsyncLifetime
         }
 
         throw new InvalidOperationException(
-            $"etcd в {Endpoint} не поднялся за 30 c (попыток {attempts}, латентность последней пробы {lastLatencyMs:0} мс)");
+            $"etcd at {Endpoint} did not come up within 30 s (attempts {attempts}, last probe latency {lastLatencyMs:0} ms)");
     }
 }

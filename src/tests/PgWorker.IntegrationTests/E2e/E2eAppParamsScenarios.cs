@@ -40,14 +40,14 @@ public class E2eAppParamsScenarios
 
         // Assert 1 (критерий 2): у КАЖДОЙ ноды обоих шардов app_params = дефолт
         // конфига ("sslmode=require"), без user/password в значении.
-        provisioned.Should().BeTrue("provisioning дошёл до SQL-фазы (dsn обоих шардов)");
+        provisioned.Should().BeTrue("provisioning reached the SQL phase (the dsn of both shards)");
         foreach (var shard in new[] { "shard1", "shard2" })
             foreach (var node in new[] { "a", "b" })
             {
                 var kv = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}{node}/app_params");
-                kv.Should().NotBeNull($"app_params узла {shard}{node} обеспечен");
+                kv.Should().NotBeNull($"the app_params of node {shard}{node} are provisioned");
                 kv!.Value.Should().Be("sslmode=require");
-                kv.Value.Should().NotContainAny(["user=", "password="], "клиентские параметры не входят (spec §3.1)");
+                kv.Value.Should().NotContainAny(["user=", "password="], "client parameters are not included (spec §3.1)");
             }
 
         // Assert 2 (критерий 2): стабильность между тиками + ручная правка жива
@@ -57,9 +57,9 @@ public class E2eAppParamsScenarios
             "sslmode=verify-full", null, ct);
         await Task.Delay(TimeSpan.FromSeconds(5), ct); // ≥2 тика scan
         (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/nodes/shard1a/app_params"))!.Value
-            .Should().Be("sslmode=verify-full", "ручное значение не перезаписано (spec §3.1)");
+            .Should().Be("sslmode=verify-full", "the manual value is not overwritten (spec §3.1)");
         (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/nodes/shard1b/app_params"))!.Value
-            .Should().Be("sslmode=require", "прочие ноды стабильны");
+            .Should().Be("sslmode=require", "the other nodes are stable");
     }
 
     // Сид кластера в стиле панели (копия E2eAppSecretScenarios.SeedClusterAsync).

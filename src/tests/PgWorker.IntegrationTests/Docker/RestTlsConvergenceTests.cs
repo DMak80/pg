@@ -66,10 +66,10 @@ internal static class RestTlsDockerRig
             // Ассерт чистоты (e2e-isolation): ни контейнеров, ни volume.
             var left = await E2eFixture.RunDockerAsync(
                 ["ps", "-aq", "--filter", $"name=pgw-{Cluster}-"], ct);
-            left.Trim().Should().BeEmpty("контур полностью зачищен");
+            left.Trim().Should().BeEmpty("the contour is fully cleaned up");
             var volumes = await E2eFixture.RunDockerAsync(
                 ["volume", "ls", "-q", "--filter", $"name=pgw-{Cluster}-"], ct);
-            volumes.Trim().Should().BeEmpty("volume префикса удалены");
+            volumes.Trim().Should().BeEmpty("the prefix volumes are removed");
         }
     }
 
@@ -175,7 +175,7 @@ internal static class RestTlsDockerRig
             gateway, [endpoint], new StubSql(), driver, probe, claims, journal,
             secrets, ensurer);
 
-        (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм контура");
+        (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("the contour claim");
         return new Contour
         {
             Cluster = cluster,
@@ -248,38 +248,38 @@ public class RestTlsConvergenceTests(Etcd.EtcdFixture fixture)
 
         // Assert: контейнер пересоздан (создан после старта теста) и несёт
         // REST-TLS env: серт из CA + hash пароля из etcd (ensure-результат).
-        migrated.Should().BeTrue("шаг пересоздания обязан довести легаси-ноду до TLS-env");
+        migrated.Should().BeTrue("the recreation step must bring the legacy node to TLS env");
         containerId.Should().NotBeNullOrEmpty();
         var createdAt = await ContainerCreatedAtAsync(c.ContainerA);
-        createdAt.Should().BeOnOrAfter(startedAt.AddSeconds(-5), "контейнер пересоздан шагом");
+        createdAt.Should().BeOnOrAfter(startedAt.AddSeconds(-5), "the container was recreated by the step");
         var finalEnv = await c.Driver.InspectNodeEnvAsync(c.Cluster, "shard1", "shard1a", ct);
         finalEnv.Value.Should().ContainKey(RestRotation.EnvCert);
         finalEnv.Value[RestRotation.EnvCert].Should().StartWith("-----BEGIN CERTIFICATE-----");
         var restKey = (await c.Gateway.GetAsync(c.Endpoint, $"/clusters/{c.Cluster}/rest_password", ct)).Value;
-        restKey.Should().NotBeNull("ensure положил седьмой ключ");
+        restKey.Should().NotBeNull("ensure put the seventh key");
         finalEnv.Value[RestRotation.EnvPasswordHash]
             .Should().Be(RestRotation.PasswordHash(restKey!.Value),
-                "hash — пароля из результата ensure (не снапшота)");
+                "hash — of the password from the ensure result (not the snapshot)");
 
         // Volume и data-маркер на месте (пересоздание volume сохраняет).
         var marker = await E2eFixture.RunDockerAsync(
             ["exec", c.ContainerA, "test", "-f", "/home/postgres/pgdata/MARKER"], ct);
-        marker.Should().BeEmpty("MARKER пережил пересоздание (docker exec без вывода = код 0)");
+        marker.Should().BeEmpty("MARKER survived the recreation (docker exec with no output = code 0)");
 
         // Окно миграции (спека §5.5): без rebuild-фаз и UNREACHABLE-переходов.
         var work = (await c.Journal.ReadAsync(c.Cluster, ct)).Value;
         work.Should().NotBeNull();
-        work!.Unreachable.Should().BeNullOrEmpty("пробы зелёные — трек пуст");
+        work!.Unreachable.Should().BeNullOrEmpty("the probes are green — the track is empty");
         work.Phase.Should().NotMatch("*rebuild*");
         var stateA = (await c.Gateway.GetAsync(c.Endpoint,
             $"/clusters/{c.Cluster}/shards/shard1/nodes/shard1a/state", ct)).Value;
-        stateA!.Value.Should().Be("RUNNING", "state не покидал RUNNING");
+        stateA!.Value.Should().Be("RUNNING", "state never left RUNNING");
 
         // Повторный тик — no-op: ID контейнера не изменился.
         var idBefore = containerId;
         var snap2 = await RestTlsDockerRig.SnapshotAsync(c);
         (await c.Supervisor.TickAsync(snap2, null, ct)).IsSuccess.Should().BeTrue();
-        (await ContainerIdAsync(c.ContainerA)).Should().Be(idBefore, "идемпотентность шага");
+        (await ContainerIdAsync(c.ContainerA)).Should().Be(idBefore, "the step is idempotent");
     }
 
     private static async Task<string> ContainerIdAsync(string name)

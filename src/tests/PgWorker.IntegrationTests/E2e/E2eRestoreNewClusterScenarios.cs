@@ -55,7 +55,7 @@ public class E2eRestoreNewClusterScenarios
 
             var provisioned = await WaitPhaseAsync(
                 "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
+            provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -65,7 +65,7 @@ public class E2eRestoreNewClusterScenarios
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
                 TimeSpan.FromSeconds(300), ct);
-            completed.Should().BeTrue("полный обязан дойти до COMPLETED до deprovision");
+            completed.Should().BeTrue("the full must reach COMPLETED before the deprovision");
 
             // Act 1 — deprovision: state=TO_REMOVE → контур A пуст (D2-ассерт: и
             // /clusters/A/, и /pgworker/backups/A/), S3-префикс жив
@@ -85,18 +85,18 @@ public class E2eRestoreNewClusterScenarios
                     return false;
                 return clusterPrefix.Value.Count == 0 && backupsPrefix.Value.Count == 0;
             }, TimeSpan.FromSeconds(300), ct);
-            deprovisioned.Should().BeTrue("deprovision обязан вычистить контур кластера (вкл. restore/full/wal)");
+            deprovisioned.Should().BeTrue("the deprovision must clean up the cluster contour (incl. restore/full/wal)");
             await using var backupS3 = HostS3Client();
             var fullsInS3 = await backupS3.ListFullsAsync(cluster, "shard1", ct: ct);
             fullsInS3.IsSuccess.Should().BeTrue();
-            fullsInS3.Value.Should().NotBeEmpty("S3 переживает кластер — фактический DR-источник");
+            fullsInS3.Value.Should().NotBeEmpty("S3 outlives the cluster — the actual DR source");
 
             // Act 2 — пересоздание декларацией + restore обеих шардов из A/shard1
             // (source-override; ретрай на гонку t03 — дыры цепочки source-префикса)
             await SeedClusterAsync(cluster);
             var reprovisioned = await WaitPhaseAsync(
                 "reprovisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            reprovisioned.Should().BeTrue("кластер обязан подняться заново (пустые шарды)");
+            reprovisioned.Should().BeTrue("the cluster must come up anew (empty shards)");
             var drDone = await RestoreWithRetryAsync(cluster, "shard1",
                 target: "latest", source: $"{cluster}/shard1", ct: ct);
             var drDone2 = await RestoreWithRetryAsync(cluster, "shard2",
@@ -126,7 +126,7 @@ public class E2eRestoreNewClusterScenarios
                 }
             }, TimeSpan.FromSeconds(120), ct);
             masterReady.Should().BeTrue(
-                "мастер обязан принять SQL до финального чтения (гейт t10): "
+                "the master must accept SQL before the final read (t10 gate): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
             // Финальное чтение с ретраем (эталон rs-latest): даже после гейта
@@ -149,7 +149,7 @@ public class E2eRestoreNewClusterScenarios
                 }
             }
 
-            rows.Should().Be("7", "данные совпадают с моментом бэкапа (RPO = точка полного): "
+            rows.Should().Be("7", "the data matches the backup moment (RPO = the full point): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
         }, ct);
     }
@@ -275,12 +275,12 @@ public class E2eRestoreNewClusterScenarios
         if (!done || status!["state"].GetString() == "FAILED")
         {
             var error = status?.TryGetValue("error", out var err) == true ? err.GetString() : null;
-            if (error is not null && error.Contains("дыра WAL-цепочки", StringComparison.Ordinal))
+            if (error is not null && error.Contains("WAL chain gap", StringComparison.Ordinal))
                 throw new ChainGapException(
                     $"restore {cluster}/{shard}/{id}: {error}");
             throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
-                + (status is null ? "ключа нет" : status["state"].GetString())
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
                 + (error is null ? "" : $", error={error}")
                 + "; " + await DumpDiagnosticsAsync(cluster, shard));
         }
@@ -325,7 +325,7 @@ public class E2eRestoreNewClusterScenarios
             catch (ChainGapException) when (attempt < attempts)
             {
                 Console.Error.WriteLine(
-                    $"e2e[restore]: {cluster}/{shard} попытка {attempt} — дыра цепочки (гонка t03), повторяю заявку");
+                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (t03 race), retrying the request");
                 await Task.Delay(3000, ct);
             }
         }
@@ -434,7 +434,7 @@ public class E2eRestoreNewClusterScenarios
                 }
                 catch (Exception cp)
                 {
-                    pgLog += $"\n== {name}: лог недоступен ({cp.Message})";
+                    pgLog += $"\n== {name}: log unavailable ({cp.Message})";
                 }
 
                 // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
@@ -445,11 +445,11 @@ public class E2eRestoreNewClusterScenarios
                         "ls /tmp/.mc 2>/dev/null | head -3; for s in 000000010000000000000009 00000001000000000000000a 00000001000000000000000b; do " +
                         "mc stat \"pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$s\" 2>&1 | head -2; done"],
                         TestContext.Current.CancellationToken);
-                    pgLog += $"\n== {name} MC-STAT(живой):\n{live[..Math.Min(1500, live.Length)]}";
+                    pgLog += $"\n== {name} MC-STAT(alive):\n{live[..Math.Min(1500, live.Length)]}";
                 }
                 catch (Exception ex)
                 {
-                    pgLog += $"\n== {name} MC-STAT: недоступен ({ex.Message})";
+                    pgLog += $"\n== {name} MC-STAT: unavailable ({ex.Message})";
                 }
             }
         }
@@ -558,7 +558,7 @@ public class E2eRestoreNewClusterScenarios
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -585,7 +585,7 @@ public class E2eRestoreNewClusterScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }

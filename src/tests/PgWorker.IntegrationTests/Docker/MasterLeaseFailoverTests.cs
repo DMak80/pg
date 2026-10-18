@@ -77,7 +77,7 @@ public class MasterLeaseFailoverTests
             var appeared = await E2eFixture.WaitForAsync(async () =>
                 (await gateway.GetAsync(ep1, key, ct)).Value is not null,
                 TimeSpan.FromSeconds(15), ct);
-            appeared.Should().BeTrue("демон master-lease обязан писать мастер-ключ (логи: docker exec … cat /tmp/lease.log)");
+            appeared.Should().BeTrue("the master-lease daemon must write the master key (logs: docker exec … cat /tmp/lease.log)");
 
             // Act: останавливаем ПЕРВЫЙ контейнер — активный endpoint умирает.
             await etcd1.StopAsync(ct);
@@ -93,12 +93,12 @@ public class MasterLeaseFailoverTests
                 var kv = (await gateway.GetAsync(ep2, key, ct)).Value;
                 alive = kv is { Value.Length: > 0 };
             }
-            alive.Should().BeTrue($"ключ {key} не гаснет на 5 пробах × 2 c (10 c > 2×TTL) через второй endpoint после смерти первого");
+            alive.Should().BeTrue($"the key {key} does not die across 5 probes × 2 s (10 s > 2×TTL) via the second endpoint after the first dies");
 
             var log = await E2eFixture.RunProcessAsync(
                 "docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);
             log.Should().Contain("endpoint switch",
-                "лог скрипта обязан сообщать, через какой endpoint он пишет (диагностика)");
+                "the script log must report which endpoint it writes through (diagnostics)");
         }
         finally
         {
@@ -121,6 +121,6 @@ public class MasterLeaseFailoverTests
         // Ассерт чистоты: своих контейнеров не осталось (guid-имена).
         var left = await E2eFixture.RunProcessAsync("docker",
             ["ps", "-a", "--format", "{{.Names}}", "--filter", "name=pgw-it-ml"], CancellationToken.None);
-        left.Should().BeEmpty("teardown теста обязан убрать оба etcd и runner");
+        left.Should().BeEmpty("the test teardown must remove both etcd nodes and the runner");
     }
 }

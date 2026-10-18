@@ -120,12 +120,12 @@ public class WalReceiverIntegrationTests
             await Task.Delay(500, TestContext.Current.CancellationToken);
         }
 
-        var info = debug is null ? "нет" : await debug();
-        Assert.Fail($"условие не выполнилось за бюджет {budget.TotalSeconds} c; debug: {info}");
+        var info = debug is null ? "none" : await debug();
+        Assert.Fail($"the condition was not met within the {budget.TotalSeconds} s budget; debug: {info}");
     }
 
     [Fact]
-    public async Task Доставка_сегментов_и_непрерывность()
+    public async Task SegmentDeliveryAndContinuity()
     {
         // Arrange — своё окружение: PG (TLS+слот) + ownS3-нода, guid cluster/shard
         DockerTrait.SkipIfUnavailable();
@@ -157,16 +157,16 @@ public class WalReceiverIntegrationTests
 
             // Assert — сегменты в S3, без .partial, цепочка непрерывна
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
-            minName.Should().NotBeNull("цепочка закреплена первым полным сегментом");
-            names.Should().NotContain(n => n.EndsWith(".partial"), ".partial не появляются");
+            minName.Should().NotBeNull("the chain is anchored by the first full segment");
+            names.Should().NotContain(n => n.EndsWith(".partial"), ".partial files do not appear");
             var chain = WalChain.Check(
                 WalFileName.TryParse(minName!)!.Value, names);
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
 
             // Assert AC1 — restart_lsn не ушёл за доставленный хвост
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
-            restartLsn.Should().BeLessThanOrEqualTo(tail, "инвариант подтверждения-по-доставке");
+            restartLsn.Should().BeLessThanOrEqualTo(tail, "the confirm-on-delivery invariant");
         }
         finally
         {
@@ -177,7 +177,7 @@ public class WalReceiverIntegrationTests
     }
 
     [Fact]
-    public async Task Рестарт_дозасылает_от_хвоста()
+    public async Task RestartCatchesUpFromTail()
     {
         // Arrange — окружение; первый запуск доставляет ≥2 сегмента и останавливается
         DockerTrait.SkipIfUnavailable();
@@ -209,7 +209,7 @@ public class WalReceiverIntegrationTests
             // Assert — цепочка непрерывна (дыр нет), AC1 сохраняется
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, names);
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
             restartLsn.Should().BeLessThanOrEqualTo(tail);
@@ -222,7 +222,7 @@ public class WalReceiverIntegrationTests
     }
 
     [Fact]
-    public async Task Обрыв_S3_backpressure_восстановление()
+    public async Task S3OutageBackpressureRecovery()
     {
         // Arrange — окружение; приёмник доставляет ≥1 сегмент
         DockerTrait.SkipIfUnavailable();
@@ -246,7 +246,7 @@ public class WalReceiverIntegrationTests
             var tailBefore = PgWorker.WalReceiver.S3TailResolver.EndLsn(chainBefore.LastSegment!.Value);
 
             // Act AC6 — S3-обрыв: docker pause ownS3-ноды; бюджет спеки «≥1 мин»
-            TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] pause-wait 60s (S3 недоступен)");
+            TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] pause-wait 60s (S3 unavailable)");
             await s3Node.PauseAsync(ct);
             // Длительность сценария по AC6 (≥1 мин недоступности S3), не таймаут
             // ожидания — не увеличивать и не уменьшать.
@@ -255,10 +255,10 @@ public class WalReceiverIntegrationTests
             // Assert — приёмник НЕ подтверждает за недоставленное (backpressure)
             var restartDuring = await postgres.ReadRestartLsnAsync(ct);
             restartDuring.Should().BeLessThanOrEqualTo(
-                tailBefore, "restart_lsn не уходит за последний доставленный сегмент при паузе S3");
+                tailBefore, "restart_lsn does not go past the last delivered segment while S3 is paused");
 
             // Act — восстановление S3: доставка доигрывается
-            TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] unpause, доставка доигрывается");
+            TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] unpause, the delivery finishes");
             await s3Node.UnpauseAsync(ct);
             await GenerateWalAsync(postgres.AdminDsn, 2, ct);
             await WaitUntilAsync(async () =>
@@ -270,7 +270,7 @@ public class WalReceiverIntegrationTests
             // Assert — цепочка непрерывна, AC1 после восстановления
             var (minName, namesAfter) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, namesAfter);
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             restartLsn.Should().BeLessThanOrEqualTo(
                 PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value));

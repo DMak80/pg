@@ -32,7 +32,7 @@ public sealed class BackupsPolicyS3Validator(IEtcdGateway gateway, string[] endp
         var poolName = s3.Pool?.Trim();
         if (string.IsNullOrEmpty(poolName))
         {
-            errors.Add(new ValidationError("s3.pool", "обязателен при заданной секции s3"));
+            errors.Add(new ValidationError("s3.pool", "required when the s3 section is present"));
             return Result<System.Collections.Generic.IReadOnlyList<ValidationError>>.Success(errors);
         }
 
@@ -41,7 +41,7 @@ public sealed class BackupsPolicyS3Validator(IEtcdGateway gateway, string[] endp
             return Result<System.Collections.Generic.IReadOnlyList<ValidationError>>.Failed(read.Error!); // 503
         if (read.Value is null)
         {
-            errors.Add(new ValidationError("s3.pool", $"пул {poolName} не найден в /s3/clusters/"));
+            errors.Add(new ValidationError("s3.pool", $"pool {poolName} not found in /s3/clusters/"));
             return Result<System.Collections.Generic.IReadOnlyList<ValidationError>>.Success(errors);
         }
         if (read.Value.ToRemove)
@@ -60,7 +60,7 @@ public sealed class BackupsPolicyS3Validator(IEtcdGateway gateway, string[] endp
     {
         if (names is null || names.Count == 0)
         {
-            errors.Add(new ValidationError(field, $"список пуст (пусто = отсутствие секции s3 целиком)"));
+            errors.Add(new ValidationError(field, $"list is empty (empty = the whole s3 section is absent)"));
             return;
         }
 
@@ -69,11 +69,11 @@ public sealed class BackupsPolicyS3Validator(IEtcdGateway gateway, string[] endp
         {
             if (!seen.Add(name))
             {
-                errors.Add(new ValidationError(field, $"дубликат {name}"));
+                errors.Add(new ValidationError(field, $"duplicate {name}"));
                 continue;
             }
             if (pool.Nodes.All(n => n.Name != name))
-                errors.Add(new ValidationError(field, $"нода {name} не в пуле {pool.Name}"));
+                errors.Add(new ValidationError(field, $"node {name} is not in pool {pool.Name}"));
         }
     }
 }

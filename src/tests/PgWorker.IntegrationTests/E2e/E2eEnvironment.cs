@@ -383,7 +383,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         if (!IsInnerRunner)
         {
             await E2eContour.OrchestrateCurrentTestAsync(slug, withS3Node, haEtcd, ct);
-            throw new InvalidOperationException("оркестратор обязан завершиться исключением");
+            throw new InvalidOperationException("the orchestrator must terminate with an exception");
         }
 
         // Раннер, per-факт окружение: ПОЛНЫЙ контур (etcd/ownS3/mc — новые
@@ -417,7 +417,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var (caPem, caKeyPem) = E2eTestPki.GenerateCa("e2e");
         File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
         File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.key"), caKeyPem);
-        Console.WriteLine($"[PHASE] e2e-class {slug}: сеть класса {netName} создана (CA: rest-ca.pem в артефактах)");
+        Console.WriteLine($"[PHASE] e2e-class {slug}: class network {netName} created (CA: rest-ca.pem in artifacts)");
         // Окно портов ВЫДАЁТСЯ ЗДЕСЬ, на хосте-оркестраторе (его счётчик
         // глобален для прогонов процесса), и передаётся раннеру env'ом:
         // у каждого раннера свой процесс со счётчиком с нуля — локальный
@@ -503,13 +503,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             catch (Exception e) when (createNet && IsRetryableStartRace(e))
             {
                 Console.Error.WriteLine(
-                    $"e2e[{slug}]: старт сорван внешней гонкой — пересоздаём окружение (попытка {w + 1}/5): {e.Message.Split('\n')[0]}");
+                    $"e2e[{slug}]: start interrupted by an external race — recreating the environment (attempt {w + 1}/5): {e.Message.Split('\n')[0]}");
                 await Task.Delay(2000, ct);
             }
         }
 
         throw new ApplicationException(
-            $"e2e[{slug}]: не удалось поднять окружение за 5 попыток (перечислен бюджет ретраев старта)");
+            $"e2e[{slug}]: failed to raise the environment in 5 attempts (the start-retry budget is exhausted)");
     }
 
     // Ретрай-условия старта: чужой prune сети (network … not found).
@@ -587,7 +587,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 await E2eFixture.RunDockerAsync([.. etcdArgs], ct);
             }
 
-            Console.WriteLine($"[PHASE] e2e-env {slug}: etcd-ноды подняты ({etcdNames.Count}), ожидание здоровья…");
+            Console.WriteLine($"[PHASE] e2e-env {slug}: etcd nodes raised ({etcdNames.Count}), waiting for health…");
 
             // Готовность контура (бюджет ≤ 100 c — быстрое падение фикстуры,
             // AGENTS.md): etcdctl внутри узла №1 — endpoint health по всем
@@ -622,8 +622,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     return false; // ещё поднимается / кворум не собран
                 }
             }, TimeSpan.FromSeconds(100), ct);
-            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c "
-                + $"(проб сделано {probeAttempts})");
+            ready.Should().BeTrue($"the etcd contour ({(haEtcd ? 3 : 1)} node(s)) must assemble within 100 s "
+                + $"(probes made: {probeAttempts})");
 
             if (withS3Node)
             {
@@ -653,7 +653,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     "--entrypoint", "/bin/sh", McImage, "-c", "sleep infinity",
                 ], ct, timeout: TimeSpan.FromMinutes(5));
 
-                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3-нода поднята, mc-контейнер факта, бакет/образы…");
+                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3 node raised, fact mc container, bucket/images…");
                 await EnsureOwnS3BucketAsync(runId, "e2e-owns3", ct);
             }
 
@@ -669,7 +669,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.key"), caKeyPem);
 
             Console.WriteLine(
-                $"[PHASE] e2e-env {slug}: окружение поднято (сеть {netName}, окно {portFrom}–{portTo})");
+                $"[PHASE] e2e-env {slug}: environment raised (network {netName}, window {portFrom}–{portTo})");
             return env;
         }
         catch
@@ -718,7 +718,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private static string GetRequiredEnv(string name)
         => Environment.GetEnvironmentVariable(name)
-           ?? throw new ApplicationException($"{name} не задан — запуск вне контура (env раннера отсутствует)");
+           ?? throw new ApplicationException($"{name} is not set — running outside the contour (runner env is absent)");
 
     // Список etcd-endpoints для etcdctl (внутрисетевые URL узлов).
     private static string EtcdAliases(IReadOnlyList<string> aliases)
@@ -771,23 +771,23 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public static E2eEnvironment AttachFromEnv()
     {
         var runId = Environment.GetEnvironmentVariable("PGW_E2E_RUN_ID")
-            ?? throw new ApplicationException("PGW_E2E_RUN_ID не задан — раннер вне контура (фазы 1 нет)");
+            ?? throw new ApplicationException("PGW_E2E_RUN_ID is not set — the runner is outside the contour (no phase 1)");
         var netName = Environment.GetEnvironmentVariable("PGW_E2E_NET")
-            ?? throw new ApplicationException("PGW_E2E_NET не задан");
+            ?? throw new ApplicationException("PGW_E2E_NET is not set");
         var slug = Environment.GetEnvironmentVariable("PGW_E2E_SLUG") ?? "e2e";
         var aliases = (Environment.GetEnvironmentVariable("PGW_E2E_ETCD_ALIASES") ?? "e2e-etcd1")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var s3Alias = Environment.GetEnvironmentVariable("PGW_E2E_S3_ALIAS") ?? "";
         var caPem = Environment.GetEnvironmentVariable("PGW_E2E_CA_PEM")
-            ?? throw new ApplicationException("PGW_E2E_CA_PEM не задан");
+            ?? throw new ApplicationException("PGW_E2E_CA_PEM is not set");
         var caKeyPem = Environment.GetEnvironmentVariable("PGW_E2E_CA_KEY_PEM")
-            ?? throw new ApplicationException("PGW_E2E_CA_KEY_PEM не задан");
+            ?? throw new ApplicationException("PGW_E2E_CA_KEY_PEM is not set");
         var portFrom = int.Parse(
             Environment.GetEnvironmentVariable("PGW_E2E_PORT_FROM")
-            ?? throw new ApplicationException("PGW_E2E_PORT_FROM не задан"), CultureInfo.InvariantCulture);
+            ?? throw new ApplicationException("PGW_E2E_PORT_FROM is not set"), CultureInfo.InvariantCulture);
         var portTo = int.Parse(
             Environment.GetEnvironmentVariable("PGW_E2E_PORT_TO")
-            ?? throw new ApplicationException("PGW_E2E_PORT_TO не задан"), CultureInfo.InvariantCulture);
+            ?? throw new ApplicationException("PGW_E2E_PORT_TO is not set"), CultureInfo.InvariantCulture);
         var artifactsDir = Environment.GetEnvironmentVariable("PGW_E2E_ARTIFACTS") ?? "/artifacts";
 
         return new E2eEnvironment(slug, runId, netName, artifactsDir, aliases, s3Alias,
@@ -798,7 +798,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// Только фаза 1.</summary>
     internal IReadOnlyDictionary<string, string> RunnerEnv()
     {
-        throw new NotSupportedException("RunnerEnv переехал в BuildRunnerEnv (per-класс периметр)");
+        throw new NotSupportedException("RunnerEnv moved to BuildRunnerEnv (per-class perimeter)");
     }
 
     internal static IReadOnlyDictionary<string, string> BuildRunnerEnv(
@@ -921,7 +921,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var hostSnapsDir = Environment.GetEnvironmentVariable("PGW_E2E_HOST_SNAPS_DIR");
         if (hostSnapsDir is null)
             throw new ApplicationException(
-                "PGW_E2E_HOST_SNAPS_DIR не задан — старт воркера вне раннер-контейнера");
+                "PGW_E2E_HOST_SNAPS_DIR is not set — starting a worker outside the runner container");
         Directory.CreateDirectory(Path.Combine("/snaps", name));
 
         return await StartWorkerWithEnvAsync(name, alias, containerName, env, ct, readinessThumbprint);
@@ -1005,11 +1005,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"e2e[{Slug}]: stop воркера {name}: {e.Message}");
+                Console.Error.WriteLine($"e2e[{Slug}]: worker {name} stop: {e.Message}");
             }
 
             throw new ApplicationException(
-                $"воркер {name} не поднялся за 60 с; хвост логов:\n{OutputTail(logs, 60)}");
+                $"worker {name} did not come up within 60 s; log tail:\n{OutputTail(logs, 60)}");
         }
 
         return instance;
@@ -1030,7 +1030,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public async Task<string> GetAppPasswordAsync(string cluster, CancellationToken ct = default)
     {
         var result = await Gateway.GetAsync(EtcdEndpoint, $"/clusters/{cluster}/app_password", ct);
-        result.IsSuccess.Should().BeTrue("app-секрет обязан появиться после provisioning");
+        result.IsSuccess.Should().BeTrue("the app secret must appear after provisioning");
         return result.Value!.Value;
     }
 
@@ -1080,7 +1080,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// список "host:port" (внутрисетевые адреса: вторые ownS3 сценариев AC2/AC4/AC6).</summary>
     public async Task SeedS3PoolAsync(string pool, CancellationToken ct, IReadOnlyList<string>? endpoints = null)
     {
-        S3Endpoint.Should().NotBeEmpty("пул сидается только в окружении с ownS3 (withS3Node: true)");
+        S3Endpoint.Should().NotBeEmpty("the pool is seeded only in an environment with ownS3 (withS3Node: true)");
         var list = (endpoints is { Count: > 0 } ? endpoints : [S3Endpoint])
             .Select(e => e.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/'))
             .ToArray();
@@ -1096,7 +1096,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/nodes/{node}/placement",
                 "{\"docker_host\":\"local\"}", null, ct);
             var sep = list[i].LastIndexOf(':');
-            sep.Should().BePositive($"endpoint '{list[i]}' обязан быть host:port (внутрисетевой адрес ownS3)");
+            sep.Should().BePositive($"endpoint '{list[i]}' must be host:port (ownS3 intra-network address)");
             alloc.Add($"\"{node}\":{{\"host\":\"{list[i][..sep]}\",\"s3\":{list[i][(sep + 1)..]}}}");
         }
 
@@ -1195,7 +1195,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                problems.Add($"воркер {host.Name}: {e.Message}");
+                problems.Add($"worker {host.Name}: {e.Message}");
             }
 
         // 2) Упавший сценарий: стоп, не удаление (данные для отчёта живы).
@@ -1227,12 +1227,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (ApplicationException e) when (e.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"e2e[{Slug}]: контейнер {id} уже удаляется демоном — пропускаем");
+                Console.Error.WriteLine($"e2e[{Slug}]: container {id} is already being removed by the daemon — skipping");
                 return (string?)null;
             }
             catch (Exception e)
             {
-                return $"rm контейнера {id}: {e.Message}";
+                return $"container {id} rm: {e.Message}";
             }
         }));
         problems.AddRange(rmErrors.Where(e => e is not null).Select(e => e!));
@@ -1268,21 +1268,21 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                problems.Add($"сеть кластера {net}: {e.Message}");
+                problems.Add($"cluster network {net}: {e.Message}");
             }
         }
 
         // 7) АССЕРТ ЧИСТОТЫ факта: ни одного контейнера/тома/сети факта.
         var leftContainers = await OwnContainersAsync();
         if (leftContainers.Count > 0)
-            problems.Add($"остались контейнеры факта: {string.Join(' ', leftContainers)}");
+            problems.Add($"fact containers left: {string.Join(' ', leftContainers)}");
         var leftVolumes = await OwnVolumesAsync();
         if (leftVolumes.Count > 0)
-            problems.Add($"остались тома факта: {string.Join(' ', leftVolumes)}");
+            problems.Add($"fact volumes left: {string.Join(' ', leftVolumes)}");
 
         if (problems.Count > 0)
             throw new ApplicationException(
-                $"{Slug}: teardown факта неполный:\n- " + string.Join("\n- ", problems));
+                $"{Slug}: fact teardown is incomplete:\n- " + string.Join("\n- ", problems));
     }
 
     /// <summary>docker rm -f СВОИХ контейнеров по префиксу имени (own-only:
@@ -1296,11 +1296,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (ApplicationException e) when (e.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"e2e[{Slug}]: контейнер {id} уже удаляется демоном — пропускаем");
+                Console.Error.WriteLine($"e2e[{Slug}]: container {id} is already being removed by the daemon — skipping");
             }
             catch (Exception e)
             {
-                problems.Add($"rm контейнера {id}: {e.Message}");
+                problems.Add($"container {id} rm: {e.Message}");
             }
     }
 
@@ -1341,7 +1341,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                problems.Add($"stop контейнера {id}: {e.Message}");
+                problems.Add($"container {id} stop: {e.Message}");
             }
 
         await WriteCleanupReadmeAsync();
@@ -1352,10 +1352,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private async Task WriteCleanupReadmeAsync()
     {
         var cleanup = """
-            Упавший E2E-сценарий — окружение ФАКТА ОСТАНОВЛЕНО, но НЕ удалено (разбор по месту).
-            Логи всех контейнеров сняты в этот каталог (container-*.log, runner.log).
-            Перезапуск теста ради логов запрещён (docs/e2e-launch.md).
-            Зачистить, когда данные для отчёта больше не нужны:
+            Failed E2E scenario — the FACT environment is STOPPED but NOT removed (investigate in place).
+            Logs of all containers are saved into this directory (container-*.log, runner.log).
+            Re-running the test just to grab logs is forbidden (docs/e2e-launch.md).
+            Clean up when the report data is no longer needed:
               docker rm -f $(docker ps -aq --filter name=__RUN__)
               docker rm -f $(docker ps -aq --filter name=__TAG__)
               docker volume rm -f $(docker volume ls -q --filter name=__TAG__)
@@ -1427,11 +1427,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 }
             }));
 
-            Console.Error.WriteLine($"e2e[{Slug}]: телеметрия «{reason}» → {ArtifactsDir}");
+            Console.Error.WriteLine($"e2e[{Slug}]: telemetry \"{reason}\" -> {ArtifactsDir}");
         }
         catch (Exception e)
         {
-            Console.Error.WriteLine($"e2e[{Slug}]: сбор телеметрии «{reason}» не удался: {e.Message}");
+            Console.Error.WriteLine($"e2e[{Slug}]: telemetry collection \"{reason}\" failed: {e.Message}");
         }
     }
 
@@ -1448,7 +1448,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                problems.Add($"stop контейнера {id}: {e.Message}");
+                problems.Add($"container {id} stop: {e.Message}");
             }
 
         foreach (var container in (_etcdNodes ?? []).Concat<IContainer?>([_s3Node]))
@@ -1459,7 +1459,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
             catch (Exception e)
             {
-                problems.Add($"stop инфраструктуры: {e.Message}");
+                problems.Add($"infrastructure stop: {e.Message}");
             }
 
         _gatewayHttp.Dispose();
@@ -1467,10 +1467,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
         PatroniHttp.Dispose();
 
         var cleanup = """
-            Упавший E2E-сценарий — окружение ОСТАНОВЛЕНО, но НЕ удалено (разбор по месту).
-            Логи всех контейнеров сняты в этот каталог (container-*.log, runner.log).
-            Перезапуск теста ради логов запрещён (docs/e2e-launch.md).
-            Зачистить, когда данные для отчёта больше не нужны:
+            Failed E2E scenario — the environment is STOPPED but NOT removed (investigate in place).
+            Logs of all containers are saved into this directory (container-*.log, runner.log).
+            Re-running the test just to grab logs is forbidden (docs/e2e-launch.md).
+            Clean up when the report data is no longer needed:
               docker rm -f $(docker ps -aq --filter name=__RUN__)
               docker rm -f $(docker ps -aq --filter name=__TAG__)
               docker volume rm -f $(docker volume ls -q --filter name=__TAG__)
@@ -1483,10 +1483,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
         if (problems.Count > 0)
             throw new ApplicationException(
-                $"{Slug}: stop-teardown упавшего сценария неполный:\n- " + string.Join("\n- ", problems));
+                $"{Slug}: stop-teardown of the failed scenario is incomplete:\n- " + string.Join("\n- ", problems));
 
         Console.Error.WriteLine(
-            $"e2e[{Slug}]: FAILED — окружение остановлено и оставлено для разбора: {ArtifactsDir}");
+            $"e2e[{Slug}]: FAILED — the environment is stopped and kept for investigation: {ArtifactsDir}");
     }
 
     // ===== Статические ассеты процесса: publish-выводы, образы =====
@@ -1510,7 +1510,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static bool PreparingPhase => Environment.GetEnvironmentVariable(PrepareModeEnv) == "1";
 
     private const string PrepareHint =
-        "запустите подготовку ОДНИМ процессом ДО тестов: "
+        "run the preparation as ONE process BEFORE the tests: "
         + "dotnet run --project src/tests/PgWorker.E2ePrepare -c Release";
 
     /// <summary>Фаза подготовки статических ассетов — ОТДЕЛЬНЫЙ запуск ДО
@@ -1535,7 +1535,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 Path.Combine(root, "artifacts", "e2e", ".prepared"),
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
                     .ToString(CultureInfo.InvariantCulture), ct);
-            E2eFixture.StaticPhase("e2e-prepare: штамп готовности записан — тесты можно запускать");
+            E2eFixture.StaticPhase("e2e-prepare: readiness stamp written — tests may run");
         }
         finally
         {
@@ -1551,7 +1551,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
         var stampPath = Path.Combine(root, "artifacts", "e2e", ".prepared");
         if (!File.Exists(stampPath))
-            throw new ApplicationException($"статика E2E не подготовлена. {PrepareHint}");
+            throw new ApplicationException($"E2E statics are not prepared. {PrepareHint}");
         long stampMs;
         try
         {
@@ -1559,20 +1559,20 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
         catch (FormatException e)
         {
-            throw new ApplicationException($"штамп подготовки E2E повреждён ({stampPath}). {PrepareHint}", e);
+            throw new ApplicationException($"the E2E preparation stamp is corrupted ({stampPath}). {PrepareHint}", e);
         }
 
         var stampUtc = DateTimeOffset.FromUnixTimeMilliseconds(stampMs).UtcDateTime;
         var newest = NewestSourceInputUtc(root);
         if (newest > stampUtc)
             throw new ApplicationException(
-                $"исходники новее подготовки (правка {newest:yyyy-MM-dd HH:mm:ss} UTC > штамп "
-                + $"{stampUtc:yyyy-MM-dd HH:mm:ss} UTC) — устаревший бинарь маскирует регрессии. {PrepareHint}");
+                $"sources are newer than the preparation (edit {newest:yyyy-MM-dd HH:mm:ss} UTC > stamp "
+                + $"{stampUtc:yyyy-MM-dd HH:mm:ss} UTC) — a stale binary masks regressions. {PrepareHint}");
 
         _root = root;
         foreach (var image in new[] { WorkerImage, RunnerImage, NodeImage })
             if (!await DockerImageExistsAsync(image, ct))
-                throw new ApplicationException($"образ {image} отсутствует в docker. {PrepareHint}");
+                throw new ApplicationException($"image {image} is missing in docker. {PrepareHint}");
     }
 
     // Самый свежий вход сборки: исходники src/ (.cs/.csproj/.props/.targets/
@@ -1665,25 +1665,25 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // publish PgWorker.App → образ SUT-воркера.
             if (noBuild)
                 E2eFixture.EnsurePublishedDir(AppPublishDir,
-                    "требуется: dotnet publish src/PgWorker.App -c Release -o artifacts/e2e/app");
+                    "required: dotnet publish src/PgWorker.App -c Release -o artifacts/e2e/app");
             else
                 await E2eFixture.PublishProjectAsync(
                     Path.Combine(_root, "src", "PgWorker.App", "PgWorker.App.csproj"),
                     AppPublishDir, "app", ct);
 
             var sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {WorkerImage}: docker build (контекст artifacts/e2e/app)…");
+            E2eFixture.StaticPhase($"e2e-image {WorkerImage}: docker build (context artifacts/e2e/app)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.E2E.Dockerfile", "-t", WorkerImage, AppPublishDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-worker-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {WorkerImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+            E2eFixture.StaticPhase($"e2e-image {WorkerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             // publish тестовой сборки → образ раннера (фаза 2).
             if (noBuild)
                 E2eFixture.EnsurePublishedDir(TestsPublishDir,
-                    "требуется: dotnet publish src/tests/PgWorker.IntegrationTests -c Release -o artifacts/e2e/tests");
+                    "required: dotnet publish src/tests/PgWorker.IntegrationTests -c Release -o artifacts/e2e/tests");
             else
                 await E2eFixture.PublishProjectAsync(
                     Path.Combine(_root, "src", "tests", "PgWorker.IntegrationTests", "PgWorker.IntegrationTests.csproj"),
@@ -1696,25 +1696,25 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     runnerJson);
 
             sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: docker build (контекст artifacts/e2e/tests)…");
+            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: docker build (context artifacts/e2e/tests)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/E2eRunner.Dockerfile", "-t", RunnerImage, TestsPublishDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-runner-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             // Образ узла (задача 25): docker-cache делает повторные сборки
             // инкрементальными. ПЕРЕДАЧА КОНТЕКСТА (COPY src) — самая «тихая»
             // фаза: метки до/после обязательны (канон e2e-launch).
             sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase("e2e-image pgworker-node:e2e: docker build (контекст корня)…");
+            E2eFixture.StaticPhase("e2e-image pgworker-node:e2e: docker build (context root)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-node-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             _staticReady = true;
         }
@@ -1744,7 +1744,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 return;
             if (!await DockerImageExistsAsync(OwnS3Image, ct))
                 throw new ApplicationException(
-                    "образ owns3:dev отсутствует в docker — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
+                    "image owns3:dev is missing in docker — build it in ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
             _owns3ImageReady = true;
         }
         finally
@@ -1770,7 +1770,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
             {
                 if (!await DockerImageExistsAsync(JobImage, ct))
-                    throw new ApplicationException($"образ {JobImage} отсутствует в docker. {PrepareHint}");
+                    throw new ApplicationException($"image {JobImage} is missing in docker. {PrepareHint}");
                 _jobImageReady = true;
                 return;
             }
@@ -1778,14 +1778,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // .NET-publish не нужен; узкий контекст docker/ (без «тихой» передачи
             // корня репозитория), вывод — с [PHASE]-меткой и таймингом.
             var sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {JobImage}: docker build (контекст docker/)…");
+            E2eFixture.StaticPhase($"e2e-image {JobImage}: docker build (context docker/)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Backup.E2E.Dockerfile", "-t", JobImage,
                 $"{_root}/docker",
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-backup-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {JobImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+            E2eFixture.StaticPhase($"e2e-image {JobImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
             _jobImageReady = true;
         }
         finally
@@ -1814,7 +1814,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
             {
                 if (!await DockerImageExistsAsync(WalImage, ct))
-                    throw new ApplicationException($"образ {WalImage} отсутствует в docker. {PrepareHint}");
+                    throw new ApplicationException($"image {WalImage} is missing in docker. {PrepareHint}");
                 _walImageReady = true;
                 return;
             }
@@ -1830,13 +1830,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "-c", "Release", "-o", outDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
                 logFile: "/tmp/pgw-e2e-static-process-wal-e2e-publish.log");
-            E2eFixture.StaticPhase($"e2e-image {WalImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/wal)…");
+            E2eFixture.StaticPhase($"e2e-image {WalImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context artifacts/e2e/wal)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Wal.E2E.Dockerfile", "-t", WalImage, outDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-wal-e2e-build.log");
-            E2eFixture.StaticPhase($"e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
+            E2eFixture.StaticPhase($"e2e-image {WalImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (publish+build)");
             _walImageReady = true;
         }
         finally
@@ -1863,7 +1863,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
             {
                 if (!await DockerImageExistsAsync(SdImage, ct))
-                    throw new ApplicationException($"образ {SdImage} отсутствует в docker. {PrepareHint}");
+                    throw new ApplicationException($"image {SdImage} is missing in docker. {PrepareHint}");
                 _sdImageReady = true;
                 return;
             }
@@ -1877,13 +1877,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "-c", "Release", "-o", outDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
                 logFile: "/tmp/pgw-e2e-static-process-sd-e2e-publish.log");
-            E2eFixture.StaticPhase($"e2e-image {SdImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/sdgenerator)…");
+            E2eFixture.StaticPhase($"e2e-image {SdImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context artifacts/e2e/sdgenerator)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/Metrics.SdGenerator.Dockerfile", "-t", SdImage, outDir,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-sd-e2e-build.log");
-            E2eFixture.StaticPhase($"e2e-image {SdImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
+            E2eFixture.StaticPhase($"e2e-image {SdImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (publish+build)");
             _sdImageReady = true;
         }
         finally

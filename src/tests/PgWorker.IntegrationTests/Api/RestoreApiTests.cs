@@ -24,7 +24,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: confirm=имя шарда → 202; etcd-ключ PLANNED с target=latest и requested_by
     [Fact]
-    public async Task Restore_202_и_PLANNED_ключ_в_etcd()
+    public async Task Restore202AndPlannedKeyInEtcd()
     {
         // Arrange — активный кластер с shard1
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rs", buckets: 4, shards: 2);
@@ -50,7 +50,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: confirm=чужое → 400 с ожидаемым именем; ключа нет
     [Fact]
-    public async Task Restore_confirm_мисматч_400()
+    public async Task RestoreConfirmMismatch400()
     {
         // Arrange
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsc", buckets: 4, shards: 2);
@@ -71,7 +71,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: target_time не RFC3339 → 400
     [Fact]
-    public async Task Restore_target_time_не_RFC3339_400()
+    public async Task RestoreTargetTimeNotRfc3339400()
     {
         // Arrange
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rst", buckets: 4, shards: 2);
@@ -91,7 +91,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: активная заявка уже есть → 409, значение не перезаписано
     [Fact]
-    public async Task Restore_активная_заявка_409()
+    public async Task RestoreActiveRequest409()
     {
         // Arrange — сид PLANNED-ключа (RUNNING тоже активен, но PLANNED — наш путь)
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsa", buckets: 4, shards: 2);
@@ -115,7 +115,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: кластер не Active (state в config) → 409
     [Fact]
-    public async Task Restore_кластер_не_Active_409()
+    public async Task RestoreClusterNotActive409()
     {
         // Arrange — config с state (не Active-канон)
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsn", buckets: 4, shards: 2);
@@ -136,7 +136,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: шард не заявлен → 404
     [Fact]
-    public async Task Restore_шард_не_заявлен_404()
+    public async Task RestoreShardNotDeclared404()
     {
         // Arrange
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsh", buckets: 4, shards: 2);
@@ -154,7 +154,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: кластера нет → 404
     [Fact]
-    public async Task Restore_кластер_нет_404()
+    public async Task RestoreClusterMissing404()
     {
         // Arrange — пустой etcd
 
@@ -170,7 +170,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: source_cluster без source_shard → 400 с errors по полям
     [Fact]
-    public async Task Restore_source_cluster_без_source_shard_400()
+    public async Task RestoreSourceClusterWithoutSourceShard400()
     {
         // Arrange
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsv", buckets: 4, shards: 2);
@@ -192,7 +192,7 @@ public class RestoreApiTests(PgApiFixture fixture)
 
     // AAA: без тела → 400
     [Fact]
-    public async Task Restore_без_тела_400()
+    public async Task RestoreNoBody400()
     {
         // Arrange — активный кластер
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsb", buckets: 4, shards: 2);
@@ -210,7 +210,7 @@ public class RestoreApiTests(PgApiFixture fixture)
     // AAA: target_time RFC3339 → ключ с time:<значение>; пустой body JSON без
     // confirm — 400 (confirm обязателен)
     [Fact]
-    public async Task Restore_target_time_RFC3339_попадает_в_ключ()
+    public async Task RestoreTargetTimeRfc3339LandsInKey()
     {
         // Arrange
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "rsp", buckets: 4, shards: 2);

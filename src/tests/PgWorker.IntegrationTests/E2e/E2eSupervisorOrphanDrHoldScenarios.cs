@@ -36,7 +36,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
 
 
     [Fact]
-    public async Task Backup_OrphanDrHold_ПолныйПереживаетTtl_ЗаявкаЧистит()
+    public async Task BackupOrphanDrHoldFullSurvivesTtlRequestCleansUp()
     {
         // Arrange 1 — окружение bk-drh (withS3Node), воркер с OrphanTtlSec=120,
         //   Supervisor IntervalSec=60 (StartOrphanHostAsync — сжатое время)
@@ -54,7 +54,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
         //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
         var provisioned = await WaitPhaseAsync("provisioning",
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning обязан дойти до DONE");
+        provisioned.Should().BeTrue("provisioning must reach DONE");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "dr-data");
         await McCpAsync($"{ghost}/shard1/full/20260911110000Z/backup_manifest", "manifest");
 
@@ -66,7 +66,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
                    && raw.Value.Contains("\"has_valid_full\":true");
         }, TimeSpan.FromSeconds(180), ct);
         observed.Should().BeTrue(
-            $"сирота обязана попасть в реестр с has_valid_full=true: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}]");
+            $"the orphan must land in the registry with has_valid_full=true: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}]");
 
         // Act 2 — окно выживания: WaitFor, пока с момента first_seen записи
         // прошло ≥ TTL (120 c) + один проход (60 c) = 180 c — к этому моменту
@@ -84,15 +84,15 @@ public class E2eSupervisorOrphanDrHoldScenarios
                 .GetProperty("first_seen_unix").GetInt64();
             return DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= firstSeen + 120 + 60;
         }, TimeSpan.FromSeconds(360), ct);
-        window.Should().BeTrue("окно истёкшего TTL + один проход обязано наступить");
+        window.Should().BeTrue("the expired TTL window plus one pass must arrive");
 
         // Assert 1 — объекты ЖИВЫ, запись OBSERVED с has_valid_full (AC1)
         (await McLsAsync($"{ghost}/shard1/")).Should().HaveCountGreaterThanOrEqualTo(2,
-            "DR-источник с валидным полным не удаляется автоматикой НИКОГДА");
+            "a DR source with a valid full is NEVER removed by the automation");
         var registryAfter = (await GetOrNullAsync("/pgworker/backups/orphans"))!.Value;
         registryAfter.Should().Contain($"{ghost}/shard1")
             .And.Contain("OBSERVED").And.Contain("\"has_valid_full\":true",
-            "запись жива под автоправилом");
+            "the record is alive under the auto rule");
 
         // Act 3 — заявка явного удаления (ручной путь канона, runbook §2);
         //   after-окно: TTL уже истёк, заявка приоритетнее — ближайший проход
@@ -111,7 +111,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
                    && (raw is null || !raw.Value.Contains($"{ghost}/shard1"))
                    && req is null;
         }, TimeSpan.FromSeconds(300), ct);
-        swept.Should().BeTrue("заявка удаляет защищённую сироту; запись и заявка гасятся вместе");
+        swept.Should().BeTrue("the request removes the protected orphan; the record and the request are retired together");
         }, ct);
     }
 
@@ -148,7 +148,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
         var completed = await WaitPhaseAsync("first-full-completed",
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), TestContext.Current.CancellationToken);
-        completed.Should().BeTrue("реальный полный обязан дойти до COMPLETED");
+        completed.Should().BeTrue("the real full must reach COMPLETED");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         return done.Key.Split('/').Last();
     }
@@ -291,7 +291,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -318,7 +318,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }
@@ -362,7 +362,7 @@ public class E2eSupervisorOrphanDrHoldScenarios
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}",
             TestContext.Current.CancellationToken);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         return entries
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal))

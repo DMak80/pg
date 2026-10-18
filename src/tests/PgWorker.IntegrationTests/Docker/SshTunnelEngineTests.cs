@@ -87,7 +87,7 @@ public class SshTunnelEngineTests
         // Act: Ping + ListContainers через туннель (форвард → socat → docker.sock).
         var ct = TestContext.Current.CancellationToken;
         var ping = await ResultProbe(async () => await engine.PingAsync(ct), TimeSpan.FromSeconds(20));
-        ping.IsSuccess.Should().BeTrue($"SSH-туннель пробрасывает Engine API; error: {ping.Error}");
+        ping.IsSuccess.Should().BeTrue($"the SSH tunnel forwards the Engine API; error: {ping.Error}");
         (await engine.ListContainersAsync("pgw-ssh-test", all: false, ct)).IsSuccess.Should().BeTrue();
     }
 
@@ -123,13 +123,13 @@ public class SshTunnelEngineTests
         try
         {
             var pinned = probe.FingerprintSha256;
-            pinned.Should().NotBeNull("TOFU-подключение фиксирует fingerprint");
+            pinned.Should().NotBeNull("the TOFU connection pins the fingerprint");
 
             // Act: фабрика с pin.
             var factory = new DockerEngineFactory(ssh: Options(keyPem, pinned));
             await using var engine = factory.Create(endpoint);
             (await engine.PingAsync(TestContext.Current.CancellationToken))
-                .IsSuccess.Should().BeTrue("корректный pin не мешает туннелю");
+                .IsSuccess.Should().BeTrue("a correct pin does not disturb the tunnel");
         }
         finally
         {

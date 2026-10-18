@@ -28,7 +28,7 @@ public sealed class E2eQuorumElectedTests
         var elected = E2eEnvironment.EtcdQuorumElected(json, 3);
 
         // Assert
-        elected.Should().BeTrue("все узлы называют одного ненулевого лидера");
+        elected.Should().BeTrue("all nodes name the same non-zero leader");
     }
 
     [Fact]
@@ -41,7 +41,7 @@ public sealed class E2eQuorumElectedTests
         var elected = E2eEnvironment.EtcdQuorumElected(json, 3);
 
         // Assert
-        elected.Should().BeFalse("нулевая запись лидера — выборы не завершились");
+        elected.Should().BeFalse("a zero leader record — the election has not finished");
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public sealed class E2eQuorumElectedTests
         var elected = E2eEnvironment.EtcdQuorumElected(json, 3);
 
         // Assert
-        elected.Should().BeFalse("разные лидеры в ответах узлов — кворум не сошёлся");
+        elected.Should().BeFalse("different leaders in the node answers — no quorum");
     }
 
     [Fact]
@@ -71,6 +71,6 @@ public sealed class E2eQuorumElectedTests
         var elected = E2eEnvironment.EtcdQuorumElected(json, 3);
 
         // Assert
-        elected.Should().BeFalse("ответили не все узлы кластера");
+        elected.Should().BeFalse("not all cluster nodes answered");
     }
 }

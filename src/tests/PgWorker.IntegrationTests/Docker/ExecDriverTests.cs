@@ -52,9 +52,9 @@ public class ExecDriverTests
             Env: new Dictionary<string, string>(),
             Cmd: ["sleep", "30"]);
         (await engine.CreateContainerAsync(spec, ContainerName, CancellationToken.None))
-            .IsSuccess.Should().BeTrue("контейнер exec-теста должен создаться");
+            .IsSuccess.Should().BeTrue("the exec-test container must be created");
         (await engine.StartContainerAsync(ContainerName, CancellationToken.None))
-            .IsSuccess.Should().BeTrue("контейнер exec-теста должен стартовать");
+            .IsSuccess.Should().BeTrue("the exec-test container must be started");
     }
 
     // AAA: exec в running-контейнер ноды возвращает demultiplexed stdout
@@ -96,8 +96,8 @@ public class ExecDriverTests
         var exec = await driver.ExecNodeAsync("execit", "shard1", "n1", ["sh", "-c", "exit 3"], CancellationToken.None);
 
         // Assert
-        exec.IsSuccess.Should().BeFalse("ненулевой exit — не успех");
-        exec.Error!.Message.Should().Contain("3", "код выхода виден оператору");
+        exec.IsSuccess.Should().BeFalse("a non-zero exit — not a success");
+        exec.Error!.Message.Should().Contain("3", "the exit code is visible to the operator");
 
         await CleanupAsync();
     }
@@ -117,7 +117,7 @@ public class ExecDriverTests
         var exec = await driver.ExecNodeAsync("execit", "shard1", "n1", ["echo", "x"], CancellationToken.None);
 
         // Assert
-        exec.IsSuccess.Should().BeFalse("exec без контейнера невозможен");
-        exec.Error!.Message.Should().Contain("не найден");
+        exec.IsSuccess.Should().BeFalse("exec without a container is impossible");
+        exec.Error!.Message.Should().Contain("not found");
     }
 }

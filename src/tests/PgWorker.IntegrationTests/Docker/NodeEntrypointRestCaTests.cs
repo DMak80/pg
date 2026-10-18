@@ -64,25 +64,25 @@ public class NodeEntrypointRestCaTests
                     await runner.ReadFileAsync("/home/postgres/pgw-node.env", ct));
                 return outp.Contains("PGW_NODE_CA=", StringComparison.Ordinal);
             }, TimeSpan.FromSeconds(15), ct);
-            ran.Should().BeTrue("entrypoint обязан дописать PGW_NODE_CA после материализации ca-файла");
+            ran.Should().BeTrue("the entrypoint must append PGW_NODE_CA after materializing the ca file");
 
             // Assert: ca-файл == PEM байт-в-байт, права 600, владелец postgres.
             var caFile = System.Text.Encoding.UTF8.GetString(
                 await runner.ReadFileAsync("/home/postgres/pgw-node-ca.pem", ct));
             caFile.TrimEnd('\n').Should().Be(caPem.TrimEnd('\n'),
-                "PEM материализуется в файл буквально (реальные переносы строк)");
+                "the PEM is materialized into the file verbatim (real line breaks)");
             var ls = await E2eFixture.RunProcessAsync("docker",
                 ["exec", runner.Name, "sh", "-c",
                     "ls -l /home/postgres/pgw-node-ca.pem | awk '{print $1, $3}'"], ct);
             ls.Trim().Should().Be("-rw------- postgres",
-                "ca-файл 600 и принадлежит postgres (паттерн HAPROXY_CONFIG)");
+                "the ca file is 600 and owned by postgres (the HAPROXY_CONFIG pattern)");
 
             // pgw-node.env: строка-путь есть, PEM в файл НЕ попадает.
             var envFile = System.Text.Encoding.UTF8.GetString(
                 await runner.ReadFileAsync("/home/postgres/pgw-node.env", ct));
             envFile.Should().Contain("PGW_NODE_CA=/home/postgres/pgw-node-ca.pem");
             envFile.Should().NotContain("BEGIN CERTIFICATE",
-                "PEM не переносится в KEY=VALUE-файл");
+                "the PEM is not carried into a KEY=VALUE file");
         }
         finally
         {

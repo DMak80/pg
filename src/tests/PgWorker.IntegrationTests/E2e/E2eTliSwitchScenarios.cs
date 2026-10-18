@@ -61,7 +61,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             return;
         if (_hostError.Length > 0)
             throw new ApplicationException(_hostError);
-        Assert.Skip("класс исполнен в раннере (исход — в журнале раннера)");
+        Assert.Skip("the class is executed in the runner (the outcome is in the runner log)");
     }
 
     public async ValueTask InitializeAsync()
@@ -126,13 +126,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await StartTliSwitchHostAsync("tlsw", ct);
         var provisioned = await WaitPhaseAsync(
             "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов: "
+        provisioned.Should().BeTrue("provisioning must reach DONE before the backups: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
         // Эталон dsn-ключа ДО любых действий: эталон для ассерта «restore не
         // трогает portalloc/dsn» (AC2, Fact 1; образец rs-latest).
         DsnBefore = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value!;
-        DsnBefore.Should().NotBeNullOrEmpty("dsn пишется при provisioning");
+        DsnBefore.Should().NotBeNullOrEmpty("the dsn is written at provisioning");
 
         // Шаг 2 — полный на TLI1 + pre-wal (TLI1-хвост после точки полного).
         await SeedFullBackupAsync(ct);
@@ -148,7 +148,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         // родителя (§3.3, AC1).
         var synced = await WaitPhaseAsync("replica-sync", () => ReplicasSyncedAsync(ct),
             TimeSpan.FromSeconds(60), ct);
-        synced.Should().BeTrue("реплики обязаны догнать позицию мастера до failover: "
+        synced.Should().BeTrue("the replicas must catch up with the master position before the failover: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
         // Шаги 3–5 — failover + данные нового TLI.
@@ -157,7 +157,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
         // Шаг 6 — строгий гейт смешанности: контур готов к заявкам.
         await AssertMixedSwitchAsync(ct);
-        Console.WriteLine($"[PHASE] tlsw-ready: контур готов (OldBackupId={OldBackupId}, " +
+        Console.WriteLine($"[PHASE] tlsw-ready: contour ready (OldBackupId={OldBackupId}, " +
             $"Tli2={Tli2}, T_cut={TCut:yyyy-MM-ddTHH:mm:ssZ})");
     }
 
@@ -170,10 +170,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
         await using var s3 = HostS3Client();
         var got = await s3.GetObjectAsync(cluster, shard, $"wal/{tli:x8}.history", ct);
         got.IsSuccess.Should().BeTrue(
-            $"history-объект wal/{tli:x8}.history доступен: {got.Error?.Message}");
+            $"the history object wal/{tli:x8}.history is available: {got.Error?.Message}");
         var entries = PgWorker.Backups.WalHistory.Parse(got.Value!);
         entries.Should().NotBeNull(
-            $"history-файл wal/{tli:x8}.history строго разбирается: [{got.Value}]");
+            $"the history file wal/{tli:x8}.history parses strictly: [{got.Value}]");
         return entries![^1];
     }
 
@@ -253,11 +253,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
             {
                 await using var s3 = HostS3Client();
                 var got = await s3.GetObjectAsync(Cluster, "shard1", $"wal/{Tli2:x8}.history", ct);
-                history = got.IsSuccess ? got.Value! : $"<недоступен: {got.Error?.Message}>";
+                history = got.IsSuccess ? got.Value! : $"<unavailable: {got.Error?.Message}>";
             }
             catch (Exception he)
             {
-                history = $"<сбой чтения: {he.Message}>";
+                history = $"<read failure: {he.Message}>";
             }
 
             // Карта pageaddr→tli объекта S (лучшими усилиями — входит в дамп
@@ -276,11 +276,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
             }
             catch (Exception pe)
             {
-                pageMap = $"<карта недоступна: {pe.Message}>";
+                pageMap = $"<map unavailable: {pe.Message}>";
             }
 
             throw new ApplicationException(
-                $"гейт смешанности провален: {ex.Message}\nhistory=[{history}]\n{pageMap}\n"
+                $"the mixedness gate failed: {ex.Message}\nhistory=[{history}]\n{pageMap}\n"
                 + await DumpDiagnosticsAsync(Cluster, "shard1"), ex);
         }
     }
@@ -294,7 +294,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     {
         var entry = await HistoryEntryAsync(Cluster, "shard1", Tli2, ct);
         entry.ParentTli.Should().Be(1u,
-            $"последняя запись {Tli2:x8}.history — сам TLI2 от родителя TLI1: parent={entry.ParentTli}");
+            $"the last record of {Tli2:x8}.history — TLI2 itself from the parent TLI1: parent={entry.ParentTli}");
         var switchValue = ParseLsn(entry.SwitchLsn);
         var switchSeg = PgWorker.Backups.WalFileName.FromLsn(0, entry.SwitchLsn);
 
@@ -302,8 +302,8 @@ public sealed class TliSwitchContext : IAsyncLifetime
         // покрытием t28 не считается: накат шёл бы по стыку сегментов).
         (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes)
             .Should().NotBe(0UL,
-                $"точка переключения {entry.SwitchLsn} ВНУТРИ сегмента {switchSeg.Name} "
-                + "(не на границе 16 МиБ)");
+                $"the switch point {entry.SwitchLsn} is INSIDE segment {switchSeg.Name} "
+                + "(not on the 16 MiB boundary)");
 
         var names = await ListWalNamesAsync(Cluster, "shard1");
         var parentName = $"{entry.ParentTli:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
@@ -317,20 +317,20 @@ public sealed class TliSwitchContext : IAsyncLifetime
             .Select(w => w!.Value.Name)
             .ToList();
         sNames.Should().BeEquivalentTo([parentName],
-            $"сегмент S доставлен РОВНО один раз, под именем TLI родителя {parentName} "
-            + "(SegmentAssembler.Close именует по page header границы); иные имена S недопустимы");
+            $"segment S is delivered EXACTLY once, under the parent TLI name {parentName} "
+            + "(SegmentAssembler.Close names by the page header boundary); other S names are invalid");
 
         // (3) ПОБАЙТОВОЕ подтверждение смешанности: page-заголовки объекта S
         // по разные стороны switchWALLSN показывают TLI родителя / TLI нового.
         var pages = await SegmentPageTlisAsync(Cluster, "shard1", parentName, ct);
-        pages.Should().NotBeEmpty("объект S обязан содержать page-заголовки");
+        pages.Should().NotBeEmpty("object S must contain page headers");
         var segStart = (ulong)((long)switchSeg.Log * 256 + switchSeg.Seg)
             * (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
-        pages[0].PageAddr.Should().Be(segStart, "страница 0 — граница сегмента S");
+        pages[0].PageAddr.Should().Be(segStart, "page 0 — the S segment boundary");
         pages[0].Tli.Should().Be(entry.ParentTli,
-            "страница 0 — long header границы (записан мастером TLI1): источник имени объекта; "
-            + "TLI1-сторона смешанности (spec §3.3 п.3 «включая страницу 0» — точка может лежать "
-            + "в первой странице: replica-sync прижимает её к позиции единственной записи мастера в S)");
+            "page 0 — the long header of the boundary (written by the TLI1 master): the source of the object name; "
+            + "the TLI1 side of the mixedness (spec §3.3 item 3 \"including page 0\" — the point may lie "
+            + "in the first page: replica-sync pins it to the position of the only master record in S)");
         // Валидные страницы — внутри границ сегмента S: нулевой хвост недописанного
         // сегмента (pageaddr=0/tli=0 — незаполненные байты) заголовками не является
         // и побайтовому ассерту не подлежит.
@@ -343,16 +343,16 @@ public sealed class TliSwitchContext : IAsyncLifetime
         {
             if (pageAddr + pageSize <= switchValue)
                 tli.Should().Be(entry.ParentTli,
-                    $"страница 0x{pageAddr:x} целиком ниже switchWALLSN — байты TLI1 в объекте {parentName}");
+                    $"page 0x{pageAddr:x} is entirely below switchWALLSN — TLI1 bytes in object {parentName}");
             else if (pageAddr > switchValue)
                 tli.Should().Be(Tli2,
-                    $"страница 0x{pageAddr:x} целиком выше switchWALLSN — байты TLI2 в объекте {parentName}");
+                    $"page 0x{pageAddr:x} is entirely above switchWALLSN — TLI2 bytes in object {parentName}");
             // страница, СОДЕРЖАЩАЯ switchWALLSN (pageaddr ≤ точка < pageaddr+8192),
             // — переходная: её заголовок создан до переключения, жёстко НЕ
             // ассертится (spec §3.3 п.3)
         }
         validPages.Should().Contain(p => p.PageAddr > switchValue && p.Tli == Tli2,
-            "в объекте есть страницы TLI2 выше точки — хвост байтов нового таймлайна");
+            "the object contains TLI2 pages above the point — the tail of new timeline bytes");
 
         // (4) TLI2-поток продолжается со следующего сегмента: первый
         // TLI2-именованный объект = Next(S); TLI1-именованных выше S нет.
@@ -365,21 +365,21 @@ public sealed class TliSwitchContext : IAsyncLifetime
             .Select(w => w!.Value)
             .OrderBy(w => (long)w.Log * 256 + w.Seg)
             .ToList();
-        tli2Segments.Should().NotBeEmpty("TLI2-именованные сегменты доставлены (гейт шага 4)");
+        tli2Segments.Should().NotBeEmpty("TLI2-named segments are delivered (gate of step 4)");
         (tli2Segments[0].Log, tli2Segments[0].Seg).Should().Be((next.Log, next.Seg),
-            $"первый TLI2-именованный объект = Next(S) = {next.Name}");
+            $"the first TLI2-named object = Next(S) = {next.Name}");
         var switchPos = (long)switchSeg.Log * 256 + switchSeg.Seg;
         names.Where(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
                 && w.Tli == entry.ParentTli
                 && (long)w.Log * 256 + w.Seg > switchPos)
-            .Should().BeEmpty("TLI1-именованных объектов выше S нет");
+            .Should().BeEmpty("no TLI1-named objects above S");
 
         // (5) WalChain.Check — тем же валидатором, которым restore-заявка
         // пройдёт валидацию (S под именем TLI1 → Next(S) под TLI2 + history).
         var start = PgWorker.Backups.WalFileName.TryParse(WalStartSegment)!.Value;
         var check = PgWorker.Backups.WalChain.Check(start, names);
         check.IsContinuous.Should().BeTrue(check.GapError ??
-            $"WalChain.Check от {WalStartSegment} непрерывен — тем же валидатором, что пройдёт restore-заявка");
+            $"WalChain.Check from {WalStartSegment} is continuous — the same validator a restore request will pass");
     }
 
     // Шаг 3 (spec §3.2): жёсткая потеря мастера — docker stop (БЕЗ
@@ -391,10 +391,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
         Console.WriteLine($"[PHASE] tlsw-failover: docker stop pgw-{Cluster}-shard1-{master}");
         await Fx.RunDockerAsync(["stop", $"pgw-{Cluster}-shard1-{master}"], ct);
         var (host, port, newMaster) = await MasterPgAsync(Cluster, "shard1", ct);
-        newMaster.Should().NotBe(master, "после смерти мастера primary — выжившая реплика");
-        Console.WriteLine($"[PHASE] tlsw-failover: новый primary {newMaster}");
+        newMaster.Should().NotBe(master, "after the master dies the primary is the surviving replica");
+        Console.WriteLine($"[PHASE] tlsw-failover: new primary {newMaster}");
         Tli2 = await PrimaryTimelineAsync(Cluster, "shard1", ct);
-        Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
+        Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover opens a new timeline");
         _newMasterDsn = AdminDsn(host, port);
     }
 
@@ -443,7 +443,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 return false; // рестарт-окно — поллинг повторит
             }
         }, TimeSpan.FromSeconds(120), ct);
-        ready.Should().BeTrue("мастер обязан принять SQL до чтения данных (гейт t10): "
+        ready.Should().BeTrue("the master must accept SQL before reading data (t10 gate): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
         var (h, p, _) = await MasterPgAsync(Cluster, "shard1", ct);
         return AdminDsn(h, p);
@@ -495,7 +495,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                        && (long)w.Log * 256 + w.Seg > tli1Max);
         }, TimeSpan.FromSeconds(300), ct);
         tailDelivered.Should().BeTrue(
-            $"wal/{Tli2:x8}.history и TLI2-сегменты выше точки переключения обязаны доставиться (агент реплики продолжает от хвоста): "
+            $"wal/{Tli2:x8}.history and TLI2-segments above the switch point must be delivered (the replica agent continues from the tail): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
         // Шаг 4 (конец) — фиксация цели PITR: T_cut строго между post-switch
@@ -524,7 +524,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         Console.WriteLine($"[PHASE] after-cut-archived: ok={afterArchived}, elapsed={afterSw.Elapsed.TotalSeconds:F1}s");
         if (afterSw.Elapsed > TimeSpan.FromSeconds(60))
             await Fx.CollectDiagnosticsAsync($"slow-phase-after-cut-archived-{(int)afterSw.Elapsed.TotalSeconds}s");
-        afterArchived.Should().BeTrue("сегменты с after-cut обязаны попасть в архив: "
+        afterArchived.Should().BeTrue("segments with after-cut must land in the archive: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
     }
 
@@ -548,7 +548,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             (await FullKeysAsync(Cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
             TimeSpan.FromSeconds(300), ct);
         if (!completed)
-            throw new ApplicationException("полный не дошёл до COMPLETED: " +
+            throw new ApplicationException("the full did not reach COMPLETED: " +
                 await DumpDiagnosticsAsync(Cluster, "shard1"));
         var completedFull = (await FullKeysAsync(Cluster, "shard1"))
             .Single(f => f.Value.Contains("COMPLETED"));
@@ -556,7 +556,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         WalStartSegment = JsonSerializer
             .Deserialize<Dictionary<string, JsonElement>>(completedFull.Value)!
             ["wal_start_segment"].GetString()!;
-        WalStartSegment.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+        WalStartSegment.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
 
         // pre-wal: сегменты закрываются по одному, пока WalChain.Check от
         // wal_start не станет непрерывен (доставка — по list-S3, истина §2).
@@ -578,7 +578,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         Console.WriteLine($"[PHASE] pre-wal-chain: ok={chainOk}, elapsed={chainSw.Elapsed.TotalSeconds:F1}s");
         if (chainSw.Elapsed > TimeSpan.FromSeconds(60))
             await Fx.CollectDiagnosticsAsync($"slow-phase-pre-wal-chain-{(int)chainSw.Elapsed.TotalSeconds}s");
-        chainOk.Should().BeTrue("цепочка от wal_start обязана сойтись до failover: "
+        chainOk.Should().BeTrue("the chain from wal_start must converge before the failover: "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
 
         // Реальная запись TLI1 в открытом сегменте S — гарантия профиля
@@ -693,11 +693,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (!done || status!["state"].GetString() == "FAILED")
         {
             var error = status?.TryGetValue("error", out var err) == true ? err.GetString() : null;
-            if (error is not null && error.Contains("дыра WAL-цепочки", StringComparison.Ordinal))
+            if (error is not null && error.Contains("WAL chain gap", StringComparison.Ordinal))
                 throw new ChainGapException($"restore {cluster}/{shard}/{id}: {error}");
             throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
-                + (status is null ? "ключа нет" : status["state"].GetString())
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
                 + (error is null ? "" : $", error={error}")
                 + "; " + await DumpDiagnosticsAsync(cluster, shard));
         }
@@ -723,7 +723,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             catch (ChainGapException) when (attempt < 3)
             {
                 Console.Error.WriteLine(
-                    $"e2e[restore]: {cluster}/{shard} попытка {attempt} — дыра цепочки (гонка доставки), повторяю заявку");
+                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (delivery race), retrying the request");
                 await Task.Delay(3000, ct);
             }
         }
@@ -811,7 +811,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 }
                 catch (Exception cp)
                 {
-                    pgLog += $"\n== {name}: лог недоступен ({cp.Message})";
+                    pgLog += $"\n== {name}: log unavailable ({cp.Message})";
                 }
 
                 // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
@@ -822,11 +822,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
                         "ls /tmp/.mc 2>/dev/null | head -3; for s in 000000010000000000000009 00000001000000000000000a 00000001000000000000000b; do " +
                         "mc stat \"pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$s\" 2>&1 | head -2; done"],
                         TestContext.Current.CancellationToken);
-                    pgLog += $"\n== {name} MC-STAT(живой):\n{live[..Math.Min(1500, live.Length)]}";
+                    pgLog += $"\n== {name} MC-STAT(alive):\n{live[..Math.Min(1500, live.Length)]}";
                 }
                 catch (Exception ex)
                 {
-                    pgLog += $"\n== {name} MC-STAT: недоступен ({ex.Message})";
+                    pgLog += $"\n== {name} MC-STAT: unavailable ({ex.Message})";
                 }
             }
         }
@@ -923,7 +923,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     public async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -950,7 +950,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{Cluster}-{shard}-{primary}", 5432,
             primary!);
@@ -961,7 +961,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task<uint> PrimaryTimelineAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
         // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
@@ -1110,13 +1110,13 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 " FROM tli_switch_probe", ct);
             var parts = rows.Split('|');
             parts[0].Should().Be("18",
-                "все контрольные строки восстановлены, включая after-cut (хвост за целью PITR)");
+                "all control rows are restored, including after-cut (the tail beyond the PITR target)");
             parts[1].Should().Be("5",
-                "TLI1-хвост после полного накатился через смешанный сегмент (байты TLI1 в префиксе S)");
+                "the TLI1 tail after the full rolled forward through the mixed segment (TLI1 bytes in the prefix of S)");
             parts[2].Should().Be("5",
-                "данные TLI2 после END_OF_RECOVERY накатились");
+                "TLI2 data after END_OF_RECOVERY rolled forward");
             parts[3].Should().Be("3",
-                "after-cut восстановлены — restore дошёл до конца цепочки TLI2");
+                "after-cut rows are restored — restore reached the end of the TLI2 chain");
 
             // Assert 3 — контур: ноды RUNNING, dsn-ключ не изменился
             // (эталон DsnBefore фиксации шага 1; образец rs-latest).
@@ -1128,7 +1128,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
             nodeB!.Value.Should().Be("RUNNING");
             var dsnAfter = await Ctx.GetOrNullAsync(
                 $"/clusters/{Ctx.Cluster}/shards/shard1/dsn");
-            dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "portalloc/dsn restore не трогает (AC2)");
+            dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "restore does not touch portalloc/dsn (AC2)");
 
             // Assert 4 (инвариант §3.5 после restore) — wal-ключ сброшен и
             // заведён заново (ACTIVE), новый COMPLETED-полный ≠ OldBackupId,
@@ -1148,7 +1148,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                         $"name=pgw-backup-wal-{Ctx.Cluster}-shard1"], ct);
                 return agents.Length > 0;
             }, TimeSpan.FromSeconds(300), ct);
-            reinited.Should().BeTrue("инвариант после restore (wal-reinit): "
+            reinited.Should().BeTrue("the post-restore invariant (wal-reinit): "
                 + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));
 
             // Assert 5 — фиксация исхода: гейт skip'а Fact 2.
@@ -1176,7 +1176,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
         // контуре — каскадный красный без новой информации; телеметрия
         // первой заявки уже собрана.
         if (!Ctx.LatestRestoreSucceeded)
-            Assert.Skip("Fact 1 (latest) упал — контур для target_time недостоверен, разбор по телеметрии Fact 1");
+            Assert.Skip("Fact 1 (latest) failed — the target_time contour is unreliable, investigate via Fact 1 telemetry");
         var ct = TestContext.Current.CancellationToken;
         try
         {
@@ -1193,7 +1193,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
             var restoredSeg = PgWorker.Backups.WalFileName.FromLsn(0, lsn!);
             var restoredPos = (long)restoredSeg.Log * 256 + restoredSeg.Seg;
             restoredPos.Should().BeLessThanOrEqualTo(Ctx.AfterCutPos,
-                "цель раньше конца цепочки — recovery не уходил дальше after-cut");
+                "the target is earlier than the end of the chain — recovery did not go past after-cut");
 
             // Assert 2 — остановка в цели: 15 строк, after-cut нет.
             var dsn = await Ctx.MasterReadyDsnAsync(ct);
@@ -1202,8 +1202,8 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 " FROM tli_switch_probe", ct);
             var parts = rows.Split('|');
             parts[0].Should().Be("15",
-                "pre + pre-wal + post-switch восстановлены — обе стороны TLI-границы через смешанный сегмент");
-            parts[1].Should().Be("0", "коммиты после T_cut не накатились — PITR-остановка в цели");
+                "pre + pre-wal + post-switch are restored — both sides of the TLI boundary through the mixed segment");
+            parts[1].Should().Be("0", "commits after T_cut did not roll forward — PITR stops at the target");
 
             // Assert 3 — контур: ноды RUNNING (rejoin второй заявки — тот же
             // RestoreProcess), dsn жив.

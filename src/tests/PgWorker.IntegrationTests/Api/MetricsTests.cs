@@ -94,7 +94,7 @@ public sealed class MetricsTests(PgMetricsFixture fx)
                      "pgworker_backup_restore_total",
                      "pgworker_backup_drill_total",
                  })
-            body.Should().Contain(name, $"серия {name} словаря §2.7 обязана экспортироваться");
+            body.Should().Contain(name, $"the {name} series of the §2.7 dictionary must be exported");
 
         // Лейблы: экспозиция OTel сортирует ключи лексикографически
         // (cluster, result, shard для counter'ов; cluster, shard для гейджей) —

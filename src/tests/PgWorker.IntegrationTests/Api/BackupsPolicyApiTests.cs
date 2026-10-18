@@ -19,7 +19,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
     // AAA: валидное тело → 200, ключ в etcd равен телу канона, парсер t01
     // читает policy без parseErrors (AC7).
     [Fact]
-    public async Task Валидное_тело_200_и_ключ_в_etcd()
+    public async Task ValidBody200AndKeyInEtcd()
     {
         // Arrange — активный кластер + валидная политика
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bp", buckets: 4, shards: 2);
@@ -58,7 +58,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
 
     // AAA: пустое тело — отсутствующие поля замещаются дефолтами канона.
     [Fact]
-    public async Task Опущенные_поля_дефолты()
+    public async Task OmittedFieldsDefaults()
     {
         // Arrange — активный кластер, тело {}
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd", buckets: 4, shards: 2);
@@ -81,7 +81,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
 
     // AAA: нарушения диапазонов — 400 с перечнем по всем полям.
     [Fact]
-    public async Task Невалидные_диапазоны_400_с_перечнем()
+    public async Task InvalidRanges400WithList()
     {
         // Arrange — days=400, weeks=99, full_max_age_sec=1 (все три мимо)
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpv", buckets: 4, shards: 2);
@@ -102,12 +102,12 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         errors.TryGetProperty("retention.weeks", out _).Should().BeTrue();
         errors.TryGetProperty("full_max_age_sec", out _).Should().BeTrue();
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpv/policy", ct);
-        stored.Value.Should().BeNull("невалидная политика не пишется");
+        stored.Value.Should().BeNull("an invalid policy is not written");
     }
 
     // AAA: мусорное тело — 400.
     [Fact]
-    public async Task Мусорный_JSON_400()
+    public async Task GarbageJson400()
     {
         // Arrange — активный кластер
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpj", buckets: 4, shards: 2);
@@ -125,7 +125,7 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
 
     // AAA: несуществующий кластер — 404, ключ не пишется.
     [Fact]
-    public async Task Несуществующий_кластер_404()
+    public async Task NonexistentCluster404()
     {
         // Arrange — кластер nocluster не сеялся
         var ct = TestContext.Current.CancellationToken;
@@ -285,7 +285,7 @@ private async Task SeedS3PoolAsync(string ctTag = "")
 // читает pool/списки); инстанс с placement БЕЗ portalloc — ВАЛИДЕН (201/200,
 // без 400: адрес появится при provisioning).
 [Fact]
-public async Task PolicyСS3_Валидна_ИнстансБезPortallocВалиден()
+public async Task PolicyWithS3ValidInstanceWithoutPortallocIsValid()
 {
     // Arrange — кластер + пул (node2 без portalloc-записи).
     await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3", buckets: 4, shards: 2);
@@ -315,7 +315,7 @@ public async Task PolicyСS3_Валидна_ИнстансБезPortallocВал�
 
 // AAA: повторный PUT без s3 — секция исчезла (выключение бэкапов кластера).
 [Fact]
-public async Task ПовторныйПутБезS3_СекцияУдалена()
+public async Task RepeatedPutWithoutS3SectionRemoved()
 {
     // Arrange — policy с s3 уже записана.
     await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3r", buckets: 4, shards: 2);
@@ -346,7 +346,7 @@ public async Task ПовторныйПутБезS3_СекцияУдалена()
 // AAA: 400-набор — несуществующий пул / нода не в пуле / дубликат / пустой
 // список / pool пуст при заданных списках — ошибки ПО ПОЛЯМ.
 [Fact]
-public async Task НекорректнаяS3_400ПоПолям()
+public async Task InvalidS3_400PerFields()
 {
     // Arrange — кластер + пул.
     await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3v", buckets: 4, shards: 2);
@@ -359,27 +359,27 @@ public async Task НекорректнаяS3_400ПоПолям()
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"pool":"ghost","write_master":["node1"],"write_replica":["node1"]}}
-        """, "s3.pool", "не найден"),
+        """, "s3.pool", "not found"),
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"pool":"backups","write_master":["ghost1"],"write_replica":["node1"]}}
-        """, "s3.write_master", "не в пуле"),
+        """, "s3.write_master", "is not in pool"),
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"pool":"backups","write_master":["node1","node1"],"write_replica":["node1"]}}
-        """, "s3.write_master", "дубликат"),
+        """, "s3.write_master", "duplicate"),
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"pool":"backups","write_master":[],"write_replica":["node1"]}}
-        """, "s3.write_master", "список пуст"),
+        """, "s3.write_master", "list is empty"),
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"write_master":["node1"],"write_replica":["node1"]}}
-        """, "s3.pool", "обязателен"),
+        """, "s3.pool", "required"),
         ("""
         {"retention":{"days":1},"full_max_age_sec":86400,"verify":{"on_create":true},
          "s3":{"pool":"backups","write_master":["node1"],"write_replica":[]}}
-        """, "s3.write_replica", "список пуст"),
+        """, "s3.write_replica", "list is empty"),
     };
     foreach (var (body, field, fragment) in cases)
     {
@@ -393,7 +393,7 @@ public async Task НекорректнаяS3_400ПоПолям()
 
 // AAA: пул в TO_REMOVE → 400 по полю s3.pool.
 [Fact]
-public async Task ПулToRemove_400()
+public async Task PoolToRemove400()
 {
     // Arrange — пул с заявкой удаления.
     await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bps3t", buckets: 4, shards: 2);

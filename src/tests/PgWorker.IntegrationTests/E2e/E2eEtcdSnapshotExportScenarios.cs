@@ -105,7 +105,7 @@ public class E2eEtcdSnapshotExportScenarios
     // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в ownS3,
     // ключ OK с фактом, sha256 совпадает, слепок разворачиваем (etcdctl).
     [Fact]
-    public async Task Export_плановый_слепок_уезжает_в_S3_ключ_OK()
+    public async Task ExportPlannedSnapshotLeavesToS3KeyOk()
     {
         // Arrange — своё окружение (сеть/etcd/ownS3) + хост-воркер с экспортом
         DockerTrait.SkipIfUnavailable();
@@ -120,7 +120,7 @@ public class E2eEtcdSnapshotExportScenarios
             TimeSpan.FromSeconds(120), ct);
 
         // Assert — ключ OK с интервалом и фактом
-        okKey.Should().BeTrue("первый тик лидера снимает слепок и выгружает его");
+        okKey.Should().BeTrue("the first leader tick takes a snapshot and uploads it");
         var kv = await StatusValueAsync(ct);
         kv.Should().Contain("\"interval_min\":1").And.Contain("\"last_object\":\"etcd/snapshot-");
         // Assert — объекты в ownS3: пара db+meta (имена относительно etcd/).
@@ -141,7 +141,7 @@ public class E2eEtcdSnapshotExportScenarios
                 : dbKey;
             return keysNow.Contains(dbKey) && keysNow.Contains(metaKey);
         }, TimeSpan.FromSeconds(120), ct);
-        stablePair.Should().BeTrue("пара последнего выгруженного слепка (db+meta) устойчиво в листинге");
+        stablePair.Should().BeTrue("the pair of the last uploaded snapshot (db+meta) is stably in the listing");
         var listing = await McLsAsync("etcd/");
         var keys = McKeys(listing);
         // Assert — sha256 выгрузки == sha256 содержимого S3-объекта (целостность)
@@ -149,9 +149,9 @@ public class E2eEtcdSnapshotExportScenarios
         // db-ключ из статуса (не Single по листингу: в окне факта воркер мог
         // снять следующий слепок — счёт пар в листинге не инвариант этого факта)
         var lastDb = status.LastObject!["etcd/".Length..];
-        keys.Should().Contain(lastDb, "последний выгруженный db-объект в листинге");
+        keys.Should().Contain(lastDb, "the last uploaded db object is in the listing");
         var bytes = await DownloadAsync(status.LastObject!, ct);
-        Sha256Hex(bytes).Should().Be(status.LastSha256, "sha256 статуса = sha256 содержимого S3-объекта");
+        Sha256Hex(bytes).Should().Be(status.LastSha256, "the status sha256 = the sha256 of the S3 object content");
         // Assert — verify слепка (AC5): etcdctl snapshot status на ВАЛИДНОМ слепке
         // в контейнере etcd окружения — положительный вердикт структуры/ревизии
         // (etcd 3.5.x печатает hash, но при status его НЕ сверяет — порча байта
@@ -166,7 +166,7 @@ public class E2eEtcdSnapshotExportScenarios
             // etcdctl печатает hash БЕЗ ведущих нулей (напр. «9367b56» — 7 hex) —
             // {8} ловил только полный паддинг; диапазон 1..8 по механике вывода.
             verdict.Should().MatchRegex("^[0-9a-f]{1,8}, \\d+, \\d+, .+",
-                "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
+                "a valid snapshot from S3 passes etcdctl snapshot status (AC5): hash/keys/size");
         }
         finally
         {
@@ -176,7 +176,7 @@ public class E2eEtcdSnapshotExportScenarios
 
     // AAA (AC4 сквозно): ретенция держит ровно N пар — старейшая снесена.
     [Fact]
-    public async Task Export_ретенция_держит_N_пар()
+    public async Task ExportRetentionKeepsNPairs()
     {
         // Arrange — хост с retention: 1 и минутным интервалом
         DockerTrait.SkipIfUnavailable();
@@ -190,7 +190,7 @@ public class E2eEtcdSnapshotExportScenarios
         var first = await E2eFixture.WaitForAsync(async () =>
             (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value.Contains("\"state\":\"OK\"") == true,
             TimeSpan.FromSeconds(300), ct);
-        first.Should().BeTrue("первая выгрузка");
+        first.Should().BeTrue("the first upload");
         var firstName = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
             await StatusValueAsync(ct))!.LastObject;
         var second = await E2eFixture.WaitForAsync(async () =>
@@ -201,17 +201,17 @@ public class E2eEtcdSnapshotExportScenarios
         }, TimeSpan.FromSeconds(180), ct);
 
         // Assert — ровно 2 ключа (одна пара), старейшего id нет
-        second.Should().BeTrue("каждый плановый слепок уезжает новой парой — ретенция 1 сносит старейшую");
+        second.Should().BeTrue("every planned snapshot leaves as a new pair — retention 1 removes the oldest");
         var keys = McKeys(await McLsAsync("etcd/"));
-        keys.Should().HaveCount(2, "ретенция держит ровно N=1 пар (db+meta)");
+        keys.Should().HaveCount(2, "the retention keeps exactly N=1 pairs (db+meta)");
         keys.Should().Contain(k => k.EndsWith(".db")).And.Contain(k => k.EndsWith(".meta.json"));
-        keys.Should().NotContain(k => $"etcd/{k}" == firstName, "старейший id снесён (AC4)");
+        keys.Should().NotContain(k => $"etcd/{k}" == firstName, "the oldest id is removed (AC4)");
     }
 
     // AAA (AC3+AC7 сквозно): S3 недоступен — слепок снят, ключ FAILED с error,
     // цикл жив, панель зажигает critical-алерт на фактическом значении ключа.
     [Fact]
-    public async Task Export_негатив_S3_недоступен_слепок_снят_ключ_FAILED_алерт()
+    public async Task ExportNegativeS3UnavailableSnapshotTakenKeyFailedAlert()
     {
         // Arrange — хост с экспортом на закрытый порт (протокольный «всегда закрыт»)
         DockerTrait.SkipIfUnavailable();
@@ -227,16 +227,16 @@ public class E2eEtcdSnapshotExportScenarios
             TimeSpan.FromSeconds(120), ct);
 
         // Assert — ключ FAILED + непустая error
-        failed.Should().BeTrue("сбой выгрузки фиксируется статус-ключом, не снятием");
+        failed.Should().BeTrue("an upload failure is recorded by the status key, not by the snapshot");
         var kv = await StatusValueAsync(ct);
         var status = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(kv)!;
         status.State.Should().Be("FAILED");
         status.Error.Should().NotBeNullOrEmpty();
         // Assert — слепок снят в локальный том (истина снятия), цикл жив
         Directory.GetFiles(app.SnapshotsDir, "snapshot-*.db").Should().NotBeEmpty(
-            "сбой выгрузки не роняет снятие (spec §2.3)");
+            "an upload failure does not fail the snapshot (spec §2.3)");
         var api = (await G.RangeAsync(Endpoint, "/pgworker/api/", ct)).Value;
-        api.Should().NotBeEmpty("цикл жив — дискавери-ключ инстанса существует");
+        api.Should().NotBeEmpty("the loop is alive — the instance discovery key exists");
         // Assert — панельный алерт: фактическое значение ключа кормит правило
         var parsed = AdminPanel.Etcd.Parsing.EtcdSnapshotsParser.Parse(
             new Shared.Etcd.Client.Kv("/pgworker/etcd-snapshots", kv, 1));
@@ -249,6 +249,6 @@ public class E2eEtcdSnapshotExportScenarios
             .Evaluate(snapshot, new AdminPanel.Core.Alerting.AlertContext(null, DateTimeOffset.UtcNow, 3)).ToList();
         alerts.Should().ContainSingle(a => a.Kind == "etcd-snapshot-export-failed"
             && a.Severity == AdminPanel.Core.AlertSeverity.Critical,
-            "провал выгрузки — critical-алерт (AC7)");
+            "an upload failure — a critical alert (AC7)");
     }
 }

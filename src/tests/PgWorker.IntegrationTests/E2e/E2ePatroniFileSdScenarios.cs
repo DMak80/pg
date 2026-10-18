@@ -54,13 +54,13 @@ public class E2ePatroniFileSdScenarios
         // ровно в /artifacts, артефакты факта живут в /artifacts/<runId> —
         // хостовый аналог контейнерного пути = hostArtifacts/<runId>.
         var hostArtifacts = Environment.GetEnvironmentVariable("PGW_E2E_HOST_ARTIFACTS")
-            ?? throw new ApplicationException("PGW_E2E_HOST_ARTIFACTS не задан — старт вне раннера");
+            ?? throw new ApplicationException("PGW_E2E_HOST_ARTIFACTS is not set — running outside the runner");
         var hostArtifactsDir = Path.Combine(
             hostArtifacts, Path.GetRelativePath("/artifacts", Fx.ArtifactsDir));
         try
         {
             // ---------- контур мониторинга (только этого сценария) ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сборка образа {E2eEnvironment.SdImage} (ленивая, первая серия платит)…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: building image {E2eEnvironment.SdImage} (lazy, the first series pays)…");
             await E2eEnvironment.EnsureSdImageAsync(ct);
 
             await Fx.RunDockerAsync(["volume", "create", sdVolName], ct);
@@ -124,13 +124,13 @@ public class E2ePatroniFileSdScenarios
             };
 
             // ---------- старт контура мониторинга ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: старт контейнеров контура (sd-generator + prometheus)…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: starting contour containers (sd-generator + prometheus)…");
             await Fx.RunDockerAsync([.. sdGenArgs], ct);
             await Fx.RunDockerAsync([.. promArgs], ct);
             using var promHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             // ---------- кластер ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сид кластера {cluster} + провижининг (≤360 c)…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: seeding cluster {cluster} + provisioning (≤360 s)…");
             await SeedClusterAsync(cluster);
             // ScrapeNetwork = имя сети окружения класса (t15 ревизия 3, spec §3.5):
             // движок Ensure-attach'ит ноды к сети окружения поверх pgw-net-<C>,
@@ -142,53 +142,53 @@ public class E2ePatroniFileSdScenarios
 
             var provisioned = await E2eFixture.WaitForAsync(
                 E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
+            provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // ---------- сетевая идентичность (Д1-контур в E2E) ----------
             // portalloc: все 4 записи с alias вида pgw-<cluster>-… и net = сети
             // окружения; membership каждой ноды в сети — docker inspect
             // (spec §6.4 «inspect подтверждает membership», обязательный ассерт).
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сетевая идентичность portalloc + membership нод…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: network identity portalloc + node membership…");
             var aliases = await PatroniAliasesAsync(cluster);
             foreach (var alias in aliases)
             {
                 var inspect = await Fx.RunDockerAsync(
                     ["inspect", alias, "--format", "{{json .NetworkSettings.Networks}}"], ct);
                 inspect.Should().Contain($"\"{Fx.NetName}\"",
-                    $"нода {alias} подключена к сети окружения {Fx.NetName} (Ensure-attach движка)");
+                    $"node {alias} is attached to the environment network {Fx.NetName} (engine Ensure-attach)");
             }
 
             // ---------- таргеты up ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: ожидание таргетов patroni-nodes up…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: waiting for the patroni-nodes up targets…");
             var targetsUp = await E2eFixture.WaitForAsync(
                 () => PatroniTargetsUpAsync(promHttp, promUrl, aliases),
                 TimeSpan.FromSeconds(120), ct);
-            targetsUp.Should().BeTrue("таргеты patroni-nodes обязаны появиться и быть up");
+            targetsUp.Should().BeTrue("the patroni-nodes targets must appear and be up");
 
             // Канон ревизии 3: ни один scrapeUrl (обе джобы: patroni-nodes и
             // sd-generator) не содержит host.docker.internal — скрейп целиком
             // сетевой, host-форвардинга в контуре нет.
             var allUrls = await AllScrapeUrlsAsync(promHttp, promUrl);
-            allUrls.Should().NotBeEmpty("activeTargets прометея непусты");
+            allUrls.Should().NotBeEmpty("the prometheus activeTargets are not empty");
             allUrls.Should().NotContain(u => u.Contains("host.docker.internal", StringComparison.Ordinal),
-                "ни один таргет не на host-форвардинге (канон t15 ревизии 3)");
+                "no target is on host forwarding (t15 revision 3 canon)");
 
             // ---------- канон-минимум серий (M3-факт) ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: фиксация фактического словаря patroni_* + самоскрейп генератора…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: fixing the actual patroni_* dictionary + generator self-scrape…");
             var factSeries = await E2eFixture.WaitForAsync(
                 async () => await PatroniSeriesFactAsync(promHttp, promUrl) is not null,
                 TimeSpan.FromSeconds(60), ct);
             factSeries.Should().BeTrue(
-                "при up-скрейпе таргетов серии patroni_* обязаны появиться в TSDB (факт для arch/18 §2.5)");
+                "with an up-scrape of the series targets, patroni_* must appear in the TSDB (the fact for arch/18 §2.5)");
             var fact = await PatroniSeriesFactAsync(promHttp, promUrl);
-            fact!.Should().NotBeEmpty("нативные серии Patroni — словарь arch/18 §2.5 (M3-факт)");
+            fact!.Should().NotBeEmpty("native Patroni series — the arch/18 §2.5 dictionary (M3 fact)");
             // M3-факт — в артефакты прогона: xUnit буферизует Console, файл виден
             // сразу и остаётся в дампе (фиксация словаря arch/18 §2.5 по факту).
             await File.WriteAllTextAsync(
                 Path.Combine(Fx.ArtifactsDir, "patroni-series-fact.txt"),
                 string.Join("\n", fact), ct);
             Console.WriteLine(
-                $"[PHASE] e2e[{Fx.Slug}]: факт словаря patroni_*: {string.Join(", ", fact)}");
+                $"[PHASE] e2e[{Fx.Slug}]: the patroni_* dictionary fact: {string.Join(", ", fact)}");
 
             // Канон-минимум arch/18 §2.5 (M3-факт прогона: словарь Patroni 4.x —
             // роли отдельными сериями, patroni_primary вместо master,
@@ -204,16 +204,16 @@ public class E2ePatroniFileSdScenarios
                 var present = await E2eFixture.WaitForAsync(
                     () => SeriesPresentAsync(promHttp, promUrl, series),
                     TimeSpan.FromSeconds(60), ct);
-                present.Should().BeTrue($"серия {series} обязана быть в TSDB (канон-минимум arch/18 §2.5 / §5.4)");
+                present.Should().BeTrue($"the series {series} must be in the TSDB (arch/18 §2.5 / §5.4 canon minimum)");
             }
 
             // ---------- демонтаж ----------
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: демонтаж кластера → таргеты patroni-nodes исчезают…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: cluster dismantling → the patroni-nodes targets disappear…");
             await SetToRemoveAsync(cluster);
             var gone = await E2eFixture.WaitForAsync(
                 () => DismantledAsync(cluster, promHttp, promUrl),
                 TimeSpan.FromSeconds(240), ct);
-            gone.Should().BeTrue("после демонтажа portalloc-ключ исчез, а таргеты patroni-nodes = 0");
+            gone.Should().BeTrue("after the dismantling the portalloc key is gone and the patroni-nodes targets = 0");
         }
         catch
         {
@@ -229,7 +229,7 @@ public class E2ePatroniFileSdScenarios
             // удаления — «что произошло» отвечает по логам без перезапуска
             // (docs/e2e-launch.md); жёсткий kill процесса теста — единственный
             // случай, когда этот шаг не выполняется.
-            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: teardown — телеметрия, затем удаления…");
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: teardown — telemetry first, then removals…");
             await Fx.CollectDiagnosticsAsync("scenario-finally");
 
             foreach (var c in new[] { promName, sdGenName })
@@ -274,7 +274,7 @@ public class E2ePatroniFileSdScenarios
             // Ассерт чистоты контура сценария: volume file_sd удалён.
             var leftVolumes = await E2eFixture.RunDockerAsync(
                 ["volume", "ls", "-q", "--filter", $"name=pgw-sd-{Fx.ClusterTag}"], CancellationToken.None);
-            leftVolumes.Should().BeEmpty("volume file_sd контура сценария удалён teardown'ом");
+            leftVolumes.Should().BeEmpty("the file_sd volume of the scenario contour is removed by the teardown");
         }
     }
 
@@ -356,16 +356,16 @@ public class E2ePatroniFileSdScenarios
     private async Task<List<string>> PatroniAliasesAsync(string cluster)
     {
         var kv = await GetOrNullAsync($"/pgworker/portalloc/{cluster}");
-        kv.Should().NotBeNull("portalloc кластера записан провижинингом");
+        kv.Should().NotBeNull("the cluster portalloc is written by provisioning");
         var dict = JsonSerializer.Deserialize<Dictionary<string, PortallocEntry>>(kv!.Value, Json) ?? [];
         var live = dict.Where(p => p.Value.Patroni > 0).ToList();
-        live.Should().HaveCount(4, "portalloc кластера: 2 шарда × 2 реплики с живым Patroni");
+        live.Should().HaveCount(4, "the cluster portalloc: 2 shards × 2 replicas with a live Patroni");
         foreach (var (key, entry) in live)
         {
             entry.Alias.Should().NotBeNullOrEmpty(
-                $"запись {key} несёт alias (ScrapeNetwork задан —decorate точек записи)");
-            entry.Alias.Should().StartWith($"pgw-{cluster}-", "alias — полное docker-имя ноды");
-            entry.Net.Should().Be(Fx.NetName, "net записи = имя сети окружения класса");
+                $"the record {key} carries the alias (ScrapeNetwork is set — decorate of the write points)");
+            entry.Alias.Should().StartWith($"pgw-{cluster}-", "the alias is the full docker name of the node");
+            entry.Net.Should().Be(Fx.NetName, "the record net = the name of the class environment network");
         }
 
         return live.Select(p => p.Value.Alias!).ToList();

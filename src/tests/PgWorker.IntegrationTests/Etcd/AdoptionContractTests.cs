@@ -155,7 +155,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
         var entry = await ReadJournalAsync(cluster);
         entry.Op.Should().Be("adopt");
         entry.Phase.Should().Be("done");
-        entry.Message.Should().Contain("пропущено: 1");
+        entry.Message.Should().Contain("skipped: 1");
     }
 
     // AAA (advertised-правило, arch/16-симметрия): Active-кластер с ЛЕГАСИ-
@@ -215,7 +215,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
         dsn.Value!.Value.Should().Be(
             $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} " +
             "user=bucket_admin password=bapw"); // t02: dsn несёт ensure-кред, не legacy config-пароль
-        driver.EnsuredNodes.Should().BeEmpty("живые контейнеры на месте — recreate не нужен");
+        driver.EnsuredNodes.Should().BeEmpty("the live containers are in place — no recreate needed");
         var entry = await ReadJournalAsync(cluster);
         entry.Op.Should().Be("adopt");
         entry.Phase.Should().Be("repaired-dsn");

@@ -100,7 +100,7 @@ public class EtcdContractTests(EtcdFixture fixture)
 
         // Act — фейл с серией, затем фаза прогресса с переносом той же серии.
         var fail = await journal.WritePhaseAsync("shop", "provision", "shard-provision", "inst-1",
-            "Patroni шарда shop-shard1 не поднялся за бюджет 600 с", ct, series);
+            "the Patroni of shard shop-shard1 did not come up within the 600 s budget", ct, series);
         var carried = await journal.WritePhaseAsync(
             "shop", "provision", "waiting-patroni", "inst-1", null, ct, series);
         var read = await journal.ReadAsync("shop", ct);

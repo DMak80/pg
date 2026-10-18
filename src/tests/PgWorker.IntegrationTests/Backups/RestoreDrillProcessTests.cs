@@ -220,7 +220,7 @@ public class RestoreDrillProcessTests
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
 
-        private static NotSupportedException NotSupported() => new("не используется в тестах дрилла");
+        private static NotSupportedException NotSupported() => new("not used in the drill tests");
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
@@ -262,7 +262,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
-        (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
     }
 
     private RestoreDrillProcess BuildProcess(
@@ -297,7 +297,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     {
         var kv = await Fx.Gateway.GetAsync(Fx.Endpoint, DrillKey(cluster),
             TestContext.Current.CancellationToken);
-        kv.Value.Should().NotBeNull("статус дрилла пишется в ключ /drill");
+        kv.Value.Should().NotBeNull("the drill status is written to the /drill key");
         return kv.Value!.Value;
     }
 
@@ -309,7 +309,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var range = await Fx.Gateway.RangeAsync(Fx.Endpoint, $"/pgworker/backups/{cluster}/", ct);
         range.IsSuccess.Should().BeTrue();
         var parsed = BackupsParser.Parse(range.Value, out var errors);
-        errors.Should().BeEmpty("сид-ключи обязаны парситься");
+        errors.Should().BeEmpty("the seed keys must parse");
         return parsed.Value;
     }
 
@@ -365,7 +365,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert — SUCCEEDED с LSN, phase снят, контейнер и volume снесены.
         var key = await ReadDrillAsync(cluster);
         key.Should().Contain("\"SUCCEEDED\"").And.Contain("\"restored_to_lsn\":\"0/42\"");
-        key.Should().NotContain("phase", "чистый терминальный итог — контур снесён");
+        key.Should().NotContain("phase", "a clean terminal outcome — the contour is torn down");
         key.Should().Contain("finished_unix");
         engine.Removed.Should().Contain(name);
         engine.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
@@ -435,7 +435,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct)).IsSuccess.Should().BeTrue();
 
         // Assert
-        engine.Removed.Count.Should().Be(removedBefore, "чистый итог — повторных rm нет");
+        engine.Removed.Count.Should().Be(removedBefore, "a clean outcome — no repeated rm");
     }
 
     // AAA: transient docker rm — ключ остаётся с phase=cleaning, следующий тик повторяет.
@@ -462,9 +462,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct)).IsSuccess.Should().BeTrue();
 
         // Assert — контейнер жив, ключ остался с cleaning (доводка не «забыта»).
-        engine.Containers.Should().ContainKey(name, "rm не прошёл — контур на месте");
+        engine.Containers.Should().ContainKey(name, "the rm did not go through — the contour is in place");
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"cleaning\"",
-            "transient сноса виден в ключе — следующий тик повторит");
+            "the teardown transient is visible in the key — the next tick will repeat it");
 
         // Act — следующий тик повторяет rm (идемпотентная доводка).
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct)).IsSuccess.Should().BeTrue();
@@ -593,7 +593,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert — ключа дрилла не появилось, джобов нет.
         engine.Created.Should().BeEmpty();
         var kv = await Fx.Gateway.GetAsync(Fx.Endpoint, DrillKey(cluster), ct);
-        kv.Value.Should().BeNull("интервал 0 — дрилл выключен");
+        kv.Value.Should().BeNull("interval 0 — the drill is off");
     }
 
     // AAA: активная restore-заявка шарда — шард не кандидат.
@@ -622,7 +622,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .IsSuccess.Should().BeTrue();
 
         // Assert
-        engine.Created.Should().BeEmpty("restore владеет ЖЦ шарда — дрилл не стартует");
+        engine.Created.Should().BeEmpty("restore owns the shard LIFECYCLE — the drill does not start");
     }
 
     // AAA: валидационный провал (манифеста нет) → FAILED без запуска джоба:
@@ -653,7 +653,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var key = await ReadDrillAsync(cluster);
         key.Should().Contain("\"FAILED\"").And.Contain("backup_manifest");
         key.Should().Contain("started_unix").And.Contain("finished_unix");
-        key.Should().NotContain("phase", "без джоба — чистый терминальный итог");
+        key.Should().NotContain("phase", "no job — a clean terminal outcome");
         engine.Created.Should().BeEmpty();
         engine.RemovedVolumes.Should().BeEmpty();
         (await ReadWorkPhaseAsync(cluster)).Should().Contain("failed/shard1/");
@@ -792,7 +792,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var key = await ReadDrillAsync(cluster);
         key.Should().Contain("\"FAILED\"").And.Contain("drill-vanished");
         key.Should().NotContain("phase");
-        engine.Created.Should().BeEmpty("vanished — досоздачи нет: возраст за бюджетом");
+        engine.Created.Should().BeEmpty("vanished — no re-creation: the age is over the budget");
         engine.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
     }
 
@@ -864,7 +864,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .IsSuccess.Should().BeTrue();
 
         // Assert 2
-        engine.Created.Should().BeEmpty("выключение — только доводка, новых запусков нет");
+        engine.Created.Should().BeEmpty("disabled — finalization only, no new runs");
     }
 
     // AAA: интервал = policy.drill.interval_days ?? конфига (policy перекрывает).
@@ -924,7 +924,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .IsSuccess.Should().BeTrue();
 
         // Assert — контур снесён на h2 (не «404 чужого хоста»), ключ чист.
-        engineH2.Removed.Should().Contain(name, "доводка обязана найти джоб на втором хосте");
+        engineH2.Removed.Should().Contain(name, "the finalization must find the job on the second host");
         engineH2.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
         (await ReadDrillAsync(cluster)).Should().Contain("\"SUCCEEDED\"").And.NotContain("phase");
     }
@@ -995,7 +995,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // (ни досоздачи на h1, ни FAILED).
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"")
             .And.NotContain("drill-vanished").And.NotContain("\"FAILED\"");
-        engineH1.Created.Should().BeEmpty("досоздача-дубликат на чужом хосте запрещена");
+        engineH1.Created.Should().BeEmpty("a re-creation duplicate on a foreign host is forbidden");
     }
 
     // AAA (AC4, окно вердикт→cleaning, F1): вердикт пишется ОДНИМ put сразу с
@@ -1030,7 +1030,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var key = await ReadDrillAsync(cluster);
         key.Should().Contain("\"SUCCEEDED\"").And.Contain("\"phase\":\"cleaning\"")
             .And.Contain("\"restored_to_lsn\":\"0/700\"");
-        engineH1.Containers.Should().ContainKey(name, "снос сорвался — контур на месте");
+        engineH1.Containers.Should().ContainKey(name, "the teardown was interrupted — the contour is in place");
 
         // Act 2 — хосты доступны: следующий тик дочищает.
         driver.HostsFails = false;
@@ -1046,7 +1046,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA: t14 — оба пути чистого терминального итога зовут наблюдателя:
     // FAILED-валидация без джоба ("failed") и доведённый SUCCEEDED ("ok")
     [Fact]
-    public async Task ТерминальныеИсходы_зовут_наблюдателя()
+    public async Task TerminalOutcomesCallObserver()
     {
         // Arrange 1 — полный есть, манифеста нет: FAILED-валидация без джоба
         var ct = TestContext.Current.CancellationToken;

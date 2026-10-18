@@ -71,8 +71,8 @@ public class RepairContractTests(EtcdFixture fixture)
         {
             var kv = await Gateway.GetAsync(Endpoint, MoveNames.MoveKey(cluster, bucket),
                 TestContext.Current.CancellationToken);
-            kv.Value!.Value.Should().Contain("\"op\":\"abort\"", $"{bucket} — синтетическая abort-заявка");
-            kv.Value.Value.Should().NotContain("\"force\":true", $"{bucket} — routing==owner, force не нужен");
+            kv.Value!.Value.Should().Contain("\"op\":\"abort\"", $"{bucket} — a synthetic abort request");
+            kv.Value.Value.Should().NotContain("\"force\":true", $"{bucket} — routing==owner, force is not needed");
             kv.Value.Value.Should().Contain("\"requested_by\":\"pgworker-repair\"");
         }
     }
@@ -97,7 +97,7 @@ public class RepairContractTests(EtcdFixture fixture)
         tick.IsSuccess.Should().BeTrue(tick.Error?.ToString());
         var kv = await Gateway.GetAsync(Endpoint, MoveNames.MoveKey(cluster, "bucket_3"),
             TestContext.Current.CancellationToken);
-        kv.Value!.Value.Should().Be(operatorRequest, "операторская заявка жива — репарация не лезет");
+        kv.Value!.Value.Should().Be(operatorRequest, "the operator request is alive — repair does not interfere");
     }
 
     [Fact]
@@ -116,6 +116,6 @@ public class RepairContractTests(EtcdFixture fixture)
         tick.IsSuccess.Should().BeTrue(tick.Error?.ToString());
         var range = await Gateway.RangeAsync(Endpoint, MoveNames.MovesPrefix(cluster),
             TestContext.Current.CancellationToken);
-        range.Value.Should().BeEmpty("свежий статус — живой владелец, домен MoveProcess");
+        range.Value.Should().BeEmpty("a fresh status — a live owner, the MoveProcess domain");
     }
 }

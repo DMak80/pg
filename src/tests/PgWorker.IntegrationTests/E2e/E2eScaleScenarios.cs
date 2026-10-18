@@ -45,7 +45,7 @@ public class E2eScaleScenarios
 
             var provisioned = await E2eFixture.WaitForAsync(
                 E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
+            provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
             // живости записи до/после scale-операций; гранты app выдаёт сид).
@@ -55,7 +55,7 @@ public class E2eScaleScenarios
             await SeedBucketAsync(m2.Dsn, "bucket_1", ct);
             await SeedBucketAsync(m2.Dsn, "bucket_3", ct);
             (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
-                .Should().BeTrue("запись в bucket_0 (владелец shard1) работает до add-shard");
+                .Should().BeTrue("writing to bucket_0 (the shard1 owner) works before add-shard");
 
             // Снапшот routing ДО (главный ассерт границы §2.1).
             var routingBefore = await RoutingSnapshotAsync(cluster, ct);
@@ -66,22 +66,22 @@ public class E2eScaleScenarios
             // Assert: шард поднят и зарегистрирован; контейнеры живы.
             var added = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
                 TimeSpan.FromSeconds(360), ct);
-            added.Should().BeTrue($"AddShardProcess должен поднять shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
+            added.Should().BeTrue($"AddShardProcess must raise shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-");
             containers.Should().BeEquivalentTo([$"pgw-{cluster}-shard3-shard3a", $"pgw-{cluster}-shard3-shard3b"],
-                "контейнеры нового шарда подняты");
+                "the containers of the new shard are raised");
 
             // ГЛАВНЫЙ ассерт границы §2.1: routing/status/schema-мир не изменён НИКАК.
             (await RoutingSnapshotAsync(cluster, ct)).Should().Equal(routingBefore,
-                "add-shard не двигает ни один бакет (routing неизменен)");
-            (await RangeAsync($"/clusters/{cluster}/buckets/status/")).Should().BeEmpty("status-ключи не появились");
+                "add-shard does not move any bucket (routing unchanged)");
+            (await RangeAsync($"/clusters/{cluster}/buckets/status/")).Should().BeEmpty("no status keys appeared");
             var m3 = await MasterInfoAsync(cluster, "shard3", ct);
             var schemas = await SqlScalarAsync(m3.Dsn,
                 "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'bucket_%'", ct);
-            schemas.Should().Be("0", "шард стартует ПУСТЫМ — схем бакетов на нём нет (§2.1)");
+            schemas.Should().Be("0", "the shard starts EMPTY — it has no bucket schemas (§2.1)");
             (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
-                .Should().BeTrue("запись в существующие бакеты не прерывалась");
+                .Should().BeTrue("writing to the existing buckets was not interrupted");
 
             // ---------- §8-2: remove шарда с бакетами заблокирован G3 ----------
             // Arrange: sync-режим приёмников (P8-префлайт move), переезд bucket_1 → shard3.
@@ -90,7 +90,7 @@ public class E2eScaleScenarios
                 $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
             var moved = await E2eFixture.WaitForAsync(
                 () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(120), ct);
-            moved.Should().BeTrue($"move bucket_1 → shard3 должен завершиться; work={await WorkDumpAsync(cluster, ct)}");
+            moved.Should().BeTrue($"move bucket_1 → shard3 must finish; work={await WorkDumpAsync(cluster, ct)}");
 
             // Act: маркер демонтажа на shard1 (на нём ещё 3 бакета: 0, 2, 4).
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct);
@@ -106,16 +106,16 @@ public class E2eScaleScenarios
                 {
                     using var doc = JsonDocument.Parse(work);
                     return doc.RootElement.TryGetProperty("last_error", out var error)
-                        && error.GetString()?.Contains("бакет", StringComparison.Ordinal) == true;
+                        && error.GetString()?.Contains("bucket", StringComparison.Ordinal) == true;
                 }
                 catch (JsonException)
                 {
                     return false;
                 }
             }, TimeSpan.FromSeconds(60), ct);
-            blocked.Should().BeTrue($"guard G3 должен записать причину с числом бакетов; work={await WorkDumpAsync(cluster, ct)}");
+            blocked.Should().BeTrue($"the G3 guard must record the reason with the bucket count; work={await WorkDumpAsync(cluster, ct)}");
             (await ListContainerNamesAsync($"pgw-{cluster}-shard1-")).Should().HaveCount(2,
-                "контейнеры помеченного шарда живы, пока на нём бакеты");
+                "the containers of the marked shard stay alive while it has buckets");
             (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/state"))!.Value.Should().Be("TO_REMOVE");
 
             // ---------- §8-3: явные переезды → демонтаж завершается сам ----------
@@ -134,8 +134,8 @@ public class E2eScaleScenarios
                 && await RoutingIsAsync(cluster, "bucket_2", "shard2", ct)
                 && await RoutingIsAsync(cluster, "bucket_4", "shard2", ct),
                 TimeSpan.FromSeconds(240), ct);
-            allMoved.Should().BeTrue($"все бакеты shard1 должны уехать; work={await WorkDumpAsync(cluster, ct)}, " +
-                                     $"заявки={await MovesDumpAsync(cluster, ct)}");
+            allMoved.Should().BeTrue($"all buckets of shard1 must move away; work={await WorkDumpAsync(cluster, ct)}, " +
+                                     $"requests={await MovesDumpAsync(cluster, ct)}");
 
             foreach (var bucket in new[] { "bucket_0", "bucket_2", "bucket_4" })
                 await PutMoveRequestAsync(cluster, bucket,
@@ -143,27 +143,27 @@ public class E2eScaleScenarios
 
             var finalized = await E2eFixture.WaitForAsync(
                 () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(240), ct);
-            finalized.Should().BeTrue($"finalize-заявки должны разобраться; заявки={await MovesDumpAsync(cluster, ct)}, " +
+            finalized.Should().BeTrue($"the finalize requests must be processed; requests={await MovesDumpAsync(cluster, ct)}, " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
 
             // Assert: демонтаж дошёл сам (маркер не повторяли): контейнеры/volumes
             // удалены, ключи/порталы вычищены, кластер продолжает обслуживать запись.
             var dismantled = await E2eFixture.WaitForAsync(
                 () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(180), ct);
-            dismantled.Should().BeTrue($"после уезда последнего бакета демонтаж завершается сам; " +
-                                       $"work={await WorkDumpAsync(cluster, ct)}, контейнеры={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
+            dismantled.Should().BeTrue($"after the last bucket leaves, the dismantling completes on its own; " +
+                                       $"work={await WorkDumpAsync(cluster, ct)}, containers={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
 
-            (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn")).Should().BeNull("ключей демонтированного шарда нет");
+            (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn")).Should().BeNull("no keys of the dismantled shard");
             (await RangeAsync($"/clusters/{cluster}/shards/shard1/")).Should().BeEmpty();
             (await RangeAsync($"/service/{cluster}-shard1/")).Should().BeEmpty();
             var portalloc = (await GetOrNullAsync($"/pgworker/portalloc/{cluster}"))!.Value;
             portalloc.Should().NotContain("shard1/").And.Contain("shard2/").And.Contain("shard3/",
-                "portalloc вычищен точечно — записи остальных шардов живы");
+                "portalloc is cleaned up pointwise — the records of the other shards are alive");
 
             (await TryInsertAppAsync(cluster, "shard3", "bucket_1", ct))
-                .Should().BeTrue("кластер жив: запись в бакет на shard3 успешна после демонтажа");
+                .Should().BeTrue("the cluster is alive: writing to a bucket on shard3 succeeds after the dismantling");
             (await TryInsertAppAsync(cluster, "shard2", "bucket_3", ct))
-                .Should().BeTrue("кластер жив: запись в бакет на shard2 успешна после демонтажа");
+                .Should().BeTrue("the cluster is alive: writing to a bucket on shard2 succeeds after the dismantling");
 
             // ---------- §8-5: имя освобождается демонтажом ----------
             // Act: add-декларация с именем shard1 НАПРЯМУЮ в etcd (в обход автогенерации).
@@ -172,7 +172,7 @@ public class E2eScaleScenarios
             // Assert: AddShardProcess принял освобождённое имя (клэйм-инвариант §4.2).
             var reused = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard1"),
                 TimeSpan.FromSeconds(360), ct);
-            reused.Should().BeTrue($"имя shard1 освобождено демонтажом и принято заново; work={await WorkDumpAsync(cluster, ct)}");
+            reused.Should().BeTrue($"the shard1 name is freed by the dismantling and accepted anew; work={await WorkDumpAsync(cluster, ct)}");
         }
         catch
         {
@@ -204,12 +204,12 @@ public class E2eScaleScenarios
 
             var provisioned = await E2eFixture.WaitForAsync(
                 E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
+            provisioned.Should().BeTrue("provisioning of the cluster must reach Active before add starts");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
             var a3Started = await E2eFixture.WaitForAsync(
                 () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
-            a3Started.Should().BeTrue("первый инстанс должен начать A3 (появился контейнер shard3)");
+            a3Started.Should().BeTrue("the first instance must start A3 (the shard3 container appeared)");
 
             // Act: docker-kill PgWorker посреди A3 → второй инстанс доносит шард.
             s2.Kill();
@@ -219,10 +219,10 @@ public class E2eScaleScenarios
             // Assert: шард донесён (клэйм истёк ≤15 с), дублей контейнеров нет.
             var finished = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
                 TimeSpan.FromSeconds(360), ct);
-            finished.Should().BeTrue($"второй инстанс должен донести shard3 после takeover; work={await WorkDumpAsync(cluster, ct)}");
+            finished.Should().BeTrue($"the second instance must carry shard3 after the takeover; work={await WorkDumpAsync(cluster, ct)}");
 
             var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-", all: true);
-            containers.Should().HaveCount(2, "контейнеров нового шарда ровно 2 (нет дублей после takeover)");
+            containers.Should().HaveCount(2, "exactly 2 containers of the new shard (no duplicates after the takeover)");
         }
         catch
         {
@@ -245,7 +245,7 @@ public class E2eScaleScenarios
 
     private async Task PutMoveRequestAsync(string cluster, string bucket, string json, CancellationToken ct)
         => (await G.PutAsync(Endpoint, MoveNames.MoveKey(cluster, bucket), json, null, ct))
-            .IsSuccess.Should().BeTrue($"заявка {bucket} должна записаться в etcd");
+            .IsSuccess.Should().BeTrue($"the request {bucket} must be written to etcd");
 
     private async Task<string?> RoutingAsync(string cluster, string bucket, CancellationToken ct)
         => (await GetOrNullAsync(MoveNames.RoutingKey(cluster, bucket)))?.Value;
@@ -264,12 +264,12 @@ public class E2eScaleScenarios
             .ToList();
 
     private async Task<string> WorkDumpAsync(string cluster, CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
 
     private async Task<string> MovesDumpAsync(string cluster, CancellationToken ct)
     {
         var kvs = await RangeAsync(MoveNames.MovesPrefix(cluster));
-        return kvs.Count == 0 ? "нет" : string.Join("; ", kvs.Select(k => $"{k.Key.Split('/')[^1]}={k.Value}"));
+        return kvs.Count == 0 ? "absent" : string.Join("; ", kvs.Select(k => $"{k.Key.Split('/')[^1]}={k.Value}"));
     }
 
     private async Task<bool> MovesEmptyAsync(string cluster, CancellationToken ct)
@@ -386,7 +386,7 @@ public class E2eScaleScenarios
                 return false; // PG ещё не готов / разовый сброс транспорта — повторим
             }
         }, TimeSpan.FromSeconds(60), ct))
-            .Should().BeTrue($"сид {bucket} должен примениться к мастеру ({adminDsn})");
+            .Should().BeTrue($"the seed {bucket} must be applied to the master ({adminDsn})");
     }
 
     private sealed record NodeAddr(string Host, int Pg, int Patroni, int Doorman);
@@ -422,7 +422,7 @@ public class E2eScaleScenarios
                 var dcs = (await G.RangeAsync(Endpoint, "/service/", ct)).Value;
                 var work = (await G.RangeAsync(Endpoint, "/pgworker/work/", ct)).Value;
                 var line =
-                    $"[diag] master-{shard}: попытка {i}: /clusters/{cluster}/* = {dump.Count}"
+                    $"[diag] master-{shard}: attempt {i}: /clusters/{cluster}/* = {dump.Count}"
                     + $" [{string.Join(", ", dump.Select(kv => kv.Key).Take(12))}];"
                     + $" /service/* = {dcs.Count} [{string.Join(", ", dcs.Select(kv => kv.Key).Take(8))}];"
                     + $" work = [{string.Join("; ", work.Select(kv => kv.Value[..Math.Min(120, kv.Value.Length)]))}]";
@@ -468,7 +468,7 @@ public class E2eScaleScenarios
             await Task.Delay(1000, ct);
         }
 
-        throw new ApplicationException($"мастер {cluster}/{shard} не найден за 60 с");
+        throw new ApplicationException($"master {cluster}/{shard} not found within 60 s");
     }
 
     // Включение synchronous_mode у Patroni мастера шарда (P8-префлайт move).
@@ -485,7 +485,7 @@ public class E2eScaleScenarios
                 restPassword, """{"synchronous_mode":true}"""),
             ct);
         response.IsSuccessStatusCode.Should().BeTrue(
-            $"Patroni {shard} должен принять PATCH /config (получили HTTP {(int)response.StatusCode})");
+            $"Patroni {shard} must accept the PATCH /config (got HTTP {(int)response.StatusCode})");
 
         var synced = await E2eFixture.WaitForAsync(async () =>
         {
@@ -495,7 +495,7 @@ public class E2eScaleScenarios
                 "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')", ct);
             return !string.IsNullOrWhiteSpace(names) && long.Parse(count) >= 1;
         }, TimeSpan.FromSeconds(60), ct);
-        synced.Should().BeTrue($"у мастера {shard} должен появиться sync-standby после PATCH");
+        synced.Should().BeTrue($"the master {shard} must have a sync-standby after the PATCH");
     }
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)

@@ -130,9 +130,9 @@ public static class E2eFixture
                     {
                         await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
                         throw new ApplicationException(
-                            $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
-                            + ">60 с, config.state не снят (воркер не завершает заявку — см. "
-                            + "container-pgw-ew-*.log в телеметрии fail-fast)");
+                            $"provisioning is stuck: nodes {cluster} ({string.Join(',', shards)}) RUNNING "
+                            + ">60 s, config.state not lifted (the worker does not complete the request — see "
+                            + "container-pgw-ew-*.log in the fail-fast telemetry)");
                     }
                 }
                 else
@@ -213,9 +213,9 @@ public static class E2eFixture
             {
                 await fx.CollectDiagnosticsAsync("provision-stuck-fail-fast");
                 throw new ApplicationException(
-                    $"провижининг застрял: ноды {cluster} ({string.Join(',', shards)}) RUNNING "
-                    + ">60 с, config.state не снят (воркер не завершает заявку — см. "
-                    + "container-pgw-ew-*.log в телеметрии fail-fast)");
+                    $"provisioning is stuck: nodes {cluster} ({string.Join(',', shards)}) RUNNING "
+                    + ">60 s, config.state not lifted (the worker does not complete the request — see "
+                    + "container-pgw-ew-*.log in the fail-fast telemetry)");
             }
 
             return false;
@@ -264,7 +264,7 @@ public static class E2eFixture
             foreach (var (key, value) in env)
                 psi.EnvironmentVariables[key] = value;
         using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"не удалось запустить {file}");
+            ?? throw new ApplicationException($"failed to start {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeout is { } budget)
             timeoutCts.CancelAfter(budget);
@@ -303,8 +303,8 @@ public static class E2eFixture
             await WriteLogAsync(logFile, killed);
             var tail = OutputTail(killed, lines: 40);
             throw new ApplicationException(
-                $"{file} {string.Join(' ', args)} не завершился за {timeout!.Value.TotalSeconds:0} c — убит"
-                + (tail.Length == 0 ? "" : $"; хвост вывода:\n{tail}"));
+                $"{file} {string.Join(' ', args)} did not finish within {timeout!.Value.TotalSeconds:0} s — killed"
+                + (tail.Length == 0 ? "" : $"; output tail:\n{tail}"));
         }
     }
 
@@ -351,13 +351,13 @@ public static class E2eFixture
         string projectPath, string outDir, string tag, CancellationToken ct)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        StaticPhase($"e2e-publish {tag}: dotnet publish (host, инкрементально)…");
+        StaticPhase($"e2e-publish {tag}: dotnet publish (host, incrementally)…");
         await RunProcessAsync("dotnet",
         [
             "publish", projectPath, "-c", "Release", "-o", outDir, "--nologo",
         ], ct, timeout: TimeSpan.FromMinutes(10), env: NoMsBuildReuseEnv,
             logFile: $"/tmp/pgw-e2e-static-process-{tag}-publish.log");
-        StaticPhase($"e2e-publish {tag}: готов за {sw.Elapsed.TotalSeconds:F0} с");
+        StaticPhase($"e2e-publish {tag}: ready in {sw.Elapsed.TotalSeconds:F0} s");
     }
 
     /// <summary>
@@ -371,8 +371,8 @@ public static class E2eFixture
     {
         if (!Directory.Exists(dir) || Directory.EnumerateFiles(dir, "*.dll").Any() is false)
             throw new ApplicationException(
-                $"нет publish-артефактов в {dir} — соберите их (dotnet publish) и повторите"
-                + $" (или снимите PGW_TEST_E2E_NOBUILD для автосборки). {hint}");
+                $"no publish artifacts in {dir} — build them (dotnet publish) and retry"
+                + $" (or unset PGW_TEST_E2E_NOBUILD for an auto-build). {hint}");
     }
 
     // [PHASE]-метка статических фаз подготовки: Console (в лог факта) + ФАЙЛ
@@ -424,7 +424,7 @@ public static class E2eFixture
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "node", "Dockerfile")))
             dir = dir.Parent;
         return dir?.FullName
-            ?? throw new ApplicationException("корень репозитория (docker/node/Dockerfile) не найден");
+            ?? throw new ApplicationException("the repository root (docker/node/Dockerfile) was not found");
     }
 }
 

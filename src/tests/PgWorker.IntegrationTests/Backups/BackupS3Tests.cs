@@ -21,7 +21,7 @@ public class BackupS3Tests
         new AmazonS3Config { ServiceURL = s3Node.HostEndpoint, ForcePathStyle = true });
 
     [Fact]
-    public async Task BucketExists_живой_bucket()
+    public async Task BucketExistsLiveBucket()
     {
         // Arrange — своё ownS3-окружение Fact'а (teardown при любом исходе)
         var ct = TestContext.Current.CancellationToken;
@@ -37,7 +37,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListWal_пустой_префикс_пустой_список()
+    public async Task ListWalEmptyPrefixEmptyList()
     {
         // Arrange — своё окружение: bucket пуст, чужих посевов быть не может
         var ct = TestContext.Current.CancellationToken;
@@ -53,7 +53,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListWal_возвращает_только_wal_префикс_шарда()
+    public async Task ListWalReturnsOnlyShardWalPrefix()
     {
         // Arrange — своё окружение + посев: свой шард, чужой шард, не-wal
         var ct = TestContext.Current.CancellationToken;
@@ -87,7 +87,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListWal_пагинация_maxKeys_2_собирает_все()
+    public async Task ListWalPaginationMaxKeys2CollectsAll()
     {
         // Arrange — своё окружение + 5 объектов, страница по 2 → 3 запроса
         var ct = TestContext.Current.CancellationToken;
@@ -110,7 +110,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListWal_отдает_LastModified_объекта()
+    public async Task ListWalReturnsObjectLastModified()
     {
         // Arrange — своё окружение + один объект
         var ct = TestContext.Current.CancellationToken;
@@ -135,7 +135,7 @@ public class BackupS3Tests
     // ---- t06: ListPrefixAsync / DeleteKeysAsync ----
 
     [Fact]
-    public async Task ListPrefix_размеры_и_полные_ключи()
+    public async Task ListPrefixSizesAndFullKeys()
     {
         // Arrange — своё окружение + объект полного (тело 10 байт) и wal соседнего префикса
         var ct = TestContext.Current.CancellationToken;
@@ -166,7 +166,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListPrefix_пустой_префикс_весь_bucket()
+    public async Task ListPrefixEmptyPrefixWholeBucket()
     {
         // Arrange — своё окружение + объекты в двух кластер-префиксах
         var ct = TestContext.Current.CancellationToken;
@@ -198,7 +198,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task ListPrefix_пагинация()
+    public async Task ListPrefixPagination()
     {
         // Arrange — своё окружение + 5 объектов, страница по 2
         var ct = TestContext.Current.CancellationToken;
@@ -222,7 +222,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task DeleteKeys_удаляет_и_идемпотентен()
+    public async Task DeleteKeysRemovesAndIsIdempotent()
     {
         // Arrange — своё окружение + два объекта под удаление
         var ct = TestContext.Current.CancellationToken;
@@ -255,7 +255,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task DeleteKeys_пустой_список()
+    public async Task DeleteKeysEmptyList()
     {
         // Arrange — своё окружение, пустой список ключей
         var ct = TestContext.Current.CancellationToken;
@@ -270,7 +270,7 @@ public class BackupS3Tests
     }
 
     [Fact]
-    public async Task DeleteKeys_чанки_1002_ключа()
+    public async Task DeleteKeysChunksOf1002Keys()
     {
         // Arrange — своё окружение + 1002 объекта (два чанка: 1000+2)
         var ct = TestContext.Current.CancellationToken;
@@ -304,7 +304,7 @@ public class BackupS3Tests
 
     // AAA: ListAsync произвольного префикса full/<id>/pg_wal/ — только объекты префикса
     [Fact]
-    public async Task ListAsync_ПрефиксНабора_ВозвращаетТолькоЕгоОбъекты()
+    public async Task ListAsyncSetPrefixReturnsOnlyItsObjects()
     {
         // Arrange — своё окружение + набор full/<id>/pg_wal/ и соседние объекты
         var ct = TestContext.Current.CancellationToken;
@@ -328,7 +328,7 @@ public class BackupS3Tests
 
     // AAA: ListAsync пагинация на произвольном префиксе (maxKeys=2, 5 объектов)
     [Fact]
-    public async Task ListAsync_Пагинация_СобираетВсе()
+    public async Task ListAsyncPaginationCollectsAll()
     {
         // Arrange — своё окружение + 5 объектов, страница по 2
         var ct = TestContext.Current.CancellationToken;
@@ -348,7 +348,7 @@ public class BackupS3Tests
 
     // AAA: GetObjectAsync — содержимое history-объекта (крошечный GET)
     [Fact]
-    public async Task GetObject_ОтдаетСодержимое()
+    public async Task GetObjectReturnsContent()
     {
         // Arrange — своё окружение + history-объект
         var ct = TestContext.Current.CancellationToken;
@@ -368,7 +368,7 @@ public class BackupS3Tests
 
     // AAA: GetObjectAsync несуществующего — Failed (не исключение мимо Result)
     [Fact]
-    public async Task GetObject_Отсутствует_Failed()
+    public async Task GetObjectMissingFailed()
     {
         // Arrange — своё окружение, объекта нет
         var ct = TestContext.Current.CancellationToken;
@@ -386,7 +386,7 @@ public class BackupS3Tests
 
     // ListFulls (t05): id полных по CommonPrefixes, сортировка, чужие шарды не попадают.
     [Fact]
-    public async Task ListFulls_возвращает_id_полных()
+    public async Task ListFullsReturnsFullIds()
     {
         // Arrange — своё окружение + два полных в разных full/<id>/
         var ct = TestContext.Current.CancellationToken;
@@ -415,7 +415,7 @@ public class BackupS3Tests
 
     // ListFulls — пагинация по страницам (maxKeys=1, 3 полных).
     [Fact]
-    public async Task ListFulls_пагинация_maxKeys_1_собирает_все()
+    public async Task ListFullsPaginationMaxKeys1CollectsAll()
     {
         // Arrange — своё окружение + 3 полных, страница по 1
         var ct = TestContext.Current.CancellationToken;
@@ -439,7 +439,7 @@ public class BackupS3Tests
 
     // DownloadText (t05): маленький текстовый объект; отсутствующий — Failed (не исключение).
     [Fact]
-    public async Task DownloadText_backup_label_и_notfound()
+    public async Task DownloadTextBackupLabelAndNotfound()
     {
         // Arrange — своё окружение + backup_label-объект
         var ct = TestContext.Current.CancellationToken;
@@ -465,7 +465,7 @@ public class BackupS3Tests
 
     // AAA (t08): put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)
     [Fact]
-    public async Task PutObject_байты_доставлены_1к1()
+    public async Task PutObjectBytesDeliveredOneToOne()
     {
         // Arrange — своё ownS3-окружение Fact'а
         var ct = TestContext.Current.CancellationToken;
@@ -490,8 +490,8 @@ public class BackupS3Tests
     // x-amz-checksum-sha256 (пут проходит, BadDigest не возвращается).
     // Возврат теста в строй — задача t91-owns3-checksum-verify
     // (arch/roadmap/owns3.md).
-    [Fact(Skip = "t91-owns3-checksum-verify (arch/roadmap/owns3.md): сервер ownS3 не верифицирует x-amz-checksum-sha256 (BadDigest) — пут с неверной чексуммой проходит")]
-    public async Task PutObject_битый_ша_отклонён_сервером()
+    [Fact(Skip = "t91-owns3-checksum-verify (arch/roadmap/owns3.md): the ownS3 server does not verify x-amz-checksum-sha256 (BadDigest) — a put with a wrong checksum passes")]
+    public async Task PutObjectBrokenShaRejectedByServer()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -504,7 +504,7 @@ public class BackupS3Tests
         var put = await s3.PutObjectAsync("etcd/snapshot-test.db", [1, 2, 3], wrongSha, ct);
 
         // Assert — серверная проверка целостности отклонила (не Result.Success)
-        put.IsSuccess.Should().BeFalse("сервер обязан отвергнуть put с неверной чексуммой");
+        put.IsSuccess.Should().BeFalse("the server must reject a put with a wrong checksum");
     }
 
     private static string Sha256Hex(byte[] data)

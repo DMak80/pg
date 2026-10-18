@@ -53,7 +53,7 @@ public class E2eRestoreScenarios
 
             var provisioned = await WaitPhaseAsync(
                 "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
+            provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — контрольные данные ДО полного (RPO-полный)
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
@@ -70,14 +70,14 @@ public class E2eRestoreScenarios
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
                 TimeSpan.FromSeconds(300), ct);
             if (!completed)
-                throw new ApplicationException("полный не дошёл до COMPLETED: " +
+                throw new ApplicationException("the full did not reach COMPLETED: " +
                     await DumpDiagnosticsAsync(cluster, "shard1"));
             var completedFull = (await FullKeysAsync(cluster, "shard1"))
                 .Single(f => f.Value.Contains("COMPLETED"));
             var oldId = completedFull.Key.Split('/').Last();
             var walStartSeg = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(completedFull.Value)!
                 ["wal_start_segment"].GetString();
-            walStartSeg.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+            walStartSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
             // Послебакапные данные (накатятся WAL'ом до latest)
             await ExecAsync(adminDsn,
                 "INSERT INTO e2e_restore_probe SELECT g, 'post' FROM generate_series(6, 10) g", ct);
@@ -94,7 +94,7 @@ public class E2eRestoreScenarios
                 chainOk = await WalChainContinuousAsync(cluster, "shard1", walStartSeg!, ct);
             }
 
-            chainOk.Should().BeTrue("цепочка от wal_start обязана сойтись до заявки: "
+            chainOk.Should().BeTrue("the chain from wal_start must converge before the request: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
             // Act — «погиб диск»: полный docker-снос нод шарда (контейнеры+тома) +
@@ -130,8 +130,8 @@ public class E2eRestoreScenarios
             }
 
             var parts = rows.Split('|');
-            parts[0].Should().Be("10", "все контрольные строки восстановлены");
-            parts[1].Should().Be("5", "послебэкапные строки доставлены накатом WAL до latest");
+            parts[0].Should().Be("10", "all control rows are restored");
+            parts[1].Should().Be("5", "the post-backup rows are delivered by WAL roll-forward to latest");
 
             // Assert 3 — ноды RUNNING, dsn не изменился
             var nodeA = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
@@ -139,7 +139,7 @@ public class E2eRestoreScenarios
             nodeA!.Value.Should().Be("RUNNING");
             nodeB!.Value.Should().Be("RUNNING");
             var dsnAfter = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
-            dsnAfter!.Value.Should().Be(dsnBefore!.Value, "portalloc/dsn restore не трогает");
+            dsnAfter!.Value.Should().Be(dsnBefore!.Value, "restore does not touch portalloc/dsn");
 
             // Assert 4 (AC4) — wal-ключ сброшен и заведён заново (ACTIVE), полный
             // переснят (новый COMPLETED ≠ старому), агент вернулся running
@@ -160,7 +160,7 @@ public class E2eRestoreScenarios
             }, TimeSpan.FromSeconds(300), ct);
             if (!reinited)
                 throw new ApplicationException(
-                    "инвариант AC4 не сошёлся: " + await DumpDiagnosticsAsync(cluster, "shard1"));
+                    "the AC4 invariant did not converge: " + await DumpDiagnosticsAsync(cluster, "shard1"));
         }, ct);
     }
 
@@ -183,7 +183,7 @@ public class E2eRestoreScenarios
 
             var provisioned = await WaitPhaseAsync(
                 "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
+            provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — данные T0 → полный COMPLETED
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
@@ -196,7 +196,7 @@ public class E2eRestoreScenarios
             var completed = await WaitPhaseAsync(
                 "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
                 TimeSpan.FromSeconds(300), ct);
-            completed.Should().BeTrue("полный обязан дойти до COMPLETED");
+            completed.Should().BeTrue("the full must reach COMPLETED");
 
             // Arrange 3 — данные T1; ещё сегменты; фиксация цели. Позиции — от
             // wal_start полного: сегменты с T1 обязаны быть в архиве ДО заявки.
@@ -204,13 +204,13 @@ public class E2eRestoreScenarios
                 .Single(f => f.Value.Contains("COMPLETED"));
             var wsSeg = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(completedFull2.Value)!
                 ["wal_start_segment"].GetString();
-            wsSeg.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+            wsSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
             var ws = WalPosOf(wsSeg!);
             await ExecAsync(adminDsn,
                 "INSERT INTO pitr_probe SELECT g, 't1' FROM generate_series(6, 10) g", ct);
             await SwitchWalsAsync(adminDsn, 6, ct); // закрыты ws..ws+5
             var t1Archived = await WalArchivedAsync(cluster, "shard1", ws + 5, ct);
-            t1Archived.Should().BeTrue("сегменты с T1 обязаны попасть в архив: "
+            t1Archived.Should().BeTrue("the segments from T1 must land in the archive: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
             // Пауза ДО фиксации tCut выносит коммиты T1 из секунды фиксации:
             // target-time округляется ВНИЗ до секунды — коммит T1 в той же
@@ -224,12 +224,12 @@ public class E2eRestoreScenarios
             await ExecAsync(adminDsn, "DROP TABLE pitr_probe", ct);
             await SwitchWalsAsync(adminDsn, 3, ct); // закрыты ws+6..ws+8
             var dropArchived = await WalArchivedAsync(cluster, "shard1", ws + 8, ct);
-            dropArchived.Should().BeTrue("сегмент с DROP обязан попасть в архив: "
+            dropArchived.Should().BeTrue("the segment with DROP must land in the archive: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
             // Act — заявка PITR на T_cut (до порчи); ретрай на гонку t03 (дыра)
             var chainOk2 = await WalChainContinuousAsync(cluster, "shard1", wsSeg!, ct);
-            chainOk2.Should().BeTrue("цепочка до заявки PITR обязана быть непрерывной: "
+            chainOk2.Should().BeTrue("the chain before the PITR request must be continuous: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
             var done = await RestoreWithRetryAsync(cluster, "shard1",
                 target: $"time:{tCut:yyyy-MM-ddTHH:mm:ssZ}", ct: ct);
@@ -259,7 +259,7 @@ public class E2eRestoreScenarios
             }
 
             var parts = rows.Split('|');
-            parts[0].Should().Be("10", "T0+T1 восстановлены, DROP не накатился");
+            parts[0].Should().Be("10", "T0+T1 are restored, DROP did not roll forward");
             parts[1].Should().Be("5");
 
             // Assert 3 (AC4) — wal-ключ сброшен/заведён заново, новый полный снят
@@ -268,7 +268,7 @@ public class E2eRestoreScenarios
                 var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
                 return walKv is not null && walKv.Value.Contains("ACTIVE");
             }, TimeSpan.FromSeconds(300), ct);
-            reinited.Should().BeTrue("после PITR цепочка заводится заново (инвариант §3.5)");
+            reinited.Should().BeTrue("after PITR the chain is started anew (§3.5 invariant)");
         }, ct);
     }
     // ===== Хелперы (копии образцов E2eBackupScenarios/E2eRetentionScenarios —
@@ -392,12 +392,12 @@ public class E2eRestoreScenarios
         if (!done || status!["state"].GetString() == "FAILED")
         {
             var error = status?.TryGetValue("error", out var err) == true ? err.GetString() : null;
-            if (error is not null && error.Contains("дыра WAL-цепочки", StringComparison.Ordinal))
+            if (error is not null && error.Contains("WAL chain gap", StringComparison.Ordinal))
                 throw new ChainGapException(
                     $"restore {cluster}/{shard}/{id}: {error}");
             throw new ApplicationException(
-                $"restore {cluster}/{shard}/{id} не дошёл до COMPLETED: "
-                + (status is null ? "ключа нет" : status["state"].GetString())
+                $"restore {cluster}/{shard}/{id} did not reach COMPLETED: "
+                + (status is null ? "no key" : status["state"].GetString())
                 + (error is null ? "" : $", error={error}")
                 + "; " + await DumpDiagnosticsAsync(cluster, shard));
         }
@@ -442,7 +442,7 @@ public class E2eRestoreScenarios
             catch (ChainGapException) when (attempt < attempts)
             {
                 Console.Error.WriteLine(
-                    $"e2e[restore]: {cluster}/{shard} попытка {attempt} — дыра цепочки (гонка t03), повторяю заявку");
+                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (t03 race), retrying the request");
                 await Task.Delay(3000, ct);
             }
         }
@@ -551,7 +551,7 @@ public class E2eRestoreScenarios
                 }
                 catch (Exception cp)
                 {
-                    pgLog += $"\n== {name}: лог недоступен ({cp.Message})";
+                    pgLog += $"\n== {name}: log unavailable ({cp.Message})";
                 }
 
                 // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
@@ -562,11 +562,11 @@ public class E2eRestoreScenarios
                         "ls /tmp/.mc 2>/dev/null | head -3; for s in 000000010000000000000009 00000001000000000000000a 00000001000000000000000b; do " +
                         "mc stat \"pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$s\" 2>&1 | head -2; done"],
                         TestContext.Current.CancellationToken);
-                    pgLog += $"\n== {name} MC-STAT(живой):\n{live[..Math.Min(1500, live.Length)]}";
+                    pgLog += $"\n== {name} MC-STAT(alive):\n{live[..Math.Min(1500, live.Length)]}";
                 }
                 catch (Exception ex)
                 {
-                    pgLog += $"\n== {name} MC-STAT: недоступен ({ex.Message})";
+                    pgLog += $"\n== {name} MC-STAT: unavailable ({ex.Message})";
                 }
             }
         }
@@ -675,7 +675,7 @@ public class E2eRestoreScenarios
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -702,7 +702,7 @@ public class E2eRestoreScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }

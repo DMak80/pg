@@ -23,7 +23,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
         // Arrange: конвергенция контура до TLS — обе ноды несут hash(OLD)
         // (shard1b поднимается EnsureDeclared-шагом первого тика).
         var oldPassword = await ConvergeAsync(c);
-        oldPassword.Should().NotBeNullOrEmpty("ensure шага уже положил ключ");
+        oldPassword.Should().NotBeNullOrEmpty("the ensure step already put the key");
         var oldId = await ContainerIdAsync(c.ContainerA);
 
         // (а) заявка → первый тик ротатора: rest_pending зафиксирован,
@@ -32,9 +32,9 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
         var first = await c.Rotator.TickAsync(await RestTlsDockerRig.SnapshotAsync(c), ct);
         first.IsSuccess.Should().BeTrue(first.Error?.ToString());
         var pending = (await c.Journal.ReadAsync(c.Cluster, ct)).Value!.RestPending;
-        pending.Should().NotBeNullOrEmpty("rotate-rest-start фиксирует пару в полёте");
-        pending.Should().NotBe(oldPassword, "NEW-пара отлична от текущего ключа");
-        (await TicketAsync(c, ct)).Should().NotBeNull("коммита ещё не было — заявка жива");
+        pending.Should().NotBeNullOrEmpty("rotate-rest-start records the in-flight pair");
+        pending.Should().NotBe(oldPassword, "the NEW pair differs from the current key");
+        (await TicketAsync(c, ct)).Should().NotBeNull("no commit yet — the request is alive");
 
         // Act (б)+(г): цикл тиков до txn-коммита; каждый промежуточный тик
         // ПРОДОЛЖАЕТ проход той же парой (сбой посреди окна не регенерирует).
@@ -42,19 +42,19 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
 
         // Assert (б): txn-коммит — ключ==NEW, заявка снята, pending сброшен;
         // контейнер пересоздан с hash(NEW), volume/маркер на месте.
-        committed.Should().BeTrue("rolling обязан дойти до txn за бюджет тиков");
+        committed.Should().BeTrue("rolling must reach the txn within the tick budget");
         var key = (await c.Gateway.GetAsync(c.Endpoint, $"/clusters/{c.Cluster}/rest_password", ct)).Value;
-        key!.Value.Should().Be(pending, "txn закоммитил pending-пару");
-        (await TicketAsync(c, ct)).Should().BeNull("заявка удалена txn'ом");
+        key!.Value.Should().Be(pending, "the txn committed the pending pair");
+        (await TicketAsync(c, ct)).Should().BeNull("the request is removed by the txn");
         (await c.Journal.ReadAsync(c.Cluster, ct)).Value!.RestPending
-            .Should().BeNull("фаза done сбросила окно");
-        (await ContainerIdAsync(c.ContainerA)).Should().NotBe(oldId, "нода пересоздана rolling'ом");
+            .Should().BeNull("the done phase reset the window");
+        (await ContainerIdAsync(c.ContainerA)).Should().NotBe(oldId, "the node was recreated by rolling");
         var env = await c.Driver.InspectNodeEnvAsync(c.Cluster, "shard1", "shard1a", ct);
         env.Value[RestRotation.EnvPasswordHash]
-            .Should().Be(RestRotation.PasswordHash(pending), "env несёт hash(NEW)");
+            .Should().Be(RestRotation.PasswordHash(pending), "env carries hash(NEW)");
         var marker = await E2eFixture.RunDockerAsync(
             ["exec", c.ContainerA, "test", "-f", "/home/postgres/pgdata/MARKER"], ct);
-        marker.Should().BeEmpty("volume пережил rolling (exec код 0)");
+        marker.Should().BeEmpty("the volume survived the rolling (exec code 0)");
 
         // (в) идемпотентность: повторная заявка — НОВЫЙ проход с новой парой.
         await SubmitTicketAsync(c, ct);
@@ -62,20 +62,20 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
             .IsSuccess.Should().BeTrue();
         var pending2 = (await c.Journal.ReadAsync(c.Cluster, ct)).Value!.RestPending;
         pending2.Should().NotBeNullOrEmpty();
-        pending2.Should().NotBe(pending, "повторный проход — свежая пара");
-        (await RunUntilCommitAsync(c, pending2!, ct)).Should().BeTrue("второй проход коммитится");
+        pending2.Should().NotBe(pending, "a repeated pass — a fresh pair");
+        (await RunUntilCommitAsync(c, pending2!, ct)).Should().BeTrue("the second pass is committed");
         var key2 = (await c.Gateway.GetAsync(c.Endpoint, $"/clusters/{c.Cluster}/rest_password", ct)).Value;
-        key2!.Value.Should().Be(pending2, "ключ — второй NEW");
+        key2!.Value.Should().Be(pending2, "the key is the second NEW");
 
         // (д) no-op тика без заявки: ключ/контейнер не меняются, окна нет.
         var idAfter = await ContainerIdAsync(c.ContainerA);
         var noop = await c.Rotator.TickAsync(await RestTlsDockerRig.SnapshotAsync(c), ct);
         noop.IsSuccess.Should().BeTrue(noop.Error?.ToString());
         (await c.Gateway.GetAsync(c.Endpoint, $"/clusters/{c.Cluster}/rest_password", ct)).Value!.Value
-            .Should().Be(pending2, "без заявки ключ не трогается");
+            .Should().Be(pending2, "without a request the key is not touched");
         (await c.Journal.ReadAsync(c.Cluster, ct)).Value!.RestPending
-            .Should().BeNull("окна нет");
-        (await ContainerIdAsync(c.ContainerA)).Should().Be(idAfter, "пересозданий нет");
+            .Should().BeNull("no window");
+        (await ContainerIdAsync(c.ContainerA)).Should().Be(idAfter, "no recreations");
     }
 
     // Цикл тиков ротатор↔надзор до коммита; пока окно открыто — pending
@@ -91,7 +91,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
                 return true; // txn закрыл проход — pending уже сброшен фазой done
 
             var work = (await c.Journal.ReadAsync(c.Cluster, ct)).Value;
-            work!.RestPending.Should().Be(expectedPending, "тик продолжает проход той же парой");
+            work!.RestPending.Should().Be(expectedPending, "the tick continues the pass with the same pair");
 
             var sup = await c.Supervisor.TickAsync(await RestTlsDockerRig.SnapshotAsync(c), null, ct);
             sup.IsSuccess.Should().BeTrue(sup.Error?.ToString());
@@ -100,7 +100,7 @@ public class RestRotationTests(Etcd.EtcdFixture fixture)
             // патча в журнале нет (окно — только фаза skip либо фазы rolling).
             var after = (await c.Journal.ReadAsync(c.Cluster, ct)).Value;
             if (after!.RestPending is not null)
-                after.Phase.Should().NotBe("dcs-converge", "окно подавляет PATCH конвергенции");
+                after.Phase.Should().NotBe("dcs-converge", "the window suppresses the convergence PATCH");
         }
 
         return false;

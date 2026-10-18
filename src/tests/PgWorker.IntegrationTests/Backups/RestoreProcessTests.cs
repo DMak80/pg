@@ -222,7 +222,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     // ── PLANNED: happy-path ──
 
     [Fact]
-    public async Task Валидация_проходит_фиксирует_backup_id_и_started_unix_переходя_в_RUNNING()
+    public async Task ValidationPassesRecordsBackupIdAndStartedUnixMovingToRunning()
     {
         // Arrange — свой COMPLETED-полный в etcd + непрерывная цепочка + манифест
         const string fullId = "20260910120000Z";
@@ -234,7 +234,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var process = BuildProcess(s3, driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911120000Z", backupId: "");
         (await _claims.TryClaimClusterAsync("c1", TestContext.Current.CancellationToken))
-            .Value.Should().BeTrue("клэйм — предусловие тика");
+            .Value.Should().BeTrue("claim is a tick precondition");
 
         // Act
         var result = await process.TickAsync(
@@ -255,7 +255,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     // ── PLANNED: permanent-отказы валидации ──
 
     [Fact]
-    public async Task Валидация_полный_без_backup_manifest_permanent_FAILED()
+    public async Task ValidationFullWithoutBackupManifestPermanentFailed()
     {
         // Arrange — префикс полного есть (etcd-статус + backup_label), манифеста
         // НЕТ: имитация упавшего на середине upload t02
@@ -275,12 +275,12 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Assert — permanent FAILED с причиной
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("без backup_manifest");
+        failed.Error.Should().Contain("has no backup_manifest");
         failed.FinishedUnix.Should().BeGreaterThan(0);
     }
 
     [Fact]
-    public async Task Валидация_дубль_заявки_младшие_permanent_FAILED_старейшая_исполняется()
+    public async Task ValidationDuplicateRequestYoungerPermanentFailedOldestRuns()
     {
         // Arrange — два PLANNED одного шарда; валидные данные под старейшую
         const string fullId = "20260910120000Z";
@@ -301,12 +301,12 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Assert — младший FAILED «дубль заявки», старейший дошёл до RUNNING
         var restores = await ReadRestoresAsync("c1", "shard1");
         restores.Single(r => r.Id == younger.Id).State.Should().Be(RestoreStatus.Failed);
-        restores.Single(r => r.Id == younger.Id).Error.Should().Contain("дубль заявки");
+        restores.Single(r => r.Id == younger.Id).Error.Should().Contain("duplicate request");
         restores.Single(r => r.Id == oldest.Id).State.Should().Be(RestoreStatus.Running);
     }
 
     [Fact]
-    public async Task Валидация_усыновлённый_шард_permanent_FAILED()
+    public async Task ValidationAdoptedShardPermanentFailed()
     {
         // Arrange — portalloc с object-нодами (усвоенный стендовый шард)
         await SeedAsync("c1", alloc: new Dictionary<string, NodeAddress>
@@ -325,11 +325,11 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Assert
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("усыновлённых шардов");
+        failed.Error.Should().Contain("adopted shards");
     }
 
     [Fact]
-    public async Task Валидация_дыра_цепочки_permanent_FAILED_с_границами()
+    public async Task ValidationWalChainGapPermanentFailedWithBoundaries()
     {
         // Arrange — сегмент 3 пропущен: 2, 4 (ожидается 000000010000000000000003)
         const string fullId = "20260910120000Z";
@@ -349,11 +349,11 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Assert — границы дыры в error
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("дыра WAL-цепочки: ожидался");
+        failed.Error.Should().Contain("WAL chain gap: expected");
     }
 
     [Fact]
-    public async Task Валидация_полных_нет_в_S3_permanent_FAILED()
+    public async Task ValidationNoFullsInS3PermanentFailed()
     {
         // Arrange — DR-ветка: source-override на пустой префикс
         await SeedAsync("c1");
@@ -369,13 +369,13 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Assert
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("полные в c9/shard1 не найдены");
+        failed.Error.Should().Contain("no full backups found in c9/shard1");
     }
 
     // ── PLANNED: transient (статус не меняем, тик Ok) ──
 
     [Fact]
-    public async Task Валидация_S3_недоступен_статус_не_меняется()
+    public async Task ValidationS3UnavailableStatusUnchanged()
     {
         // Arrange — list S3 падает (FailList), заявка через source-override
         await SeedAsync("c1");
@@ -449,7 +449,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Демонтаж_сносит_агента_ноды_и_чистит_ha_scope_ставит_REBUILDING()
+    public async Task DemolitionRemovesNodeAgentCleansHaScopeSetsRebuilding()
     {
         // Arrange — RUNNING-заявка; живой агент, HA-scope и request_cpu в etcd
         var ct = TestContext.Current.CancellationToken;
@@ -488,7 +488,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/leader", ct)).Value.Should().BeNull();
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/optime/shard1a", ct)).Value.Should().BeNull();
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/members/shard1a", ct)).Value.Should().BeNull();
-        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/status", ct)).Value.Should().BeNull("optime-рудимент запирает выборы восстановленной ноды");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/status", ct)).Value.Should().BeNull("the optime rudiment locks elections of the restored node");
         // Щит re-bootstrap: initialize ставится заново заполнителем — пустая нода
         // в окне демонтаж→джоба→rejoin initdb'нуться в чужой кластер не может
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
@@ -500,7 +500,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Джоб_exit0_ok_переход_REJOINING_с_lsn()
+    public async Task JobExit0OkMovesToRejoiningWithLsn()
     {
         // Arrange — RUNNING + контейнер exited 0 с result-JSON ok
         var ct = TestContext.Current.CancellationToken;
@@ -527,7 +527,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Джоб_exit1_пишет_FAILED_с_error_и_чистит_контейнер()
+    public async Task JobExit1WritesFailedWithErrorAndRemovesContainer()
     {
         // Arrange — exited 1 с error-JSON
         var ct = TestContext.Current.CancellationToken;
@@ -554,7 +554,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Джоб_exit1_FAILED_до_rejoin_снимает_щит_initialize()
+    public async Task JobExit1FailedBeforeRejoinRemovesInitializeShield()
     {
         // Arrange — демонтаж уже прошёл (щит «restore-in-progress» стоит);
         // джоба фейлится: permanent-FAILED обязан снять заполнитель, иначе он
@@ -580,11 +580,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Failed);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
-            .Value.Should().BeNull("щит без system_id не переживает permanent-FAILED");
+            .Value.Should().BeNull("the shield without system_id does not survive permanent-FAILED");
     }
 
     [Fact]
-    public async Task Rejoin_FAILED_не_трогает_initialize_с_system_id()
+    public async Task RejoinFailedDoesNotTouchInitializeWithSystemId()
     {
         // Arrange — REJOINING: initialize уже настоящий system_id восстановленного
         // volume; сверх бюджета PatroniBoot → permanent-FAILED. system_id чистить
@@ -615,7 +615,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Тик_с_существующим_джобом_не_повторяет_демонтаж_и_доносит_итог()
+    public async Task TickWithExistingJobDoesNotRepeatDemolitionAndDeliversOutcome()
     {
         // Arrange — RUNNING + exited-1 джоб: контейнер существует и держит
         // data-volume первой ноды (реальный docker — 409 «volume is in use»).
@@ -639,7 +639,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
 
         // Assert — демонтаж НЕ повторялся (контейнер существует ⇒ уже разобран),
         // итог джоба доведён до статуса, контейнер и volume прибраны
-        inner.RemovedNodes.Should().BeEmpty("демонтаж не повторяется при существующем джобе");
+        inner.RemovedNodes.Should().BeEmpty("demolition is not repeated when the job already exists");
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
         failed.Error.Should().Be("boom");
@@ -648,7 +648,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Джоб_сверх_бюджета_докилл_и_FAILED()
+    public async Task JobOverBudgetKillAndFailed()
     {
         // Arrange — running-контейнер; started_unix глубже бюджета (1800+60)
         var ct = TestContext.Current.CancellationToken;
@@ -671,14 +671,14 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         engine.Removed.Should().Contain(name);
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("бюджет");
+        failed.Error.Should().Contain("budget");
     }
 
     // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в
     // опциях теста) → restore-джоб kill+rm, заявка FAILED "restore-job-timeout",
     // щит initialize снят, volume первой ноды удалён
     [Fact]
-    public async Task Running_старше_бюджета_FAILED_jobtimeout_щит_снят()
+    public async Task RunningOlderThanBudgetFailedJobTimeoutShieldRemoved()
     {
         // Arrange — заявка RUNNING started_unix = now - 2h; FakeBackupEngine держит
         // running-контейнер restore-джоба без маркеров; сид щита initialize
@@ -708,11 +708,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         failed.State.Should().Be(RestoreStatus.Failed);
         failed.Error.Should().Contain("restore-job-timeout");
         var init = await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct);
-        init.Value.Should().BeNull("щит initialize снят FailPermanentAsync (fd5342e-механика)");
+        init.Value.Should().BeNull("the initialize shield is removed by FailPermanentAsync (fd5342e mechanics)");
     }
 
     [Fact]
-    public async Task RUNNING_без_контейнера_перезапуск_идемпотентен()
+    public async Task RunningWithoutContainerRestartIsIdempotent()
     {
         // Arrange — RUNNING, джоба нет (после рестарта docker-хоста)
         var ct = TestContext.Current.CancellationToken;
@@ -743,7 +743,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Target_time_нормализуется_к_формату_PG()
+    public async Task TargetTimeNormalizedToPgFormat()
     {
         // Arrange — RUNNING с target time:<RFC3339>: парсер recovery_target_time
         // PG не принимает «T»-сепаратор и суффикс «Z» (инцидент E2E-гейта t05),
@@ -767,7 +767,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Target_time_битое_permanent_FAILED()
+    public async Task TargetTimeMalformedPermanentFailed()
     {
         // Arrange — RUNNING с time:не-RFC3339 (ручная запись мимо API)
         var ct = TestContext.Current.CancellationToken;
@@ -776,7 +776,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         var driver = new TestDriver(new StubScaleDriver(), engine);
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
-            backupId: "20260910120000Z", target: "time:завтра-утром",
+            backupId: "20260910120000Z", target: "time:tomorrow-morning",
             state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
@@ -786,12 +786,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         // Assert — permanent FAILED, джоб не создаётся
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("не RFC3339");
+        failed.Error.Should().Contain("not RFC3339");
         engine.Created.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Transient_docker_отказ_статус_не_меняется()
+    public async Task TransientDockerFailureStatusUnchanged()
     {
         // Arrange — RUNNING, list docker падает
         var ct = TestContext.Current.CancellationToken;
@@ -818,7 +818,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // ── REJOINING: ensure нод + пробы + COMPLETED ──
 
     [Fact]
-    public async Task Rejoin_ensure_первой_ноды_и_ожидание_пробы()
+    public async Task RejoinEnsuresFirstNodeAndWaitsForProbe()
     {
         // Arrange — REJOINING после успешного джоба; Patroni отвечает «start»
         var ct = TestContext.Current.CancellationToken;
@@ -846,7 +846,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Rejoin_окно_ротации_ensure_несёт_pending_пару()
+    public async Task RejoinRotationWindowEnsureCarriesPendingPair()
     {
         // Arrange — REJOINING; журнал работы несёт rest_pending (окно rolling
         // REST-ротации): EnsureNode-путь restore окно НЕ расширяет — нода
@@ -874,7 +874,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Rejoin_лидер_избран_реплика_стартовала_basebackup_COMPLETED_wal_удалён()
+    public async Task RejoinLeaderElectedReplicaStartedBasebackupCompletedWalRemoved()
     {
         // Arrange — REJOINING; Patroni: лидер running, реплика в basebackup
         // ("creating replica") — контракт rejoin 2026-09-12: ожидания полного
@@ -910,13 +910,13 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         completed.FinishedUnix.Should().BeGreaterThan(0);
         completed.RestoredToLsn.Should().Be("0/42");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
-            .Value.Should().BeNull("сброс цепочки — переснятие полного планировщиком (AC4)");
+            .Value.Should().BeNull("chain reset — the full backup is retaken by the scheduler (AC4)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("done/shard1/");
     }
 
     [Fact]
-    public async Task Rejoin_ставит_щит_initialize_systemid_до_ensure_нод()
+    public async Task RejoinSetsInitializeShieldSystemIdBeforeNodeEnsure()
     {
         // Arrange — REJOINING с system_id от джобы; в scope — заполнитель демонтажа.
         // Щит перезаписывается ДО ensure первой ноды: параллельно поднятая пустая
@@ -944,11 +944,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         // Assert — щит = system id восстановленного PGDATA (не заполнитель)
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
             .Value!.Value.Should().Be("7684914368175407176");
-        inner.EnsuredNodes.Should().NotBeEmpty("rejoin дошёл до ensure нод");
+        inner.EnsuredNodes.Should().NotBeEmpty("rejoin reached the node ensure");
     }
 
     [Fact]
-    public async Task Rejoin_сверх_PatroniBootSec_permanent_FAILED()
+    public async Task RejoinOverPatroniBootSecPermanentFailed()
     {
         // Arrange — часы фиксированные: первый тик фиксирует since, второй
         // (после +700 c > 600 бюджет) — бюджет исчерпан
@@ -972,11 +972,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         // Assert — permanent FAILED «Patroni не поднялся»
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("Patroni не поднялся");
+        failed.Error.Should().Contain("Patroni did not come up");
     }
 
     [Fact]
-    public async Task Takeover_новый_инстанс_продолжает_по_статусу()
+    public async Task TakeoverNewInstanceContinuesByStatus()
     {
         // Arrange — инстанс A начинает rejoin (probe не готов), «умирает»;
         // инстанс B (свежий, без in-memory) видит REJOINING в etcd
@@ -999,7 +999,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await processB.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
 
         // Assert — продолжение с REJOINING (ensure-вызовы были, статус финальный)
-        innerB.EnsuredNodes.Should().NotBeEmpty("инстанс B продолжает ensure по etcd-статусу");
+        innerB.EnsuredNodes.Should().NotBeEmpty("instance B continues ensure from the etcd status");
         (await ReadRestoresAsync("c1", "shard1")).Single()
             .State.Should().Be(RestoreStatus.Completed);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
@@ -1007,7 +1007,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Rejoin_проба_ждёт_лидера_running_реплика_не_считается_готовой()
+    public async Task RejoinProbeWaitsForLeaderRunningReplicaNotReady()
     {
         // Arrange — REJOINING; Patroni отвечает, но первая нода — running-реплика:
         // выборы не завершены (гонка после restore), доводить до реплик нельзя
@@ -1030,7 +1030,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await ReadRestoresAsync("c1", "shard1")).Single()
             .State.Should().Be(RestoreStatus.Rejoining);
         inner.EnsuredNodes.Should().NotContain(n => n.Contains("shard1b"),
-            "реплики поднимаются только после избранного лидера");
+            "replicas start only after a leader is elected");
     }
 
     // ── REJOINING: SQL-гейт мастера перед COMPLETED (t10) ──
@@ -1040,7 +1040,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // переводятся в RUNNING, wal-ключ жив; тик InProgress, журнал —
     // master-sql-wait (без мутаций — тик повторит).
     [Fact]
-    public async Task Rejoin_мастер_в_recovery_гейт_не_пускает_без_мутаций()
+    public async Task RejoinMasterInRecoveryGateBlocksWithoutMutations()
     {
         // Arrange — Patroni готов (лидер running, реплика creating replica),
         // SQL-фейк: pg_is_in_recovery = true
@@ -1069,9 +1069,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             .State.Should().Be(RestoreStatus.Rejoining);
         (await fixture.Gateway.GetAsync(fixture.Endpoint,
             "/clusters/c1/shards/shard1/nodes/shard1a/state", ct)).Value
-            .Should().BeNull("RUNNING ставится только после SQL-гейта (t10)");
+            .Should().BeNull("RUNNING is set only after the SQL gate (t10)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
-            .Value.Should().NotBeNull("wal-ключ удаляется только с COMPLETED");
+            .Value.Should().NotBeNull("the wal key is removed only on COMPLETED");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("master-sql-wait/shard1/");
     }
@@ -1079,7 +1079,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // AAA (t10-б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
     // → гейт пропускает: ноды RUNNING, COMPLETED, wal-ключ удалён.
     [Fact]
-    public async Task Rejoin_мастер_принял_SQL_гейт_пропускает_до_COMPLETED()
+    public async Task RejoinMasterAcceptedSqlGateProceedsToCompleted()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -1107,14 +1107,14 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Completed);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
-            .Value.Should().BeNull("COMPLETED сбрасывает цепочку (AC4)");
+            .Value.Should().BeNull("COMPLETED resets the chain (AC4)");
     }
 
     // AAA (t10-в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
     // «мастер не принял SQL» (фиксированные часы: тик 1 фиксирует since, тик 2
     // после +700 с > 600).
     [Fact]
-    public async Task Rejoin_SQL_гейт_сверх_бюджета_permanent_FAILED()
+    public async Task RejoinSqlGateOverBudgetPermanentFailed()
     {
         // Arrange — транспорт рвётся (connection refused)
         var ct = TestContext.Current.CancellationToken;
@@ -1138,9 +1138,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         // Assert — permanent-FAILED с причиной и диагностикой
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
-        failed.Error.Should().Contain("мастер не принял SQL за 600 с");
+        failed.Error.Should().Contain("master did not accept SQL");
         failed.Error.Should().Contain("connection refused (fake)");
-        failed.Error.Should().Contain("members=", "снимок Patroni-диагностики в причине");
+        failed.Error.Should().Contain("members=", "Patroni diagnostics snapshot in the reason");
     }
 
     // AAA (t10-г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
@@ -1148,7 +1148,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // статусу: мастер принял SQL → COMPLETED (waitKey стабилен:
     // {cluster}/{shard}/{op.Id} — от инстанса не зависит).
     [Fact]
-    public async Task Rejoin_SQL_гейт_takeover_продолжает_по_статусу()
+    public async Task RejoinSqlGateTakeoverContinuesByStatus()
     {
         // Arrange — A: Patroni готов, SQL не готова
         var ct = TestContext.Current.CancellationToken;
@@ -1171,7 +1171,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             .IsSuccess.Should().BeTrue();
 
         // Assert — B довёл до COMPLETED с ensure нод
-        innerB.EnsuredNodes.Should().NotBeEmpty("инстанс B продолжает ensure по etcd-статусу");
+        innerB.EnsuredNodes.Should().NotBeEmpty("instance B continues ensure from the etcd status");
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Completed);
     }
@@ -1179,7 +1179,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // ── Каркас тика ──
 
     [Fact]
-    public async Task Тик_без_клэйма_и_без_активных_заявок_молчит()
+    public async Task TickWithoutClaimAndWithoutActiveRequestsStaysSilent()
     {
         // Arrange — клэйма нет, заявок нет
         await SeedAsync("c1");
@@ -1189,8 +1189,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         var refused = await process.TickAsync(BuildSnap(), [], TestContext.Current.CancellationToken);
 
         // Assert — отказ клэйм-гварда
-        refused.IsSuccess.Should().BeFalse("мутации без клэйма запрещены");
-        refused.Error!.Message.Should().Contain("клэйм не наш");
+        refused.IsSuccess.Should().BeFalse("mutations without a claim are forbidden");
+        refused.Error!.Message.Should().Contain("claim is not ours");
 
         // Act — клэйм есть, заявок нет
         (await _claims.TryClaimClusterAsync("c1", TestContext.Current.CancellationToken)).Value.Should().BeTrue();
@@ -1202,7 +1202,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     }
 
     [Fact]
-    public async Task Тик_шард_убран_из_декларации_заявка_не_исполняется()
+    public async Task TickShardRemovedFromDeclarationRequestNotExecuted()
     {
         // Arrange — заявка на shard9, которого в снапшоте нет
         await SeedAsync("c1");
@@ -1226,7 +1226,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     // в точке записи статуса и COMPLETED ("ok") после успешного putDone
     // (симметрия drill-теста; обе точки вставки 3b/3c)
     [Fact]
-    public async Task Терминальные_исходы_FAILED_и_COMPLETED_зовут_наблюдателя()
+    public async Task TerminalOutcomesFailedAndCompletedCallObserver()
     {
         // Arrange 1 — заявка PLANNED, полных нет ни в etcd (ShardBackups.Full пуст),
         // ни в S3 (FakeBackupS3.Fulls пуст) → DR-резолв «полные не найдены»

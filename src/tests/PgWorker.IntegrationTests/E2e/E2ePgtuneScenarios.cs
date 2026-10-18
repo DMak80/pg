@@ -51,7 +51,7 @@ public class E2ePgtuneScenarios
         // Act: provisioning до Active.
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
+        provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
         // Assert: SPILO_CONFIGURATION каждой ноды — merge(PGTune ∪ канон):
@@ -82,7 +82,7 @@ public class E2ePgtuneScenarios
         spilos
             .Select(s => string.Join('\n', s.Split('\n').Where(l => !l.Contains("connect_address"))))
             .Distinct()
-            .Should().ContainSingle("все ноды одного прохода получают один расчёт");
+            .Should().ContainSingle("all nodes of one pass get the same computation");
 
         // Assert: doorman-бюджет синхронизирован от рассчитанного max_connections
         // (P15: 60 − 5 = 55, пол 10).
@@ -107,11 +107,11 @@ public class E2ePgtuneScenarios
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
+        provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
         var envBefore = (await ContainerEnvAsync(node, ct))["SPILO_CONFIGURATION"];
-        envBefore.Should().Contain("shared_buffers: \"1GB\"", "исходный расчёт — от заявки 4Gi");
+        envBefore.Should().Contain("shared_buffers: \"1GB\"", "the initial computation comes from the 4Gi request");
 
         // Снимок имён ключей etcd ДО (граница контракта: воркер не пишет параметры).
         var keysBefore = await AllKeyNamesAsync(ct);
@@ -120,7 +120,7 @@ public class E2ePgtuneScenarios
         // пересоздание надзором прочитает уже НОВУЮ заявку), затем снести контейнер
         // ноды — сверка декларации (arch/14 §5 C) пересоздаёт её.
         (await G.PutAsync(Endpoint, $"/service/{cluster}-shard1/request_mem", "8Gi", null, ct))
-            .IsSuccess.Should().BeTrue("заявка request_mem должна перезаписаться");
+            .IsSuccess.Should().BeTrue("the request_mem request must be overwritten");
         await Fx.RunDockerAsync(["rm", "-f", node], ct);
 
         var recreated = await E2eFixture.WaitForAsync(async () =>
@@ -137,12 +137,12 @@ public class E2ePgtuneScenarios
                 return false; // контейнера ещё нет — надзор пересоздаст следующим тиком
             }
         }, TimeSpan.FromSeconds(120), ct);
-        recreated.Should().BeTrue($"пересозданная нода должна получить env от заявки 8Gi; " +
+        recreated.Should().BeTrue($"the recreated node must get env from the 8Gi request; " +
                                   $"work={await WorkDumpAsync(cluster, ct)}");
 
         // Assert: env отличается от прежнего (пересчёт от АКТУАЛЬНОЙ заявки).
         var envAfter = (await ContainerEnvAsync(node, ct))["SPILO_CONFIGURATION"];
-        envAfter.Should().NotBe(envBefore, "env пересозданной ноды пересчитан от новой заявки");
+        envAfter.Should().NotBe(envBefore, "the env of the recreated node is recomputed from the new request");
         envAfter.Should().Contain("max_connections: \"60\"");
         envAfter.Should().Contain("wal_level: logical");
 
@@ -155,7 +155,7 @@ public class E2ePgtuneScenarios
             .Where(k => !k.StartsWith("/service/", StringComparison.Ordinal))
             .Where(k => !k.EndsWith("/master", StringComparison.Ordinal))
             .ToList();
-        fresh.Should().BeEmpty("параметры не фиксируются в etcd — новых ключей нет");
+        fresh.Should().BeEmpty("parameters are not persisted in etcd — no new keys");
     }
 
     [Fact]
@@ -181,24 +181,24 @@ public class E2ePgtuneScenarios
 
         // Assert: без обязательной заявки кластер НЕ поднялся — конфиг всё ещё
         // со state=NOT_INITIALIZED (Active снимает state-ключ).
-        journaled.Should().BeTrue("без обязательной заявки request_mem provisioning обязан падать с journal-ошибкой; " +
+        journaled.Should().BeTrue("without a mandatory request_mem request provisioning must fail with a journal error; " +
                                   $"work={await WorkDumpAsync(cluster, ct)}");
         (await GetOrNullAsync($"/clusters/{cluster}/config"))!.Value
-            .Should().Contain("NOT_INITIALIZED", "кластер без обязательных заявок не может стать Active");
+            .Should().Contain("NOT_INITIALIZED", "a cluster without mandatory requests cannot become Active");
 
         // Act: посеять ОБЯЗАТЕЛЬНЫЕ заявки → транзиент-ретрай подхватывает их
         // следующим тиком provisioning.
         foreach (var shard in new[] { "shard1", "shard2" })
         {
             (await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct))
-                .IsSuccess.Should().BeTrue("заявка request_cpu должна записаться");
+                .IsSuccess.Should().BeTrue("the request_cpu request must be written");
             (await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct))
-                .IsSuccess.Should().BeTrue("заявка request_mem должна записаться");
+                .IsSuccess.Should().BeTrue("the request_mem request must be written");
         }
 
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("после посева обязательных заявок provisioning должен дойти до Active; " +
+        provisioned.Should().BeTrue("after seeding the mandatory requests provisioning must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
         // Assert: env нод рассчитан от заявки 8Gi: 2GB/6GB/60; заявка cpu 2 < 4 →
@@ -241,13 +241,13 @@ public class E2ePgtuneScenarios
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
+        provisioned.Should().BeTrue("provisioning of the cluster must reach Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
         var master = await MasterInfoAsync(cluster, "shard1", ct);
         (await SqlScalarAsync(master.Dsn,
                 "SELECT current_setting('effective_cache_size')", ct))
-            .Should().Be("6GB", "bootstrap-расчёт от заявки 8Gi применён при инициализации");
+            .Should().Be("6GB", "the bootstrap computation from the 8Gi request is applied at initialization");
         // Бутовое значение postmaster-параметра: Spilo при инициализации
         // пересчитывает shared_buffers из памяти контейнера, поэтому живое
         // значение — НЕ литерал DCS ("2GB"), а автотюнинг (напр. "1983MB";
@@ -259,7 +259,7 @@ public class E2ePgtuneScenarios
         // Act: перезаписать заявку 8Gi → 16Gi (расчёт: effective_cache_size 12GB —
         // динамика; shared_buffers 4GB — postmaster) — ЖИВОЙ шард, ноды не трогаем.
         (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "16Gi", null, ct))
-            .IsSuccess.Should().BeTrue("заявка request_mem должна перезаписаться");
+            .IsSuccess.Should().BeTrue("the request_mem request must be overwritten");
 
         // Assert (а): GET /config несёт пересчитанные параметры (динамика +
         // postmaster) — тик надзора патчит DCS одним документом.
@@ -267,7 +267,7 @@ public class E2ePgtuneScenarios
             await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "4GB"
             && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "12GB",
             TimeSpan.FromSeconds(120), ct);
-        configUpdated.Should().BeTrue("тик надзора обязан патчить DCS-конфиг от новой заявки; " +
+        configUpdated.Should().BeTrue("the supervision tick must patch the DCS config from the new request; " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
 
         // Assert (б): динамический параметр фактически применён живым PG без
@@ -276,7 +276,7 @@ public class E2ePgtuneScenarios
             await SqlScalarAsync(master.Dsn,
                 "SELECT current_setting('effective_cache_size')", ct) == "12GB",
             TimeSpan.FromSeconds(60), ct);
-        reloaded.Should().BeTrue("динамический параметр применяется Patroni без рестарта ноды");
+        reloaded.Should().BeTrue("the dynamic parameter is applied by Patroni without a node restart");
 
         // Assert (в): postmaster-параметр помечен pending_restart=true (GET
         // /patroni), рестарт воркером НЕ инициируется: контейнеры живы;
@@ -284,12 +284,12 @@ public class E2ePgtuneScenarios
         var pending = await E2eFixture.WaitForAsync(async () =>
             (await GetPatroniFieldAsync(master.Host, "pending_restart", ct)) == "true",
             TimeSpan.FromSeconds(60), ct);
-        pending.Should().BeTrue("Patroni обязан пометить postmaster-расхождение pending_restart");
+        pending.Should().BeTrue("Patroni must flag the postmaster divergence as pending_restart");
         (await SqlScalarAsync(master.Dsn, "SELECT current_setting('shared_buffers')", ct))
             .Should().Be(sharedBuffersAtBoot,
-                "postmaster-параметр НЕ применён до рестарта (решение 2026-09-14)");
+                "the postmaster parameter is NOT applied until the restart (decision 2026-09-14)");
         (await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))
-            .Should().HaveCount(2, "воркер не пересоздаёт и не рестартует ноды конвергенцией");
+            .Should().HaveCount(2, "the worker neither recreates nor restarts nodes by convergence");
 
         // Assert (г): идемпотентность — сначала конфиг ОСЕДАЕТ (mod_revision
         // не меняется 5 с: серия конвергенций при смене заявки завершена;
@@ -299,19 +299,19 @@ public class E2ePgtuneScenarios
         // писатель).
         var settled = await ConfigModRevisionSettledAsync(
             scope, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), ct);
-        settled.Should().BeTrue("конфиг должен перестать мутировать после конвергенции; " +
+        settled.Should().BeTrue("the config must stop mutating after convergence; " +
                                 $"work={await WorkDumpAsync(cluster, ct)}");
         var stable = await ConfigModRevisionStableAsync(scope, TimeSpan.FromSeconds(15), ct);
-        stable.Should().BeTrue("повторные тики не патчат конвергентный конфиг");
+        stable.Should().BeTrue("repeated ticks do not patch a converged config");
 
         // Act (д): возврат заявки 16Gi → 8Gi — патч ВНИЗ отрабатывает.
         (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "8Gi", null, ct))
-            .IsSuccess.Should().BeTrue("заявка request_mem должна вернуться к 8Gi");
+            .IsSuccess.Should().BeTrue("the request_mem request must return to 8Gi");
         var rolledBack = await E2eFixture.WaitForAsync(async () =>
             await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "2GB"
             && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "6GB",
             TimeSpan.FromSeconds(120), ct);
-        rolledBack.Should().BeTrue("уменьшение значений тоже конвергируется (патч вниз); " +
+        rolledBack.Should().BeTrue("decreasing values also converge (a downward patch); " +
                                    $"work={await WorkDumpAsync(cluster, ct)}");
     }
 
@@ -374,7 +374,7 @@ public class E2ePgtuneScenarios
         => (await G.RangeAsync(Endpoint, prefix, TestContext.Current.CancellationToken)).Value;
 
     private async Task<string> WorkDumpAsync(string cluster, CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
 
     // Все имена ключей etcd окружения (prefix "/" — весь ключевой namespace).
     private async Task<List<string>> AllKeyNamesAsync(CancellationToken ct)
@@ -533,7 +533,7 @@ public class E2ePgtuneScenarios
             await Task.Delay(1000, ct);
         }
 
-        throw new ApplicationException($"мастер {cluster}/{shard} не найден за 60 с");
+        throw new ApplicationException($"master {cluster}/{shard} not found within 60 s");
     }
 
     private async Task<List<string>> ListContainerNamesAsync(string prefix, bool all = false)

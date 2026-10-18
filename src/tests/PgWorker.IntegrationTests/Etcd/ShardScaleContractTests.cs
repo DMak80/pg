@@ -156,7 +156,7 @@ public class ShardScaleContractTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task RemoveShard_останавливает_агента_WAL_и_чистит_ключ_бэкапов_AC6()
+    public async Task RemoveShardStopsWalAgentAndCleansBackupKeysAc6()
     {
         // Arrange — кластер Active, shard1 с TO_REMOVE-маркером; StubScaleDriver
         // видит объекты нод + живой агент (BackupAgentObjects); etcd-ключ
@@ -201,7 +201,7 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         driver.RemovedBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1");
         driver.BackupAgentObjects.Should().NotContain(c => c.Names.Any(n => n.Contains(cluster)));
         var backupsPrefix = await Gateway.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/", ct);
-        backupsPrefix.Value.Should().BeEmpty("ключ wal не переживает демонтаж (CleanKeysAsync)");
+        backupsPrefix.Value.Should().BeEmpty("the wal key does not outlive the dismantling (CleanKeysAsync)");
     }
 
     [Fact]

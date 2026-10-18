@@ -69,7 +69,7 @@ public class E2eRetentionScenarios
         // Arrange 2 — provisioning DONE
         var provisioned = await E2eFixture.WaitForAsync(
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
+        provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
         // Arrange 3 — генерация WAL ДО первого полного: позиция wal_start
         // обязана оставить минимум 5 сегментов ниже cutoff для посева
@@ -113,23 +113,23 @@ public class E2eRetentionScenarios
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var fulls = await FullKeysAsync(cluster, "shard1");
             throw new ApplicationException(
-                $"ретенция не удалила старый полный: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"retention did not remove the old full: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
                 $"fulls=[{string.Join(";", fulls.Select(f => f.Key))}]");
         }
-        trimmed.Should().BeTrue("старый COMPLETED (единственный кандидат GFS) обязан уйти");
+        trimmed.Should().BeTrue("the old COMPLETED (the only GFS candidate) must go");
 
         // Assert 1 — ключи: старый исчез (WaitFor выше), реальный жив
         (await GetOrNullAsync(PgWorker.Backups.BackupNames.FullKey(cluster, "shard1", real.Id)))
-            .Should().NotBeNull("guard: самый свежий COMPLETED не удаляется");
+            .Should().NotBeNull("guard: the newest COMPLETED is not removed");
 
         // Assert 2 — S3: префикс старого пуст, реального жив, посевные WAL
         // ниже cutoff удалены, всё живое в wal/ ≥ cutoff
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}/", ct: ct);
-        oldPrefix.Value.Should().BeEmpty("объекты старого полного удалены (DELETING-доводка)");
+        oldPrefix.Value.Should().BeEmpty("the old full objects are removed (the DELETING finalization)");
         var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}/", ct: ct);
-        realPrefix.Value.Should().NotBeEmpty("объекты реального полного не тронуты");
+        realPrefix.Value.Should().NotBeEmpty("the real full objects are untouched");
         // Посевные ниже cutoff удаляет WAL-trim — ПОСЛЕ verify-OK реального
         // полного (cutoff = wal_start verify-OK; периодика verify 7 дней, но
         // verify null due сразу). Удаление старого полного и trim — РАЗНЫЕ
@@ -143,7 +143,7 @@ public class E2eRetentionScenarios
             var keys = listed.Value.Select(o => o.Key).ToList();
             return seededWal.All(s => !keys.Contains($"{cluster}/shard1/wal/{s}"));
         }, TimeSpan.FromSeconds(300), ct);
-        seedsGone.Should().BeTrue("посевные сегменты строго ниже cutoff удалены");
+        seedsGone.Should().BeTrue("the seed segments strictly below the cutoff are removed");
         var walListed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
         walListed.Value.Should().NotBeNull();
         walListed.Value
@@ -151,15 +151,15 @@ public class E2eRetentionScenarios
             .Where(n => PgWorker.Backups.WalFileName.TryParse(n) is not null)
             .Select(n => (long)PgWorker.Backups.WalFileName.TryParse(n)!.Value.Log * 256
                          + PgWorker.Backups.WalFileName.TryParse(n)!.Value.Seg)
-            .Should().OnlyContain(p => p >= realPos, "всё живое в wal/ — не ниже cutoff");
+            .Should().OnlyContain(p => p >= realPos, "everything alive in wal/ is not below the cutoff");
 
         // Assert 3 — ключ storage: существует, used > 0, state OK (квота не задана)
         var storage = await GetOrNullAsync("/pgworker/backups/storage");
-        storage.Should().NotBeNull("ретенционный проход пишет монитор занятости");
+        storage.Should().NotBeNull("the retention pass writes the occupancy monitor");
         var storageDoc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(storage!.Value)!;
         storageDoc["used_bytes"].GetInt64().Should().BeGreaterThan(0);
         storageDoc["state"].GetString().Should().Be("OK");
-        storageDoc.Should().NotContainKey("quota_bytes", "квота в E2E не задана");
+        storageDoc.Should().NotContainKey("quota_bytes", "no quota is set in E2E");
     }
 
     // ===== Хелперы (копии образца E2eBackupScenarios — файлы сценариев
@@ -176,18 +176,18 @@ public class E2eRetentionScenarios
             var completed = await E2eFixture.WaitForAsync(
                 async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
                 TimeSpan.FromSeconds(300), ct);
-            completed.Should().BeTrue("реальный полный обязан дойти до COMPLETED");
+            completed.Should().BeTrue("the real full must reach COMPLETED");
             var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
             var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
             var walSeg = status["wal_start_segment"].GetString();
-            walSeg.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+            walSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
             var parsed = PgWorker.Backups.WalFileName.TryParse(walSeg!);
             if (parsed is { } w && (long)w.Log * 256 + w.Seg >= 5)
                 return (done.Key.Split('/').Last(), walSeg!);
 
             // Позиция мала (рестартпоинт реплики ещё не взял позицию нагрузки) —
             // дожимаем генерацией и переснимаем полный с чистого листа
-            Assert.True(attempt < 3, "полный так и не встал выше позиции 5 по wal_start");
+            Assert.True(attempt < 3, "the full never got above position 5 by wal_start");
             await GenerateWalAsync(adminDsn, 6, ct);
             await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/full/",
                 prefix: true, ct);
@@ -268,7 +268,7 @@ public class E2eRetentionScenarios
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2eFixture.WaitForAsync(async () =>
@@ -295,7 +295,7 @@ public class E2eRetentionScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432);
     }

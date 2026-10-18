@@ -36,10 +36,10 @@ public class E2eHaEtcdScenarios
             await using var h1 = await Fx.StartHostAsync("ha1", ct: ct);
             var provisioned = await E2ePhase.WaitAsync(Fx, "haetcd-provisioning",
                 E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning обязан дойти до Active на 3-узловом контуре");
+            provisioned.Should().BeTrue("provisioning must reach Active on the 3-node contour");
             Fx.EtcdEndpoints.Should().HaveCount(3);
             (await Fx.EtcdctlAsync("member", "list")).Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Should().HaveCount(3, "member list = 3 члена до отказа");
+                .Should().HaveCount(3, "member list = 3 members before the failure");
 
             // Act: останавливаем узел №1 (кворум 2/3 живёт) и СРАЗУ добавляем шард —
             // provisioning идёт через уцелевшие endpoints (failover воркера).
@@ -58,11 +58,11 @@ public class E2eHaEtcdScenarios
                 Console.WriteLine(
                     $"[PROBE] ha-etcd {probe + 1}/5: healthz={healthz}, api={apiKeys}, " +
                     $"master={(master is { Value.Length: > 0 } ? $"len={master.Value.Length}" : (master is null ? "absent" : "empty"))}");
-                healthz.Should().BeTrue($"healthz воркера жив на всём интервале отказа (проба {probe + 1}/5)");
-                apiKeys.Should().BeGreaterThan(0, "keepalive-ключ API публикуется (надзор жив)");
-                master.Should().NotBeNull($"master-ключ жив (проба {probe + 1}/5); фактически: отсутствует");
+                healthz.Should().BeTrue($"the worker healthz is alive across the whole failure interval (probe {probe + 1}/5)");
+                apiKeys.Should().BeGreaterThan(0, "the API keepalive key is published (supervision alive)");
+                master.Should().NotBeNull($"the master key is alive (probe {probe + 1}/5); actually: absent");
                 master!.Value.Should().NotBeNullOrEmpty(
-                    $"master-ключ жив (проба {probe + 1}/5); фактически: len={master.Value.Length}");
+                    $"the master key is alive (probe {probe + 1}/5); actually: len={master.Value.Length}");
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
             }
 
@@ -74,11 +74,11 @@ public class E2eHaEtcdScenarios
                 {
                     var a = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3a/state"))?.Value ?? "-";
                     var b = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3b/state"))?.Value ?? "-";
-                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "нет" : "есть";
-                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "absent" : "present";
+                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
                     return $"shard3: {a}/{b}, dsn={dsn}, work={Trunc(work)}";
                 });
-            added.Should().BeTrue($"add-shard доведён через уцелевшие endpoints; work={await WorkDumpAsync(cluster, ct)}");
+            added.Should().BeTrue($"add-shard carried through the surviving endpoints; work={await WorkDumpAsync(cluster, ct)}");
 
             // Возврат узла: member list снова 3, health 3/3 (узел догоняет кластер).
             await Fx.StartEtcdNodeAsync(0, ct);
@@ -88,7 +88,7 @@ public class E2eHaEtcdScenarios
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 return members.Length == 3 && members.All(m => m.Contains("started"));
             }, TimeSpan.FromSeconds(60), ct);
-            back.Should().BeTrue("узел №1 обязан вернуться в кворум (data-dir пережил stop)");
+            back.Should().BeTrue("node #1 must return to the quorum (the data-dir survived the stop)");
         }
         catch (Exception)
         {
@@ -112,7 +112,7 @@ public class E2eHaEtcdScenarios
         => (await G.RangeAsync(Endpoint, prefix, TestContext.Current.CancellationToken)).Value;
 
     private async Task<string> WorkDumpAsync(string cluster, CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "absent";
 
     private async Task<bool> ProvisionedAsync(string cluster)
     {

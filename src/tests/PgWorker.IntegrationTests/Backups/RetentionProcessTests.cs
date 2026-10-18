@@ -115,7 +115,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // AC3: transient-сбой S3 на первом тике — статус DELETING не трогается,
     // объекты/ключ живы; второй тик доводит: объекты удалены, ключ удалён.
     [Fact]
-    public async Task Доводка_DELETING_при_сбое_S3()
+    public async Task DeletingFinalizationOnS3Failure()
     {
         // Arrange — свежий COMPLETED (guard/окно) + просроченный COMPLETED
         // с объектами full/<old>/; клэйм наш
@@ -145,7 +145,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var deleting = await GetKvAsync(BackupNames.FullKey(cluster, "shard1", old.Id));
         deleting.Should().NotBeNull();
         deleting!.Value.Should().Contain("\"DELETING\"");
-        s3.PrefixObjects.Should().HaveCount(2, "сбой S3 — ничего не удалено (transient)");
+        s3.PrefixObjects.Should().HaveCount(2, "S3 failure — nothing removed (transient)");
         s3.DeletedKeys.Should().BeEmpty();
 
         // Act — второй тик без сбоя
@@ -162,7 +162,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // при дефолте 1/1/1 40-дневный полный вне «предыдущего месяца» не
     // удерживается месячной точкой, policy 1/0/0 тоже удаляет.
     [Fact]
-    public async Task Policy_из_ключа_кластера_действует()
+    public async Task PolicyFromClusterKeyApplies()
     {
         // Arrange — свежий (вчера) + 40-дневный; policy кластера 1/0/0
         var ct = TestContext.Current.CancellationToken;
@@ -192,7 +192,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // AC3: два кандидата — за один тик удаляется РОВНО ОДИН (старейший).
     [Fact]
-    public async Task Один_кандидат_за_проход()
+    public async Task OneCandidatePerPass()
     {
         // Arrange — свежий + два просроченных; policy 1/0/0
         var ct = TestContext.Current.CancellationToken;
@@ -220,7 +220,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // AC2: единственный просроченный COMPLETED не удаляется никогда.
     [Fact]
-    public async Task Guard_единственный_COMPLETED_не_удаляется()
+    public async Task GuardSingleCompletedIsNotRemoved()
     {
         // Arrange — один COMPLETED 40 дней назад + его S3-объекты
         var ct = TestContext.Current.CancellationToken;
@@ -243,7 +243,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // AC4: WAL строго ниже cutoff удалён; cutoff/выше/.history того же TLI живы.
     [Fact]
-    public async Task WAL_чистка_ниже_cutoff()
+    public async Task WalCleanupBelowCutoff()
     {
         // Arrange — COMPLETED с verify OK (t18: cutoff только от verify-OK) и
         // wal_start=..05; wal/ содержит 3,4,5,6 + history
@@ -283,7 +283,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // AC4-хвост: после чистки контроль t03 поднимает chain_start до cutoff —
     // цепочка от оставшихся непрерывна (ACTIVE, без error).
     [Fact]
-    public async Task Чистка_WAL_поднимает_chain_start_контроля_t03()
+    public async Task WalCleanupRaisesVerifyChainStartT03()
     {
         // Arrange — full wal_start=..05; wal-ключ chain_start=..03; S3: сегменты 3..7
         var ct = TestContext.Current.CancellationToken;
@@ -320,7 +320,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         // Act — тик ретенции (сегменты 3,4 удалены), затем тик контроля t03
         (await retention.TickAsync(BuildSnap(cluster), backups(cluster, full), ct))
             .IsSuccess.Should().BeTrue();
-        s3.DeletedKeys.Should().HaveCount(2, "предусловие: чистка срезала 3 и 4");
+        s3.DeletedKeys.Should().HaveCount(2, "precondition: the cleanup cut 3 and 4");
         (await walProcess.TickAsync(BuildSnap(cluster), backups(cluster, full), ct))
             .IsSuccess.Should().BeTrue();
 
@@ -334,7 +334,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // Консервативность: полных нет (cutoff не определён) — WAL не чистится.
     [Fact]
-    public async Task WAL_без_полных_не_чистится()
+    public async Task WalWithoutFullsIsNotCleaned()
     {
         // Arrange — только wal-объекты, полных/FAILED нет
         var ct = TestContext.Current.CancellationToken;
@@ -356,7 +356,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // AC5: при >KeepFailed FAILED старейшие удалены; бэкофф t02 не изменился.
     [Fact]
-    public async Task FAILED_гигиена()
+    public async Task FailedHygiene()
     {
         // Arrange — COMPLETED + 7 FAILED после него; KeepFailed=5
         var ct = TestContext.Current.CancellationToken;
@@ -387,7 +387,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var nowUnix = Unix(Now.AddMinutes(10));
         BackupPlanner.BackoffPassed(before, 300, 3600, nowUnix)
             .Should().Be(BackupPlanner.BackoffPassed(remaining, 300, 3600, nowUnix),
-                "чистка до KeepFailed не двигает retry_not_before (n упирается в MaxSec)");
+                "the cleanup before KeepFailed does not move retry_not_before (n hits MaxSec)");
     }
 
     // AC8: Enabled=false — полный no-op, ключ storage не пишется.
@@ -422,7 +422,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // Клэйм-гвард: без клэйма тик отказывает (мутации запрещены).
     [Fact]
-    public async Task Клэйм_не_наш_отказ()
+    public async Task ClaimNotOursRefusal()
     {
         // Arrange — клэйм НЕ брали
         const string cluster = "rt10";
@@ -434,13 +434,13 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
         // Assert — Failed с сообщением про клэйм
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм");
+        result.Error!.Message.Should().Contain("claim");
     }
 
     // AC6: ключ storage пишется с суммой размеров и вердиктом; повторный тик
     // без изменений НЕ переписывает значение (сравнение наблюдаемых полей).
     [Fact]
-    public async Task Ключ_storage_пишется_при_изменении()
+    public async Task StorageKeyWrittenOnChange()
     {
         // Arrange — 2 объекта (10+20), квота 100 (30% — OK)
         var ct = TestContext.Current.CancellationToken;
@@ -463,14 +463,14 @@ public class RetentionProcessTests(EtcdFixture fixture)
             .And.Contain("\"quota_bytes\":100")
             .And.Contain("\"used_percent\":30")
             .And.Contain("\"state\":\"OK\"");
-        second!.Value.Should().Be(first.Value, "put при неизменных наблюдаемых полях не выполняется");
+        second!.Value.Should().Be(first.Value, "no put when the observed fields are unchanged");
     }
 
     // AC6-семантика «при изменении» (arch/19 §4): два прохода с неизменными
     // данными при ИДУЩИХ часах — второй put НЕ выполняется: updated_unix не
     // участвует в сравнении, свежесть прохода видна по возрасту updated_unix.
     [Fact]
-    public async Task Storage_без_изменений_второй_put_не_выполняется()
+    public async Task StorageUnchangedSecondPutNotPerformed()
     {
         // Arrange — 2 объекта (10+20); часы идут вперёд между тиками
         var ct = TestContext.Current.CancellationToken;
@@ -493,13 +493,13 @@ public class RetentionProcessTests(EtcdFixture fixture)
         first.Should().NotBeNull();
         first!.Value.Should().Contain($"\"updated_unix\":{Unix(Now)}");
         second!.Value.Should().Be(first.Value,
-            "меняющийся updated_unix не должен превращать каждый проход в put");
+            "a changing updated_unix must not turn every pass into a put");
     }
 
     // AC6: изменился used_bytes — put выполняется с новым значением и свежим
     // updated_unix (наблюдаемые поля разошлись → запись обязательна).
     [Fact]
-    public async Task Storage_при_изменении_put_с_новым_значением_и_свежим_updated()
+    public async Task StorageOnChangePutWithNewValueAndFreshUpdated()
     {
         // Arrange — 1 объект (10); часы идут
         var ct = TestContext.Current.CancellationToken;
@@ -524,12 +524,12 @@ public class RetentionProcessTests(EtcdFixture fixture)
         first!.Value.Should().Contain("\"used_bytes\":10");
         second!.Value.Should().Contain("\"used_bytes\":30")
             .And.Contain($"\"updated_unix\":{Unix(Now.AddMinutes(1))}",
-                "изменение наблюдаемых полей → put со свежим updated_unix");
+                "a change of the observed fields → a put with a fresh updated_unix");
     }
 
     // AC6: квота 0 → только used/state/updated, полей квоты нет.
     [Fact]
-    public async Task Квота_0_без_полей_квоты()
+    public async Task QuotaZeroWithoutQuotaFields()
     {
         // Arrange — объекты есть, квота не задана (Bytes=0)
         var ct = TestContext.Current.CancellationToken;
@@ -557,7 +557,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // полное значение остаётся); тик успешен — неполнота transient, полный
     // проход повторит.
     [Fact]
-    public async Task Storage_недоступный_пул_ключ_не_пишется()
+    public async Task StorageUnavailablePoolKeyNotWritten()
     {
         // Arrange — один пул, list-prefix которого падает (FailListPrefix); квота задана.
         var ct = TestContext.Current.CancellationToken;
@@ -573,12 +573,12 @@ public class RetentionProcessTests(EtcdFixture fixture)
         // Assert — тик успешен, заниженный used_bytes не опубликован.
         result.IsSuccess.Should().BeTrue();
         (await GetKvAsync("/pgworker/backups/storage")).Should().BeNull(
-            "неполный used_bytes не публикуется — квота-алерт не молчит зря");
+            "an incomplete used_bytes is not published — the quota alert does not stay silent in vain");
     }
 
     // G0: кластер не Active — no-op.
     [Fact]
-    public async Task Не_Active_кластер()
+    public async Task NonActiveCluster()
     {
         // Arrange — ToRemove-кластер с живым ключом
         var ct = TestContext.Current.CancellationToken;
@@ -607,7 +607,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // AC3: последний полный PENDING — прунинг WAL ниже его wal_start запрещён:
     // cutoff держится на предыдущем OK (удаляется только строго ниже OK-точки).
     [Fact]
-    public async Task WAL_чистка_гвард_последний_PENDING_держит_предыдущий_OK()
+    public async Task WalCleanupGuardLastPendingKeepsPreviousOk()
     {
         // Arrange — old OK wal_start=..03 (8 дней назад), новый PENDING wal_start=..06
         // (вчера); объекты ..01.. ..08
@@ -641,7 +641,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     // AC3: последний полный verify=FAILED — гвард симметричен PENDING.
     [Fact]
-    public async Task WAL_чистка_гвард_последний_FAILED_держит_предыдущий_OK()
+    public async Task WalCleanupGuardLastFailedKeepsPreviousOk()
     {
         // Arrange — как предыдущий тест, но новый полный verify=FAILED
         var ct = TestContext.Current.CancellationToken;
@@ -674,7 +674,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // AC3-хвост: ни одного verify-OK полного — WAL-чистка no-op (полный есть,
     // но непроверенный: точки привязки нет).
     [Fact]
-    public async Task WAL_чистка_нет_OK_полных_no_op()
+    public async Task WalCleanupNoOkFullsNoOp()
     {
         // Arrange — единственный COMPLETED без verify вовсе; объекты есть
         var ct = TestContext.Current.CancellationToken;
@@ -700,7 +700,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     // AC2-хвост: недельная/месячная точки на cutoff НЕ влияют — cutoff = wal_start
     // последнего OK-полного; срез идёт ниже НЕГО (вкл. сегменты выше старых точек).
     [Fact]
-    public async Task WAL_чистка_недельная_месячная_точки_не_влияют_на_cutoff()
+    public async Task WalCleanupWeeklyMonthlyPointsDoNotAffectCutoff()
     {
         // Arrange — GFS-точка августа OK wal_start=..03 (31.08 — последний W36 и
         // последний августа: удерживается и недельной, и месячной гранулой 1/1/1)

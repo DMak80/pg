@@ -75,7 +75,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
             }
         }
 
-        return Result.Failed(new ApplicationException("порт-клэйм не освобождался 10 с — гонка/дедлок"));
+        return Result.Failed(new ApplicationException("the port claim was not released for 10 s — race/deadlock"));
     }
 
     private static HashSet<(string, int)> PortsOf(IReadOnlyDictionary<string, NodeAddress> addresses)
@@ -116,7 +116,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         var secondAlloc = Portalloc.Parse("shop2",
             (await Gateway.GetAsync(Endpoint, "/pgworker/portalloc/shop2", ct)).Value!.Value);
         var intersection = PortsOf(firstAlloc.Value).Intersect(PortsOf(secondAlloc.Value)).ToList();
-        intersection.Should().BeEmpty("клэйм сериализует выбор троек — повторная секция видит запись соседа");
+        intersection.Should().BeEmpty("the claim serializes triple selection — a repeated section sees the neighbor's write");
 
         // Ключ клэйма исчез после release обеих секций
         var lockKey = await Gateway.GetAsync(Endpoint, first.Key, ct);

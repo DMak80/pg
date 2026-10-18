@@ -183,7 +183,7 @@ public class BackupVerifyProcessTests
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
 
-        private static NotSupportedException NotSupported() => new("не используется в тестах verify");
+        private static NotSupportedException NotSupported() => new("not used in the verify tests");
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
@@ -220,7 +220,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
-        (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
     }
 
     private BackupVerifyProcess BuildProcess(
@@ -251,14 +251,14 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var kv = await Fx.Gateway.GetAsync(
             Fx.Endpoint, $"/pgworker/backups/{cluster}/shard1/full/{id}",
             TestContext.Current.CancellationToken);
-        kv.Value.Should().NotBeNull("итог verify пишется в ключ полного");
+        kv.Value.Should().NotBeNull("the verify outcome is written to the full backup key");
         return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!["verify"];
     }
 
     // AAA: PENDING-кандидат при on_create — цепочка цела → verify-джоб создан и
     // запущен (AC1-юнитная часть; итог exited — задача 9)
     [Fact]
-    public async Task Тик_PendingКандидат_ЦепочкаЦела_ЗапускаетДжоб()
+    public async Task TickPendingCandidateIntactChainStartsJob()
     {
         // Arrange — full COMPLETED verify=PENDING; wal/: сегменты 1..3 + history нет;
         // pg_wal набора: сегмент 3 (end)
@@ -290,7 +290,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA: дыра в wal/ внутри [start..end] → permanent FAILED с границами,
     // verify-джоб НЕ создаётся (AC3: контейнер не создаётся)
     [Fact]
-    public async Task Тик_ДыраЦепочки_FAILED_безДжоба()
+    public async Task TickChainGapFailedWithoutJob()
     {
         // Arrange — wal/: 1,3 (нет 2); набор: pg_wal/3 → end=3
         var ct = TestContext.Current.CancellationToken;
@@ -315,12 +315,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         verify.GetProperty("state").GetString().Should().Be("FAILED");
         verify.GetProperty("error").GetString().Should().Contain("000000010000000000000002");
         verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
-        engine.Created.Should().BeEmpty("вердикт определён цепочкой — скачивание не тратим (spec §3.1)");
+        engine.Created.Should().BeEmpty("the verdict is determined by the chain — no download is spent (spec §3.1)");
     }
 
     // AAA: COMPLETED без wal_start_segment (аномалия) — permanent FAILED без джоба
     [Fact]
-    public async Task Тик_НетWalStart_FAILED_безДжоба()
+    public async Task TickNoWalStartFailedWithoutJob()
     {
         // Arrange — wal_start_segment = null (ранний упавший UPLOADING не бывает
         // COMPLETED — аномалия; но guard обязателен, spec §3.7)
@@ -347,7 +347,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA: строгий TLI-переход с валидным switchWALLSN (GET history из S3) —
     // цепочка цела, джоб запускается (AC4: verify использует содержимое history)
     [Fact]
-    public async Task Тик_СтрогийTLI_ВалиднаяТочка_ЗапускаетДжоб()
+    public async Task TickStrictTliValidPointStartsJob()
     {
         // Arrange — wal/: tli1/seg1, history, tli2/seg2; набор: pg_wal/tli2/seg2
         var ct = TestContext.Current.CancellationToken;
@@ -376,7 +376,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA: строгий TLI-переход с НЕвалидной точкой (switchWALLSN вне границы) —
     // FAILED с упоминанием history, без джоба (AC4)
     [Fact]
-    public async Task Тик_СтрогийTLI_ТочкаВнеГраниц_FAILED()
+    public async Task TickStrictTliPointOffBoundaryFailed()
     {
         // Arrange — как vc4, но history говорит parent=1, lsn=0/5000000 (сегмент 5)
         var ct = TestContext.Current.CancellationToken;
@@ -408,7 +408,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // AAA: transient S3 (list wal/ недоступен) — шард-skip тиком: тик успешен,
     // джоб не создаётся, ключ полного НЕ изменён (spec §3.1: статус не трогаем)
     [Fact]
-    public async Task Тик_TransientS3_СтатусНеТрогаем_ДжобаНет()
+    public async Task TickTransientS3StatusUntouchedNoJob()
     {
         // Arrange — PENDING-ключ в etcd (записан руками — ассерт «не изменён»);
         // S3 «лежит» (FakeBackupS3.Fails)
@@ -431,16 +431,16 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var result = await process.TickAsync(BuildSnap("vc6"), backups, ct);
 
         // Assert — transient: тик без ошибки (шард-skip), ничего не создано/не записано
-        result.IsSuccess.Should().BeTrue("transient S3 — не ошибка тика (spec §3.1)");
-        engine.Created.Should().BeEmpty("джоб без цепочки не стартует");
+        result.IsSuccess.Should().BeTrue("transient S3 — not a tick error (spec §3.1)");
+        engine.Created.Should().BeEmpty("a job without a chain does not start");
         var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
-        after.Should().Be(before, "статус PENDING не трогаем — ретрай следующим тиком");
+        after.Should().Be(before, "the PENDING status is untouched — retry on the next tick");
     }
 
     // AAA: transient GET history (spec §3.1): цепочка с TLI-переходом требует
     // скачивания .history → GET падает → шард-skip, джоба нет, статус не тронут
     [Fact]
-    public async Task Тик_TransientGetHistory_СтатусНеТрогаем_ДжобаНет()
+    public async Task TickTransientGetHistoryStatusUntouchedNoJob()
     {
         // Arrange — сид как в vc4 (TLI-переход в диапазоне), но GET падает;
         // PENDING-ключ в etcd для ассерта «не изменён»
@@ -467,10 +467,10 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var result = await process.TickAsync(BuildSnap("vc7"), BackupsOf("vc7", candidate), ct);
 
         // Assert — list прошёл (переход в диапазоне найден), GET упал → transient
-        result.IsSuccess.Should().BeTrue("transient GET — не ошибка тика (spec §3.1)");
-        engine.Created.Should().BeEmpty("без содержимого history строгий разбор невозможен — джоб не стартует");
+        result.IsSuccess.Should().BeTrue("transient GET — not a tick error (spec §3.1)");
+        engine.Created.Should().BeEmpty("without the history content the strict parse is impossible — the job does not start");
         var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
-        after.Should().Be(before, "статус PENDING не трогаем — ретрай следующим тиком");
+        after.Should().Be(before, "the PENDING status is untouched — retry on the next tick");
     }
 
     // Локальный хелпер: PENDING-кандидат + непрерывная цепочка 1..3 + джоб запущен первым тиком.
@@ -488,13 +488,13 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             new BackupVerify(BackupVerifyStatus.Pending, null)));
         (await process.TickAsync(BuildSnap(cluster), backups, TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
-        engine.Created.Should().NotBeEmpty("джоб запущен первым тиком (предусловие)");
+        engine.Created.Should().NotBeEmpty("the job is started by the first tick (precondition)");
         return engine;
     }
 
     // AAA: exited exit=0 + ok:true → verify OK + checked_unix; контейнер и volume снесены (AC1)
     [Fact]
-    public async Task Супервиз_Exit0_Ok_чисткаДжоба()
+    public async Task SupervisorExit0OkCleansUpJob()
     {
         // Arrange — джоб exited с ok:true
         var ct = TestContext.Current.CancellationToken;
@@ -524,7 +524,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
     // AAA: exited + phase=verify → permanent FAILED с error от pg_verifybackup (AC2)
     [Fact]
-    public async Task Супервиз_VerifyPhaseFailed_FAILED()
+    public async Task SupervisorVerifyPhaseFailedFailed()
     {
         // Arrange — джоб exited с result-JSON phase=verify
         var ct = TestContext.Current.CancellationToken;
@@ -552,7 +552,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
     // AAA: exited + phase=download → transient: контейнер снесён, статус ОСТАЛСЯ PENDING (AC2)
     [Fact]
-    public async Task Супервиз_DownloadPhase_Transient_ОстаетсяPending()
+    public async Task SupervisorDownloadPhaseTransientStaysPending()
     {
         // Arrange — джоб exited с result-JSON phase=download (mc/staging ENOSPC);
         // ключ кандидата в etcd записан руками (transient итог НЕ пишет — паттерн vc6/vc7)
@@ -578,7 +578,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
         // Assert — статус НЕ изменён (остался PENDING), контейнер/volume снесены
         var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
-        after.Should().Be(before, "download-phase transient: статус PENDING не трогаем");
+        after.Should().Be(before, "download-phase transient: the PENDING status is untouched");
         engine.Removed.Should().Contain(name);
 
         // Act 2 — следующий тик: PENDING снова due → джоб перезапущен (ретрай тиками)
@@ -587,12 +587,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
                 new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
         // Assert 2
-        engine.Created.Should().HaveCount(2, "transient ретраится следующим тиком (spec §3.1)");
+        engine.Created.Should().HaveCount(2, "a transient is retried on the next tick (spec §3.1)");
     }
 
     // AAA: vanished-джоб (контейнера нет при PENDING) → перезапуск со шага цепочки (AC8)
     [Fact]
-    public async Task Супервиз_Vanished_Перезапуск()
+    public async Task SupervisorVanishedRestart()
     {
         // Arrange — PENDING-кандидат, движок ПУСТ (контейнер исчез после рестарта docker-хоста)
         var ct = TestContext.Current.CancellationToken;
@@ -616,7 +616,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
     // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
     [Fact]
-    public async Task ДваDue_ПоОдномуЗаТик_PendingРаньше()
+    public async Task TwoDueOnePerTickPendingEarlier()
     {
         // Arrange — full A (старее): verify=OK, CheckedUnix=now-7200 (периодика due при
         // interval 3600); full B (свежее): verify=PENDING (on_create)
@@ -657,7 +657,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // on_create; verify=null («никогда не проверялся») — периодика due;
     // FAILED не перепроверяется (терминален)
     [Fact]
-    public async Task Периодика_ПоInterval_Отключение_и_ТерминальностьFAILED()
+    public async Task PeriodicityByIntervalDisabledAndFailedTerminality()
     {
         // Arrange — OK-полный CheckedUnix=now-7200; policy interval_sec=3600 → due
         var ct = TestContext.Current.CancellationToken;
@@ -678,7 +678,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeVerifyEngine();
         var process = BuildProcess("sv6", new FakeVerifyDriver(engine), s3);
         (await process.TickAsync(BuildSnap("sv6"), [WithInterval(3600)], ct)).IsSuccess.Should().BeTrue();
-        engine.Created.Should().ContainSingle("OK-полный старше interval — перепроверка (AC5)");
+        engine.Created.Should().ContainSingle("the OK full is older than the interval — re-verify (AC5)");
 
         // Act 1b — джоб завершился ok:true → супервиз пишет итог
         var name = "pgw-backup-verify-sv6-shard1-20260911120000Z";
@@ -689,13 +689,13 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var verify = await ReadVerifyAsync("sv6", "20260911120000Z");
         verify.GetProperty("state").GetString().Should().Be("OK");
         verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(now - 7200,
-            "периодическая перепроверка обновляет checked_unix (AC5)");
+            "the periodic re-verify refreshes checked_unix (AC5)");
 
         // Act 2 / Assert 2 — interval=0: не due (только on_create)
         var engineOff = new FakeVerifyEngine();
         var processOff = BuildProcess("sv6", new FakeVerifyDriver(engineOff), s3);
         (await processOff.TickAsync(BuildSnap("sv6"), [WithInterval(0)], ct)).IsSuccess.Should().BeTrue();
-        engineOff.Created.Should().BeEmpty("interval_sec<=0 — периодика выключена (AC5)");
+        engineOff.Created.Should().BeEmpty("interval_sec<=0 — periodicity is off (AC5)");
 
         // Act 2b / Assert 2b — verify=null («никогда не проверялся», spec §3.1
         // due-periodic): ловится ТОЛЬКО периодикой (не on_create — verify нет)
@@ -704,7 +704,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var neverVerified = Completed("20260911120000Z", "000000010000000000000001", verify: null);
         (await processNull.TickAsync(BuildSnap("sv6"), [WithInterval(3600, neverVerified)], ct))
             .IsSuccess.Should().BeTrue();
-        engineNull.Created.Should().ContainSingle("непроверенный полный (verify=null) due по периодике (§3.1)");
+        engineNull.Created.Should().ContainSingle("an unverified full (verify=null) is due by periodicity (§3.1)");
 
         // Act 3 / Assert 3 — FAILED не перепроверяется ни при каком interval
         var failed = new ClusterBackups("sv6",
@@ -717,12 +717,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineFailed = new FakeVerifyEngine();
         var processFailed = BuildProcess("sv6", new FakeVerifyDriver(engineFailed), s3);
         (await processFailed.TickAsync(BuildSnap("sv6"), [failed], ct)).IsSuccess.Should().BeTrue();
-        engineFailed.Created.Should().BeEmpty("FAILED терминален (spec §3.1)");
+        engineFailed.Created.Should().BeEmpty("FAILED is terminal (spec §3.1)");
     }
 
     // AAA: транспорт-отказ docker (list) — статус не меняем (transient, spec §3.2)
     [Fact]
-    public async Task Супервиз_TransportОтказ_СтатусНеТрогаем()
+    public async Task SupervisorTransportFailureStatusUntouched()
     {
         // Arrange — джоб exited с ok:true, но list падает; ключ кандидата в etcd
         // записан руками (никто другой его не пишет до итога — паттерн vc6/vc7)
@@ -758,7 +758,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // кандидата A жив + кандидат B due (PENDING) → новый джоб НЕ стартуется,
     // статус B не тронут (spec §3.3 п.1)
     [Fact]
-    public async Task ЖивойДжобШарда_БлокируетНовый_СтатусBTакойЖе()
+    public async Task LiveShardJobBlocksNewOneStatusUntouched()
     {
         // Arrange — в движке уже running-контейнер джоба кандидата A; B — PENDING;
         // ключи обоих кандидатов записаны в etcd руками (ассерт «не тронут»)
@@ -789,15 +789,15 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .IsSuccess.Should().BeTrue();
 
         // Assert — новый джоб не создан; ключ B не изменён
-        engine.Created.Should().BeEmpty("живой verify-джоб шарда блокирует запуск нового (инвариант §3.3)");
+        engine.Created.Should().BeEmpty("a live verify job of the shard blocks starting a new one (§3.3 invariant)");
         var afterB = (await Fx.Gateway.GetAsync(Fx.Endpoint, keyB, ct)).Value!.Value;
-        afterB.Should().Be(beforeB, "статус due-кандидата не трогаем, пока жив чужой джоб шарда");
+        afterB.Should().Be(beforeB, "the due-candidate status is untouched while a foreign job of the shard is alive");
     }
 
     // AAA (AC5): verify-джоб running дольше бюджета → kill+rm, кандидат PENDING с
     // checked_unix=now; лив-лок исключён — следующий due только через interval
     [Fact]
-    public async Task Супервиз_verify_старше_бюджета_kill_и_квота_попытки()
+    public async Task SupervisorVerifyOlderThanBudgetKillAndAttemptQuota()
     {
         // Arrange — COMPLETED-полный с Verify=PENDING; FakeVerifyEngine держит
         // running-контейнер verify-джоба с StartedUnix = now-7h (бюджет 6 ч дефолт)
@@ -828,8 +828,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var verify = await ReadVerifyAsync("sv9", "20260911090000Z");
         ((string?)verify.GetProperty("state").GetString()).Should().Be("PENDING");
         var checkedUnix = verify.GetProperty("checked_unix").GetInt64();
-        checkedUnix.Should().BeGreaterOrEqualTo(now - 60, "квота попытки — время супервиза");
-        verify.TryGetProperty("error", out _).Should().BeFalse("данные не виноваты — FAILED не ставится");
+        checkedUnix.Should().BeGreaterOrEqualTo(now - 60, "the attempt quota — the supervisor time");
+        verify.TryGetProperty("error", out _).Should().BeFalse("the data is not at fault — FAILED is not set");
 
         // Act 2 — повторный тик немедленно (джобов живых больше нет)
         var b = a with { Verify = new BackupVerify(BackupVerifyStatus.Pending, checkedUnix) };
@@ -837,13 +837,13 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             .IsSuccess.Should().BeTrue();
 
         // Assert 3 — НОВЫЙ джоб НЕ создан (checked только что; pending due — по interval)
-        engine.Created.Should().BeEmpty("лив-лок немедленных перезапусков исключён (t07)");
+        engine.Created.Should().BeEmpty("the live-lock of immediate restarts is excluded (t07)");
     }
 
     // AAA: нода-источник исчезла из portalloc → джоб стартует на ПЕРВОМ хосте
     // таблицы Docker:Hosts (GetHostsAsync) + journal-факт engine-fallback (spec §3.2)
     [Fact]
-    public async Task Тик_УзелИсчезИзPortalloc_ДжобНаПервомХостеТаблицы()
+    public async Task TickNodeGoneFromPortallocJobOnFirstHostOfTable()
     {
         // Arrange — portalloc ПУСТ (узел shard1a исчез); PENDING-кандидат с node=shard1a
         var ct = TestContext.Current.CancellationToken;
@@ -875,7 +875,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     // wal_start → permanent FAILED → failed; exited(0) ok:true → ok
     // (процесс не меняется — тест фиксирует вызовы всех трёх исходов)
     [Fact]
-    public async Task Verify_исходы_зовут_наблюдателя_transient_failed_ok()
+    public async Task VerifyOutcomesCallObserverTransientFailedOk()
     {
         // Arrange 1 — COMPLETED PENDING-кандидат; S3-транспорт лежит
         var ct = TestContext.Current.CancellationToken;

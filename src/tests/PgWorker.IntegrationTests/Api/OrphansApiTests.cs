@@ -137,7 +137,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): hold → 204; в etcd ключ канона с set_by из заголовка
     [Fact]
-    public async Task Hold_204_ключ_в_etcd()
+    public async Task Hold204KeyInEtcd()
     {
         // Arrange — реестр с сиротой ghost/s1
         await CleanupAsync();
@@ -158,7 +158,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): повторный hold идемпотентен — 204, put поверх (значение заменено)
     [Fact]
-    public async Task Hold_повторный_204_перезаписывает()
+    public async Task HoldRepeated204Overwrites()
     {
         // Arrange — реестр + hold чужого автора (operator)
         await CleanupAsync();
@@ -175,12 +175,12 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
         first.StatusCode.Should().Be(HttpStatusCode.NoContent);
         second.StatusCode.Should().Be(HttpStatusCode.NoContent);
         var raw = await GetValueAsync(OrphanRegistry.HoldKey("ghost/s1"));
-        raw.Should().Contain("\"set_by\":\"panel\"", "put поверх — не 409");
+        raw.Should().Contain("\"set_by\":\"panel\"", "a put on top — not a 409");
     }
 
     // AAA (AC6): префикса нет в реестре (реестр пуст) → 404
     [Fact]
-    public async Task Hold_404_не_сирота()
+    public async Task Hold404NotOrphan()
     {
         // Arrange — контур чист (реестра нет)
         await CleanupAsync();
@@ -195,7 +195,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): имена не-regex → 404 БЕЗ похода в etcd (реестр нетронут)
     [Fact]
-    public async Task Hold_404_мусорные_имена()
+    public async Task Hold404GarbageNames()
     {
         // Arrange — реестр с сиротой; ожидаемое значение для сверки нетронутости
         await CleanupAsync();
@@ -230,7 +230,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): unhold 204 и ключ удалён; повторный DELETE (ключа нет) — тоже 204
     [Fact]
-    public async Task Unhold_204_идемпотентен()
+    public async Task Unhold204Idempotent()
     {
         // Arrange — реестр + живой hold-ключ
         await CleanupAsync();
@@ -246,13 +246,13 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
         // Assert — оба 204; ключ удалён после первого
         first.StatusCode.Should().Be(HttpStatusCode.NoContent);
-        gone.Should().BeNull("unhold снимает hold-ключ");
-        second.StatusCode.Should().Be(HttpStatusCode.NoContent, "unhold идемпотентен");
+        gone.Should().BeNull("unhold removes the hold key");
+        second.StatusCode.Should().Be(HttpStatusCode.NoContent, "unhold is idempotent");
     }
 
     // AAA (AC6): заявка delete с confirm → 202 + DTO; ключ заявки канона в etcd
     [Fact]
-    public async Task Delete_202_ключ_заявки()
+    public async Task Delete202RequestKey()
     {
         // Arrange — реестр с сиротой ghost/s1
         await CleanupAsync();
@@ -278,7 +278,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): повторная заявка — put поверх (202, не 409: заявка — состояние)
     [Fact]
-    public async Task Delete_повторный_202_put_поверх()
+    public async Task DeleteRepeated202PutOnTop()
     {
         // Arrange — реестр + заявка другого автора (operator)
         await CleanupAsync();
@@ -295,12 +295,12 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
         first.StatusCode.Should().Be(HttpStatusCode.Accepted);
         second.StatusCode.Should().Be(HttpStatusCode.Accepted);
         var raw = await GetValueAsync(OrphanRegistry.DeleteKey("ghost/s1"));
-        raw.Should().Contain("\"requested_by\":\"panel\"", "put поверх — не 409");
+        raw.Should().Contain("\"requested_by\":\"panel\"", "a put on top — not a 409");
     }
 
     // AAA (AC6): confirm != "<C>/<X>" → 400; ключа заявки нет
     [Fact]
-    public async Task Delete_400_confirm_мисматч()
+    public async Task Delete400ConfirmMismatch()
     {
         // Arrange — реестр с сиротой
         await CleanupAsync();
@@ -318,7 +318,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): POST без тела → 400
     [Fact]
-    public async Task Delete_400_нет_тела()
+    public async Task Delete400NoBody()
     {
         // Arrange — реестр с сиротой
         await CleanupAsync();
@@ -336,7 +336,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): delete — префикса нет в реестре → 404
     [Fact]
-    public async Task Delete_404_не_сирота()
+    public async Task Delete404NotOrphan()
     {
         // Arrange — контур чист
         await CleanupAsync();
@@ -368,7 +368,7 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // AAA (AC6): подсистема бэкапов выключена (_disabledFactory, default false) → 503
     [Fact]
-    public async Task Hold_503_подсистема_выключена()
+    public async Task Hold503SubsystemDisabled()
     {
         // Arrange — клиент выключенной фабрики (Enabled=false по умолчанию)
         await CleanupAsync();

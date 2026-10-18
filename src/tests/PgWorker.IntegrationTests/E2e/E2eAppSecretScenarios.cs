@@ -41,7 +41,7 @@ public class E2eAppSecretScenarios
         var provisioned = await E2eFixture.WaitForAsync(
             async () => await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null,
             TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning должен дойти до SQL-фазы (dsn записан)");
+        provisioned.Should().BeTrue("provisioning must reach the SQL phase (the dsn is written)");
 
         // Assert 1 (критерий 1): /clusters/<C>/app_user = "app"; app_password —
         // 32 символа [A-Za-z0-9]; dsn несёт user=bucket_admin (как было), но НЕ
@@ -51,12 +51,12 @@ public class E2eAppSecretScenarios
         userKv!.Value.Should().Be("app");
         var password = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(password, "^[A-Za-z0-9]{32}$").Should().BeTrue(
-            "app_password — 32 символа [A-Za-z0-9] (spec §4.1)");
+            "app_password — 32 characters [A-Za-z0-9] (spec §4.1)");
         var dsnKv = await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn");
         dsnKv.Should().NotBeNull();
         dsnKv!.Value.Should().Contain("user=bucket_admin");
         dsnKv.Value.Should().NotContain("user=app");
-        dsnKv.Value.Should().NotContain(password, "app-пароль не попадает в dsn-ключ (spec §2.4)");
+        dsnKv.Value.Should().NotContain(password, "the app password does not land in the dsn key (spec §2.4)");
 
         // Assert 2 (критерий 2): подключение user=app паролем из etcd выполняет
         // запрос к данным. ПРЯМОЙ pg-порт ноды (пофрагментный проб multi-host DSN,
@@ -90,13 +90,13 @@ public class E2eAppSecretScenarios
                 break;
         }
 
-        connected.Should().BeTrue("креды user=app + пароль из etcd работают против БД шарда (критерий 2)");
+        connected.Should().BeTrue("the user=app credentials + the password from etcd work against the shard DB (criterion 2)");
 
         // Assert 3 (критерий 3): пауза ≥2 тиков scan (1 с) — app_password не меняется
         // (идемпотентность ensure: put-if-absent не перегенерирует существующее).
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
         var passwordAgain = await Fx.GetAppPasswordAsync(Cluster, ct);
-        passwordAgain.Should().Be(password, "повторные тики не перегенерируют app-пароль (spec §2.5)");
+        passwordAgain.Should().Be(password, "repeated ticks do not regenerate the app password (spec §2.5)");
     }
 
     // ===== Хелперы =====

@@ -53,7 +53,7 @@ public class E2ePatroniRestTlsScenarios
             {
                 var provisioned = await E2ePhase.WaitAsync(fx, "rtls-provisioning",
                     E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
-                provisioned.Should().BeTrue($"provisioning обязан дойти до Active; work={await WorkDumpAsync(cluster, ct)}");
+                provisioned.Should().BeTrue($"provisioning must reach Active; work={await WorkDumpAsync(cluster, ct)}");
 
                 var addresses = await PortallocAsync(cluster);
                 addresses.Should().ContainKey("shard1/shard1a");
@@ -75,23 +75,23 @@ public class E2ePatroniRestTlsScenarios
                     plainRefused = true; // транспорт схлопнулся на TLS-порте
                 }
 
-                plainRefused.Should().BeTrue("голый HTTP на :8008 не работает (транспорт — TLS)");
+                plainRefused.Should().BeTrue("plain HTTP on :8008 does not work (the transport is TLS)");
 
                 // (а) https с ca.pem контура → 200 + JSON членов.
                 var https = Fx.NewPatroniHttpClient();
                 using var clusterResponse = await https.GetAsync($"https://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
                 clusterResponse.StatusCode.Should().Be(HttpStatusCode.OK);
                 var body = await clusterResponse.Content.ReadAsStringAsync(ct);
-                body.Should().Contain("members", "ответ — Patroni /cluster JSON");
+                body.Should().Contain("members", "the response is a Patroni /cluster JSON");
 
                 // (б) серт ноды верифицируется цепочкой против CA контура.
                 var leafDer = await CaptureServerCertificateAsync($"pgw-{cluster}-shard1-shard1a", ct);
-                leafDer.Should().NotBeNull("TLS-хендшейк отдаёт серверный серт");
-                ChainValidAgainstInstallCa(leafDer!).Should().BeTrue("серт ноды выпущен per-contour CA");
+                leafDer.Should().NotBeNull("the TLS handshake yields the server certificate");
+                ChainValidAgainstInstallCa(leafDer!).Should().BeTrue("the node certificate is issued by the per-contour CA");
 
                 // (в) мутации — basic-auth per-cluster: без Authorization — 401.
                 var restPassword = (await GetOrNullAsync($"/clusters/{cluster}/rest_password"))!.Value;
-                restPassword.Should().NotBeNullOrWhiteSpace("ensure положил седьмой ключ");
+                restPassword.Should().NotBeNullOrWhiteSpace("ensure put the seventh key");
                 using var noAuth = new HttpRequestMessage(HttpMethod.Patch,
                     $"https://pgw-{cluster}-shard1-shard1a:8008/config")
                 {
@@ -99,7 +99,7 @@ public class E2ePatroniRestTlsScenarios
                 };
                 using var refused = await https.SendAsync(noAuth, ct);
                 refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized,
-                    "unsafe-эндпоинт без basic-auth закрыт");
+                    "the unsafe endpoint without basic-auth is closed");
 
                 // (в) с Authorization: Basic patroni:<rest_password> — 200.
                 using var withAuth = new HttpRequestMessage(HttpMethod.Patch,
@@ -111,12 +111,12 @@ public class E2ePatroniRestTlsScenarios
                     "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"patroni:{restPassword}")));
                 using var patched = await https.SendAsync(withAuth, ct);
                 patched.StatusCode.Should().Be(HttpStatusCode.OK,
-                    "с per-cluster парой мутация проходит");
+                    "with the per-cluster pair the mutation goes through");
 
                 // (д) P11: рестарт мастера → мастер-ключ жив ≤60 c (callback
                 // on_start узнал роль через https /primary, lease TTL 5 c).
                 var master = await PrimaryNodeAsync(cluster, ct);
-                master.Should().NotBeNullOrWhiteSpace("primary резолвится пробой /primary");
+                master.Should().NotBeNullOrWhiteSpace("the primary is resolved by the /primary probe");
                 replica = master == "shard1a" ? "shard1b" : "shard1a";
                 var masterContainer = $"pgw-{cluster}-shard1-{master}";
                 await Fx.RunDockerAsync(["restart", masterContainer], ct);
@@ -124,7 +124,7 @@ public class E2ePatroniRestTlsScenarios
                     (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master")) is { Value.Length: > 0 },
                     TimeSpan.FromSeconds(60), ct);
                 keyAlive.Should().BeTrue(
-                    "мастер-ключ вернулся после рестарта — master-lease прошёл https /primary (P11)");
+                    "the master key returned after the restart — the master-lease passed https /primary (P11)");
 
                 // (е) конвергенция легаси: маркер в volume реплики (не лидера).
                 var replicaContainer = $"pgw-{cluster}-shard1-{replica}";
@@ -147,7 +147,7 @@ public class E2ePatroniRestTlsScenarios
                  E2eEnvironment.NodeImage, "-c", "sleep 900"], ct);
             var legacyEnv = await Fx.RunDockerAsync(
                 ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
-            legacyEnv.Should().NotContain("SSL_RESTAPI_CERTIFICATE", "легаси-контейнер без REST-TLS env");
+            legacyEnv.Should().NotContain("SSL_RESTAPI_CERTIFICATE", "a legacy container without REST-TLS env");
 
             await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
             {
@@ -167,17 +167,17 @@ public class E2ePatroniRestTlsScenarios
                         return env.Contains("SSL_RESTAPI_CERTIFICATE");
                     },
                     TimeSpan.FromSeconds(120), ct);
-                migrated.Should().BeTrue("шаг конвергенции обязан довести легаси-ноду до живой ноды с TLS-env");
+                migrated.Should().BeTrue("the convergence step must bring the legacy node to a live node with TLS env");
 
                 // Volume пережил пересоздание (маркер на месте).
                 var marker = await Fx.RunDockerAsync(
                     ["exec", legacy, "test", "-f", "/home/postgres/pgdata/resttls-marker"], ct);
-                marker.Should().BeEmpty("volume и данные пережили миграцию (exec код 0)");
+                marker.Should().BeEmpty("the volume and data survived the migration (exec code 0)");
 
                 // Кластер снова Active после миграции.
                 var activeAgain = await E2ePhase.WaitAsync(fx, "rtls-active-again",
                     E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
-                activeAgain.Should().BeTrue($"кластер Active после миграции; work={await WorkDumpAsync(cluster, ct)}");
+                activeAgain.Should().BeTrue($"the cluster is Active after the migration; work={await WorkDumpAsync(cluster, ct)}");
             }
         }
         catch
@@ -283,7 +283,7 @@ public class E2ePatroniRestTlsScenarios
     }
 
     private async Task<string> WorkDumpAsync(string cluster, CancellationToken ct)
-        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "<нет work-ключа>";
+        => (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "<no work key>";
 
     // Серверный серт ноды: перехват в TLS-хендшейке (без доверия — только
     // захват). Внутри callback копируем DER: хендл сертификата живёт лишь

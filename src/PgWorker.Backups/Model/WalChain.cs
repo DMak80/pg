@@ -88,7 +88,7 @@ public static class WalChain
                 {
                     // пропуск внутри TLI: границы дыры — ожидали/найдено
                     return new ChainResult(false,
-                        $"дыра WAL-цепочки: ожидался {expected.Name}, найден {segment.Name}", last);
+                        $"WAL chain gap: expected {expected.Name}, found {segment.Name}", last);
                 }
                 // сегмент меньше expected (дубли/хвост старого потока) — игнор
             }

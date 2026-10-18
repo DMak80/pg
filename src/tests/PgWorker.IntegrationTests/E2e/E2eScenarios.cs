@@ -58,7 +58,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
         var provisioned = await E2ePhase.WaitAsync(Fx,
             "ac2-provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning должен дойти до DONE (dsn/RUNNING/без status/state)");
+        provisioned.Should().BeTrue("provisioning must reach DONE (dsn/RUNNING/no status/state)");
 
         await AssertProvisioningResultAsync(Cluster, ct);
 
@@ -66,24 +66,24 @@ public class E2eScenarios(ITestOutputHelper output)
         await SeedClusterAsync(Cluster2);
         var started = await E2ePhase.WaitAsync(Fx,
             "ac3-takeover-started", () => DockerHasAsync($"pgw-{Cluster2}-"), TimeSpan.FromSeconds(120), ct);
-        started.Should().BeTrue($"первый инстанс должен начать provisioning {Cluster2}");
+        started.Should().BeTrue($"the first instance must start provisioning {Cluster2}");
 
         p1.Kill(); // смерть контроллера посреди работы (клэйм истечёт ≤15 с)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2ePhase.WaitAsync(Fx,
             "ac3-takeover-done", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(360), ct);
-        taken.Should().BeTrue($"второй инстанс должен донести {Cluster2} до DONE (takeover)");
+        taken.Should().BeTrue($"the second instance must carry {Cluster2} to DONE (takeover)");
 
         var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");
-        shop2Containers.Should().HaveCount(4, "дублей контейнеров после takeover быть не должно");
+        shop2Containers.Should().HaveCount(4, "there must be no duplicate containers after the takeover");
 
         // ---------- AC4: deprovisioning ----------
         await SetToRemoveAsync(Cluster2);
 
         var deprovisioned = await E2ePhase.WaitAsync(Fx,
             "ac4-deprovisioning", () => DeprovisionedAsync(Cluster2), TimeSpan.FromSeconds(180), ct);
-        deprovisioned.Should().BeTrue("deprovisioning должен удалить контейнеры/volume/ключи и снять клэйм");
+        deprovisioned.Should().BeTrue("deprovisioning must remove containers/volume/keys and release the claim");
 
         // ---------- AC5: failover/rebuild ----------
         await AssertFailoverRebuildAsync(Cluster, "shard1", ct);
@@ -197,7 +197,7 @@ public class E2eScenarios(ITestOutputHelper output)
             .ToList();
         // IPv4/IPv6-байндинги дублируют каждую пару — уникальных должно быть 8.
         published.Distinct().Should().HaveCount(8,
-            "по 2 publish-порта (pg+patroni) на 4 ноды, все host-порты уникальны");
+            "2 publish ports (pg+patroni) per node across 4 nodes, all host ports are unique");
 
         // O2 (решение плана №9): probe SELECT 1 по DSN ИЗ КЛЮЧА как записан
         // (multi-host, порты разные, без пароля) + Password из сид-секрета.
@@ -206,7 +206,7 @@ public class E2eScenarios(ITestOutputHelper output)
         var dsnKv = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
         dsnKv.Should().NotBeNull();
         var dsn = dsnKv!.Value;
-        dsn.Should().Contain(",", "multi-host DSN: обе ноды шарда (разные порты)")
+        dsn.Should().Contain(",", "multi-host DSN: both nodes of the shard (different ports)")
             .And.Contain("user=bucket_admin").And.Contain("password=");
         // Npgsql не поддерживает СПИСОК портов (только один порт на все хосты),
         // поэтому multi-host DSN с разными портами пробуем пофрагментно:
@@ -215,7 +215,7 @@ public class E2eScenarios(ITestOutputHelper output)
         var hosts = System.Text.RegularExpressions.Regex.Match(dsn, "host=([^ ]+)").Groups[1].Value.Split(',');
         var pgPorts = System.Text.RegularExpressions.Regex.Match(dsn, "port=([^ ]+)").Groups[1].Value.Split(',');
         hosts.Should().HaveCount(2);
-        pgPorts.Should().HaveCount(2, "порты нод различаются (анти-аффинити на одном хосте)");
+        pgPorts.Should().HaveCount(2, "the node ports differ (anti-affinity on one host)");
         foreach (var (host, port) in hosts.Zip(pgPorts))
         {
             // Реплика в первый момент может рестартовать Patroni (bootstrap) —
@@ -235,7 +235,7 @@ public class E2eScenarios(ITestOutputHelper output)
                     return false; // рестарт/ещё не готова — повторим
                 }
             }, TimeSpan.FromSeconds(60), ct);
-            alive.Should().BeTrue($"нода {host}:{port} отвечает по DSN-параметрам из ключа");
+            alive.Should().BeTrue($"node {host}:{port} responds with the DSN parameters from the key");
         }
 
         // Роли и схемы на мастерах обоих шардов (P2.3–P2.4).
@@ -246,14 +246,14 @@ public class E2eScenarios(ITestOutputHelper output)
             var roles = await SqlListAsync(adminDsn,
                 "SELECT rolname FROM pg_roles WHERE rolname IN ('app','bucket_admin','bucket_mover') ORDER BY 1", ct);
             roles.Should().BeEquivalentTo(["app", "bucket_admin", "bucket_mover"],
-                $"роли бакетного слоя созданы на мастере {shard}");
+                $"the bucket-layer roles are created on the master {shard}");
 
             // Схемы живут в БД кластера (роли — кластерные, видно из postgres).
             string[] expected = shard == "shard1" ? ["bucket_0", "bucket_2", "bucket_4"] : ["bucket_1", "bucket_3", "bucket_5"];
             var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
             var schemas = await SqlListAsync(schemasDsn,
                 "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
-            schemas.Should().BeEquivalentTo(expected, $"схемы бакетов {shard} созданы по routing");
+            schemas.Should().BeEquivalentTo(expected, $"the bucket schemas of {shard} are created per routing");
         }
     }
 
@@ -264,7 +264,7 @@ public class E2eScenarios(ITestOutputHelper output)
     {
         var masterBefore = await WaitForMasterAsync(cluster, shard, ct);
         var container = $"pgw-{cluster}-{shard}-{masterBefore.Node}";
-        (await ContainerStatusAsync(container, ct)).Should().Be("running", "лидер до failover работает");
+        (await ContainerStatusAsync(container, ct)).Should().Be("running", "the leader works before the failover");
 
         // t14 (гейт против stale-RUNNING): фиксируем ревизию ключа state ноды
         // ДО stop. После docker stop супервизор пишет ключ строго в порядке
@@ -276,7 +276,7 @@ public class E2eScenarios(ITestOutputHelper output)
         // тайминги опроса. Гипотетический флап между фиксацией и stop лишь
         // увеличит ревизию — гейт остаётся корректным (строже).
         var stateBefore = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
-        (stateBefore?.Value).Should().Be("RUNNING", "лидер до failover: ключ state существует и равен RUNNING (предусловие гейта t14)");
+        (stateBefore?.Value).Should().Be("RUNNING", "leader before the failover: the state key exists and equals RUNNING (t14 gate precondition)");
         var revAtStop = stateBefore!.ModRevision;
 
         // Длительность stop-команды — отдельной строкой (t29 §3.1): SIGTERM
@@ -304,12 +304,12 @@ public class E2eScenarios(ITestOutputHelper output)
                 return $"primary={primary ?? "none"}";
             });
         sw.Stop();
-        leaderFlipped.Should().BeTrue("фактический primary шарда сменился после failover (P11)");
+        leaderFlipped.Should().BeTrue("the actual primary of the shard changed after the failover (P11)");
         // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
         // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
         output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
         sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
-            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
+            "the leader-switch budget ≤5 s (t09: graceful demote/failover acceleration by the worker, canon ttl=20/loop_wait=1)");
 
         // Master-ключ (P11: callback + reconciler). При EnableDoorman=false
         // (e2e) portalloc-записи несут doorman:0 (миграция факта инспекции,
@@ -331,9 +331,9 @@ public class E2eScenarios(ITestOutputHelper output)
             {
                 var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
                 var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево
-                return $"primary={primary ?? "none"}, master-key={(key is { Value.Length: > 0 } ? "есть" : "нет")}";
+                return $"primary={primary ?? "none"}, master-key={(key is { Value.Length: > 0 } ? "present" : "absent")}";
             });
-        flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
+        flipped.Should().BeTrue("the master key is alive while the actual primary of the shard changed after the failover (P11: callback + reconciler)");
 
         // Rebuild: остановленный контейнер пересоздаётся, нода проходит
         // REBUILDING → RUNNING (AC5, spec задачи 26 §11.5). Гейт по ревизии:
@@ -353,14 +353,14 @@ public class E2eScenarios(ITestOutputHelper output)
         if (!rebuilt)
         {
             var current = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
-            Assert.Fail($"восстановление ноды не зафиксировано за 300с; state: {current?.Value ?? "нет"} " +
+            Assert.Fail($"node recovery was not observed within 300 s; state: {current?.Value ?? "absent"} " +
                         $"(ModRevision {current?.ModRevision.ToString() ?? "-"}, revAtStop {revAtStop}); " +
-                        $"статус контейнера: {await ContainerStatusAsync(container, ct)}");
+                        $"container status: {await ContainerStatusAsync(container, ct)}");
         }
         // Одиночный inspect корректен: RUNNING с ревизией > revAtStop пишется
         // только когда пересозданная нода жива пробой → контейнер уже running;
         // повторная смерть сразу после — реальный сбой, тест обязан упасть.
-        (await ContainerStatusAsync(container, ct)).Should().Be("running", "контейнер ноды пересоздан");
+        (await ContainerStatusAsync(container, ct)).Should().Be("running", "the node container was recreated");
 
         // Реплика догоняет: на шарде ровно один мастер (pg_is_in_recovery).
         var addresses = await PortallocAsync(cluster);
@@ -386,7 +386,7 @@ public class E2eScenarios(ITestOutputHelper output)
                 return false; // нода рестартует (rebuild/патрони) — повторим
             }
         }, TimeSpan.FromSeconds(120), ct);
-        stable.Should().BeTrue("ровно одна нода шарда — мастер, вторая в recovery (реплика догнала)");
+        stable.Should().BeTrue("exactly one node of the shard is the master, the other is in recovery (the replica caught up)");
     }
 
     // AC6: stop всех нод шарда → после ShardDeadSec (5 с) эвакуация бакетов на
@@ -406,30 +406,30 @@ public class E2eScenarios(ITestOutputHelper output)
             var state = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(journal.Value) ?? [];
             return state.TryGetValue("state", out var s) && s.GetString() == "DONE";
         }, TimeSpan.FromSeconds(120), ct);
-        evacuated.Should().BeTrue("эвакуация должна завершиться после ShardDeadSec");
+        evacuated.Should().BeTrue("the evacuation must finish after ShardDeadSec");
 
         var routing = (await RangeAsync($"/clusters/{cluster}/buckets/routing/"))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
         routing.Values.Should().OnlyContain(v => v == aliveShard,
-            "владение бакетами умершего шарда переведено на живой (E2)");
+            "the bucket ownership of the dead shard is moved to the live one (E2)");
 
         // Схемы эвакуированных бакетов созданы на живом шарде (E1).
         var master = await WaitForMasterAsync(cluster, aliveShard, ct);
         var schemasDsn = $"Host={master.Host};Port={master.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}";
         var schemas = await SqlListAsync(schemasDsn,
             "SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'bucket_%' ORDER BY 1", ct);
-        schemas.Should().HaveCount(6, "все 6 схем бакетов теперь на живом шарде");
+        schemas.Should().HaveCount(6, "all 6 bucket schemas are now on the live shard");
 
         // Ноды мёртвого шарда — QUARANTINED (E3).
         foreach (var node in new[] { $"{deadShard}a", $"{deadShard}b" })
         {
             var state = await GetOrNullAsync($"/clusters/{cluster}/shards/{deadShard}/nodes/{node}/state");
-            state?.Value.Should().Be("QUARANTINED", $"{node} эвакуирована — карантин");
+            state?.Value.Should().Be("QUARANTINED", $"{node} evacuated — quarantine");
         }
 
         // Снапшоты «до» и «после» (P12): в каталоге держателя клэйма.
         Directory.GetFiles(snapshotsDir, "snapshot-*.db")
-            .Should().HaveCountGreaterThanOrEqualTo(2, "снапшоты до/после эвакуации сняты");
+            .Should().HaveCountGreaterThanOrEqualTo(2, "snapshots before/after the evacuation are taken");
 
         // Возврат шарда: docker start вручную → PgWorker останавливает (P1-призраки).
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
@@ -447,8 +447,8 @@ public class E2eScenarios(ITestOutputHelper output)
         if (!quarantined)
         {
             var current = await GetOrNullAsync($"/pgworker/evacuations/{cluster}/{deadShard}");
-            Assert.Fail($"возврат шарда не зафиксирован за 120с; journal: {current?.Value ?? "нет"}; " +
-                        $"статусы контейнеров: {string.Join(",", await Task.WhenAll(
+            Assert.Fail($"the shard return was not observed within 120 s; journal: {current?.Value ?? "absent"}; " +
+                        $"container statuses: {string.Join(",", await Task.WhenAll(
                             (await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
                             .Select(async n => $"{n}={await ContainerStatusAsync(n, ct)}")))}");
         }
@@ -456,7 +456,7 @@ public class E2eScenarios(ITestOutputHelper output)
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
         {
             var status = await ContainerStatusAsync(container, ct);
-            status.Should().Be("exited", $"PgWorker останавливает вернувшиеся ноды ({container}), данные не тронуты");
+            status.Should().Be("exited", $"PgWorker stops the returned nodes ({container}), the data is untouched");
         }
 
         // Данные на месте: volume мёртвого шарда живы (E3 — ничего не удаляем).
@@ -478,7 +478,7 @@ public class E2eScenarios(ITestOutputHelper output)
             "ac7-snapshot-leader",
             async () => await GetOrNullAsync("/pgworker/leader") is not null,
             TimeSpan.FromSeconds(30), ct);
-        hasLeader.Should().BeTrue("лидер снапшотов должен быть выбран");
+        hasLeader.Should().BeTrue("the snapshots leader must be elected");
 
         // Снапшоты снимает ТОЛЬКО лидер (§11.7). Ретрай-окно на РОСТ ровно
         // одного каталога (t24, вскрывшийся фейл точечного повтора): после
@@ -493,7 +493,7 @@ public class E2eScenarios(ITestOutputHelper output)
             () => Task.FromResult(instances.Count(i =>
                 Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length > 0) > 0),
             TimeSpan.FromSeconds(60), ct);
-        shot.Should().BeTrue("лидер снимает регулярные снапшоты (SnapshotLoop)");
+        shot.Should().BeTrue("the leader takes regular snapshots (SnapshotLoop)");
 
         var singleGrower = await E2ePhase.WaitAsync(Fx,
             "ac7-single-grower",
@@ -508,7 +508,7 @@ public class E2eScenarios(ITestOutputHelper output)
             },
             TimeSpan.FromSeconds(240), ct);
         singleGrower.Should().BeTrue(
-            "не-лидер снапшоты не снимает (§11.7): за окно снимков растёт ровно один каталог");
+            "a non-leader does not take snapshots (§11.7): exactly one directory grows per the snapshot window");
 
         // Кластер обрабатывает ровно один инстанс: work.instance стабилен.
         // Ретрай-окно на СТАБИЛЬНОСТЬ (t24, фейлы №15/№17 при N=5):
@@ -537,7 +537,7 @@ public class E2eScenarios(ITestOutputHelper output)
             },
             TimeSpan.FromSeconds(120), ct);
         stableInstance.Should().BeTrue(
-            $"кластер {cluster} обрабатывает только один инстанс (клэймы Д2; окно переизбрания после Kill предыдущего выдержано)");
+            $"the cluster {cluster} is served by only one instance (D2 claims; the re-election window after killing the previous one is respected)");
     }
 
     // ===== Хелперы docker/sql =====
@@ -615,7 +615,7 @@ public class E2eScenarios(ITestOutputHelper output)
             await Task.Delay(1000, ct);
         }
 
-        throw new ApplicationException($"мастер {cluster}/{shard} не найден за 60 с");
+        throw new ApplicationException($"master {cluster}/{shard} not found within 60 s");
     }
 
     private static async Task<List<string>> SqlListAsync(string dsn, string sql, CancellationToken ct)

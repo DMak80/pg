@@ -91,7 +91,7 @@ public class MasterLeaseHttpsTests
                 return false; // сервер ещё не готов — проба ненулевым exit'ом падает
             }
         }, TimeSpan.FromSeconds(20), ct);
-        up.Should().BeTrue("мини-https-сервер /primary обязан подняться (логи: docker exec … cat /tmp/srv.log)");
+        up.Should().BeTrue("the mini-https server /primary must come up (logs: docker exec … cat /tmp/srv.log)");
     }
 
     [Fact]
@@ -122,8 +122,8 @@ public class MasterLeaseHttpsTests
                 "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
             return outp.Trim() == "yes";
         }, TimeSpan.FromSeconds(10), ct);
-        started.Should().BeTrue("local_role обязан вернуть master по https /primary 200 " +
-            "(логи: docker exec … cat /tmp/lease.log)");
+        started.Should().BeTrue("local_role must return master on https /primary 200 " +
+            "(logs: docker exec … cat /tmp/lease.log)");
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public class MasterLeaseHttpsTests
         await Task.Delay(1500, ct);
         var pid = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
             "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
-        pid.Trim().Should().Be("no", "реплика не запускает демон мастер-ключа");
+        pid.Trim().Should().Be("no", "the replica does not start the master-key daemon");
     }
 
     [Fact]

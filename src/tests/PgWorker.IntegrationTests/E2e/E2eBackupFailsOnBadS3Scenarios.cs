@@ -61,16 +61,16 @@ public class E2eBackupFailsOnBadS3Scenarios
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
             TimeSpan.FromSeconds(480), ct);
-        failed.Should().BeTrue("попытка с недоступным S3 должна упасть в FAILED");
+        failed.Should().BeTrue("an attempt with an unavailable S3 must fail into FAILED");
         var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
-        status["error"].GetString().Should().NotBeNullOrEmpty("причина фиксируется в статусе");
+        status["error"].GetString().Should().NotBeNullOrEmpty("the reason is recorded in the status");
 
         // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
         var retried = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
             TimeSpan.FromSeconds(240), ct);
-        retried.Should().BeTrue("бэкофф 2 c должен запустить переснятие новым id");
+        retried.Should().BeTrue("the 2 s backoff must trigger a retake with a new id");
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и

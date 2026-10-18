@@ -66,7 +66,7 @@ public class E2eWorkerCertScenarios
             // Assert 1: грань на etcd-серте — /healthz 200 ТОЛЬКО при доверии
             // старому thumbprint; дискавери-ключ сообщает старый thumbprint.
             var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, p1, ct);
-            discoveryOld.Should().Be(oldThumb, "дискавери-ключ обязан нести thumbprint применённого серта");
+            discoveryOld.Should().Be(oldThumb, "the discovery key must carry the thumbprint of the applied certificate");
             using (var client = TlsClient(clientPem, clientKeyPem, oldThumb))
             {
                 var response = await client.GetAsync($"{oldUrl}/healthz", ct);
@@ -85,7 +85,7 @@ public class E2eWorkerCertScenarios
             using (var trustOld = TlsClient(clientPem, clientKeyPem, oldThumb))
             {
                 var still = await trustOld.GetAsync($"{oldUrl}/healthz", ct);
-                still.StatusCode.Should().Be(HttpStatusCode.OK, "грань живёт на старом серте до рестарта");
+                still.StatusCode.Should().Be(HttpStatusCode.OK, "the endpoint lives on the old certificate until the restart");
             }
 
             // ---------- Act 3: POST /api/restart → self-stop → подъём ----------
@@ -101,31 +101,31 @@ public class E2eWorkerCertScenarios
             var exited = await E2ePhase.WaitAsync(fx, "cert-restart-exit",
                 async () => (await p1.InspectStateAsync(ct)).Status != "running",
                 TimeSpan.FromSeconds(30), ct);
-            exited.Should().BeTrue("graceful self-stop обязан завершить процесс после ~1 c");
+            exited.Should().BeTrue("the graceful self-stop must end the process after ~1 s");
             var (state, exitCode) = await p1.InspectStateAsync(ct);
-            exitCode.Should().Be(0, $"штатный graceful stop — exit 0 (state={state})");
+            exitCode.Should().Be(0, $"a normal graceful stop — exit 0 (state={state})");
 
             // docker-политика restart: unless-stopped в e2e имитируется новым
             // инстансом с тем же контуром: при старте перечитан etcd-ключ.
             await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct,
                 readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
             var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, p2, ct);
-            discoveryNew.Should().Be(newThumb, "дискавери-ключ переподставился с новым thumbprint");
+            discoveryNew.Should().Be(newThumb, "the discovery key re-seated itself with the new thumbprint");
             using (var client = TlsClient(clientPem, clientKeyPem, newThumb))
             {
                 var response = await client.GetAsync($"{newUrl}/healthz", ct);
-                response.StatusCode.Should().Be(HttpStatusCode.OK, "грань поднялась на новом серте");
+                response.StatusCode.Should().Be(HttpStatusCode.OK, "the endpoint came up on the new certificate");
             }
 
             // ---------- Act 4: DELETE ключа → рестарт → env-фоллбек ----------
             var deleted = await fx.Gateway.DeleteAsync(fx.EtcdEndpoint, ManagedKey, prefix: false, ct);
-            deleted.IsSuccess.Should().BeTrue("ключ управляемого серта должен удаляться");
+            deleted.IsSuccess.Should().BeTrue("the managed certificate key must be removable");
             p2.Kill(); // рестарт: смерть процесса + повторный подъём = политика docker
             await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct,
                 readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
 
             var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, p3, ct);
-            discoveryEnv.Should().Be(envThumb, "после удаления ключа воркер на env-серте (unmanaged)");
+            discoveryEnv.Should().Be(envThumb, "after the key removal the worker is on the env certificate (unmanaged)");
             using (var client = TlsClient(clientPem, clientKeyPem, envThumb))
             {
                 var response = await client.GetAsync($"{envUrl}/healthz", ct);
@@ -174,9 +174,9 @@ public class E2eWorkerCertScenarios
             // Assert: процесс упал с сообщением про ключ (exit != 0, ≤30 с —
             // бюджет readiness фикстуры).
             started.Should().BeOfType<ApplicationException>(
-                "битый управляемый ключ обязан fail-fast старта");
-            started!.Message.Should().Contain("не поднялся за",
-                "воркер не обслуживает API (fail-fast старта)");
+                "a broken managed key must fail-fast the start");
+            started!.Message.Should().Contain("did not come up within",
+                "the worker does not serve the API (start fail-fast)");
             // Текст fail-fast («/workers/api_tls/pgworker») — в логах воркера:
             // container-{...}.log артефактов (stdout контейнера буферизуется,
             // хвост в исключении не гарантирован).
@@ -274,7 +274,7 @@ public class E2eWorkerCertScenarios
         }, TimeSpan.FromSeconds(30), ct,
             progress: async () =>
                 $"alive={await host.IsRunningAsync(ct)}, api-keys={await CountApiKeysAsync(fx, ct)}");
-        found.Should().BeTrue("дискавери-ключ с cert_thumbprint обязан появиться");
+        found.Should().BeTrue("the discovery key with cert_thumbprint must appear");
         return (url!, actualThumb!);
     }
 

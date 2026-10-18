@@ -40,11 +40,11 @@ public class EngineSupersetTests
 
             // Assert: итог Failed (pull несуществующего образа неуспешен), но
             // упал именно pull-фолбэк (/images/create), а не голый 404 create.
-            created.IsSuccess.Should().BeFalse("образ не существует — create не может пройти");
+            created.IsSuccess.Should().BeFalse("the image does not exist — create cannot pass");
             created.Error!.Message.Should().Contain("/images/create",
-                "движок обязан был выполнить pull-фолбэк (канон-суперсет §7.2)");
+                "the engine must have performed the pull fallback (§7.2 canon-superset)");
             created.Error.Message.Should().NotContain("/containers/create",
-                "голый 404 create означал бы отсутствие фолбэка");
+                "a bare 404 create would mean the fallback is missing");
         }
         finally
         {

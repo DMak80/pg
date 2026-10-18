@@ -102,7 +102,7 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("только из ACTIVE");
+        problem.GetProperty("detail").GetString().Should().Contain("only possible from ACTIVE");
     }
 
     // AAA: пустой массив → 400; нешардированный кластер → 409.
@@ -174,7 +174,7 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("убирать нечего");
+        problem.GetProperty("detail").GetString().Should().Contain("nothing to remove");
     }
 
     // AAA: oldShard не существует → 404; TO_REMOVE-приёмник допустим → 201.
@@ -280,7 +280,7 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         noForce.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await noForce.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("осознанно");
+        problem.GetProperty("detail").GetString().Should().Contain("deliberate");
 
         // Act / Assert — с force
         var forced = await Client.PostAsJsonAsync("/api/clusters/abfl/moves/abort",
@@ -324,7 +324,7 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("не переезд");
+        problem.GetProperty("detail").GetString().Should().Contain("not a move");
     }
 
     // ===== отмена заявки (§9.7.5) =====
@@ -352,7 +352,7 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert — 404 «заявки нет»
         again.StatusCode.Should().Be(HttpStatusCode.NotFound);
         var problem = await again.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("detail").GetString().Should().Contain("заявки");
+        problem.GetProperty("detail").GetString().Should().Contain("not found");
     }
 
     // AAA: чужой кластер и битый leaf → 404.

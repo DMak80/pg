@@ -37,7 +37,7 @@ public class E2eRotateScenarios
             await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
             && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
             TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("кластер поднялся");
+        provisioned.Should().BeTrue("the cluster came up");
         var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
         var oldAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
@@ -74,7 +74,7 @@ public class E2eRotateScenarios
             return password != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{Cluster}") is null;
         }, TimeSpan.FromSeconds(120), ct);
-        rotated.Should().BeTrue("заявка исполнена: пароль изменён, ключ заявки удалён");
+        rotated.Should().BeTrue("the request is executed: the password changed, the request key is removed");
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
 
@@ -114,7 +114,7 @@ public class E2eRotateScenarios
 
             return inserts >= 5;
         }, TimeSpan.FromSeconds(90), ct);
-        wrote.Should().BeTrue($"письменная нагрузка продолжается после ротации (inserts={inserts}, lastError={lastError})");
+        wrote.Should().BeTrue($"the write load continues after the rotation (inserts={inserts}, lastError={lastError})");
 
         // Assert 2 (критерий 5в/5г): новый app-пароль подключается, старый отвергается
         var newWorks = false;
@@ -135,7 +135,7 @@ public class E2eRotateScenarios
                     return false;
                 }
             }, TimeSpan.FromSeconds(60), ct);
-        newWorks.Should().BeTrue("новый пароль подключается user=app");
+        newWorks.Should().BeTrue("the new password connects as user=app");
 
         var oldRejected = false;
         foreach (var (host, port) in hosts.Zip(ports))
@@ -154,7 +154,7 @@ public class E2eRotateScenarios
                     return true; // отвергнут — ожидаемо
                 }
             }, TimeSpan.FromSeconds(60), ct);
-        oldRejected.Should().BeTrue("старый пароль отвергается (auth fail)");
+        oldRejected.Should().BeTrue("the old password is rejected (auth fail)");
     }
 
     // Сид кластера в стиле панели (копия E2eAppSecretScenarios.SeedClusterAsync).

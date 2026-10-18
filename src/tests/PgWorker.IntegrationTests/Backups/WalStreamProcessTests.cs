@@ -86,7 +86,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (код-ревью B3): аудируемая фаза create агента передаёт progress —
     // итерации поллинга дают Mark (окно без progress = молчание для watchdog).
     [Fact]
-    public async Task Аудируемый_create_агента_итерации_дают_Mark()
+    public async Task AuditableAgentCreateIterationsGiveMark()
     {
         // Arrange — «медленный daemon отпускает»: первые 2 вызова висят 2.5 c
         // (дольше таймаута итерации — пол 1 c из Math.Max(TicksPerSecond, window/2)
@@ -112,7 +112,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — Mark рос с итерациями: 2 таймаут-итерации + успешная = ≥ 3
         // (не «один на весь вызов» и не ноль)
         marks.Marks.Should().BeGreaterThanOrEqualTo(3,
-            "итерации поллинга аудируемой фазы дают Mark (spec §1.2 п.4)");
+            "polling iterations of an audited phase give Mark (spec §1.2 item 4)");
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-ap9-shard1-shard1a");
     }
 
@@ -137,12 +137,12 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal);
 
     [Fact]
-    public async Task Тик_поднимает_агента_ensure_слот_и_ждет_первый_объект()
+    public async Task TickEnsuresAgentAndSlotAndWaitsForFirstObject()
     {
         // Arrange — полных нет, S3 пуст, ключ wal нет; клэйм кластера наш
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("claim is a tick precondition");
         var sql = new FakeWalSqlExecutor();
         var s3 = new FakeBackupS3();
         var driver = new StubScaleDriver();
@@ -166,16 +166,16 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_c1_shard1"));
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
-        wal.Value.Should().BeNull("ключ не пишется до первого наблюдения (spec §3.2 п.8)");
+        wal.Value.Should().BeNull("the key is not written until the first observation (spec §3.2 item 8)");
     }
 
     [Fact]
-    public async Task Тик_идемпотентен_агент_не_пересоздается()
+    public async Task TickIsIdempotentAgentNotRecreated()
     {
         // Arrange — агент уже создан (первый тик)
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("claim is a tick precondition");
         var sql = new FakeWalSqlExecutor();
         var s3 = new FakeBackupS3();
         var driver = new StubScaleDriver();
@@ -193,14 +193,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Тик_без_кредов_t02_пропускает_шард_с_journal_заметкой()
+    public async Task TickWithoutCredentialsSkipsShardWithJournalNote()
     {
         // Arrange — backup_password отсутствует (t02 не смержена/ensure не прошёл)
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1", password: "");
         await fixture.Gateway.DeleteAsync(
             fixture.Endpoint, "/clusters/c1/backup_password", prefix: false, ct);
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("claim is a tick precondition");
         var sql = new FakeWalSqlExecutor();
         var driver = new StubScaleDriver();
         var process = BuildProcess(Options(), sql, new FakeBackupS3(), driver);
@@ -210,7 +210,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert — transient-пропуск: ни слота, ни агента
         result.IsSuccess.Should().BeTrue();
-        sql.SlotsByDsn.Should().BeEmpty("агент/слот не поднимаются без кредов (spec §3.2 п.1)");
+        sql.SlotsByDsn.Should().BeEmpty("agent/slot are not raised without credentials (spec §3.2 item 1)");
         driver.EnsuredBackupAgents.Should().BeEmpty();
         var journal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/work/c1", ct);
@@ -218,12 +218,12 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Тик_Enabled_false_останавливает_агентов_и_пишет_STOPPED()
+    public async Task TickWithEnabledFalseStopsAgentsAndWritesStopped()
     {
         // Arrange — живой агент + ключ wal ACTIVE от прошлого прохода
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
-        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue("claim is a tick precondition");
         var sql = new FakeWalSqlExecutor();
         var s3 = new FakeBackupS3();
         var driver = new StubScaleDriver();
@@ -277,7 +277,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // t05 §3.4 гвард: шард с активной restore-заявкой — агент не ensure,
     // wal-статус не пишется (контуры не трогают шард во время restore).
     [Fact]
-    public async Task Тик_скипает_шард_с_активным_restore()
+    public async Task TickSkipsShardWithActiveRestore()
     {
         // Arrange — full COMPLETED + цепочка (due-условия есть) + PLANNED restore
         var ct = TestContext.Current.CancellationToken;
@@ -312,11 +312,11 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         sql.SlotsByDsn.Should().BeEmpty();
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/cr9/shard1/wal", ct);
-        wal.Value.Should().BeNull("шард в restore — контуры бэкапов молчат");
+        wal.Value.Should().BeNull("shard is in restore — backup contours stay silent");
     }
 
     [Fact]
-    public async Task Контроль_сплошная_цепочка_пишет_ACTIVE_и_chain_start_от_полного()
+    public async Task VerifyContinuousChainWritesActiveAndChainStartFromFull()
     {
         // Arrange — full COMPLETED wal_start=..01; S3: сегменты 1..3
         var ct = TestContext.Current.CancellationToken;
@@ -351,7 +351,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Контроль_дыра_пишет_BROKEN_границы_стоп_и_блокировка_подъема_AC4a()
+    public async Task VerifyGapWritesBrokenBoundariesStopsAndBlocksAgentAc4a()
     {
         // Arrange — full wal_start=..01; S3: 1,3 (дыра на ..02)
         var ct = TestContext.Current.CancellationToken;
@@ -374,11 +374,11 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal!.State.Should().Be(WalStreamStatus.Broken);
         wal.Error.Should().Contain("000000010000000000000002").And.Contain("000000010000000000000003");
         (await process.TickAsync(BuildSnap("cc2"), backups, ct)).IsSuccess.Should().BeTrue();
-        driver.EnsuredBackupAgents.Should().BeEmpty("ChainBroken блокирует подъём (ревью Ф4-2 №1)");
+        driver.EnsuredBackupAgents.Should().BeEmpty("ChainBroken blocks agent raising (review F4-2 #1)");
     }
 
     [Fact]
-    public async Task Контроль_инвалидация_слота_пишет_BROKEN_стоп_агента_AC4b()
+    public async Task VerifySlotInvalidationWritesBrokenAndStopsAgentAc4b()
     {
         // Arrange — ключ wal ACTIVE; FakeSql.Slots пуст (слот исчез)
         var ct = TestContext.Current.CancellationToken;
@@ -409,14 +409,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — BROKEN с error про слот; агент остановлен; слот пересоздан
         var wal = await ReadWal("cc3");
         wal!.State.Should().Be(WalStreamStatus.Broken);
-        wal.Error.Should().Contain("слот");
-        wal.ChainStartSegment.Should().Be("000000010000000000000002", "граница разрыва — last_uploaded на момент обнаружения");
+        wal.Error.Should().Contain("slot");
+        wal.ChainStartSegment.Should().Be("000000010000000000000002", "gap boundary — last_uploaded at detection time");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cc3-shard1");
-        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cc3_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cc3_shard1"), "the slot is recreated at BROKEN (spec §3.2)");
     }
 
     [Fact]
-    public async Task Контроль_новый_полный_выше_дыры_восстанавливает_ACTIVE_тем_же_тиком_AC4c()
+    public async Task VerifyNewFullAboveGapRestoresActiveOnSameTickAc4c()
     {
         // Arrange — DEGRADED (дыра ..02) в ключе; появляется full wal_start=..05; S3: 5,6
         var ct = TestContext.Current.CancellationToken;
@@ -430,7 +430,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         await writer.WriteIfChangedAsync("cc4", "shard1", new WalStreamState(
             WalStreamStatus.Degraded, "pgw_bkp_cc4_shard1", "shard1a",
             "000000010000000000000001", "000000010000000000000001",
-            "000000010000000000000001", 1757500000, null, "дыра WAL-цепочки"), ct);
+            "000000010000000000000001", 1757500000, null, "WAL chain gap"), ct);
         var process = BuildProcess(Options(), sql, s3, driver);
         var backups = new ClusterBackups("cc4", null,
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000005") });
@@ -446,7 +446,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Transient_stale_DEGRADED_не_блокирует_пересоздание_агента()
+    public async Task TransientStaleDegradedDoesNotBlockAgentRecreation()
     {
         // Arrange — агент exited; цепочка сплошная, но тишина загрузок 3600 c (порог 60)
         var ct = TestContext.Current.CancellationToken;
@@ -468,13 +468,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — DEGRADED «тишина»; агент ПЕРЕСОЗДАН (remove → ensure)
         var wal = await ReadWal("cc5");
         wal!.State.Should().Be(WalStreamStatus.Degraded);
-        wal.Error.Should().Contain("тишина");
+        wal.Error.Should().Contain("upload silence");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1");
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1-shard1a");
     }
 
     [Fact]
-    public async Task Супервиз_running_агент_канон_имён_без_слеша_не_трогается()
+    public async Task SupervisorRunningAgentCanonicalNameWithoutSlashUntouched()
     {
         // Arrange — живой агент в списке движка: канон ListContainersAsync — имена
         // БЕЗ ведущего "/"; раньше матч "/"+name всегда промахивался (t05-регресс
@@ -504,7 +504,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (AC1): дыра → wal.state=BROKEN с границей разрыва в chain_start,
     // агент не поднимается повторными тиками (маркер — ключ, не память)
     [Fact]
-    public async Task Контроль_дыра_пишет_BROKEN_и_держит_агента_внизу()
+    public async Task VerifyGapWritesBrokenAndKeepsAgentDown()
     {
         // Arrange — full wal_start=..01; S3: 1,3 (дыра на ..02)
         var ct = TestContext.Current.CancellationToken;
@@ -527,13 +527,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cb1");
         wal!.State.Should().Be(WalStreamStatus.Broken);
         wal.Error.Should().Contain("000000010000000000000002");
-        wal.ChainStartSegment.Should().Be("000000010000000000000001", "граница разрыва — последний непрерывный сегмент");
-        driver.EnsuredBackupAgents.Should().BeEmpty("BROKEN держит агента внизу (ключ, не память)");
+        wal.ChainStartSegment.Should().Be("000000010000000000000001", "gap boundary — last continuous segment");
+        driver.EnsuredBackupAgents.Should().BeEmpty("BROKEN keeps the agent down (key, not memory)");
     }
 
     // AAA (AC2): слот исчез при живой цепочке → BROKEN + слот ПЕРЕСОЗДАН, агент вниз
     [Fact]
-    public async Task Слот_исчез_пишет_BROKEN_и_пересоздает_слот()
+    public async Task SlotDisappearedWritesBrokenAndRecreatesSlot()
     {
         // Arrange — ключ wal ACTIVE (цепочка ..01-..02), слота в FakeSql нет, агент жив
         var ct = TestContext.Current.CancellationToken;
@@ -562,10 +562,10 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // агент снят; слот пересоздан immediate+reserved (держит позицию к пересъёму)
         var wal = await ReadWal("cb2");
         wal!.State.Should().Be(WalStreamStatus.Broken);
-        wal.Error.Should().Contain("слот");
+        wal.Error.Should().Contain("slot");
         wal.ChainStartSegment.Should().Be("000000010000000000000002");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cb2-shard1");
-        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb2_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb2_shard1"), "the slot is recreated at BROKEN (spec §3.2)");
     }
 
     // AAA (t13 AC1): инвариант писателя нарушен (ACTIVE с last_uploaded_unix=null
@@ -576,13 +576,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // парсеры не задействованы (spec §3.3); чтение ключа — raw (парсер отверг
     // бы ключ без last_uploaded_unix — гвард остаётся первой линией, spec §3.4).
     [Fact]
-    public async Task Слот_исчез_при_битом_last_uploaded_unix_не_роняет_тик()
+    public async Task SlotDisappearedWithBrokenLastUploadedUnixDoesNotFailTick()
     {
         // Arrange — wal ACTIVE с LastUploadedUnix = null (инвариант писателя
         // нарушен), слота в FakeSql нет, агент жив; цепочка объектов в S3 есть
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("cb5");
-        (await _claims.TryClaimClusterAsync("cb5", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync("cb5", ct)).Value.Should().BeTrue("claim is a tick precondition");
         var sql = new FakeWalSqlExecutor();
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cb5", 1, 2);
@@ -610,14 +610,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         result.IsSuccess.Should().BeTrue();
         var walKv = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/cb5/shard1/wal", ct);
-        walKv.Value.Should().NotBeNull("BROKEN пишется даже из битого ключа");
-        walKv.Value!.Value.Should().Contain("\"state\":\"BROKEN\"").And.Contain("слот");
+        walKv.Value.Should().NotBeNull("BROKEN is written even from a broken key");
+        walKv.Value!.Value.Should().Contain("\"state\":\"BROKEN\"").And.Contain("slot");
         walKv.Value.Value.Should().Contain(
             "\"chain_start_segment\":\"000000010000000000000002\"",
-            "граница разрыва — last_uploaded_segment на момент обнаружения");
+            "gap boundary — last_uploaded_segment at detection time");
         walKv.Value.Value.Should().NotContain("\"last_uploaded_unix\"",
-            "запись строится из живого wal: now()-фолбэк в ключ не попадает (spec §2)");
-        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb5_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
+            "the record is built from the live wal: the now() fallback does not reach the key (spec §2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb5_shard1"), "the slot is recreated at BROKEN (spec §3.2)");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cb5-shard1");
         var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/cb5", ct);
         journal.Value!.Value.Should().Contain("wal-key-invalid/shard1");
@@ -627,7 +627,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (AC1/заживление): новый COMPLETED-полный ≥ границы + непрерывная цепь →
     // ACTIVE + агент ТЕМ ЖЕ тиком (даже без прошедшего VerifyIntervalSec)
     [Fact]
-    public async Task Контроль_при_BROKEN_каждый_тик_заживляет_одним_тиком()
+    public async Task VerifyAtBrokenEveryTickHealsInOneTick()
     {
         // Arrange — BROKEN-ключ (граница ..01, дыра ..02); VerifyIntervalSec=3600;
         // появился full wal_start=..05; S3: 5,6 (цепь от нового полного непрерывна —
@@ -643,7 +643,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         await writer.WriteIfChangedAsync("cb3", "shard1", new WalStreamState(
             WalStreamStatus.Broken, "pgw_bkp_cb3_shard1", "shard1a",
             "000000010000000000000001", "000000010000000000000001",
-            "000000010000000000000001", 1757500000, null, "дыра WAL-цепочки"), ct);
+            "000000010000000000000001", 1757500000, null, "WAL chain gap"), ct);
         var process = BuildProcess(Options(verify: 3600), sql, s3, driver, clock: TimeProvider.System);
         var backups = new ClusterBackups("cb3", null,
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000005") });
@@ -661,7 +661,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (AC4 — рестарт-устойчивость): BROKEN живёт в etcd — пересоздание
     // процесса (новая фабрика = «рестарт воркера») не поднимает агента
     [Fact]
-    public async Task BROKEN_переживает_рестарт_процесса()
+    public async Task BrokenSurvivesProcessRestart()
     {
         // Arrange — доводим до BROKEN первым процессом (дыра ..02)
         var ct = TestContext.Current.CancellationToken;
@@ -691,7 +691,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await restarted.TickAsync(BuildSnap("cb4"), freshBackups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — агент не поднимается: маркер разрыва — ключ wal, не память
-        driver.EnsuredBackupAgents.Should().BeEmpty("BROKEN в etcd переживает рестарт воркера");
+        driver.EnsuredBackupAgents.Should().BeEmpty("BROKEN in etcd survives a worker restart");
     }
 
     // AAA (AC9-регресс): смена мастера при живом ключе — агент пересоздаётся с нового
@@ -700,7 +700,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // тик 2 — контроль вне интервала (VerifyIntervalSec=3600): EnsureAgent сверяет
     // master_node ПРЕЖНЕГО статуса с новым резолвом → remove+ensure с нового мастера.
     [Fact]
-    public async Task Смена_мастера_агент_пересоздается_с_нового()
+    public async Task MasterChangedAgentRecreatedFromNewMaster()
     {
         // Arrange — ключ wal ACTIVE master_node=shard1a; агент running на «shard1a»;
         // portalloc + ShardSpec.Master переводят мастера на shard1b; цепочка сплошная
@@ -752,7 +752,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Контроль_дыра_без_прошлого_ключа_пишет_BROKEN_AC4_тотальность()
+    public async Task VerifyGapWithoutPreviousKeyWritesBrokenAc4Totality()
     {
         // Arrange — ключа нет; full wal_start=..01; S3: 1,3 (дыра при первом наблюдении)
         var ct = TestContext.Current.CancellationToken;
@@ -778,7 +778,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Контроль_без_сегментных_объектов_ключ_не_пишется_до_первого_наблюдения()
+    public async Task VerifyNoSegmentObjectsKeyNotWrittenUntilFirstObservation()
     {
         // Arrange — full wal_start=..01 (chain anchored); S3 ПУСТ; ключа нет
         var ct = TestContext.Current.CancellationToken;
@@ -801,7 +801,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Контроль_пропажа_объектов_staleness_от_прошлого_факта_не_от_now()
+    public async Task VerifyObjectsGoneStalenessFromLastFactNotFromNow()
     {
         // Arrange — ключ ACTIVE с last_uploaded_unix = now-3600 (порог 300); S3 пуст
         var ct = TestContext.Current.CancellationToken;
@@ -833,13 +833,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — DEGRADED «тишина»; last_uploaded_unix — прежний факт (не now)
         var wal = await ReadWal("cc8");
         wal!.State.Should().Be(WalStreamStatus.Degraded);
-        wal.Error.Should().Contain("тишина");
+        wal.Error.Should().Contain("upload silence");
         wal.LastUploadedUnix.Should().Be(staleUnix,
-            "факт над записью: фабрика now() прятала бы мёртвый поток (ревью Ф4-2 №2)");
+            "fact over the record: the now() factory would hide a dead stream (review F4-2 #2)");
     }
 
     [Fact]
-    public async Task Контроль_lag_выше_порога_DEGRADED_AC5a()
+    public async Task VerifyLagAboveThresholdDegradedAc5a()
     {
         // Arrange — цепочка ..01; мастер далеко впереди (0/10000000 → сегмент 16)
         var ct = TestContext.Current.CancellationToken;
@@ -859,13 +859,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — DEGRADED про отставание; агент ЖИВ (transient-деградация)
         var wal = await ReadWal("cc9");
         wal!.State.Should().Be(WalStreamStatus.Degraded);
-        wal.Error.Should().Contain("отставание");
+        wal.Error.Should().Contain("WAL stream lag");
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc9-shard1-shard1a");
         driver.RemovedBackupAgents.Should().NotContain("pgw-backup-wal-cc9-shard1-shard1a");
     }
 
     [Fact]
-    public async Task Первый_объект_закрепляет_chain_start_без_полных()
+    public async Task FirstObjectAnchorsChainStartWithoutFulls()
     {
         // Arrange — полных нет, ключа нет; S3: 2..3
         var ct = TestContext.Current.CancellationToken;
@@ -893,7 +893,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // старой min-семантики: от старого OK (..03) при объектах {5,6} контроль
     // дал бы дыру «ожидался ..04» и BROKEN.
     [Fact]
-    public async Task Контроль_стартует_от_новейшего_OK_полного_без_ложного_BROKEN()
+    public async Task VerifyStartsFromNewestOkFullWithoutFalseBroken()
     {
         // Arrange — два OK-полных: старый wal_start=..03 (сегменты ..03/..04
         // срезаны ретенцией), новый wal_start=..05; S3: 5,6; ключа wal нет
@@ -927,7 +927,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // (verify-перепроверка старшего OK→FAILED откатила точку) не понижает
     // chain_start.
     [Fact]
-    public async Task Ratchet_chain_start_не_понижается_младшим_OK_полным()
+    public async Task RatchetChainStartNotLoweredByOlderOkFull()
     {
         // Arrange — ключ ACTIVE с chain_start=..05; OK-полный wal_start=..03;
         // S3: 5,6,7 (непрерывны от ..05)
@@ -1002,7 +1002,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (AC3-контур): два источника (мастер + sync-standby) → ДВА per-node агента,
     // слоты ensured на ОБОИХ DSN, ключ wal содержит agents с двумя running-нодами.
     [Fact]
-    public async Task Двойная_архивация_два_агента_слоты_на_обеих_нодах_agents()
+    public async Task DualArchivingTwoAgentsSlotsOnBothNodes()
     {
         // Arrange — двухнодовый кластер, Patroni-фейк с sync на shard1b
         var ct = TestContext.Current.CancellationToken;
@@ -1031,7 +1031,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             .Should().Contain("pgw_bkp_" + cluster + "_shard1");
         // Ключ wal содержит agents с двумя running-нодами
         var wal = await ReadWal(cluster);
-        wal.Should().NotBeNull("сегменты в S3 — контроль пишет ключ");
+        wal.Should().NotBeNull("segments in S3 — verify writes the key");
         wal!.Agents.Should().NotBeNull();
         wal.Agents.Should().BeEquivalentTo(
         [
@@ -1043,7 +1043,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (миграция §3.6 / AC7-сценарий): агент старого формата (имя без ноды,
     // running) → тик: старый снесён, per-node поднят; повторный тик идемпотентен.
     [Fact]
-    public async Task Миграция_старый_агент_сносится_per_node_поднимается()
+    public async Task MigrationOldAgentRemovedPerNodeRaised()
     {
         // Arrange — живой агент старого формата pgw-backup-wal-<C>-shard1
         var ct = TestContext.Current.CancellationToken;
@@ -1077,7 +1077,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (смена источника): агент per-node мастера -shard1a; мастер сменился на
     // shard1b → агент -shard1a снесён (чужое имя), -shard1b поднят.
     [Fact]
-    public async Task Смена_мастера_per_node_агент_переносится()
+    public async Task MasterChangedPerNodeAgentMoved()
     {
         // Arrange — тик 1: мастер shard1a, агенты per-node
         var ct = TestContext.Current.CancellationToken;
@@ -1114,7 +1114,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // sync-ноде → тик НЕ пишет BROKEN (ensure на мастере); слот исчез на обеих при
     // живой цепочке → BROKEN + recreateSlot.
     [Fact]
-    public async Task Слот_исчез_правило_всех_нод()
+    public async Task SlotDisappearedAllNodesRule()
     {
         // Arrange — два источника; слот жив ТОЛЬКО на sync-ноде (16002)
         var ct = TestContext.Current.CancellationToken;
@@ -1148,9 +1148,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — не BROKEN; слот ensured на мастере (16001)
         var walAfterSyncAlive = await ReadWal(cluster);
         walAfterSyncAlive!.State.Should().NotBe(WalStreamStatus.Broken,
-            "живой слот на любой ноде — не BROKEN (t27 §3.3 п.3)");
+            "a live slot on any node — not BROKEN (t27 §3.3 item 3)");
         sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => [])
-            .Should().Contain($"pgw_bkp_{cluster}_shard1", "ensure на источнике, где слота нет");
+            .Should().Contain($"pgw_bkp_{cluster}_shard1", "ensure on the source where the slot is absent");
 
         // Act 2 — слот исчез на ОБОИХ (границы словаря чистим) при живой цепочке
         sql.SlotsByDsn.Clear();
@@ -1160,15 +1160,15 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — BROKEN + recreateSlot (слот пересоздан на мастере)
         var walGone = await ReadWal(cluster);
         walGone!.State.Should().Be(WalStreamStatus.Broken);
-        walGone.Error.Should().Contain("слот");
+        walGone.Error.Should().Contain("slot");
         sql.SlotsByDsn.Values.Should().Contain(s => s.Contains($"pgw_bkp_{cluster}_shard1"),
-            "recreateSlot immediate+reserved на мастере (t07)");
+            "recreateSlot immediate+reserved on the master (t07)");
     }
 
     // AAA (t19 AC1): lost-слот мастера при живом sync — тик НЕ пишет BROKEN,
     // слот мастера пересоздан (drop+create), журнальная фаза slot-recreate/<X>.
     [Fact]
-    public async Task Lost_слот_мастера_при_живом_sync_не_BROKEN_recreate_журнал()
+    public async Task LostMasterSlotWithLiveSyncNotBrokenRecreateJournal()
     {
         // Arrange — два источника (мастер shard1a + sync shard1b); слот мастера
         // существует, но lost; слот sync жив; ключ wal ACTIVE (цепочка жива)
@@ -1206,26 +1206,26 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // фазу ДО мутации; агент мастера не снимался
         var wal = await ReadWal(cluster);
         wal!.State.Should().NotBe(WalStreamStatus.Broken,
-            "lost одного источника при живом втором — не BROKEN (spec §3.2)");
+            "lost on one source while the other is alive — not BROKEN (spec §3.2)");
         sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == masterDsn,
-            "FakeSql фиксирует drop потерянного слота");
+            "FakeSql records the drop of the lost slot");
         sql.Calls.Should().Contain(c => c.Op == "create" && c.Dsn == masterDsn,
-            "FakeSql фиксирует create пересозданного слота");
+            "FakeSql records the create of the recreated slot");
         sql.LostByDsn[masterDsn].Should().NotContain($"pgw_bkp_{cluster}_shard1",
-            "после recreate слот жив");
+            "after recreate the slot is alive");
         var journal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
         journal.Value!.Value.Should().Contain("slot-recreate/shard1");
         journal.Value.Value.Should().Contain("wal_status=lost");
         driver.RemovedBackupAgents.Should().NotContain(
-            n => n.Contains("shard1", StringComparison.Ordinal), "агенты не трогаются");
+            n => n.Contains("shard1", StringComparison.Ordinal), "agents are not touched");
     }
 
     // AAA (фаза A2 — «повторный тик на здоровом слоте — нулевые мутации»):
     // тик на здоровых (не lost) слотах — нулевые мутации слотов
     // и никаких журнальных фаз slot-recreate.
     [Fact]
-    public async Task Тик_на_здоровых_слотах_нулевые_мутации()
+    public async Task TickOnHealthySlotsZeroMutations()
     {
         // Arrange — два источника, оба слота живы; ключ ACTIVE; цепочка сплошная
         var ct = TestContext.Current.CancellationToken;
@@ -1252,7 +1252,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — ни одного вызова мутации слота; журнал без slot-recreate
-        sql.Calls.Should().BeEmpty("здоровый слот не трогается (фаза A2)");
+        sql.Calls.Should().BeEmpty("a healthy slot is not touched (phase A2)");
         var journal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
         (journal.Value?.Value ?? "").Should().NotContain("slot-recreate");
@@ -1261,7 +1261,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (t19 AC2): lost на ВСЕХ источниках при живом (ACTIVE) ключе — BROKEN,
     // recreateSlot на мастере, error различает lost от «исчез».
     [Fact]
-    public async Task Lost_слотов_всех_источников_при_живой_цепочке_BROKEN()
+    public async Task LostSlotsOnAllSourcesWithLiveChainBroken()
     {
         // Arrange — оба слота существуют и lost; ключ ACTIVE; агент жив
         var ct = TestContext.Current.CancellationToken;
@@ -1301,16 +1301,16 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — BROKEN, error содержит lost; слот мастера пересоздан (recreateSlot)
         var wal = await ReadWal(cluster);
         wal!.State.Should().Be(WalStreamStatus.Broken);
-        wal.Error.Should().Contain("lost", "error различает потерю и исчезновение (spec §3.2)");
+        wal.Error.Should().Contain("lost", "the error distinguishes lost from disappeared (spec §3.2)");
         sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == SourceDsn(16001, cluster),
-            "BreakAsync recreateSlot: lost-слот мастера пересоздаётся immediate+reserved");
-        driver.RemovedBackupAgents.Should().NotBeEmpty("BROKEN останавливает агентов");
+            "BreakAsync recreateSlot: the master's lost slot is recreated immediate+reserved");
+        driver.RemovedBackupAgents.Should().NotBeEmpty("BROKEN stops the agents");
     }
 
     // AAA (t19 AC3): ensure-ветка (ключ wal = BROKEN) + существующий lost-слот —
     // EnsureSlotAlive recreates (не пропускает по идемпотентности), новый BROKEN не пишется.
     [Fact]
-    public async Task Ensure_ветка_BROKEN_ключ_lost_слот_recreate()
+    public async Task EnsureBranchBrokenKeyLostSlotRecreate()
     {
         // Arrange — однонодовый кластер; wal-состояние BROKEN передано тиком (как
         // в cb-кейсах: и ключ в etcd, и backups-аргумент); слот есть, но lost
@@ -1326,7 +1326,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var brokenWal = new WalStreamState(
             WalStreamStatus.Broken, "pgw_bkp_sl4_shard1", "shard1a",
             "000000010000000000000001", "000000010000000000000001",
-            "000000010000000000000001", 1757500000, null, "дыра WAL-цепочки");
+            "000000010000000000000001", 1757500000, null, "WAL chain gap");
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
         await writer.WriteIfChangedAsync("sl4", "shard1", brokenWal, ct);
         var process = BuildProcess(Options(), sql, s3, driver);
@@ -1339,7 +1339,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — ensure-ветка полечила lost (drop+create), тик успешен
         result.IsSuccess.Should().BeTrue();
         sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == masterDsn,
-            "lost в ensure-ветке лечится recreate, а не пропуском (критерий 3)");
+            "lost in the ensure branch is healed by recreate, not skipped (criterion 3)");
         sql.Calls.Should().Contain(c => c.Op == "create" && c.Dsn == masterDsn);
         sql.LostByDsn[masterDsn].Should().NotContain("pgw_bkp_sl4_shard1");
 
@@ -1349,16 +1349,16 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // наблюдение из фактов ключа (ratchet chain_start + last_uploaded); это
         // pre-existing семантика контроля, не ветки слота.)
         driver.RemovedBackupAgents.Should().BeEmpty(
-            "BreakAsync не стрелял — ensure-ветка лечит lost без BROKEN-записи");
+            "BreakAsync did not fire — the ensure branch heals lost without a BROKEN record");
         var walAfter = await ReadWal("sl4");
-        walAfter!.Error.Should().NotContain("пересними полный бэкап",
-            "новой BROKEN-записи от ветки слота нет — лечение тихое (критерий 3)");
+        walAfter!.Error.Should().NotContain("retake the full backup",
+            "no new BROKEN record from the slot branch — healing is silent (criterion 3)");
     }
 
     // AAA («sync появился»): тик 1 single-node (sync не резолвится) → один агент;
     // тик 2 с sync → второй агент поднят, первый жив (не пересоздан).
     [Fact]
-    public async Task Sync_появился_второй_агент_первый_жив()
+    public async Task SyncAppearedSecondAgentFirstStaysAlive()
     {
         // Arrange — patroni-порт заглушка (sync не резолвится): тик 1
         var ct = TestContext.Current.CancellationToken;
@@ -1400,7 +1400,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // кластеру) не триггерит recreate-цикл этого шарда: foreign-детект —
     // только в рамках шарда.
     [Fact]
-    public async Task Агент_соседнего_шарда_не_триггерит_recreate()
+    public async Task NeighborShardAgentDoesNotTriggerRecreate()
     {
         // Arrange — двухнодовый шард1 (sync на shard1b) + ЖИВОЙ агент шарда shard2
         var ct = TestContext.Current.CancellationToken;
@@ -1442,14 +1442,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
         driver.RemovedBackupAgents.Should().NotContain(
             n => n.Contains("shard2", StringComparison.Ordinal),
-            "агент соседнего шарда — не foreign для этого шарда (регресс вечного recreate)");
+            "a neighbor shard's agent is not foreign to this shard (regression of the eternal recreate)");
     }
 
     // AAA (t27 Task 13, канон §3 fallback): контроль видит TLI-переход без
     // history-объекта → docker-exec ноды (base64) → put wal/<tli>.history в S3;
     // повторный тик — идемпотентен (exec не повторяется).
     [Fact]
-    public async Task History_fallback_контроль_докладывает_history_при_TLI_переходе()
+    public async Task HistoryFallbackVerifyReportsHistoryOnTliSwitch()
     {
         // Arrange — сегменты TLI 1 (…0001, …0002) и TLI 2 (…0002); history НЕТ;
         // exec ноды возвращает base64 синтетики history-файла
@@ -1471,14 +1471,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert — history-объект в S3
         var execCalls1 = driver.ExecNodeCalls;
-        execCalls1.Should().BeGreaterThan(0, "exec ноды за history-файлом");
+        execCalls1.Should().BeGreaterThan(0, "node exec for the history file");
         var listed = await s3.ListWalAsync(cluster, "shard1", ct: ct);
         listed.Value.Should().Contain(o => o.Name == "00000002.history",
-            "wal/00000002.history докладывается контролем (AC5-fallback)");
+            "wal/00000002.history is reported by verify (AC5 fallback)");
 
         // Act/Assert — повторный тик: history уже в S3 — exec не повторяется
         (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
-        driver.ExecNodeCalls.Should().Be(execCalls1, "идемпотентность: history уже загружен");
+        driver.ExecNodeCalls.Should().Be(execCalls1, "idempotency: history already uploaded");
     }
 
     // AAA (t27, AC5): префикс wal/ БЕЗ сегментов TLI 1 (контур стартовал уже на
@@ -1487,7 +1487,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // склейке (не бывает только у TLI 1). Прежнее правило «все TLI кроме
     // минимального» молча пропускало этот случай — AC5-факт E2E.
     [Fact]
-    public async Task History_fallback_минимальныйTLIБольше1_докладывает_history()
+    public async Task HistoryFallbackMinimalTliAbove1ReportsHistory()
     {
         // Arrange — сегменты ТОЛЬКО TLI 2; history НЕТ; exec возвращает синтетику
         var ct = TestContext.Current.CancellationToken;
@@ -1506,16 +1506,16 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — history-объект в S3
-        driver.ExecNodeCalls.Should().BeGreaterThan(0, "exec ноды за history-файлом");
+        driver.ExecNodeCalls.Should().BeGreaterThan(0, "node exec for the history file");
         var listed = await s3.ListWalAsync(cluster, "shard1", ct: ct);
         listed.Value.Should().Contain(o => o.Name == "00000002.history",
-            "history минимального TLI>1 склеивает переход — докладывается (AC5)");
+            "history of the minimal TLI>1 stitches the switch — it is reported (AC5)");
     }
 
     // AAA: t14 — контрольный проход отдаёт ОБЕИМ наблюдателям факт одного
     // прохода: lag (сегменты) и uploaded-age (now − last_uploaded_unix ≥ 0)
     [Fact]
-    public async Task Контроль_наблюдатели_получают_лаг_и_возраст_загрузки()
+    public async Task VerifyObserversReceiveLagAndUploadAge()
     {
         // Arrange — полный COMPLETED wal_start=..01; S3: сегменты 1..3; мастер 0/3000000
         var ct = TestContext.Current.CancellationToken;
@@ -1543,7 +1543,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // AAA: t14 — BROKEN (дыра цепочки) снимает обе серии: наблюдатели получают null
     [Fact]
-    public async Task Контроль_дыра_BROKEN_снимаетСерииОбоихНаблюдателей()
+    public async Task VerifyGapBrokenDropsSeriesOfBothObservers()
     {
         // Arrange — wal_start=..01; S3: 1 и 3 (дыра на ..02)
         var ct = TestContext.Current.CancellationToken;

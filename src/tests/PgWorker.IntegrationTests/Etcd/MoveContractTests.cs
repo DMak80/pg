@@ -56,8 +56,8 @@ public class MoveContractTests(EtcdFixture fixture)
         var competing = await store.FlipAsync(cluster, bucket, "shard1", "shardX", ct: ct);
 
         // Assert — чужой flip отклонён txn-compare, значение не перебито
-        first.Value.Should().BeTrue("routing соответствовал cur=shard1");
-        competing.Value.Should().BeFalse("конкурентный flip с устаревшим cur обязан не сойтись");
+        first.Value.Should().BeTrue("routing matched cur=shard1");
+        competing.Value.Should().BeFalse("a competing flip with a stale cur must not converge");
         var routing = await fixture.Gateway.GetAsync(Endpoint, MoveNames.RoutingKey(cluster, bucket), ct);
         routing.Value!.Value.Should().Be("shard2");
 
@@ -84,7 +84,7 @@ public class MoveContractTests(EtcdFixture fixture)
         // Assert — той же txn: routing переведён, статус-ключ исчез (ACTIVE)
         flipped.Value.Should().BeTrue(flipped.Error?.ToString());
         var status = await store.GetAsync(cluster, bucket, ct);
-        status.Value.Should().BeNull("flip удаляет статус-ключ атомарно с routing");
+        status.Value.Should().BeNull("the flip removes the status key atomically with routing");
 
         // Cleanup
         await fixture.Gateway.DeleteAsync(Endpoint, MoveNames.RoutingKey(cluster, bucket), prefix: false, CancellationToken.None);

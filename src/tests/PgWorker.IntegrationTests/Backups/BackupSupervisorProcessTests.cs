@@ -43,7 +43,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", prefix: false, ct);
-        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
     }
 
     private BackupSupervisorProcess BuildProcess(
@@ -62,7 +62,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
     // AAA (AC6): мусор full/<id>/ живого шарда удаляется первым проходом, journal
     // пишет supervisor/swept-full/<X>/<id>; повторный проход — no-op
     [Fact]
-    public async Task Проход_мусор_живого_шарда_удаляется_идемпотентно()
+    public async Task PassGarbageOfLiveShardRemovedIdempotently()
     {
         // Arrange — клэйм c1; объекты c1/shard1/full/A/... и full/B/...;
         // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы
@@ -85,7 +85,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
         // Assert 1 — объекты B удалены, A и wal/ живы; journal-факт swept-full
         s3.DeletedKeys.Should().Contain($"{cluster}/shard1/full/20260911120000Z/backup_manifest");
-        s3.DeletedKeys.Should().HaveCount(1, "владеемый префикс и wal/ не трогаются");
+        s3.DeletedKeys.Should().HaveCount(1, "the owned prefix and wal/ are not touched");
         s3.PrefixObjects.Should().Contain(o => o.Key == $"{cluster}/shard1/full/20260911110000Z/backup_manifest");
         var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
         journal.Value!.Value.Should().Contain("swept-full/shard1/20260911120000Z");
@@ -94,12 +94,12 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert 2 — новых удалений нет (list подтверждает пустоту — no-op)
-        s3.DeletedKeys.Should().HaveCount(1, "идемпотентность: повторный проход ничего не удаляет");
+        s3.DeletedKeys.Should().HaveCount(1, "idempotency: a repeated pass removes nothing");
     }
 
     // AAA (AC9): шард в активном restore — супервизор его не трогает
     [Fact]
-    public async Task Проход_скипает_шард_в_активном_restore()
+    public async Task PassSkipsShardInActiveRestore()
     {
         // Arrange — мусорный префикс есть, но у шарда активная (PLANNED) заявка
         var ct = TestContext.Current.CancellationToken;
@@ -118,14 +118,14 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — объекты живы (гвард владельца), журнал-фактов нет
-        s3.DeletedKeys.Should().BeEmpty("restore владеет шардом — сверка не выполняется");
+        s3.DeletedKeys.Should().BeEmpty("restore owns the shard — the sweep is not performed");
         s3.PrefixObjects.Should().ContainSingle();
     }
 
     // AAA: гварды — Enabled=false (runtime()==null) / не-Active кластер / чужой
     // клэйм: no-op либо отказ, мутаций нет (по образцу RetentionProcess-тестов)
     [Fact]
-    public async Task Гварды_Enabled_и_клэйм()
+    public async Task GuardsEnabledAndClaim()
     {
         // Arrange 1 — Enabled=false: проход не выполняется
         var ct = TestContext.Current.CancellationToken;
@@ -147,7 +147,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
                 [new NodeSpec("shard1", "shard1a", NodeState.Running)])],
             []);
         (await process.TickAsync(notActive, null, ct)).IsSuccess.Should().BeTrue();
-        s3b.DeletedKeys.Should().BeEmpty("не-Active — no-op");
+        s3b.DeletedKeys.Should().BeEmpty("non-Active — a no-op");
 
         // Arrange 3 — чужой клэйм: отказ до любых мутаций
         var s3c = new FakeBackupS3();
@@ -158,7 +158,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), TimeProvider.System);
         (await other.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeFalse(
-            "мутации без клэйма запрещены");
+            "mutations without a claim are forbidden");
         s3c.DeletedKeys.Should().BeEmpty();
     }
 }

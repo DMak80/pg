@@ -57,7 +57,7 @@ public class E2eWalStreamMasterDownScenarios
             ], ct);
             return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("оба агента до смерти мастера");
+        bothAgents.Should().BeTrue("both agents before the master dies");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
         var beforeList = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -72,8 +72,8 @@ public class E2eWalStreamMasterDownScenarios
             Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{currentMaster}");
             await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
             var (_, _, newMasterNode) = await MasterPgAsync(cluster, "shard1", ct);
-            newMasterNode.Should().NotBe(currentMaster, "после смерти мастера primary — реплика");
-            Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMasterNode}");
+            newMasterNode.Should().NotBe(currentMaster, "after the master dies the primary is a replica");
+            Console.WriteLine($"[PHASE] wal-ac4: new primary {newMasterNode}");
 
             // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
             // repair-контуром (восстановление ноды — продуктовое поведение, минуты);
@@ -86,7 +86,7 @@ public class E2eWalStreamMasterDownScenarios
             // частота ≈ строка на окно (t29 §3.9). Ассерта на результат цикла нет —
             // итог только в строке телеметрии (новый ассерт не добавляем).
             TestContext.Current.TestOutputHelper?.WriteLine(
-                "[PHASE] wal-ac4: ожидание снятия unreachable (repair-контур надзора)");
+                "[PHASE] wal-ac4: waiting for the unreachable to be lifted (the repair contour of supervision)");
             var stillUnreachable = true;
             var window = 0;
             var repaired = await E2ePhase.WaitAsync(Fx, "wal-ac4-repair", async () =>
@@ -102,9 +102,9 @@ public class E2eWalStreamMasterDownScenarios
                 await Task.Delay(TimeSpan.FromSeconds(30), ct); // 30-с окно проверки — дословно, полл не учащается
                 return false;
             }, TimeSpan.FromSeconds(600), ct,
-                progress: () => Task.FromResult($"unreachable={(stillUnreachable ? "да" : "нет")}, окно {window}"));
+                progress: () => Task.FromResult($"unreachable={(stillUnreachable ? "yes" : "no")}, window {window}"));
             TestContext.Current.TestOutputHelper?.WriteLine(
-                $"[PHASE] wal-ac4: repair-фаза завершена/снята (repaired={repaired}) — замеры ключа");
+                $"[PHASE] wal-ac4: repair phase finished/lifted (repaired={repaired}) — key measurements");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
             // цепочка непрерывна (CheckWithRestart), ключ не BROKEN
@@ -120,9 +120,9 @@ public class E2eWalStreamMasterDownScenarios
                     var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                     return listed.IsSuccess
                         ? $"objects={listed.Value.Count} (before={beforeList.Value.Count})"
-                        : "listing=ошибка";
+                        : "listing=error";
                 });
-            grew.Should().BeTrue("агент реплики продолжает доставку после смерти мастера");
+            grew.Should().BeTrue("the replica agent continues delivery after the master dies");
 
             // Чтение ключа — поллингом (etcd-транспорт может дать transient-отказ:
             // ReadAsync Failed → Value null; факт ждём, не фиксируем одноразовым чтением)
@@ -135,14 +135,14 @@ public class E2eWalStreamMasterDownScenarios
                 keyState = read.Value;
                 return true;
             }, TimeSpan.FromSeconds(30), ct);
-            keySeen.Should().BeTrue("wal-ключ обязан существовать после failover");
+            keySeen.Should().BeTrue("the wal key must exist after the failover");
             keyState!.State.Should().NotBe(
-                PgWorker.Etcd.Parsing.WalStreamStatus.Broken, "ключ не BROKEN (AC4)");
+                PgWorker.Etcd.Parsing.WalStreamStatus.Broken, "the key is not BROKEN (AC4)");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             var chain = PgWorker.Backups.WalChain.CheckWithRestart(
                 PgWorker.Backups.WalFileName.TryParse(keyState!.ChainStartSegment)!.Value,
                 list.Value!.Select(o => o.Name));
-            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка склеена через TLI");
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is stitched through the TLI");
 
             // После promote воркер пересоздаёт агентов на новых ролях: running-агент
             // новой мастер-ноды ≤ 300 c (смена источника — пересоздание).
@@ -155,7 +155,7 @@ public class E2eWalStreamMasterDownScenarios
                      "--filter", $"name=pgw-backup-wal-{cluster}-shard1-{newMasterNode}"], ct);
                 return ps.Contains("running");
             }, TimeSpan.FromSeconds(300), ct);
-            newAgent.Should().BeTrue($"агент новой мастер-ноды {newMasterNode} running");
+            newAgent.Should().BeTrue($"the agent of the new master node {newMasterNode} running");
         }
         catch (Exception ex)
         {
@@ -224,7 +224,7 @@ public class E2eWalStreamMasterDownScenarios
     private async Task<uint> PrimaryTimelineAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
         // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
@@ -311,7 +311,7 @@ public class E2eWalStreamMasterDownScenarios
                             || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("repair", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("provision ", StringComparison.OrdinalIgnoreCase)
-                            || l.Contains("эвакуа", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("evacuat", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("REBUILDING", StringComparison.OrdinalIgnoreCase))
                         .ToList();
                     hostLog += $"\n== {host.Name} OPS({opLines.Count}):\n{string.Join("\n", opLines)}" +
@@ -320,7 +320,7 @@ public class E2eWalStreamMasterDownScenarios
                 }
                 catch (Exception e)
                 {
-                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                    hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
             var agentLogs = "";
@@ -340,7 +340,7 @@ public class E2eWalStreamMasterDownScenarios
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
             await File.WriteAllTextAsync(dumpPath, dump);
-            Console.WriteLine($"[DIAG] дамп: {dumpPath}");
+            Console.WriteLine($"[DIAG] dump: {dumpPath}");
         }
         catch
         {
@@ -371,11 +371,11 @@ public class E2eWalStreamMasterDownScenarios
                 }
             }
 
-            return "<ни одна нода shard1 не отвечает /cluster>";
+            return "<no shard1 node responds on /cluster>";
         }
         catch (Exception e)
         {
-            return $"<patroni недоступен: {e.Message}>";
+            return $"<patroni unavailable: {e.Message}>";
         }
     }
 
@@ -391,16 +391,16 @@ public class E2eWalStreamMasterDownScenarios
         Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
         var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
         Fx = fx;
-        Console.WriteLine($"[PHASE] {slug}: окружение поднято за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c (вкл. Release-сборку и образы)");
+        Console.WriteLine($"[PHASE] {slug}: environment raised in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s (incl. Release build and images)");
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-ac4-provisioning",
             E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
-        Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
-            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
+        provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
+        Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -492,7 +492,7 @@ public class E2eWalStreamMasterDownScenarios
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
         var resolved = await E2ePhase.WaitAsync(Fx, "wal-ac4-master-resolved", async () =>
@@ -519,7 +519,7 @@ public class E2eWalStreamMasterDownScenarios
 
             return false;
         }, TimeSpan.FromSeconds(120), ct);
-        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
         return ($"pgw-{cluster}-{shard}-{primary}", 5432,
             primary!);
