@@ -55,7 +55,7 @@ public sealed class UpdateTopicDesiredHandler(IEtcdGateway gateway, string[] end
             return Result<KafkaTopicDesiredDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
         if (read.Json.Missing)
             return Result<KafkaTopicDesiredDto>.Failed(
-                new KafkaTopicNotFoundException(cluster, topic, "топик отсутствует в кластере"));
+                new KafkaTopicNotFoundException(cluster, topic, "topic is absent from the cluster"));
 
         // Валидация против факта (partitions — только увеличение, §3.2).
         var errors = KafkaTopicDesiredPlan.Validate(request, read.Json.Partitions);
@@ -229,7 +229,7 @@ public sealed class DeleteTopicHandler(IEtcdGateway gateway, string[] endpoints,
             return Result<KafkaTopicDeletedDto>.Failed(read.Error);
         if (read.Json is null || read.Json.Missing)
             return Result<KafkaTopicDeletedDto>.Failed(
-                new KafkaTopicNotFoundException(cluster, topic, "топик отсутствует в кластере"));
+                new KafkaTopicNotFoundException(cluster, topic, "topic is absent from the cluster"));
         if (read.Json.Desired is not null)
             return Result<KafkaTopicDeletedDto>.Failed(new KafkaDesiredPendingException(cluster, topic));
 

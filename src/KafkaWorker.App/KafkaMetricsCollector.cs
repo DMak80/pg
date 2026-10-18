@@ -31,7 +31,7 @@ public sealed class KafkaMetricsCollector(
             : collectIntervalSec;
         if (collectIntervalSec <= 0)
             logger.LogWarning(
-                "KafkaWorker:Metrics:CollectIntervalSec={Value} <= 0 — используется дефолт 30 с", collectIntervalSec);
+                "KafkaWorker:Metrics:CollectIntervalSec={Value} <= 0 — falling back to the default of 30 s", collectIntervalSec);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -46,7 +46,7 @@ public sealed class KafkaMetricsCollector(
             catch (Exception ex)
             {
                 // Исключение тика — лог warning, тик жив (метрики не роняют воркер).
-                logger.LogWarning(ex, "тик KafkaMetricsCollector упал: {Message}", ex.Message);
+                logger.LogWarning(ex, "KafkaMetricsCollector tick failed: {Message}", ex.Message);
             }
 
             await Task.Delay(TimeSpan.FromSeconds(interval), stoppingToken);
@@ -59,7 +59,7 @@ public sealed class KafkaMetricsCollector(
         var snapshots = await clustersSnapshot(ct);
         if (!snapshots.IsSuccess)
         {
-            logger.LogWarning("снапшот кластеров недоступен: {Message}", snapshots.Error!.Message);
+            logger.LogWarning("cluster snapshot unavailable: {Message}", snapshots.Error!.Message);
             return; // коллектор пропустит тик — KafkaCollectorStalled сработает по свежести
         }
 
@@ -94,7 +94,7 @@ public sealed class KafkaMetricsCollector(
         if (ok)
             _backoff.RecordSuccess(snap.Cluster);
         else
-            _backoff.RecordFailure(snap.Cluster, "сбор метрик не удался");
+            _backoff.RecordFailure(snap.Cluster, "metrics collection failed");
         return ok;
     }
 
@@ -113,7 +113,7 @@ public sealed class KafkaMetricsCollector(
             var alive = await admin.DescribeClusterAsync(ct);
             if (!alive.IsSuccess)
             {
-                logger.LogWarning("кластер {Cluster}: DescribeCluster не удался: {Message}",
+                logger.LogWarning("cluster {Cluster}: DescribeCluster failed: {Message}",
                     cluster, alive.Error!.Message);
                 return false;
             }
@@ -122,7 +122,7 @@ public sealed class KafkaMetricsCollector(
             var groups = await admin.ListGroupsAsync(ct);
             if (!groups.IsSuccess)
             {
-                logger.LogWarning("кластер {Cluster}: ListGroups не удался: {Message}", cluster, groups.Error!.Message);
+                logger.LogWarning("cluster {Cluster}: ListGroups failed: {Message}", cluster, groups.Error!.Message);
                 return false;
             }
 
@@ -131,7 +131,7 @@ public sealed class KafkaMetricsCollector(
                 var committed = await admin.ListConsumerGroupOffsetsAsync(group.Group, ct);
                 if (!committed.IsSuccess)
                 {
-                    logger.LogWarning("кластер {Cluster}: committed {Group} не удался: {Message}",
+                    logger.LogWarning("cluster {Cluster}: committed {Group} failed: {Message}",
                         cluster, group.Group, committed.Error!.Message);
                     return false;
                 }
@@ -143,7 +143,7 @@ public sealed class KafkaMetricsCollector(
                     committed.Value.Select(c => new KafkaTopicPartition(c.Topic, c.Partition)).ToList(), ct);
                 if (!watermarks.IsSuccess)
                 {
-                    logger.LogWarning("кластер {Cluster}: watermarks {Group} не удались: {Message}",
+                    logger.LogWarning("cluster {Cluster}: watermarks {Group} failed: {Message}",
                         cluster, group.Group, watermarks.Error!.Message);
                     return false;
                 }
@@ -164,7 +164,7 @@ public sealed class KafkaMetricsCollector(
             var topics = await admin.DescribeTopicsAsync(includeInternal: false, ct);
             if (!topics.IsSuccess)
             {
-                logger.LogWarning("кластер {Cluster}: describe топиков не удался: {Message}", cluster, topics.Error!.Message);
+                logger.LogWarning("cluster {Cluster}: topic describe failed: {Message}", cluster, topics.Error!.Message);
                 return false;
             }
 
@@ -184,7 +184,7 @@ public sealed class KafkaMetricsCollector(
         catch (Exception ex)
         {
             // Пассивный наблюдатель: исключение сбора — не роняет тик.
-            logger.LogWarning(ex, "кластер {Cluster}: сбор метрик упал: {Message}", cluster, ex.Message);
+            logger.LogWarning(ex, "cluster {Cluster}: metrics collection failed: {Message}", cluster, ex.Message);
             return false;
         }
     }

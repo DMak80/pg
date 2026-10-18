@@ -43,7 +43,7 @@ public sealed class AddBrokerHandler(IEtcdGateway gateway, string[] endpoints)
         var errors = new List<ValidationError>();
         if ((request.Cpu ?? KafkaLimits.DefCpu) < KafkaLimits.MinCpu
             || (request.Cpu ?? KafkaLimits.DefCpu) > KafkaLimits.MaxCpu)
-            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} ядер"));
+            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} cores"));
         if (memGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)
             errors.Add(new("memGi", $"memGi: {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
         if (diskGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)

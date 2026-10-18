@@ -38,7 +38,7 @@ public sealed class ServiceProbes(
                 last = Result.Failed(range.Error!);
             }
 
-            return last.Error ?? new ApplicationException("KafkaWorker:Etcd:Endpoints не заданы");
+            return last.Error ?? new ApplicationException("KafkaWorker:Etcd:Endpoints is not set");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -76,7 +76,7 @@ public sealed class ServiceProbes(
         catch (Exception ex)
         {
             // Catch-all (t09): непредвиденный отказ вне per-host-вызовов — структура, не бросок.
-            results["all"] = Result.Failed(new ApplicationException($"docker-проба: {ex.Message}", ex));
+            results["all"] = Result.Failed(new ApplicationException($"docker probe: {ex.Message}", ex));
         }
 
         return results;

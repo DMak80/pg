@@ -59,12 +59,12 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);
 // ключ доступа /kafkaworker/api/<id> без URL бессмысленен (arch/16 §1.1).
 builder.Services.AddOptions<KafkaWorkerOptions>()
-    .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints не заданы")
+    .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints is not set")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
-        "KafkaWorker:Api:AdvertiseUrl не задан (env KFW_API_ADVERTISE_URL)")
+        "KafkaWorker:Api:AdvertiseUrl is not set (env KFW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/16 §1.1)")
+        "AdvertiseUrl must be https:// (mTLS-only API, arch/16 §1.1)")
     .ValidateOnStart();
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/kafkaworker
@@ -187,7 +187,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
-            throw new ApplicationException("KafkaWorker:Docker:Mode=Swarm требует KafkaWorker:Docker:SwarmManager");
+            throw new ApplicationException("KafkaWorker:Docker:Mode=Swarm requires KafkaWorker:Docker:SwarmManager");
         return new SwarmClusterDriver(docker.SwarmManager, factory);
     }
 
@@ -195,7 +195,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .Select(h => new HostEndpoint(h.Name, h.Endpoint))
         .ToList();
     if (hosts.Count == 0)
-        throw new ApplicationException("KafkaWorker:Docker:Mode=Plain требует непустую таблицу KafkaWorker:Docker:Hosts");
+        throw new ApplicationException("KafkaWorker:Docker:Mode=Plain requires a non-empty KafkaWorker:Docker:Hosts table");
     return new PlainClusterDriver(hosts, factory);
 });
 
@@ -437,9 +437,9 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/16 §1.1)");
+        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/16 §1.1)");
 if (apiTls.Source is { } certSource)
-    app.Logger.LogInformation("KafkaWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+    app.Logger.LogInformation("KafkaWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("KafkaWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
@@ -483,7 +483,7 @@ static async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersA
         return KafkaSnapshotParser.Parse(range.Value);
     }
 
-    return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+    return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
 }
 
 // WAF-тесты (KafkaWorker.IntegrationTests/Api): точка входа как public partial.

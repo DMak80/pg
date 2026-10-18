@@ -20,19 +20,19 @@ public sealed class KafkaMetricsState
                 new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                 new KeyValuePair<string, object?>("group", kv.Key.Group),
                 new KeyValuePair<string, object?>("topic", kv.Key.Topic)))),
-            description: "Суммарный consumer-lag по группе и топику (arch/18 §2.3)");
+            description: "Total consumer lag per group and topic (arch/18 §2.3)");
 
         meter.CreateObservableGauge(
             "kafka.under_replicated_partitions",
             () => Measure(_usr.Select(kv => new Measurement<int>(kv.Value,
                 new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                 new KeyValuePair<string, object?>("topic", kv.Key.Topic)))),
-            description: "Число недореплицированных партиций топика");
+            description: "Number of under-replicated partitions of a topic");
 
         meter.CreateObservableGauge(
             "kafka.collector.last_success_timestamp_seconds",
             () => Measure(new[] { ReadLastSuccess() }.OfType<Measurement<long>>()),
-            unit: "s", description: "Unix-время последнего успешного сбора коллектора");
+            unit: "s", description: "Unix time of the last successful collector run");
     }
 
     // Обновление стейта тика: лаги/USR кластера (предыдущие записи кластера

@@ -33,7 +33,7 @@ internal sealed class KeepaliveLoop(
             Working = true;
             // Продление lease'ов + instance-ключ — фоновый контур ClaimStore (задача 12).
             await claims.StartAsync(stoppingToken);
-            logger.LogInformation("keepalive-контур запущен: instance {InstanceId}", claims.InstanceId);
+            logger.LogInformation("keepalive loop started: instance {InstanceId}", claims.InstanceId);
 
             while (!stoppingToken.IsCancellationRequested)
             {

@@ -50,22 +50,22 @@ public static class TlsEndpoints
                 break;
             case ManagedCertStatus.Broken:
                 throw new ApplicationException(
-                    $"KafkaWorker:Api:Tls: ключ /workers/api_tls/kafkaworker бит ({managedCert.Error}) — "
-                    + "исправьте из панели (PUT api-cert) или удалите (DELETE api-cert)");
+                    $"KafkaWorker:Api:Tls: key /workers/api_tls/kafkaworker is broken ({managedCert.Error}) — "
+                    + "fix it from the panel (PUT api-cert) or delete it (DELETE api-cert)");
             default:
                 serverCert = LoadServerCertificate(tls);
                 source = "env";
                 if (managedCert?.Status == ManagedCertStatus.Unreachable)
-                    warning = $"etcd недоступен ({managedCert.Error}) — стартую на env-серте";
+                    warning = $"etcd is unavailable ({managedCert.Error}) — starting with the env certificate";
                 break;
         }
 
         if (serverCert is null)
             throw new ApplicationException(
-                "KafkaWorker:Api:Tls: серверный серт/ключ не заданы (KFW_API_TLS_CERT/KEY или *_PATH; etcd-ключ /workers/api_tls/kafkaworker; arch/16 §1.1)");
+                "KafkaWorker:Api:Tls: server certificate/key is not set (KFW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/kafkaworker; arch/16 §1.1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
-            "KafkaWorker:Api:Tls: ClientCA не задан (KFW_API_TLS_CLIENT_CA[_PATH])");
+            "KafkaWorker:Api:Tls: ClientCA is not set (KFW_API_TLS_CLIENT_CA[_PATH])");
 
         // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только mTLS.
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(

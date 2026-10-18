@@ -59,7 +59,7 @@ internal sealed class ReconcileLoop(
                     metrics.LoopTick("reconcile", ok: false);
                     // Тик не прошёл (etcd недоступен и т.п.): лог + короткая задержка.
                     StatusError = tick;
-                    logger.LogError(tick.Error, "тик ReconcileLoop не прошёл: {Message}", tick.Error!.Message);
+                    logger.LogError(tick.Error, "ReconcileLoop tick failed: {Message}", tick.Error!.Message);
                     await Task.Delay(
                         TimeSpan.FromMilliseconds(options.CurrentValue.Loops.ErrorDelayMs), stoppingToken);
                 }
@@ -100,7 +100,7 @@ internal sealed class ReconcileLoop(
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
-            return Result.Failed(new ApplicationException("KafkaWorker:Etcd:Endpoints не заданы"));
+            return Result.Failed(new ApplicationException("KafkaWorker:Etcd:Endpoints is not set"));
 
         // Единственная точка KafkaWorker: ожидания расползаются по тикам
         // (один DescribeCluster RequestTimeout=10 с за тик) — спека §4.6.
@@ -116,7 +116,7 @@ internal sealed class ReconcileLoop(
         var parsed = KafkaSnapshotParser.Parse(clustersKvs.Value);
         foreach (var cluster in parsed.Value)
         foreach (var error in cluster.ParseErrors)
-            logger.LogWarning("пропущен битый ключ: {Error}", error);
+            logger.LogWarning("skipped a broken key: {Error}", error);
 
         // Кластеры исчезли из снапшота — backoff-состояние не копится (t11).
         backoff.ForgetMissing(parsed.Value.Select(c => c.Cluster).ToHashSet());
@@ -157,7 +157,7 @@ internal sealed class ReconcileLoop(
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
             {
-                logger.LogError(claimed.Error, "клэйм {Cluster} не удался: {Message}", cluster, claimed.Error!.Message);
+                logger.LogError(claimed.Error, "claim {Cluster} failed: {Message}", cluster, claimed.Error!.Message);
                 return;
             }
 
@@ -192,7 +192,7 @@ internal sealed class ReconcileLoop(
         {
             // Страховка контура кластера: даже исключение вне вызова процесса
             // не должно уходить в Task.WhenAll → StopHost.
-            logger.LogError(ex, "кластер {Cluster}: необработанное исключение (тик продолжается)",
+            logger.LogError(ex, "cluster {Cluster}: unhandled exception (tick continues)",
                 snap.Cluster);
         }
         finally
@@ -212,7 +212,7 @@ internal sealed class ReconcileLoop(
             if (outcome.IsSuccess)
                 logger.LogInformation("{Op} {Cluster}: ok", op, cluster);
             else
-                logger.LogError(outcome.Error, "{Op} {Cluster} не прошёл: {Message}", op, cluster, outcome.Error!.Message);
+                logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -227,7 +227,7 @@ internal sealed class ReconcileLoop(
     // Крэш процесса (P7-след): journal.last_error — оператору видно из etcd.
     private async Task LogCrashAsync(string cluster, string op, Exception ex)
     {
-        logger.LogError(ex, "процесс {Op} {Cluster} бросил исключение: {Message}", op, cluster, ex.Message);
+        logger.LogError(ex, "process {Op} {Cluster} threw an exception: {Message}", op, cluster, ex.Message);
         try
         {
             // CancellationToken.None: запись должна доехать даже при остановке host'а.
@@ -236,7 +236,7 @@ internal sealed class ReconcileLoop(
         }
         catch (Exception journalEx)
         {
-            logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
+            logger.LogWarning(journalEx, "work journal for {Cluster} was not written after the exception", cluster);
         }
     }
 
@@ -252,6 +252,6 @@ internal sealed class ReconcileLoop(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }
