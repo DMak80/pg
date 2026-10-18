@@ -70,12 +70,12 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
 
             var tick = await rig.Provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
         (await fixture.SnapshotAsync(cluster))!.Config.State.Should().BeNull(
-            $"кластер {cluster} не поднялся за {budgetSec} с");
+            $"cluster {cluster} did not come up within {budgetSec} s");
     }
 
     // Доведение до RUNNING (после UpAsync брокеры уже RUNNING по K4, но
@@ -91,11 +91,11 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
                 return;
 
             var tick = await rig.Add.RunAsync(snap, ct);
-            tick.IsSuccess.Should().BeTrue($"тик add не должен падать: {tick.Error?.Message}");
+            tick.IsSuccess.Should().BeTrue($"add tick must not fail: {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
-        Assert.Fail("брокеры не достигли RUNNING в бюджет");
+        Assert.Fail("brokers did not reach RUNNING within budget");
     }
 
     [Fact]
@@ -145,9 +145,9 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
         }
 
         inspected.Value.Should().Be(new NodeLimits(2_000_000_000L, 2L << 30),
-            "лимиты контейнера обязаны сойтись к декларации");
+            "container limits must converge to the declaration");
         (await fixture.GetAsync($"/kafkaworker/regens/{cluster}")).Should().BeNull(
-            "прогресс-ключ удаляется по сходимости");
+            "progress key removed on convergence");
 
         // Том пережил пересоздание: топик жив в метаданных кластера
         // (производственный produce/consume-цикл — вне объёма; spec §7).

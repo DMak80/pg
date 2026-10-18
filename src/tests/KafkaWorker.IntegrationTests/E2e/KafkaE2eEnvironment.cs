@@ -100,7 +100,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
     public static async Task<KafkaE2eEnvironment> StartAsync(string slug)
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
-            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+            throw new InvalidOperationException("E2E requires PGW_TEST_DOCKER=1 (otherwise Skip in the test)");
 
         var runId = Guid.NewGuid().ToString("N");
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
@@ -180,7 +180,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
                     etcd, worker1, worker2,
                     $"http://localhost:{etcdPort}", artifactsDir, api1Port, api2Port);
                 await File.WriteAllTextAsync(Path.Combine(artifactsDir, "README-cleanup.txt"),
-                    "# Зачистка окружения прогона (own-only, по тегу/идентификатору):\n"
+                    "# Run-environment cleanup (own-only, by tag/identifier):\n"
                     + $"docker rm -f kfw-ew1-{runId} kfw-ew2-{runId} kfw-ee-{runId}\n"
                     + $"docker ps -aq --filter name={environment.ClusterTag} | xargs -r docker rm -f\n"
                     + $"docker volume ls -q --filter name={environment.ClusterTag} | xargs -r docker volume rm -f\n"
@@ -217,14 +217,14 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
             return;
         var root = FindRepoRoot();
-        Console.WriteLine($"[PHASE] build {WorkerImage}: старт (продовый Dockerfile, бюджет 120 c)…");
+        Console.WriteLine($"[PHASE] build {WorkerImage}: start (prod Dockerfile, budget 120 s)…");
         var sw = Stopwatch.StartNew();
         await RunProcessAsync("docker",
             ["build", "-f", "docker/KafkaWorker.Dockerfile", "-t", WorkerImage, "."],
             CancellationToken.None, TimeSpan.FromSeconds(120),
             workingDirectory: root,
             logFile: Path.Combine(artifactsDir, $"process-build-{runId[..8]}.log"));
-        Console.WriteLine($"[PHASE] build {WorkerImage}: {sw.Elapsed.TotalSeconds:F0} c");
+        Console.WriteLine($"[PHASE] build {WorkerImage}: {sw.Elapsed.TotalSeconds:F0} s");
     }
 
     private static string FindRepoRoot()
@@ -233,7 +233,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "KafkaWorker.Dockerfile")))
             dir = dir.Parent;
         return dir?.FullName
-            ?? throw new InvalidOperationException("корень репо (docker/KafkaWorker.Dockerfile) не найден");
+            ?? throw new InvalidOperationException("repo root (docker/KafkaWorker.Dockerfile) not found");
     }
 
     // ── Хелперы docker-CLI (канон RunProcessAsync: таймаут убивает дерево,
@@ -272,7 +272,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         if (workingDirectory is not null)
             psi.WorkingDirectory = workingDirectory;
         using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"не удалось запустить {file}");
+            ?? throw new ApplicationException($"failed to start {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -315,7 +315,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
             if (logFile is not null)
                 await File.AppendAllTextAsync(logFile, drained);
             throw new ApplicationException(
-                $"{file} {string.Join(' ', args)} не завершился за {timeout.TotalSeconds:0} c — убит; хвост:\n{drained}");
+                $"{file} {string.Join(' ', args)} did not finish within {timeout.TotalSeconds:0} s — killed; tail:\n{drained}");
         }
     }
 
@@ -412,13 +412,13 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         // Ассерт чистоты: ни контейнера, ни тома, ни сети с идентификатором
         // прогона (runId/тег содержится во всех именах серии).
         (await ListContainerNamesAsync(ClusterTag, all: true))
-            .Should().BeEmpty($"teardown убрал все контейнеры тега {ClusterTag}");
+            .Should().BeEmpty($"teardown removed all containers of tag {ClusterTag}");
         (await RunDockerOrNullAsync(
                 ["volume", "ls", "--format", "{{.Name}}", "--filter", $"name={ClusterTag}"]))
-            .Trim().Should().BeEmpty($"после teardown не осталось томов тега {ClusterTag}");
+            .Trim().Should().BeEmpty($"no volumes of tag {ClusterTag} left after teardown");
         (await RunDockerOrNullAsync(
                 ["network", "ls", "--format", "{{.Name}}", "--filter", $"name={ClusterTag}"]))
-            .Trim().Should().BeEmpty($"после teardown не осталось сетей тега {ClusterTag}");
+            .Trim().Should().BeEmpty($"no networks of tag {ClusterTag} left after teardown");
     }
 
     // docker-вызов телеметрии/чистки: ошибки не всплывают (прогон завершён,

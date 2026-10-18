@@ -61,7 +61,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         }
 
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/config")).Should().NotContain("state",
-            "кластер поднялся — lifecycle-проверки ниже бессмысленны без него");
+            "cluster is up — the lifecycle checks below are meaningless without it");
         return sync;
     }
 
@@ -129,12 +129,12 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             described.Partitions.Should().Be(2);
             described.Retention.Should().Be("86400000");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}/desired.create"))
-                .Should().BeNull("заявка исполнена — воркер снял ключ");
+                .Should().BeNull("ticket executed — the worker removed the key");
 
             // Повторный тик: автосинк кладёт факт-ключ (partitions 2, без заявок).
             await sync.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
             var raw = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
-            raw.Should().NotBeNull("факт-ключ кладёт следующий автосинк-тик");
+            raw.Should().NotBeNull("the next autosync tick writes the fact key");
             using var doc = JsonDocument.Parse(raw!);
             doc.RootElement.GetProperty("partitions").GetInt32().Should().Be(2);
             doc.RootElement.GetProperty("replication_factor").GetInt32().Should().Be(1);
@@ -184,7 +184,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             result.IsSuccess.Should().BeTrue();
             (await TopicExistsAsync(fixture, cluster, topic, ct)).Should().BeFalse();
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}"))
-                .Should().BeNull("факт-ключ снесён одной txn с заявкой");
+                .Should().BeNull("the fact key removed by a single txn with the ticket");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}/desired.delete"))
                 .Should().BeNull();
         }
@@ -228,9 +228,9 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             // Assert: топик НЕ пересоздан (параметры исходные), заявка снята.
             result.IsSuccess.Should().BeTrue();
             var described = await DescribeTopicAsync(fixture, cluster, topic, ct);
-            described.Partitions.Should().Be(3, "параметры заявки к живому топику не применяются");
+            described.Partitions.Should().Be(3, "ticket parameters are not applied to a live topic");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}/desired.create"))
-                .Should().BeNull("заявка снята как исполненная внешне");
+                .Should().BeNull("ticket removed as externally executed");
         }
         finally
         {
@@ -279,7 +279,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             // Assert: успех (NotFound = исполнено), заявка и факт-ключ удалены.
             result.IsSuccess.Should().BeTrue();
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}"))
-                .Should().BeNull("missing-ключ снесён вместе с заявкой");
+                .Should().BeNull("the missing key removed together with the ticket");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}/desired.delete"))
                 .Should().BeNull();
         }

@@ -74,7 +74,7 @@ internal static class FreePortWindow
         }
 
         throw new InvalidOperationException(
-            $"нет свободного окна из {Size} хост-портов в диапазоне {SearchFrom}–{SearchTo}");
+            $"no free window of {Size} host ports in the range {SearchFrom}–{SearchTo}");
     }
 
     // Зонд: все порты окна должны биндиться одновременно (listen на всех

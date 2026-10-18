@@ -83,7 +83,7 @@ public class AdminRotationTests(KafkaClusterFixture fixture)
         {
             var snap = await fixture.SnapshotAsync(cluster);
             var result = await rotator.RunAsync(snap!, ct);
-            result.IsSuccess.Should().BeTrue($"тик ротации не должен падать: {result.Error?.Message}");
+            result.IsSuccess.Should().BeTrue($"rotation tick must not fail: {result.Error?.Message}");
 
             ticks++;
             await AssertAppProduceConsumeAsync(cluster, topic, appPassword!, ct);
@@ -97,7 +97,7 @@ public class AdminRotationTests(KafkaClusterFixture fixture)
 
         // Assert 1: admin_password изменён; заявка удалена; app-пароль не тронут.
         var adminPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password");
-        adminPassword.Should().NotBe(oldAdminPassword, "фаза B обязана заменить admin_password");
+        adminPassword.Should().NotBe(oldAdminPassword, "phase B must replace admin_password");
         adminPassword.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
         (await fixture.GetAsync($"/kafkaworker/admin_rotations/{cluster}")).Should().BeNull();
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password")).Should().Be(appPassword);
@@ -126,7 +126,7 @@ public class AdminRotationTests(KafkaClusterFixture fixture)
         {
             // GetMetadata синхронный: SASL-отказ ожидаем как KafkaException.
             var act = () => staleAdmin.GetMetadata(TimeSpan.FromSeconds(15));
-            act.Should().Throw<KafkaException>("старый admin-кред отвергнут после фазы C")
+            act.Should().Throw<KafkaException>("the old admin credential is rejected after phase C")
                 .Which.Error.IsError.Should().BeTrue();
         }
 
@@ -189,6 +189,6 @@ public class AdminRotationTests(KafkaClusterFixture fixture)
         }
 
         throw new ApplicationException(
-            $"точка непрерывности не прошла за бюджет; errors={string.Join("|", clientErrors)}");
+            $"continuity point did not pass within budget; errors={string.Join("|", clientErrors)}");
     }
 }

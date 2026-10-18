@@ -148,7 +148,7 @@ public class WorkerApiCertStartupTests(KafkaApiFixture fx)
     public void ConfigureMtls_ManagedBroken_FailFast()
     {
         // Arrange: ключ бит — явное намерение оператора, тихий fallback запрещён
-        var read = new ManagedCertRead(ManagedCertStatus.Broken, null, null, "битый JSON");
+        var read = new ManagedCertRead(ManagedCertStatus.Broken, null, null, "broken JSON");
         var builder = WebApplication.CreateBuilder();
         builder.Configuration["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "false";
 
@@ -167,7 +167,7 @@ public class WorkerApiCertStartupTests(KafkaApiFixture fx)
         builder.Configuration["KafkaWorker:Api:Tls:ServerKeyPem"] = keyPem;
         builder.Configuration["KafkaWorker:Api:Tls:ClientCaPem"] = caPem;
         builder.Configuration["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "false";
-        var read = new ManagedCertRead(ManagedCertStatus.Unreachable, null, null, "etcd недоступен");
+        var read = new ManagedCertRead(ManagedCertStatus.Unreachable, null, null, "etcd unreachable");
 
         // Act
         var setup = TlsEndpoints.ConfigureMtls(builder, 8080, read);

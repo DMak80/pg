@@ -40,53 +40,53 @@ public class PortAllocHealingTests(KafkaClusterFixture fixture)
 
             var tick = await provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
         var supervisor = await fixture.SupervisorRigAsync(cluster);
         var endpointsBefore = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
-        endpointsBefore.Should().NotBeNullOrEmpty("кластер поднят provisioning'ом");
+        endpointsBefore.Should().NotBeNullOrEmpty("cluster raised by provisioning");
 
         // Act 1 (ветка 2): утеря журнала при живых контейнерах.
         await fixture.DelAsync($"/kafkaworker/portalloc/{cluster}");
         var snap1 = await fixture.SnapshotAsync(cluster);
         var tick1 = await supervisor.RunAsync(snap1!, ct);
-        tick1.IsSuccess.Should().BeTrue($"ветка 2 (реконструкция) не должна падать: {tick1.Error?.Message}");
+        tick1.IsSuccess.Should().BeTrue($"branch 2 (reconstruction) must not fail: {tick1.Error?.Message}");
 
         // Assert 1: portalloc восстановлен, порты прежние, endpoints не менялся,
         // контейнер остался тем же объектом и отвечает на exec (пересоздания нет).
         var portAlloc = await fixture.GetAsync($"/kafkaworker/portalloc/{cluster}");
-        portAlloc.Should().NotBeNull("реконструкция из inspect (ветка 2)");
+        portAlloc.Should().NotBeNull("reconstruction from inspect (branch 2)");
         portAlloc.Should().ContainAny(endpointsBefore!.Split(',').Select(p => p[(p.LastIndexOf(':') + 1)..]).ToArray(),
-            "прежние порты сохранены (advertise стабилен)");
+            "previous ports preserved (advertise stable)");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints")).Should().Be(endpointsBefore);
         var objectsAfterBranch2 = await fixture.Driver.ListNodeObjectsAsync(cluster, ct);
         objectsAfterBranch2.Value.Should().Contain($"kfw-{cluster}-broker1");
         (await fixture.Driver.ExecNodeAsync(cluster, "broker1", ["true"], ct))
-            .IsSuccess.Should().BeTrue("контейнер жив (не пересоздавался)");
+            .IsSuccess.Should().BeTrue("container alive (was not recreated)");
         var admin2 = fixture.AdminFactory.Create(endpointsBefore, "app",
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password"))!,
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem")));
-        (await admin2.DescribeClusterAsync(ct)).IsSuccess.Should().BeTrue("кластер жив");
+        (await admin2.DescribeClusterAsync(ct)).IsSuccess.Should().BeTrue("cluster alive");
 
         // Act 2 (ветка 3): снос контейнеров + повторная утеря журнала.
         await fixture.DelAsync($"/kafkaworker/portalloc/{cluster}");
         await fixture.RemoveBrokerContainersAsync(cluster);
         var snap2 = await fixture.SnapshotAsync(cluster);
         var tick2 = await supervisor.RunAsync(snap2!, ct);
-        tick2.IsSuccess.Should().BeTrue($"ветка 3 (реаллокация) не должна падать: {tick2.Error?.Message}");
+        tick2.IsSuccess.Should().BeTrue($"branch 3 (reallocation) must not fail: {tick2.Error?.Message}");
 
         // Assert 2: ветка 3 исполнилась (Recreated=true → supervisor пишет
         // PROVISIONING), portalloc перезаписан, контейнер поднят. Порты МОГУТ
         // совпасть с прежними — старый порт свободен, аллокатор берёт первый
         // свободный (S7-реаллокация не обязана менять адрес).
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker1/state"))
-            .Should().Be("PROVISIONING", "ветка 3 пересоздала контейнер (Recreated=true)");
+            .Should().Be("PROVISIONING", "branch 3 recreated the container (Recreated=true)");
         var portAlloc2 = await fixture.GetAsync($"/kafkaworker/portalloc/{cluster}");
-        portAlloc2.Should().NotBeNull("portalloc перезаписан аллокацией");
+        portAlloc2.Should().NotBeNull("portalloc overwritten by the allocation");
         var endpointsAfter = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
-        endpointsAfter.Should().NotBeNullOrEmpty("endpoints RMW-обновлён (клиенты перечитают тиком)");
+        endpointsAfter.Should().NotBeNullOrEmpty("endpoints RMW-updated (clients reread it on a tick)");
 
         // Готовность — по ДВУМ фактам (ревью F9): DescribeCluster отвечает И
         // воркер довёл state до RUNNING (поллинг тиков надзора + пробы,
@@ -97,7 +97,7 @@ public class PortAllocHealingTests(KafkaClusterFixture fixture)
         {
             var snap = await fixture.SnapshotAsync(cluster);
             var tick = await supervisor.RunAsync(snap!, ct);
-            tick.IsSuccess.Should().BeTrue($"тик надзора не должен падать: {tick.Error?.Message}");
+            tick.IsSuccess.Should().BeTrue($"supervision tick must not fail: {tick.Error?.Message}");
 
             var view = await fixture.AdminFactory.Create(endpointsAfter!, "app",
                 (await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password"))!,
@@ -112,6 +112,6 @@ public class PortAllocHealingTests(KafkaClusterFixture fixture)
             await Task.Delay(3000, ct);
         }
 
-        ready.Should().BeTrue("кластер поднялся воркером после утери portalloc: DescribeCluster жив + state=RUNNING (ветка 3)");
+        ready.Should().BeTrue("cluster raised by the worker after the portalloc loss: DescribeCluster alive + state=RUNNING (branch 3)");
     }
 }

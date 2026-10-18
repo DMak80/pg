@@ -25,7 +25,7 @@ public class KafkaE2eTakeoverTests
         var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
         if (!enabled)
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker-E2E skipped");
             return;
         }
 
@@ -48,7 +48,7 @@ public class KafkaE2eTakeoverTests
                     var instances = (await fx.RangeAsync("/kafkaworker/instances/", ct)).Count;
                     return $"api={api}, instances={instances}";
                 });
-            bothUp.Should().BeTrue("оба инстанса обязаны опубликовать дискавери-ключи за 100 с");
+            bothUp.Should().BeTrue("both instances must publish discovery keys within 100 s");
 
             // A2: сид кластера в стиле панели (копия формата
             // KafkaClusterFixture.SeedClusterAsync): config NOT_INITIALIZED +
@@ -77,25 +77,25 @@ public class KafkaE2eTakeoverTests
                     var work = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
                     var claim = await fx.GetOrNullAsync($"/kafkaworker/claims/{cluster}", ct) is not null;
                     var alloc = await fx.GetOrNullAsync($"/kafkaworker/portalloc/{cluster}", ct) is not null;
-                    return $"work={Trunc(work ?? "нет")}, claim={claim}, portalloc={alloc}";
+                    return $"work={Trunc(work ?? "none")}, claim={claim}, portalloc={alloc}";
                 });
-            midProvision.Should().BeTrue("якорь обязан поймать окно K3..K5 (брокер1 создан, state жив, клэйм жив) за 120 с");
+            midProvision.Should().BeTrue("the anchor must catch the K3..K5 window (broker1 created, state alive, claim alive) within 120 s");
 
             // A4: резолв ДЕРЖАТЕЛЯ по etcd-фактам и kill (одномоментно).
             var claimJson = await fx.GetOrNullAsync($"/kafkaworker/claims/{cluster}", ct);
-            claimJson.Should().NotBeNull("клэйм существует непосредственно перед kill (ассерт A4)");
+            claimJson.Should().NotBeNull("the claim exists immediately before the kill (A4 assert)");
             string holderInstance;
             using (var doc = JsonDocument.Parse(claimJson!))
                 holderInstance = doc.RootElement.GetProperty("instance").GetString()!;
-            holderInstance.Should().NotBeNullOrEmpty("claims/{C}.instance обязан быть непустым");
+            holderInstance.Should().NotBeNullOrEmpty("claims/{C}.instance must be non-empty");
 
             var holderUrl = await fx.GetOrNullAsync($"/kafkaworker/api/{holderInstance}", ct);
-            holderUrl.Should().NotBeNull($"api-ключ держателя {holderInstance} обязан существовать (общий lease с instance-ключом)");
+            holderUrl.Should().NotBeNull($"holder api key {holderInstance} must exist (shared lease with the instance key)");
             var holderPort = new Uri(JsonDocument.Parse(holderUrl!).RootElement.GetProperty("url").GetString()!).Port;
 
             var matched = new[] { fx.Api1Port, fx.Api2Port }.Count(p => p == holderPort);
-            matched.Should().Be(1, $"порт держателя {holderPort} обязан совпасть ровно с одним известным api-портом "
-                + $"({fx.Api1Port}/{fx.Api2Port}); claims={claimJson}, api-ключи={await DumpApiKeysAsync(fx, ct)}");
+            matched.Should().Be(1, $"holder port {holderPort} must match exactly one known api port "
+                + $"({fx.Api1Port}/{fx.Api2Port}); claims={claimJson}, api keys={await DumpApiKeysAsync(fx, ct)}");
 
             var holderName = holderPort == fx.Api1Port ? fx.Worker1Name : fx.Worker2Name;
             var survivorName = holderPort == fx.Api1Port ? fx.Worker2Name : fx.Worker1Name;
@@ -117,39 +117,39 @@ public class KafkaE2eTakeoverTests
                 progress: async () =>
                 {
                     var config = await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/config", ct);
-                    var configState = (config ?? "нет").Contains("state") ? "жива" : "нет";
+                    var configState = (config ?? "none").Contains("state") ? "alive" : "none";
                     var work = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
                     var api = (await fx.RangeAsync("/kafkaworker/api/", ct)).Count;
                     var instances = (await fx.RangeAsync("/kafkaworker/instances/", ct)).Count;
-                    return $"state={configState}, work={Trunc(work ?? "нет")}, api={api}, instances={instances}";
+                    return $"state={configState}, work={Trunc(work ?? "none")}, api={api}, instances={instances}";
                 });
             finished.Should().BeTrue(
-                $"выживший обязан доиграть provisioning до done; work={await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct)}");
+                $"the survivor must finish provisioning to done; work={await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct)}");
 
             // I2: операция доиграна ВЫЖИВШИМ до терминальной фазы: config без
             // state, endpoints записан, brokers RUNNING, work.instance=survivor.
             var configAfter = await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/config", ct);
-            configAfter.Should().NotBeNull("config кластера существует после provisioning");
-            configAfter.Should().NotContain("state", "K5 CommitConfig убирает state из config (I2)");
+            configAfter.Should().NotBeNull("cluster config exists after provisioning");
+            configAfter.Should().NotContain("state", "K5 CommitConfig removes state from the config (I2)");
             (await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/endpoints", ct))
-                .Should().NotBeNullOrEmpty("endpoints записаны K5 (I2)");
+                .Should().NotBeNullOrEmpty("endpoints written by K5 (I2)");
             for (var k = 1; k <= 3; k++)
                 (await fx.GetOrNullAsync($"/kafka/clusters/{cluster}/brokers/broker{k}/state", ct))
-                    .Should().Be("RUNNING", $"брокер{k} RUNNING после доигрывания (I2)");
+                    .Should().Be("RUNNING", $"broker{k} RUNNING after completion (I2)");
 
             // I1: takeover клэйма — ключи мертвеца погасли, жив ровно один
             // api-ключ и один instance-ключ; клэйм держит survivor.
             var apiKeys = await fx.RangeAsync("/kafkaworker/api/", ct);
-            apiKeys.Should().HaveCount(1, "после kill держателя жив ровно один api-ключ (lease погас)");
+            apiKeys.Should().HaveCount(1, "after the holder kill exactly one api key is alive (its lease expired)");
             (await fx.RangeAsync("/kafkaworker/instances/", ct))
-                .Should().HaveCount(1, "instance-ключ держателя погас вместе с lease");
+                .Should().HaveCount(1, "the holder instance key expired together with the lease");
             var survivorId = apiKeys[0].Key.Split('/')[^1];
 
             var claimAfter = await fx.GetOrNullAsync($"/kafkaworker/claims/{cluster}", ct);
-            claimAfter.Should().NotBeNull("клэйм живого кластера обязан существовать после takeover");
+            claimAfter.Should().NotBeNull("a claim of the live cluster must exist after takeover");
             using (var doc = JsonDocument.Parse(claimAfter!))
                 doc.RootElement.GetProperty("instance").GetString().Should().Be(survivorId,
-                    "клэйм кластера держит выживший инстанс — надзор мигрировал (I1)");
+                    "the cluster claim is held by the survivor instance — supervision migrated (I1)");
 
             var workJson = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
             using (var doc = JsonDocument.Parse(workJson!))
@@ -157,18 +157,18 @@ public class KafkaE2eTakeoverTests
                 doc.RootElement.GetProperty("op").GetString().Should().Be("provision");
                 doc.RootElement.GetProperty("phase").GetString().Should().Be("done");
                 doc.RootElement.GetProperty("instance").GetString().Should().Be(survivorId,
-                    "фазы доигрывает instance-ид из клэйма — выживший (I2)");
+                    "phases are completed by the instance id from the claim — the survivor (I2)");
             }
 
             // I3: нет дублей — контейнеров брокеров ровно 3 (вкл. stopped).
             var brokers = await fx.ListContainerNamesAsync($"kfw-{cluster}-broker", all: true);
-            brokers.Should().HaveCount(3, "контейнеров kfw-{C}-broker* ровно 3 — дублей после takeover нет (I3)");
+            brokers.Should().HaveCount(3, "exactly 3 kfw-{C}-broker* containers — no duplicates after takeover (I3)");
 
             // I4: контроль-плейн цел — portalloc жив и содержит broker1..3.
             var portalloc = await fx.GetOrNullAsync($"/kafkaworker/portalloc/{cluster}", ct);
-            portalloc.Should().NotBeNull("portalloc кластера цел после takeover (I4)");
+            portalloc.Should().NotBeNull("cluster portalloc intact after takeover (I4)");
             portalloc.Should().Contain("broker1").And.Contain("broker2").And.Contain("broker3",
-                "portalloc закрепляет все 3 брокера (I4)");
+                "portalloc pins all 3 brokers (I4)");
 
             // I5: датаплейн жив — admin-клиент из etcd-дискавери (паттерн
             // KafkaClusterFixture.DiscoveryAdminBuilderAsync: endpoints,
@@ -194,7 +194,7 @@ public class KafkaE2eTakeoverTests
             using (var admin = new AdminClientBuilder(adminConfig).Build())
             {
                 var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
-                metadata.Brokers.Should().HaveCount(3, "датаплейн жив: admin-клиент из дискавери видит 3 брокеров (I5)");
+                metadata.Brokers.Should().HaveCount(3, "data plane alive: the discovery-built admin client sees 3 brokers (I5)");
             }
 
             // A6: финальный демонтаж ВЫЖИВШИМ: config.state=TO_REMOVE (стиль
@@ -225,13 +225,13 @@ public class KafkaE2eTakeoverTests
                     var work = await fx.GetOrNullAsync($"/kafkaworker/work/{cluster}", ct);
                     var alloc = await fx.GetOrNullAsync($"/kafkaworker/portalloc/{cluster}", ct) is not null;
                     var domain = (await fx.RangeAsync($"/kafka/clusters/{cluster}/", ct)).Count;
-                    return $"work={Trunc(work ?? "нет")}, portalloc={alloc}, domain-ключи={domain}";
+                    return $"work={Trunc(work ?? "none")}, portalloc={alloc}, domain keys={domain}";
                 });
-            cleaned.Should().BeTrue("выживший обязан штатно демонтировать кластер за 60 с (I6)");
+            cleaned.Should().BeTrue("the survivor must decommission the cluster cleanly within 60 s (I6)");
 
             // A7: teardown + ассерт чистоты — в DisposeAsync окружения (I7);
             // survivor-name здесь только для читаемости журнала.
-            Console.WriteLine($"[PHASE] ktake-done: holder={holderName} убит, survivor={survivorName} доиграл");
+            Console.WriteLine($"[PHASE] ktake-done: holder={holderName} killed, survivor={survivorName} finished");
         }
         catch
         {

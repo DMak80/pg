@@ -55,6 +55,6 @@ public sealed class MetricsTests(KafkaMetricsFixture fx)
             .ToList();
         matches.Should().ContainSingle(
             l => l.Contains("loop=\"reconcile\"") && l.Contains("otel_scope_name=\"KafkaWorker\""),
-            "циклы и журнал обязаны писать в один объект метрик: {0}", string.Join(" | ", matches));
+            "the loops and the journal must write to the same metrics object: {0}", string.Join(" | ", matches));
     }
 }

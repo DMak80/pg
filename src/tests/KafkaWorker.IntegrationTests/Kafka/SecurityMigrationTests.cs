@@ -68,7 +68,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
             CpuCores: 1, MemoryBytes: 512L * 1024 * 1024);
         var ensuredNode = await fixture.Driver.EnsureNodeAsync(spec, ct);
         ensuredNode.IsSuccess.Should().BeTrue(
-            "контейнер legacy-брокера обязан подняться: {0}", ensuredNode.Error?.Message);
+            "the legacy broker container must come up: {0}", ensuredNode.Error?.Message);
 
         // Arrange 2: готовность PLAINTEXT-кластера + сообщение в топике legacy.
         var legacyBootstrap = $"localhost:{legacyPort}";
@@ -131,7 +131,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         {
             var snap = await fixture.SnapshotAsync(cluster);
             var result = await migrator.RunAsync(snap!, ct);
-            result.IsSuccess.Should().BeTrue($"тик миграции не должен падать: {result.Error?.Message}");
+            result.IsSuccess.Should().BeTrue($"migration tick must not fail: {result.Error?.Message}");
             outcome = result.Value;
             if (outcome == SecurityMigrator.MigrationOutcome.NotNeeded)
                 break;
@@ -141,7 +141,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         // Assert 1: миграция завершена; новые ключи etcd появились.
         var migJournal = await journal.ReadAsync(cluster, ct);
         outcome.Should().Be(SecurityMigrator.MigrationOutcome.NotNeeded,
-            "journal={0}", migJournal.Value?.Phase ?? "<нет>");
+            "journal={0}", migJournal.Value?.Phase ?? "<none>");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user")).Should().Be("admin");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password"))
             .Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
@@ -180,7 +180,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         {
             consumer.Subscribe(topic);
             var consumed = consumer.Consume(TimeSpan.FromSeconds(30));
-            consumed.Should().NotBeNull("legacy-сообщение обязано быть прочитано по SASL_SSL");
+            consumed.Should().NotBeNull("the legacy message must be readable over SASL_SSL");
             consumed!.Message.Value.Should().Be(legacyMessage);
         }
 

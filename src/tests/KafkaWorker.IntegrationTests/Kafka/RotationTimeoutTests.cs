@@ -94,11 +94,11 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
 
             var tick = await rig.Provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
-        throw new TimeoutException($"кластер {cluster} не поднялся за {budgetSec} с");
+        throw new TimeoutException($"cluster {cluster} did not come up within {budgetSec} s");
     }
 
     // Финал теста: демонтаж кластера (контейнеры kfw-* не оставляем коллегам).
@@ -145,7 +145,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
         var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
         var journal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
         var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
-        return $"progress={progress ?? "<нет>"}; journal={journal ?? "<нет>"}; outcome={outcome ?? "<нет>"}";
+        return $"progress={progress ?? "<none>"}; journal={journal ?? "<none>"}; outcome={outcome ?? "<none>"}";
     }
 
     // Транзиент-толерантный тик (spec §5.1): одиночный Result.Failed — не
@@ -165,13 +165,13 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             if (result.IsSuccess)
                 return DateTimeOffset.UtcNow - started;
 
-            EnqueueDiag(diag, $"{label}: тик #{attempt} провален — {result.Error!.Message}");
+            EnqueueDiag(diag, $"{label}: tick #{attempt} failed — {result.Error!.Message}");
             if (attempt >= FailedTickLimit)
             {
                 var context = await DiagContextAsync(cluster);
                 throw new Xunit.Sdk.XunitException(
-                    $"{label}: стагнация — {FailedTickLimit} подряд неудачных тика; {context}; "
-                    + $"хвост тиков: {string.Join(" | ", diag)}");
+                    $"{label}: stagnation — {FailedTickLimit} consecutive failed ticks; {context}; "
+                    + $"tick tail: {string.Join(" | ", diag)}");
             }
 
             await Task.Delay(TickIntervalMs, TestContext.Current.CancellationToken);
@@ -275,8 +275,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     {
         var context = await DiagContextAsync(cluster);
         throw new Xunit.Sdk.XunitException(
-            $"{cause}; сэмплы remaining: {string.Join(",", remainingSamples)}; {context}; "
-            + $"тики: {string.Join(" | ", diag)}");
+            $"{cause}; remaining samples: {string.Join(",", remainingSamples)}; {context}; "
+            + $"ticks: {string.Join(" | ", diag)}");
     }
 
     // ===== AC10 (spec §6 п.10): дедлок H↔K разорван приоритетом =====
@@ -323,14 +323,14 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             {
                 var snap = (await fixture.SnapshotAsync(cluster))!;
                 var hTick = await passwordRotator.RunAsync(snap, ct);
-                hTick.IsSuccess.Should().BeTrue($"тик H не должен падать: {hTick.Error?.Message}");
+                hTick.IsSuccess.Should().BeTrue($"H tick must not fail: {hTick.Error?.Message}");
 
                 var workNow = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
                 if (workNow is not null)
                 {
                     journalTexts.Add(workNow);
                     workNow.Should().NotContain(
-                        "expired", "начатые ротации не экспирируются (тройной гвард)");
+                        "expired", "started rotations are never expired (triple guard)");
                     if (workNow.Contains("\"op\":\"rotate\"", StringComparison.Ordinal)
                         && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
                         passwordSeenDone = true;
@@ -351,8 +351,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             }
 
             passwordSeenDone.Should().BeTrue(
-                "H обязан был завершиться в бюджете фазы (при ЖИВОЙ ca-заявке — дедлок разорван); "
-                + "журнал (последние фазы): " + string.Join(" | ", journalTexts.TakeLast(6)));
+                "H must have completed within the phase budget (with a LIVE ca ticket — deadlock broken); "
+                + "journal (last phases): " + string.Join(" | ", journalTexts.TakeLast(6)));
 
             // Фаза K (бюджет 300 c): тики ca-ротатора до финала K4.
             var kDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
@@ -360,13 +360,13 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             while (DateTimeOffset.UtcNow < kDeadline && !caDone)
             {
                 var kTick = await caRotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                kTick.IsSuccess.Should().BeTrue($"тик K не должен падать: {kTick.Error?.Message}");
+                kTick.IsSuccess.Should().BeTrue($"K tick must not fail: {kTick.Error?.Message}");
 
                 var workNow = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
                 if (workNow is not null)
                 {
                     journalTexts.Add(workNow);
-                    workNow.Should().NotContain("expired", "окно K доигрывается без экспирации");
+                    workNow.Should().NotContain("expired", "K window completes without expiration");
                     if (workNow.Contains("\"op\":\"rotate-ca\"", StringComparison.Ordinal)
                         && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
                         caDone = true;
@@ -379,22 +379,22 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // НИ одна фаза не была expired; исход последний — done; пароль и
             // CA сменены.
             (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}")).Should().BeNull(
-                "заявка пароль-ротации доиграна H (дедлок разорван приоритетом)");
+                "password-rotation ticket completed by H (deadlock broken by priority)");
             (await fixture.GetAsync($"/kafkaworker/ca_rotations/{cluster}")).Should().BeNull(
-                "ca-заявка доиграна K после H");
+                "ca ticket completed by K after H");
             caDone.Should().BeTrue(
-                "K обязан был завершиться в бюджете фазы; журнал: "
+                "K must have completed within the phase budget; journal: "
                 + string.Join(" | ", journalTexts.TakeLast(6)));
             var workFinal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
             workFinal.Should().Contain("rotate-ca").And.Contain("done");
             journalTexts.Should().NotContain(t => t.Contains("expired"));
             var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
-            outcome.Should().NotBeNull("финал K пишет исход done");
+            outcome.Should().NotBeNull("K finalization writes the done outcome");
             outcome!.Should().Contain("\"kind\":\"ca\"").And.Contain("\"outcome\":\"done\"");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password"))!
-                .Should().NotBe(oldAppPassword, "фаза A сменила app_password");
+                .Should().NotBe(oldAppPassword, "phase A replaced app_password");
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem"))!
-                .Should().NotBe(oldCaPem, "фаза C переключила канон на NEW CA");
+                .Should().NotBe(oldCaPem, "phase C switched the canonical key to NEW CA");
         }
         finally
         {
@@ -428,7 +428,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             for (var i = 0; i < 2; i++)
             {
                 var tick = await rotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                tick.IsSuccess.Should().BeTrue($"тик не должен падать: {tick.Error?.Message}");
+                tick.IsSuccess.Should().BeTrue($"tick must not fail: {tick.Error?.Message}");
                 if (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}") is null)
                     break;
             }
@@ -436,18 +436,18 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // Assert: заявка снята; исход expired waiting-cluster; журнал
             // expired; повторная заявка ставится (ключа нет — 409 невозможен).
             (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}")).Should().BeNull(
-                "не-начатая заявка старше порога снята в waiting-cluster");
+                "unstarted ticket older than the threshold is removed in waiting-cluster");
             var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
             outcome.Should().NotBeNull();
             outcome!.Should().Contain("\"kind\":\"password-app\"")
                 .And.Contain("\"outcome\":\"expired\"")
                 .And.Contain("\"reason\":\"waiting-cluster\"");
             (await fixture.GetAsync($"/kafkaworker/work/{cluster}"))!
-                .Should().Contain("expired", "journal-фаза expired терминальна");
+                .Should().Contain("expired", "the expired journal phase is terminal");
             await PutTicketAsync($"/kafkaworker/rotations/{cluster}",
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds());
             (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}")).Should().NotBeNull(
-                "повторная заявка ставится после снятия");
+                "a new ticket can be placed after removal");
 
             // Teardown-гигиена: снять тестовую заявку (демонтаж ниже чистит всё).
             await fixture.DelAsync($"/kafkaworker/rotations/{cluster}");
@@ -499,13 +499,13 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
 
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
-                "заявка ребалансировки снята в waiting-drain-точке (не начата)");
+                "rebalance ticket removed at the waiting-drain point (never started)");
             var expiredOutcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
             expiredOutcome.Should().NotBeNull();
             expiredOutcome!.Should().Contain("\"kind\":\"rebalance\"")
                 .And.Contain("\"outcome\":\"expired\"")
                 .And.Contain("\"reason\":\"waiting-drain\"");            (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
-                "прогресс-ключ НЕ создан — операция не начиналась");
+                "progress key NOT created — the operation never started");
             (await fixture.GetAsync($"/kafkaworker/work/{cluster}"))!
                 .Should().Contain("expired");
 
@@ -562,9 +562,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 {
                     var context = await DiagContextAsync(cluster);
                     throw new Xunit.Sdk.XunitException(
-                        "act2: ни живой баланс (mode=balance), ни вырожденный done за 600 с; заявка="
-                        + (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") ?? "<нет>")
-                        + "; " + context + "; тики: " + string.Join(" | ", diag));
+                        "act2: neither a live balance (mode=balance) nor a degenerate done within 600 s; ticket="
+                        + (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") ?? "<none>")
+                        + "; " + context + "; ticks: " + string.Join(" | ", diag));
                 }
 
                 await Task.Delay(PollMs, ct);
@@ -580,38 +580,38 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 // teardown-гигиеной. Различительная валидация подготовки:
                 // вырожденный исход обязан быть гонкой метаданных (H5-i), НЕ
                 // дефектом подготовки (H5-ii) — снижение RF применилось.
-                output.WriteLine("вырожденный путь: сходимость обогнала первый сэмпл (H5)");
+                output.WriteLine("degenerate path: convergence overtook the first sample (H5)");
                 var configNow = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
-                configNow.Should().NotBeNull("config-ключ кластера существует");
+                configNow.Should().NotBeNull("the cluster config key exists");
                 configNow!.Should().Contain("\"replication_factor\":1",
-                    "вырожденный путь: замена RF не применилась — исход вызван дефектом "
-                    + "подготовки, а не гонкой метаданных (spec §5.2, H5-ii)");
+                    "degenerate path: the RF replacement did not apply — the outcome is caused by a "
+                    + "preparation defect, not a metadata race (spec §5.2, H5-ii)");
                 (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
-                    "вырожденный путь: заявка удалена (финал balance по сходимости, §2 п.3)");
+                    "degenerate path: ticket removed (balance finalization on convergence, §2 p.3)");
                 (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
-                    "вырожденный путь: прогресс-ключ не создан (§2 п.3)");
+                    "degenerate path: progress key not created (§2 p.3)");
                 var degenerateOutcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
-                degenerateOutcome.Should().NotBeNull("вырожденный путь: исход записан");
+                degenerateOutcome.Should().NotBeNull("degenerate path: outcome written");
                 degenerateOutcome!.Should().Contain("\"kind\":\"rebalance\"")
                     .And.Contain("\"outcome\":\"done\"");
                 TryReadFinishedUnix(degenerateOutcome, out var finished).Should().BeTrue(
-                    "вырожденный путь: finished_unix присутствует в исходе");
+                    "degenerate path: finished_unix present in the outcome");
                 finished.Should().BeGreaterThanOrEqualTo(requestedUnix,
-                    "вырожденный путь: финал завершил заявку Act2 (finished ≥ requested)");
+                    "degenerate path: finalization completed the Act2 ticket (finished ≥ requested)");
                 return; // teardown — в finally
             }
 
-            output.WriteLine("живой путь: баланс открыта (прогресс mode=balance)");
+            output.WriteLine("live path: balance opened (progress mode=balance)");
 
             var outcomeAfterBalance = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
             remaining.Should().NotBeEmpty(
-                "батчи поданы — прогресс mode=balance создан; сэмплы remaining: "
+                "batches submitted — progress mode=balance created; remaining samples: "
                 + string.Join(",", remaining)
                 + "; journal=" + await fixture.GetAsync($"/kafkaworker/work/{cluster}")
                 + "; outcome=" + outcomeAfterBalance);
             var progressLive = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
             progressLive.Should().NotBeNull(
-                "balance жив — окно держится живым прогресс-ключом, а не темпом сходимости; "
+                "balance is live — the window is held by a live progress key, not by convergence pace; "
                 + "journal=" + await fixture.GetAsync($"/kafkaworker/work/{cluster}"))
                 .And.Contain("\"balance\"");
 
@@ -621,7 +621,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             await TickAsync("guard2-old-ticket", cluster,
                 async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
-                "идущая ребалансировка не снимается никогда (тройной гвард)");
+                "a running rebalance is never removed (triple guard)");
 
             // Гвард в waiting-точке при живом balance: слепая проба (endpoints
             // занулены) + старая заявка → НЕ expired, waiting-cluster.
@@ -630,10 +630,10 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             await TickAsync("guard3-blind-endpoints", cluster,
                 async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
-                "гвард previous mode=balance работает и в endpoints-точке");
+                "the previous mode=balance guard also holds at the endpoints point");
             var outcomeLive = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
             outcomeLive.Should().Be(expiredOutcome,
-                "гвард previous mode=balance запрещает экспирацию — исход Act1 не перезаписан; "
+                "the previous mode=balance guard forbids expiration — the Act1 outcome is not overwritten; "
                 + "journal=" + await fixture.GetAsync($"/kafkaworker/work/{cluster}"));
             await fixture.PutAsync($"/kafka/clusters/{cluster}/endpoints", endpointsRaw!);
 
@@ -664,9 +664,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 var backstopSec = ConvergeBackstopSec(tickSeconds, remainingFirst);
                 if (DateTimeOffset.UtcNow - convergeStarted >= TimeSpan.FromSeconds(backstopSec))
                     await FailConvergeAsync(cluster, diag, remainingSamples,
-                        $"финал: backstop {backstopSec} с исчерпан при живой заявке "
-                        + $"(remainingFirst={(remainingFirst?.ToString() ?? "—")}, тиков={tickSeconds.Count}, "
-                        + $"средний тик={(tickSeconds.Count > 0 ? tickSeconds.Average().ToString("F1") : "—")} с) — сходимости нет");
+                        $"final: backstop {backstopSec} s exhausted with the ticket still live "
+                        + $"(remainingFirst={(remainingFirst?.ToString() ?? "—")}, ticks={tickSeconds.Count}, "
+                        + $"avg tick={(tickSeconds.Count > 0 ? tickSeconds.Average().ToString("F1") : "—")} s) — no convergence");
 
                 var tick = await TickAsync("converge", cluster,
                     async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
@@ -689,8 +689,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 else if (++stagnantTicks >= StagnantTickLimit)
                 {
                     await FailConvergeAsync(cluster, diag, remainingSamples,
-                        $"финал: стагнация — {stagnantTicks} подряд успешных тика с неизменным "
-                        + $"partitions_remaining={bestRemaining} (дедуп RetrySubmitSec или затяжка ISR)");
+                        $"final: stagnation — {stagnantTicks} consecutive successful ticks with unchanged "
+                        + $"partitions_remaining={bestRemaining} (RetrySubmitSec dedup or ISR lag)");
                 }
 
                 // Между тиками — интервал подачи (§5.6); опрос remaining —
@@ -699,11 +699,11 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             }
 
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
-                "заявка снята по сходимости");
+                "ticket removed on convergence");
             (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
-                "прогресс удалён по сходимости");
+                "progress removed on convergence");
             (await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}"))!
-                .Should().Contain("\"outcome\":\"done\"", "финал balance пишет исход done");
+                .Should().Contain("\"outcome\":\"done\"", "balance finalization writes the done outcome");
         }
         finally
         {

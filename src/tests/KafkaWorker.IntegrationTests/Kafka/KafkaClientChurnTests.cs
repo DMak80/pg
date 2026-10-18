@@ -68,7 +68,7 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
             etcd.Endpoint, "/kafka/clusters/", TestContext.Current.CancellationToken);
         if (!range.IsSuccess)
             throw new InvalidOperationException(
-                $"range /kafka/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
+                $"range /kafka/clusters/ failed (fixture etcd unreachable?): {range.Error?.Message}");
         var snapshot = KafkaSnapshotParser.Parse(range.Value).Value.Single(c => c.Cluster == cluster);
 
         // Act: 6 тиков надзора (первый — реальный probe-контакт: клиент #1, фейл,
@@ -76,7 +76,7 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         for (var i = 0; i < 6; i++)
         {
             var tick = await supervisor.RunAsync(snapshot, TestContext.Current.CancellationToken);
-            tick.IsSuccess.Should().BeTrue($"слепая проба — не ошибка тика: {tick.Error?.Message}");
+            tick.IsSuccess.Should().BeTrue($"a blind probe is not a tick error: {tick.Error?.Message}");
         }
 
         // Assert: ≤ 2 нативных клиента (первый + не более одного
@@ -85,6 +85,6 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         // глобальный Process.Threads ловит активность соседних коллекций
         // того же процесса; нешумный churn-прокси — сам CreatedClients.
         factory.CreatedClients.Should().BeInRange(1, 2,
-            $"кэш+backoff: 6 тиков = 1 клиент (+≤1 пересоздание), не 5–7 на тик; фактически {factory.CreatedClients}");
+            $"cache+backoff: 6 ticks = 1 client (+≤1 recreation), not 5–7 per tick; actual {factory.CreatedClients}");
     }
 }

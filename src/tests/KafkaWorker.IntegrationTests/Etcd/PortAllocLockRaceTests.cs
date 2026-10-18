@@ -83,7 +83,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
             }
         }
 
-        return Result.Failed(new ApplicationException("порт-клэйм не освобождался 10 с — гонка/дедлок"));
+        return Result.Failed(new ApplicationException("the port lock was not released for 10 s — race/deadlock"));
     }
 
     // Формат arch/15 §4: {"broker<k>":{"host":"h","client":P}} — пары (host, client).
@@ -133,7 +133,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         firstPorts.Should().NotBeEmpty();
         secondPorts.Should().NotBeEmpty();
         firstPorts.Intersect(secondPorts).Should().BeEmpty(
-            "клэйм сериализует секции — повторная видит запись соседа в busy");
+            "the lock serializes the sections — the second one sees the neighbor's entry in busy");
 
         // Ключ клэйма исчез после release обеих секций
         var lockKey = await Gateway.GetAsync(Endpoint, first.Key, ct);

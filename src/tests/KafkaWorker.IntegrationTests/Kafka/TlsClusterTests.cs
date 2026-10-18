@@ -51,7 +51,7 @@ public class TlsClusterTests(KafkaClusterFixture fixture)
                 break; // provisioning завершён (config без state)
             var tick = await provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
@@ -99,7 +99,7 @@ public class TlsClusterTests(KafkaClusterFixture fixture)
                 [new TopicSpecification { Name = "forbidden-" + fixture.RunTag, NumPartitions = 1, ReplicationFactor = 1 }],
                 new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(15) });
             await act.Should().ThrowAsync<CreateTopicsException>(
-                "принципал User:app не имеет Create-ACL (16 §2.3), deny-by-default");
+                "the User:app principal has no Create ACL (16 §2.3), deny-by-default");
         }
 
         // Assert 3: admin-кред — super.user (CreateTopics прошёл выше); финальная

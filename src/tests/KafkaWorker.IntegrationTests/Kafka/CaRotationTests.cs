@@ -51,7 +51,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
                 break; // provisioning завершён (config без state)
             var tick = await provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать: {tick.Error?.Message}");
+                $"provisioning tick must not fail: {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
@@ -80,7 +80,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
         while (DateTimeOffset.UtcNow < deadline)
         {
             var tick = await caRotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick.IsSuccess.Should().BeTrue($"тик ротации не должен падать: {tick.Error?.Message}");
+            tick.IsSuccess.Should().BeTrue($"rotation tick must not fail: {tick.Error?.Message}");
             if (await fixture.GetAsync($"/kafkaworker/ca_rotations/{cluster}") is null)
             {
                 ticketGone = true;
@@ -112,12 +112,12 @@ public class CaRotationTests(KafkaClusterFixture fixture)
             $"admin={snapDiag.AdminPassword is not null}, ca={snapDiag.CaPem is not null}, cakey={snapDiag.CaKey is not null}, " +
             $"parse_errors={string.Join(";", snapDiag!.ParseErrors)}, admin={adminDiag}, {await EnvDiagAsync(fixture, cluster)}, " +
             "logs=[" + BrokerLogTail(cluster) + "]";
-        ticketGone.Should().BeTrue($"ротация исполнена: заявка удалена [{diag}]");
+        ticketGone.Should().BeTrue($"rotation executed: ticket removed [{diag}]");
 
         // Assert 1: ca_pem = NEW (только новый), staging удалён, ключ CA сменён.
         var newCaPem = (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem"))!;
-        newCaPem.Should().NotBe(oldCaPem, "канон переключён на NEW CA");
-        newCaPem.Should().NotContain(oldCaPem, "bundle свёрнут после коммита");
+        newCaPem.Should().NotBe(oldCaPem, "the canonical ca_pem switched to NEW CA");
+        newCaPem.Should().NotContain(oldCaPem, "the bundle collapsed after commit");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_next_key")).Should().BeNull();
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_next_pem")).Should().BeNull();
 
@@ -142,7 +142,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
             rejected = true; // TLS-хендшейк/доставка с недоверенным CA — ожидаемо
         }
 
-        rejected.Should().BeTrue("клиент со старым CA-кэшем не работает после коммита");
+        rejected.Should().BeTrue("a client with the old CA cache does not work after commit");
     }
 
     // Env живого контейнера брокера: число сертов в truststore/keystore

@@ -375,7 +375,7 @@ public class ClusterMutationsApiTests(KafkaApiFixture fixture) : IAsyncLifetime
         var dto = await first.Content.ReadFromJsonAsync<JsonElement>(ct);
         dto.GetProperty("cluster").GetString().Should().Be("events");
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/kafkaworker/admin_rotations/events", ct))
-            .Value?.Value.Should().NotBeNull("заявка положена клэйм-txn-ом");
+            .Value?.Value.Should().NotBeNull("the ticket is placed by the claim-txn");
 
         // Act 2: повтор.
         var second = await Client.PostAsync("/api/kafka/clusters/events/admin-password/rotate", null, ct);

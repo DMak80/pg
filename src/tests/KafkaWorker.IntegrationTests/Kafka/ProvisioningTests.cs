@@ -58,13 +58,13 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
 
             var tick = await provision.RunAsync(snap, ct);
             tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+                $"provisioning tick must not fail (waiting-brokers is a success): {tick.Error?.Message}");
             await Task.Delay(3000, ct);
         }
 
         // Assert 1: контейнер Running, ключи факта на месте.
         var config = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
-        config.Should().NotContain("state", "provisioning снимает state у config");
+        config.Should().NotContain("state", "provisioning removes state from the config");
         var endpoints = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
         // Порты — из динамического окна фикстуры (литералов «:16000» больше нет:
         // выдача сквозная по кластерам коллекции, it1 не обязательно первый).
@@ -94,14 +94,14 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         using (var admin = adminBuilder.Build())
         {
             var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
-            metadata.Brokers.Should().HaveCount(1, "1-брокерный кластер заявлен");
+            metadata.Brokers.Should().HaveCount(1, "a 1-broker cluster was declared");
         }
 
         var appBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "app");
         using (var appAdmin = appBuilder.Build())
         {
             var metadata = appAdmin.GetMetadata(TimeSpan.FromSeconds(15));
-            metadata.Brokers.Should().HaveCount(1, "app-роль тоже подключается по SASL_SSL");
+            metadata.Brokers.Should().HaveCount(1, "the app role also connects over SASL_SSL");
         }
 
         // Act 2: заявка ротации (остаточная — её должна подчистить очистка X2)
@@ -115,12 +115,12 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var removed = await deprovision.RunAsync(cluster, dying!.Brokers.Select(b => b.Name).ToList(), ct);
 
         // Assert 3: контейнер/том удалены, префикс пуст, rotations-заявка очищена.
-        removed.IsSuccess.Should().BeTrue($"демонтаж не должен падать: {removed.Error?.Message}");
+        removed.IsSuccess.Should().BeTrue($"decommission must not fail: {removed.Error?.Message}");
         (await fixture.Driver.ListNodeObjectsAsync(cluster, ct)).Value.Should().BeEmpty();
         var rest = await fixture.Gateway.RangeAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/", ct);
-        rest.Value.Should().BeEmpty("префикс /kafka/clusters/<C>/ пуст после демонтажа");
+        rest.Value.Should().BeEmpty("the /kafka/clusters/<C>/ prefix is empty after decommission");
         (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}")).Should().BeNull(
-            "заявка ротации не переживает удаление кластера (A10-очистка)");
+            "the rotation ticket does not survive cluster deletion (A10 cleanup)");
         (await fixture.GetAsync($"/kafkaworker/portalloc/{cluster}")).Should().BeNull();
 
         await claims.DisposeAsync();

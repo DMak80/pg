@@ -63,7 +63,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
         }
 
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/config")).Should().NotContain("state",
-            "кластер поднялся — фаза проверки ниже бессмысленна без него");
+            "cluster is up — the verification phase below is meaningless without it");
 
         // Act 1: топик создан CLI/клиентом (3 партиции) → автосинк кладёт ключ.
         var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
@@ -82,7 +82,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
 
         // Assert 1: ключ реестра = факт.
         var raw1 = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
-        raw1.Should().NotBeNull("автосинк кладёт ключ нового факт-топика");
+        raw1.Should().NotBeNull("autosync writes the key for the new fact topic");
         using (var doc1 = JsonDocument.Parse(raw1!))
         {
             doc1.RootElement.GetProperty("partitions").GetInt32().Should().Be(3);
@@ -112,7 +112,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
         var raw2 = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
         using (var doc2 = JsonDocument.Parse(raw2!))
         {
-            doc2.RootElement.TryGetProperty("desired", out _).Should().BeFalse("заявка исполнена и снята");
+            doc2.RootElement.TryGetProperty("desired", out _).Should().BeFalse("ticket executed and removed");
             doc2.RootElement.GetProperty("configs").GetProperty("retention.ms").GetString()
                 .Should().Be("86400000");
         }
@@ -148,7 +148,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
         var snap4 = await fixture.SnapshotAsync(cluster);
         await sync.RunAsync(snap4!, ct);
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}")).Should().BeNull(
-            "топик исчез без заявки — ключ удалён");
+            "topic disappeared without a ticket — key removed");
 
         // Act 5: missing-ветка: валидная заявка ДО удаления → missing=true;
         // отмена заявки → ключ удалён (arch/15 §3).
@@ -179,7 +179,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
 
         // Assert 5: missing=true с сохранённой заявкой.
         var raw6 = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
-        raw6.Should().NotBeNull("заявка жива — ключ не удаляется");
+        raw6.Should().NotBeNull("ticket is alive — key not removed");
         using (var doc6 = JsonDocument.Parse(raw6!))
         {
             doc6.RootElement.GetProperty("missing").GetBoolean().Should().BeTrue();
@@ -195,7 +195,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
         await sync.RunAsync(snap7!, ct);
 
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}")).Should().BeNull(
-            "после отмены заявки автосинк удаляет ключ отсутствующего топика");
+            "after ticket cancellation autosync removes the key of the missing topic");
 
         // Финал: демонтаж кластера (не оставлять контейнеры коллегам по коллекции).
         var rawConfig = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");

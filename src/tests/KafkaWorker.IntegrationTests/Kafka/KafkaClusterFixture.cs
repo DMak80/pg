@@ -193,7 +193,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         var range = await Gateway.RangeAsync(Endpoint, "/kafka/clusters/", TestContext.Current.CancellationToken);
         if (!range.IsSuccess)
             throw new InvalidOperationException(
-                $"range /kafka/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
+                $"range /kafka/clusters/ failed (fixture etcd unreachable?): {range.Error?.Message}");
 
         return KafkaSnapshotParser.Parse(range.Value).Value.FirstOrDefault(c => c.Cluster == cluster);
     }

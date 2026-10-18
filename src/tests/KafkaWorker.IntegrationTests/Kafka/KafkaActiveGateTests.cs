@@ -86,8 +86,8 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
         // Assert: тик успех; kafka-контакт не выполнялся (гейт до converger'а
         // и TopicSync; supervise-проба тоже гейтится — без brokers это
         // единственный путь к фабрике); брокеры (их нет) не тронуты.
-        result.IsSuccess.Should().BeTrue("skip по backoff — не ошибка тика");
+        result.IsSuccess.Should().BeTrue("a backoff skip is not a tick error");
         factory.CreatedClients.Should().Be(0,
-            $"ActiveAsync в окне не должен создавать клиентов (E–J/D skip, проба надзора гейтится); фактически {factory.CreatedClients}");
+            $"ActiveAsync in the window must not create clients (E–J/D skip, the supervision probe is gated); actual {factory.CreatedClients}");
     }
 }

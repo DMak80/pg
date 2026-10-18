@@ -165,7 +165,7 @@ public class ClaimStoreTests(EtcdFixture etcd)
         await store.StartAsync(cts.Token);
         await Task.Delay(1000, cts.Token);
         var whileDown = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/kafkaworker/api/", cts.Token);
-        whileDown.IsSuccess.Should().BeFalse("etcd не запущен — ключи не могли поставиться");
+        whileDown.IsSuccess.Should().BeFalse("etcd is not running — the keys could not have been written");
 
         // etcd появился — ключ ставится ретраем тика (несколько циклов ~5с)
         await fixture.InitializeAsync();

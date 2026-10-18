@@ -117,14 +117,14 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 // реальный ReconcileLoop ретраит следующим тиком, здесь — сходимость.
                 failures++;
                 failures.Should().BeLessThan(MaxConsecutiveTickFailures,
-                    $"тик provisioning падал {failures} подряд без успеха " +
-                    $"(waiting-brokers — успех; транзиент — не провал): {tick.Error?.Message}");
+                    $"provisioning tick failed {failures} times in a row without success " +
+                    $"(waiting-brokers is a success; a transient is not a failure): {tick.Error?.Message}");
             }
 
             await Task.Delay(3000, ct);
         }
 
-        throw new TimeoutException($"кластер {cluster} не поднялся за {budgetSec} с");
+        throw new TimeoutException($"cluster {cluster} did not come up within {budgetSec} s");
     }
 
     // Финал теста: демонтаж кластера (контейнеры kfw-* не оставляем коллегам).
@@ -148,7 +148,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             creds.Bootstrap, creds.User, creds.Password, creds.CaPem);
         var described = await admin.DescribeTopicsAsync(
             includeInternal: true, TestContext.Current.CancellationToken);
-        described.IsSuccess.Should().BeTrue($"describe-all должен работать: {described.Error?.Message}");
+        described.IsSuccess.Should().BeTrue($"describe-all must work: {described.Error?.Message}");
         return described.Value;
     }
 
@@ -209,7 +209,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     [Fact]
-    public async Task Drain_RemovesNonEmptyBroker_Снижает_RF()
+    public async Task Drain_RemovesNonEmptyBroker_ReducesRF()
     {
         var cluster = fixture.Cluster("re1");
         const string topic = "reorders";
@@ -236,7 +236,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
 
             await ProduceAsync(creds, topic, 12);
             (await ConsumeAsync(creds, topic, 12, budgetSec: 180)).Should().Be(12,
-                "до drain все сообщения читаются");
+                "all messages are readable before drain");
 
             // Act: broker4 TO_REMOVE → тики reassigner+remove+topicsync до демонтажа.
             // Транзиентные отказы тика (exec CLI, коннекты) — не провал: реальный
@@ -269,7 +269,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             }
 
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().BeNull(
-                $"broker4 должен демонтироваться за 300 c (последняя ошибка тика: {lastTickError?.Message})");
+                $"broker4 must be decommissioned within 300 s (last tick error: {lastTickError?.Message})");
 
             // Автосинк подтягивает replication_factor=3 (бюджет 120 с — с запасом
             // под параллельный dev-стенд).
@@ -287,28 +287,28 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
 
             // Assert: демонтаж завершён — ключей/контейнера нет, endpoints сократился.
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().BeNull(
-                "broker4 демонтирован после drain");
+                "broker4 decommissioned after drain");
             var objects = await fixture.Driver.ListNodeObjectsAsync(cluster, ct);
-            objects.Value.Should().NotContain($"kfw-{cluster}-broker4", "контейнер broker4 удалён");
+            objects.Value.Should().NotContain($"kfw-{cluster}-broker4", "broker4 container removed");
             var endpoints = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
-            endpoints!.Split(',').Should().HaveCount(3, "endpoints без адреса broker4");
+            endpoints!.Split(',').Should().HaveCount(3, "endpoints without the broker4 address");
             (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
-                "прогресс-ключ удалён по завершении drain");
+                "progress key removed after drain completed");
 
             // Describe-all (включая __): nodeId=4 нигде; RF юзер-топика == 3.
             var described = await DescribeAllAsync(creds);
             described.SelectMany(t => t.ReplicasPerPartition).SelectMany(r => r)
-                .Should().NotContain(4, "ни одна партиция (включая __-топики) не держит реплику на 4");
+                .Should().NotContain(4, "no partition (including __ topics) keeps a replica on 4");
             var orders = described.Single(t => t.Topic == topic);
             orders.ReplicasPerPartition.Should().HaveCount(6);
-            orders.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 3, "RF снижен 4→3");
+            orders.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 3, "RF reduced 4→3");
 
             var registry = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
-            registry.Should().Contain("\"replication_factor\":3", "автосинк обновил факт RF");
+            registry.Should().Contain("\"replication_factor\":3", "autosync updated the RF fact");
 
             // Данные целы: все сообщения читаются (приёмка §11.2).
             (await ConsumeAsync(creds, topic, 12, budgetSec: 120)).Should().Be(12,
-                "после drain все сообщения читаются");
+                "all messages are readable after drain");
         }
         finally
         {
@@ -317,7 +317,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     [Fact]
-    public async Task Reassign_Повторная_Подача_Безопасна()
+    public async Task Reassign_ResubmissionIsSafe()
     {
         var cluster = fixture.Cluster("re3");
         const string topic = "rere";
@@ -345,7 +345,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // Act 1: повторный RunAsync на стабильном факте — no-op без подач.
             var snap = await fixture.SnapshotAsync(cluster);
             (await rig.Reassigner.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue(
-                "повторный тик reassigner на сошедшемся факте — успех");
+                "a repeat reassigner tick on the converged fact succeeds");
 
             // Act 2: повторная CLI-подача того же assignment (факт == план) —
             // Kafka обязана принять идемпотентно (KIP-455).
@@ -362,7 +362,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             for (var i = 0; i < 2; i++)
             {
                 var exec = await fixture.Driver.ExecNodeAsync(cluster, "broker1", cmd, ct);
-                exec.IsSuccess.Should().BeTrue($"повторная подача №{i + 1} не падает: {exec.Error?.Message}");
+                exec.IsSuccess.Should().BeTrue($"resubmission #{i + 1} must not fail: {exec.Error?.Message}");
             }
 
             // Assert: describe до/после идентичен по assignment всех партиций.
@@ -372,7 +372,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 .SelectMany(t => t.ReplicasPerPartition.Select((r, p) => $"{t.Topic}:{p}=[{string.Join(",", r)}]"))
                 .ToList();
             assignment(after).Should().BeEquivalentTo(assignment(before),
-                "повторная подача того же assignment не меняет размещение");
+                "resubmitting the same assignment does not change placement");
         }
         finally
         {
@@ -381,7 +381,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     [Fact]
-    public async Task Balance_Восстанавливает_RF_После_Повторного_Add()
+    public async Task Balance_RestoresRF_AfterRepeatedAdd()
     {
         var cluster = fixture.Cluster("re2");
         const string topic = "reorders2";
@@ -424,10 +424,10 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
 
             var afterDrain = await DescribeAllAsync(creds);
             var ordersDrained = afterDrain.Single(t => t.Topic == topic);
-            ordersDrained.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 3, "RF снижен 4→3");
+            ordersDrained.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 3, "RF reduced 4→3");
             ordersDrained.ReplicasPerPartition.Should().OnlyContain(p => !p.Contains(4));
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().BeNull(
-                "broker4 демонтирован после drain");
+                "broker4 decommissioned after drain");
 
             // Act 2: повторный add broker4 (без него восстановление RF=4
             // недостижимо — targets=3 и заявка снялась бы без движения).
@@ -440,7 +440,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             while (DateTimeOffset.UtcNow < addDeadline)
             {
                 var snap = await fixture.SnapshotAsync(cluster);
-                (await rig.Add.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue("тик add не падает");
+                (await rig.Add.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue("add tick must not fail");
                 if (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state") == "RUNNING")
                     break;
 
@@ -448,15 +448,15 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             }
 
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().Be("RUNNING",
-                "broker4 повторно поднят за 180 c (NodeId=4 детерминирован именем)");
+                "broker4 re-raised within 180 s (NodeId=4 is determined by name)");
             var endpointsAfterAdd = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
-            endpointsAfterAdd!.Split(',').Should().HaveCount(4, "endpoints содержит адрес broker4");
+            endpointsAfterAdd!.Split(',').Should().HaveCount(4, "endpoints contain the broker4 address");
             await using (var clusterAdmin = fixture.AdminFactory.Create(
                 creds.Bootstrap, creds.User, creds.Password, creds.CaPem))
             {
                 var view = await clusterAdmin.DescribeClusterAsync(ct);
                 view.IsSuccess.Should().BeTrue();
-                view.Value.Brokers.Should().HaveCount(4, "кластер видит всех 4 брокеров");
+                view.Value.Brokers.Should().HaveCount(4, "the cluster sees all 4 brokers");
             }
 
             // Факт до баланса: лидеры (первые реплики) для сверки неизменности.
@@ -487,22 +487,22 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
 
             // Assert: заявка исполнена и снята, прогресс удалён.
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
-                "заявка ребалансировки снята по сходимости");
+                "rebalance ticket removed on convergence");
             (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
-                "прогресс-ключ удалён");
+                "progress key removed");
 
             // Каждая партиция юзер-топика: 4 реплики, среди них nodeId=4,
             // лидер (первая реплика) не изменился.
             var afterBalance = await DescribeAllAsync(creds);
             var ordersBalanced = afterBalance.Single(t => t.Topic == topic);
             ordersBalanced.ReplicasPerPartition.Should().HaveCount(6);
-            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 4, "RF восстановлен до 4");
-            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Contains(4), "nodeId=4 в репликах");
+            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 4, "RF restored to 4");
+            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Contains(4), "nodeId=4 among replicas");
             ordersBalanced.ReplicasPerPartition.Select(p => p[0]).Should().BeEquivalentTo(leadersBefore,
-                o => o.WithStrictOrdering(), "лидер (первая реплика) сохранён");
+                o => o.WithStrictOrdering(), "leader (first replica) preserved");
 
             var registry = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
-            registry.Should().Contain("\"replication_factor\":4", "автосинк обновил факт RF=4");
+            registry.Should().Contain("\"replication_factor\":4", "autosync updated the RF=4 fact");
         }
         finally
         {
