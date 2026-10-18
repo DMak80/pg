@@ -203,8 +203,8 @@ public class NodeTlsProvisionerTests
         var (caPem, _) = NewCa("c1");
         var env = new Dictionary<string, string>
         {
-            ["VALKEY_TLS_CERT"] = "не PEM",
-            ["VALKEY_TLS_KEY"] = "не PEM",
+            ["VALKEY_TLS_CERT"] = "not PEM",
+            ["VALKEY_TLS_KEY"] = "not PEM",
             ["VALKEY_TLS_CA"] = caPem,
         };
 

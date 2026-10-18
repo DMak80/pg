@@ -168,7 +168,7 @@ public class TlsMigratorTests
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.TlsMigrator.MigrationOutcome.InProgress);
         var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
-        ensured.ClientHostPort.Should().Be(17001, "portalloc не меняется");
+        ensured.ClientHostPort.Should().Be(17001, "portalloc stays unchanged");
         ensured.Args.Should().HaveCount(3);
         ensured.Args[0].Should().Be("sh");
         ensured.Args[2].Should().Contain("--tls-port").And.Contain("--port");

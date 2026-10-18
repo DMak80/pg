@@ -242,7 +242,7 @@ public class ProvisioningProcessTests
         // контейнер создан (V3 прошёл).
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeAssignableTo<Exception>();
-        result.Error!.Message.Should().Contain("не отвечает");
+        result.Error!.Message.Should().Contain("not responding");
         rig.Etcd.Store["/valkeyworker/work/boot"].Value.Should().Contain("boot-timeout");
         rig.Etcd.Store["/valkey/clusters/boot/nodes/node1/state"].Value.Should().Be("PROVISIONING");
         rig.Driver.Ensured.Should().ContainSingle();
@@ -286,9 +286,9 @@ public class ProvisioningProcessTests
         // целиком под клэймом (иначе гонка MaxClusters>1 выбирает один порт).
         var lockIndex = rig.OpsLog.FindIndex(o => o.Contains("/valkeyworker/locks/portalloc"));
         var hostsIndex = rig.OpsLog.IndexOf("docker:hosts");
-        lockIndex.Should().BeGreaterThanOrEqualTo(0, "клэйм portalloc захвачен");
-        hostsIndex.Should().BeGreaterThanOrEqualTo(0, "занятость docker читалась");
-        lockIndex.Should().BeLessThan(hostsIndex, "чтение занятости — ВНУТРИ клэйма portalloc");
+        lockIndex.Should().BeGreaterThanOrEqualTo(0, "portalloc claim acquired");
+        hostsIndex.Should().BeGreaterThanOrEqualTo(0, "docker busy-ports were read");
+        lockIndex.Should().BeLessThan(hostsIndex, "busy-ports read happens INSIDE the portalloc claim");
         rig.OpsLog.IndexOf("docker:busy-ports").Should().BeGreaterThan(lockIndex);
     }
 

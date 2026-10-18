@@ -264,7 +264,7 @@ public sealed class ValkeyMetricsCollectorTests
         sample.UsedMemoryBytes.Should().Be(1);
         sample.Role.Should().Be("master");
         sample.MaxMemoryBytes.Should().BeNull();
-        sample.InstantaneousOpsPerSec.Should().BeNull("нечисловое поле — серия не эмитится");
+        sample.InstantaneousOpsPerSec.Should().BeNull("non-numeric field — series is not emitted");
         sample.ConnectedSlaves.Should().BeNull();
     }
 

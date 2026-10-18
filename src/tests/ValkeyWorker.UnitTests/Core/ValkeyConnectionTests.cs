@@ -400,7 +400,7 @@ public class ValkeyConnectionTests
     public void ParseInfo_МусорныеСтроки_Пропущены()
     {
         // Arrange
-        var bulk = "без-разделителя\r\n:значение-без-ключа\r\nused_memory:1\r\n";
+        var bulk = "no-delimiter\r\n:value-without-key\r\nused_memory:1\r\n";
 
         // Act
         var info = ValkeyConnection.ParseInfo(bulk);

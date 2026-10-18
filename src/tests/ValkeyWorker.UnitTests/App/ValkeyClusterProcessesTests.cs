@@ -165,13 +165,13 @@ public class ValkeyClusterProcessesTests
         // перезаписал его своим op («supervise» появился бы, если бы ветка
         // дошла до C) — эксклюзивность окна доказана journal'ом
         var work = rig.Work("gate1");
-        work.Should().Contain("rotate-ca", "K исполнился и держит ветку");
-        work.Should().Contain("done", "цикл завершён одним тиком");
-        work.Should().NotContain("supervise", "надзор в окне не идёт");
+        work.Should().Contain("rotate-ca", "K executed and holds the branch");
+        work.Should().Contain("done", "cycle finished in one tick");
+        work.Should().NotContain("supervise", "supervision does not run inside the window");
         // Коммит прошёл: заявка снята (staging после C отсутствует —
         // ассертить его наличие НЕЛЬЗЯ)
         rig.Etcd.Store.TryGetValue("/valkeyworker/ca_rotations/gate1", out _)
-            .Should().BeFalse("заявка снята атомарно коммиту фазы C");
+            .Should().BeFalse("ticket removed atomically by phase C commit");
     }
 
     [Fact]
@@ -198,13 +198,13 @@ public class ValkeyClusterProcessesTests
         // заявку этим же тиком (заявка rotations снята, журнал — op rotate
         // done); CA-заявка жива, окно НЕ открывалось
         rig.Etcd.Store.TryGetValue("/valkeyworker/rotations/gate2", out _)
-            .Should().BeFalse("E доиграл заявку пароля этим же тиком");
+            .Should().BeFalse("E played the password ticket out in the same tick");
         var work = rig.Work("gate2");
-        work.Should().Contain("\"rotate\"", "журнал завершён ротатором E (K не заблокировал ветку)");
-        work.Should().Contain("done", "E доведён до конца");
+        work.Should().Contain("\"rotate\"", "journal finished by rotator E (K did not block the branch)");
+        work.Should().Contain("done", "E played through to the end");
         rig.Etcd.Store.TryGetValue("/valkeyworker/ca_rotations/gate2", out _)
-            .Should().BeTrue("CA-заявка ждёт (окно не открывалось)");
+            .Should().BeTrue("CA ticket alive (window was not opened)");
         rig.Etcd.Store.TryGetValue("/valkey/clusters/gate2/ca_next_key", out _)
-            .Should().BeFalse("окно не открывалось");
+            .Should().BeFalse("window was not opened");
     }
 }

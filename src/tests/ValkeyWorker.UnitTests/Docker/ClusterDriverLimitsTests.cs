@@ -26,7 +26,7 @@ public class ClusterDriverLimitsTests
             => Task.FromResult(Result<Shared.Docker.NodeLimits?>.Success(limits));
 
         // Остальные члены union — вне сценария теста.
-        private static NotImplementedException NotUsed() => new("движок-дублёр: маршрут вне сценария теста");
+        private static NotImplementedException NotUsed() => new("stub engine: route outside the test scenario");
 
         public Task<Result> PingAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<DockerContainer>>> ListContainersAsync(string namePrefix, bool all, CancellationToken ct) => throw NotUsed();

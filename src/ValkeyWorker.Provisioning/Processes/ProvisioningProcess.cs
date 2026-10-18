@@ -420,7 +420,7 @@ public sealed class ProvisioningProcess(
                     break;
                 if (_clock.GetUtcNow() - startedAt > budget)
                     return Result.Failed(new TimeoutException(
-                        $"provision {snap.Cluster}/{node}: нода не отвечает {budget.TotalSeconds:F0} c " +
+                        $"provision {snap.Cluster}/{node}: node not responding for {budget.TotalSeconds:F0}s " +
                         $"({ping.Error!.Message})"));
                 await Task.Delay(100, ct);
             }

@@ -85,7 +85,7 @@ public class PasswordRotatorTests
         // стейт доигрывания удалены, E3 удалил OLD — на ноде ровно NEW.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         var newInEtcd = rig.Etcd.Store[$"/valkey/clusters/rot/app_password"].Value;
-        CanonPassword.IsMatch(newInEtcd).Should().BeTrue("NEW — канон 32 симв [A-Za-z0-9]");
+        CanonPassword.IsMatch(newInEtcd).Should().BeTrue("NEW matches the 32-char [A-Za-z0-9] canon");
         newInEtcd.Should().NotBe(OldApp);
         rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/rot");
         rig.Etcd.Store.Should().NotContainKey("/valkeyworker/work/rot/rotation");
@@ -111,7 +111,7 @@ public class PasswordRotatorTests
             : null;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
-        first.IsSuccess.Should().BeFalse("E2 упал — отказ после E1");
+        first.IsSuccess.Should().BeFalse("E2 failed — failure after E1");
 
         // Стейт e1-added несёт NEW; OLD ещё в etcd.
         var state = rig.Etcd.Store["/valkeyworker/work/resume/rotation"].Value;
@@ -151,14 +151,14 @@ public class PasswordRotatorTests
             : null;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
-        first.IsSuccess.Should().BeFalse("put стейта после E1 упал");
+        first.IsSuccess.Should().BeFalse("state put after E1 failed");
 
         // Стейт e1-pending записан до E1, NEW1 уже добавлен на ноду.
         var state = rig.Etcd.Store[stateKey].Value;
         state.Should().Contain("e1-pending");
         var stagedNew = Regex.Match(state, @"""new"":""([A-Za-z0-9]{32})""").Groups[1].Value;
         stagedNew.Should().NotBeEmpty();
-        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew, "E1 успел до отказа put");
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew, "E1 landed before the put failure");
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(OldApp);
 
         // Act: второй тик (отказ ушёл) — доигрывание с ТЕМ ЖЕ NEW из стейта
@@ -171,7 +171,7 @@ public class PasswordRotatorTests
         second.IsSuccess.Should().BeTrue(second.Error?.Message);
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
         rig.Valkey.Users["app"].Passwords.Should().HaveCount(1,
-            "E1 повторён тем же NEW (идемпотентно), без осиротевших паролей");
+            "E1 replayed with the same NEW (idempotent), no orphaned passwords");
         rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew);
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
         rig.Etcd.Store.Should().NotContainKey(stateKey);
@@ -199,11 +199,11 @@ public class PasswordRotatorTests
 
         // Assert: штатный Failed без исключения; стейт и кред не тронуты —
         // доигрывание повторится следующим тиком со свежим снапшотом.
-        result.IsSuccess.Should().BeFalse("без endpoints доигрывание невозможно");
+        result.IsSuccess.Should().BeFalse("replay is impossible without endpoints");
         result.Error.Should().BeOfType<ApplicationException>();
         rig.Etcd.Store[stateKey].Value.Should().Be(before);
-        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(OldApp, "до E2 дело не дошло");
-        rig.Valkey.SetUserCalls.Should().BeEmpty("ни E1, ни E3 не выполняются без endpoints");
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(OldApp, "E2 was never reached");
+        rig.Valkey.SetUserCalls.Should().BeEmpty("neither E1 nor E3 runs without endpoints");
     }
 
     [Fact]
@@ -219,11 +219,11 @@ public class PasswordRotatorTests
         rig.Valkey.SetUserFailFromIndex = 1;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
-        first.IsSuccess.Should().BeFalse("E3 упал — краш между E2 и E3");
-        rig.Etcd.Store[$"/valkey/clusters/e2e3/app_password"].Value.Should().NotBe(OldApp, "E2 закоммитил NEW");
-        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/e2e3", "заявка снята в E2");
+        first.IsSuccess.Should().BeFalse("E3 failed — crash between E2 and E3");
+        rig.Etcd.Store[$"/valkey/clusters/e2e3/app_password"].Value.Should().NotBe(OldApp, "E2 committed NEW");
+        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/e2e3", "ticket removed in E2");
         rig.Etcd.Store["/valkeyworker/work/e2e3/rotation"].Value.Should().Contain("e2-committed");
-        rig.Valkey.Users["app"].Passwords.Should().Contain(OldApp, "OLD ещё не снят (E3 упал)");
+        rig.Valkey.Users["app"].Passwords.Should().Contain(OldApp, "OLD not yet removed (E3 failed)");
 
         // Act: второй тик — заявки НЕТ, но стейт e2-committed доигрывает E3.
         rig.Valkey.SetUserFailFromIndex = null;
@@ -256,15 +256,15 @@ public class PasswordRotatorTests
 
         // Assert: окно «E2 закоммичен, стейт не записан» — etcd NEW, стейт
         // e1-added (без исправления второй тик вечный Failed «изменился»).
-        first.IsSuccess.Should().BeFalse("запись e2-committed упала после коммита E2");
+        first.IsSuccess.Should().BeFalse("e2-committed write failed after the E2 commit");
         var state = rig.Etcd.Store[stateKey].Value;
         state.Should().Contain("e1-added");
         var stagedNew = Regex.Match(state, @"""new"":""([A-Za-z0-9]{32})""").Groups[1].Value;
         stagedNew.Should().NotBeEmpty();
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew,
-            "txn E2 закоммичена до отказа put");
+            "E2 txn committed before the put failure");
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}",
-            "условный del выполнен до отказа записи стейта");
+            "conditional del ran before the state write failure");
 
         // Act: второй тик — compare E2 не проходит (значение уже NEW),
         // перечитывание подтверждает свой коммит → промоция стейта, E3.
@@ -332,7 +332,7 @@ public class PasswordRotatorTests
         // ротация доиграна.
         first.IsSuccess.Should().BeTrue(first.Error?.Message);
         rig.Etcd.Store[$"/valkeyworker/rotations/{cluster}"].Value.Should().Be(foreignPayload,
-            "чужая заявка не тронута условным del");
+            "foreign ticket untouched by the conditional del");
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
         rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
         rig.Etcd.Store.Should().NotContainKey(stateKey);
@@ -345,11 +345,11 @@ public class PasswordRotatorTests
         second.IsSuccess.Should().BeTrue(second.Error?.Message);
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
         var adminNew = rig.Etcd.Store[$"/valkey/clusters/{cluster}/admin_password"].Value;
-        CanonPassword.IsMatch(adminNew).Should().BeTrue("admin_password — NEW канона 32 симв");
+        CanonPassword.IsMatch(adminNew).Should().BeTrue("admin_password is a canon NEW of 32 chars");
         adminNew.Should().NotBe(OldAdmin);
         rig.Valkey.Users["admin"].Passwords.Should().NotContain(OldAdmin);
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew,
-            "ротация admin не трогает app-кред");
+            "admin rotation does not touch the app credential");
     }
 
     [Fact]
@@ -490,7 +490,7 @@ public class PasswordRotatorTests
 
         // Assert: Failed (доигрывание — третий предикат гварда ложен), заявка/
         // стейт живы, исхода нет.
-        result.IsSuccess.Should().BeFalse("доигрывание начатой ротации без endpoints невозможно");
+        result.IsSuccess.Should().BeFalse("replaying a started rotation without endpoints is impossible");
         rig.Etcd.Store.Should().ContainKey($"/valkeyworker/rotations/{cluster}");
         rig.Etcd.Store.Should().ContainKey(stateKey);
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ticket_outcomes/{cluster}");

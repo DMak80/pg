@@ -54,7 +54,7 @@ public class ValkeyClusterClassifierTests
         var snap = new ValkeyClusterSnapshot(
             "demo", null,
             new Dictionary<string, ValkeyNodeSnapshot>(),
-            null, null, null, null, null, null, null, [], ["битый JSON"]);
+            null, null, null, null, null, null, null, [], ["broken JSON"]);
 
         // Act/Assert
         ValkeyClusterClassifier.Classify(snap).Should().Be(ValkeyClusterKind.Skip);

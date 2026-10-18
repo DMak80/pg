@@ -154,7 +154,7 @@ public sealed class CaRotator(
                 return await FailAsync(cluster, bundlePut.Error!, "phase-d", ct);
             if (!bundlePut.Value.Succeeded)
                 return await FailAsync(cluster, new ApplicationException(
-                    $"rotate-ca {cluster}: ca_pem изменился с момента чтения (внешняя запись?) — ретрай тиком"), "phase-d", ct);
+                    $"rotate-ca {cluster}: ca_pem changed since read (external write?) — retry on next tick"), "phase-d", ct);
         }
 
         // R→C→K4: Task 3 (ReplayNodeCommitAsync); до его появления — окно живо.
@@ -257,7 +257,7 @@ public sealed class CaRotator(
             return await FailAsync(cluster, commit.Error!, PhaseCommitted, ct);
         if (!commit.Value.Succeeded)
             return await FailAsync(cluster, new ApplicationException(
-                $"rotate-ca {cluster}: ca_next_key изменился с момента чтения (параллельная ротация?) — ретрай тиком"), PhaseCommitted, ct);
+                $"rotate-ca {cluster}: ca_next_key changed since read (concurrent rotation?) — retry on next tick"), PhaseCommitted, ct);
 
         return await FinishAsync(cluster, ct);
     }

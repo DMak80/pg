@@ -57,7 +57,7 @@ public sealed class NodeSupervisor(
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId, existingTrack.Value ?? new Dictionary<string, long>(),
-                "нет ACL-кредов или CA в etcd — пересоздание отложено (миграция T), пробы пропущены", ct);
+                "no ACL creds or CA in etcd — recreation deferred (T migration), probes skipped", ct);
             return skip.IsSuccess ? Result.Success() : skip;
         }
 

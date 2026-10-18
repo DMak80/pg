@@ -485,10 +485,10 @@ internal static class Fakes
             => Result<T>.Failed(new ApplicationException("valkey connection failed"));
 
         // Нода молчит: соединение установилось, ответа нет (таймаут пробы).
-        private Result SilentFail() => Result.Failed(new TimeoutException("valkey не ответил за бюджет пробы"));
+        private Result SilentFail() => Result.Failed(new TimeoutException("valkey did not respond within the probe budget"));
 
         private Result<T> SilentBlind<T>() where T : notnull
-            => Result<T>.Failed(new TimeoutException("valkey не ответил за бюджет пробы"));
+            => Result<T>.Failed(new TimeoutException("valkey did not respond within the probe budget"));
 
         public Task<Result> PingAsync(ValkeyEndpoint ep, CancellationToken ct)
         {

@@ -82,7 +82,7 @@ public class DeprovisioningProcessTests
         var dockerIndex = rig.Log.FindIndex(l => l.StartsWith("docker:"));
         var etcdIndex = rig.Log.FindIndex(l => l.StartsWith("etcd:"));
         dockerIndex.Should().BeGreaterThanOrEqualTo(0);
-        etcdIndex.Should().BeGreaterThan(dockerIndex, "порядок arch/21 §5 B: сначала docker, потом etcd");
+        etcdIndex.Should().BeGreaterThan(dockerIndex, "arch/21 §5 B ordering: docker first, then etcd");
 
         rig.Driver.Containers.Should().NotContainKey($"vwk-{cluster}-node1");
         // X1 (env-TLS): remove-tls-volume-шага НЕТ — легаси-том демонтаж не
@@ -97,7 +97,7 @@ public class DeprovisioningProcessTests
         // стейт доигрывания ротации тоже удалён.
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/work/{cluster}")).Should().BeEmpty();
         (await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).Value
-            .Should().BeTrue("клэйм снят явно — второй инстанс захватывает");
+            .Should().BeTrue("claim removed explicitly — a second instance can acquire it");
         rig.Snapshots.Should().HaveCount(2);
     }
 
@@ -164,7 +164,7 @@ public class DeprovisioningProcessTests
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ca_rotations/{cluster}");
         rig.Etcd.Store.Keys.Where(k => k.StartsWith($"/valkey/clusters/{cluster}/"))
-            .Should().BeEmpty("префиксный del домена забирает staging ca_next_*");
+            .Should().BeEmpty("domain prefix del takes staging ca_next_* with it");
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/claims/{cluster}");
     }
 

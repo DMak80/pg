@@ -46,7 +46,7 @@ public sealed class ServiceProbes(
         }
         catch (Exception ex)
         {
-            return Result.Failed(new ApplicationException($"etcd-проба: {ex.Message}", ex));
+            return Result.Failed(new ApplicationException($"etcd probe: {ex.Message}", ex));
         }
     }
 

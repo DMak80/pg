@@ -214,7 +214,7 @@ public class NodeSupervisorTests
         rig.Driver.Ensured.Should().BeEmpty();
         rig.Etcd.Store["/valkey/clusters/s7/nodes/node1/state"].Value.Should().Be("RUNNING");
         var track = await journal.ReadUnreachableAsync("s7", TestContext.Current.CancellationToken);
-        track.Value!["node1"].Should().Be(1000, "слепой тик не двигает трек");
+        track.Value!["node1"].Should().Be(1000, "blind tick does not move the track");
     }
 
     [Fact]
@@ -413,6 +413,6 @@ public class NodeSupervisorTests
         // last_error в journal — JSON-экранированный: декодируем.
         using var doc = System.Text.Json.JsonDocument.Parse(rig.Etcd.Store["/valkeyworker/work/noca"].Value);
         doc.RootElement.GetProperty("last_error").GetString()
-            .Should().Contain("пересоздание отложено");
+            .Should().Contain("recreation deferred");
     }
 }

@@ -223,7 +223,7 @@ public class CaRotatorTests
         // Assert — aborted-state-changed, Waiting; демонтаж B почистит всё
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.Waiting);
         rig.Get("/valkeyworker/work/c5").Should().Contain("aborted-state-changed");
-        rig.Get("/valkey/clusters/c5/ca_next_key").Should().BeNull("окно не открывалось");
+        rig.Get("/valkey/clusters/c5/ca_next_key").Should().BeNull("window was not opened");
     }
 
     [Fact]
@@ -247,12 +247,12 @@ public class CaRotatorTests
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.InProgress);
         var newPem = rig.Get("/valkey/clusters/c6/ca_pem")!;
-        newPem.Should().NotBe(oldPem).And.NotContain(oldPem, "bundle свёрнут после коммита");
+        newPem.Should().NotBe(oldPem).And.NotContain(oldPem, "bundle folded after commit");
         rig.Get("/valkey/clusters/c6/ca_next_key").Should().BeNull();
         rig.Get("/valkey/clusters/c6/ca_next_pem").Should().BeNull();
         rig.Get("/valkeyworker/ca_rotations/c6").Should().BeNull();
         rig.Get("/valkeyworker/work/c6").Should().Contain("done");
-        rig.Snapshots.Should().Contain("shot", "K4 снял снапшот «после»");
+        rig.Snapshots.Should().Contain("shot", "K4 took the after snapshot");
     }
 
     [Fact]
@@ -275,8 +275,8 @@ public class CaRotatorTests
         // пароль-заявка не тронута (E не идёт — его исполнит ветка после K)
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.InProgress);
         rig.Get("/valkeyworker/work/c7").Should().Contain("done");
-        rig.Get("/valkey/clusters/c7/ca_next_key").Should().BeNull("коммит прошёл");
-        rig.Get("/valkeyworker/rotations/c7").Should().NotBeNull("заявка креда не тронута");
+        rig.Get("/valkey/clusters/c7/ca_next_key").Should().BeNull("commit went through");
+        rig.Get("/valkeyworker/rotations/c7").Should().NotBeNull("credential ticket left untouched");
     }
 
     [Fact]
@@ -318,7 +318,7 @@ public class CaRotatorTests
         rig.EnsureNodeEnv("c9", nextPem, nextKey); // R: факт-детект true (env = NEW)
         var revisionBefore = rig.Etcd.Store["/valkey/clusters/c9/ca_pem"].ModRevision;
         rig.Etcd.TxnFault = req => req.Success.Count >= 5
-            ? new ApplicationException("инжект: отказ C-txn")
+            ? new ApplicationException("inject: C-txn failure")
             : null;
 
         // Act
@@ -328,10 +328,10 @@ public class CaRotatorTests
         // фаза D — пропущена — и фаза C — сорвана инжектом); окно ЖИВО
         // (staging на месте, bundle в ca_pem), Failed с last_error
         rig.Etcd.Store["/valkey/clusters/c9/ca_pem"].ModRevision.Should().Be(revisionBefore,
-            "put bundle пропущен (Contains-детект), коммит сорван инжектом");
-        outcome.IsSuccess.Should().BeFalse("C-txn отказ — Failed");
-        rig.Get("/valkey/clusters/c9/ca_next_key").Should().NotBeNull("окно живо");
-        rig.Get("/valkey/clusters/c9/ca_pem").Should().Be(oldPem + "\n" + nextPem, "bundle неизменен");
+            "bundle put skipped (Contains-detect), commit faulted by inject");
+        outcome.IsSuccess.Should().BeFalse("C-txn failure — Failed");
+        rig.Get("/valkey/clusters/c9/ca_next_key").Should().NotBeNull("window is alive");
+        rig.Get("/valkey/clusters/c9/ca_pem").Should().Be(oldPem + "\n" + nextPem, "bundle unchanged");
         rig.Get("/valkeyworker/work/c9").Should().Contain("last_error");
     }
 
@@ -351,10 +351,10 @@ public class CaRotatorTests
         // Assert — Failed «ретрай тиком» С last_error в journal (spec §5:
         // отказ между фазами — Failed c last_error); окно при этом открыто
         outcome.IsSuccess.Should().BeFalse();
-        outcome.Error!.Message.Should().Contain("ретрай");
+        outcome.Error!.Message.Should().Contain("retry");
         rig.Get("/valkey/clusters/c10/ca_next_key").Should().NotBeNull();
         rig.Get("/valkeyworker/work/c10").Should().Contain("last_error",
-            "отказ фазы D фиксируется в journal (FailAsync)");
+            "phase D failure is recorded in journal (FailAsync)");
     }
 
     [Fact]
@@ -372,13 +372,13 @@ public class CaRotatorTests
         // Assert — коммит: ca_pem/ca_key = NEW, staging/заявка удалены, done
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.InProgress);
         var newPem = rig.Get("/valkey/clusters/r1/ca_pem")!;
-        newPem.Should().NotBe(oldPem).And.NotContain(oldPem, "bundle свёрнут после коммита");
+        newPem.Should().NotBe(oldPem).And.NotContain(oldPem, "bundle folded after commit");
         rig.Get("/valkey/clusters/r1/ca_key").Should().NotBe(oldPem);
         rig.Get("/valkey/clusters/r1/ca_next_key").Should().BeNull();
         rig.Get("/valkey/clusters/r1/ca_next_pem").Should().BeNull();
         rig.Get("/valkeyworker/ca_rotations/r1").Should().BeNull();
         rig.Get("/valkeyworker/work/r1").Should().Contain("done");
-        rig.Snapshots.Should().Contain("shot", "K4 снял снапшот «после»");
+        rig.Snapshots.Should().Contain("shot", "K4 took the after snapshot");
     }
 
     [Fact]
@@ -400,7 +400,7 @@ public class CaRotatorTests
 
         // Assert — контейнер не тронут, RemoveNode не звался, коммит прошёл
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.InProgress);
-        rig.Driver.Removed.Should().BeEmpty("факт-детект: пересоздание не нужно");
+        rig.Driver.Removed.Should().BeEmpty("fact-detect: recreation not needed");
         rig.Driver.Containers[$"vwk-r2-node1"].Id.Should().Be(containerBefore);
         rig.Get("/valkey/clusters/r2/ca_pem").Should().Be(nextPem);
     }
@@ -440,7 +440,7 @@ public class CaRotatorTests
             && s.Env.ContainsKey("VALKEY_TLS_CERT")
             && s.Env.ContainsKey("VALKEY_TLS_KEY"));
         rig.Get("/valkey/clusters/r3/nodes/node1/state").Should().Be("RUNNING");
-        rig.Valkey.LastCaPem.Should().Be(nextPem, "AwaitBoot — якорь NEW (одноблочный парсер)");
+        rig.Valkey.LastCaPem.Should().Be(nextPem, "AwaitBoot — anchored on NEW (single-block parser)");
     }
 
     [Fact]
@@ -462,7 +462,7 @@ public class CaRotatorTests
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.Waiting);
         rig.Driver.Removed.Should().BeEmpty();
         rig.Get("/valkeyworker/work/r4").Should().Contain("aborted-state-changed");
-        rig.Get("/valkey/clusters/r4/ca_pem").Should().Contain(oldPem, "коммита не было");
+        rig.Get("/valkey/clusters/r4/ca_pem").Should().Contain(oldPem, "no commit happened");
     }
 
     [Fact]
@@ -491,7 +491,7 @@ public class CaRotatorTests
         // Assert — срыв compare: Failed «ретрай тиком» + last_error,
         // ca_pem остался bundle
         outcome.IsSuccess.Should().BeFalse();
-        outcome.Error!.Message.Should().Contain("ретрай");
+        outcome.Error!.Message.Should().Contain("retry");
         rig.Get("/valkey/clusters/r5/ca_pem").Should().Contain(oldPem);
         rig.Get("/valkeyworker/work/r5").Should().Contain("last_error");
     }
@@ -534,8 +534,8 @@ public class CaRotatorTests
         // Assert
         var bundlePut = ops.IndexOf("put:/valkey/clusters/r7/ca_pem");
         var statePut = ops.IndexOf("put:/valkey/clusters/r7/nodes/node1/state");
-        bundlePut.Should().BeGreaterThanOrEqualTo(0, "bundle записан фазой D");
-        statePut.Should().BeGreaterThan(bundlePut, "R (state) строго после D (bundle)");
+        bundlePut.Should().BeGreaterThanOrEqualTo(0, "bundle written by phase D");
+        statePut.Should().BeGreaterThan(bundlePut, "R (state) strictly after D (bundle)");
     }
 
     [Fact]
@@ -555,7 +555,7 @@ public class CaRotatorTests
         rig.Get("/valkeyworker/work/r8").Should().Contain("done");
         rig.Snapshots.Should().Contain("shot");
         rig.Driver.Removed.Should().BeEmpty();
-        rig.Valkey.LastCaPem.Should().BeNull("PING в хвосте не выполняется");
+        rig.Valkey.LastCaPem.Should().BeNull("tail PING is not executed");
     }
 
     // ===== t10: экспирация K0.5-точек под гвардом; окно уводит в доигрывание =====
@@ -612,7 +612,7 @@ public class CaRotatorTests
         rig.SeedOldTicket("c22");
         rig.SeedWindow("c22");
         rig.Etcd.TxnFault = req => req.Success.Count >= 5
-            ? new ApplicationException("инжект: отказ C-txn")
+            ? new ApplicationException("inject: C-txn failure")
             : null;
 
         // Act
