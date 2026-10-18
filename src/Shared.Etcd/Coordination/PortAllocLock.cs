@@ -135,7 +135,7 @@ public sealed class PortAllocLock(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -149,7 +149,7 @@ public sealed class PortAllocLock(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     // Value ключа {prefix}/locks/portalloc (arch/14 §3.3).
@@ -162,4 +162,4 @@ public sealed class PortAllocLock(
 /// НЕ фейл — без бэкоффа; процесс возвращает InProgress (waiting-portalloc-lock),
 /// следующий тик повторяет. Маркер-тип для ветки обработки рядом с FailAsync.</summary>
 public sealed class PortLockBusyException(string key) : Exception(
-    $"{key}: занят другим инстансом — повторить следующим тиком");
+    $"{key}: busy by another instance — retry on the next tick");

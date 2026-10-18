@@ -8,7 +8,7 @@ namespace Shared.Etcd.Client;
 
 // HTTP-ошибка gateway: не-2xx от /v3/*.
 public sealed class EtcdHttpException(string endpoint, int statusCode, string body)
-    : Exception($"etcd {endpoint} ответил {statusCode}: {body}");
+    : Exception($"etcd {endpoint} responded {statusCode}: {body}");
 
 // Все живые endpoints не ответили (после failover).
 public sealed class EtcdUnreachableException(string message) : Exception(message);
@@ -99,7 +99,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         // Один цикл продления: TTL<=0 в ответе — lease истёк (например, после разрыва).
         return result.Bind(r => r.Result is { Ttl: > 0 }
             ? Result.Success()
-            : Result.Failed(new EtcdHttpException(endpoint, 404, $"lease {lease} не продлён (TTL=0)")));
+            : Result.Failed(new EtcdHttpException(endpoint, 404, $"lease {lease} not renewed (TTL=0)")));
     }
 
     public async Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
@@ -197,7 +197,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
                 TxnTarget.Version => 0,
                 TxnTarget.ModRevision => 2,
                 TxnTarget.Value => 3,
-                _ => throw new InvalidOperationException($"неподдерживаемая цель txn-compare: {c.Target}"),
+                _ => throw new InvalidOperationException($"unsupported txn-compare target: {c.Target}"),
             },
             ["result"] = c.Pred == TxnPredicate.Greater ? 1 : 0,
         };
@@ -213,7 +213,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
                 dto["value"] = ToB64(c.Arg);
                 break;
             default:
-                throw new InvalidOperationException($"неподдерживаемая цель txn-compare: {c.Target}");
+                throw new InvalidOperationException($"unsupported txn-compare target: {c.Target}");
         }
 
         return dto;
@@ -237,7 +237,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
                 ? new Dictionary<string, object> { ["key"] = ToB64(d.Key), ["range_end"] = ToB64(PrefixEnd(d.Key)) }
                 : new Dictionary<string, object> { ["key"] = ToB64(d.Key) },
         },
-        _ => throw new InvalidOperationException($"неизвестная операция txn: {op}"),
+        _ => throw new InvalidOperationException($"unknown txn operation: {op}"),
     };
 
     private async Task<T> PostAsync<T>(string endpoint, string path, object body, CancellationToken ct)
@@ -253,7 +253,7 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         }
 
         return await response.Content.ReadFromJsonAsync<T>(Json, ct)
-            ?? throw new EtcdHttpException(endpoint, (int)response.StatusCode, "пустой ответ");
+            ?? throw new EtcdHttpException(endpoint, (int)response.StatusCode, "empty response");
     }
 
     private static string ToB64(string value)

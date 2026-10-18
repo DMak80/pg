@@ -145,7 +145,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         }
         catch (JsonException e)
         {
-            return Result<WorkState?>.Failed(new ApplicationException($"битый журнал {WorkKey(cluster)}: {e.Message}", e));
+            return Result<WorkState?>.Failed(new ApplicationException($"corrupt journal {WorkKey(cluster)}: {e.Message}", e));
         }
     }
 
@@ -211,7 +211,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -225,6 +225,6 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 }

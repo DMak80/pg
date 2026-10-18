@@ -48,7 +48,7 @@ public sealed class SnapshotJob(
         }
 
         if (data is null)
-            return Result<string>.Failed(last ?? new ApplicationException("нет etcd-endpoints"));
+            return Result<string>.Failed(last ?? new ApplicationException("no etcd endpoints"));
 
         try
         {
@@ -89,7 +89,7 @@ public sealed class SnapshotJob(
         }
         catch (Exception e)
         {
-            return Result<string>.Failed(new ApplicationException($"снапшот не записан в {dir}: {e.Message}", e));
+            return Result<string>.Failed(new ApplicationException($"snapshot not written to {dir}: {e.Message}", e));
         }
     }
 
@@ -121,7 +121,7 @@ public sealed class SnapshotJob(
         }
 
         if (revision is null)
-            return Result.Failed(lastErr ?? new ApplicationException("нет etcd-endpoints"));
+            return Result.Failed(lastErr ?? new ApplicationException("no etcd endpoints"));
 
         // 2. Compact — кластерная операция, достаточно на одном endpoint.
         var compacted = false;

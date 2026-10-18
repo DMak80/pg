@@ -358,7 +358,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -372,7 +372,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     // Value claim'а: {"instance","since_unix"} (spec §4.3).

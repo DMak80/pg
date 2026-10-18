@@ -140,7 +140,7 @@ public sealed class TicketExpirator(IEtcdGateway gateway, string[] endpoints)
                 return result;
             last = result;
         }
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -153,6 +153,6 @@ public sealed class TicketExpirator(IEtcdGateway gateway, string[] endpoints)
                 return result;
             last = result;
         }
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 }
