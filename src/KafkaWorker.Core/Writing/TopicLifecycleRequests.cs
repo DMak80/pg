@@ -59,21 +59,21 @@ public static class KafkaTopicCreateValidator
     {
         var errors = new List<ValidationError>();
         if (!KafkaLimits.TopicPattern().IsMatch(request.Name ?? "") || KafkaLimits.IsInternalTopic(request.Name ?? ""))
-            errors.Add(new("name", "имя: ^[a-zA-Z0-9._-]{1,249}$ без __-префикса"));
+            errors.Add(new("name", "name: ^[a-zA-Z0-9._-]{1,249}$ without __ prefix"));
 
         var partitions = request.Partitions ?? config.DefaultPartitions;
         if (partitions < KafkaLimits.MinPartitions || partitions > KafkaLimits.MaxPartitions)
-            errors.Add(new("partitions", $"partitions: целое {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
+            errors.Add(new("partitions", $"partitions: integer {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
 
         var rf = request.ReplicationFactor ?? (short)config.ReplicationFactor;
         if (rf < KafkaLimits.MinRf || rf > config.Brokers)
-            errors.Add(new("replicationFactor", $"replicationFactor: целое {KafkaLimits.MinRf}..{KafkaLimits.MaxRf} и ≤ brokers ({config.Brokers})"));
+            errors.Add(new("replicationFactor", $"replicationFactor: integer {KafkaLimits.MinRf}..{KafkaLimits.MaxRf} and ≤ brokers ({config.Brokers})"));
 
         if (request.RetentionMs is { } r && (r < KafkaLimits.MinRetentionMs || r > KafkaLimits.MaxRetentionMs))
             errors.Add(new("retentionMs", $"retentionMs: {KafkaLimits.MinRetentionMs}..{KafkaLimits.MaxRetentionMs}"));
 
         if (request.MinInSyncReplicas is { } isr && (isr < 1 || isr > rf))
-            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas: целое 1..replicationFactor (={rf})"));
+            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas: integer 1..replicationFactor (={rf})"));
 
         return errors;
     }
@@ -156,21 +156,21 @@ public static class KafkaTopicDesiredPlan
     {
         var errors = new List<ValidationError>();
         if (request.Partitions is null && request.RetentionMs is null && request.MinInSyncReplicas is null)
-            errors.Add(new("", "хотя бы одно поле заявки обязательно"));
+            errors.Add(new("", "at least one request field is required"));
 
         if (request.Partitions is { } p && p <= actualPartitions)
             errors.Add(new("partitions",
-                $"partitions: только увеличение (фактически {actualPartitions})"));
+                $"partitions: increase only (current {actualPartitions})"));
         if (request.Partitions is { } p2 && (p2 < KafkaLimits.MinPartitions || p2 > KafkaLimits.MaxPartitions))
             errors.Add(new("partitions",
-                $"partitions: целое {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
+                $"partitions: integer {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
 
         if (request.RetentionMs is { } r && (r < KafkaLimits.MinRetentionMs || r > KafkaLimits.MaxRetentionMs))
             errors.Add(new("retentionMs",
                 $"retentionMs: {KafkaLimits.MinRetentionMs}..{KafkaLimits.MaxRetentionMs}"));
 
         if (request.MinInSyncReplicas is { } isr && isr < 1)
-            errors.Add(new("minInSyncReplicas", "minInSyncReplicas: целое ≥ 1"));
+            errors.Add(new("minInSyncReplicas", "minInSyncReplicas: integer ≥ 1"));
 
         return errors;
     }

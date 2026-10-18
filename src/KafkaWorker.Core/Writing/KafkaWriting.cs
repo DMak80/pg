@@ -78,27 +78,27 @@ public static class KafkaCreateValidator
     {
         var errors = new List<ValidationError>();
         if (!KafkaLimits.ClusterPattern().IsMatch(request.Name ?? ""))
-            errors.Add(new("name", "имя: ^[a-z][a-z0-9_]{0,62}$"));
+            errors.Add(new("name", "name: ^[a-z][a-z0-9_]{0,62}$"));
 
         Range(request.Brokers ?? KafkaLimits.DefBrokers, KafkaLimits.MinBrokers, KafkaLimits.MaxBrokers,
-            "brokers", $"брокеры: целое {KafkaLimits.MinBrokers}..{KafkaLimits.MaxBrokers} (по умолчанию 3)", errors);
+            "brokers", $"brokers: integer {KafkaLimits.MinBrokers}..{KafkaLimits.MaxBrokers} (default 3)", errors);
         var rf = Range(request.ReplicationFactor ?? KafkaLimits.DefRf, KafkaLimits.MinRf, KafkaLimits.MaxRf,
-            "replicationFactor", $"replicationFactor: целое {KafkaLimits.MinRf}..{KafkaLimits.MaxRf} ≤ brokers", errors);
+            "replicationFactor", $"replicationFactor: integer {KafkaLimits.MinRf}..{KafkaLimits.MaxRf} ≤ brokers", errors);
         if ((request.Brokers ?? KafkaLimits.DefBrokers) < rf)
-            errors.Add(new("replicationFactor", "replicationFactor не может превышать brokers"));
+            errors.Add(new("replicationFactor", "replicationFactor cannot exceed brokers"));
 
         var minIsr = request.MinInSyncReplicas ?? KafkaLimits.DefMinIsr;
         if (minIsr < 1 || minIsr > rf)
-            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas: целое 1..replicationFactor (={rf})"));
+            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas: integer 1..replicationFactor (={rf})"));
 
         Range(request.DefaultPartitions ?? KafkaLimits.DefPartitions, KafkaLimits.MinPartitions, KafkaLimits.MaxPartitions,
-            "defaultPartitions", $"defaultPartitions: целое {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}", errors);
+            "defaultPartitions", $"defaultPartitions: integer {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}", errors);
         Range(request.DefaultRetentionMs ?? KafkaLimits.DefRetentionMs, KafkaLimits.MinRetentionMs, KafkaLimits.MaxRetentionMs,
             "defaultRetentionMs", $"defaultRetentionMs: {KafkaLimits.MinRetentionMs}..{KafkaLimits.MaxRetentionMs}", errors);
 
         var cpu = request.Cpu ?? KafkaLimits.DefCpu;
         if (cpu < KafkaLimits.MinCpu || cpu > KafkaLimits.MaxCpu)
-            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} ядер"));
+            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} cores"));
         GiB(request.MemGi ?? KafkaLimits.DefMemGi, "memGi", errors);
         GiB(request.DiskGi ?? KafkaLimits.DefDiskGi, "diskGi", errors);
         return errors;
@@ -112,12 +112,12 @@ public static class KafkaCreateValidator
         var errors = new List<ValidationError>();
         if (request.ReplicationFactor is null && request.MinInSyncReplicas is null
             && request.DefaultPartitions is null && request.DefaultRetentionMs is null)
-            errors.Add(new("", "хотя бы одно поле обновления обязательно"));
+            errors.Add(new("", "at least one update field is required"));
 
         if (request.ReplicationFactor is { } rf && (rf < KafkaLimits.MinRf || rf > KafkaLimits.MaxRf))
-            errors.Add(new("replicationFactor", $"replicationFactor: целое {KafkaLimits.MinRf}..{KafkaLimits.MaxRf}"));
+            errors.Add(new("replicationFactor", $"replicationFactor: integer {KafkaLimits.MinRf}..{KafkaLimits.MaxRf}"));
         if (request.MinInSyncReplicas is { } isr && isr < 1)
-            errors.Add(new("minInSyncReplicas", "minInSyncReplicas: целое ≥ 1"));
+            errors.Add(new("minInSyncReplicas", "minInSyncReplicas: integer ≥ 1"));
 
         if (request.DefaultPartitions is { } p && (p < KafkaLimits.MinPartitions || p > KafkaLimits.MaxPartitions))
             errors.Add(new("defaultPartitions", $"defaultPartitions: {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
@@ -128,7 +128,7 @@ public static class KafkaCreateValidator
         var effectiveRf = request.ReplicationFactor ?? currentRf;
         var effectiveIsr = request.MinInSyncReplicas ?? currentMinIsr;
         if (effectiveIsr > effectiveRf)
-            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas ({effectiveIsr}) не может превышать replicationFactor ({effectiveRf})"));
+            errors.Add(new("minInSyncReplicas", $"minInSyncReplicas ({effectiveIsr}) cannot exceed replicationFactor ({effectiveRf})"));
         return errors;
     }
 
@@ -149,7 +149,7 @@ public static class KafkaCreateValidator
     private static void GiB(int value, string field, List<ValidationError> errors)
     {
         if (value < KafkaLimits.MinGiB || value > KafkaLimits.MaxGiB)
-            errors.Add(new(field, $"{field}: целое {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
+            errors.Add(new(field, $"{field}: integer {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
     }
 }
 
@@ -285,17 +285,17 @@ public static class KafkaResourcesUpdateValidator
     {
         var errors = new List<ValidationError>();
         if (request.Cpu is null && request.MemGi is null && request.DiskGi is null)
-            errors.Add(new("", "хотя бы одно поле обновления обязательно"));
+            errors.Add(new("", "at least one update field is required"));
 
         var cpu = request.Cpu ?? current.Cpu;
         if (cpu < KafkaLimits.MinCpu || cpu > KafkaLimits.MaxCpu)
-            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} ядер"));
+            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} cores"));
         var memGi = request.MemGi ?? current.MemGi;
         if (memGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)
-            errors.Add(new("memGi", $"memGi: целое {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
+            errors.Add(new("memGi", $"memGi: integer {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
         var diskGi = request.DiskGi ?? current.DiskGi;
         if (diskGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)
-            errors.Add(new("diskGi", $"diskGi: целое {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
+            errors.Add(new("diskGi", $"diskGi: integer {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
         return errors;
     }
 }
