@@ -110,6 +110,107 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             $$"""{"requested_unix":{{requestedUnix}},"requested_by":"it"}""", lease: null,
             TestContext.Current.CancellationToken);
 
+    // Лимиты стагнации (spec §5.1 — подряд неудачные тики; §5.3 — подряд
+    // успешные с неизменным remaining) и размер кольцевого буфера диагностики.
+    private const int FailedTickLimit = 3;
+    private const int StagnantTickLimit = 3;
+    private const int DiagLimit = 32;
+
+    // Полный диагностический контекст кластера для сообщений падения
+    // (spec §4.3): прогресс-ключ (вкл. last_error), журнал work/<C>, исход
+    // ticket_outcomes/<C> — всё, что нужно для разбора флейка по выводу
+    // прогона без повторных запусков. Ошибки etcd не всплывают (fixture
+    // возвращает null) — сборщик не может замаскировать причину падения.
+    private async Task<string> DiagContextAsync(string cluster)
+    {
+        var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
+        var journal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+        var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
+        return $"progress={progress ?? "<нет>"}; journal={journal ?? "<нет>"}; outcome={outcome ?? "<нет>"}";
+    }
+
+    // Транзиент-толерантный тик (spec §5.1): одиночный Result.Failed — не
+    // провал теста: процесс идемпотентен, следующий тик переподаст батч
+    // (arch/16 §5 I); подряд FailedTickLimit неудачных — исключение с
+    // ПОЛНЫМ контекстом (DiagContextAsync + хвост ошибок тиков). Backstop
+    // на хелпер не заводится: тик завершается сам (≤30 с etcd-транзиент,
+    // ≤ExecSec=180 exec), три подряд провала — быстрое красное. Возвращает
+    // длительность успешной попытки — скользящий замер темпа для backstop
+    // финала (spec §5.3).
+    private async Task<TimeSpan> TickAsync(string label, string cluster, Func<Task<Result>> tick, Queue<string> diag)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var started = DateTimeOffset.UtcNow;
+            var result = await tick();
+            if (result.IsSuccess)
+                return DateTimeOffset.UtcNow - started;
+
+            EnqueueDiag(diag, $"{label}: тик #{attempt} провален — {result.Error!.Message}");
+            if (attempt >= FailedTickLimit)
+            {
+                var context = await DiagContextAsync(cluster);
+                throw new Xunit.Sdk.XunitException(
+                    $"{label}: стагнация — {FailedTickLimit} подряд неудачных тика; {context}; "
+                    + $"хвост тиков: {string.Join(" | ", diag)}");
+            }
+
+            await Task.Delay(3000, TestContext.Current.CancellationToken);
+        }
+    }
+
+    // Кольцевой буфер диагностики: последние DiagLimit строк.
+    private static void EnqueueDiag(Queue<string> diag, string line)
+    {
+        diag.Enqueue(line);
+        while (diag.Count > DiagLimit)
+            diag.Dequeue();
+    }
+
+    // partitions_remaining из прогресс-ключа balance (null — ключа нет или
+    // поля нет: ключ удаляется только финалом вместе с заявкой).
+    private async Task<int?> ReadRemainingAsync(string cluster)
+    {
+        var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
+        if (progress is null)
+            return null;
+        using var doc = JsonDocument.Parse(progress);
+        return doc.RootElement.TryGetProperty("partitions_remaining", out var rem)
+            ? rem.GetInt32()
+            : null;
+    }
+
+    // Вычисляемый backstop финала (spec §5.3): объём в батчах — из
+    // ФАКТИЧЕСКОГО pending первого успешного тика финального цикла, то есть
+    // из remaining, который этот тик записал в прогресс-ключ (100 — объём
+    // нового плана RF=2), а НЕ из remaining старого ключа до первого тика
+    // (~50 — занизил бы backstop вдвое): batches = ceil(remainingFirst /
+    // BatchPartitions); backstop = batches × фактическая средняя длительность
+    // успешного тика (скользящий замер) × запас 1.5 + 60 с; нижняя граница
+    // 300 с, верхний кап 1800 с. До первого тика — пол 300 с (нет ни замера
+    // темпа, ни объёма нового плана); backstop — предохранитель от вечного
+    // цикла, реальное падение при поломке даёт стагнация-детект раньше него.
+    private static int ConvergeBackstopSec(IReadOnlyList<double> tickSeconds, int? remainingFirst)
+    {
+        if (tickSeconds.Count == 0 || remainingFirst is null)
+            return 300;
+        var batches = Math.Max(1, (int)Math.Ceiling(remainingFirst.Value / (double)ReassignBatchPartitions));
+        var avgTickSec = tickSeconds.Average();
+        return Math.Clamp((int)(batches * avgTickSec * 1.5 + 60), 300, 1800);
+    }
+
+    // Красный финала AC12 с полной диагностикой (spec §4.3, §5.3): причина,
+    // сэмплы partitions_remaining, прогресс-ключ (вкл. last_error), журнал
+    // work/<C>, исход ticket_outcomes, хвост тиков — следующий флейк (если
+    // случится) разбирается по выводу прогона без повторов.
+    private async Task FailConvergeAsync(string cluster, Queue<string> diag, IReadOnlyList<int> remainingSamples, string cause)
+    {
+        var context = await DiagContextAsync(cluster);
+        throw new Xunit.Sdk.XunitException(
+            $"{cause}; сэмплы remaining: {string.Join(",", remainingSamples)}; {context}; "
+            + $"тики: {string.Join(" | ", diag)}");
+    }
+
     // ===== AC10 (spec §6 п.10): дедлок H↔K разорван приоритетом =====
 
     [Fact]
