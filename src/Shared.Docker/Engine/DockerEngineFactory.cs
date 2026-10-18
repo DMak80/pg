@@ -74,7 +74,7 @@ public class DockerEngineFactory : IAsyncDisposable
             // R15: plaintext tcp — только dev/тесты/локальные стенды; канон прода —
             // 2376+mTLS или ssh (arch/14 §2.2.1).
             _logger?.LogWarning(
-                "Engine API {Endpoint} без TLS (plaintext tcp; канон прода — tcp://:2376 mTLS или ssh://, arch/14 §2.2.1)",
+                "Engine API {Endpoint} without TLS (plaintext tcp; production canon is tcp://:2376 mTLS or ssh://, arch/14 §2.2.1)",
                 endpoint);
         }
 
@@ -147,7 +147,7 @@ internal sealed class DockerTlsMaterial
         var keyPem = tls.ClientKeyPem ?? TlsMaterial.ReadPemFile(tls.ClientKeyPath);
         if (caPem is null || certPem is null || keyPem is null)
             throw new ApplicationException(
-                "PgWorker:Docker:Tls: частичная TLS-конфигурация — нужны CA+CERT+KEY "
+                "PgWorker:Docker:Tls: partial TLS configuration — CA+CERT+KEY are required "
                 + "(env PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH], arch/14 §2.2.1)");
 
         // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream требует

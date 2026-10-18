@@ -112,7 +112,7 @@ public sealed record ServiceSpec(string Name, ContainerSpec Template, string Nod
 
 // HTTP-ошибка Engine API: не-2xx (кроме идемпотентных 404/409).
 public sealed class DockerHttpException(string method, string path, int statusCode, string body)
-    : Exception($"docker {method} {path} ответил {statusCode}: {body}")
+    : Exception($"docker {method} {path} responded {statusCode}: {body}")
 {
     public int StatusCode { get; } = statusCode;
 

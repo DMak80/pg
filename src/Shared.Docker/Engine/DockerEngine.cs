@@ -58,7 +58,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         => await Result<DockerContainerInspect>.FromAsync(async () =>
         {
             var dto = await GetAsync<ContainerInspectDto>($"/containers/{Uri.EscapeDataString(id)}/json", ct)
-                      ?? throw new ApplicationException($"инспект контейнера {id} пуст");
+                      ?? throw new ApplicationException($"inspect of container {id} is empty");
             var ports = new List<PortMap>();
             foreach (var (key, bindings) in dto.NetworkSettings?.Ports ?? [])
             {
@@ -307,7 +307,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     ["Cmd"] = cmd,
                 }, ct);
             if (exec is not { Id.Length: > 0 })
-                throw new DockerHttpException("POST", $"/containers/{containerId}/exec", 500, "пустой ответ exec create");
+                throw new DockerHttpException("POST", $"/containers/{containerId}/exec", 500, "empty exec create response");
 
             // 2) старт: тело ответа — application/vnd.docker.raw-stream (мультиплексирован).
             var (stdout, stderr) = await StartExecAsync(exec.Id, ct);

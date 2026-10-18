@@ -38,7 +38,7 @@ public sealed class SshHostConnection : IAsyncDisposable
         _logger = logger ?? NullLogger.Instance;
         var keyPem = ReadKeyMaterial(options)
             ?? throw new ApplicationException(
-                $"PgWorker:Docker:Ssh: ключ не задан (env PGW_DOCKER_SSH_KEY[_PATH]) для {_endpoint}, arch/14 §2.2.1");
+                $"PgWorker:Docker:Ssh: key not set (env PGW_DOCKER_SSH_KEY[_PATH]) for {_endpoint}, arch/14 §2.2.1");
         _fingerprint = options.FingerprintSha256;
         var keyFile = new PrivateKeyFile(new MemoryStream(Encoding.UTF8.GetBytes(keyPem)));
         var user = scheme.User ?? "root"; // дефолт docker-хостов: операторские демоны
@@ -55,7 +55,7 @@ public sealed class SshHostConnection : IAsyncDisposable
             {
                 _tofuWarned[0] = true;
                 _logger.LogWarning(
-                    "SSH host-key {Endpoint} принят по TOFU (fingerprint {Fingerprint}); закрепите PGW_DOCKER_SSH_FINGERPRINT (R14)",
+                    "SSH host-key {Endpoint} accepted via TOFU (fingerprint {Fingerprint}); pin PGW_DOCKER_SSH_FINGERPRINT (R14)",
                     _endpoint, FingerprintSha256);
             }
 
@@ -79,7 +79,7 @@ public sealed class SshHostConnection : IAsyncDisposable
         if (IsConnected)
             return;
         if (DateTimeOffset.UtcNow - _lastAttempt < TimeSpan.FromSeconds(ReconnectBackoffSec))
-            throw new ApplicationException($"SSH-туннель {_endpoint} разорван — повторная попытка после бэкоффа (transient)");
+            throw new ApplicationException($"SSH tunnel {_endpoint} is down — retry after backoff (transient)");
         Connect();
     }
 
@@ -92,7 +92,7 @@ public sealed class SshHostConnection : IAsyncDisposable
         }
         catch (Exception e)
         {
-            throw new ApplicationException($"SSH-подключение {_endpoint} не удалось (transient): {e.Message}", e);
+            throw new ApplicationException($"SSH connection {_endpoint} failed (transient): {e.Message}", e);
         }
     }
 
@@ -119,7 +119,7 @@ public sealed class SshHostConnection : IAsyncDisposable
         }
         catch (Exception e)
         {
-            _logger.LogWarning("закрытие SSH-туннеля {Endpoint}: {Message}", _endpoint, e.Message);
+            _logger.LogWarning("failed to close SSH tunnel {Endpoint}: {Message}", _endpoint, e.Message);
         }
 
         return ValueTask.CompletedTask;

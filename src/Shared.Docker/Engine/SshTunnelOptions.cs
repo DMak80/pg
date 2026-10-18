@@ -35,7 +35,7 @@ public sealed class SshTunnelOptions
     {
         if (string.IsNullOrWhiteSpace(RemoteDaemonHost) || RemoteDaemonPort is < 1 or > 65535)
             throw new ApplicationException(
-                $"PgWorker:Docker:Ssh: некорректная цель туннеля {RemoteDaemonHost}:{RemoteDaemonPort} (arch/14 §2.2.1)");
+                $"PgWorker:Docker:Ssh: invalid tunnel target {RemoteDaemonHost}:{RemoteDaemonPort} (arch/14 §2.2.1)");
         return (RemoteDaemonHost, RemoteDaemonPort);
     }
 

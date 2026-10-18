@@ -39,11 +39,11 @@ public sealed record EndpointScheme(string Scheme, string Host, int Port, string
             }
 
             if (string.IsNullOrEmpty(rest))
-                throw new ApplicationException($"endpoint без хоста: {endpoint}");
+                throw new ApplicationException($"endpoint without host: {endpoint}");
             return new EndpointScheme(scheme.Item1, rest, port, user);
         }
 
         throw new ApplicationException(
-            $"неизвестная схема endpoint: {endpoint} (ожидался unix://|tcp://|ssh://, arch/14 §2.2)");
+            $"unknown endpoint scheme: {endpoint} (expected unix://|tcp://|ssh://, arch/14 §2.2)");
     }
 }
