@@ -12,7 +12,15 @@ namespace KafkaWorker.IntegrationTests.Etcd;
 // секции «busy из префикса portalloc → Allocate → put portalloc» под глобальным
 // клэймом дают НЕПЕРЕСЕКАЮЩИЕСЯ порты; без клэйма+индекса обе читали бы пустой
 // префикс (класс гонки t90: «port is already allocated»; порт PgWorker-теста).
-[Collection(EtcdCollection.Name)]
+// Своя etcd-only коллекция (spec 2026-10-17 §6.3.6): собственный etcd-контур
+// класса — полный канон per-class окружения.
+[CollectionDefinition(Name)]
+public sealed class PortAllocRaceCollection : ICollectionFixture<EtcdFixture>
+{
+    public const string Name = "kfw-etcd-palloc-race";
+}
+
+[Collection(PortAllocRaceCollection.Name)]
 public class PortAllocLockRaceTests(EtcdFixture fixture)
 {
     private EtcdGateway Gateway => fixture.Gateway;

@@ -17,7 +17,15 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // bootstrap роняет процесс нативно (дефект librdkafka 2.14.2, репро 2026-09-04),
 // поэтому коллектор против лежащего кластера интеграционно не гоняется — его
 // гейт/пре-гейт покрыты юнитами (KafkaMetricsCollectorTests). Литералов :16000 нет.
-[Collection(EtcdCollection.Name)] // etcd-only фикстура (контейнеров kafka нет)
+// Своя etcd-only коллекция (spec 2026-10-17 §6.3.6): собственный etcd-контур
+// класса (контейнеров kafka нет) — полный канон per-class окружения.
+[CollectionDefinition(Name)]
+public sealed class ClientChurnCollection : ICollectionFixture<EtcdFixture>
+{
+    public const string Name = "kfw-etcd-churn";
+}
+
+[Collection(ClientChurnCollection.Name)]
 public class KafkaClientChurnTests(EtcdFixture etcd)
 {
     [Fact]
