@@ -7,7 +7,7 @@ namespace Shared.Core.UnitTests.Hosting;
 public sealed class WatchdogConfigGuardTests
 {
     [Fact]
-    public void ScanМеньшеПорога_НеБросает()
+    public void ScanBelowThreshold_DoesNotThrow()
     {
         // Arrange/Act/Assert: дефолты (5/5, порог 2×15=30) — старт разрешён
         var act = () => WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
@@ -20,7 +20,7 @@ public sealed class WatchdogConfigGuardTests
     [InlineData(5, 30, 2, 15)] // keepalive == порогу
     [InlineData(60, 5, 2, 15)] // scan > порога
     [InlineData(5, 5, 4, 15)]  // порог 60, scan 5 — ок (контроль позитивного на кастоме)
-    public void ГраницыПорога_FailFastЛиРазрешение(int scan, int keepalive, int multiplier, int window)
+    public void ThresholdBoundary_FailFastOrAllows(int scan, int keepalive, int multiplier, int window)
     {
         // Arrange
         var watchdog = new WatchdogOptions { Multiplier = multiplier, CheckIntervalSec = window };

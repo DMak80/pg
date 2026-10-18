@@ -341,12 +341,12 @@ public class ResultTests
         string? value = null;
 
         // Act
-        var result = Result.FromValue(value, "значение обязательно");
+        var result = Result.FromValue(value, "value is required");
 
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeOfType<ApplicationException>()
-            .Which.Message.Should().Be("значение обязательно");
+            .Which.Message.Should().Be("value is required");
     }
 
     [Fact]
@@ -688,7 +688,7 @@ public class ResultTests
     {
         try
         {
-            throw new InvalidOperationException("с трейсом");
+            throw new InvalidOperationException("with stack trace");
         }
         catch (Exception ex)
         {

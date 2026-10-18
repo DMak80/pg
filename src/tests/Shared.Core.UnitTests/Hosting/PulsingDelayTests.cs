@@ -7,7 +7,7 @@ namespace Shared.Core.UnitTests.Hosting;
 public sealed class PulsingDelayTests
 {
     [Fact]
-    public async Task SleepAsync_ЧанкКорочеОкна_ОтметкаНаКаждыйЧанк()
+    public async Task SleepAsync_ChunkShorterThanWindow_MarksEveryChunk()
     {
         // Arrange: сон 3 c при окне 1 c → чанк = max(1 c, 0.5 c) = 1 c
         // (в проде окно 15 c → чанк 7.5 c < 15 c)
@@ -24,7 +24,7 @@ public sealed class PulsingDelayTests
     }
 
     [Fact]
-    public async Task SleepAsync_Отмена_ВыходитБыстро()
+    public async Task SleepAsync_Cancellation_ExitsQuickly()
     {
         // Arrange: долгий сон + отмена через 300 мс (меньше чанка 1 c)
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));

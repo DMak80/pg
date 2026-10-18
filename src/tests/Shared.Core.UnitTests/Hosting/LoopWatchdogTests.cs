@@ -112,7 +112,7 @@ public sealed class LoopWatchdogTests
         marks.Should().ContainSingle().Which.Should().Be("reconcile");
         logger.Entries.Should().Contain(e =>
             e.Level == LogLevel.Critical && e.Message.Contains("reconcile")
-            && e.Message.Contains("не проявлял активности")
+            && e.Message.Contains("showed no activity")
             && e.Message.Contains("self-restart"));
         cts.Cancel();
     }

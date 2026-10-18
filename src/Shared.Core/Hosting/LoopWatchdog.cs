@@ -101,7 +101,7 @@ public sealed class LoopWatchdog(
     {
         StaleLoop = heartbeat.Name;
         logger.LogCritical(
-            "watchdog: цикл {Loop} не проявлял активности {Age:F0} c (порог {Threshold:F0} c) — инициирован self-restart",
+            "watchdog: loop {Loop} showed no activity for {Age:F0} s (threshold {Threshold:F0} s) — initiating self-restart",
             heartbeat.Name, age.TotalSeconds, heartbeat.StaleAfter.TotalSeconds);
         try
         {
