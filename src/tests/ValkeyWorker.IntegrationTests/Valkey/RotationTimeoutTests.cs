@@ -43,7 +43,7 @@ public class RotationTimeoutTests(ValkeyClusterFixture fx)
         // исход expired; повторная заявка ставится (409-ситуация невозможна).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         (await fx.GetAsync($"/valkeyworker/rotations/{cluster}")).Should().BeNull(
-            "не-начатая заявка старше порога снята");
+            "an unstarted ticket older than the threshold is removed");
         (await fx.GetAsync($"/valkeyworker/ticket_outcomes/{cluster}"))!
             .Should().Contain("\"kind\":\"password-app\"")
             .And.Contain("\"outcome\":\"expired\"")
@@ -51,7 +51,7 @@ public class RotationTimeoutTests(ValkeyClusterFixture fx)
         await fx.PutAsync($"/valkeyworker/rotations/{cluster}",
             $$"""{"role":"app","requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"it"}""");
         (await fx.GetAsync($"/valkeyworker/rotations/{cluster}")).Should().NotBeNull(
-            "повторная заявка ставится после снятия");
+            "a new ticket can be placed after the removal");
 
         // Восстановленный кластер: полная ротация доигрывается и перезаписывает
         // исход done (AC13: expired → done, алерт панели погашен).
@@ -60,8 +60,8 @@ public class RotationTimeoutTests(ValkeyClusterFixture fx)
             await fx.RequireSnapshotAsync(cluster), TestContext.Current.CancellationToken);
         done.IsSuccess.Should().BeTrue(done.Error?.Message);
         (await fx.GetAsync($"/valkeyworker/rotations/{cluster}")).Should().BeNull(
-            "ротация доиграна тиком (окно двух паролей E1–E3)");
+            "the rotation was completed by the tick (two-password window E1–E3)");
         (await fx.GetAsync($"/valkeyworker/ticket_outcomes/{cluster}"))!
-            .Should().Contain("\"outcome\":\"done\"", "успешная ротация гасит expired перезаписью");
+            .Should().Contain("\"outcome\":\"done\"", "a successful rotation clears expired by overwrite");
     }
 }

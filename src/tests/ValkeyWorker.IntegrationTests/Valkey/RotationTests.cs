@@ -11,7 +11,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class RotationTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task РотацияApp_ОкноИФинал()
+    public async Task AppRotation_WindowAndFinal()
     {
         // Arrange: RUNNING-кластер; заявка role=app.
         var cluster = fx.Cluster("rot");
@@ -55,10 +55,10 @@ public class RotationTests(ValkeyClusterFixture fx)
         committed.Should().NotBe(oldApp).And.NotBe(newApp).And.HaveLength(32);
         (await fx.GetAsync($"/valkeyworker/rotations/{cluster}")).Should().BeNull();
         var oldRejected = RespProbe.ExecuteTls("localhost", port, "app", oldApp, caPem, "SET", "rot:probe2", "1");
-        oldRejected.Ok.Should().BeFalse("OLD удалён фазой E3");
+        oldRejected.Ok.Should().BeFalse("OLD was removed by phase E3");
         var newAccepted = RespProbe.ExecuteTls("localhost", port, "app", committed, caPem, "SET", "rot:probe3", "1");
         newAccepted.Ok.Should().BeTrue(newAccepted.Error);
         var adminStillOk = RespProbe.ExecuteTls("localhost", port, "admin", oldAdmin, caPem, "PING");
-        adminStillOk.Ok.Should().BeTrue("ротация app не трогает admin-кред");
+        adminStillOk.Ok.Should().BeTrue("the app rotation does not touch the admin credential");
     }
 }

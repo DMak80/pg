@@ -64,7 +64,7 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
     // AAA: живая нода — серии словаря со значениями; остановленная — тик жив,
     // LastSuccess стоит (консервативно), стейт не перезаписан.
     [Fact]
-    public async Task Collect_ЖиваяНодаИОстановленная_СерииИLastSuccess()
+    public async Task Collect_AliveAndStoppedNode_SeriesAndLastSuccess()
     {
         // Arrange: provisioning кластера (паттерн ProvisioningTests).
         var ct = TestContext.Current.CancellationToken;
@@ -76,7 +76,7 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
             fx.NewPortAllocLock(claims.InstanceId), fx.NewPortAllocIndex(),
             fx.NewSecretEnsurer());
         var snap = await fx.RequireSnapshotAsync(cluster);
-        (await process.TickAsync(snap, ct)).IsSuccess.Should().BeTrue("нода поднята provisioning-тиком");
+        (await process.TickAsync(snap, ct)).IsSuccess.Should().BeTrue("the node was started by the provisioning tick");
 
         var state = new ValkeyMetricsState(new Meter("TestValkeyLiveCollector"));
         var clock = new SettableClock(DateTimeOffset.UnixEpoch.AddHours(9));
@@ -93,7 +93,7 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
         // Assert 1: поля INFO с фактическими значениями; LastSuccess = T0.
         var node = state.DebugSnapshot().Nodes[(cluster, "node1")];
         node.UsedMemoryBytes.Should().BeGreaterThan(0);
-        node.MaxMemoryBytes.Should().Be(536870912, "maxmemory задан декларацией сида");
+        node.MaxMemoryBytes.Should().Be(536870912, "maxmemory is set by the seed declaration");
         node.Role.Should().Be("master");
         node.ConnectedSlaves.Should().Be(0);
         node.TotalCommandsProcessed.Should().BeGreaterThanOrEqualTo(0);
@@ -109,8 +109,8 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
 
         // Assert 2: тик не бросает; LastSuccess НЕ двигался; стейт прежний.
         await act.Should().NotThrowAsync();
-        state.DebugSnapshot().LastSuccess.Should().Be(before, "LastSuccess стоит при неуспехе тика");
+        state.DebugSnapshot().LastSuccess.Should().Be(before, "LastSuccess stands still on a failed tick");
         state.DebugSnapshot().Nodes[(cluster, "node1")].UsedMemoryBytes
-            .Should().Be(node.UsedMemoryBytes, "стейт не перезаписан провальным тиком");
+            .Should().Be(node.UsedMemoryBytes, "the state was not overwritten by the failed tick");
     }
 }

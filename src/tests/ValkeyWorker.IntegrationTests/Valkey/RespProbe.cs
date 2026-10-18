@@ -27,7 +27,7 @@ public static class RespProbe
         client.ConnectAsync(host, port).GetAwaiter().GetResult();
 
         if (!ValkeyPki.TryParseCertificate(caPem, out var ca) || ca is null)
-            return (false, "ca_pem: невалидный PEM", null);
+            return (false, "ca_pem: invalid PEM", null);
         bool ValidateServerCertificate(
             object sender, System.Security.Cryptography.X509Certificates.X509Certificate? certificate,
             System.Security.Cryptography.X509Certificates.X509Chain? chain,
@@ -68,7 +68,7 @@ public static class RespProbe
         if (auth is ValkeyConnection.RespError authError)
             return (false, $"AUTH: {authError.Message}", null);
         if (auth is not string authOk || authOk != "OK")
-            return (false, $"AUTH: неожиданный ответ {auth}", null);
+            return (false, $"AUTH: unexpected reply {auth}", null);
 
         var reply = WriteAndRead(stream, command);
         return reply switch
@@ -78,7 +78,7 @@ public static class RespProbe
             long n => (true, "", n.ToString()),
             List<object?> list => (true, "", string.Join("|", list.Select(i => i?.ToString() ?? "<null>"))),
             null => (true, "", null),
-            _ => (false, $"неизвестный кадр {reply.GetType().Name}", null),
+            _ => (false, $"unknown frame {reply.GetType().Name}", null),
         };
     }
 

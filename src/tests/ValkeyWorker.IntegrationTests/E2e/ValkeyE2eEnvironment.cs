@@ -92,12 +92,12 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     public string Api2BaseUrl
         => _api2Port is { } port
             ? $"https://localhost:{port}"
-            : throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+            : throw new InvalidOperationException("no second API: the environment was started with StartAsync (single-instance setup)");
 
     /// <summary>Хост-порт API второго воркера — только StartTwoAsync.</summary>
     public int Api2Port
         => _api2Port
-           ?? throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+           ?? throw new InvalidOperationException("no second API: the environment was started with StartAsync (single-instance setup)");
 
     /// <summary>Docker-имя первого воркера (vwk-ew1-{runId}; одиночный — vwk-ew).</summary>
     public string Worker1Name => _workerNames[0];
@@ -105,7 +105,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     /// <summary>Docker-имя второго воркера (vwk-ew2-{runId}) — только StartTwoAsync.</summary>
     public string Worker2Name
         => _worker2 is null
-            ? throw new InvalidOperationException("второго воркера нет: окружение поднято StartAsync (одиночный контур)")
+            ? throw new InvalidOperationException("no second worker: the environment was started with StartAsync (single-instance setup)")
             : _workerNames[1];
 
     public string ClusterTag => _runId[..8];
@@ -124,7 +124,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     public static async Task<ValkeyE2eEnvironment> StartAsync(string slug)
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
-            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+            throw new InvalidOperationException("E2E requires PGW_TEST_DOCKER=1 (otherwise the test skips)");
 
         var runId = Guid.NewGuid().ToString("N");
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
@@ -186,7 +186,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                     $"http://localhost:{etcdPort}", artifactsDir,
                     $"https://localhost:{apiPort}", clientCert, clientKey);
                 await environment.WriteAsync("README-cleanup.txt",
-                    "# Зачистка окружения прогона (own-only):\n"
+                    "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f vwk-ew-{runId} vwk-ee-{runId}\n"
                     + $"docker ps -aq --filter name=vwk-{environment.ClusterTag} | xargs -r docker rm -f\n"
                     + $"docker network rm {netName}\n");
@@ -220,7 +220,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     public static async Task<ValkeyE2eEnvironment> StartTwoAsync(string slug)
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
-            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+            throw new InvalidOperationException("E2E requires PGW_TEST_DOCKER=1 (otherwise the test skips)");
 
         var runId = Guid.NewGuid().ToString("N");
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
@@ -300,7 +300,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                     $"https://localhost:{api1Port}", clientCert, clientKey,
                     worker2, api2Port);
                 await environment.WriteAsync("README-cleanup.txt",
-                    "# Зачистка окружения прогона (own-only):\n"
+                    "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f vwk-ew1-{runId} vwk-ew2-{runId} vwk-ee-{runId}\n"
                     + $"docker ps -aq --filter name=vwk-{environment.ClusterTag} | xargs -r docker rm -f\n"
                     + $"docker volume ls -q --filter name=vwk-{environment.ClusterTag} | xargs -r docker volume rm -f\n"
@@ -344,7 +344,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         await process.WaitForExitAsync();
         if (process.ExitCode != 0)
             throw new InvalidOperationException(
-                $"сборка {WorkerImage} не удалась: {await process.StandardError.ReadToEndAsync()}");
+                $"failed to build {WorkerImage}: {await process.StandardError.ReadToEndAsync()}");
     }
 
     private static string FindRepoRoot()
@@ -353,7 +353,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "ValkeyWorker.Dockerfile")))
             dir = dir.Parent;
         return dir?.FullName
-            ?? throw new InvalidOperationException("корень репо (docker/ValkeyWorker.Dockerfile) не найден");
+            ?? throw new InvalidOperationException("repo root (docker/ValkeyWorker.Dockerfile) not found");
     }
 
     // ── Хелперы docker-CLI (канон KafkaE2eEnvironment.RunProcessAsync:
@@ -375,7 +375,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             CreateNoWindow = true,
         };
         using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"не удалось запустить {file}");
+            ?? throw new ApplicationException($"failed to start {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -414,7 +414,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             }
 
             throw new ApplicationException(
-                $"{file} {string.Join(' ', args)} не завершился за {timeout.TotalSeconds:0} c — убит; хвост:\n{drained}");
+                $"{file} {string.Join(' ', args)} did not finish within {timeout.TotalSeconds:0} s — killed; tail:\n{drained}");
         }
     }
 
@@ -552,7 +552,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         }
 
         await CollectDiagnosticsAsync($"timeout-{phase}");
-        throw new TimeoutException($"[PHASE] {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан");
+        throw new TimeoutException($"[PHASE] {phase}: budget {budget.TotalSeconds:F0} s exhausted");
     }
 
     public async ValueTask DisposeAsync()
@@ -592,7 +592,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             { RedirectStandardOutput = true, RedirectStandardError = true };
             using var process = Process.Start(inspect)!;
             await process.WaitForExitAsync();
-            process.ExitCode.Should().NotBe(0, $"контейнер {name} удалён teardown'ом");
+            process.ExitCode.Should().NotBe(0, $"container {name} was removed by teardown");
         }
 
         var volumeList = new ProcessStartInfo("docker",
@@ -601,7 +601,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         using var volumeListing = Process.Start(volumeList)!;
         var volumeNames = await volumeListing.StandardOutput.ReadToEndAsync();
         await volumeListing.WaitForExitAsync();
-        volumeNames.Trim().Should().BeEmpty($"после teardown не осталось томов тега {ClusterTag}");
+        volumeNames.Trim().Should().BeEmpty($"no volumes with tag {ClusterTag} remain after teardown");
     }
 
     private static async Task SafeStopAsync(IContainer container, bool remove)

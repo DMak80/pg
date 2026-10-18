@@ -10,7 +10,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class ConvergeTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task МутацияConfig_ConfigSetБезПересоздания()
+    public async Task ConfigMutation_ConfigSetWithoutRecreate()
     {
         // Arrange: RUNNING-кластер.
         var cluster = fx.Cluster("cnv");
@@ -43,7 +43,7 @@ public class ConvergeTests(ValkeyClusterFixture fx)
             "CONFIG", "GET", "maxmemory-policy");
         policy.Value.Should().Contain("volatile-ttl");
         ContainerId($"vwk-{cluster}-node1").Should().Be(containerBefore,
-            "converge D применяет CONFIG SET без рестартов");
+            "converge D applies CONFIG SET without restarts");
     }
 
     private static string ContainerId(string name)

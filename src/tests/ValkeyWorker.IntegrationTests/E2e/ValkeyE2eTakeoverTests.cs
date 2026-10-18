@@ -38,7 +38,7 @@ public class ValkeyE2eTakeoverTests
         var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
         if (!enabled)
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 is not set — docker-E2E skipped");
             return;
         }
 
@@ -62,7 +62,7 @@ public class ValkeyE2eTakeoverTests
                     var instances = (await RangeAsync(fx, "/valkeyworker/instances/", ct)).Count;
                     return $"api={api}, instances={instances}";
                 });
-            bothUp.Should().BeTrue("оба инстанса обязаны опубликовать дискавери-ключи за 100 с");
+            bothUp.Should().BeTrue("both instances must publish their discovery keys within 100 s");
 
             // A2: живой кластер через API ew1 (нода поднята с VALKEY_TLS_* в env
             // и cmd-обёрткой, без TLS-тома — env-модель).
@@ -78,7 +78,7 @@ public class ValkeyE2eTakeoverTests
                     return false; // Kestrel ещё поднимается
                 }
             }, TimeSpan.FromSeconds(30), ct);
-            workerUp.Should().BeTrue("API ew1 (/healthz по mTLS) обязан подняться за 30 с");
+            workerUp.Should().BeTrue("API ew1 (/healthz over mTLS) must come up within 30 s");
 
             using var created = await api1.PostAsJsonAsync("/api/valkey/clusters",
                 new
@@ -98,8 +98,8 @@ public class ValkeyE2eTakeoverTests
                 return kv == "RUNNING" && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
             }, TimeSpan.FromSeconds(100), ct,
                 progress: async () =>
-                    $"state={await GetOrNullAsync(fx, $"/valkey/clusters/{cluster}/nodes/node1/state", ct) ?? "нет"}");
-            provisioned.Should().BeTrue("provisioning кластера обязан дойти до RUNNING за 100 с");
+                    $"state={await GetOrNullAsync(fx, $"/valkey/clusters/{cluster}/nodes/node1/state", ct) ?? "none"}");
+            provisioned.Should().BeTrue("cluster provisioning must reach RUNNING within 100 s");
 
             // Baseline датаплейна ДО заявки демонтажа (ключи домена уйдут в X2):
             // endpoints + ca_pem + admin-кред из etcd.
@@ -112,16 +112,16 @@ public class ValkeyE2eTakeoverTests
             // Доп-проверка env-модели (docker inspect, вне тиков): env контейнера
             // ноды несёт VALKEY_TLS_{CERT,KEY,CA}; CA == per-cluster ca_pem.
             var nodeEnv = await GetContainerEnvAsync(fx, $"vwk-{cluster}-node1", ct);
-            nodeEnv.Should().ContainKey("VALKEY_TLS_CERT", "серт ноды доставляется env контейнера (env-модель)");
-            nodeEnv.Should().ContainKey("VALKEY_TLS_KEY", "ключ ноды доставляется env контейнера (env-модель)");
-            nodeEnv.Should().ContainKey("VALKEY_TLS_CA", "CA ноды доставляется env контейнера (env-модель)");
+            nodeEnv.Should().ContainKey("VALKEY_TLS_CERT", "node certificate is delivered via container env (env model)");
+            nodeEnv.Should().ContainKey("VALKEY_TLS_KEY", "node key is delivered via container env (env model)");
+            nodeEnv.Should().ContainKey("VALKEY_TLS_CA", "node CA is delivered via container env (env model)");
             nodeEnv["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(),
-                "CA в env ноды == per-cluster ca_pem (переносы — в значении env, Trim-сравнение)");
+                "CA in node env == per-cluster ca_pem (newlines live inside the env value, Trim comparison)");
 
             // Датаплейн жив до kill (I5-часть): RESP PING admin-кредом по TLS.
             var ping = RespProbe.ExecuteTls(probeHost, probePort, "admin", adminPassword, caPem, "PING");
             ping.Ok.Should().BeTrue(ping.Error);
-            ping.Value.Should().Be("PONG", "датаплейн кластера отвечает по TLS до kill (I5-часть)");
+            ping.Value.Should().Be("PONG", "cluster dataplane responds over TLS before the kill (I5 part)");
 
             // A3 (Act): заявка демонтажа ЛЮБОМУ из ew1/ew2 (демонтаж ведёт
             // держатель клэйма — адресат заявки не важен) → 202 = config.state
@@ -163,27 +163,27 @@ public class ValkeyE2eTakeoverTests
                     var claim = await GetOrNullAsync(fx, $"/valkeyworker/claims/{cluster}", ct) is not null;
                     var work = await GetOrNullAsync(fx, $"/valkeyworker/work/{cluster}", ct);
                     var workView = work is null
-                        ? "нет"
+                        ? "none"
                         : $"op={JsonStringField(work, "op")}/instance={JsonStringField(work, "instance")}";
-                    return $"state={JsonStringField(config, "state") ?? "нет"}, claims={claim}, work={workView}";
+                    return $"state={JsonStringField(config, "state") ?? "none"}, claims={claim}, work={workView}";
                 });
             midDeprovision.Should().BeTrue(
-                "якорь обязан поймать окно демонтажа ДО X0 жертвы (config TO_REMOVE + клэйм + контейнер + work без op=deprovision) за 30 с — "
-                + "иначе окно kill стабильно недостаточно (СТОП по spec §15-Р2)");
+                "the anchor must catch the deprovision window BEFORE the victim's X0 (config TO_REMOVE + claim + container + work without op=deprovision) within 30 s — "
+                + "otherwise the kill window is persistently too narrow (STOP per spec §15-Р2)");
 
             // A4 (Act): резолв ДЕРЖАТЕЛЯ по etcd-фактам и kill (одномоментно).
             var claimJson = await GetOrNullAsync(fx, $"/valkeyworker/claims/{cluster}", ct);
-            claimJson.Should().NotBeNull("клэйм существует непосредственно перед kill (ассерт A4)");
+            claimJson.Should().NotBeNull("the claim exists immediately before the kill (assert A4)");
             var holderInstance = JsonStringField(claimJson, "instance");
-            holderInstance.Should().NotBeNullOrEmpty("claims/{C}.instance обязан быть непустым");
+            holderInstance.Should().NotBeNullOrEmpty("claims/{C}.instance must be non-empty");
 
             var holderUrl = await GetOrNullAsync(fx, $"/valkeyworker/api/{holderInstance}", ct);
-            holderUrl.Should().NotBeNull($"api-ключ держателя {holderInstance} обязан существовать (общий lease с instance-ключом)");
+            holderUrl.Should().NotBeNull($"holder api key {holderInstance} must exist (shared lease with the instance key)");
             var holderPort = new Uri(JsonStringField(holderUrl, "url")!).Port;
 
             var matched = new[] { fx.Api1Port, fx.Api2Port }.Count(p => p == holderPort);
-            matched.Should().Be(1, $"порт держателя {holderPort} обязан совпасть ровно с одним известным api-портом "
-                + $"({fx.Api1Port}/{fx.Api2Port}); claims={claimJson}, api-ключи={await DumpApiKeysAsync(fx, ct)}");
+            matched.Should().Be(1, $"holder port {holderPort} must match exactly one known api port "
+                + $"({fx.Api1Port}/{fx.Api2Port}); claims={claimJson}, api keys={await DumpApiKeysAsync(fx, ct)}");
 
             var holderName = holderPort == fx.Api1Port ? fx.Worker1Name : fx.Worker2Name;
             var survivorName = holderPort == fx.Api1Port ? fx.Worker2Name : fx.Worker1Name;
@@ -198,9 +198,9 @@ public class ValkeyE2eTakeoverTests
             var claimAtKill = await GetOrNullAsync(fx, $"/valkeyworker/claims/{cluster}", ct);
             var configAtKill = await GetOrNullAsync(fx, $"/valkey/clusters/{cluster}/config", ct);
             (workAtKill is null || JsonStringField(workAtKill, "op") != "deprovision").Should().BeTrue(
-                "пре-факт I2: X0 жертвы НЕ начат на момент kill — work отсутствует или op != deprovision; "
-                + $"claims={Trunc(claimAtKill ?? "нет")}, work={Trunc(workAtKill ?? "нет")}, "
-                + $"config={Trunc(configAtKill ?? "нет")}");
+                "I2 pre-fact: the victim's X0 has NOT started at kill time — work is absent or op != deprovision; "
+                + $"claims={Trunc(claimAtKill ?? "none")}, work={Trunc(workAtKill ?? "none")}, "
+                + $"config={Trunc(configAtKill ?? "none")}");
 
             // docker kill держателя (без рестарта — воскресать не должен,
             // доносит ТОЛЬКО выживший; бюджет/kill-дерева — канон окружения).
@@ -216,7 +216,7 @@ public class ValkeyE2eTakeoverTests
                     survivorId = kv.Key.Split('/')[^1];
             }
             survivorId.Should().NotBeNullOrEmpty(
-                $"api-ключ survivor'а (порт {survivorPort}) обязан существовать; api-ключи={await DumpApiKeysAsync(fx, ct)}");
+                $"survivor api key (port {survivorPort}) must exist; api keys={await DumpApiKeysAsync(fx, ct)}");
 
             // A5 (Assert) — I2 ПО ПОСТРОЕНИЮ + документальный лог (спека §8 A5,
             // решение пользователя 2026-10-09): journal-полл «дождаться work
@@ -245,13 +245,13 @@ public class ValkeyE2eTakeoverTests
                     var instances = (await RangeAsync(fx, "/valkeyworker/instances/", ct)).Count;
                     return $"api={api}, instances={instances}";
                 });
-            settled.Should().BeTrue("дискавери мертвеца гаснет с его lease ≤15 с — бюджет 20 с (I1)");
+            settled.Should().BeTrue("the dead instance's discovery keys expire with its lease ≤15 s — budget 20 s (I1)");
             var apiKeys = await RangeAsync(fx, "/valkeyworker/api/", ct);
-            apiKeys.Should().ContainSingle("после kill держателя жив ровно один api-ключ (I1)");
+            apiKeys.Should().ContainSingle("after the holder kill exactly one api key stays alive (I1)");
             apiKeys[0].Key.Split('/')[^1].Should().Be(survivorId,
-                "живой api-ключ — survivor по факту резолва A4 (I1)");
+                "the alive api key is the survivor per the A4 resolve (I1)");
             (await RangeAsync(fx, "/valkeyworker/instances/", ct))
-                .Should().ContainSingle("instance-ключ держателя погас вместе с lease (I1)");
+                .Should().ContainSingle("the holder's instance key expired together with its lease (I1)");
 
             // A5: терминал — финиш демонтажа выжившим. Journal-записи done у
             // демонтажа НЕТ (arch/21 §5 B) — терминальные факты: контейнеров
@@ -270,10 +270,10 @@ public class ValkeyE2eTakeoverTests
                     var work = await GetOrNullAsync(fx, $"/valkeyworker/work/{cluster}", ct) is not null;
                     var claim = await GetOrNullAsync(fx, $"/valkeyworker/claims/{cluster}", ct) is not null;
                     var alloc = await GetOrNullAsync(fx, $"/valkeyworker/portalloc/{cluster}", ct) is not null;
-                    return $"domain-ключи={domain}, work={work}, claims={claim}, portalloc={alloc}";
+                    return $"domain keys={domain}, work={work}, claims={claim}, portalloc={alloc}";
                 });
             cleaned.Should().BeTrue(
-                "выживший обязан доиграть демонтаж до терминальной чистоты ≤15 с от re-захвата (I6; done-записи у демонтажа нет — терминал = чистота)");
+                "the survivor must finish the deprovision to terminal cleanliness within ≤15 s of the re-capture (I6; deprovision has no done record — terminal = cleanliness)");
 
             // Документальный лог-факт I2 (docker-CLI вне тиков; ОДНОКРАТНО
             // после терминала, НЕ полл): «deprovision {C}» в логах survivor —
@@ -284,26 +284,26 @@ public class ValkeyE2eTakeoverTests
             // логов прогона e055e1e0: у жертвы 0 вхождений).
             var survivorLog = await fx.RunDockerAsync(["logs", survivorName], ct);
             survivorLog.Should().Contain($"deprovision {cluster}",
-                "документальный факт I2: демонтаж кластера исполнил survivor — жертва убита до X0 и не рестартована");
+                "documentary fact I2: the cluster deprovision was executed by the survivor — the victim was killed before X0 and never restarted");
 
             // I3: нет дублей и остатков — контейнеров префикса кластера ровно 0
             // (вкл. stopped; docker-проверки вне тиков), томов префикса нет —
             // env-модель, у домена нет docker-объектов кроме контейнеров нод.
             (await ListContainersAsync(fx, $"vwk-{cluster}", all: true)).Should().BeEmpty(
-                "контейнеров префикса кластера нет — дублей/остатков после takeover нет (I3)");
+                "no cluster-prefix containers — no duplicates/leftovers after the takeover (I3)");
             (await fx.RunDockerAsync(
                     ["volume", "ls", "-q", "--filter", $"name=vwk-{cluster}"], ct))
-                .Should().BeEmpty("томов префикса кластера нет — env-модель их не создаёт (I3)");
+                .Should().BeEmpty("no cluster-prefix volumes — the env model does not create them (I3)");
 
             // I4: контроль-плейн цел — portalloc снят демонтажом X2 (входит в
             // терминальную чистоту; продублирован явным ассертом для отчёта).
             (await GetOrNullAsync(fx, $"/valkeyworker/portalloc/{cluster}", ct))
-                .Should().BeNull("portalloc кластера снят демонтажом выжившего (I4)");
+                .Should().BeNull("the cluster portalloc was removed by the survivor's deprovision (I4)");
 
             // A7: teardown + ассерт чистоты — в DisposeAsync окружения (I7);
             // survivor-name здесь только для читаемости журнала. Отдельного
             // финального демонтажа НЕТ — жертва и есть демонтаж.
-            Console.WriteLine($"[PHASE] takeover-done: holder={holderName} убит, survivor={survivorName} доиграл демонтаж");
+            Console.WriteLine($"[PHASE] takeover-done: holder={holderName} killed, survivor={survivorName} finished the deprovision");
         }
         catch
         {

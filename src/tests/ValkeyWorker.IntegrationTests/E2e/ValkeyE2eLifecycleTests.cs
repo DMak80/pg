@@ -22,7 +22,7 @@ public class ValkeyE2eLifecycleTests
         var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
         if (!enabled)
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 is not set — docker-E2E skipped");
             return;
         }
 
@@ -80,7 +80,7 @@ public class ValkeyE2eLifecycleTests
             $"/valkey/clusters/{cluster}/admin_password", ct)).Value!.Value;
         var caPem = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
             $"/valkey/clusters/{cluster}/ca_pem", ct)).Value!.Value;
-        ValkeyPki.TryParseCertificate(caPem, out _).Should().BeTrue("ca_pem — валидный PEM");
+        ValkeyPki.TryParseCertificate(caPem, out _).Should().BeTrue("ca_pem is a valid PEM");
         var ping = RespProbe.ExecuteTls(probeHost, port, "admin", adminPassword, caPem, "PING");
         ping.Ok.Should().BeTrue(ping.Error);
 
@@ -92,7 +92,7 @@ public class ValkeyE2eLifecycleTests
         var get = RespProbe.ExecuteTls(probeHost, port, "app", appPassword, caPem, "GET", "e2e:key");
         get.Value.Should().Be("value");
         var configGet = RespProbe.ExecuteTls(probeHost, port, "app", appPassword, caPem, "CONFIG", "GET", "maxmemory");
-        configGet.Ok.Should().BeFalse("app без админ-команд");
+        configGet.Ok.Should().BeFalse("app has no admin commands");
 
         // Act 4: дискавери-ключи: config без state; /valkeyworker/api/<id> — url+thumbprint.
         var config = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
@@ -135,7 +135,7 @@ public class ValkeyE2eLifecycleTests
         var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
         if (!enabled)
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 is not set — docker-E2E skipped");
             return;
         }
 
@@ -227,7 +227,7 @@ public class ValkeyE2eLifecycleTests
                 plainRejected = true; // сброс соединения на хендшейке
             }
 
-            plainRejected.Should().BeTrue("plain-порт закрыт (--port 0)");
+            plainRejected.Should().BeTrue("plain port is closed (--port 0)");
 
             // Act 2: DELETE → 202 → демонтаж.
             using var deleted = await api.DeleteAsync($"/api/valkey/clusters/{cluster}", ct);
@@ -265,7 +265,7 @@ public class ValkeyE2eLifecycleTests
         var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
         if (!enabled)
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 is not set — docker-E2E skipped");
             return;
         }
 
@@ -344,7 +344,7 @@ public class ValkeyE2eLifecycleTests
             // Assert 1: ca_pem/ca_key = NEW (не bundle), staging нет, заявки нет.
             var newCaPem = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/valkey/clusters/{cluster}/ca_pem", ct)).Value!.Value;
-            newCaPem.Should().NotBe(oldCaPem).And.NotContain(oldCaPem, "bundle свёрнут");
+            newCaPem.Should().NotBe(oldCaPem).And.NotContain(oldCaPem, "bundle is collapsed away");
             (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/valkey/clusters/{cluster}/ca_key", ct)).Value!.Value.Should().NotBe(oldCaPem);
             (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
@@ -375,7 +375,7 @@ public class ValkeyE2eLifecycleTests
                 oldRejected = true;
             }
 
-            oldRejected.Should().BeTrue("OLD-ключ уничтожен перезаписью");
+            oldRejected.Should().BeTrue("OLD key is destroyed by the overwrite");
 
             // Финал: DELETE → 202 → демонтаж (канон самоочистки e2e-isolation:
             // ноду/том снимает только демонтаж воркера — teardown фикстуры их

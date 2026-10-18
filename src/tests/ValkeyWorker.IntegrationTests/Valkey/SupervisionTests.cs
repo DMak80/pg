@@ -12,7 +12,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class SupervisionTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task СносКонтейнера_НадзорПересоздаётСТемиЖеКредамиИПортом()
+    public async Task ContainerKill_SupervisorRecreatesWithSameCredentialsAndPort()
     {
         // Arrange: RUNNING-кластер.
         var cluster = fx.Cluster("sup");
@@ -44,11 +44,11 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
         var ok = probe.Ok || await WaitRunningAsync(cluster, claims, portLock, portIndex, adminPassword, caPem, port);
-        ok.Should().BeTrue("нода поднялась на прежнем порту с прежними кредами");
+        ok.Should().BeTrue("the node came up on the same port with the same credentials");
     }
 
     [Fact]
-    public async Task ОстановленныйКонтейнер_ПорогNodeDead_Пересоздание()
+    public async Task StoppedContainer_NodeDeadThreshold_Recreate()
     {
         // Arrange: RUNNING-кластер; риг с коротким NodeDeadSec (5 с).
         // docker stop: inspect жив (PortBindings персистят, Running=false) —
@@ -68,7 +68,7 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
         var port = int.Parse(endpoints.Split(':')[1]);
         var idBefore = DockerInspectId($"vwk-{cluster}-node1");
-        idBefore.Should().NotBeEmpty("контейнер поднят provisioning-тиком");
+        idBefore.Should().NotBeEmpty("the container was started by the provisioning tick");
 
         var portLock = fx.NewPortAllocLock(claims.InstanceId);
         var portIndex = fx.NewPortAllocIndex();
@@ -103,16 +103,16 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         // Assert: до порога state держал RUNNING (отказ пробы копил трек, а не
         // валил тик), затем PROVISIONING (пересоздание) — контейнер НОВЫЙ
         // (Id сменился), нода поднялась на прежних кредах/порту.
-        states.Should().Contain("RUNNING", "до порога молчание копится без действий");
-        states.Should().Contain("PROVISIONING", "по порогу NodeDead — пересоздание");
+        states.Should().Contain("RUNNING", "before the threshold silence accumulates without action");
+        states.Should().Contain("PROVISIONING", "at the NodeDead threshold — recreation");
         var idAfter = DockerInspectId($"vwk-{cluster}-node1");
-        idAfter.Should().NotBeEmpty().And.NotBe(idBefore, "контейнер пересоздан, не запущен старый");
+        idAfter.Should().NotBeEmpty().And.NotBe(idBefore, "the container was recreated, not the old one restarted");
 
         await ValkeyClusterFixture.WaitAsync(async () =>
         {
             var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
             return probe.Ok;
-        }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 после пересоздания");
+        }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 after recreation");
     }
 
     // docker inspect -f {{.Id}} (пусто — объекта нет).
@@ -138,7 +138,7 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         {
             var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
             return probe.Ok;
-        }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 после пересоздания");
+        }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 after recreation");
         return true;
     }
 }

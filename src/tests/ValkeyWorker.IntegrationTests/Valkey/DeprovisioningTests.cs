@@ -10,7 +10,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class DeprovisioningTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task ToRemove_Демонтаж_КонтейнераНетEtcdЧист()
+    public async Task ToRemove_Deprovision_NoContainerEtcdClean()
     {
         // Arrange: прогнанный provisioning → RUNNING-кластер с контейнером.
         var cluster = fx.Cluster("dep");
@@ -43,11 +43,11 @@ public class DeprovisioningTests(ValkeyClusterFixture fx)
         {
             var range = await fx.Gateway.RangeAsync(
                 fx.Endpoint, prefix, TestContext.Current.CancellationToken);
-            range.Value.Should().BeEmpty($"{prefix} пуст после демонтажа");
+            range.Value.Should().BeEmpty($"{prefix} is empty after deprovision");
         }
 
         // work/<C> пуст ПОСЛЕ чистки (финальной journal-записи нет: «done»
         // воскресил бы удалённый ключ — arch/21 §5 B, образец kfw).
-        (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().BeNull("координация <C> чиста");
+        (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().BeNull("coordination <C> is clean");
     }
 }

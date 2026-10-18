@@ -74,13 +74,13 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         {
             var tick = await rotator.RunAsync(await fx.RequireSnapshotAsync(cluster),
                 TestContext.Current.CancellationToken);
-            tick.IsSuccess.Should().BeTrue($"тик ротации не должен падать: {tick.Error?.Message}");
+            tick.IsSuccess.Should().BeTrue($"rotation tick must not fail: {tick.Error?.Message}");
             if (await fx.GetAsync($"/valkeyworker/ca_rotations/{cluster}") is null)
                 return (await fx.GetAsync($"/valkeyworker/work/{cluster}"))!;
             await Task.Delay(1000, TestContext.Current.CancellationToken);
         }
 
-        return $"/!\\ бюджет исчерпан: journal={await fx.GetAsync($"/valkeyworker/work/{cluster}")}";
+        return $"/!\\ budget exhausted: journal={await fx.GetAsync($"/valkeyworker/work/{cluster}")}";
     }
 
     [Fact]
@@ -93,15 +93,15 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         var (port, adminPw, oldCaPem) = await SeedTlsClusterAsync(cluster, claims);
 
         RespProbe.ExecuteTls("localhost", port, "admin", adminPw, oldCaPem, "PING").Ok
-            .Should().BeTrue("стартовое доверие OLD");
+            .Should().BeTrue("initial trust is OLD");
 
         // Act: заявка + тик-цикл ротатора до del заявки.
         var journal = await RotateToCompletionAsync(cluster, claims);
-        journal.Should().Contain("done", $"ротация исполнена за бюджет; journal={journal}");
+        journal.Should().Contain("done", $"rotation completed within the budget; journal={journal}");
 
         // Assert 1: ca_pem = NEW (не bundle), ca_key = NEW, staging нет, заявки нет.
         var newCaPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
-        newCaPem.Should().NotBe(oldCaPem).And.NotContain(oldCaPem, "bundle свёрнут");
+        newCaPem.Should().NotBe(oldCaPem).And.NotContain(oldCaPem, "bundle is collapsed away");
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_key")).Should().NotBe(oldCaPem);
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_next_key")).Should().BeNull();
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_next_pem")).Should().BeNull();
@@ -109,7 +109,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
 
         // Assert 2: PING по NEW-CA отвечает; OLD-CA отклоняется (ключ уничтожен).
         RespProbe.ExecuteTls("localhost", port, "admin", adminPw, newCaPem, "PING").Ok
-            .Should().BeTrue("доверие NEW после коммита");
+            .Should().BeTrue("NEW trust after the commit");
         var oldRejected = false;
         try
         {
@@ -119,7 +119,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         {
             oldRejected = true; // TLS-отказ на хендшейке: серт подписан NEW
         }
-        oldRejected.Should().BeTrue("серверный серт подписан NEW — OLD больше не якорь");
+        oldRejected.Should().BeTrue("server cert is signed by NEW — OLD is no longer an anchor");
     }
 
     [Fact]
@@ -141,7 +141,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
 
         // Act: заявка + тик-цикл (R пересоздаёт ноду, C коммитит).
         var journal = await RotateToCompletionAsync(cluster, claims);
-        journal.Should().Contain("done", $"доигрывание после краша D/R: {journal}");
+        journal.Should().Contain("done", $"replay after the D/R crash: {journal}");
 
         // Assert: коммит от ЧУЖОЙ staging; контейнер снова жив; PING по NEW.
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem")).Should().Be(nextPem);
@@ -149,7 +149,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_next_pem")).Should().BeNull();
         (await fx.GetAsync($"/valkeyworker/ca_rotations/{cluster}")).Should().BeNull();
         RespProbe.ExecuteTls("localhost", port, "admin", adminPw, nextPem, "PING").Ok
-            .Should().BeTrue("пересозданная нода доверяет NEW");
+            .Should().BeTrue("the recreated node trusts NEW");
     }
 
     [Fact]
@@ -185,20 +185,20 @@ public class CaRotationTests(ValkeyClusterFixture fx)
 
         // Act: заявка + тик-цикл (факт-детект → сразу C).
         var journal = await RotateToCompletionAsync(cluster, claims);
-        journal.Should().Contain("done", $"доигрывание после краша R/C: {journal}");
+        journal.Should().Contain("done", $"replay after the R/C crash: {journal}");
 
         // Assert: пересоздания НЕ было; коммит от NEW. В env-модели «краш
         // после R до C» = контейнер уже пересоздан с env от NEW (env меняется
         // только пересозданием) — факт-детект R видит валидный env и сразу
         // коммитит; нода живёт с NEW-сертом.
-        ContainerId($"vwk-{cluster}-node1").Should().Be(idBefore, "факт-детект: контейнер не тронут");
+        ContainerId($"vwk-{cluster}-node1").Should().Be(idBefore, "fact-detect: container untouched");
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem")).Should().Be(nextPem);
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_next_key")).Should().BeNull();
         var nodeEnv = await fx.Driver.NodeEnvAsync(cluster, "node1", ct);
         nodeEnv.Value.Should().NotBeNull();
-        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(nextPem.Trim(), "env ноды — NEW CA");
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(nextPem.Trim(), "node env carries the NEW CA");
         RespProbe.ExecuteTls("localhost", port, "admin", adminPw, nextPem, "PING").Ok
-            .Should().BeTrue("нода поднята с сертом NEW (R завершён до краша)");
+            .Should().BeTrue("node was started with the NEW cert (R completed before the crash)");
     }
 
     [Fact]
@@ -224,7 +224,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         // Assert: ни заявки, ни staging, ни клэйма — X2 снёс координацию.
         (await fx.GetAsync($"/valkeyworker/ca_rotations/{cluster}")).Should().BeNull();
         var prefix = await fx.Gateway.RangeAsync(fx.Endpoint, $"/valkey/clusters/{cluster}/", ct);
-        prefix.Value.Should().BeEmpty("префиксный del домена забирает staging ca_next_*");
+        prefix.Value.Should().BeEmpty("the domain prefix del removes the ca_next_* staging");
         (await fx.GetAsync($"/valkeyworker/claims/{cluster}")).Should().BeNull();
     }
 

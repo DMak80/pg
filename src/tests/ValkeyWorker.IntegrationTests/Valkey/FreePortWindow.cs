@@ -59,7 +59,7 @@ internal static class FreePortWindow
             }
         }
 
-        throw new InvalidOperationException("FreePortWindow: свободного окна не нашлось");
+        throw new InvalidOperationException("FreePortWindow: no free window found");
     }
 
     private static int _singleCursor;
@@ -86,7 +86,7 @@ internal static class FreePortWindow
             }
         }
 
-        throw new InvalidOperationException("FreePortWindow: свободного порта не нашлось");
+        throw new InvalidOperationException("FreePortWindow: no free port found");
     }
 
     // Зонд одиночного порта: TcpListener bind — порт занят любым живым

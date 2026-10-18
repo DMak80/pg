@@ -106,7 +106,7 @@ public sealed class ValkeyMetricsDomainFixture : IAsyncLifetime
         if (Driver is not null)
         {
             var objects = await Driver.ListNodeObjectsAsync(Cluster, CancellationToken.None);
-            sb.AppendLine($"── docker-объекты vwk-{Cluster}-* (IsSuccess={objects.IsSuccess}):");
+            sb.AppendLine($"── docker objects vwk-{Cluster}-* (IsSuccess={objects.IsSuccess}):");
             if (objects.IsSuccess)
                 foreach (var name in objects.Value)
                     sb.AppendLine($"  {name}");
@@ -114,7 +114,7 @@ public sealed class ValkeyMetricsDomainFixture : IAsyncLifetime
                 sb.AppendLine($"  error: {objects.Error!.Message}");
         }
 
-        sb.AppendLine("── логи хоста (≥ Warning, последние 40):");
+        sb.AppendLine("── host logs (≥ Warning, last 40):");
         foreach (var line in MetricsLiveFactory.LogSink.TakeLast(40))
             sb.AppendLine($"  {line}");
 
@@ -162,7 +162,7 @@ public sealed class ValkeyMetricsDomainFixture : IAsyncLifetime
         // Ассерт чистоты: ни контейнера vwk-<C>-* этого прогона.
         if (Driver is not null)
             (await Driver.ListNodeObjectsAsync(Cluster, ct)).Value.Should().BeEmpty(
-                "после teardown не осталось контейнеров прогона");
+                "no run containers remain after teardown");
     }
 }
 
@@ -229,7 +229,7 @@ public sealed class MetricsDomainTests(ValkeyMetricsDomainFixture fx) : IClassFi
     // AAA: живой кластер (hosted-циклы подняли ноду из сида) → все 15 имён словаря
     // экспортированы фактически, scope — ValkeyWorker, role — master (standalone).
     [Fact]
-    public async Task Metrics_ЖивойКластер_Все15ИмёнСловаря()
+    public async Task Metrics_LiveCluster_All15DictionaryNames()
     {
         // Arrange: фикстура засеяла заявку; WAF с циклами (NodeBootSec ≤ 100).
         using var client = fx.Factory.CreateClient();
@@ -247,12 +247,12 @@ public sealed class MetricsDomainTests(ValkeyMetricsDomainFixture fx) : IClassFi
         // Маркер не появился — дамп состояния домена в сообщение провала
         // (диагностика «на какой стадии оборвалось», без повторного прогона).
         if (!body.Contains("valkey_memory_used_bytes"))
-            Assert.Fail($"серия valkey_memory_used_bytes не экспортирована за бюджет.\n{await fx.DumpDiagnosticsAsync()}");
+            Assert.Fail($"valkey_memory_used_bytes series was not exported within the budget.\n{await fx.DumpDiagnosticsAsync()}");
 
         // Assert: фактические имена против словаря §2.6.
         foreach (var name in CanonicalNames)
-            body.Should().Contain(name, "серия {0} обязана экспортироваться при живой ноде", name);
-        body.Should().Contain("role=\"master\"", "standalone-нода — master");
+            body.Should().Contain(name, "series {0} must be exported while the node is alive", name);
+        body.Should().Contain("role=\"master\"", "a standalone node is master");
         body.Should().Contain("otel_scope_name=\"ValkeyWorker\"");
     }
 }

@@ -49,13 +49,13 @@ public sealed class MetricsApiTests(ValkeyMetricsFixture fx)
             .ToList();
         matches.Should().ContainSingle(
             l => l.Contains("loop=\"reconcile\"") && l.Contains("otel_scope_name=\"ValkeyWorker\""),
-            "циклы и журнал обязаны писать в один объект метрик: {0}", string.Join(" | ", matches));
+            "the loops and the journal must write to a single metrics object: {0}", string.Join(" | ", matches));
     }
 
     // AAA (t05): пустой домен — консервативный успех тика: серия самонаблюдения
     // коллектора обязана появиться в экспорте при живом воркере (без docker-нод).
     [Fact]
-    public async Task Metrics_ValkeyCollectorLastSuccess_ПустойДоменУспех()
+    public async Task Metrics_ValkeyCollectorLastSuccess_EmptyDomainSuccess()
     {
         // Arrange: WAF-фабрика с живыми циклами на пустом etcd; первый тик
         // коллектора — сразу при старте (до Task.Delay), scrape 500 мс.

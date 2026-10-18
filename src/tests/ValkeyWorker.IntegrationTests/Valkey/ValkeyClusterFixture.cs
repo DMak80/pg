@@ -147,7 +147,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
         {
             var objects = await Driver.ListNodeObjectsAsync(cluster, ct);
             objects.IsSuccess.Should().BeTrue();
-            objects.Value.Should().BeEmpty($"после teardown не осталось контейнеров {cluster}");
+            objects.Value.Should().BeEmpty($"no {cluster} containers remain after teardown");
         }
     }
 
@@ -214,7 +214,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
         var range = await Gateway.RangeAsync(Endpoint, "/valkey/clusters/", TestContext.Current.CancellationToken);
         if (!range.IsSuccess)
             throw new InvalidOperationException(
-                $"range /valkey/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
+                $"range /valkey/clusters/ failed (fixture etcd unavailable?): {range.Error?.Message}");
 
         return ValkeySnapshotParser.Parse(range.Value).Value.Clusters.FirstOrDefault(c => c.Cluster == cluster);
     }
@@ -222,7 +222,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     // Снапшот с гарантией присутствия (тесты сеют кластер перед вызовом).
     public async Task<ValkeyClusterSnapshot> RequireSnapshotAsync(string cluster)
         => await SnapshotAsync(cluster)
-           ?? throw new InvalidOperationException($"кластер {cluster} не найден в etcd");
+           ?? throw new InvalidOperationException($"cluster {cluster} not found in etcd");
 
     public async Task<string?> GetAsync(string key)
     {
@@ -249,6 +249,6 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
             await Task.Delay(500, TestContext.Current.CancellationToken);
         }
 
-        throw new TimeoutException($"бюджет {budget.TotalSeconds:F0} c исчерпан: {what}");
+        throw new TimeoutException($"budget {budget.TotalSeconds:F0} s exhausted: {what}");
     }
 }

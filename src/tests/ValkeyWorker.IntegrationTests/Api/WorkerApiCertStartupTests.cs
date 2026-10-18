@@ -37,7 +37,7 @@ public class WorkerApiCertStartupTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Read_КлючаНет_Missing()
+    public async Task Read_KeyMissing_Missing()
     {
         // Arrange: ключа нет (чистим свой ключ фикстуры).
         await DeleteKeyAsync();
@@ -48,7 +48,7 @@ public class WorkerApiCertStartupTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Read_ВалиднаяПара_Found()
+    public async Task Read_ValidPair_Found()
     {
         // Arrange
         await DeleteKeyAsync();
@@ -69,7 +69,7 @@ public class WorkerApiCertStartupTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Read_БитыйJson_Broken()
+    public async Task Read_BrokenJson_Broken()
     {
         // Arrange: JSON-мусор — fail-fast-ветка старта.
         await DeleteKeyAsync();
@@ -89,7 +89,7 @@ public class WorkerApiCertStartupTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Read_МёртвыйEndpoint_Unreachable()
+    public async Task Read_DeadEndpoint_Unreachable()
     {
         // Arrange: ключ чист; мёртвый порт (зонд свободного → никто не слушает).
         await DeleteKeyAsync();
@@ -105,7 +105,7 @@ public class WorkerApiCertStartupTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task ConfigureMtls_ManagedFound_СертИзEtcd()
+    public async Task ConfigureMtls_ManagedFound_CertFromEtcd()
     {
         // Arrange: валидная пара в etcd; CA пары — CA клиентского серта
         // (грань mTLS: клиент обязан предъявить серт этой CA).

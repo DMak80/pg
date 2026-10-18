@@ -36,7 +36,7 @@ public class RestartApiTests
     }
 
     [Fact]
-    public async Task Restart_202ХостЖивПослеОтветаЗатемСтоп()
+    public async Task Restart_202HostAliveAfterResponseThenStop()
     {
         // Arrange: своя фабрика; маркер стопа — ApplicationStopping.
         await using var host = new RestartHost();

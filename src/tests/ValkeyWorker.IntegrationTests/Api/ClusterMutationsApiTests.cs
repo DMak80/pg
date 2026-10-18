@@ -27,11 +27,11 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
         body.Should().NotContain("password");
         foreach (var match in Regex.Matches(body, "[A-Za-z0-9]{32}"))
             PasswordLike.IsMatch(match.ToString() ?? "").Should().BeFalse(
-                "32-символьное значение в ответе похоже на пароль: {0}", match);
+                "a 32-char value in the response looks like a password: {0}", match);
     }
 
     [Fact]
-    public async Task Create_201_ДискавериКлючиБезПаролей()
+    public async Task Create_201_DiscoveryKeysWithoutPasswords()
     {
         // Arrange: валидная заявка.
         var cluster = Cluster("mk");
@@ -54,7 +54,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Create_Повтор_409()
+    public async Task Create_Repeat_409()
     {
         // Arrange: кластер создан первым POST.
         var cluster = Cluster("dup");
@@ -80,7 +80,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     [InlineData(1, 536870912, "allkeys-lru", 0.001, 1, 10, "cpu")]
     [InlineData(1, 536870912, "allkeys-lru", 1, 0, 10, "memGi")]
     [InlineData(1, 1073741824, "allkeys-lru", 1, 1, 10, "maxmemoryBytes")] // инвариант R3
-    public async Task Create_Невалидная_400СПолем(
+    public async Task Create_Invalid_400WithField(
         int nodes, long maxmemory, string policy, decimal cpu, int memGi, int diskGi, string field)
     {
         // Arrange/Act
@@ -102,7 +102,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Delete_202_404_Идемпотентность()
+    public async Task Delete_202_404_Idempotency()
     {
         // Arrange: создан кластер.
         var cluster = Cluster("del");
@@ -124,7 +124,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
 
         // Assert
         first.StatusCode.Should().Be(HttpStatusCode.Accepted);
-        second.StatusCode.Should().Be(HttpStatusCode.Accepted, "повтор идемпотентен");
+        second.StatusCode.Should().Be(HttpStatusCode.Accepted, "the repeat is idempotent");
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
         var config = await fx.Etcd.Gateway.GetAsync(
             fx.Etcd.Endpoint, $"/valkey/clusters/{cluster}/config", TestContext.Current.CancellationToken);
@@ -132,7 +132,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Config_200_404_400_ИСекретность()
+    public async Task Config_200_404_400_AndSecrets()
     {
         // Arrange: Active-кластер (state снят — имитируем прогнанный provisioning).
         var cluster = Cluster("cfg");
@@ -203,7 +203,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Rotate_202_409_400_404_ИСекретность()
+    public async Task Rotate_202_409_400_404_AndSecrets()
     {
         // Arrange: Active-кластер.
         var cluster = Cluster("rot");
@@ -243,7 +243,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
     }
 
     [Fact]
-    public async Task Seed_ВыключенныйФлаг_404()
+    public async Task Seed_FlagDisabled_404()
     {
         // Arrange: фабрика с EnableSeedEndpoint=false.
         var factory = new SeedOffFactory(fx.Etcd);

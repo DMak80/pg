@@ -78,7 +78,7 @@ public sealed class ValkeyEtcdFixture : IAsyncLifetime
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
+        throw new InvalidOperationException($"etcd at {Endpoint} did not come up within 30 s");
     }
 }
 

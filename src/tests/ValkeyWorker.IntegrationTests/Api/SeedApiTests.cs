@@ -11,7 +11,7 @@ namespace ValkeyWorker.IntegrationTests.Api;
 public class SeedApiTests(ValkeyApiFixture fx)
 {
     [Fact]
-    public async Task Seed_201Потом200SeededFalse_Идемпотентен()
+    public async Task Seed_201Then200SeededFalse_Idempotent()
     {
         // Arrange: свой demo-ключ чистим до теста (общий etcd фикстуры).
         await fx.Etcd.Gateway.DeleteAsync(fx.Etcd.Endpoint, "/valkey/clusters/demo/",

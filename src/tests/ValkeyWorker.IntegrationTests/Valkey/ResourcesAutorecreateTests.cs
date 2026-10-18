@@ -9,7 +9,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class ResourcesAutorecreateTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task МутацияResources_ПересозданиеСНовымиЛимитами()
+    public async Task ResourcesMutation_RecreateWithNewLimits()
     {
         // Arrange: RUNNING-кластер (cpu 1/mem 1Gi).
         var cluster = fx.Cluster("res");

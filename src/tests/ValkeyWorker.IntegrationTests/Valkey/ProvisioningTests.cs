@@ -11,7 +11,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class ProvisioningTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task Сид_ТикиProvisioning_КонтейнерИДискавери()
+    public async Task Seed_ProvisioningTicks_ContainerAndDiscovery()
     {
         // Arrange: сид NOT_INITIALIZED + клэйм.
         var cluster = fx.Cluster("prov");
@@ -53,7 +53,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         env.Value!["VALKEY_TLS_CERT"].Should().Contain("BEGIN CERTIFICATE");
         env.Value["VALKEY_TLS_KEY"].Should().Contain("BEGIN PRIVATE KEY");
         var envCa = await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem");
-        env.Value["VALKEY_TLS_CA"].Trim().Should().Be(envCa!.Trim(), "CA env == ca_pem кластера");
+        env.Value["VALKEY_TLS_CA"].Trim().Should().Be(envCa!.Trim(), "CA env == cluster ca_pem");
 
         // Креды: 32 симв; PING admin-кредом → PONG.
         var adminPassword = await fx.GetAsync($"/valkey/clusters/{cluster}/admin_password");
@@ -111,7 +111,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         nodeEnv.IsSuccess.Should().BeTrue(nodeEnv.Error?.Message);
         nodeEnv.Value.Should().NotBeNull();
         nodeEnv.Value.Should().ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
-        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == ca_pem кластера");
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == cluster ca_pem");
 
         // Assert 3: app-кред roundtrip по TLS с ca_pem из etcd.
         var appPassword = (await fx.GetAsync($"/valkey/clusters/{cluster}/app_password"))!;
@@ -134,7 +134,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
             plainRejected = true;
         }
 
-        plainRejected.Should().BeTrue("plain-порт закрыт (--port 0)");
+        plainRejected.Should().BeTrue("plain port is closed (--port 0)");
 
         // Assert 5: ACL-матрица прежняя (app без +@all: CONFIG GET → отказ).
         var configGet = RespProbe.ExecuteTls("localhost", port, "app", appPassword, caPem, "CONFIG", "GET", "maxmemory");

@@ -10,7 +10,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 public class AclMatrixTests(ValkeyClusterFixture fx)
 {
     [Fact]
-    public async Task Матрица_DefaultAppAdmin()
+    public async Task Matrix_DefaultAppAdmin()
     {
         // Arrange: поднимаем кластер provisioning-процессом.
         var cluster = fx.Cluster("acl");

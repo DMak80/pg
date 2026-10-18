@@ -48,7 +48,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         await fx.PutAsync($"/valkey/clusters/{cluster}/nodes/node1/state", "RUNNING");
 
         var idBefore = ContainerId($"vwk-{cluster}-node1");
-        idBefore.Should().NotBeEmpty("plain-контейнер поднят руками");
+        idBefore.Should().NotBeEmpty("the plain container was started manually");
 
         // Act: тик мигратора.
         var migrator = new TlsMigrator(
@@ -64,21 +64,21 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(TlsMigrator.MigrationOutcome.InProgress);
         var idAfter = ContainerId($"vwk-{cluster}-node1");
-        idAfter.Should().NotBe(idBefore, "контейнер пересоздан (не рестартнут)");
+        idAfter.Should().NotBe(idBefore, "the container was recreated (not restarted)");
         var args = (await fx.Driver.NodeArgsAsync(cluster, "node1", ct)).Value!;
         args.Should().HaveCount(3);
         args[0].Should().Be("sh");
         args[1].Should().Be("-c");
         args[2].Should().Contain("'--tls-port' '6379'").And.Contain("'--port' '0'");
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
-        int.Parse(endpoints.Split(':')[1]).Should().Be(port, "portalloc не меняется");
+        int.Parse(endpoints.Split(':')[1]).Should().Be(port, "portalloc stays unchanged");
         var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         caPem.Should().Contain("BEGIN CERTIFICATE");
         // env-модель: контейнер несёт VALKEY_TLS_{CERT,KEY,CA}; CA == ca_pem.
         var nodeEnv = await fx.Driver.NodeEnvAsync(cluster, "node1", ct);
         nodeEnv.Value.Should().NotBeNull();
         nodeEnv.Value.Should().ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
-        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == ca_pem миграции");
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == migration ca_pem");
         var ping = RespProbe.ExecuteTls("localhost", port, "admin", ensured.Value.AdminPassword, caPem, "PING");
         ping.Ok.Should().BeTrue(ping.Error);
         var journal = (await fx.GetAsync($"/valkeyworker/work/{cluster}"))!;
@@ -88,7 +88,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         var rerun = await migrator.RunAsync(await fx.RequireSnapshotAsync(cluster), ct);
         rerun.IsSuccess.Should().BeTrue(rerun.Error?.Message);
         rerun.Value.Should().Be(TlsMigrator.MigrationOutcome.NotNeeded);
-        ContainerId($"vwk-{cluster}-node1").Should().Be(idAfter, "повторный детект — no-op");
+        ContainerId($"vwk-{cluster}-node1").Should().Be(idAfter, "repeated detect is a no-op");
     }
 
     [Fact]
