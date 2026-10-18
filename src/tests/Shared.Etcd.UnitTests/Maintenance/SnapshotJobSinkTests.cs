@@ -51,7 +51,7 @@ public class SnapshotJobSinkTests
         public bool Throw { get; set; }
         public Task<Shared.Core.Result> ExportAsync(string snapshotFileName, byte[] data, long? revision, CancellationToken ct)
         {
-            if (Throw) throw new ApplicationException("sink взорвался");
+            if (Throw) throw new ApplicationException("sink exploded");
             Calls.Add((snapshotFileName, data, revision));
             return Task.FromResult(Shared.Core.Result.Success());
         }
@@ -61,7 +61,7 @@ public class SnapshotJobSinkTests
 
     // AAA: снятие вызывает sink именем файла, байтами и ревизией StatusAsync
     [Fact]
-    public async Task TakeAsync_вызывает_sink_после_локальной_записи()
+    public async Task TakeAsync_CallsSink_AfterLocalWrite()
     {
         // Arrange
         var sink = new RecordingSink();
@@ -79,7 +79,7 @@ public class SnapshotJobSinkTests
 
     // AAA: Result.Failed sink не роняет снятие (локальный файл — истина снятия)
     [Fact]
-    public async Task TakeAsync_сбой_sink_не_роняет_снятие()
+    public async Task TakeAsync_SinkFailure_DoesNotFailSnapshot()
     {
         // Arrange
         var sink = new FailingSink();
@@ -89,13 +89,13 @@ public class SnapshotJobSinkTests
         var shot = await job.TakeAsync(TestContext.Current.CancellationToken);
 
         // Assert
-        shot.IsSuccess.Should().BeTrue("сбой выгрузки — транзиент, доводка догонит (spec §2.3)");
+        shot.IsSuccess.Should().BeTrue("export failure is transient — reconciliation will catch up (spec §2.3)");
         File.Exists(shot.Value).Should().BeTrue();
     }
 
     // AAA: исключение реализации sink — тоже не роняет снятие
     [Fact]
-    public async Task TakeAsync_исключение_sink_не_роняет_снятие()
+    public async Task TakeAsync_SinkException_DoesNotFailSnapshot()
     {
         // Arrange
         var sink = new RecordingSink { Throw = true };
@@ -110,7 +110,7 @@ public class SnapshotJobSinkTests
 
     // AAA: sink=null — прежнее поведение (KafkaWorker/ValkeyWorker)
     [Fact]
-    public async Task TakeAsync_без_sink_пишет_файл()
+    public async Task TakeAsync_WithoutSink_WritesFile()
     {
         // Arrange
         var job = new SnapshotJob(new FakeEtcd([9]), [Ep], TempDir(), 10, 60);
@@ -127,6 +127,6 @@ public class SnapshotJobSinkTests
     private sealed class FailingSink : ISnapshotSink
     {
         public Task<Shared.Core.Result> ExportAsync(string snapshotFileName, byte[] data, long? revision, CancellationToken ct)
-            => Task.FromResult(Shared.Core.Result.Failed(new ApplicationException("S3 недоступен")));
+            => Task.FromResult(Shared.Core.Result.Failed(new ApplicationException("S3 unavailable")));
     }
 }

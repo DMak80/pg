@@ -39,7 +39,7 @@ public class WorkJournalTests
         // Arrange: Put падает (etcd недоступен)
         var gateway = new FakeCoordinationGateway
         {
-            PutFault = _ => Result.Failed(new HttpRequestException("etcd недоступен")),
+            PutFault = _ => Result.Failed(new HttpRequestException("etcd unreachable")),
         };
         var journal = NewJournal(gateway);
         var emitted = false;

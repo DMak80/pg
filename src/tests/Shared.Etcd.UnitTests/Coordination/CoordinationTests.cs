@@ -148,7 +148,7 @@ public class CoordinationTests
         // Arrange — grant отвечает ошибкой («etcd недоступен»)
         var gateway = new FakeCoordinationGateway
         {
-            GrantOverride = () => Result<long>.Failed(new ApplicationException("etcd недоступен")),
+            GrantOverride = () => Result<long>.Failed(new ApplicationException("etcd unreachable")),
         };
         var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
 
@@ -256,9 +256,9 @@ public class CoordinationTests
         await Task.WhenAll(first, second);
 
         // Assert — ровно один grant, оба ключа живут на нём
-        gateway.GrantedLeases.Should().ContainSingle("постановка instance-ключей сериализована — двойной grant исключён");
+        gateway.GrantedLeases.Should().ContainSingle("instance key placement is serialized — double grant is excluded");
         var lease = gateway.KeyLeases[$"{Prefix}/instances/{store.InstanceId}"];
-        gateway.KeyLeases[$"{Prefix}/api/{store.InstanceId}"].Should().Be(lease, "оба ключа на одном lease");
+        gateway.KeyLeases[$"{Prefix}/api/{store.InstanceId}"].Should().Be(lease, "both keys live on the same lease");
         await store.DisposeAsync();
     }
 
@@ -277,7 +277,7 @@ public class CoordinationTests
         await store.KeepaliveTickAsync(CancellationToken.None);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
-        gateway.KeepaliveOverride = _ => Result.Failed(new ApplicationException("отмена http-запроса"));
+        gateway.KeepaliveOverride = _ => Result.Failed(new ApplicationException("http request cancelled"));
 
         // Act — тик с отменённым токеном: неудача keepalive ≠ потеря lease
         await store.KeepaliveTickAsync(cts.Token);
@@ -285,7 +285,7 @@ public class CoordinationTests
         // Assert — lease не потерян: Dispose собирает и отзывает его
         await store.DisposeAsync();
         gateway.LiveLeases.Should().BeEmpty(
-            "провал keepalive по отменённому ct — не потеря: lease отозван Dispose, а не утёк до TTL");
+            "keepalive failure on a cancelled ct is not a loss: lease is revoked by Dispose, not leaked until TTL");
         gateway.Store.Should().NotContainKey($"{Prefix}/instances/{store.InstanceId}");
     }
 
@@ -318,9 +318,9 @@ public class CoordinationTests
         var finished = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(5), ct));
 
         // Assert — lease постановки собран и отозван (бюджет 5 с — не висит вечно)
-        finished.Should().Be(disposeTask, "Dispose дождался постановки ключей");
+        finished.Should().Be(disposeTask, "Dispose waited for the key placement");
         await tick;
-        gateway.LiveLeases.Should().BeEmpty("lease висящей постановки отозван, а не утёк до TTL");
+        gateway.LiveLeases.Should().BeEmpty("lease of the in-flight placement is revoked, not leaked until TTL");
         gateway.Store.Should().NotContainKey($"{Prefix}/instances/{store.InstanceId}");
     }
 }
