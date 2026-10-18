@@ -508,8 +508,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             // Старая заявка при идущей balance: тик НЕ снимает (гвард — прогресс
             // balance жив; в balance-ветке экспирационных точек нет вообще).
             await PutTicketAsync($"/kafkaworker/rebalances/{cluster}", nowUnix - 3700);
-            var tick2 = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick2.IsSuccess.Should().BeTrue(tick2.Error?.Message);
+            await TickAsync("guard2-old-ticket", cluster,
+                async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
                 "идущая ребалансировка не снимается никогда (тройной гвард)");
 
@@ -517,8 +517,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             // занулены) + старая заявка → НЕ expired, waiting-cluster.
             var endpointsRaw = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
             await fixture.PutAsync("/kafka/clusters/" + cluster + "/endpoints", "");
-            var tick3 = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick3.IsSuccess.Should().BeTrue(tick3.Error?.Message);
+            await TickAsync("guard3-blind-endpoints", cluster,
+                async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
                 "гвард previous mode=balance работает и в endpoints-точке");
             var outcomeLive = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
