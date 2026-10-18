@@ -12,7 +12,10 @@ namespace PgWorker.IntegrationTests.Docker;
 [Collection(NonE2eCollection.Name)]
 public class EngineSupersetTests
 {
-    private const string AlpineImage = "alpine:3.20";
+    // Внешний образ — только из локального registry (канон образов, runbook):
+    // голый alpine:3.20 резолвится в docker.io и роняет тест таймаутом при
+    // недоступном хабе.
+    private const string AlpineImage = "192.168.0.1:5000/alpine:3.20";
 
     // Локальный registry — канон внешних образов (runbook); уникальный
     // гарантированно отсутствующий репозиторий задачи.
@@ -50,8 +53,12 @@ public class EngineSupersetTests
         }
     }
 
-    // Позитивный контроль путей: после pull реального образа create проходит
+    // Позитивный контроль путей: create по существующему образу проходит
     // (гарантирует, что предыдущий кейс красен именно из-за отсутствия образа).
+    // Отдельный pull НЕ зовём: локальный registry за basic-auth, движок тянет
+    // анонимно (без X-Registry-Auth) — «pull access denied»; по канону ранбука
+    // образы предзеркалируются на хост ДО тестов (dev-stand/images/pull-images.sh),
+    // поэтому образ уже локален.
     [Fact]
     public async Task CreateContainer_ExistingImage_Succeeds()
     {
@@ -62,9 +69,6 @@ public class EngineSupersetTests
         var spec = new ContainerSpec(AlpineImage, [], name, Cmd: ["true"], ResetEntrypoint: true);
         try
         {
-            await using var puller = Factory.Create("unix:///var/run/docker.sock", hostAlias: "local");
-            await ((DockerEngine)puller).PullImageAsync(AlpineImage, ct);
-
             // Act / Assert
             var created = await engine.CreateContainerAsync(spec, name, ct);
             created.IsSuccess.Should().BeTrue(created.Error?.ToString());

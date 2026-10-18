@@ -160,12 +160,25 @@ public sealed class PlainClusterDriver(
             if (!network.IsSuccess)
                 throw network.Error!;
 
-            // Идемпотентность: существующий контейнер не пересоздаётся (K3).
+            // Идемпотентность: ЖИВОЙ контейнер не пересоздаётся (K3). Найденный
+            // созданным-но-незапущенным (created/exited — держатель клэйма умер
+            // между create и start) доводим до running: takeover-путь обязан
+            // доиграть подъём ноды, иначе кластер навсегда недосчитывается
+            // брокера, а WaitReady выгорает бюджетом на «N-1 из N».
             var existing = await engine.ListContainersAsync(name, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
-            if (existing.Value.Any(c => c.Names.Contains(name)))
+            var mine = existing.Value.FirstOrDefault(c => c.Names.Contains(name));
+            if (mine is not null)
+            {
+                if (mine.State == "running")
+                    return;
+
+                var resumed = await engine.StartContainerAsync(name, ct);
+                if (!resumed.IsSuccess)
+                    throw resumed.Error!;
                 return;
+            }
 
             var containerSpec = new ContainerSpec(
                 spec.Image,

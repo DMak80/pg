@@ -159,9 +159,8 @@ public class E2ePatroniRestTlsScenarios
                 var migrated = await E2ePhase.WaitAsync(fx, "rtls-convergence",
                     async () =>
                     {
-                        var state = await Fx.RunDockerAsync(
-                            ["inspect", "-f", "{{.State.Status}}", legacy], ct);
-                        if (!state.Trim().Equals("running", StringComparison.Ordinal))
+                        var state = await InspectStatusOrNullAsync(legacy, ct);
+                        if (state != "running")
                             return false;
                         var env = await Fx.RunDockerAsync(
                             ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
@@ -191,6 +190,22 @@ public class E2ePatroniRestTlsScenarios
     }
 
     // ===== хелперы =====
+
+    // Статус контейнера; null = ещё не создан (воркер не дошёл до recreate).
+    // Для поллинга «no such object» — «не готово», а не фатально: легаси-нода
+    // перед ожиданием удаляется, и до пересоздания inspect закономерно 404.
+    private async Task<string?> InspectStatusOrNullAsync(string container, CancellationToken ct)
+    {
+        try
+        {
+            return (await Fx.RunDockerAsync(
+                ["inspect", "-f", "{{.State.Status}}", container], ct)).Trim();
+        }
+        catch (ApplicationException e) when (e.Message.Contains("no such object", StringComparison.Ordinal))
+        {
+            return null;
+        }
+    }
 
     private async Task SeedClusterAsync(string cluster)
     {

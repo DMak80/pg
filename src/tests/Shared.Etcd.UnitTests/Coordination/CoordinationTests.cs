@@ -262,6 +262,33 @@ public class CoordinationTests
         await store.DisposeAsync();
     }
 
+    // Отмена токена остановки во время keepalive: http по отменённому ct
+    // проваливается сам по себе — это НЕ истечение lease. Потеря не
+    // фиксируется (_instanceLease жив), и Dispose отзывает lease немедленно;
+    // иначе instance/api-ключи переживали остановку на остатке TTL ≤15 с
+    // (соседние сценарии общего etcd видели мёртвый ключ).
+    [Fact]
+    public async Task ClaimStore_KeepaliveCancelledDuringCall_LeaseNotLostAndRevokedOnDispose()
+    {
+        // Arrange — ключи поставлены; keepalive отвечает неудачей (как http
+        // по отменённому токену)
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
+        await store.KeepaliveTickAsync(CancellationToken.None);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        gateway.KeepaliveOverride = _ => Result.Failed(new ApplicationException("отмена http-запроса"));
+
+        // Act — тик с отменённым токеном: неудача keepalive ≠ потеря lease
+        await store.KeepaliveTickAsync(cts.Token);
+
+        // Assert — lease не потерян: Dispose собирает и отзывает его
+        await store.DisposeAsync();
+        gateway.LiveLeases.Should().BeEmpty(
+            "провал keepalive по отменённому ct — не потеря: lease отозван Dispose, а не утёк до TTL");
+        gateway.Store.Should().NotContainKey($"{Prefix}/instances/{store.InstanceId}");
+    }
+
     // Dispose против висящей постановки instance-ключей: сбор lease на остановке
     // ждёт её завершения — lease постановки отзывается, а не утекает до TTL
     // (форма «ключи живут ≤15 с после смерти воркера»).

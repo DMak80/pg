@@ -50,9 +50,13 @@ public class E2ePatroniFileSdScenarios
         var sdGenName = $"pgw-sdgen-{Fx.ClusterTag}";
         var promName = $"pgw-prom-{Fx.ClusterTag}";
         var promUrl = $"http://{promName}:9090"; // внутрисетевой, без публикаций
-        string? sdVol = null, sdGen = null, prom = null; // фактический подъём — для finally
+        // Раннер (bind-пути резолвит демон хоста): hostArtifacts смонтирован
+        // ровно в /artifacts, артефакты факта живут в /artifacts/<runId> —
+        // хостовый аналог контейнерного пути = hostArtifacts/<runId>.
         var hostArtifacts = Environment.GetEnvironmentVariable("PGW_E2E_HOST_ARTIFACTS")
             ?? throw new ApplicationException("PGW_E2E_HOST_ARTIFACTS не задан — старт вне раннера");
+        var hostArtifactsDir = Path.Combine(
+            hostArtifacts, Path.GetRelativePath("/artifacts", Fx.ArtifactsDir));
         try
         {
             // ---------- контур мониторинга (только этого сценария) ----------
@@ -109,10 +113,13 @@ public class E2ePatroniFileSdScenarios
                 "run", "-d", "--name", promName,
                 "--network", Fx.NetName,
                 "-v", $"{sdVolName}:/etc/prometheus/sd:ro",
-                "-v", $"{hostArtifacts}/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
+                // Bind — ХОСТОВЫЕ пути факта (раннер: hostArtifacts ↔ /artifacts,
+                // файлы факта — в подкаталоге <runId>; bind несуществующего
+                // корневого пути docker подменяет каталогом — «not a directory»).
                 // CA контура для https-скрейпа patroni-nodes (t22: rest-ca.pem
                 // фаза 1 пишет в каталог артефактов при старте окружения).
-                "-v", $"{hostArtifacts}/rest-ca.pem:/etc/prometheus/ca.pem:ro",
+                "-v", $"{Path.Combine(hostArtifactsDir, "prometheus.yml")}:/etc/prometheus/prometheus.yml:ro",
+                "-v", $"{Path.Combine(hostArtifactsDir, "rest-ca.pem")}:/etc/prometheus/ca.pem:ro",
                 "prom/prometheus:v3.14.0",
             };
 
@@ -120,9 +127,6 @@ public class E2ePatroniFileSdScenarios
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: старт контейнеров контура (sd-generator + prometheus)…");
             await Fx.RunDockerAsync([.. sdGenArgs], ct);
             await Fx.RunDockerAsync([.. promArgs], ct);
-            sdGen = sdGenName;
-            prom = promName;
-            sdVol = sdVolName;
             using var promHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 
             // ---------- кластер ----------
@@ -228,10 +232,8 @@ public class E2ePatroniFileSdScenarios
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: teardown — телеметрия, затем удаления…");
             await Fx.CollectDiagnosticsAsync("scenario-finally");
 
-            foreach (var c in new[] { prom, sdGen })
+            foreach (var c in new[] { promName, sdGenName })
             {
-                if (c is null)
-                    continue;
                 try
                 {
                     await File.WriteAllTextAsync(
@@ -245,11 +247,29 @@ public class E2ePatroniFileSdScenarios
                 }
             }
 
-            foreach (var c in new[] { prom, sdGen })
-                if (c is not null)
+            // Контейнеры контура и volume — по ИМЕНАМ (переменные «успешного
+            // подъёма» не присвоены при раннем падении старта, а созданные
+            // контейнеры держат volume); rm по отсутствующему — не ошибка.
+            foreach (var c in new[] { promName, sdGenName })
+            {
+                try
+                {
                     await Fx.RunDockerAsync(["rm", "-f", c], CancellationToken.None); // stop + rm
-            if (sdVol is not null)
-                await Fx.RunDockerAsync(["volume", "rm", "-f", sdVol], CancellationToken.None);
+                }
+                catch (ApplicationException e) when (e.Message.Contains("No such container", StringComparison.Ordinal))
+                {
+                    // контур не дошёл до создания — уже чисто
+                }
+            }
+
+            try
+            {
+                await Fx.RunDockerAsync(["volume", "rm", "-f", sdVolName], CancellationToken.None);
+            }
+            catch (ApplicationException e) when (e.Message.Contains("no such volume", StringComparison.Ordinal))
+            {
+                // volume не создавался — уже чисто
+            }
 
             // Ассерт чистоты контура сценария: volume file_sd удалён.
             var leftVolumes = await E2eFixture.RunDockerAsync(

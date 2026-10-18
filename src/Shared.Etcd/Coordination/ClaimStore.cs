@@ -190,6 +190,12 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             if (ok.IsSuccess)
                 continue;
 
+            // Отмена остановки ≠ истечение lease: http по отменённому ct падает
+            // сам по себе. Потерю не фиксируем — Dispose соберёт и отзовёт lease
+            // (иначе ключи переживали остановку на остатке TTL ≤15 с).
+            if (ct.IsCancellationRequested)
+                return;
+
             // lease истёк/отозван: помечаем потерю, ключ под ним etcd уже удалил сам
             lock (_sync)
             {
