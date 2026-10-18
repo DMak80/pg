@@ -17,8 +17,8 @@ public static class WatchdogConfigGuard
         var slowest = TimeSpan.FromSeconds(Math.Max(1, Math.Max(scanIntervalSec, keepaliveSec)));
         if (slowest >= threshold)
             throw new ApplicationException(
-                $"Loops:ScanIntervalSec/KeepaliveSec ({slowest.TotalSeconds:F0} c) обязаны быть МЕНЬШЕ порога сноса watchdog " +
-                $"({threshold.TotalSeconds:F0} c = Multiplier({watchdog.Multiplier}) × CheckIntervalSec({watchdog.CheckIntervalSec})): " +
-                "тики быстрых циклов чаще порога — иначе watchdog сносит живой воркер; увеличьте CheckIntervalSec/Multiplier");
+                $"Loops:ScanIntervalSec/KeepaliveSec ({slowest.TotalSeconds:F0} s) must be LESS than the watchdog teardown threshold " +
+                $"({threshold.TotalSeconds:F0} s = Multiplier({watchdog.Multiplier}) × CheckIntervalSec({watchdog.CheckIntervalSec})): " +
+                "fast loop ticks must come more often than the threshold — otherwise the watchdog tears down a live worker; increase CheckIntervalSec/Multiplier");
     }
 }

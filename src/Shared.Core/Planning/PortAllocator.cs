@@ -60,8 +60,8 @@ public static class PortAllocator
             if (!allocated)
                 return Result<IReadOnlyDictionary<string, TAddress>>.Failed(
                     new InvalidOperationException(
-                        $"PortAllocator: нет свободного порта на хосте {placement.Host} " +
-                        $"в диапазоне [{rangeFrom},{rangeTo}) для {key}"));
+                        $"PortAllocator: no free port on host {placement.Host} " +
+                        $"in range [{rangeFrom},{rangeTo}) for {key}"));
         }
 
         return Result<IReadOnlyDictionary<string, TAddress>>.Success(result);

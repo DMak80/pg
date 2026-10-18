@@ -22,7 +22,7 @@ public static class PlacementPlanner
     public static PlacementPlan Plan(IReadOnlyList<NodeGroup> groups, IReadOnlyList<HostInfo> hosts)
     {
         if (hosts.Count == 0)
-            throw new InvalidOperationException("PlacementPlanner: список docker-хостов пуст");
+            throw new InvalidOperationException("PlacementPlanner: docker host list is empty");
 
         // Текущая загрузка: исходные UsedSlots + уже размещённые этим планом ноды.
         var load = hosts.ToDictionary(h => h.Name, h => h.UsedSlots);
