@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Docker.Drivers;
@@ -12,7 +11,7 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 
 // Churn-интеграция (t05, spec §7.5): Active-кластер с endpoints на ЗАКРЫТЫЙ
 // порт (зонд свободных — рантайм) — воркер-цикл (supervise-проба) не churn'ит
-// клиентов: кэш + backoff держат CreatedClients ≤ 2, потоки процесса стабильны.
+// клиентов: кэш + backoff держат CreatedClients ≤ 2.
 // Вehicle — проба надзора (DescribeCluster): ListConsumerGroups на недоступном
 // bootstrap роняет процесс нативно (дефект librdkafka 2.14.2, репро 2026-09-04),
 // поэтому коллектор против лежащего кластера интеграционно не гоняется — его
@@ -71,8 +70,6 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
                 $"range /kafka/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
         var snapshot = KafkaSnapshotParser.Parse(range.Value).Value.Single(c => c.Cluster == cluster);
 
-        var threadsBefore = Process.GetCurrentProcess().Threads.Count;
-
         // Act: 6 тиков надзора (первый — реальный probe-контакт: клиент #1, фейл,
         // RecordFailure; остальные — skip по backoff-окну 15 c). Без задержек.
         for (var i = 0; i < 6; i++)
@@ -82,10 +79,11 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         }
 
         // Assert: ≤ 2 нативных клиента (первый + не более одного
-        // unhealthy-пересоздания), потоки не растут (churn погашен).
+        // unhealthy-пересоздания) — churn погашен кэшем+backoff. Гейт по
+        // потокам процесса невалиден по построению в параллельном прогоне:
+        // глобальный Process.Threads ловит активность соседних коллекций
+        // того же процесса; нешумный churn-прокси — сам CreatedClients.
         factory.CreatedClients.Should().BeInRange(1, 2,
             $"кэш+backoff: 6 тиков = 1 клиент (+≤1 пересоздание), не 5–7 на тик; фактически {factory.CreatedClients}");
-        var threadsAfter = Process.GetCurrentProcess().Threads.Count;
-        (threadsAfter - threadsBefore).Should().BeLessThanOrEqualTo(10);
     }
 }
