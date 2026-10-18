@@ -133,4 +133,4 @@ public sealed class ValkeyClusterDetailsQueryHandler(IValkeySnapshotReader store
 
 // Кластер отсутствует в valkey-снапшоте — 404 (детали).
 public sealed class ValkeyClusterNotFound(string cluster)
-    : Exception($"valkey-кластер {cluster} не найден в снапшоте");
+    : Exception($"valkey cluster {cluster} not found in snapshot");

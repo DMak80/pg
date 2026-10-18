@@ -147,19 +147,19 @@ public sealed record BackupObjectDto(string Key, long SizeBytes, long LastModifi
 
 // Шард отсутствует и в etcd-Backups, и в S3-дереве инвентаря — 404.
 public sealed class BackupShardNotFound(string cluster, string shard)
-    : Exception($"шард {cluster}/{shard} отсутствует и в etcd, и в S3-дереве инвентаря");
+    : Exception($"shard {cluster}/{shard} is missing from both etcd and the S3 inventory tree");
 
 // Гвард ступени 2: префикс вне грани (не кластер снапшота и не объект дерева) — 400.
 public sealed class InvalidBackupPrefixException(string prefix)
-    : Exception($"префикс вне грани (не кластер и не объект инвентаря): {prefix}");
+    : Exception($"prefix outside the backups storage scope (not a cluster and not an inventory object): {prefix}");
 
 // Гвард maxKeys вне 1..1000 — 400.
 public sealed class InvalidBackupMaxKeysException(int? maxKeys)
-    : Exception($"maxKeys вне диапазона 1..{BackupObjectsQuery.MaxKeysLimit}: {maxKeys?.ToString() ?? "null"}");
+    : Exception($"maxKeys out of range 1..{BackupObjectsQuery.MaxKeysLimit}: {maxKeys?.ToString() ?? "null"}");
 
 // objects при незаданном Endpoint — 503 (грань выключена).
 public sealed class BackupsStorageNotConfiguredException()
-    : Exception("AdminPanel:Backups:S3:Endpoint не задан — грань «Хранилище бэкапов» выключена");
+    : Exception("AdminPanel:Backups:S3:Endpoint is not set — the backups storage scope is disabled");
 
 // Транспортный сбой обращения к ownS3 — 502.
 public sealed class BackupsS3UnavailableException(string message)
@@ -177,7 +177,7 @@ public static class BackupStorageMappers
             // AC1: грань не настроена — только configured + причина.
             return new BackupStorageDto(
                 Configured: false,
-                NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint не задан",
+                NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint is not set",
                 Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
@@ -360,11 +360,11 @@ public static class BackupStorageMappers
         var etcdOnly = shardFulls.Count(f => f.Status == BackupFullReconcileStatus.EtcdOnly);
         var deleting = shardFulls.Count(f => f.Status == BackupFullReconcileStatus.Deleting);
         if (s3Only > 0)
-            notes.Add($"объекты без ключа: {s3Only}");
+            notes.Add($"objects without keys: {s3Only}");
         if (etcdOnly > 0)
-            notes.Add($"ключи без объектов: {etcdOnly}");
+            notes.Add($"keys without objects: {etcdOnly}");
         if (deleting > 0)
-            notes.Add($"идёт удаление: {deleting}");
+            notes.Add($"deletion in progress: {deleting}");
 
         var drill = etcdCluster?.ShardsDrills?.TryGetValue(shard, out var drillInfo) == true
             ? new BackupDrillBadgeDto(drillInfo.State, drillInfo.Phase, drillInfo.StartedUnix,

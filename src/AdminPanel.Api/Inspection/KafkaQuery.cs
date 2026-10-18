@@ -291,4 +291,4 @@ public sealed class KafkaClusterDetailsQueryHandler(
 
 // Кластер отсутствует в kafka-снапшоте — 404 (детали).
 public sealed class KafkaClusterNotFound(string cluster)
-    : Exception($"kafka-кластер {cluster} не найден в снапшоте");
+    : Exception($"kafka cluster {cluster} not found in snapshot");

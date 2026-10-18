@@ -181,4 +181,4 @@ public sealed class S3ClusterDetailsQueryHandler(IS3SnapshotReader store)
 
 // Кластер отсутствует в s3-снапшоте — 404 (детали).
 public sealed class S3ClusterNotFound(string cluster)
-    : Exception($"S3-кластер {cluster} не найден в снапшоте");
+    : Exception($"S3 cluster {cluster} not found in snapshot");

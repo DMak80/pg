@@ -77,7 +77,7 @@ public sealed class AdminAuthenticator(IOptions<AuthOptions> options, ILogger<Ad
 
     private bool MalformedHash()
     {
-        logger.LogWarning("AdminPanel:Auth:PasswordHash имеет битый формат — логин отклоняется (fail-closed)");
+        logger.LogWarning("AdminPanel:Auth:PasswordHash has a malformed format — login is rejected (fail-closed)");
         return false;
     }
 

@@ -57,7 +57,7 @@ public static class AuthModule
                 if (auth.Value.SessionHours <= 0)
                 {
                     // Опечатка в конфиге — не роняем хост, откатываемся к 8 часам.
-                    logger.LogWarning("AdminPanel:Auth:SessionHours <= 0 — использую 8 часов");
+                    logger.LogWarning("AdminPanel:Auth:SessionHours <= 0 — falling back to 8 hours");
                     o.ExpireTimeSpan = TimeSpan.FromHours(8);
                 }
                 else

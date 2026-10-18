@@ -11,15 +11,15 @@ namespace AdminPanel.Api.Inspection;
 public static class InspectionModule
 {
     // До первого тика снапшота нет (t03 §3.13): хендлеры возвращают этот отказ → 503 (spec §3.12).
-    public sealed class SnapshotNotReadyException() : Exception("etcd-снапшот ещё не собран");
+    public sealed class SnapshotNotReadyException() : Exception("etcd snapshot has not been collected yet");
 
     // Кластер отсутствует в снапшоте: 404 — отличается от 503 «снапшота нет» (spec §3.10).
     public sealed class ClusterNotFoundException(string cluster)
-        : Exception($"кластер {cluster} не найден в снапшоте");
+        : Exception($"cluster {cluster} not found in snapshot");
 
     // HA-scope отсутствует в снапшоте: 404 — как неизвестный кластер (spec §3.18).
     public sealed class ScopeNotFoundException(string scope)
-        : Exception($"HA-scope {scope} не найден в снапшоте");
+        : Exception($"HA-scope {scope} not found in snapshot");
 
     // GET /api/overview | /api/etcd/status | /api/alerts (arch/03 §1, spec §6.1).
     public static IEndpointRouteBuilder MapInspectionApi(this IEndpointRouteBuilder endpoints)
@@ -70,7 +70,7 @@ public static class InspectionModule
                     return Results.Problem(
                         statusCode: StatusCodes.Status400BadRequest,
                         title: "Invalid state",
-                        detail: $"state должен быть ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED, получено: {state}");
+                        detail: $"state must be ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED, got: {state}");
                 parsed = value;
             }
 
@@ -138,7 +138,7 @@ public static class InspectionModule
                     return Results.Problem(
                         statusCode: StatusCodes.Status400BadRequest,
                         title: "Invalid severity",
-                        detail: $"severity должен быть critical|warning|info, получено: {severity}");
+                        detail: $"severity must be critical|warning|info, got: {severity}");
                 parsed = value;
             }
 
@@ -270,12 +270,12 @@ public static class InspectionModule
                 return Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     title: "Invalid prefix",
-                    detail: $"prefix пуст или первый сегмент не матчит ^[a-z][a-z0-9_]{{0,62}}$: {prefix}");
+                    detail: $"prefix is empty or its first segment does not match ^[a-z][a-z0-9_]{{0,62}}$: {prefix}");
             if (!BackupObjectsQuery.IsValidMaxKeys(maxKeys))
                 return Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     title: "Invalid maxKeys",
-                    detail: $"maxKeys должен быть 1..{BackupObjectsQuery.MaxKeysLimit}, получено: {maxKeys?.ToString() ?? "null"}");
+                    detail: $"maxKeys must be 1..{BackupObjectsQuery.MaxKeysLimit}, got: {maxKeys?.ToString() ?? "null"}");
 
             var result = await handler.HandleQuery<BackupObjectsQuery, BackupObjectsPageDto>(
                 new BackupObjectsQuery(prefix, maxKeys, continuationToken), ct);

@@ -178,7 +178,7 @@ public static class OperationsModule
                 {
                     return Results.Problem(
                         statusCode: StatusCodes.Status400BadRequest, title: "Invalid body",
-                        detail: "тело запроса — JSON вида {\"mode\":\"soft|hard\"}");
+                        detail: "request body must be JSON of the form {\"mode\":\"soft|hard\"}");
                 }
             }
             var result = await handler.HandleCommand<RecreateNodeCommand, NodeRecreatedDto>(
@@ -205,7 +205,7 @@ public static class OperationsModule
                 return Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
                     title: "Invalid body",
-                    detail: "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, drillIntervalDays в [0..3650]");
+                    detail: "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, drillIntervalDays in [0..3650]");
             }
 
             var result = await handler.HandleCommand<UpdateBackupsPolicyCommand, string>(

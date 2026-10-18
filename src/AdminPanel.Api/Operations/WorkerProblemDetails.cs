@@ -9,7 +9,7 @@ namespace AdminPanel.Api.Operations;
 /// Results.Text(Body, "application/problem+json", StatusCode).
 /// </summary>
 public sealed class WorkerProblemDetails(int statusCode, string body)
-    : Exception($"API воркера ответил {statusCode}")
+    : Exception($"worker API responded {statusCode}")
 {
     public int StatusCode { get; } = statusCode;
 

@@ -59,7 +59,7 @@ builder.Services.AddSingleton(sp =>
         () => new Measurement<double>(
             store.Current?.BuiltAtUtc.ToUnixTimeSeconds() ?? 0),
         unit: "s",
-        description: "Unix-время последнего успешного тика etcd-refresher (arch/18 §2.4)");
+        description: "Unix timestamp of the last successful etcd-refresher tick (arch/18 §2.4)");
 });
 
 var app = builder.Build();
@@ -71,7 +71,7 @@ _ = app.Services.GetRequiredService<System.Diagnostics.Metrics.ObservableGauge<d
 // t02: fail-closed — без пароля в конфиге логин невозможен, предупреждаем на старте.
 var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
-    app.Logger.LogWarning("AdminPanel:Auth: не задан ни Password, ни PasswordHash — логин отключён");
+    app.Logger.LogWarning("AdminPanel:Auth: neither Password nor PasswordHash is set — login is disabled");
 
 // t08: fail-fast конфига S3-грани (пустой Endpoint — грань выключена, не ошибка).
 var s3 = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.BackupsS3Options>>().Value;
@@ -87,7 +87,7 @@ if (app.Environment.IsDevelopment())
 // [t07] SPA из wwwroot — без авторизации (в бандле секретов нет, arch/01 §4/§5).
 // Бандла нет (npm run build не запускался) — хост жив, отдаётся только API.
 if (!Directory.Exists(app.Environment.WebRootPath))
-    app.Logger.LogWarning("wwwroot пуст — SPA-бандл не собран (cd frontend && npm run build)");
+    app.Logger.LogWarning("wwwroot is empty — SPA bundle not built (cd frontend && npm run build)");
 
 // [t07] default-документ и статика; guard /api/* ниже статике не мешает.
 // index.html — no-cache: имена ассетов хешируются (vite), но сам html должен

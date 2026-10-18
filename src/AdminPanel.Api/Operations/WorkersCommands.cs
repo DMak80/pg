@@ -60,7 +60,7 @@ public sealed class GenerateWorkerApiCertCommandHandler(
         var hosts = LiveHosts(c.Worker, pg.Current, kafka.Current, valkey.Current, s3.Current);
         var write = await certs.GenerateAndPutAsync(c.Worker, hosts, c.RequestedBy, ct);
         return write.Map(w => ToDto(w, hosts.Count == 0
-            ? "живых инстансов нет — SAN только localhost/127.0.0.1; после подъёма замените серт (PUT) для полного SAN"
+            ? "no live instances — SAN is localhost/127.0.0.1 only; after they come up, replace the cert (PUT) for a full SAN"
             : null));
     }
 
