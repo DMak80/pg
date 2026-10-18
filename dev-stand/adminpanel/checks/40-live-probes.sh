@@ -10,7 +10,7 @@ BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE?)"; exit 1; }
+  || { echo "❌ login (adminpanel at $BASE?)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 
 # 1) HA-скопы: все члены пробиты без ошибок; роли/состояния живые.
@@ -24,8 +24,8 @@ ha_ok() {
 for scope in demo-shard1 demo-shard2; do
   ok=""
   for i in $(seq 1 40); do ha_ok "$scope" && { ok=1; break; }; sleep 2; done
-  [ -n "$ok" ] || { echo "❌ /api/ha/$scope: пробы не обогащены (advertised portalloc-адреса?)"; exit 1; }
-  echo "  $scope: мастер running, реплика streaming+lag (Patroni-REST по advertised)"
+  [ -n "$ok" ] || { echo "❌ /api/ha/$scope: probes not enriched (advertised portalloc addresses?)"; exit 1; }
+  echo "  $scope: master running, replica streaming+lag (Patroni-REST via advertised)"
 done
 
 # 2) SQL-пробы: runtime без ошибок, sync-standby есть, инвентарь схем
@@ -43,14 +43,14 @@ cl_ok() {
 }
 ok=""
 for i in $(seq 1 40); do cl_ok && { ok=1; break; }; sleep 2; done
-[ -n "$ok" ] || { echo "❌ /api/clusters/demo: runtime/инвентарь/lease (SQL-пробы по advertised portalloc)"; exit 1; }
-echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь схем непуст"
+[ -n "$ok" ] || { echo "❌ /api/clusters/demo: runtime/inventory/lease (SQL probes via advertised portalloc)"; exit 1; }
+echo "  SQL probes: shard runtime alive, sync-standby present, schema inventory non-empty"
 
 # 3) никаких ошибок проб и расхождений: probe-failed быть не должно вовсе.
 api /api/alerts | jq -e \
   'all(.[]; .kind != "probe-failed"
      and .kind != "inventory-mismatch" and .kind != "shard-no-master")' >/dev/null \
-  || { echo "❌ /api/alerts: есть probe-failed / inventory-mismatch / shard-no-master"; exit 1; }
-echo "  алертов проб/инвентаря/без-мастера нет"
+  || { echo "❌ /api/alerts: probe-failed / inventory-mismatch / shard-no-master present"; exit 1; }
+echo "  no probe/inventory/no-master alerts"
 
-echo "✓ live-probes зелёный"
+echo "✓ live-probes green"

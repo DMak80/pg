@@ -13,14 +13,14 @@ JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login admin/admin не прошёл (стенд поднят? 00-up.sh)"; exit 1; }
+  || { echo "❌ login admin/admin failed (is the stand up? 00-up.sh)"; exit 1; }
 
 # 401 без cookie / GET /api/workers отдаёт обоих воркеров
 code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/workers")"
-[ "$code" = 401 ] || { echo "❌ /api/workers без cookie = $code"; exit 1; }
+[ "$code" = 401 ] || { echo "❌ /api/workers without cookie = $code"; exit 1; }
 curl -fsS -b "$JAR" "$BASE/api/workers" | jq -e '.workers | length == 2' >/dev/null \
-  || { echo "❌ /api/workers: ожидались карточки pgworker+kafkaworker"; exit 1; }
-echo "  /api/workers: без cookie 401, с cookie — оба воркера"
+  || { echo "❌ /api/workers: expected pgworker+kafkaworker cards"; exit 1; }
+echo "  /api/workers: 401 without cookie, both workers with cookie"
 
 # Act 1: generate (409-идемпотентность допускаем: ключ мог остаться от прогона)
 http="$(curl -s -o /tmp/pgw-wc-gen.json -w '%{http_code}' -b "$JAR" -X POST \
@@ -28,12 +28,12 @@ http="$(curl -s -o /tmp/pgw-wc-gen.json -w '%{http_code}' -b "$JAR" -X POST \
 [ "$http" = 201 ] || [ "$http" = 409 ] || { echo "❌ generate = $http"; cat /tmp/pgw-wc-gen.json; exit 1; }
 thumb="$(jq -r '.thumbprint // empty' /tmp/pgw-wc-gen.json)"
 [ -n "$thumb" ] || thumb="$(curl -fsS -b "$JAR" "$BASE/api/workers" | jq -r '.workers[] | select(.worker=="pgworker") | .targetCert.thumbprint // empty')"
-[ -n "$thumb" ] || { echo "❌ thumbprint целевого серта не найден"; exit 1; }
+[ -n "$thumb" ] || { echo "❌ target cert thumbprint not found"; exit 1; }
 echo "  generate pgworker api-cert: 201/409, thumbprint ${thumb:0:16}…"
 
 # pending restart до перезапуска (PECULIARITY: живые инстансы сообщают старый thumbprint)
 status="$(curl -fsS -b "$JAR" "$BASE/api/workers" | jq -r '.workers[] | select(.worker=="pgworker") | .instances[0].applyStatus // "none"')"
-[ "$status" = "pending restart" ] || echo "  ⚠️ статус до рестарта: $status (не 'pending restart' — проверьте стенд)"
+[ "$status" = "pending restart" ] || echo "  ⚠️ status before restart: $status (not 'pending restart' — check the stand)"
 
 # Act 2: restart → 202; Assert: applied после подъёма (полл ≤60 с)
 http="$(curl -s -o /tmp/pgw-wc-restart.json -w '%{http_code}' -b "$JAR" -X POST \
@@ -44,11 +44,11 @@ for i in $(seq 1 60); do
   st="$(curl -fsS -b "$JAR" "$BASE/api/workers" | jq -r '.workers[] | select(.worker=="pgworker") | .instances[0].applyStatus // "none"')"
   [ "$st" = "applied" ] && break; sleep 1
 done
-[ "${st:-}" = "applied" ] || { echo "❌ после рестарта статус ${st:-none}, ожидался applied"; exit 1; }
-echo "  серт применён (applied), панель сохранила доступ к API воркера"
+[ "${st:-}" = "applied" ] || { echo "❌ status after restart ${st:-none}, expected applied"; exit 1; }
+echo "  cert applied, adminpanel kept access to the worker API"
 
 # Cleanup: откат на env (DELETE + рестарт) — стенд в исходном состоянии
 curl -fsS -b "$JAR" -X DELETE "$BASE/api/workers/pgworker/api-cert" -o /dev/null \
-  || { echo "⚠️ DELETE api-cert не прошёл (ключа уже нет?)"; }
+  || { echo "⚠️ DELETE api-cert failed (key already gone?)"; }
 curl -fsS -b "$JAR" -X POST "$BASE/api/workers/pgworker/restart" -o /dev/null
-echo "✅ чек грани Воркеры пройден"
+echo "✅ Workers edge check passed"

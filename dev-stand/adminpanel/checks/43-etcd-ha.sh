@@ -31,38 +31,38 @@ trap cleanup EXIT
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login панели (стенд поднят? 00-up.sh)"; exit 1; }
+  || { echo "❌ adminpanel login (is the stand up? 00-up.sh)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 
 # 1) Контур цел: 3 started, единый leader; панель видит 3 члена с одним лидером
 [ "$(ECT member list | grep -c started)" = "3" ] \
   || { echo "❌ member list ≠ 3 started (docker logs as-etcd-1/2/3)"; exit 1; }
 ECT endpoint health --endpoints="$EP3" >/dev/null \
-  || { echo "❌ endpoint health 3/3 (compose-DNS etcd1/etcd2/etcd3 из as-etcd-1)"; exit 1; }
+  || { echo "❌ endpoint health 3/3 (compose-DNS etcd1/etcd2/etcd3 from as-etcd-1)"; exit 1; }
 api /api/etcd/status | jq -e '(.members | length) == 3
   and ([.members[] | select(.isLeader)] | length) == 1' >/dev/null \
-  || { echo "❌ /api/etcd/status: 3 члена/единый leader"; exit 1; }
-echo "  контур цел: 3 started, health 3/3, единый leader"
+  || { echo "❌ /api/etcd/status: 3 members/single leader"; exit 1; }
+echo "  contour intact: 3 started, health 3/3, single leader"
 
 # 2) Отказ одного узла — НЕ-событие: кворум пишет, воркеры/панель/master-ключ живы
 docker stop as-etcd-2 >/dev/null
 sleep 2
 ECT put "$KEY" check43 >/dev/null \
-  || { echo "❌ кворум не пишет после stop as-etcd-2 (member list / raft-статус as-etcd-1)"; exit 1; }
+  || { echo "❌ quorum cannot write after stop as-etcd-2 (member list / raft status of as-etcd-1)"; exit 1; }
 ECT get "$KEY" --print-value-only | grep -qx check43 \
-  || { echo "❌ read-after-write не сходится"; exit 1; }
+  || { echo "❌ read-after-write does not converge"; exit 1; }
 ECT del "$KEY" >/dev/null
 $MTLS "https://localhost:${PGW_API_HOST_PORT}/healthz" >/dev/null \
   && $MTLS "https://localhost:${PGW_API_HOST_PORT2}/healthz" >/dev/null \
-  || { echo "❌ healthz PgWorker (etcd-reachable) погас при живом кворуме"; exit 1; }
-api /api/healthz >/dev/null || { echo "❌ панель не отвечает при живом кворуме"; exit 1; }
+  || { echo "❌ PgWorker healthz (etcd-reachable) failed while quorum was alive"; exit 1; }
+api /api/healthz >/dev/null || { echo "❌ adminpanel not responding while quorum is alive"; exit 1; }
 api /api/clusters/demo | jq -e 'all(.shards[]; .masterLeaseAlive == true)' >/dev/null \
-  || { echo "❌ master-ключ демо-кластера погас (эмулятор должен писать через уцелевший узел)"; exit 1; }
+  || { echo "❌ demo cluster master key expired (the emulator must write through the surviving node)"; exit 1; }
 # ожидаемая деградация: 2 healthy / 1 unreachable — НЕ ошибка (вывод для журнала)
 ECT endpoint health --endpoints="$EP3" 2>&1 | grep -q "is healthy" && \
   ECT endpoint health --endpoints="$EP3" 2>&1 | grep -qc "unreachable" \
   || true
-echo "  stop as-etcd-2: запись/healthz×2/панель/master-ключ живы (2 healthy, 1 unreachable — ожидаемо)"
+echo "  stop as-etcd-2: write/healthz×2/adminpanel/master key alive (2 healthy, 1 unreachable — expected)"
 
 # 3) Возврат узла: member list снова 3 started, health 3/3 (retry-вхождение в кворум)
 docker start as-etcd-2 >/dev/null
@@ -72,6 +72,6 @@ for i in $(seq 1 30); do
      && ECT endpoint health --endpoints="$EP3" >/dev/null 2>&1; then ok3=1; break; fi
   sleep 2
 done
-[ "$ok3" = 1 ] || { echo "❌ as-etcd-2 не вернулся в кворум за 60 c (docker logs as-etcd-2)"; exit 1; }
+[ "$ok3" = 1 ] || { echo "❌ as-etcd-2 did not rejoin the quorum within 60 s (docker logs as-etcd-2)"; exit 1; }
 ECT del "$KEY" >/dev/null 2>&1 || true
-echo "✓ etcd-ha: 3/3 → stop узла (не-событие) → 3/3"
+echo "✓ etcd-ha: 3/3 → node stop (non-event) → 3/3"

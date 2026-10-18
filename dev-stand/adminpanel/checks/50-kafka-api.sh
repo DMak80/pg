@@ -27,11 +27,11 @@ done
 # Панель жива.
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/healthz" >/dev/null \
-  || { echo "❌ панель не отвечает: $BASE/api/healthz"; exit 1; }
+  || { echo "❌ adminpanel not responding: $BASE/api/healthz"; exit 1; }
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login admin/admin не прошёл"; exit 1; }
-echo "  панель жива, login ok"
+  || { echo "❌ login admin/admin failed"; exit 1; }
+echo "  adminpanel alive, login ok"
 
 api()   { curl -fsS -b "$JAR" "$BASE$1"; }
 code()  { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$@"; }
@@ -43,10 +43,10 @@ wait_clusters() {
     sleep 1
   done
   api /api/kafka/clusters | jq -e 'length == 2' >/dev/null \
-    || { echo "❌ /api/kafka/clusters: ожидался 2 кластера сида"; exit 1; }
+    || { echo "❌ /api/kafka/clusters: expected the seed's 2 clusters"; exit 1; }
 }
 wait_clusters
-echo "  GET /api/kafka/clusters: 2 кластера (events, pending)"
+echo "  GET /api/kafka/clusters: 2 clusters (events, pending)"
 
 # 1) Сводка: events Active + 3/3 брокеров + ротация + ребалансировка; pending NOT_INITIALIZED.
 api /api/kafka/clusters | jq -e '
@@ -55,8 +55,8 @@ api /api/kafka/clusters | jq -e '
    and ([.[] | select(.name=="events")][0].rotationPending == true)
    and ([.[] | select(.name=="events")][0].rebalancePending == true)
    and ([.[] | select(.name=="pending")][0].state == "NOT_INITIALIZED")' >/dev/null \
-  || { echo "❌ сводка: state/брокеры/ротация/ребалансировка"; exit 1; }
-echo "  сводка: events ACTIVE 3/3 + rotationPending + rebalancePending, pending NOT_INITIALIZED"
+  || { echo "❌ summary: state/brokers/rotation/rebalance"; exit 1; }
+echo "  summary: events ACTIVE 3/3 + rotationPending + rebalancePending, pending NOT_INITIALIZED"
 
 # 2) Детали events: брокеры/topics/заявка ротации + rebalance/reassignment
 #    (4 строки топиков: 3 факт + виртуальная audit).
@@ -71,8 +71,8 @@ api /api/kafka/clusters/events | jq -e '
   and (.reassignment.mode == "drain")
   and (.reassignment.drainBroker == "broker2")
   and (.reassignment.partitionsRemaining == 3)' >/dev/null \
-  || { echo "❌ детали events: brokers/topics/rotation/rebalance"; exit 1; }
-echo "  детали events: 3 брокера controller, 4 топика (3 факт + виртуальная create), ротация+ребалансировка seed, drain-прогресс"
+  || { echo "❌ events details: brokers/topics/rotation/rebalance"; exit 1; }
+echo "  events details: 3 brokers with controller, 4 topics (3 actual + virtual create), seed rotation+rebalance, drain progress"
 
 # 3) lifecycle: виртуальная строка audit (create) + бейдж delete у orders (t01).
 api /api/kafka/clusters/events | jq -e '
@@ -80,61 +80,61 @@ api /api/kafka/clusters/events | jq -e '
   and ([.topics[] | select(.name=="audit")][0].lifecycle.partitions == 12)
   and ([.topics[] | select(.name=="audit")][0].partitions == 0)
   and ([.topics[] | select(.name=="orders")][0].lifecycle.op == "delete")' >/dev/null \
-  || { echo "❌ lifecycle-бейджи (audit create / orders delete)"; exit 1; }
-echo "  lifecycle: audit — виртуальная строка создания (12 партиций), orders — бейдж удаления"
+  || { echo "❌ lifecycle badges (audit create / orders delete)"; exit 1; }
+echo "  lifecycle: audit — virtual create row (12 partitions), orders — delete badge"
 
 # 4) Негативы lifecycle: клэйм/существование/missing/отмена несуществующей/валидация.
 c="$(code -X POST "$BASE/api/kafka/clusters/events/topics" -H 'Content-Type: application/json' -d '{"name":"audit"}')"
-[ "$c" = 409 ] || { echo "❌ повторный create audit = $c"; exit 1; }
+[ "$c" = 409 ] || { echo "❌ duplicate create audit = $c"; exit 1; }
 c="$(code -X POST "$BASE/api/kafka/clusters/events/topics" -H 'Content-Type: application/json' -d '{"name":"payments"}')"
 [ "$c" = 409 ] || { echo "❌ create payments = $c"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/ghost")"
 [ "$c" = 404 ] || { echo "❌ delete ghost (missing) = $c"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/payments/desired.create")"
-[ "$c" = 404 ] || { echo "❌ отмена несуществующей create = $c"; exit 1; }
+[ "$c" = 404 ] || { echo "❌ cancel of a non-existent create = $c"; exit 1; }
 c="$(code -X POST "$BASE/api/kafka/clusters/events/topics" -H 'Content-Type: application/json' -d '{"name":"x","replicationFactor":10}')"
 [ "$c" = 400 ] || { echo "❌ RF 10 = $c"; exit 1; }
-echo "  негативы: повторный create 409, существующий 409, missing-delete 404, отмена-404, RF 10 → 400"
+echo "  negatives: duplicate create 409, existing 409, missing-delete 404, cancel-404, RF 10 → 400"
 
 # 5) Отмена create → ключ заявки исчез; DELETE orders идемпотентен (204 ×2).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/audit/desired.create")"
-[ "$c" = 204 ] || { echo "❌ отмена create = $c"; exit 1; }
+[ "$c" = 204 ] || { echo "❌ cancel create = $c"; exit 1; }
 docker compose exec -T etcd1 etcdctl get /kafka/clusters/events/topics/audit/desired.create \
-  </dev/null 2>/dev/null | grep -q . && { echo "❌ заявка audit не удалена"; exit 1; }
+  </dev/null 2>/dev/null | grep -q . && { echo "❌ audit request not deleted"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/orders")"
 [ "$c" = 204 ] || { echo "❌ DELETE orders #1 = $c"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/orders")"
-[ "$c" = 204 ] || { echo "❌ DELETE orders #2 (идемпотентность) = $c"; exit 1; }
-echo "  отмена create → 204 (ключ исчез); DELETE orders идемпотентен: 204 ×2"
+[ "$c" = 204 ] || { echo "❌ DELETE orders #2 (idempotency) = $c"; exit 1; }
+echo "  cancel create → 204 (key gone); DELETE orders idempotent: 204 ×2"
 
 # 6) POST создать events → 409 (клэйм-txn занят).
 c="$(code -X POST "$BASE/api/kafka/clusters" -H 'Content-Type: application/json' \
   -d '{"name":"events"}')"
-[ "$c" = 409 ] || { echo "❌ POST events (повтор) = $c, ожидался 409"; exit 1; }
-echo "  POST /api/kafka/clusters events (занято) -> 409"
+[ "$c" = 409 ] || { echo "❌ POST events (repeat) = $c, expected 409"; exit 1; }
+echo "  POST /api/kafka/clusters events (taken) -> 409"
 
 # 7) PUT config events (retention) → 200.
 curl -fsS -b "$JAR" -X PUT "$BASE/api/kafka/clusters/events/config" \
   -H 'Content-Type: application/json' -d '{"defaultRetentionMs":86400000}' \
   | jq -e '.defaultRetentionMs == 86400000' >/dev/null \
-  || { echo "❌ PUT config events: retention не применился"; exit 1; }
-echo "  PUT config events (retention 1д) -> 200"
+  || { echo "❌ PUT config events: retention not applied"; exit 1; }
+echo "  PUT config events (retention 1d) -> 200"
 
 # 8) POST brokers events → 201 broker4 (имя сгенерировано).
 curl -fsS -b "$JAR" -X POST "$BASE/api/kafka/clusters/events/brokers" \
   -H 'Content-Type: application/json' -d '{"cpu":1,"memGi":2,"diskGi":20}' \
   | jq -e '.name == "broker4" and .state == "NOT_INITIALIZED"' >/dev/null \
-  || { echo "❌ POST brokers: broker4 не сгенерирован"; exit 1; }
+  || { echo "❌ POST brokers: broker4 not generated"; exit 1; }
 echo "  POST brokers events -> 201 broker4"
 
 # 9) DELETE brokers/broker4 → 204 (только что заявленный — пустой по построению).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/brokers/broker4")"
-[ "$c" = 204 ] || { echo "❌ DELETE broker4 = $c, ожидался 204"; exit 1; }
+[ "$c" = 204 ] || { echo "❌ DELETE broker4 = $c, expected 204"; exit 1; }
 echo "  DELETE brokers/broker4 -> 204"
 
 # 10) DELETE brokers/broker1 → 409 (controller-guard).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/brokers/broker1")"
-[ "$c" = 409 ] || { echo "❌ DELETE broker1 (controller) = $c, ожидался 409"; exit 1; }
+[ "$c" = 409 ] || { echo "❌ DELETE broker1 (controller) = $c, expected 409"; exit 1; }
 echo "  DELETE brokers/broker1 (controller) -> 409"
 
 # 11) DELETE cluster pending → 204; демонтаж подтверждаем исчезновением:
@@ -146,7 +146,7 @@ echo "  DELETE brokers/broker1 (controller) -> 409"
 #     (t26, диагностика 2026-10-01). Исчезновение — единственный
 #     детерминированный наблюдаемый исход (канон: 55/59 финальные шаги, 51 §8).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/pending")"
-[ "$c" = 204 ] || { echo "❌ DELETE pending = $c, ожидался 204"; exit 1; }
+[ "$c" = 204 ] || { echo "❌ DELETE pending = $c, expected 204"; exit 1; }
 # Демонтаж: тик воркера (5 c) + мгновенные фазы; чистота etcd первична.
 for i in $(seq 1 15); do
   left="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
@@ -154,37 +154,37 @@ for i in $(seq 1 15); do
   sleep 2
 done
 left="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
-[ -z "$left" ] || { echo "❌ префикс /kafka/clusters/pending/ пережил демонтаж: $left"; exit 1; }
+[ -z "$left" ] || { echo "❌ prefix /kafka/clusters/pending/ survived teardown: $left"; exit 1; }
 coord="$(docker compose exec -T etcd1 etcdctl get /kafkaworker/ --prefix --keys-only </dev/null 2>/dev/null | grep pending || true)"
-[ -z "$coord" ] || { echo "❌ остаточные kafkaworker-ключи pending: $coord"; exit 1; }
+[ -z "$coord" ] || { echo "❌ leftover pending kafkaworker keys: $coord"; exit 1; }
 # Список панели догоняет удаление тиком снапшота (3 c) — поллинг, не одиночный выстрел.
 for i in $(seq 1 15); do
   api /api/kafka/clusters | jq -e 'any(.[]; .name == "pending") | not' >/dev/null 2>&1 && break
   sleep 2
 done
 api /api/kafka/clusters | jq -e 'any(.[]; .name == "pending") | not' >/dev/null \
-  || { echo "❌ pending не исчез из панельного списка"; exit 1; }
-echo "  DELETE pending -> 204; демонтаж подтверждён: ключей pending нет, из панели исчез"
+  || { echo "❌ pending not gone from the panel list"; exit 1; }
+echo "  DELETE pending -> 204; teardown confirmed: no pending keys, gone from the panel"
 
 # 12) Ротация events: заявка уже стоит (сид) → 409.
 c="$(code -X POST "$BASE/api/kafka/clusters/events/app-password/rotate")"
-[ "$c" = 409 ] || { echo "❌ POST rotate events = $c, ожидался 409 (заявка сида жива)"; exit 1; }
-echo "  POST rotate events (заявка жива) -> 409"
+[ "$c" = 409 ] || { echo "❌ POST rotate events = $c, expected 409 (seed request alive)"; exit 1; }
+echo "  POST rotate events (request alive) -> 409"
 
 # 12b) Ребалансировка events: заявка уже стоит (сид) → 409; отмена → 204;
 #      повторная отмена → 404; несуществующий кластер → 404.
 c="$(code -X POST "$BASE/api/kafka/clusters/events/rebalance")"
-[ "$c" = 409 ] || { echo "❌ POST rebalance events = $c, ожидался 409 (заявка жива)"; exit 1; }
-echo "  POST rebalance events (заявка жива) -> 409"
+[ "$c" = 409 ] || { echo "❌ POST rebalance events = $c, expected 409 (request alive)"; exit 1; }
+echo "  POST rebalance events (request alive) -> 409"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/rebalance")"
-[ "$c" = 204 ] || { echo "❌ DELETE rebalance events = $c, ожидался 204"; exit 1; }
-echo "  DELETE rebalance events (отмена) -> 204"
+[ "$c" = 204 ] || { echo "❌ DELETE rebalance events = $c, expected 204"; exit 1; }
+echo "  DELETE rebalance events (cancel) -> 204"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/rebalance")"
-[ "$c" = 404 ] || { echo "❌ повторный DELETE rebalance = $c, ожидался 404"; exit 1; }
-echo "  повторный DELETE rebalance -> 404"
+[ "$c" = 404 ] || { echo "❌ repeated DELETE rebalance = $c, expected 404"; exit 1; }
+echo "  repeated DELETE rebalance -> 404"
 c="$(code -X POST "$BASE/api/kafka/clusters/nope/rebalance")"
-[ "$c" = 404 ] || { echo "❌ POST rebalance nope = $c, ожидался 404"; exit 1; }
-echo "  POST rebalance nope (нет кластера) -> 404"
+[ "$c" = 404 ] || { echo "❌ POST rebalance nope = $c, expected 404"; exit 1; }
+echo "  POST rebalance nope (no cluster) -> 404"
 
 # 13) Алерты: kafka-домен в общей ленте (kafka-rotation-pending: events).
 for i in $(seq 1 15); do
@@ -192,8 +192,8 @@ for i in $(seq 1 15); do
   sleep 1
 done
 api /api/alerts | jq -e 'any(.[]; .kind=="kafka-rotation-pending" and .target=="events")' >/dev/null \
-  || { echo "❌ /api/alerts: kafka-rotation-pending events не найден"; exit 1; }
-echo "  /api/alerts: kafka-rotation-pending events в общей ленте"
+  || { echo "❌ /api/alerts: kafka-rotation-pending events not found"; exit 1; }
+echo "  /api/alerts: kafka-rotation-pending events in the common feed"
 
 # Финал: kafkaworker больше не нужен (end-state «после сида воркер остановлен»,
 # spec §3.5) — мутации прошли через живой API, останавливаем. Сразу проверяем
@@ -206,7 +206,7 @@ for i in $(seq 1 20); do
   sleep 2
 done
 api /api/alerts | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="kafkaworker")' >/dev/null \
-  || { echo "❌ worker-api-unreachable (kafkaworker) не появился после stop"; exit 1; }
-echo "  kafkaworker остановлен (мутации — через живой API; kafka-грань алерта видна)"
+  || { echo "❌ worker-api-unreachable (kafkaworker) did not appear after stop"; exit 1; }
+echo "  kafkaworker stopped (mutations via the live API; the alert kafka edge visible)"
 
-echo "✓ 50-kafka-api: API kafka-домена на сиде — все шаги зелёные"
+echo "✓ 50-kafka-api: kafka domain API on the seed — all steps green"

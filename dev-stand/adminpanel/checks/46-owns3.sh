@@ -13,7 +13,7 @@ PORT="${PORT:-9010}"
 ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
 ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
 [ -n "$ROOT_USER" ] && [ -n "$ROOT_PASSWORD" ] \
-  || { echo "❌ deploy/.env: нет OWNS3_ROOT_USER/OWNS3_ROOT_PASSWORD"; exit 1; }
+  || { echo "❌ deploy/.env: no OWNS3_ROOT_USER/OWNS3_ROOT_PASSWORD"; exit 1; }
 BASE="http://localhost:${PORT}"
 MC="minio/mc:RELEASE.2025-08-13T08-35-41Z"
 BUCKET="os3check-$(date +%s)"
@@ -23,15 +23,15 @@ BUCKET="os3check-$(date +%s)"
 MC_TARGET="http://host.docker.internal:${PORT}"
 
 # 1) healthz — 200 без подписи
-curl -sf "$BASE/healthz" >/dev/null || { echo "❌ $BASE/healthz не 200"; exit 1; }
+curl -sf "$BASE/healthz" >/dev/null || { echo "❌ $BASE/healthz is not 200"; exit 1; }
 echo "  healthz: 200"
 
 # 1b) кластер-health — 200 без подписи + JSON drives-поля (канон 05 §5;
 #     потребитель — ClusterOk-проба панели, adminpanel/02 §2.5)
 CLUSTER="$(curl -sf "$BASE/s3/health/cluster")" \
-  || { echo "❌ $BASE/s3/health/cluster не 200"; exit 1; }
+  || { echo "❌ $BASE/s3/health/cluster is not 200"; exit 1; }
 echo "$CLUSTER" | grep -q '"healthyDrives"' \
-  || { echo "❌ /s3/health/cluster: нет healthyDrives"; exit 1; }
+  || { echo "❌ /s3/health/cluster: no healthyDrives"; exit 1; }
 echo "  cluster-health: 200 + healthyDrives"
 
 # 2) mc-smoke ЧЕРЕЗ ХОСТ-ПУБЛИКАЦИЮ: alias → mb → cp(128 КиБ /dev/urandom)
@@ -61,17 +61,17 @@ mc_run "mc alias set c ${MC_TARGET} '$ROOT_USER' '$ROOT_PASSWORD' >/dev/null \
          && [ -z \"\$(mc ls c/$BUCKET 2>/dev/null)\" ] \
          && mc rb c/$BUCKET >/dev/null \
          && [ \"\$SRC\" = \"\$GOT\" ]" \
-  || { echo "❌ mc-smoke через хост-публикацию :${PORT} не прошёл"; exit 1; }
+  || { echo "❌ mc-smoke via host publishing :${PORT} failed"; exit 1; }
 trap - EXIT
-echo "  mc (host.docker.internal:${PORT}): mb→cp→ls→cat(sha256=источник)→stat→скачивание(cmp ok)→rm→rb"
+echo "  mc (host.docker.internal:${PORT}): mb→cp→ls→cat(sha256=source)→stat→download(cmp ok)→rm→rb"
 
 # 3) /metrics — каталожные серии канона 05 §5 (после mc-трафика: OTel
 #    экспортирует counter-серии только при наличии точек данных).
 METRICS="$(curl -sf "$BASE/metrics")"
 echo "$METRICS" | grep -q 'ownS3_requests_total{' \
-  || { echo "❌ /metrics: нет ownS3_requests_total{"; exit 1; }
+  || { echo "❌ /metrics: no ownS3_requests_total{"; exit 1; }
 echo "$METRICS" | grep -q 'ownS3_disk_total_bytes' \
-  || { echo "❌ /metrics: нет ownS3_disk_total_bytes"; exit 1; }
-echo "  metrics: ownS3_requests_total{…} / ownS3_disk_total_bytes — на месте"
+  || { echo "❌ /metrics: no ownS3_disk_total_bytes"; exit 1; }
+echo "  metrics: ownS3_requests_total{…} / ownS3_disk_total_bytes — present"
 
-echo "✓ owns3-чек зелёный (healthz + mc-smoke + metrics, :${PORT})"
+echo "✓ owns3 check green (healthz + mc-smoke + metrics, :${PORT})"

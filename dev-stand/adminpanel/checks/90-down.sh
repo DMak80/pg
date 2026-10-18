@@ -14,10 +14,10 @@ if [ "${1:-}" = "-v" ]; then
   # детерминирован). metrics обязателен: живой as-prometheus держит
   # external-сеть pgw-metrics — deploy-down не снесёт её (t15, arch/18 §5.4).
   docker compose --profile full --profile kafka --profile valkey --profile metrics down -v --remove-orphans
-  echo "✓ стенд разобран (данные стёрты)"
+  echo "✓ stand taken down (data erased)"
 else
   docker compose --profile full --profile kafka --profile valkey --profile metrics down --remove-orphans
-  echo "✓ стенд разобран (etcd-data сохранён)"
+  echo "✓ stand taken down (etcd-data kept)"
 fi
 
 # t15/t41: deploy-контур разбирается ПОСЛЕ стендового — теми же файлами, что
@@ -28,7 +28,7 @@ ROOT="$(cd ../.. && pwd)"
 if [ -f "$ROOT/deploy/.env" ]; then
   (cd "$ROOT/deploy" && docker compose -f docker-compose.yml -f docker-compose.contour.yml \
     --env-file .env down ${1:+-v} --remove-orphans) \
-    || echo "⚠ deploy down не удался (docker network ls | grep -E 'pgw-metrics|adminpanel-stand-net')"
+    || echo "⚠ deploy down failed (docker network ls | grep -E 'pgw-metrics|adminpanel-stand-net')"
 fi
 
 # Канонические контейнеры движка (t41): pgw-demo-* ноды, wal-агенты, джобы —

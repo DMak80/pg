@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 while read -r img; do
   case "$img" in ''|'#'*) continue;; esac
   if docker manifest inspect --insecure "$REG/$img" >/dev/null 2>&1; then
-    echo ">>> $img (уже в registry — пропуск)"
+    echo ">>> $img (already in registry — skipping)"
     continue
   fi
   echo ">>> $img"

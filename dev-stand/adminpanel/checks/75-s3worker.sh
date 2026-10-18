@@ -36,56 +36,56 @@ for i in $(seq 1 30); do
   sleep 1
 done
 "${MTLS[@]}" -o /dev/null "$API/healthz" 2>/dev/null \
-  || { echo "❌ s3worker не отвечает (:${S3W_PORT}/healthz; 00-up.sh поднимал?)"; exit 1; }
-echo "  s3worker жив: /healthz по mTLS"
+  || { echo "❌ s3worker not responding (:${S3W_PORT}/healthz; did 00-up.sh bring it up?)"; exit 1; }
+echo "  s3worker alive: /healthz via mTLS"
 
 # 1) Демо-кластер через API: 201 → воркер провижинит (RUNNING) ≤ NodeBootSec+запас.
 body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$("${MTLS[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
-[ "$c" = 201 ] || { echo "❌ create = $c, ожидался 201"; cat "$TMP/create.json"; exit 1; }
-echo "  create $TAG -> 201 (заявка принята)"
+[ "$c" = 201 ] || { echo "❌ create = $c, expected 201"; cat "$TMP/create.json"; exit 1; }
+echo "  create $TAG -> 201 (request accepted)"
 
 ready=0
 for i in $(seq 1 75); do
   [ "$(etcd_key "/s3/clusters/$TAG/nodes/node1/state")" = "RUNNING" ] && [ -z "$(etcd_key "/s3/clusters/$TAG/config" | grep -o '"state"' || true)" ] && { ready=1; break; }
   sleep 2
 done
-[ "$ready" = 1 ] || { echo "❌ $TAG не достиг RUNNING за 150 c (docker logs deploy-s3worker-1)"; exit 1; }
+[ "$ready" = 1 ] || { echo "❌ $TAG did not reach RUNNING within 150 s (docker logs deploy-s3worker-1)"; exit 1; }
 endpoints="$(etcd_key "/s3/clusters/$TAG/endpoints")"
 echo "$endpoints" | grep -qE '^[^:]+:[0-9]+$' \
-  || { echo "❌ endpoints '$endpoints' не формата host:port"; exit 1; }
+  || { echo "❌ endpoints '$endpoints' is not in host:port format"; exit 1; }
 [ "$(etcd_key "/s3/clusters/$TAG/nodes/node1/placed_on")" = "local" ] \
   || { echo "❌ placed_on ≠ local ($(etcd_key "/s3/clusters/$TAG/nodes/node1/placed_on"))"; exit 1; }
-echo "  $TAG: config без state, node1 RUNNING, endpoints=$endpoints, placed_on=local"
+echo "  $TAG: config without state, node1 RUNNING, endpoints=$endpoints, placed_on=local"
 
 # 2) Контейнер/том ноды существуют; bucket создан (листинг root-кредом — mc).
-docker ps -a --format '{{.Names}}' | grep -qx "s3w-$TAG-node1" || { echo "❌ контейнер s3w-$TAG-node1 не найден"; exit 1; }
-docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "❌ том s3w-$TAG-node1-data не найден"; exit 1; }
+docker ps -a --format '{{.Names}}' | grep -qx "s3w-$TAG-node1" || { echo "❌ container s3w-$TAG-node1 not found"; exit 1; }
+docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "❌ volume s3w-$TAG-node1-data not found"; exit 1; }
 
 # 3) Валидации: невалидный name → 400; неизвестный профиль → 422.
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
-[ "$c" = 400 ] || { echo "❌ невалидный name → $c, ожидался 400"; exit 1; }
+[ "$c" = 400 ] || { echo "❌ invalid name → $c, expected 400"; exit 1; }
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
   -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"secretProfile\":\"no-such-profile\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
-[ "$c" = 422 ] || { echo "❌ неизвестный профиль → $c, ожидался 422"; exit 1; }
+[ "$c" = 422 ] || { echo "❌ unknown profile → $c, expected 422"; exit 1; }
 # /metrics домен-счётчики (spec §9): .NET-экспортер выдаёт серию после первого
 # наблюдения — проверка ПОСЛЕ операций API выше (create/400/422).
 "${MTLS[@]}" "$API/metrics" 2>/dev/null | grep -q '^s3worker_' \
-  || { echo "❌ /metrics не содержит метрик s3worker_"; exit 1; }
-echo "  валидации: name → 400, профиль → 422; /metrics содержит s3worker_"
+  || { echo "❌ /metrics contains no s3worker_ metrics"; exit 1; }
+echo "  validations: name → 400, profile → 422; /metrics contains s3worker_"
 
 # 4) sync-probe: 202 always; ключи connectivity/sync НЕ появляются (заглушка t33).
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters/$TAG/sync-probe")"
-[ "$c" = 202 ] || { echo "❌ sync-probe → $c, ожидался 202"; exit 1; }
+[ "$c" = 202 ] || { echo "❌ sync-probe → $c, expected 202"; exit 1; }
 sleep 3
 [ -z "$(ect get "/s3/clusters/$TAG/" --prefix --keys-only 2>/dev/null | grep -E 'connectivity|/sync' || true)" ] \
-  || { echo "❌ после sync-probe появились ключи connectivity/sync"; exit 1; }
-echo "  sync-probe: 202, ключи t33 не появляются"
+  || { echo "❌ connectivity/sync keys appeared after sync-probe"; exit 1; }
+echo "  sync-probe: 202, t33 keys do not appear"
 
 # 5) Снос: 202 → X0–X3 воркером → чистота etcd + docker + volume.
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X DELETE "$API/api/s3/clusters/$TAG")"
-[ "$c" = 202 ] || { echo "❌ delete → $c, ожидался 202"; exit 1; }
+[ "$c" = 202 ] || { echo "❌ delete → $c, expected 202"; exit 1; }
 clean=0
 for i in $(seq 1 60); do
   if [ -z "$(ect get "/s3/clusters/$TAG/" --prefix --keys-only 2>/dev/null)" ] \
@@ -95,7 +95,7 @@ for i in $(seq 1 60); do
   fi
   sleep 2
 done
-[ "$clean" = 1 ] || { echo "❌ после delete остались следы $TAG (etcd/docker/volume)"; exit 1; }
-echo "  delete $TAG: префикс etcd пуст, контейнеров/томов нет (ассерт чистоты пройден)"
+[ "$clean" = 1 ] || { echo "❌ traces of $TAG remain after delete (etcd/docker/volume)"; exit 1; }
+echo "  delete $TAG: etcd prefix empty, no containers/volumes (cleanliness assert passed)"
 
-echo "✅ 75-s3worker: демо-кластер provisioning/валидации/sync-probe/снос — зелёный, за собой убран"
+echo "✅ 75-s3worker: demo cluster provisioning/validations/sync-probe/teardown — green, cleaned up"

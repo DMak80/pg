@@ -26,17 +26,17 @@ CLUSTER="churn"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE? поднимите 00-up.sh)"; exit 1; }
+  || { echo "❌ login (adminpanel at $BASE? run 00-up.sh)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 docker inspect as-adminpanel >/dev/null 2>&1 \
-  || { echo "❌ контейнер as-adminpanel не найден — поднимите стенд (00-up.sh)"; exit 1; }
+  || { echo "❌ container as-adminpanel not found — bring up the stand (00-up.sh)"; exit 1; }
 
 # Preconditions: порты действительно закрыты (иначе «репро» ничего не репает).
 for port in $CHURN_PORTS; do
   if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-    echo "❌ порт $port занят — выберите свободные: CHURN_PORTS=\"...\" ./58-kafka-probe-churn.sh"; exit 1
+    echo "❌ port $port busy — choose free ones: CHURN_PORTS=\"...\" ./58-kafka-probe-churn.sh"; exit 1
   fi
 done
 # Чистый слейт от прошлого прогона.
@@ -48,7 +48,7 @@ bootstrap="$(printf 'host.docker.internal:%s,' $CHURN_PORTS)"; bootstrap="${boot
 ect put "/kafka/clusters/$CLUSTER/endpoints" "$bootstrap" >/dev/null
 ect put "/kafka/clusters/$CLUSTER/app_user" "app" >/dev/null
 ect put "/kafka/clusters/$CLUSTER/app_password" "deadbeef" >/dev/null
-echo ">>> сид: /kafka/clusters/$CLUSTER → $bootstrap (порты закрыты), окно ${CHURN_MINUTES} мин"
+echo ">>> seed: /kafka/clusters/$CLUSTER → $bootstrap (ports closed), window ${CHURN_MINUTES} min"
 
 # Assert 1: проба честно failed и кластер виден панели (снапшот 3 c + тик 15 c).
 probe_error=""
@@ -56,8 +56,8 @@ for i in $(seq 1 30); do
   probe_error="$(api "/api/kafka/clusters/$CLUSTER" 2>/dev/null | jq -r '.probeError // empty')" && [ -n "$probe_error" ] && break
   sleep 2
 done
-[ -n "$probe_error" ] || { echo "❌ кластер $CLUSTER/probeError не появился за 60 c"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
-echo "  проба failed: ${probe_error:0:80}…"
+[ -n "$probe_error" ] || { echo "❌ cluster $CLUSTER/probeError did not appear within 60 s"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
+echo "  probe failed: ${probe_error:0:80}…"
 
 # Наблюдение: CPU каждые 30 c, стартовые потоки; backoff-пометка ждёт 2 неудач
 # и пропущенный тик (≈75 c от сида — внутри окна).
@@ -75,29 +75,29 @@ rdkafka_lines="$(docker logs --since "${CHURN_MINUTES}m" as-adminpanel 2>&1 | gr
 
 # Assert 2: backoff-состояние видно в UI-поле probeError (кластер не мерцает).
 echo "$probe_error" | grep -qi "backoff" \
-  || { echo "❌ probeError без backoff-пометки: $probe_error"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
-echo "  probeError несёт backoff: ${probe_error: -80}"
+  || { echo "❌ probeError without a backoff mark: $probe_error"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
+echo "  probeError carries backoff: ${probe_error: -80}"
 
 # Assert 3: CPU ≤ 10% (инцидент ~99%, приёмка ≤5% ядра).
 [ "$cpu_max" -le 10 ] \
-  || { echo "❌ CPU панели до ${cpu_max}% (бюджет 10%)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
-echo "  CPU панели ≤ ${cpu_max}% за окно"
+  || { echo "❌ adminpanel CPU up to ${cpu_max}% (budget 10%)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
+echo "  adminpanel CPU ≤ ${cpu_max}% over the window"
 
 # Assert 4: rdkafka-лог ≤ 1 события/мин на кластер (после фикса — 0).
 allowed="$CHURN_MINUTES"
 [ "$rdkafka_lines" -le "$allowed" ] \
-  || { echo "❌ rdkafka-строк $rdkafka_lines за ${CHURN_MINUTES} мин (бюджет $allowed)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
-echo "  rdkafka-строк в логе: $rdkafka_lines (бюджет ≤$allowed)"
+  || { echo "❌ rdkafka lines $rdkafka_lines within ${CHURN_MINUTES} min (budget $allowed)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
+echo "  rdkafka lines in the log: $rdkafka_lines (budget ≤$allowed)"
 
 # Assert 5: потоки процесса не растут (churn poll-потоков погашен).
 [ "$threads_end" -le "$((threads_start + 10))" ] \
-  || { echo "❌ потоки: $threads_start → $threads_end (растут)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
-echo "  потоки процесса стабильны: $threads_start → $threads_end"
+  || { echo "❌ threads: $threads_start → $threads_end (growing)"; ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null; exit 1; }
+echo "  process threads stable: $threads_start → $threads_end"
 
 # Cleanup: демонтаж сида, кластер уходит из панели (снапшот 3 c).
 ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null
 for i in $(seq 1 15); do
-  api "/api/kafka/clusters/$CLUSTER" >/dev/null 2>&1 || { echo "✅ 58-kafka-probe-churn: мёртвый кластер не жжёт CPU (≤${cpu_max}%), лог тих (${rdkafka_lines}), потоки стабильны"; exit 0; }
+  api "/api/kafka/clusters/$CLUSTER" >/dev/null 2>&1 || { echo "✅ 58-kafka-probe-churn: dead cluster does not burn CPU (≤${cpu_max}%), log quiet (${rdkafka_lines}), threads stable"; exit 0; }
   sleep 2
 done
-echo "⚠️ сид убран из etcd, кластер ещё виден в API — дождитесь тика снапшота"; exit 1
+echo "⚠️ seed removed from etcd, cluster still visible in the API — wait for the snapshot tick"; exit 1

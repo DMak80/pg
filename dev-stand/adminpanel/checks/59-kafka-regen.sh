@@ -41,11 +41,11 @@ wait_until() { # wait_until <описание> <секунд> <cmd…>
     if "$@" >/dev/null 2>&1; then echo "  ✓ $what"; return 0; fi
     sleep 1
   done
-  echo "❌ не дождались: $what (бюджет ${seconds} c)"; exit 1
+  echo "❌ timed out waiting: $what (budget ${seconds} s)"; exit 1
 }
 
 # ===== 1) Чистое состояние: стенд разобран, kfw-объекты и /kafka/ пусты =====
-echo ">>> (1/8) чистый стенд: down -v + kfw-очистка + up --profile kafka"
+echo ">>> (1/8) clean stand: down -v + kfw cleanup + up --profile kafka"
 ./checks/90-down.sh -v >/dev/null
 docker compose --profile kafka down -v --remove-orphans >/dev/null 2>&1 || true
 # kfw-объекты живут вне compose-проекта — чистим вручную (handoff-рецепт B9).
@@ -54,20 +54,20 @@ docker volume rm $(docker volume ls -q --filter 'name=kfw-') >/dev/null 2>&1 || 
 docker network rm $(docker network ls -q --filter 'name=kfw-net') >/dev/null 2>&1 || true
 # Прокси-маршрут №15 живёт в панели — образ панели тоже обязан быть свежим.
 docker compose --profile kafka build kafkaworker adminpanel >/dev/null \
-  || { echo "❌ сборка образов kafkaworker/adminpanel не удалась"; exit 1; }
+  || { echo "❌ kafkaworker/adminpanel image build failed"; exit 1; }
 docker compose --profile kafka up -d >/dev/null
-[ -z "$(etcd_kafka_keys)" ] || { echo "❌ /kafka/ не пуст до старта (сид?)"; exit 1; }
-echo "  ✓ стенд поднят (etcd+kafkaworker), /kafka/ пуст"
+[ -z "$(etcd_kafka_keys)" ] || { echo "❌ /kafka/ not empty before start (seed?)"; exit 1; }
+echo "  ✓ stand up (etcd+kafkaworker), /kafka/ empty"
 
 # Панель жива (хост-процесс оператора).
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ панель/login недоступны: $BASE"; exit 1; }
-echo "  ✓ панель жива, login ok"
+  || { echo "❌ adminpanel/login unavailable: $BASE"; exit 1; }
+echo "  ✓ adminpanel alive, login ok"
 
 # ===== 2) Кластер 3 брокера через API → RUNNING + endpoints =====
-echo ">>> (2/8) создание кластера $CLUSTER (3 брокера) через API"
+echo ">>> (2/8) creating cluster $CLUSTER (3 brokers) via API"
 for i in $(seq 1 30); do
   created="$(curl -s -b "$JAR" -X POST "$BASE/api/kafka/clusters" \
     -H 'Content-Type: application/json' -d "{\"name\":\"$CLUSTER\"}")" \
@@ -75,82 +75,82 @@ for i in $(seq 1 30); do
   sleep 1
 done
 echo "$created" | jq -e '.state == "NOT_INITIALIZED"' >/dev/null \
-  || { echo "❌ POST /api/kafka/clusters не прошёл: $created"; exit 1; }
+  || { echo "❌ POST /api/kafka/clusters failed: $created"; exit 1; }
 wait_until "RUNNING 3/3 + endpoints" 150 bash -c '
   curl -fsS -b "'"$JAR"'" "'"$BASE"'/api/kafka/clusters" \
   | jq -e "[.[] | select(.name == \"e2e6\")][0] | .brokersRunning == 3 and .endpoints != null"'
 echo "  endpoints: $(etcd_key /kafka/clusters/$CLUSTER/endpoints)"
 
 # ===== 3) Фиксация лимитов ДО (сид: cpu 2 → 2000000000) =====
-echo ">>> (3/8) docker inspect kfw-$CLUSTER-broker1: NanoCPUs ДО"
+echo ">>> (3/8) docker inspect kfw-$CLUSTER-broker1: NanoCPUs BEFORE"
 nano_before="$(broker_nano)"
 [ "$nano_before" = "2000000000" ] \
-  || { echo "❌ NanoCPUs до регенерации = $nano_before, ожидался 2000000000 (сид cpu 2)"; exit 1; }
-echo "  NanoCPUs до: $nano_before"
+  || { echo "❌ NanoCPUs before regen = $nano_before, expected 2000000000 (seed cpu 2)"; exit 1; }
+echo "  NanoCPUs before: $nano_before"
 
 # ===== 4) Мутация №15: PUT resources cpu 2→3 → 200 =====
 echo ">>> (4/8) PUT /api/kafka/clusters/$CLUSTER/brokers/broker1/resources {\"cpu\":3}"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/brokers/broker1/resources" \
   -H 'Content-Type: application/json' -d '{"cpu":3}')"
-[ "$c" = 200 ] || { echo "❌ PUT resources = $c, ожидался 200"; exit 1; }
+[ "$c" = 200 ] || { echo "❌ PUT resources = $c, expected 200"; exit 1; }
 etcd_key "/kafka/clusters/$CLUSTER/brokers/broker1/resources" \
   | jq -e '.cpu == "3" and .mem == "2Gi" and .disk == "20Gi"' >/dev/null \
-  || { echo "❌ канонический JSON resources не записан"; exit 1; }
-echo "  200, ключ: cpu=3 (mem/disk унаследованы)"
+  || { echo "❌ canonical resources JSON not written"; exit 1; }
+echo "  200, key: cpu=3 (mem/disk inherited)"
 
 # ===== 5) Сходимость: прогресс виден → регенерация → ключ исчез, NanoCPUs=3e9 =====
-echo ">>> (5/8) поллинг: регенерация broker1 (прогресс → RUNNING → ключ исчез)"
+echo ">>> (5/8) polling: broker1 regen (progress → RUNNING → key gone)"
 # (а) прогресс regen виден в деталях панели хотя бы раз (воркер снял ключ с
 # сходимостью мгновеннее поллера — допустимо, сходимость проверяем ниже).
 # NB: инлайн docker inspect — bash -c не наследует функции родительского шелла.
-wait_until "прогресс regen виден в GET деталей ИЛИ уже сошёлся (ключ исчез)" 150 bash -c '
+wait_until "regen progress visible in GET details OR already converged (key gone)" 150 bash -c '
   details="$(curl -fsS -b "'"$JAR"'" "'"$BASE"'/api/kafka/clusters/'"$CLUSTER"'")" || exit 1
   echo "$details" | jq -e ".regen != null" && exit 0
   echo "$details" | jq -e ".regen == null and ([.brokersList[] | select(.name == \"broker1\")][0].state == \"RUNNING\")" \
     && [ "$(docker inspect kfw-'"$CLUSTER"'-broker1 --format "{{.HostConfig.NanoCpus}}")" = "3000000000" ]'
 # (б) финальная сходимость: ключ исчез, RUNNING, лимиты == декларации.
-wait_until "сходимость: regen=null, broker1 RUNNING, NanoCPUs=3000000000" 150 bash -c '
+wait_until "convergence: regen=null, broker1 RUNNING, NanoCPUs=3000000000" 150 bash -c '
   curl -fsS -b "'"$JAR"'" "'"$BASE"'/api/kafka/clusters/'"$CLUSTER"'" \
   | jq -e ".regen == null and ([.brokersList[] | select(.name == \"broker1\")][0].state == \"RUNNING\")" \
   && [ "$(docker inspect kfw-'"$CLUSTER"'-broker1 --format "{{.HostConfig.NanoCpus}}")" = "3000000000" ] \
   && ! docker compose exec -T etcd1 etcdctl get /kafkaworker/regens/'"$CLUSTER"' --print-value-only 2>/dev/null | grep -q .'
-echo "  лимиты сошлись к декларации: NanoCPUs=3000000000, регенерация завершена"
+echo "  limits converged to the declaration: NanoCPUs=3000000000, regen complete"
 
 # ===== 6) Негативы =====
-echo ">>> (6/8) негативы: cpu 100 → 400; ghost-кластер → 404; broker9 → 404"
+echo ">>> (6/8) negatives: cpu 100 → 400; ghost cluster → 404; broker9 → 404"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/brokers/broker1/resources" \
   -H 'Content-Type: application/json' -d '{"cpu":100}')"
-[ "$c" = 400 ] || { echo "❌ PUT cpu=100 = $c, ожидался 400"; exit 1; }
+[ "$c" = 400 ] || { echo "❌ PUT cpu=100 = $c, expected 400"; exit 1; }
 c="$(code -X PUT "$BASE/api/kafka/clusters/ghost/brokers/broker1/resources" \
   -H 'Content-Type: application/json' -d '{"cpu":3}')"
-[ "$c" = 404 ] || { echo "❌ PUT ghost-кластер = $c, ожидался 404"; exit 1; }
+[ "$c" = 404 ] || { echo "❌ PUT ghost cluster = $c, expected 404"; exit 1; }
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/brokers/broker9/resources" \
   -H 'Content-Type: application/json' -d '{"cpu":3}')"
-[ "$c" = 404 ] || { echo "❌ PUT broker9 = $c, ожидался 404"; exit 1; }
-echo "  негативы: 400 / 404 / 404"
+[ "$c" = 404 ] || { echo "❌ PUT broker9 = $c, expected 404"; exit 1; }
+echo "  negatives: 400 / 404 / 404"
 
 # ===== 7) Идемпотентность: повтор тех же значений — рестарта нет =====
-echo ">>> (7/8) повтор PUT {\"cpu\":3} → 200, рестарта нет (15 с наблюдения)"
+echo ">>> (7/8) repeat PUT {\"cpu\":3} → 200, no restart (15 s of observation)"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/brokers/broker1/resources" \
   -H 'Content-Type: application/json' -d '{"cpu":3}')"
-[ "$c" = 200 ] || { echo "❌ повторный PUT = $c, ожидался 200"; exit 1; }
+[ "$c" = 200 ] || { echo "❌ repeated PUT = $c, expected 200"; exit 1; }
 started_before="$(broker_started_at)"
-[ "$(broker_running)" = "true" ] || { echo "❌ контейнер broker1 не running"; exit 1; }
+[ "$(broker_running)" = "true" ] || { echo "❌ broker1 container not running"; exit 1; }
 sleep 15
-[ "$(broker_running)" = "true" ] || { echo "❌ контейнер broker1 перезапустился"; exit 1; }
+[ "$(broker_running)" = "true" ] || { echo "❌ broker1 container restarted"; exit 1; }
 [ "$(broker_started_at)" = "$started_before" ] \
-  || { echo "❌ StartedAt изменился — рестарт был (идемпотентность нарушена)"; exit 1; }
-echo "  рестарта нет: Running=true, StartedAt стабилен"
+  || { echo "❌ StartedAt changed — there was a restart (idempotency broken)"; exit 1; }
+echo "  no restart: Running=true, StartedAt stable"
 
 # ===== 8) TO_REMOVE кластера → префикс пуст =====
-echo ">>> (8/8) удаление кластера → /kafka/ пуст"
+echo ">>> (8/8) cluster deletion → /kafka/ empty"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER")"
-[ "$c" = 204 ] || { echo "❌ DELETE cluster = $c, ожидался 204"; exit 1; }
-wait_until "префикс /kafka/clusters/$CLUSTER/ пуст + kfw-контейнеров нет" 180 bash -c '
+[ "$c" = 204 ] || { echo "❌ DELETE cluster = $c, expected 204"; exit 1; }
+wait_until "prefix /kafka/clusters/$CLUSTER/ empty + no kfw containers" 180 bash -c '
   [ -z "$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e6/ --prefix --keys-only 2>/dev/null | grep -v "^$")" ] \
     && [ -z "$(docker ps -a --format "{{.Names}}" | grep "^kfw-e2e6-")" ]'
 left="$(docker compose exec -T etcd1 etcdctl get /kafkaworker/ --prefix --keys-only 2>/dev/null | grep "e2e6" || true)"
-[ -z "$left" ] || { echo "❌ остаточные kafkaworker-ключи: $left"; exit 1; }
-echo "  демонтаж завершён: контейнеры/тома/ключи чисты"
+[ -z "$left" ] || { echo "❌ leftover kafkaworker keys: $left"; exit 1; }
+echo "  teardown complete: containers/volumes/keys clean"
 
-echo "✅ 59-kafka-regen: rolling-регенерация зелёная (все 8 подшагов)"
+echo "✅ 59-kafka-regen: rolling regen green (all 8 substeps)"

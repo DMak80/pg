@@ -31,9 +31,9 @@ out="$(mktemp)"; trap 'rm -f "$out"' EXIT
 code="$(curl -s -o "$out" -w '%{http_code}' --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/seed.crt" --key "$TLS_DIR/seed.key" \
   -X POST "$API/api/clusters" -H 'Content-Type: application/json' -d "$body")"
 if [ "$code" = 201 ]; then
-  echo "кластер $C задекларирован через API ($N бакетов, $SHARDS шарда × $REPLICAS реплик)"
+  echo "cluster $C declared via API ($N buckets, $SHARDS shards × $REPLICAS replicas)"
 elif [ "$code" = 409 ]; then
-  echo "кластер $C уже задекларирован (клэйм занят) — пропускаю"
+  echo "cluster $C already declared (claim taken) — skipping"
 else
   echo "❌ POST $API/api/clusters = $code: $(cat "$out")" >&2
   exit 1

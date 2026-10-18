@@ -15,7 +15,7 @@ PROM="http://localhost:${METRICS_PROMETHEUS_PORT:-9090}"
 GRAFANA="http://localhost:${METRICS_GRAFANA_PORT:-3000}"
 AM="http://localhost:${METRICS_ALERTMANAGER_PORT:-9093}"
 
-echo ">>> чек 65: мониторинг (профиль metrics)"
+echo ">>> check 65: monitoring (metrics profile)"
 # 0) гарантия живости воркеров (ревью Ф4-3): 50-kafka-api.sh штатно останавливает
 #    as-kafkaworker финальным шагом; deploy-pgworker переживает серию чеков, но
 #    проверяем оба — чек обязан проходить после ЛЮБОЙ предыстории серии.
@@ -24,10 +24,10 @@ echo ">>> чек 65: мониторинг (профиль metrics)"
 docker start as-kafkaworker as-kafkaworker-2 >/dev/null 2>&1 || true
 for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:8082/healthz >/dev/null \
-  || { echo "❌ kafkaworker не ожил за 60 c на :8082 (mTLS; docker compose logs kafkaworker)"; exit 1; }
+  || { echo "❌ kafkaworker did not come alive within 60 s on :8082 (mTLS; docker compose logs kafkaworker)"; exit 1; }
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
-  || { echo "❌ pgworker не жив на :8080 (mTLS) — поднимите стенд: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
+  || { echo "❌ pgworker not alive on :8080 (mTLS) — bring up the stand: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
 # 0.1) гарантия живости valkeyworker (t05): up -d создаёт/стартует (частичная
 #      предыстория), healthz — mTLS-парой healthcheck ИЗНУТРИ контейнера.
 docker compose --profile valkey up -d valkeyworker valkeyworker-2 >/dev/null 2>&1 || true
@@ -39,7 +39,7 @@ done
 docker compose exec -T valkeyworker curl -fsS -m 3 \
   --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ valkeyworker не ожил за 60 c (:8080/healthz mTLS изнутри; docker compose logs valkeyworker)"; exit 1; }
+  || { echo "❌ valkeyworker did not come alive within 60 s (:8080/healthz mTLS from inside; docker compose logs valkeyworker)"; exit 1; }
 for i in $(seq 1 60); do
   docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
     --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
@@ -48,18 +48,18 @@ done
 docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
   --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ valkeyworker-2 не ожил за 60 c (:8080/healthz mTLS изнутри; docker compose logs valkeyworker-2)"; exit 1; }
-echo "  воркеры живы (pgworker :8080, kafkaworker :8082, valkeyworker in-compose)"
+  || { echo "❌ valkeyworker-2 did not come alive within 60 s (:8080/healthz mTLS from inside; docker compose logs valkeyworker-2)"; exit 1; }
+echo "  workers alive (pgworker :8080, kafkaworker :8082, valkeyworker in-compose)"
 
 # 1) /metrics трёх сервисов (хост-публикации: deploy 8080, стенд 8082/5050).
 #    Подстрока вместо «echo | grep -q»: под pipefail большой экспорт панели
 #    (>64КБ буфера pipe) убивает echo SIGPIPE'ом раньше выхода grep — ложный ❌.
 # t03: /metrics воркеров — только за mTLS (клиентская пара healthcheck); панель — http.
 for u in "$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$MTLS https://localhost:8082/metrics" "curl -fsS -m 10 http://localhost:5050/metrics"; do
-  body="$($u)" || { echo "  ❌ $u недоступен"; exit 1; }
-  [[ "$body" == *"# HELP"* ]] || { echo "  ❌ $u не отдал text-format"; exit 1; }
+  body="$($u)" || { echo "  ❌ $u unavailable"; exit 1; }
+  [[ "$body" == *"# HELP"* ]] || { echo "  ❌ $u did not return text-format"; exit 1; }
 done
-echo "  /metrics трёх сервисов: 200 text-format"
+echo "  /metrics of the three services: 200 text-format"
 
 # 2) все scrape-джобы up, КРОМЕ patroni-nodes: down-таргеты этой джобы —
 #    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; устаревший file_sd
@@ -73,15 +73,15 @@ for i in $(seq 1 30); do
   sleep 2
 done
 bad=$(curl -fsS "$PROM/api/v1/targets" | jq -r '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health!="up")] | .[] | .labels.job+"/"+.labels.instance' | tr '\n' ' ')
-[ -z "$bad" ] || { echo "  ❌ таргеты не up: $bad"; exit 1; }
-echo "  scrape-джобы up (patroni-nodes — шаг 2.1)"
+[ -z "$bad" ] || { echo "  ❌ targets not up: $bad"; exit 1; }
+echo "  scrape jobs up (patroni-nodes — step 2.1)"
 
 # 2.1) patroni-nodes (t15): файл file_sd существует/валиден; таргеты — условно:
 #      ≥1 up = канал скрейпа жив; единичные down не роняют чек (rebuild/остановка).
 docker exec as-prometheus sh -c 'test -s /etc/prometheus/sd/patroni-nodes.json' \
-  || { echo "  ❌ /etc/prometheus/sd/patroni-nodes.json отсутствует/пуст (жив ли as-sd-generator? docker logs as-sd-generator)"; exit 1; }
+  || { echo "  ❌ /etc/prometheus/sd/patroni-nodes.json missing/empty (is as-sd-generator alive? docker logs as-sd-generator)"; exit 1; }
 docker exec as-prometheus cat /etc/prometheus/sd/patroni-nodes.json | jq -e 'type=="array"' >/dev/null \
-  || { echo "  ❌ file_sd patroni-nodes.json — не JSON-массив"; exit 1; }
+  || { echo "  ❌ file_sd patroni-nodes.json is not a JSON array"; exit 1; }
 pn_total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes")] | length')
 pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes" and .health=="up")] | length')
 # классификация по scrapeUrl — alias-таргеты канонических кластеров
@@ -91,7 +91,7 @@ pn_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
   | select(.labels.job=="patroni-nodes")
   | select(.scrapeUrl | test(":8008/metrics$"))] | length')
 if [ "$pn_total" -eq 0 ]; then
-  echo "  patroni-nodes: кластеров PgWorker на стенде нет — file_sd пуст (корректно)"
+  echo "  patroni-nodes: no PgWorker clusters on the stand — file_sd empty (correct)"
 elif [ "$pn_net" -gt 0 ]; then
   # alias-таргеты есть — строгий режим: сетевые без host-форвардинга,
   # канонический контур не ослеп (все down — фейл).
@@ -99,13 +99,13 @@ elif [ "$pn_net" -gt 0 ]; then
     | select(.labels.job=="patroni-nodes")
     | select(.scrapeUrl | test(":8008/metrics$"))
     | select(.scrapeUrl | contains("host.docker.internal"))] | length')
-  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net alias-таргетов с host-форвардингом"; exit 1; }
+  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net alias targets with host forwarding"; exit 1; }
   net_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
     | select(.labels.job=="patroni-nodes" and .health=="up")
     | select(.scrapeUrl | test(":8008/metrics$"))] | length')
-  [ "$net_up" -ge 1 ] || { echo "  ❌ patroni-nodes: все $pn_net alias-таргетов down (канонический контур ослеп: file_sd устарел? Patroni-REST нод живы?)"; exit 1; }
+  [ "$net_up" -ge 1 ] || { echo "  ❌ patroni-nodes: all $pn_net alias targets down (canonical contour blind: is file_sd stale? are Patroni-REST nodes alive?)"; exit 1; }
   adv_down=$(( (pn_total - pn_net) - (pn_up - net_up) ))
-  echo "  patroni-nodes: $net_up/$pn_net alias-таргетов up (сетевые :8008)${adv_down:+; advertised down: $adv_down — деградационная зона (spec §6 п.5)}"
+  echo "  patroni-nodes: $net_up/$pn_net alias targets up (network :8008)${adv_down:+; advertised down: $adv_down — degradation zone (spec §6 p.5)}"
 fi
 
 # 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
@@ -118,7 +118,7 @@ fi
 #    (алерт KafkaCollectorStalled в этот период горит — это корректно, arch/18 §4).
 for s in worker_loop_ticks_total patroni_postgres_running patroni_xlog_replayed_timestamp; do
   curl -fsS --data-urlencode "query=$s" "$PROM/api/v1/query" | jq -e '.data.result | length > 0' >/dev/null \
-    || { echo "  ❌ серия $s не найдена в TSDB"; exit 1; }
+    || { echo "  ❌ series $s not found in TSDB"; exit 1; }
 done
 # valkey-серия (t05): пустой домен = консервативный успех тика — серия обязана
 # быть в TSDB при живом воркере (отличие от условной kafka-серии).
@@ -128,7 +128,7 @@ for i in $(seq 1 30); do
     | jq -e '.data.result | length > 0' >/dev/null 2>&1 && { valkey_found=1; break; }; sleep 2
 done
 [ -n "$valkey_found" ] \
-  || { echo "❌ серия valkey_collector_last_success_timestamp_seconds не найдена в TSDB (жив valkeyworker? шаг 0)"; exit 1; }
+  || { echo "❌ series valkey_collector_last_success_timestamp_seconds not found in TSDB (is valkeyworker alive? step 0)"; exit 1; }
 # самонаблюдение генератора (t15): живой профиль metrics обязан скрейпить
 # sd-generator — серия last_success в TSDB (успех консервативен: пустой префикс = успех).
 sd_found=""
@@ -137,29 +137,29 @@ for i in $(seq 1 30); do
     | jq -e '.data.result | length > 0' >/dev/null 2>&1 && { sd_found=1; break; }; sleep 2
 done
 [ -n "$sd_found" ] \
-  || { echo "❌ серия sd_generator_last_success_timestamp_seconds не найдена в TSDB (жив as-sd-generator? docker logs as-sd-generator)"; exit 1; }
+  || { echo "❌ series sd_generator_last_success_timestamp_seconds not found in TSDB (is as-sd-generator alive? docker logs as-sd-generator)"; exit 1; }
 if timeout 2 bash -c '</dev/tcp/localhost/16001' 2>/dev/null; then
   curl -fsS --data-urlencode "query=kafka_collector_last_success_timestamp_seconds" "$PROM/api/v1/query" \
     | jq -e '.data.result | length > 0' >/dev/null \
-    || { echo "  ❌ серия kafka_collector_last_success_timestamp_seconds не найдена в TSDB"; exit 1; }
-  echo "  серии словаря arch/18 §2 в TSDB (включая kafka: брокеры живы)"
+    || { echo "  ❌ series kafka_collector_last_success_timestamp_seconds not found in TSDB"; exit 1; }
+  echo "  arch/18 §2 dictionary series in TSDB (including kafka: brokers alive)"
 else
-  echo "  серии словаря arch/18 §2 в TSDB (kafka-серия пропущена: брокеров нет — консервативная свежесть, arch/18 §4)"
+  echo "  arch/18 §2 dictionary series in TSDB (kafka series skipped: no brokers — conservative freshness, arch/18 §4)"
 fi
 
 # 4) rules зарегистрированы (21 алерт: 11 + 7 группы backups §2.7 + 3 t15 patroni-nodes)
 rules=$(curl -fsS "$PROM/api/v1/rules" | jq '[.data.groups[].rules[] | select(.type=="alerting")] | length')
-[ "$rules" -ge 21 ] || { echo "  ❌ алерт-рулы: $rules < 21"; exit 1; }
-echo "  rules: $rules алертов зарегистрировано (18 + 3 t15: patroni-nodes)"
+[ "$rules" -ge 21 ] || { echo "  ❌ alert rules: $rules < 21"; exit 1; }
+echo "  rules: $rules alerts registered (18 + 3 t15: patroni-nodes)"
 
 # 5) Grafana: дашборды провиженены (basic admin/admin — стенд)
 ds=$(curl -fsS -u admin:admin "$GRAFANA/api/search?type=dash-db" | jq 'length')
-[ "$ds" -ge 5 ] || { echo "  ❌ дашборды: $ds < 5"; exit 1; }
-echo "  Grafana: $ds дашборда"
+[ "$ds" -ge 5 ] || { echo "  ❌ dashboards: $ds < 5"; exit 1; }
+echo "  Grafana: $ds dashboards"
 
 # 6) Alertmanager жив
 curl -fsS "$AM/api/v2/status" | jq -e '.versionInfo.version' >/dev/null || { echo "  ❌ alertmanager /api/v2/status"; exit 1; }
-echo "  Alertmanager жив"
+echo "  Alertmanager alive"
 
 # 7) алерт-симуляция (spec §6.5): stop kafkaworker → up==0 + for:2m → ServiceDown
 #    firing → доставлен в Alertmanager → восстановление. Бюджет: scrape 15с +
@@ -176,8 +176,8 @@ for i in $(seq 1 30); do
   sleep 10
 done
 docker start as-kafkaworker >/dev/null
-[ "${firing:-0}" -gt 0 ] || { echo "  ❌ ServiceDown не перешёл в firing ≤~2.5мин после остановки kafkaworker"; exit 1; }
-[ "${am_alert:-0}" -gt 0 ] || { echo "  ❌ ServiceDown не доставлен в Alertmanager (alerting-секция/группа)"; exit 1; }
-echo "  алерт-симуляция: ServiceDown firing + доставлен в Alertmanager (kafkaworker восстановлен)"
+[ "${firing:-0}" -gt 0 ] || { echo "  ❌ ServiceDown did not go firing within ~2.5min after stopping kafkaworker"; exit 1; }
+[ "${am_alert:-0}" -gt 0 ] || { echo "  ❌ ServiceDown not delivered to Alertmanager (alerting section/group)"; exit 1; }
+echo "  alert simulation: ServiceDown firing + delivered to Alertmanager (kafkaworker restored)"
 
-echo "✓ чек 65: мониторинг жив (prometheus/grafana/alertmanager/rules/серии)"
+echo "✓ check 65: monitoring alive (prometheus/grafana/alertmanager/rules/series)"

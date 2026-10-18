@@ -13,10 +13,10 @@ ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE?)"; exit 1; }
+  || { echo "❌ login (adminpanel at $BASE?)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 has_alert() { api /api/alerts | jq -e --arg k "$1" --arg t "$2" 'any(.[]; .kind==$k and .target==$t)' >/dev/null; }
-wait_no_alert() { for i in $(seq 1 120); do has_alert "$1" "$2" || return 0; sleep 1; done; echo "❌ алерт $1 -> $2 не погас за 120 c"; return 1; }
+wait_no_alert() { for i in $(seq 1 120); do has_alert "$1" "$2" || return 0; sleep 1; done; echo "❌ alert $1 -> $2 did not clear within 120 s"; return 1; }
 
 # Arrange: мастер shard1 — по DCS leader-ключу Patroni (имя ноды; master-ключ
 # кластера несёт portalloc-формат advertised-хоста); контейнер движка
@@ -28,7 +28,7 @@ else
   m1_node="$m1_raw"
 fi
 [ -n "$m1_node" ] && [ "$m1_node" != "null" ] \
-  || { echo "❌ DCS leader demo-shard1 пуст"; exit 1; }
+  || { echo "❌ DCS leader demo-shard1 is empty"; exit 1; }
 m1=""
 for i in $(seq 1 30); do
   m1="$(ect get /clusters/demo/shards/shard1/master --print-value-only 2>/dev/null)"
@@ -36,11 +36,11 @@ for i in $(seq 1 30); do
   sleep 2
 done
 [ -n "$m1" ] \
-  || { echo "❌ master-ключ shard1 пуст (60 c; предыдущий чек 20 останавливал воркеров — ждём MasterKeyReconciler)"; exit 1; }
+  || { echo "❌ shard1 master key empty (60 s; previous check 20 stopped the workers — waiting for MasterKeyReconciler)"; exit 1; }
 m1_container="pgw-demo-shard1-${m1_node}"
 docker inspect "$m1_container" >/dev/null 2>&1 \
-  || { echo "❌ контейнер мастера $m1_container не найден (docker ps | grep pgw-demo)"; exit 1; }
-echo "  мастер shard1: $m1 (DCS leader $m1_node, контейнер $m1_container)"
+  || { echo "❌ master container $m1_container not found (docker ps | grep pgw-demo)"; exit 1; }
+echo "  shard1 master: $m1 (DCS leader $m1_node, container $m1_container)"
 
 # Act 1: отказ мастера (kill контейнера движка)
 echo ">>> [PHASE] docker kill $m1_container ($(date +%H:%M:%S))"
@@ -63,22 +63,22 @@ for i in $(seq 1 120); do
   sleep 2
 done
 [ -n "$m2_node" ] && [ "$m2_node" != "$m1_node" ] \
-  || { echo "❌ новый мастер shard1 не избран за 240 c (DCS leader=$m2_node, был $m1_node; docker logs $m1_container — Patroni?)"; exit 1; }
-echo "  Patroni промотил реплику: DCS leader $m1_node -> $m2_node"
+  || { echo "❌ new shard1 master not elected within 240 s (DCS leader=$m2_node, was $m1_node; docker logs $m1_container — Patroni?)"; exit 1; }
+echo "  Patroni promoted a replica: DCS leader $m1_node -> $m2_node"
 
-wait_no_alert shard-no-master demo/shard1; echo "  shard-no-master -> demo/shard1 погашен (мастер жив)"
-wait_no_alert shard-no-leader demo-shard1 30 || echo "  (shard-no-leader demo-shard1 не вспыхнул — быстрый промоут)"
+wait_no_alert shard-no-master demo/shard1; echo "  shard-no-master -> demo/shard1 cleared (master alive)"
+wait_no_alert shard-no-leader demo-shard1 30 || echo "  (shard-no-leader demo-shard1 did not fire — fast promote)"
 
 # Assert 3: панель видит нового мастера (HA-грань, тик 15 c).
 ha_master_ok() {
   api /api/ha/demo-shard1 | jq -e --arg l "$m2_node" '.leaderName == $l' >/dev/null
 }
 for i in $(seq 1 25); do ha_master_ok && break; sleep 1; done
-ha_master_ok || { echo "❌ /api/ha/demo-shard1 не видит нового мастера ($m2_node)"; exit 1; }
+ha_master_ok || { echo "❌ /api/ha/demo-shard1 does not see the new master ($m2_node)"; exit 1; }
 echo "  /api/ha/demo-shard1: leader $m2_node"
 
 # Act/Assert 4: надзор движка rejoin'ит убитую ноду — wait RUNNING обеих.
-echo ">>> [PHASE] жду rejoin ${m1_node} надзором движка (бюджет 300 c, $(date +%H:%M:%S))"
+echo ">>> [PHASE] waiting for engine supervision to rejoin ${m1_node} (budget 300 s, $(date +%H:%M:%S))"
 rejoin_ok=""
 for i in $(seq 1 150); do
   s1="$(ect get /clusters/demo/shards/shard1/nodes/${m1_node}/state --print-value-only 2>/dev/null || true)"
@@ -87,12 +87,12 @@ for i in $(seq 1 150); do
   sleep 2
 done
 [ -n "$rejoin_ok" ] \
-  || { echo "❌ rejoin не сошёлся за 300 c (${m1_node}=${s1:-?} ${m2_node}=${s2:-?}; docker logs deploy-pgworker-1)"; exit 1; }
-echo "  оба члена shard1 RUNNING (${m1_node} rejoin, ${m2_node} мастер)"
+  || { echo "❌ rejoin did not converge within 300 s (${m1_node}=${s1:-?} ${m2_node}=${s2:-?}; docker logs deploy-pgworker-1)"; exit 1; }
+echo "  both shard1 members RUNNING (${m1_node} rejoined, ${m2_node} master)"
 
 # Финал: master-ключ жив.
 m3="$(ect get /clusters/demo/shards/shard1/master --print-value-only)"
-[ -n "$m3" ] || { echo "❌ master-ключ shard1 пуст в финале"; exit 1; }
-echo "  master-ключ жив: $m3"
+[ -n "$m3" ] || { echo "❌ shard1 master key empty at the end"; exit 1; }
+echo "  master key alive: $m3"
 
-echo "✓ failover-цикл зелёный: kill -> Patroni-промоут -> гашение -> rejoin надзором"
+echo "✓ failover cycle green: kill -> Patroni promote -> clearing -> rejoin by supervision"

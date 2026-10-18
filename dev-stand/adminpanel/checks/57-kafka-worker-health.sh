@@ -22,7 +22,7 @@ JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE?)"; exit 1; }
+  || { echo "❌ login (adminpanel at $BASE?)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 
 # Предикаты (target'ы разные!): worker-unhealthy → target "kafkaworker/<id>"
@@ -39,22 +39,22 @@ wait_state() {
     if [ "$want" = absent ] && ! "$fn"; then return 0; fi
     sleep 2
   done
-  echo "❌ $label не достигнуто за 120 c ($fn/$want)"; return 1
+  echo "❌ $label not reached within 120 s ($fn/$want)"; return 1
 }
-wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ не вернулся в 200 за 30 c"; return 1; }
+wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ did not return to 200 within 30 s"; return 1; }
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # Preconditions: lease-ключи живы, воркер здоров, worker-* алертов нет.
 [ -n "$(ect get /kafkaworker/api/ --prefix --keys-only </dev/null 2>/dev/null)" ] \
-  || { echo "❌ нет живых /kafkaworker/api/ — поднимите стенд (00-up.sh, full+kafka)"; exit 1; }
-curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" || { echo "❌ /healthz воркера не 200 до стимула"; exit 1; }
-! has_unhealthy || { echo "❌ уже есть worker-unhealthy — прогоните после чистого 00-up.sh"; exit 1; }
-! has_api_down  || { echo "❌ уже есть worker-api-unreachable — стенд не согласован"; exit 1; }
+  || { echo "❌ no live /kafkaworker/api/ — bring up the stand (00-up.sh, full+kafka)"; exit 1; }
+curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" || { echo "❌ worker /healthz not 200 before the stimulus"; exit 1; }
+! has_unhealthy || { echo "❌ worker-unhealthy already present — run after a clean 00-up.sh"; exit 1; }
+! has_api_down  || { echo "❌ worker-api-unreachable already present — stand inconsistent"; exit 1; }
 started_before="$(docker inspect -f '{{.State.StartedAt}}' as-kafkaworker)"
 
 # Act 1: transient — etcd лежит ~40 c (поллер успевает 2+ раза записать Degraded
 # в стор; снапшот при этом НЕ обновляется — алерта ещё нет, spec §3.5).
-echo ">>> docker compose stop etcd (~40 c)"
+echo ">>> docker compose stop etcd (~40 s)"
 docker compose stop -t 3 etcd >/dev/null
 sleep 40
 
@@ -62,22 +62,22 @@ sleep 40
 docker compose start etcd >/dev/null
 
 # Assert 1: алерт загорается первым успешным kafka-тиком после подъёма (≤ 120 c).
-wait_state has_unhealthy present "алерт worker-unhealthy:kafkaworker" \
-  && echo "  алерт worker-unhealthy:kafkaworker загорелся (первый успешный kafka-тик)"
+wait_state has_unhealthy present "alert worker-unhealthy:kafkaworker" \
+  && echo "  alert worker-unhealthy:kafkaworker fired (first successful kafka tick)"
 
 # Assert 2: /healthz → 200 ≤ 30 c, контейнер НЕ рестартован (sticky-сброс).
-wait_healthz && echo "  /healthz → 200 после подъёма etcd"
+wait_healthz && echo "  /healthz → 200 after etcd came back"
 started_after="$(docker inspect -f '{{.State.StartedAt}}' as-kafkaworker)"
 [ "$started_before" = "$started_after" ] \
-  || { echo "❌ контейнер as-kafkaworker рестартован — сброс sticky-StatusError не доказан"; exit 1; }
-echo "  контейнер as-kafkaworker не рестартован (ошибка тика сброшена успешным тиком)"
+  || { echo "❌ container as-kafkaworker restarted — sticky-StatusError reset not proven"; exit 1; }
+echo "  container as-kafkaworker not restarted (tick error cleared by a successful tick)"
 
 # Assert 3: алерт гаснет после восстановления (≤ 2 тиков поллера).
-wait_state has_unhealthy absent "гашение worker-unhealthy:kafkaworker" \
-  && echo "  алерт worker-unhealthy:kafkaworker погас"
+wait_state has_unhealthy absent "worker-unhealthy:kafkaworker clearing" \
+  && echo "  alert worker-unhealthy:kafkaworker cleared"
 
 # Assert 4: эстафета worker-api-unreachable не зависла (lease-ключи вернулись).
-wait_state has_api_down absent "отсутствие worker-api-unreachable" \
-  && echo "  worker-api-unreachable не висит (ключи /kafkaworker/api/ восстановлены)"
+wait_state has_api_down absent "worker-api-unreachable absence" \
+  && echo "  worker-api-unreachable not stuck (keys /kafkaworker/api/ restored)"
 
-echo "✅ 57-kafka-worker-health: /healthz честный (последний тик), панель и docker-health согласованы"
+echo "✅ 57-kafka-worker-health: /healthz honest (last tick), panel and docker-health consistent"

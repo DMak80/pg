@@ -6,29 +6,29 @@ groups:
         for: 2m
         labels: {severity: critical}
         annotations:
-          summary: "сервис {{ $labels.job }} недоступен ({{ $labels.instance }})"
-          description: "scrape падает 2 мин; runbook — arch/18-metrics.md §5.2"
+          summary: "service {{ $labels.job }} is down ({{ $labels.instance }})"
+          description: "scrape failing for 2m; runbook — arch/18-metrics.md §5.2"
       - alert: WorkerLoopStalled
         expr: time() - worker_loop_last_success_timestamp_seconds{loop=~"reconcile|keepalive"} > 60
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "цикл {{ $labels.job }}/{{ $labels.loop }} не тикает >60с"
-          description: "только быстрые циклы (reconcile/keepalive); живость снапшота закрывает SnapshotStale; циклы 5с, запас на ErrorDelay-бэкофф; runbook — arch/18 §2.2"
+          summary: "{{ $labels.job }}/{{ $labels.loop }} loop not ticking for >60s"
+          description: "only fast loops (reconcile/keepalive); snapshot liveness is covered by SnapshotStale; loop interval 5s, headroom for ErrorDelay backoff; runbook — arch/18 §2.2"
       - alert: SnapshotStale
         expr: worker_snapshot_age_seconds > 28800
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "снапшот P12 старше 8ч ({{ $labels.job }})"
-          description: "снапшоты раз в 6ч; runbook — arch/18 §2.2"
+          summary: "P12 snapshot older than 8h ({{ $labels.job }})"
+          description: "snapshots every 6h; runbook — arch/18 §2.2"
       - alert: ProcessPhaseStuck
         expr: worker_process_phase_duration_seconds > 1800
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "кластер {{ $labels.cluster }} в фазе {{ $labels.process }}/{{ $labels.phase }} >30мин"
-          description: "provision-фазы допускают до 1ч; runbook — arch/18 §2.2"
+          summary: "cluster {{ $labels.cluster }} in phase {{ $labels.process }}/{{ $labels.phase }} for >30m"
+          description: "provision phases allow up to 1h; runbook — arch/18 §2.2"
   - name: kafka
     rules:
       - alert: KafkaUnderReplicated
@@ -36,22 +36,22 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: "кластер {{ $labels.cluster }}: недореплицированные партиции"
-          description: "ISR ⊂ assignment 5мин; runbook — arch/18 §2.3"
+          summary: "cluster {{ $labels.cluster }}: under-replicated partitions"
+          description: "ISR ⊂ assignment for 5m; runbook — arch/18 §2.3"
       - alert: KafkaConsumerLagHigh
         expr: kafka_consumer_lag > 1000000
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "лаг {{ $labels.group }}@{{ $labels.topic }} > 1e6 ({{ $labels.cluster }})"
-          description: "порог стартовый, тюнинг по истории; runbook — arch/18 §2.3"
+          summary: "lag {{ $labels.group }}@{{ $labels.topic }} > 1e6 ({{ $labels.cluster }})"
+          description: "initial threshold, tune from history; runbook — arch/18 §2.3"
       - alert: KafkaCollectorStalled
         expr: time() - kafka_collector_last_success_timestamp_seconds > 300
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "коллектор kafka-метрик не собирает >5мин"
-          description: "фиксированный порог ≥3×CollectIntervalSec(30с); runbook — arch/18 §4"
+          summary: "kafka metrics collector not scraping for >5m"
+          description: "fixed threshold ≥3×CollectIntervalSec(30s); runbook — arch/18 §4"
   - name: valkey
     rules:
       - alert: ValkeyCollectorStalled
@@ -59,22 +59,22 @@ groups:
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "коллектор valkey-метрик не собирает >5мин"
-          description: "фиксированный порог ≥3×CollectIntervalSec(30с); runbook — arch/18 §4.2"
+          summary: "valkey metrics collector not scraping for >5m"
+          description: "fixed threshold ≥3×CollectIntervalSec(30s); runbook — arch/18 §4.2"
       - alert: ValkeyEvictionsGrowing
         expr: rate(valkey_evicted_keys[5m]) > 0
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.node }}: выселения ключей растут"
-          description: "rate по gauge-кумулятиву (сбросы при рестарте — arch/18 §2.6); runbook — arch/18 §2.6"
+          summary: "{{ $labels.cluster }}/{{ $labels.node }}: key evictions growing"
+          description: "rate over a cumulative gauge (resets on restart — arch/18 §2.6); runbook — arch/18 §2.6"
       - alert: ValkeyMemoryNearMax
         expr: (valkey_memory_used_bytes / valkey_memory_max_bytes > 0.9) and (valkey_memory_max_bytes > 0)
         for: 10m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.node }}: память >90% maxmemory"
-          description: "and valkey_memory_max_bytes > 0 отсекает безлимитный maxmemory=0; runbook — arch/18 §2.6"
+          summary: "{{ $labels.cluster }}/{{ $labels.node }}: memory >90% of maxmemory"
+          description: "and valkey_memory_max_bytes > 0 filters out unlimited maxmemory=0; runbook — arch/18 §2.6"
   - name: pg
     rules:
       - alert: PgReplicaLagHigh
@@ -82,8 +82,8 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: "реплика {{ $labels.node }} ({{ $labels.scope }}) отстаёт >30с"
-          description: "scrape Patroni-эмуляторов; runbook — arch/18 §2.5"
+          summary: "replica {{ $labels.node }} ({{ $labels.scope }}) lagging >30s"
+          description: "scrape of Patroni emulators; runbook — arch/18 §2.5"
       # t15 (arch/18 §2.5/§5.4): реальные Patroni-ноды — нативные patroni_*
       # (file_sd patroni-nodes) и самонаблюдение генератора.
       - alert: PatroniNodeDown
@@ -91,22 +91,22 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: "Patroni-нода {{ $labels.instance }} ({{ $labels.cluster }}/{{ $labels.shard }}/{{ $labels.node }}) недоскрейпится 5мин"
-          description: "нода в rebuild — штатный сценарий (~90с), порог терпит; runbook — arch/18 §2.5"
+          summary: "Patroni node {{ $labels.instance }} ({{ $labels.cluster }}/{{ $labels.shard }}/{{ $labels.node }}) failing scrape for 5m"
+          description: "node in rebuild is a normal scenario (~90s), threshold tolerates it; runbook — arch/18 §2.5"
       - alert: PatroniReplicaLagHigh
         expr: time() - patroni_xlog_replayed_timestamp > 30
         for: 5m
         labels: {severity: warning}
         annotations:
-          summary: "реплика {{ $labels.name }} ({{ $labels.scope }}) отстаёт >30с"
-          description: "зеркало PgReplicaLagHigh на нативных сериях; серия есть только у реплик; runbook — arch/18 §2.5"
+          summary: "replica {{ $labels.name }} ({{ $labels.scope }}) lagging >30s"
+          description: "mirror of PgReplicaLagHigh on native series; series exists only on replicas; runbook — arch/18 §2.5"
       - alert: SdGeneratorStalled
         expr: time() - sd_generator_last_success_timestamp_seconds > 300
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "file_sd-генератор не тикает >5мин"
-          description: "фиксированный порог ≥3×RefreshIntervalSec(15с); runbook — arch/18 §5.4"
+          summary: "file_sd generator not ticking for >5m"
+          description: "fixed threshold ≥3×RefreshIntervalSec(15s); runbook — arch/18 §5.4"
   # t14 (arch/18 §2.7): бэкап-домен — зеркало подмножества панельных правил
   # (независимый от панели канал; etcd-источник истины статусов остаётся).
   - name: backups
@@ -116,47 +116,47 @@ groups:
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "кластер {{ $labels.cluster }}/{{ $labels.shard }}: возраст валидного полного выше порога"
-          description: "per-cluster порог из серии max_age (политики бэкапов, arch/19 §2); runbook — arch/18 §2.7"
+          summary: "cluster {{ $labels.cluster }}/{{ $labels.shard }}: valid full backup age above threshold"
+          description: "per-cluster threshold from the max_age series (backup policies, arch/19 §2); runbook — arch/18 §2.7"
       - alert: BackupFullMissing
         expr: pgworker_backup_full_max_age_seconds unless pgworker_backup_full_age_seconds
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "кластер {{ $labels.cluster }}/{{ $labels.shard }}: валидного полного нет вовсе"
-          description: "max_age эмитится, age нет — семантика IsValid планировщика; runbook — arch/18 §2.7"
+          summary: "cluster {{ $labels.cluster }}/{{ $labels.shard }}: no valid full backup at all"
+          description: "max_age emitted but age missing — planner IsValid semantics; runbook — arch/18 §2.7"
       - alert: BackupWalLagHigh
         expr: pgworker_backup_wal_lag_segments > 1024
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: отставание WAL-потока >1024 сегментов"
-          description: "порог = дефолт PgWorker:Backups:Wal:LagMaxSegments (per-install конфиг; per-cluster WAL-политики в etcd нет, arch/19 §4); runbook — arch/18 §2.7"
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: WAL stream lag >1024 segments"
+          description: "threshold = default PgWorker:Backups:Wal:LagMaxSegments (per-install config; no per-cluster WAL policy in etcd, arch/19 §4); runbook — arch/18 §2.7"
       - alert: BackupWalStale
         expr: pgworker_backup_wal_last_uploaded_age_seconds > 300
         for: 0m
         labels: {severity: warning}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: тишина WAL-загрузок >300с"
-          description: "порог = дефолт PgWorker:Backups:Wal:StaleSec (per-install конфиг); runbook — arch/18 §2.7"
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: no WAL uploads for >300s"
+          description: "threshold = default PgWorker:Backups:Wal:StaleSec (per-install config); runbook — arch/18 §2.7"
       - alert: BackupVerifyFailed
         expr: increase(pgworker_backup_verify_total{result="failed"}[15m]) > 0
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: проверка полного бэкапа провалена"
-          description: "increase[15m] при scrape 15с; runbook — arch/18 §2.7, arch/19 §5"
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: full backup verification failed"
+          description: "increase[15m] with 15s scrape; runbook — arch/18 §2.7, arch/19 §5"
       - alert: BackupRestoreFailed
         expr: increase(pgworker_backup_restore_total{result="failed"}[15m]) > 0
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: восстановление из бэкапа провалено"
-          description: "терминальный FAILED restore-заявки; runbook — arch/18 §2.7, arch/19 §3.5"
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: restore from backup failed"
+          description: "terminal FAILED of a restore request; runbook — arch/18 §2.7, arch/19 §3.5"
       - alert: BackupDrillFailed
         expr: increase(pgworker_backup_drill_total{result="failed"}[15m]) > 0
         for: 0m
         labels: {severity: critical}
         annotations:
-          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: дрилл восстановимости провален"
-          description: "восстановимость не доказана; runbook — arch/18 §2.7, arch/19 §3.6"
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: restore drill failed"
+          description: "recoverability not proven; runbook — arch/18 §2.7, arch/19 §3.6"

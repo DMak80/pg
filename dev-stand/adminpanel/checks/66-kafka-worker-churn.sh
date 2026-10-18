@@ -36,12 +36,12 @@ cleanup() {
 trap cleanup EXIT
 
 docker inspect "$WORKER" >/dev/null 2>&1 \
-  || { echo "❌ контейнер $WORKER не найден — поднимите стенд (00-up.sh)"; exit 1; }
+  || { echo "❌ container $WORKER not found — bring up the stand (00-up.sh)"; exit 1; }
 
 # Предусловие: порты действительно закрыты (иначе «репро» ничего не репает).
 for port in $CHURN_PORTS; do
   if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-    echo "❌ порт $port занят — выберите свободные: CHURN_PORTS=\"...\" ./66-kafka-worker-churn.sh"; exit 1
+    echo "❌ port $port busy — choose free ones: CHURN_PORTS=\"...\" ./66-kafka-worker-churn.sh"; exit 1
   fi
 done
 
@@ -72,7 +72,7 @@ docker exec -i as-etcd-1 etcdctl --endpoints=http://localhost:2379 \
 ect put "/kafka/clusters/$CLUSTER/admin_user" "admin" >/dev/null
 ect put "/kafka/clusters/$CLUSTER/admin_password" "deadbeef" >/dev/null
 rm -rf "$CA_TMP"
-echo ">>> сид: /kafka/clusters/$CLUSTER → $bootstrap (порты закрыты), portalloc нет; окно ${CHURN_MINUTES} мин"
+echo ">>> seed: /kafka/clusters/$CLUSTER → $bootstrap (ports closed), no portalloc; window ${CHURN_MINUTES} min"
 
 # Assert 1: тупик лечится — portalloc появился (лестница E9: контейнера нет
 # → S7-ветка → новая аллокация + контейнер; endpoints чек-кластера при этом
@@ -83,8 +83,8 @@ for i in $(seq 1 36); do
   [ -n "$healed" ] && break
   sleep 5
 done
-[ -n "$healed" ] || { echo "❌ portalloc/$CLUSTER не появился за 180 с — лестница E9 не работает"; exit 1; }
-echo "  лестница E9: portalloc восстановлен (${healed:0:60}…)"
+[ -n "$healed" ] || { echo "❌ portalloc/$CLUSTER did not appear within 180 s — E9 ladder not working"; exit 1; }
+echo "  E9 ladder: portalloc restored (${healed:0:60}…)"
 
 # Окно наблюдения — в steady-state: лестница (ветка 3) реально создаёт брокера,
 # его бут (docker + provisioning: SASL/ACL/converge) — легитимный пик, а не
@@ -120,17 +120,17 @@ for v in "${cpu_samples[@]}"; do
 done
 cpu_n=${#cpu_samples[@]}
 cpu_avg=$((cpu_sum / cpu_n))
-[ "$cpu_hot" -le $((cpu_n / 3)) ] || { echo "❌ CPU >10% в ${cpu_hot}/${cpu_n} образцов — устойчивое выедание (макс ${cpu_max}%)"; exit 1; }
-[ "$cpu_avg" -le 10 ] || { echo "❌ средний CPU ${cpu_avg}% за окно (бюджет 10%)"; exit 1; }
-echo "  CPU воркера: среднее ${cpu_avg}%, макс ${cpu_max}% (${cpu_hot}/${cpu_n} образцов >10% — bursts)"
+[ "$cpu_hot" -le $((cpu_n / 3)) ] || { echo "❌ CPU >10% in ${cpu_hot}/${cpu_n} samples — sustained burn (max ${cpu_max}%)"; exit 1; }
+[ "$cpu_avg" -le 10 ] || { echo "❌ average CPU ${cpu_avg}% over the window (budget 10%)"; exit 1; }
+echo "  worker CPU: average ${cpu_avg}%, max ${cpu_max}% (${cpu_hot}/${cpu_n} samples >10% — bursts)"
 
 # Assert 3: rdkafka-лог <= 1 событие/мин (после фикса — 0: Debug).
 allowed="$CHURN_MINUTES"
-[ "$rdkafka_lines" -le "$allowed" ] || { echo "❌ rdkafka-строк $rdkafka_lines за ${CHURN_MINUTES} мин (бюджет $allowed)"; exit 1; }
-echo "  rdkafka-строк в логе: $rdkafka_lines (бюджет ≤$allowed)"
+[ "$rdkafka_lines" -le "$allowed" ] || { echo "❌ rdkafka lines $rdkafka_lines within ${CHURN_MINUTES} min (budget $allowed)"; exit 1; }
+echo "  rdkafka lines in the log: $rdkafka_lines (budget ≤$allowed)"
 
 # Assert 4: потоки процесса не растут (churn poll-потоков погашен).
-[ "$threads_end" -le "$((threads_start + 10))" ] || { echo "❌ потоки: $threads_start → $threads_end (растут)"; exit 1; }
-echo "  потоки процесса стабильны: $threads_start → $threads_end"
+[ "$threads_end" -le "$((threads_start + 10))" ] || { echo "❌ threads: $threads_start → $threads_end (growing)"; exit 1; }
+echo "  process threads stable: $threads_start → $threads_end"
 
-echo "✅ 66-kafka-worker-churn: лежащий кластер не жжёт CPU (≤${cpu_max}%), лог тих (${rdkafka_lines}), потоки стабильны, portalloc самолечится"
+echo "✅ 66-kafka-worker-churn: down cluster does not burn CPU (≤${cpu_max}%), log quiet (${rdkafka_lines}), threads stable, portalloc self-heals"

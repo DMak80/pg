@@ -26,7 +26,7 @@ repo="${SRC%%:*}"
 # (без mapfile — bash 3.2 на macOS из коробки). Ошибка inspect (например,
 # rate-limit Docker Hub) — сразу отказ, НЕ проваливается в single-arch ветку.
 entries=()
-list="$(docker manifest inspect "$SRC" 2>/dev/null)" || { echo "!! $SRC: docker manifest inspect упал (rate-limit апстрима?)"; exit 1; }
+list="$(docker manifest inspect "$SRC" 2>/dev/null)" || { echo "!! $SRC: docker manifest inspect failed (upstream rate-limit?)"; exit 1; }
 while read -r a dg; do
   entries+=("$a $dg")
 done < <(echo "$list" | python3 -c '
@@ -41,7 +41,7 @@ if "manifests" in d:
 ' "$ARCHES")
 
 if [ "${#entries[@]}" -eq 0 ]; then
-  echo "!! $SRC: нет linux-манифестов для [$ARCHES] — зеркалирую как есть (одна платформа)"
+  echo "!! $SRC: no linux manifests for [$ARCHES] — mirroring as-is (single platform)"
   docker pull "$SRC" >/dev/null
   docker tag "$SRC" "$DST"
   docker push "$DST" >/dev/null

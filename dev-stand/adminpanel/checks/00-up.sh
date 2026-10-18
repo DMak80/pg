@@ -25,7 +25,7 @@ phase() {
 # с томами, deploy-контур, движковые pgw-*/s3w-* контейнеры, тома, сети;
 # own-only по стендовым именам, «не существует» — молча ок). etcd-данные
 # стираются: пулы/кластеры/сиды создаются заново на чистом контуре.
-phase "зачистка контура перед подъёмом (90-down.sh -v — каждый запуск = новое окружение)"
+phase "cleaning up the contour before startup (90-down.sh -v — every run = fresh environment)"
 bash "$PWD/checks/90-down.sh" -v >/dev/null 2>&1 || true
 # Хост-публикация API pgworker параметризуется (коллизии портов на хосте;
 # канон 8080, второй инстанс — 8083, t07). Advertise обязан совпадать с
@@ -45,13 +45,13 @@ printf '[{"targets": ["pgworker:8080", "pgworker-2:8080"]}]\n' \
 
 # Arrange: инструменты хоста
 for bin in docker jq curl; do
-  command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
+  command -v "$bin" >/dev/null || { echo "❌ no $bin in PATH"; exit 1; }
 done
 
 # ownS3: ВНЕШНИЙ образ (репозиторий ../OwnS3) — pg его не собирает; нет
 # образа — падаем сразу с подсказкой (сборка: ../OwnS3/deploy/build-image.sh).
 docker image inspect owns3:dev >/dev/null 2>&1 \
-  || { echo "❌ нет образа owns3:dev — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh"; exit 1; }
+  || { echo "❌ image owns3:dev missing — build it in ../OwnS3: bash ../OwnS3/deploy/build-image.sh"; exit 1; }
 
 # mTLS API воркеров (t03, arch/16 §1.1 / arch/21 §1.1): per-install TLS-пакет —
 # gen.sh идемпотентен ПОФАЙЛОВО (ca.pem жив — клиентские/pgserver не трогаются;
@@ -59,7 +59,7 @@ docker image inspect owns3:dev >/dev/null 2>&1 \
 # безусловно: на свежем хосте создаёт пакет, на живом — только чинит старый
 # server-серт; panel.crt/ca.pem уходят панели, server.* + ca.pem — воркерам
 # (bind ../../deploy/tls в стендовом compose).
-echo ">>> TLS-пакет (deploy/tls/gen.sh — идемпотентно)"
+echo ">>> TLS package (deploy/tls/gen.sh — idempotent)"
 bash "$ROOT/deploy/tls/gen.sh"
 
 # Наполнение deploy-volume pgw-api-tls пакетом (ro-монтирование воркером);
@@ -75,26 +75,26 @@ docker run --rm \
 echo ">>> [PHASE] publish Metrics.SdGenerator ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   -c Release -o "$ROOT/artifacts/sd-generator/publish" --nologo \
-  || { echo "❌ publish SdGenerator не удался"; exit 1; }
-echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
+  || { echo "❌ SdGenerator publish failed"; exit 1; }
+echo ">>> [PHASE] SdGenerator publish ready ($(date +%H:%M:%S))"
 
 # WAL-агент (t41): publish НА ХОСТЕ → образ publish-COPY (канон E2E-образов;
 # сборка не «тихая» — [PHASE] и тайминг).
 echo ">>> [PHASE] publish PgWorker.WalReceiver ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" \
   -c Release -o "$ROOT/artifacts/wal/publish" --nologo \
-  || { echo "❌ publish WalReceiver не удался"; exit 1; }
+  || { echo "❌ WalReceiver publish failed"; exit 1; }
 docker build -q -f "$ROOT/docker/PgWorker.Wal.Dockerfile" -t pgworker-wal:dev "$ROOT/artifacts/wal/publish" \
-  || { echo "❌ образ pgworker-wal:dev не собрался"; exit 1; }
-echo "  образ pgworker-wal:dev готов"
+  || { echo "❌ image pgworker-wal:dev build failed"; exit 1; }
+echo "  image pgworker-wal:dev ready"
 
 # S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
 echo ">>> [PHASE] publish S3Worker.App ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/S3Worker.App/S3Worker.App.csproj" \
   -c Release -o "$ROOT/artifacts/s3worker/publish" --nologo \
-  || { echo "❌ publish S3Worker не удался"; exit 1; }
-echo ">>> [PHASE] publish S3Worker готов ($(date +%H:%M:%S))"
+  || { echo "❌ S3Worker publish failed"; exit 1; }
+echo ">>> [PHASE] S3Worker publish ready ($(date +%H:%M:%S))"
 
 # Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
 # deploy/.env в .gitignore; t41: стенд задаёт PGW_CONTOUR_NETWORK/
@@ -150,7 +150,7 @@ fi
 # невозможна: дефис в имени переменной парсер читает как оператор дефолта).
 grep -E '^S3W_NODE_SECRETS__' "$ROOT/deploy/.env" > "$ROOT/deploy/s3w-node-secrets.env"
 [ -s "$ROOT/deploy/s3w-node-secrets.env" ] \
-  || { echo "❌ deploy/s3w-node-secrets.env пуст — профиль секретов не собран из .env"; exit 1; }
+  || { echo "❌ deploy/s3w-node-secrets.env is empty — secrets profile not assembled from .env"; exit 1; }
 # t36: env-профили кредов пулов pgworker (arch/19 §7) — в .env без блока
 # дописываются ЦЕЛИКОМ (прежний .env от старого шаблона блока не несёт;
 # свежий .env — копия .env.example — уже несёт). Имя профиля = secretProfile
@@ -186,7 +186,7 @@ if grep -q '^PgWorker__Loops__ScanIntervalSec=' "$ROOT/deploy/.env"; then
   sed -i.bak '/^PgWorker__Loops__ScanIntervalSec=/d' "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
 fi
 
-echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
+echo ">>> bringing up the stand (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
 # держит публикацию после удаления старого контейнера; при пересборке образа
 # recreate стабилен — ID меняется метаданными даже на кэшированных слоях) —
@@ -196,9 +196,9 @@ for _ in 1 2 3; do
   if docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build 2>&1 | tail -5; then
     compose_up_ok=1; break
   fi
-  echo "  compose up не удался (порт не отдан после recreate) — пауза 10 c"; sleep 10
+  echo "  compose up failed (port not released after recreate) — pausing 10 s"; sleep 10
 done
-[ "$compose_up_ok" = 1 ] || { echo "❌ стенд не поднялся за 3 попытки (docker compose logs kafkaworker)"; exit 1; }
+[ "$compose_up_ok" = 1 ] || { echo "❌ stand failed to come up after 3 attempts (docker compose logs kafkaworker)"; exit 1; }
 
 # deploy-контур (воркеры + owns3) — в стендовую сеть (контур-override t41;
 # владелец сети adminpanel-stand-net — стендовый compose выше, deploy
@@ -211,9 +211,9 @@ for _ in 1 2 3; do
        --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 owns3 s3worker s3worker-2 2>&1 | tail -2 ); then
     pg_up_ok=1; break
   fi
-  echo "  deploy up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
+  echo "  deploy up failed (port not released after recreate) — pausing 15 s"; sleep 15
 done
-[ "$pg_up_ok" = 1 ] || { echo "❌ deploy-контур не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
+[ "$pg_up_ok" = 1 ] || { echo "❌ deploy contour failed to come up after 3 attempts (docker logs deploy-pgworker-1)"; exit 1; }
 
 # ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
 #     deploy/.env, дефолт 9010).
@@ -221,8 +221,8 @@ OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail
 OWNS3_PORT="${OWNS3_PORT:-9010}"
 for i in $(seq 1 30); do curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 && break; sleep 2; done
 curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
-  || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
-echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
+  || { echo "❌ owns3 did not come alive within 60 s (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
+echo "  owns3 alive (http://localhost:${OWNS3_PORT}/healthz)"
 
 # ownS3 (t39/t36): bucket СЛЕПКОВ etcd — идемпотентный сид root-кредами
 # (спецификация §7: standalone owns3 остаётся целью слепков — отдельная пара
@@ -235,23 +235,23 @@ docker run --rm --add-host host.docker.internal:host-gateway \
   --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
   -c "mc alias set own http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
       && mc mb --ignore-existing own/pgworker-etcd-snapshots >/dev/null" \
-  || { echo "❌ bucket pgworker-etcd-snapshots не создан в ownS3 (:${OWNS3_PORT})"; exit 1; }
-echo "  bucket pgworker-etcd-snapshots готов в ownS3 (:${OWNS3_PORT})"
+  || { echo "❌ bucket pgworker-etcd-snapshots not created in ownS3 (:${OWNS3_PORT})"; exit 1; }
+echo "  bucket pgworker-etcd-snapshots ready in ownS3 (:${OWNS3_PORT})"
 
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # 1) etcd-контур: кворум собран (3 узла одним кластером, arch/04 §8)
 ect_ok() { [ "$(ect member list 2>/dev/null | grep -c 'started')" = "3" ]; }
 for i in $(seq 1 100); do ect_ok && break; sleep 1; done
-ect_ok || { echo "  ❌ кворум as-etcd-1/2/3 не собрался за 100 c (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
-echo "  etcd-контур ready (3/3 started)"
+ect_ok || { echo "  ❌ as-etcd-1/2/3 quorum not formed within 100 s (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
+echo "  etcd contour ready (3/3 started)"
 
 # 1a-2) Образ джоба бэкапов (t02): собирается рядом с pgworker:dev — тег
 #       PgWorker:Backups:Job:Image (дефолт pgworker-backup:dev). Прямой docker
 #       build (а не compose build) — без env-зависимостей deploy/.env.
 docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:dev "$ROOT" \
-  || { echo "❌ образ pgworker-backup не собрался (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
-echo "  образ pgworker-backup:dev готов"
+  || { echo "❌ image pgworker-backup build failed (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
+echo "  image pgworker-backup:dev ready"
 
 # 1b) PgWorker готовность (стенд = полная система; контур ВСЕГДА один —
 #     etcd-кластер стенда): воркеры (2 инстанса, t07) из deploy/docker-compose.yml
@@ -265,10 +265,10 @@ echo "  образ pgworker-backup:dev готов"
 MTLS=(curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" --key "$ROOT/deploy/tls/healthcheck.key")
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
-  || { echo "❌ pgworker не ожил за 60 c (https :${PGW_API_HOST_PORT:-8080}/healthz по mTLS; docker logs deploy-pgworker-1)"; exit 1; }
+  || { echo "❌ pgworker did not come alive within 60 s (https :${PGW_API_HOST_PORT:-8080}/healthz via mTLS; docker logs deploy-pgworker-1)"; exit 1; }
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
-  || { echo "❌ pgworker-2 не ожил за 60 c (https :${PGW_API_HOST_PORT2:-8083}/healthz по mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
+  || { echo "❌ pgworker-2 did not come alive within 60 s (https :${PGW_API_HOST_PORT2:-8083}/healthz via mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
 # t07: оба инстанса публикуют свой lease-ключ дискавери (InstanceId = GUID,
 # уникальный per контейнер) — двухинстансовый надзор доказан ключами.
 pgw_api_keys=0
@@ -278,15 +278,15 @@ for i in $(seq 1 30); do
   sleep 2
 done
 [ "${pgw_api_keys:-0}" -ge 2 ] \
-  || { echo "❌ /pgworker/api/ содержит ${pgw_api_keys:-0} ключей (<2) — второй инстанс не публикует AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
-echo "  pgworker жив ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; ключей /pgworker/api/: ${pgw_api_keys})"
+  || { echo "❌ /pgworker/api/ contains ${pgw_api_keys:-0} keys (<2) — second instance does not publish AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
+echo "  pgworker alive ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; /pgworker/api/ keys: ${pgw_api_keys})"
 
 # 1c) Канонический demo (t41, arch/adminpanel/04 §2.2): декларация ЧЕРЕЗ API
 #     воркера (mTLS healthcheck-парой): движок провижинит Spilo-ноды с
 #     Patroni в стендовой сети, portalloc-порты, схемы bucket_*, → Active.
 #     Идемпотентность: живой config → 409 (перезапуск 00-up на живом стенде —
 #     no-op); пересборка demo — полный цикл (90-down.sh -v → 00-up.sh).
-echo ">>> [PHASE] создание кластера demo (POST /api/clusters, $(date +%H:%M:%S))"
+echo ">>> [PHASE] creating cluster demo (POST /api/clusters, $(date +%H:%M:%S))"
 conv_t0="$(date +%s)"   # старт конвергенции: ДО POST (пороги — дельты от него)
 create_code="$(curl -s -o /tmp/pgw-create-demo.json -w '%{http_code}' -m 10 \
   --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
@@ -295,8 +295,8 @@ create_code="$(curl -s -o /tmp/pgw-create-demo.json -w '%{http_code}' -m 10 \
   -H 'Content-Type: application/json' \
   -d '{"name":"demo","buckets":16,"shards":2,"replicas":2,"requestCpu":2,"requestMem":2,"requestDisk":100}')"
 case "$create_code" in
-  201) echo "  demo: заявка принята (201)";;
-  409) echo "  demo уже существует (409) — пропускаю создание";;
+  201) echo "  demo: request accepted (201)";;
+  409) echo "  demo already exists (409) — skipping creation";;
   *) { echo "❌ POST /api/clusters → $create_code"; cat /tmp/pgw-create-demo.json; exit 1; };;
 esac
 
@@ -309,7 +309,7 @@ esac
 # per-node → leader-ключ → реплики streaming → снятие status-ключей → Active
 # + суммарная строка. Отказ (потолок/стагнация) — немедленный abort со
 # сбором диагностики (логи воркера, контейнеры нод, последние [PHASE]).
-echo ">>> [PHASE] жду конвергенцию demo (потолок 90 c, стагнация 45 c, $(date +%H:%M:%S))"
+echo ">>> [PHASE] waiting for demo convergence (budget 90 s, stagnation 45 s, $(date +%H:%M:%S))"
 demo_ready() {
   conf="$(ect get /clusters/demo/config --print-value-only 2>/dev/null || true)"
   [ -n "$conf" ] && ! echo "$conf" | grep -q '"state":"NOT_INITIALIZED"' || return 1
@@ -387,42 +387,42 @@ conv_idle_max=45
 # без повторного прогона (канон телеметрии e2e-launch).
 conv_fail_diag() {
   local why="$1" next
-  echo "❌ demo не сошёлся: $why"
-  echo "--- контейнеры нод demo:"
+  echo "❌ demo did not converge: $why"
+  echo "--- demo node containers:"
   docker ps -a --filter name='pgw-demo-' --format '{{.Names}}\t{{.Status}}' || true
-  echo "--- хвост лога deploy-pgworker-1:"
-  docker logs --tail 25 deploy-pgworker-1 2>&1 | grep -aP "[а-яА-Я]" | tail -12 || true
-  echo "--- незакрытые пороги:"
-  for pair in "t_containers:сеть/контейнеры" "t_patroni:patroni REST" \
-              "t_leader:leader-ключи" "t_streaming:реплики streaming" "t_status:status-ключи"; do
+  echo "--- deploy-pgworker-1 log tail:"
+  docker logs --tail 25 deploy-pgworker-1 2>&1 | tail -12 || true
+  echo "--- unclosed thresholds:"
+  for pair in "t_containers:network/containers" "t_patroni:patroni REST" \
+              "t_leader:leader keys" "t_streaming:replicas streaming" "t_status:status keys"; do
     next="${pair%%:*}"
-    [ -z "${!next:-}" ] && echo "  не достигнут: ${pair#*:}"
+    [ -z "${!next:-}" ] && echo "  not reached: ${pair#*:}"
   done
 }
 while [ "$(date +%s)" -lt "$conv_deadline" ]; do
-  [ -n "$t_containers" ] || { demo_containers_up && conv_mark t_containers "сеть/контейнеры: первый pgw-demo-* RUNNING"; }
-  [ -n "$t_patroni" ] || { demo_patroni_ok && conv_mark t_patroni "patroni REST: все ноды отвечают /cluster"; }
-  [ -n "$t_leader" ] || { demo_leader_ok && conv_mark t_leader "leader-ключи shard1+shard2"; }
-  [ -n "$t_streaming" ] || { demo_streaming_ok && conv_mark t_streaming "реплики streaming"; }
+  [ -n "$t_containers" ] || { demo_containers_up && conv_mark t_containers "network/containers: first pgw-demo-* RUNNING"; }
+  [ -n "$t_patroni" ] || { demo_patroni_ok && conv_mark t_patroni "patroni REST: all nodes answer /cluster"; }
+  [ -n "$t_leader" ] || { demo_leader_ok && conv_mark t_leader "leader keys shard1+shard2"; }
+  [ -n "$t_streaming" ] || { demo_streaming_ok && conv_mark t_streaming "replicas streaming"; }
   status_keys_now="$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null || true)"
   [ -n "$status_keys_now" ] && seen_status_keys=1
   if [ -z "$t_status" ] && [ -n "$seen_status_keys" ] && [ -z "$status_keys_now" ]; then
-    conv_mark t_status "status-ключи бакетов сняты"
+    conv_mark t_status "bucket status keys removed"
   fi
   demo_ready && break
   # Детектор стагнации: ни один порог не продвигался дольше conv_idle_max —
   # отказ обнаружен рано, не дожидаясь общего потолка.
   if [ "$(( $(date +%s) - conv_last_progress ))" -gt "$conv_idle_max" ]; then
-    conv_fail_diag "стагнация — без продвижения подфаз более ${conv_idle_max} c (потолок 90 c не достигнут)"
+    conv_fail_diag "stagnation — no subphase progress for more than ${conv_idle_max} s (90 s budget not reached)"
     exit 1
   fi
   sleep 1
 done
-demo_ready || { conv_fail_diag "потолок 90 c исчерпан"; exit 1; }
+demo_ready || { conv_fail_diag "90 s budget exhausted"; exit 1; }
 [ -n "$t_status" ] || t_status="$(date +%s)"   # сняты быстрее первого опроса — порог = гейт
 conv_done="$(date +%s)"
-phase "demo: конвергенция $((conv_done - conv_t0)) c (фазы: сеть/контейнеры $(conv_delta t_containers), patroni $(conv_delta t_patroni), leader $(conv_delta t_leader), streaming $(conv_delta t_streaming), status $(conv_delta t_status))"
-echo "  demo: Active, ноды RUNNING, status-ключи бакетов сняты (shard1/shard2 × a/b)"
+phase "demo: convergence $((conv_done - conv_t0)) s (phases: network/containers $(conv_delta t_containers), patroni $(conv_delta t_patroni), leader $(conv_delta t_leader), streaming $(conv_delta t_streaming), status $(conv_delta t_status))"
+echo "  demo: Active, nodes RUNNING, bucket status keys removed (shard1/shard2 × a/b)"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
 #    /kafkaworker/instances/ (два инстанса = два ключа каждого вида).
@@ -433,10 +433,10 @@ for i in $(seq 1 60); do
   sleep 1
 done
 [ "${kfw_keys:-0}" -ge 2 ] \
-  || { echo "❌ /kafkaworker/api/ содержит ${kfw_keys:-0} ключей (<2; docker compose logs kafkaworker kafkaworker-2)"; exit 1; }
+  || { echo "❌ /kafkaworker/api/ contains ${kfw_keys:-0} keys (<2; docker compose logs kafkaworker kafkaworker-2)"; exit 1; }
 [ "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | grep -c . || true)" -ge 2 ] \
-  || { echo "❌ /kafkaworker/instances/ меньше 2 ключей"; exit 1; }
-echo "  kafkaworker жив ×2 (heartbeat /kafkaworker/{api,instances}/*: по ${kfw_keys})"
+  || { echo "❌ /kafkaworker/instances/ has fewer than 2 keys"; exit 1; }
+echo "  kafkaworker alive ×2 (heartbeat /kafkaworker/{api,instances}/*: ${kfw_keys} each)"
 
 # 7b) valkeyworker жив ×2 (t03+t07): по два lease-ключа /valkeyworker/api/ и
 #     /valkeyworker/instances/ — их ждут панель (WorkerEndpoints) и чек 51.
@@ -447,20 +447,20 @@ for i in $(seq 1 60); do
   sleep 1
 done
 [ "${vwk_keys:-0}" -ge 2 ] \
-  || { echo "❌ /valkeyworker/api/ содержит ${vwk_keys:-0} ключей (<2; docker compose logs valkeyworker valkeyworker-2)"; exit 1; }
+  || { echo "❌ /valkeyworker/api/ contains ${vwk_keys:-0} keys (<2; docker compose logs valkeyworker valkeyworker-2)"; exit 1; }
 [ "$(ect get /valkeyworker/instances/ --prefix --keys-only 2>/dev/null | grep -c . || true)" -ge 2 ] \
-  || { echo "❌ /valkeyworker/instances/ меньше 2 ключей"; exit 1; }
-echo "  valkeyworker жив ×2 (heartbeat /valkeyworker/{api,instances}/*: по ${vwk_keys})"
+  || { echo "❌ /valkeyworker/instances/ has fewer than 2 keys"; exit 1; }
+echo "  valkeyworker alive ×2 (heartbeat /valkeyworker/{api,instances}/*: ${vwk_keys} each)"
 
 # 7c) s3worker жив ×2 (arch/24): healthz по mTLS healthcheck-парой
 #     (общий TLS-пакет pgw-api-tls, server-серт с SAN s3worker*) +
 #     дискавери /s3worker/api/ по ключам (по образцу pgworker/kafkaworker).
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT:-8086}/healthz >/dev/null \
-  || { echo "❌ s3worker не ожил за 60 c (https :${S3W_API_HOST_PORT:-8086}/healthz по mTLS; docker logs deploy-s3worker-1)"; exit 1; }
+  || { echo "❌ s3worker did not come alive within 60 s (https :${S3W_API_HOST_PORT:-8086}/healthz via mTLS; docker logs deploy-s3worker-1)"; exit 1; }
 for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null 2>&1 && break; sleep 1; done
 "${MTLS[@]}" https://localhost:${S3W_API_HOST_PORT2:-8089}/healthz >/dev/null \
-  || { echo "❌ s3worker-2 не ожил за 60 c (https :${S3W_API_HOST_PORT2:-8089}/healthz по mTLS; docker logs deploy-s3worker-2-1)"; exit 1; }
+  || { echo "❌ s3worker-2 did not come alive within 60 s (https :${S3W_API_HOST_PORT2:-8089}/healthz via mTLS; docker logs deploy-s3worker-2-1)"; exit 1; }
 s3w_keys=0
 for i in $(seq 1 60); do
   s3w_keys="$(ect get /s3worker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
@@ -468,8 +468,8 @@ for i in $(seq 1 60); do
   sleep 1
 done
 [ "${s3w_keys:-0}" -ge 2 ] \
-  || { echo "❌ /s3worker/api/ содержит ${s3w_keys:-0} ключей (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
-echo "  s3worker жив ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; ключей /s3worker/api/: ${s3w_keys})"
+  || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
+echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; /s3worker/api/ keys: ${s3w_keys})"
 
 # 7c-2) Сид пула бэкапов (t36, spec §4.6/§7): S3-кластер «backups» из одной
 #       ноды через API живого s3worker (mTLS healthcheck-парой, образец 75);
@@ -478,7 +478,7 @@ echo "  s3worker жив ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2
 #       (S3W_BUCKET, P3) и напишет /s3/clusters/backups/{config,nodes,endpoints}.
 #       Политика пулов кластерам стенда не задаётся сидом — оператор выбирает
 #       пул со страницы (до выбора — алерт backup-pool-missing, канон §7).
-echo ">>> [PHASE] сид пула бэкапов backups (POST /api/s3/clusters, $(date +%s))"
+echo ">>> [PHASE] seeding backups pool (POST /api/s3/clusters, $(date +%s))"
 # DTO CreateS3ClusterRequest (S3Api.cs): инстансы — списком instances (имена
 # нод + placement); nodes/placements в запросе не читаются (кластер
 # создавался пустым — прецедент мерж-гейта t36).
@@ -487,8 +487,8 @@ pool_code="$("${MTLS[@]}" -o /tmp/pgw-seed-pool.json -w '%{http_code}' -X POST \
   "https://localhost:${S3W_API_HOST_PORT:-8086}/api/s3/clusters" \
   -H 'Content-Type: application/json' -d "$pool_body")"
 case "$pool_code" in
-  201) echo "  пул backups: заявка принята (201)";;
-  409) echo "  пул backups уже существует (409) — пропуск";;
+  201) echo "  backups pool: request accepted (201)";;
+  409) echo "  backups pool already exists (409) — skipping";;
   *) { echo "❌ POST /api/s3/clusters → $pool_code"; cat /tmp/pgw-seed-pool.json; exit 1; };;
 esac
 pool_ready=0
@@ -499,8 +499,8 @@ for i in $(seq 1 50); do
   sleep 2
 done
 [ "$pool_ready" = 1 ] \
-  || { echo "❌ пул backups не собран за 100 c (node1 RUNNING + endpoints; docker logs deploy-s3worker-1)"; exit 1; }
-echo "  пул backups: node1 RUNNING, endpoints=$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)"
+  || { echo "❌ backups pool not ready within 100 s (node1 RUNNING + endpoints; docker logs deploy-s3worker-1)"; exit 1; }
+echo "  backups pool: node1 RUNNING, endpoints=$(ect get /s3/clusters/backups/endpoints --print-value-only 2>/dev/null)"
 
 # 7d) valkey-сид (t03): демо-кластер demo наливается ЧЕРЕЗ API живого воркера —
 #     метрика spec §8.1: после ПОЛНОГО 00-up.sh панель /valkey уже показывает
@@ -514,14 +514,14 @@ echo "  пул backups: node1 RUNNING, endpoints=$(ect get /s3/clusters/backups/
 #    /api/healthz опубликован на :5050.
 for i in $(seq 1 60); do curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 \
-  || { echo "❌ панель не ожила за 60 c на :5050 (docker compose logs adminpanel)"; exit 1; }
-echo "  панель жива (http://localhost:5050, docker)"
+  || { echo "❌ adminpanel did not come alive within 60 s on :5050 (docker compose logs adminpanel)"; exit 1; }
+echo "  adminpanel alive (http://localhost:5050, docker)"
 
 # 9) мониторинг (профиль metrics): Prometheus/Grafana/Alertmanager живы; таргеты
 #    прогреваются scrape-интервалом — готовность проверяет 65-metrics.sh.
 for i in $(seq 1 60); do curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev/null \
-  || { echo "❌ prometheus не готов за 60 c (docker compose logs prometheus)"; exit 1; }
-echo "  prometheus готов (:${METRICS_PROMETHEUS_PORT:-9090})"
+  || { echo "❌ prometheus not ready within 60 s (docker compose logs prometheus)"; exit 1; }
+echo "  prometheus ready (:${METRICS_PROMETHEUS_PORT:-9090})"
 
-echo "✓ стенд поднят (полная система: панель + PG + kafka + valkey + PgWorker + мониторинг, контур один)"
+echo "✓ stand is up (full system: adminpanel + PG + kafka + valkey + PgWorker + monitoring, single contour)"

@@ -32,78 +32,78 @@ wait_keys() { # <prefix> <want> <budget-sec> <label>
     [ "${got:-0}" = "$2" ] && return 0
     sleep 2
   done
-  echo "❌ $4: ключей $1 = ${got:-?}, ожидалось $2 за $3 c"; return 1
+  echo "❌ $4: keys $1 = ${got:-?}, expected $2 within $3 s"; return 1
 }
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE? поднимите стенд: checks/00-up.sh)"; exit 1; }
+  || { echo "❌ login (adminpanel at $BASE? bring up the stand: checks/00-up.sh)"; exit 1; }
 api() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE$1"; }
 
 # ===== 1) PgWorker (deploy-контейнеры) =====
-echo ">>> pgworker: оба инстанса живы (Arrange)"
-$MTLS https://localhost:${PGW_PORT1}/healthz >/dev/null || { echo "❌ pgworker-1 не жив (:${PGW_PORT1}/healthz mTLS; стенд поднят?)"; exit 1; }
-$MTLS https://localhost:${PGW_PORT2}/healthz >/dev/null || { echo "❌ pgworker-2 не жив (:${PGW_PORT2}/healthz mTLS; 00-up.sh поднял оба?)"; exit 1; }
+echo ">>> pgworker: both instances alive (Arrange)"
+$MTLS https://localhost:${PGW_PORT1}/healthz >/dev/null || { echo "❌ pgworker-1 not alive (:${PGW_PORT1}/healthz mTLS; is the stand up?)"; exit 1; }
+$MTLS https://localhost:${PGW_PORT2}/healthz >/dev/null || { echo "❌ pgworker-2 not alive (:${PGW_PORT2}/healthz mTLS; did 00-up.sh bring up both?)"; exit 1; }
 wait_keys /pgworker/api/ 2 30 "Arrange pgworker"
 
-echo ">>> pgworker: docker stop первого ($PGW1)"
+echo ">>> pgworker: docker stop of the first ($PGW1)"
 docker stop "$PGW1" >/dev/null
 # ключи первого гаснут ≤ lease TTL 15 c — остаётся ровно один (выживший)
-wait_keys /pgworker/api/ 1 60 "takeover pgworker: ключ первого погас"
+wait_keys /pgworker/api/ 1 60 "takeover pgworker: first instance key cleared"
 survivor="$(ect get /pgworker/api/ --prefix --keys-only 2>/dev/null | head -1 | awk -F/ '{print $NF}')"
-[ -n "$survivor" ] || { echo "❌ не найден выживший инстанс (/pgworker/api/)"; exit 1; }
+[ -n "$survivor" ] || { echo "❌ surviving instance not found (/pgworker/api/)"; exit 1; }
 $MTLS https://localhost:${PGW_PORT2}/healthz >/dev/null \
-  || { echo "❌ выживший pgworker-2 не жив (:${PGW_PORT2}/healthz)"; exit 1; }
-[ "$(keys /pgworker/instances/)" = "1" ] || { echo "❌ /pgworker/instances/ не сократился до 1"; exit 1; }
+  || { echo "❌ surviving pgworker-2 not alive (:${PGW_PORT2}/healthz)"; exit 1; }
+[ "$(keys /pgworker/instances/)" = "1" ] || { echo "❌ /pgworker/instances/ did not shrink to 1"; exit 1; }
 # клэйм живого кластера стенда (demo) — у выжившего; кластера нет → пропуск
 claim="$(ect get /pgworker/claims/demo --print-value-only 2>/dev/null || true)"
 if [ -n "$claim" ]; then
   echo "$claim" | jq -e --arg i "$survivor" '.instance == $i' >/dev/null \
-    || { echo "❌ клэйм demo держит не выживший: $claim (survivor=$survivor)"; exit 1; }
-  echo "  клэйм demo у выжившего инстанса ${survivor:0:8}…"
+    || { echo "❌ demo claim held not by the survivor: $claim (survivor=$survivor)"; exit 1; }
+  echo "  demo claim held by the surviving instance ${survivor:0:8}…"
 else
-  echo "  (кластера demo нет — claims-ассерт пропущен)"
+  echo "  (no demo cluster — claims assert skipped)"
 fi
 # панель жива и видит инстансы (не 503; карточка pgworker деградировала до 1)
 code="$(api /api/workers)"
-[ "$code" = 200 ] || { echo "❌ /api/workers = $code при живом втором инстансе (ожидался 200)"; exit 1; }
-echo "  надзор у второго: ключи погасли ≤60 c, healthz :${PGW_PORT2} жив, панель 200"
+[ "$code" = 200 ] || { echo "❌ /api/workers = $code with the second instance alive (expected 200)"; exit 1; }
+echo "  supervision on the second: keys cleared ≤60 s, healthz :${PGW_PORT2} alive, adminpanel 200"
 
-echo ">>> pgworker: docker start первого (Restore)"
+echo ">>> pgworker: docker start of the first (Restore)"
 docker start "$PGW1" >/dev/null
 wait_keys /pgworker/api/ 2 60 "restore pgworker"
 $MTLS https://localhost:${PGW_PORT1}/healthz >/dev/null \
-  || { echo "❌ первый pgworker не ожил после start (:${PGW_PORT1}/healthz)"; exit 1; }
-echo "  ✓ pgworker: оба инстанса снова живы"
+  || { echo "❌ first pgworker did not come alive after start (:${PGW_PORT1}/healthz)"; exit 1; }
+echo "  ✓ pgworker: both instances alive again"
 
 # ===== 2) KafkaWorker (стендовые as-*) =====
-echo ">>> kafkaworker: оба инстанса живы (Arrange)"
-[ "$(keys /kafkaworker/api/)" = "2" ] || { echo "❌ /kafkaworker/api/ != 2 ключа (профиль kafka поднят?)"; exit 1; }
+echo ">>> kafkaworker: both instances alive (Arrange)"
+[ "$(keys /kafkaworker/api/)" = "2" ] || { echo "❌ /kafkaworker/api/ != 2 keys (is the kafka profile up?)"; exit 1; }
 docker stop as-kafkaworker >/dev/null
 wait_keys /kafkaworker/api/ 1 60 "takeover kafkaworker"
 docker exec as-kafkaworker-2 curl -fsS -m 3 \
   --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ выживший as-kafkaworker-2 не жив (/healthz mTLS изнутри)"; exit 1; }
-echo "  надзор у as-kafkaworker-2: ключ первого погас ≤60 c, healthz жив"
+  || { echo "❌ surviving as-kafkaworker-2 not alive (/healthz mTLS from inside)"; exit 1; }
+echo "  supervision on as-kafkaworker-2: first instance key cleared ≤60 s, healthz alive"
 docker start as-kafkaworker >/dev/null
 wait_keys /kafkaworker/api/ 2 60 "restore kafkaworker"
-echo "  ✓ kafkaworker: оба инстанса снова живы"
+echo "  ✓ kafkaworker: both instances alive again"
 
 # ===== 3) ValkeyWorker (стендовые as-*) =====
-echo ">>> valkeyworker: оба инстанса живы (Arrange)"
-[ "$(keys /valkeyworker/api/)" = "2" ] || { echo "❌ /valkeyworker/api/ != 2 ключа (профиль valkey поднят?)"; exit 1; }
+echo ">>> valkeyworker: both instances alive (Arrange)"
+[ "$(keys /valkeyworker/api/)" = "2" ] || { echo "❌ /valkeyworker/api/ != 2 keys (is the valkey profile up?)"; exit 1; }
 docker stop as-valkeyworker >/dev/null
 wait_keys /valkeyworker/api/ 1 60 "takeover valkeyworker"
 docker exec as-valkeyworker-2 curl -fsS -m 3 \
   --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
   https://localhost:8080/healthz >/dev/null \
-  || { echo "❌ выживший as-valkeyworker-2 не жив (/healthz mTLS изнутри)"; exit 1; }
-echo "  надзор у as-valkeyworker-2: ключ первого погас ≤60 c, healthz жив"
+  || { echo "❌ surviving as-valkeyworker-2 not alive (/healthz mTLS from inside)"; exit 1; }
+echo "  supervision on as-valkeyworker-2: first instance key cleared ≤60 s, healthz alive"
 docker start as-valkeyworker >/dev/null
 wait_keys /valkeyworker/api/ 2 60 "restore valkeyworker"
-echo "  ✓ valkeyworker: оба инстанса снова живы"
+echo "  ✓ valkeyworker: both instances alive again"
 
-echo "✓ 35-worker-second-instance: kill→takeover всех трёх воркеров зелёный (стенд в исходном состоянии)"
+echo "✓ 35-worker-second-instance: kill→takeover of all three workers green (stand back to its original state)"

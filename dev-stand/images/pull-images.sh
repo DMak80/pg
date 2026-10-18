@@ -14,10 +14,10 @@ while read -r img; do
   if docker pull "$REG/$img" >/dev/null 2>&1; then
     docker tag "$REG/$img" "$img" >/dev/null 2>&1 && { echo "registry: $img"; ok_reg=$((ok_reg+1)); }
   elif docker pull "$img" >/dev/null 2>&1; then
-    echo "upstream: $img (registry недоступен)"; ok_up=$((ok_up+1))
+    echo "upstream: $img (registry unavailable)"; ok_up=$((ok_up+1))
   else
     echo "FAIL:     $img"; fail=$((fail+1))
   fi
 done < images.txt
-echo "итог: registry=$ok_reg upstream=$ok_up fail=$fail"
+echo "summary: registry=$ok_reg upstream=$ok_up fail=$fail"
 [ "$fail" -eq 0 ]

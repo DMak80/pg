@@ -18,8 +18,8 @@ seed_kafka() {
   # mTLS (t03): /healthz и сид — только с клиентской парой healthcheck + ca.pem
   MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
   for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
-  $MTLS https://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker не ожил (:8082/healthz по mTLS)"; exit 1; }
-  echo "  kafka-сид: $($MTLS -X POST https://localhost:8082/api/seed/demo)"
+  $MTLS https://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker did not come alive (:8082/healthz via mTLS)"; exit 1; }
+  echo "  kafka seed: $($MTLS -X POST https://localhost:8082/api/seed/demo)"
   # живой ключ доступа — его ждут и панель (WorkerEndpoints), и последующие
   # мутации чека 50; воркер остаётся Поднятым (безопасно: контейнеров брокеров
   # нет → пробы слепые → сидовые заявки не исполняются, arch/16 §5 C).
@@ -28,7 +28,7 @@ seed_kafka() {
     sleep 1
   done
   docker compose exec -T etcd1 etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . \
-    || { echo "❌ /kafkaworker/api/ пуст за 30 c (AdvertiseUrl/keepalive?)"; exit 1; }
+    || { echo "❌ /kafkaworker/api/ empty for 30 s (AdvertiseUrl/keepalive?)"; exit 1; }
 }
 seed_valkey() {
   docker compose --profile valkey up -d valkeyworker >/dev/null 2>&1
@@ -40,8 +40,8 @@ seed_valkey() {
   }
   for i in $(seq 1 60); do vwk_curl https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
   vwk_curl https://localhost:8080/healthz >/dev/null \
-    || { echo "❌ valkeyworker не ожил (:8080/healthz по mTLS из контейнера)"; exit 1; }
-  echo "  valkey-сид: $(vwk_curl -X POST https://localhost:8080/api/seed/demo)"
+    || { echo "❌ valkeyworker did not come alive (:8080/healthz via mTLS from inside the container)"; exit 1; }
+  echo "  valkey seed: $(vwk_curl -X POST https://localhost:8080/api/seed/demo)"
   # Заявка доигрывается Reconcile-циклом воркера: ждём Active-конфиг demo
   # (config без state) ≤ бюджета тиков (NodeBootSec-граница 120 c + запас).
   for i in $(seq 1 150); do
@@ -51,11 +51,11 @@ seed_valkey() {
   done
   cfg="$(docker compose exec -T etcd1 etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
   [ -n "$cfg" ] && ! echo "$cfg" | grep -q '"state"' \
-    || { echo "❌ демо-кластер demo не стал Active за 150 c (docker compose logs valkeyworker; контейнер vwk-demo-node1?)"; exit 1; }
-  echo "  демо-кластер demo Active (воркер доиграл заявку; vwk-demo-node1 жив)"
+    || { echo "❌ demo cluster did not become Active within 150 s (docker compose logs valkeyworker; container vwk-demo-node1?)"; exit 1; }
+  echo "  demo cluster Active (worker finished the request; vwk-demo-node1 alive)"
 }
 [ "$MODE" = kafka ] || [ "$MODE" = valkey ] || [ "$MODE" = all ] \
   || { echo "usage: 05-seed.sh [kafka|valkey|all]"; exit 1; }
 [ "$MODE" = valkey ] || seed_kafka
 [ "$MODE" = kafka ] || seed_valkey
-echo "✓ 05-seed ($MODE): сиды налиты через API воркеров (воркеры подняты — жизнью управляет потребитель)"
+echo "✓ 05-seed ($MODE): seeds loaded via worker APIs (workers are up — lifecycle is managed by the consumer)"
