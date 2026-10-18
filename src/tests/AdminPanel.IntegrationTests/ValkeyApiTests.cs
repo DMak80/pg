@@ -108,7 +108,7 @@ public sealed class ValkeyApiFixture : IAsyncLifetime
         await gateway.DeleteAsync(Endpoint, $"/valkeyworker/api/{Prefix}", prefix: true, CancellationToken.None);
         var leftovers = await gateway.RangeAsync(Endpoint, $"/valkey/clusters/{Prefix}", CancellationToken.None);
         if (leftovers.IsSuccess && leftovers.Value.Count > 0)
-            throw new InvalidOperationException("teardown-ассерт чистоты: остались guid-ключи кластера");
+            throw new InvalidOperationException("teardown cleanliness assert: cluster guid keys remain");
 
         await _etcd.DisposeAsync();
     }
@@ -238,12 +238,12 @@ public class ValkeyApiTests(ValkeyApiFixture fx)
 
         // Act/Assert: 409 воркера — телом как есть (ProblemDetails не переписывается).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Conflict","status":409,"detail":"уже существует"}""");
+            """{"title":"Conflict","status":409,"detail":"already exists"}""");
         var conflict = await client.PostAsJsonAsync("/api/valkey/clusters",
             new { name = "made" }, TestContext.Current.CancellationToken);
         conflict.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await conflict.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("уже существует");
+            .Should().Contain("already exists");
 
         // Act/Assert: недоступность API воркера — собственный 503 панели.
         fx.WorkerApi.Throw = new WorkerApiUnavailableException("valkeyworker");

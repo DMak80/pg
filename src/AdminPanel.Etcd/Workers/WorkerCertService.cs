@@ -19,7 +19,7 @@ public sealed class WorkerCertInvalidException(string reason) : Exception(reason
 
 // 409: generate при живом ключе (spec §4.1 п.2).
 public sealed class WorkerCertAlreadyManagedException(string worker)
-    : Exception($"сертификат {worker} уже управляется — замените (PUT api-cert) или удалите (DELETE api-cert)");
+    : Exception($"certificate {worker} already managed — replace (PUT api-cert) or delete (DELETE api-cert)");
 
 // 404: ключа нет (DELETE, spec §4.2).
 public sealed class WorkerCertNotFoundException(string worker)

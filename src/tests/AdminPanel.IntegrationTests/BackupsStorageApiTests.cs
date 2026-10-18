@@ -55,7 +55,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         _factory.Services.GetRequiredService<S3InventoryStore>().Current
-            .Should().BeNull("тик без конфигурации не пишет стор");
+            .Should().BeNull("tick without configuration does not write the store");
         using var client = await BackupsLogin.LoginAsync(_factory);
 
         // Act
@@ -78,7 +78,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
         alertList.EnumerateArray()
             .Should().NotContain(
                 a => a.GetProperty("kind").GetString() == "backup-s3-unreachable",
-                "грань выключена — алерт молчит");
+                "facet disabled — alert stays silent");
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
@@ -141,7 +141,7 @@ public class BackupsStorageInventoryApiTests(
         health.GetProperty("apiOk").GetBoolean().Should().BeTrue();
         health.GetProperty("liveOk").GetBoolean().Should().BeTrue();
         health.GetProperty("clusterOk").GetBoolean().Should().BeTrue(
-            "ownS3-нода отвечает 200 на /s3/health/cluster — ClusterOk true (02 §2.5)");
+            "ownS3 node responds 200 on /s3/health/cluster — ClusterOk true (02 §2.5)");
         dto.GetProperty("buckets")
             .EnumerateArray().Select(b => b.GetString())
             .Should().Contain(s3.Bucket);
@@ -181,7 +181,7 @@ public class BackupsStorageInventoryApiTests(
     // AAA (t08): ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
     // читает, пишет только PgWorker); карточка живёт независимо от инвентаря.
     [Fact]
-    public async Task Storage_EtcdSnapshots_в_DTO()
+    public async Task Storage_EtcdSnapshots_InDto()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange — свой etcd-класс серии: сид статус-ключа + тик снапшота
@@ -282,7 +282,7 @@ public class BackupsStorageDownApiTests(
         var s3Alerts = alertList.EnumerateArray()
             .Where(a => a.GetProperty("kind").GetString() == "backup-s3-unreachable")
             .ToList();
-        s3Alerts.Should().HaveCount(1, "порог — 2 тика подряд, алерт один");
+        s3Alerts.Should().HaveCount(1, "threshold — 2 consecutive ticks, single alert");
         s3Alerts[0].GetProperty("severity").GetString().Should().Be("warning");
         s3Alerts[0].GetProperty("target").GetString()
             .Should().Contain(s3.Bucket);
@@ -379,11 +379,11 @@ public class BackupsStorageOrphanProtectApiTests(
         s1.GetProperty("hasValidFull").GetBoolean().Should().BeTrue();
         s1.GetProperty("deleteRequested").GetBoolean().Should().BeTrue();
         s1.GetProperty("deleteRequestedBy").GetString().Should().Be("operator");
-        s1.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "защищён полным + заявка");
+        s1.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "protected by valid full + delete request");
         var s2 = orphans.Single(o => o.GetProperty("prefix").GetString() == "g/s2");
         s2.GetProperty("held").GetBoolean().Should().BeTrue();
         s2.GetProperty("heldBy").GetString().Should().Be("panel");
-        s2.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "под hold");
+        s2.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "under hold");
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();

@@ -203,7 +203,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
         // Assert: 409 «уже управляется»
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("уже управляется");
+            .Should().Contain("already managed");
     }
 
     [Fact]
@@ -303,7 +303,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
 
         // Act
         var response = await client.PutAsJsonAsync("/api/workers/pgworker/api-cert",
-            new { cert_pem = "мусор", key_pem = "мусор" }, TestContext.Current.CancellationToken);
+            new { cert_pem = "junk", key_pem = "junk" }, TestContext.Current.CancellationToken);
 
         // Assert: 400, ключ в etcd не изменился
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -384,7 +384,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
         // Assert: 422 с явным title, ключ НЕ записан
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         var problem = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
-        problem.Should().Contain("влияет на коммуникации воркеров с их подчинёнными сервисами");
+        problem.Should().Contain("affects the communication of workers with their subordinate services");
         (await GetKeyAsync("/workers/api_tls/pgworker")).Should().BeNull();
     }
 
@@ -427,7 +427,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
         // Assert: 422 «влияет на исходящие», ключ НЕ записан
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("влияет на коммуникации воркеров с их подчинёнными сервисами");
+            .Should().Contain("affects the communication of workers with their subordinate services");
         (await GetKeyAsync("/workers/api_tls/pgworker")).Should().BeNull();
     }
 

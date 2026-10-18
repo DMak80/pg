@@ -24,7 +24,7 @@ public class ClusterDetailsWorkApiTests(AuthWebFactory factory)
             [
                 new WorkJournalInfo("demo", "rollback", "rejected", "i-1",
                     factory.Time.GetUtcNow().ToUnixTimeSeconds() - 30,
-                    "нет обратной подписки bucket_0 — откат только полным re-copy",
+                    "no reverse subscription for bucket_0 — rollback only via full re-copy",
                     null, null, null),
             ],
         };

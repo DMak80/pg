@@ -80,7 +80,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Shard add rejected","status":409,"detail":"кластер fresh ещё инициализируется (NOT_INITIALIZED) — дождитесь инициализации"}""");
+            """{"title":"Shard add rejected","status":409,"detail":"cluster fresh is still initializing (NOT_INITIALIZED) — wait for initialization"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -93,7 +93,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         problem.GetProperty("title").GetString().Should().Be("Shard add rejected");
-        problem.GetProperty("detail").GetString().Should().Contain("дождитесь инициализации");
+        problem.GetProperty("detail").GetString().Should().Contain("wait for initialization");
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Cluster not found","status":404,"detail":"кластер ghost не найден"}""");
+            """{"title":"Cluster not found","status":404,"detail":"cluster ghost not found"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -123,7 +123,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(400,
-            """{"title":"Validation failed","status":400,"detail":"параметры добавления шарда некорректны","errors":{"replicas":["реплики: целое 1..26"],"requestCpu":["CPU (ядра): 0.01..64"]}}""");
+            """{"title":"Validation failed","status":400,"detail":"shard add parameters are invalid","errors":{"replicas":["replicas: integer 1..26"],"requestCpu":["CPU (cores): 0.01..64"]}}""");
         using var client = await LoginAsync();
 
         // Act
@@ -183,7 +183,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Shard remove rejected","status":409,"detail":"на шарде 4 бакетов — сначала явно перевезти (UI переездов — t07)"}""");
+            """{"title":"Shard remove rejected","status":409,"detail":"shard has 4 buckets — move them explicitly first (moves UI — t07)"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -194,7 +194,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         problem.GetProperty("title").GetString().Should().Be("Shard remove rejected");
-        problem.GetProperty("detail").GetString().Should().Contain("4").And.Contain("перевезти");
+        problem.GetProperty("detail").GetString().Should().Contain("4").And.Contain("move");
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Not found","status":404,"detail":"шард rem4/ghost не найден (replicas-ключ отсутствует)"}""");
+            """{"title":"Not found","status":404,"detail":"shard rem4/ghost not found (replicas key missing)"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -222,7 +222,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Shard remove rejected","status":409,"detail":"кластер dying удаляется (TO_REMOVE) — операция запрещена"}""");
+            """{"title":"Shard remove rejected","status":409,"detail":"cluster dying is being removed (TO_REMOVE) — operation forbidden"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -232,6 +232,6 @@ public class ShardsApiTests(AuthWebFactory factory)
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        problem.GetProperty("detail").GetString().Should().Contain("удаляется");
+        problem.GetProperty("detail").GetString().Should().Contain("being removed");
     }
 }

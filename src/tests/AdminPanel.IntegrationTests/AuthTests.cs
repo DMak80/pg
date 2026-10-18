@@ -100,7 +100,7 @@ public sealed class TestEtcdGateway : IEtcdGateway
         => Task.FromResult(Result<Kv?>.Success(null));
 
     public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
-        => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+        => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException("panel does not write to etcd")));
 
     public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
         => FailWriteAsync();
@@ -109,7 +109,7 @@ public sealed class TestEtcdGateway : IEtcdGateway
         => FailWriteAsync();
 
     public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
-        => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+        => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException("panel does not write to etcd")));
 
     public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
         => FailWriteAsync();
@@ -120,13 +120,13 @@ public sealed class TestEtcdGateway : IEtcdGateway
     private Task<Result> FailWriteAsync()
     {
         WriteCalls++;
-        return Task.FromResult(Result.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+        return Task.FromResult(Result.Failed(new EtcdUnreachableException("panel does not write to etcd")));
     }
 
     private Task<Result<T>> FailWriteAsync<T>()
     {
         WriteCalls++;
-        return Task.FromResult(Result<T>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+        return Task.FromResult(Result<T>.Failed(new EtcdUnreachableException("panel does not write to etcd")));
     }
 }
 

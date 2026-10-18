@@ -222,7 +222,7 @@ public static class KafkaOperationsModule
     {
         WorkerApiUnavailableException unavailable => Results.Problem(
             statusCode: StatusCodes.Status503ServiceUnavailable,
-            title: "API воркера недоступен",
+            title: "Worker API unavailable",
             detail: unavailable.Message),
         WorkerProblemDetails problem => Results.Text(
             problem.Body, "application/problem+json", System.Text.Encoding.UTF8, problem.StatusCode),

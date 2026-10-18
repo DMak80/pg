@@ -143,6 +143,6 @@ public class CreateClusterApiTests(AuthWebFactory factory)
         // Assert: собственный 503 панели (не тело воркера)
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        problem.GetProperty("title").GetString().Should().Be("API воркера недоступен");
+        problem.GetProperty("title").GetString().Should().Be("Worker API unavailable");
     }
 }

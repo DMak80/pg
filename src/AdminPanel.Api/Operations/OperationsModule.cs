@@ -257,7 +257,7 @@ public static class OperationsModule
     {
         WorkerApiUnavailableException unavailable => Results.Problem(
             statusCode: StatusCodes.Status503ServiceUnavailable,
-            title: "API воркера недоступен",
+            title: "Worker API unavailable",
             detail: unavailable.Message),
         WorkerProblemDetails problem => Results.Text(
             problem.Body, ProblemContentType, Encoding.UTF8, problem.StatusCode),

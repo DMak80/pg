@@ -51,7 +51,7 @@ public sealed class EtcdContainerFixture : IAsyncLifetime
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
+        throw new InvalidOperationException($"etcd at {Endpoint} did not start within 30 s");
     }
 
     public async ValueTask DisposeAsync() => await _container.DisposeAsync();

@@ -61,7 +61,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             }
         }
 
-        throw new InvalidOperationException("postgres:18 не поднялся за 30 c");
+        throw new InvalidOperationException("postgres:18 did not start within 30 s");
     }
 
     public async ValueTask DisposeAsync() => await _container.DisposeAsync();

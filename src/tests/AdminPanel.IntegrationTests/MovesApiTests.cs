@@ -96,7 +96,7 @@ public class MovesApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Moves rejected","status":409,"detail":"на bucket_0 уже стоит заявка (op=move, to=shard9) — дождитесь её обработки или уберите ключ"}""");
+            """{"title":"Moves rejected","status":409,"detail":"bucket_0 already has a ticket (op=move, to=shard9) — wait for it to be processed or remove the key"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -117,7 +117,7 @@ public class MovesApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Moves rejected","status":409,"detail":"шард-приёмник mvtorm/shard2 удаляется (TO_REMOVE) — выберите другой приёмник"}""");
+            """{"title":"Moves rejected","status":409,"detail":"target shard mvtorm/shard2 is being removed (TO_REMOVE) — choose another target"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -136,7 +136,7 @@ public class MovesApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Not found","status":404,"detail":"шард mvshard/shard9 не найден"}""");
+            """{"title":"Not found","status":404,"detail":"shard mvshard/shard9 not found"}""");
         using var client = await LoginAsync();
 
         // Act

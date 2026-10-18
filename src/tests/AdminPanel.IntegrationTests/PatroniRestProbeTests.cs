@@ -166,7 +166,7 @@ public class PatroniRestProbeTests : IAsyncLifetime
 
         // Assert
         result.Result.Ok.Should().BeFalse();
-        result.Enrichment.Error.Should().Contain("не найден");
+        result.Enrichment.Error.Should().Contain("not found");
     }
 
     [Fact]

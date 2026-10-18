@@ -96,7 +96,7 @@ public class RecreateNodeApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(400,
-            """{"title":"Invalid mode","status":400,"detail":"режим пересоздания «sideways» недопустим: только soft или hard"}""");
+            """{"title":"Invalid mode","status":400,"detail":"recreate mode «sideways» is not allowed: only soft or hard"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -116,7 +116,7 @@ public class RecreateNodeApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Recreate rejected","status":409,"detail":"нода s1a — последняя в скопе rclast-s1, пересоздание невозможно"}""");
+            """{"title":"Recreate rejected","status":409,"detail":"node s1a is the last one in scope rclast-s1, recreate is not possible"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -136,7 +136,7 @@ public class RecreateNodeApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Not found","status":404,"detail":"HA-скоп nope-s1 не найден"}""");
+            """{"title":"Not found","status":404,"detail":"HA scope nope-s1 not found"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -156,7 +156,7 @@ public class RecreateNodeApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Cluster not active","status":409,"detail":"кластер rcnotactive удаляется (TO_REMOVE) — операция запрещена"}""");
+            """{"title":"Cluster not active","status":409,"detail":"cluster rcnotactive is being removed (TO_REMOVE) — operation forbidden"}""");
         using var client = await LoginAsync();
 
         // Act

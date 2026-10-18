@@ -55,7 +55,7 @@ public class RotateClusterSecretsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Rotation rejected","status":409,"detail":"ротация app-пароля rot2 уже запрошена — дождитесь исполнения (ключ /pgworker/rotations/rot2)"}""");
+            """{"title":"Rotation rejected","status":409,"detail":"rotation of app password rot2 is already requested — wait for it to be processed (key /pgworker/rotations/rot2)"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -75,7 +75,7 @@ public class RotateClusterSecretsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Cluster not found","status":404,"detail":"кластер nosuch не найден"}""");
+            """{"title":"Cluster not found","status":404,"detail":"cluster nosuch not found"}""");
         using var client = await LoginAsync();
 
         // Act
@@ -102,6 +102,6 @@ public class RotateClusterSecretsApiTests(AuthWebFactory factory)
         // Assert — 503
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        problem.GetProperty("title").GetString().Should().Be("API воркера недоступен");
+        problem.GetProperty("title").GetString().Should().Be("Worker API unavailable");
     }
 }

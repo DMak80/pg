@@ -76,7 +76,7 @@ public static class WorkersModule
     {
         WorkerCertAffectsOutgoingException affects => Results.Problem(
             statusCode: StatusCodes.Status422UnprocessableEntity,
-            title: "Сертификат влияет на коммуникации воркеров с их подчинёнными сервисами — обновление отклонено",
+            title: "Certificate affects the communication of workers with their subordinate services — update rejected",
             detail: affects.Message),
         WorkerCertInvalidException invalid => Results.Problem(
             statusCode: StatusCodes.Status400BadRequest,
@@ -92,7 +92,7 @@ public static class WorkersModule
             detail: result.Error!.Message),
         WorkerApiUnavailableException unavailable => Results.Problem(
             statusCode: StatusCodes.Status503ServiceUnavailable,
-            title: "API воркера недоступен",
+            title: "Worker API unavailable",
             detail: unavailable.Message),
         _ => Results.Problem(
             statusCode: StatusCodes.Status503ServiceUnavailable,

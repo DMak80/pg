@@ -149,7 +149,7 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
         // Arrange — воркер отвечает 400 ProblemDetails.
         var ct = TestContext.Current.CancellationToken;
         WorkerApi.Respond = _ => new WorkerApiResult(400,
-            """{"title":"Validation failed","errors":{"drill.interval_days":["период дрилов — целое в [0..3650]"]}}""");
+            """{"title":"Validation failed","errors":{"drill.interval_days":["drill interval — integer in [0..3650]"]}}""");
         using var client = await BackupsLogin.LoginAsync(_factory);
 
         // Act
@@ -177,7 +177,7 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
         _factory.EnsureBuilt();
         // Arrange — гейтвей кидает WorkerApiUnavailableException.
         var ct = TestContext.Current.CancellationToken;
-        WorkerApi.Throw = new WorkerApiUnavailableException("нет живых инстансов pgworker");
+        WorkerApi.Throw = new WorkerApiUnavailableException("no live pgworker instances");
         using var client = await BackupsLogin.LoginAsync(_factory);
 
         // Act

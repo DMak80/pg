@@ -129,7 +129,7 @@ public sealed class S3ApiFixture : IAsyncLifetime
         await gateway.DeleteAsync(Endpoint, $"/s3worker/rotations/{Prefix}", prefix: true, CancellationToken.None);
         var leftovers = await gateway.RangeAsync(Endpoint, $"/s3/clusters/{Prefix}", CancellationToken.None);
         if (leftovers.IsSuccess && leftovers.Value.Count > 0)
-            throw new InvalidOperationException("teardown-ассерт чистоты: остались guid-ключи кластера");
+            throw new InvalidOperationException("teardown cleanliness assert: cluster guid keys remain");
 
         await _etcd.DisposeAsync();
     }
@@ -204,7 +204,7 @@ public class S3ApiTests(S3ApiFixture fx)
 
         // Arrange: стаб 404 (ProblemDetails воркера).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Not found","status":404,"detail":"нет такого кластера"}""");
+            """{"title":"Not found","status":404,"detail":"no such cluster"}""");
 
         // Act: DELETE ноды.
         var missing = await client.DeleteAsync(
@@ -213,11 +213,11 @@ public class S3ApiTests(S3ApiFixture fx)
         // Assert: 404 и тело как есть.
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await missing.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("нет такого кластера");
+            .Should().Contain("no such cluster");
 
         // Arrange: стаб 400 (валидация воркера).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(400,
-            """{"title":"Validation failed","status":400,"detail":"cpu вне диапазона"}""");
+            """{"title":"Validation failed","status":400,"detail":"cpu out of range"}""");
 
         // Act: POST кластера с битым телом.
         var bad = await client.PostAsJsonAsync("/api/s3/clusters",
@@ -226,11 +226,11 @@ public class S3ApiTests(S3ApiFixture fx)
         // Assert: 400 и тело как есть.
         bad.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await bad.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("cpu вне диапазона");
+            .Should().Contain("cpu out of range");
 
         // Arrange: стаб 409 (имя занято).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Conflict","status":409,"detail":"кластер уже существует"}""");
+            """{"title":"Conflict","status":409,"detail":"cluster already exists"}""");
 
         // Act: POST кластера с занятым именем.
         var conflict = await client.PostAsJsonAsync("/api/s3/clusters",
@@ -239,11 +239,11 @@ public class S3ApiTests(S3ApiFixture fx)
         // Assert: 409 как есть.
         conflict.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await conflict.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("кластер уже существует");
+            .Should().Contain("cluster already exists");
 
         // Arrange: стаб 422 (профиль секретов недоступен).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(422,
-            """{"title":"Secret profile unavailable","status":422,"detail":"нет профиля","profiles":["backups-main"]}""");
+            """{"title":"Secret profile unavailable","status":422,"detail":"no profile","profiles":["backups-main"]}""");
 
         // Act: POST кластера с недоступным профилем.
         var profile = await client.PostAsJsonAsync("/api/s3/clusters",
@@ -286,7 +286,7 @@ public class S3ApiTests(S3ApiFixture fx)
                 // Assert: панельный 503 «API воркера недоступен».
                 response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
                 (await response.Content.ReadAsStringAsync(ct))
-                    .Should().Contain("API воркера недоступен");
+                    .Should().Contain("Worker API unavailable");
             }
             finally
             {

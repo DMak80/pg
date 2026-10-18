@@ -79,7 +79,7 @@ public class DeleteClusterApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
-            """{"title":"Cluster not found","status":404,"detail":"кластер ghost не найден (config-ключ отсутствует)"}""");
+            """{"title":"Cluster not found","status":404,"detail":"cluster ghost not found (config key missing)"}""");
         using var client = await ApiTestLogin.LoginAsync(_factory);
 
         // Act
@@ -108,6 +108,6 @@ public class DeleteClusterApiTests(AuthWebFactory factory)
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        problem.GetProperty("title").GetString().Should().Be("API воркера недоступен");
+        problem.GetProperty("title").GetString().Should().Be("Worker API unavailable");
     }
 }

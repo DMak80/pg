@@ -164,7 +164,7 @@ public sealed class RotationOutcomeEtcdFixture : IAsyncLifetime
         if ((leftoversValkey.IsSuccess && leftoversValkey.Value.Count > 0)
             || (leftoversKafka.IsSuccess && leftoversKafka.Value.Count > 0))
             throw new InvalidOperationException(
-                "teardown-ассерт чистоты: остались ключи доменов после prefix-delete");
+                "teardown cleanliness assert: domain keys remain after prefix-delete");
 
         await _etcd.DisposeAsync();
     }

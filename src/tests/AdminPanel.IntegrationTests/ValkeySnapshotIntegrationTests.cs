@@ -161,7 +161,7 @@ public sealed class ValkeyEtcdFixture : IAsyncLifetime
         var leftovers = await gateway.RangeAsync(Endpoint, "/valkey/", CancellationToken.None);
         if (leftovers.IsSuccess && leftovers.Value.Count > 0)
             throw new InvalidOperationException(
-                $"teardown-ассерт чистоты: остались valkey-ключи: {string.Join(", ", leftovers.Value.Select(k => k.Key))}");
+                $"teardown cleanliness assert: valkey keys remain: {string.Join(", ", leftovers.Value.Select(k => k.Key))}");
 
         await _etcd.DisposeAsync();
     }
