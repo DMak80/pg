@@ -83,7 +83,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task СносКонтейнера_ПересозданиеТемиЖеКредамиИПортом()
+    public async Task ContainerDestroyed_RecreatedWithSameCredsAndPort()
     {
         // Arrange: контейнер снесён (объекта нет), portalloc на 17001.
         const string cluster = "gone";
@@ -114,7 +114,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task АвтоконвергеЛимитов_ПересозданиеОдноЗаТик()
+    public async Task LimitsAutoConverge_OneRecreatePerTick()
     {
         // Arrange: декларация cpu 2, контейнер cpu 1 (дрейф); env валиден.
         const string cluster = "drift";
@@ -141,7 +141,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task СлепойInspect_FailedКонтейнерЖивStateНеМеняется()
+    public async Task BlindInspect_FailedContainerAliveStateUnchanged()
     {
         // Arrange: docker-хост молчит на инспектах.
         const string cluster = "blind";
@@ -160,7 +160,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task Unreachable_ПоПорогуNodeDead_ПересозданиеЗатемRunning()
+    public async Task Unreachable_OnNodeDeadThreshold_RecreateThenRunning()
     {
         // Arrange: нода молчит; трек first_seen уже старше NodeDeadSec+1
         // (молчание копилось прошлыми тиками).
@@ -192,7 +192,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task СлепойDocker_ТикFailedТрекЗамороженБезДействий()
+    public async Task BlindDocker_TickFailedTrackFrozenNoActions()
     {
         // Arrange: docker-хост молчит на инспектах (собственная слепота воркера,
         // S7); трек first_seen уже есть — слепой тик не смеет его двигать.
@@ -218,7 +218,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task ОстановленныйКонтейнер_RefusedМолчание_ПорогПересоздание()
+    public async Task StoppedContainer_RefusedSilence_ThresholdRecreate()
     {
         // Arrange: docker stop (объект жив, Running=false), PING — connection
         // refused (не таймаут); трек молчания исчерпан прошлыми тиками.
@@ -250,7 +250,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task E9_PortallocУтерян_РеконструкцияБезДеструктива()
+    public async Task E9_PortallocLost_ReconstructionNonDestructive()
     {
         // Arrange: portalloc-ключ удалён, контейнер жив на 17001.
         const string cluster = "e9";
@@ -270,7 +270,7 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task EndpointsРасхождение_RmwККанону()
+    public async Task EndpointsDrift_RmwToCanonical()
     {
         // Arrange: endpoints указывают не на portalloc-порт.
         const string cluster = "ep";

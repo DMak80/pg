@@ -33,7 +33,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task Ping_УспехКадрПлюсПонг()
+    public async Task Ping_SuccessFramePlusPong()
     {
         // Arrange: сервер отвечает +OK на AUTH и +PONG на PING.
         var (cert, key) = ServerCert();
@@ -52,7 +52,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task Auth_ОтказWrongPass_FailedБезКоманды()
+    public async Task Auth_WrongPassRejected_FailedNoCommand()
     {
         // Arrange: сервер отвергает AUTH.
         var (cert, key) = ServerCert();
@@ -70,7 +70,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task ConfigGet_МассивОтвета_Словарь()
+    public async Task ConfigGet_ResponseArray_Dictionary()
     {
         // Arrange: RESP2 CONFIG GET — плоский массив пар [key, value].
         var (cert, key) = ServerCert();
@@ -89,7 +89,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task ConfigSet_ПлюсОк_Успех()
+    public async Task ConfigSet_PlusOk_Success()
     {
         // Arrange
         var (cert, key) = ServerCert();
@@ -108,7 +108,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task AclList_МассивСтрок()
+    public async Task AclList_StringArray()
     {
         // Arrange: два правила ACL.
         var (cert, key) = ServerCert();
@@ -129,7 +129,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task AclSetUser_ПлюсОк_ФреймАргументов()
+    public async Task AclSetUser_PlusOk_ArgsFraming()
     {
         // Arrange: ротация E1 — ACL SETUSER app >NEW ~* +@read +@write.
         var (cert, key) = ServerCert();
@@ -150,7 +150,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task Chunked_КадрВДваЗахода_КлиентДочитывает()
+    public async Task Chunked_FrameInTwoWrites_ClientReadsThrough()
     {
         // Arrange: сервер пишет ответ частями (80 мс пауза внутри кадра).
         var (cert, key) = ServerCert();
@@ -168,7 +168,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task NullBulk_МинусОдин_РазбираетсяБезИсключения()
+    public async Task NullBulk_MinusOne_ParsesWithoutException()
     {
         // Arrange: ответ массивом с $-1 (bulk null).
         var (cert, key) = ServerCert();
@@ -187,7 +187,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task Таймаут_ЗаглушкаМолчит_Failed()
+    public async Task Timeout_SilentStub_Failed()
     {
         // Arrange: сервер принимает TLS, но не отвечает.
         var (cert, key) = ServerCert();
@@ -204,7 +204,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task СоединениеОтвергнуто_FailedБезИсключения()
+    public async Task ConnectionRefused_FailedNoException()
     {
         // Arrange: порт, где никто не слушает (зонд: слушаем 0 → закрываем).
         var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
@@ -281,7 +281,7 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public async Task Ping_БитыйCaPem_Failed()
+    public async Task Ping_BrokenCaPem_Failed()
     {
         // Arrange — сервер валиден, но клиент получил мусор вместо ca_pem (arch/20 §5)
         var (cert, key) = ServerCert();
@@ -308,14 +308,14 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public void Парсер_SimpleString()
+    public void Parser_SimpleString()
     {
         // Arrange/Act/Assert: +PONG → строка PONG.
         ParseOne("+PONG\r\n").Should().Be("PONG");
     }
 
     [Fact]
-    public void Парсер_Error_ТипRespError()
+    public void Parser_Error_RespErrorType()
     {
         // Arrange/Act
         var parsed = ParseOne("-ERR unknown command\r\n");
@@ -326,28 +326,28 @@ public class ValkeyConnectionTests
     }
 
     [Fact]
-    public void Парсер_ЦелоеЧисло()
+    public void Parser_Integer()
     {
         // Arrange/Act/Assert: :1 → long 1.
         ParseOne(":1\r\n").Should().Be(1L);
     }
 
     [Fact]
-    public void Парсер_BulkString()
+    public void Parser_BulkString()
     {
         // Arrange/Act/Assert: $5 hello → строка hello.
         ParseOne("$5\r\nhello\r\n").Should().Be("hello");
     }
 
     [Fact]
-    public void Парсер_BulkNull()
+    public void Parser_BulkNull()
     {
         // Arrange/Act/Assert: $-1 → null.
         ParseOne("$-1\r\n").Should().BeNull();
     }
 
     [Fact]
-    public void Парсер_Массив()
+    public void Parser_Array()
     {
         // Arrange/Act
         var parsed = ParseOne("*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
@@ -361,7 +361,7 @@ public class ValkeyConnectionTests
 
     // AAA: заголовки секций «# Name», пустые строки и \r\n — парсер даёт плоский словарь.
     [Fact]
-    public void ParseInfo_СекцииПустыеСтроки_ПлоскийСловарь()
+    public void ParseInfo_SectionsEmptyLines_FlatDictionary()
     {
         // Arrange: типовой фрагмент INFO all с тремя секциями.
         var bulk = "# Server\r\nredis_version:9.1.2\r\nredis_mode:standalone\r\n\r\n" +
@@ -381,7 +381,7 @@ public class ValkeyConnectionTests
 
     // AAA: нечисловые значения хранятся строками (db0 из Keyspace) — выбор чисел за коллектором.
     [Fact]
-    public void ParseInfo_НечисловыеЗначения_ХранятсяСтроками()
+    public void ParseInfo_NonNumericValues_StoredAsStrings()
     {
         // Arrange
         var bulk = "# Keyspace\r\ndb0:keys=3,expires=0,avg_ttl=0\r\nrole:master\r\n";
@@ -397,7 +397,7 @@ public class ValkeyConnectionTests
     // AAA: битый ввод — строки без «ключа», «:значение», пустой bulk — мусор пропускается,
     // пустой ввод → пустой словарь (не исключение).
     [Fact]
-    public void ParseInfo_МусорныеСтроки_Пропущены()
+    public void ParseInfo_GarbageLines_Skipped()
     {
         // Arrange
         var bulk = "no-delimiter\r\n:value-without-key\r\nused_memory:1\r\n";
@@ -413,7 +413,7 @@ public class ValkeyConnectionTests
 
     // AAA: INFO all по проводу — bulk-кадр; фрейминг команды «INFO all» после AUTH.
     [Fact]
-    public async Task InfoAll_BulkОтвет_СловарьПолей()
+    public async Task InfoAll_BulkResponse_FieldDictionary()
     {
         // Arrange: полный INFO-ответ (bulk), включающий Replication.
         var body = "# Memory\r\nused_memory:1048576\r\nmaxmemory:536870912\r\n" +
@@ -438,7 +438,7 @@ public class ValkeyConnectionTests
 
     // AAA: ошибка сервера на INFO → Result.Failed (S7: проба — не исключение).
     [Fact]
-    public async Task InfoAll_ОшибкаСервера_Failed()
+    public async Task InfoAll_ServerError_Failed()
     {
         // Arrange
         var (cert, key) = ServerCert();

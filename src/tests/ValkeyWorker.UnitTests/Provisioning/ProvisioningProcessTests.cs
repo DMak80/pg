@@ -74,7 +74,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task ПолныйПрогон_V0V5_КонтейнерИДискавери()
+    public async Task FullRun_V0V5_ContainerAndDiscovery()
     {
         // Arrange: заявка NOT_INITIALIZED, пустой docker.
         const string cluster = "full";
@@ -125,7 +125,7 @@ public class ProvisioningProcessTests
     // Р9 (env-TLS): валидный env + каноническая Cmd-обёртка → пересоздания НЕТ
     // (свежий серт случаен — сверка по валидности, не побайтовая).
     [Fact]
-    public async Task ИдемпотентныйReRun_БезИзменений()
+    public async Task IdempotentReRun_NoChanges()
     {
         // Arrange: первый тик довёл кластер до RUNNING (env записан).
         const string cluster = "rerun";
@@ -146,7 +146,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task СверкаВ3_ИныеАргс_ПересозданиеСКаноническими()
+    public async Task V3Compare_DifferentArgs_RecreateWithCanonical()
     {
         // Arrange: после первого тика подменяем Cmd живого контейнера (дрейф
         // строки обёртки — maxmemory 999 вместо канонического значения).
@@ -176,7 +176,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task PortAllocLockЗанят_ЖдущийТикБезКонтейнера()
+    public async Task PortAllocLockBusy_WaitingTickWithoutContainer()
     {
         // Arrange: чужой держатель locks/portalloc (живой leased-ключ).
         const string cluster = "waitlock";
@@ -197,7 +197,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task ГонкаToRemoveМеждуV1иV3_ПроцессПрекращён()
+    public async Task ToRemoveRaceBetweenV1AndV3_ProcessAborted()
     {
         // Arrange: панель пишет TO_REMOVE сразу после portalloc-пут (V1).
         const string cluster = "race";
@@ -225,7 +225,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task V4БюджетИсчерпан_BootTimeout_StateProvisioning()
+    public async Task V4BudgetExhausted_BootTimeout_StateProvisioning()
     {
         // Arrange: нода молчит; каждый вызов PING двигает FixedTimeProvider за бюджет.
         const string cluster = "boot";
@@ -249,7 +249,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task ЧужойКлэйм_НикакихЗаписей()
+    public async Task ForeignClaim_NoWrites()
     {
         // Arrange: кластер под клэймом другого инстанса.
         const string cluster = "foreign";
@@ -269,7 +269,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task ДовыделениеПортов_КлэймДоЧтенияЗанятости()
+    public async Task ExtraPortAllocation_ClaimBeforeOccupancyRead()
     {
         // Arrange: порт не закреплён — требуется секция довыделения (arch/20 §3).
         const string cluster = "order";
@@ -293,7 +293,7 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
-    public async Task ВсёЗакреплено_РаннийВыходБезКлэйма()
+    public async Task AllAllocated_EarlyExitWithoutClaim()
     {
         // Arrange: portalloc уже закреплён за кластером (re-run).
         const string cluster = "pinned";

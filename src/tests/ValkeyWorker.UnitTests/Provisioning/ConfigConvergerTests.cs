@@ -48,7 +48,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task РасхождениеMaxmemory_ConfigSetВызван()
+    public async Task MaxmemoryDrift_ConfigSetInvoked()
     {
         // Arrange: живая нода держит старое значение maxmemory.
         const string cluster = "cfg";
@@ -66,7 +66,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task СовпадениеКонфига_Пусто()
+    public async Task ConfigMatches_Noop()
     {
         // Arrange: конфиг ноды уже канон.
         const string cluster = "same";
@@ -83,7 +83,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task ПраваАppБезRead_SETUSERВосстанавливает()
+    public async Task AppRightsWithoutRead_SetUserRestores()
     {
         // Arrange: app без +@read (ACL-дрейф), admin канон.
         const string cluster = "acl";
@@ -101,7 +101,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task ВключённыйDefault_КонвергеОтключает()
+    public async Task EnabledDefault_ConvergerDisables()
     {
         // Arrange: default включён (дрейф от канона «default off», arch/21 §5 D).
         const string cluster = "defon";
@@ -122,7 +122,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task ВыключенныйApp_КонвергеВключаетСПравами()
+    public async Task DisabledApp_ConvergerEnablesWithRights()
     {
         // Arrange: app выключен (права на месте — пользователи всё равно не работают).
         const string cluster = "appoff";
@@ -144,7 +144,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task MaxmemoryГеMem_JournalWarningR3()
+    public async Task MaxmemoryEqualsMem_JournalWarningR3()
     {
         // Arrange: maxmemory_bytes == mem-лимита (1Gi) — инвариант нарушен.
         const string cluster = "warn";
@@ -167,7 +167,7 @@ public class ConfigConvergerTests
     }
 
     [Fact]
-    public async Task СлепаяНода_Failed()
+    public async Task BlindNode_Failed()
     {
         // Arrange: нода не отвечает на соединение.
         const string cluster = "blind";

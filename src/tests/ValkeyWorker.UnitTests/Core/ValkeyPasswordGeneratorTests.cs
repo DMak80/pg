@@ -9,7 +9,7 @@ namespace ValkeyWorker.UnitTests.Core;
 public class ValkeyPasswordGeneratorTests
 {
     [Fact]
-    public void Generate_Длина32АлфавитАlphaNum()
+    public void Generate_Length32_AlphabetAlphaNum()
     {
         // Arrange/Act
         var password = ValkeyPasswordGenerator.Generate();
@@ -20,7 +20,7 @@ public class ValkeyPasswordGeneratorTests
     }
 
     [Fact]
-    public void Generate_ДваВызова_РазныеЗначения()
+    public void Generate_TwoCalls_DifferentValues()
     {
         // Arrange/Act
         var first = ValkeyPasswordGenerator.Generate();
@@ -31,7 +31,7 @@ public class ValkeyPasswordGeneratorTests
     }
 
     [Fact]
-    public void Generate_ТысячаГенераций_ВсеТриКлассаСимволов()
+    public void Generate_ThousandGenerations_AllThreeCharClasses()
     {
         // Arrange: 1000 генераций (канон 32 симв [A-Za-z0-9]).
         var seenUpper = false;

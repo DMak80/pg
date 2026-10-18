@@ -126,7 +126,7 @@ public class ValkeyClusterProcessesTests
     }
 
     [Fact]
-    public async Task ActiveTick_МиграцияПервой_НадзорОтложен()
+    public async Task ActiveTick_MigrationFirst_SupervisionDeferred()
     {
         // Arrange: премиграционный Active-кластер (plain-контейнер, без CA).
         var rig = new Rig();

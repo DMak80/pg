@@ -65,7 +65,7 @@ public class DeprovisioningProcessTests
     }
 
     [Fact]
-    public async Task ПолныйПрогон_DockerДоОтcd_ВсёЧисто()
+    public async Task FullRun_DockerBeforeEtcd_AllClean()
     {
         // Arrange: кластер TO_REMOVE с контейнером и координацией.
         const string cluster = "dep";
@@ -102,7 +102,7 @@ public class DeprovisioningProcessTests
     }
 
     [Fact]
-    public async Task DockerПуст_404КакОк_EtcdЧистится()
+    public async Task DockerEmpty_404AsOk_EtcdCleaned()
     {
         // Arrange: TO_REMOVE без контейнеров (повторный демонтаж).
         const string cluster = "empty";
@@ -121,7 +121,7 @@ public class DeprovisioningProcessTests
     }
 
     [Fact]
-    public async Task ОшибкаDocker_ДекларацияНетронута()
+    public async Task DockerError_DeclarationUntouched()
     {
         // Arrange: docker-хост отказывает на удалении (ListNodeObjects ок, но
         // RemoveNodeAsync падает — инъекция через Fault-обёртку).

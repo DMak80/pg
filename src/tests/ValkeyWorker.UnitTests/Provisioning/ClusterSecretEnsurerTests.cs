@@ -18,7 +18,7 @@ public class ClusterSecretEnsurerTests
         => value.Length == 32 && value.All(char.IsAsciiLetterOrDigit);
 
     [Fact]
-    public async Task ПервоеEnsure_ШестьКлючейОднойTxn()
+    public async Task FirstEnsure_SixKeysInOneTxn()
     {
         // Arrange: пустой etcd.
         var etcd = new Fakes.FakeEtcd();
@@ -44,7 +44,7 @@ public class ClusterSecretEnsurerTests
     }
 
     [Fact]
-    public async Task ПовторныйEnsure_БезЗаписи()
+    public async Task RepeatedEnsure_NoWrites()
     {
         // Arrange: первый ensure создал полный набор.
         var etcd = new Fakes.FakeEtcd();
@@ -62,7 +62,7 @@ public class ClusterSecretEnsurerTests
     }
 
     [Fact]
-    public async Task КонкурентныйEnsure_ЧужиеПаролиВозвращеныReReadом()
+    public async Task ConcurrentEnsure_ForeignPasswordsViaReRead()
     {
         // Arrange: полный набор уже есть (другой инстанс выиграл гонку).
         var etcd = new Fakes.FakeEtcd();
@@ -88,7 +88,7 @@ public class ClusterSecretEnsurerTests
     }
 
     [Fact]
-    public async Task ЧастичныеКреды_ДозаполняютсяТолькоОтсутствующие()
+    public async Task PartialCreds_FillOnlyMissing()
     {
         // Arrange: есть app-креды и CA, admin отсутствует.
         var etcd = new Fakes.FakeEtcd();
@@ -114,7 +114,7 @@ public class ClusterSecretEnsurerTests
     }
 
     [Fact]
-    public async Task ЧастичныйCa_ДобираетсяИзОднойГенерации()
+    public async Task PartialCa_CompletedFromSingleGeneration()
     {
         // Arrange: есть ca_pem, ca_key потерян (spec §5: частичный CA).
         var etcd = new Fakes.FakeEtcd();

@@ -9,7 +9,7 @@ namespace ValkeyWorker.UnitTests.Writing;
 public class ValkeyWritingTests
 {
     [Fact]
-    public void ConfigJson_ДословноКанонActiveБезState()
+    public void ConfigJson_VerbatimCanonicalActiveNoState()
     {
         // Arrange: канонический Active-вид (arch/20 §2.1).
         // Act
@@ -21,7 +21,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void ConfigJson_КредыНеПопадают()
+    public void ConfigJson_CredsNotIncluded()
     {
         // Arrange: пароли с кавычкоопасными символами исключены генератором,
         // но инвариант проверяем: сигнатура ConfigJson креды не принимает.
@@ -35,7 +35,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void EndpointsValue_ФорматHostPort()
+    public void EndpointsValue_HostPortFormat()
     {
         // Arrange: advertised-хост + клиентский порт из portalloc.
         // Act
@@ -46,7 +46,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void ResourcesJson_КанонPg93()
+    public void ResourcesJson_CanonicalPg93()
     {
         // Arrange: заявка ресурсов (cpu decimal-строкой, mem/disk только Gi).
         // Act
@@ -57,7 +57,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void ResourcesJson_ДробныйCpu_ИнвариантнаяКультура()
+    public void ResourcesJson_FractionalCpu_CultureInvariant()
     {
         // Arrange: cpu 0.5 (точка-разделитель в любой культуре).
         // Act
@@ -68,7 +68,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void KnownPolicies_ВосемьЗначенийКанона()
+    public void KnownPolicies_EightCanonicalValues()
     {
         // Arrange/Act: набор политик канона.
         var policies = ValkeyWriting.KnownPolicies;
@@ -80,7 +80,7 @@ public class ValkeyWritingTests
     }
 
     [Fact]
-    public void CanonicalCpu_ФорматБезЛишнихНулей()
+    public void CanonicalCpu_FormatNoExtraZeros()
     {
         // Arrange: целое и дробное значения.
         // Act/Assert: "2" и "0.5" (строки-каноны etcd).

@@ -17,7 +17,7 @@ public class ValkeyValidationTests
     private static bool HasError(List<ValidationError> errors, string field) => errors.Any(e => e.Field == field);
 
     [Fact]
-    public void ВалиднаяЗаявка_БезОшибок()
+    public void ValidRequest_NoErrors()
     {
         // Arrange/Act/Assert
         Validate().Should().BeEmpty();
@@ -31,7 +31,7 @@ public class ValkeyValidationTests
     [InlineData("_underscore")]
     [InlineData("1digit")]
     [InlineData("a")]
-    public void Имя_НеканоническоеОтклоняется(string? name)
+    public void Name_NonCanonicalRejected(string? name)
     {
         // Arrange/Act: "a" — канон (нижняя граница), остальные — нет.
         var errors = Validate(name: name);
@@ -47,14 +47,14 @@ public class ValkeyValidationTests
     [InlineData(0)]
     [InlineData(2)]
     [InlineData(3)]
-    public void Ноды_ТолькоОдин(int nodes)
+    public void Nodes_OnlyOne(int nodes)
     {
         // Arrange/Act/Assert: v1 standalone — реплики roadmap.
         HasError(Validate(nodes: nodes), "nodes").Should().BeTrue();
     }
 
     [Fact]
-    public void МаксимумПамяти_НольИлиМеньше_Отклоняется()
+    public void Maxmemory_ZeroOrLess_Rejected()
     {
         // Arrange/Act/Assert
         HasError(Validate(maxmemory: 0), "maxmemoryBytes").Should().BeTrue();
@@ -72,7 +72,7 @@ public class ValkeyValidationTests
     [InlineData("noeviction", true)]
     [InlineData("lru", false)]
     [InlineData("ALLKEYS-LRU", false)]
-    public void Политика_ВосемьЗначенийКанона(string policy, bool valid)
+    public void Policy_EightCanonicalValues(string policy, bool valid)
     {
         // Arrange/Act/Assert
         var errors = Validate(policy: policy);
@@ -85,7 +85,7 @@ public class ValkeyValidationTests
     [InlineData(0.5, true)]
     [InlineData(64, true)]
     [InlineData(64.01, false)]
-    public void Процессор_Границы010_64(decimal cpu, bool valid)
+    public void Cpu_Bounds010_64(decimal cpu, bool valid)
     {
         // Arrange/Act/Assert: decimal-ядра без суффикса m.
         var errors = Validate(cpu: cpu);
@@ -97,7 +97,7 @@ public class ValkeyValidationTests
     [InlineData(1, true)]
     [InlineData(65536, true)]
     [InlineData(65537, false)]
-    public void ПамятьИДиск_ГраницыГиб(int memGi, bool valid)
+    public void MemoryAndDisk_GiBBounds(int memGi, bool valid)
     {
         // Arrange/Act/Assert: целые GiB 1..65536.
         var errors = Validate(memGi: memGi, diskGi: memGi);
@@ -105,7 +105,7 @@ public class ValkeyValidationTests
     }
 
     [Fact]
-    public void ИнвариантMaxmemoryМеньшеПамяти_R3()
+    public void MaxmemoryBelowMemoryInvariant_R3()
     {
         // Arrange: maxmemory == mem-лимиту — OOM-риск.
         // Act
@@ -118,7 +118,7 @@ public class ValkeyValidationTests
     }
 
     [Fact]
-    public void ConfigJson_Sериализация_КанонArch20_21()
+    public void ConfigJson_Serialization_CanonicalArch20_21()
     {
         // Arrange: Active-кластер (state отсутствует) и заявка (state задан).
 

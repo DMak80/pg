@@ -10,7 +10,7 @@ public class NodeArgsBuilderTests
 {
     // AAA: канонический набор флагов valkey-server из декларации и кредов (arch/21 §2)
     [Fact]
-    public void Build_канонический_набор_флагов()
+    public void Build_CanonicalFlagSet()
     {
         // Arrange
         long maxmemory = 536870912;
@@ -38,7 +38,7 @@ public class NodeArgsBuilderTests
     }
 
     [Fact]
-    public void Build_ПустойАргументSave_РовноОдинПустойЭлемент()
+    public void Build_EmptySaveArgument_ExactlyOneEmptyElement()
     {
         // Arrange: persistence off (arch/21 §2) — `--save ""`.
         // Act
@@ -51,7 +51,7 @@ public class NodeArgsBuilderTests
     }
 
     [Fact]
-    public void Build_РазныеПаролиИлиMaxmemory_РазныеArgs()
+    public void Build_DifferentPasswordsOrMaxmemory_DifferentArgs()
     {
         // Arrange: два набора входов.
         var first = NodeArgsBuilder.Build(536870912, "allkeys-lru", "pwd1pwd1pwd1pwd1pwd1pwd1pwd1", "apppwdapppwdapppwdapppwdapppwd");
@@ -88,7 +88,7 @@ public class NodeArgsBuilderTests
 
     // AAA: канонический args → ["sh","-c", раскатка §2 + exec с экранированными args]
     [Fact]
-    public void BuildCmd_КаноническаяОбёрткаРаскаткиИExec()
+    public void BuildCmd_CanonicalUnrollAndExecWrapper()
     {
         // Arrange
         var args = NodeArgsBuilder.Build(536870912, "allkeys-lru", "ADMINPWD32SYMBOLSxxxxxxxxxxx", "APPPWD32SYMBOLSxxxxxxxxxxxxx");
@@ -110,7 +110,7 @@ public class NodeArgsBuilderTests
     // AAA: детерминизм обёртки — одинаковый args → побитово равная строка
     // (свежий серт в env случаен, идемпотентность V3 держится на Cmd-сверке).
     [Fact]
-    public void BuildCmd_ДетерминизмОтArgs()
+    public void BuildCmd_DeterministicFromArgs()
     {
         // Arrange
         var first = NodeArgsBuilder.Build(536870912, "allkeys-lru", "pwd1pwd1pwd1pwd1pwd1pwd1pwd1", "apppwdapppwdapppwdapppwdapppwd");
@@ -126,7 +126,7 @@ public class NodeArgsBuilderTests
 
     // AAA: пустой аргумент (--save '') survives экранирование литералом ''
     [Fact]
-    public void BuildCmd_ПустойАргумент_СохраняетсяКакПустойЛитерал()
+    public void BuildCmd_EmptyArgument_PreservedAsEmptyLiteral()
     {
         // Arrange — persistence off: `--save ""`
         var args = NodeArgsBuilder.Build(1, "noeviction", "a", "b");
@@ -140,7 +140,7 @@ public class NodeArgsBuilderTests
 
     // AAA: пароли [A-Za-z0-9] не искажаются экранированием (ACL-префикс > — литерал)
     [Fact]
-    public void BuildCmd_ПаролиБезСпецсимволов_НеИскажаются()
+    public void BuildCmd_PasswordsWithoutSpecials_Unchanged()
     {
         // Arrange
         const string adminPwd = "ADMINPWD32SYMBOLSxxxxxxxxxxx";
@@ -156,7 +156,7 @@ public class NodeArgsBuilderTests
 
     // AAA: обратный парсинг — строка обёртки содержит все флаги канона в исходном порядке
     [Fact]
-    public void BuildCmd_СодержитВсеФлагиКанонаВПорядке()
+    public void BuildCmd_ContainsAllCanonicalFlagsInOrder()
     {
         // Arrange
         var args = NodeArgsBuilder.Build(536870912, "allkeys-lru", "adm", "app");

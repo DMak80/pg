@@ -18,7 +18,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: BuildNodeTlsEnv — три ключа env, CA == входному, серт валиден против CA
     [Fact]
-    public void BuildNodeTlsEnv_ТриКлючаИВалидныйСерт()
+    public void BuildNodeTlsEnv_ThreeKeysAndValidCert()
     {
         // Arrange — валидная CA-пара кластера
         var (caPem, caKeyPem) = NewCa("c1");
@@ -36,7 +36,7 @@ public class NodeTlsProvisionerTests
     [Theory]
     [InlineData("cache.example.local")]
     [InlineData("127.0.0.1")]
-    public void BuildNodeTlsEnv_SanПокрываетAdvertised(string advertised)
+    public void BuildNodeTlsEnv_SanCoversAdvertised(string advertised)
     {
         // Arrange
         var (caPem, caKeyPem) = NewCa("c1");
@@ -60,7 +60,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: key↔cert — приватный ключ env соответствует серту (PKCS#8)
     [Fact]
-    public void BuildNodeTlsEnv_КлючСоответствуетСерту()
+    public void BuildNodeTlsEnv_KeyMatchesCert()
     {
         // Arrange
         var (caPem, caKeyPem) = NewCa("c1");
@@ -82,7 +82,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: PEM в env — многострочный (переносы в значении; \n-форма etcd — наружи)
     [Fact]
-    public void BuildNodeTlsEnv_PemМногострочный()
+    public void BuildNodeTlsEnv_PemMultiline()
     {
         // Arrange
         var (caPem, caKeyPem) = NewCa("c1");
@@ -99,7 +99,7 @@ public class NodeTlsProvisionerTests
     // «одной строкой с \n» даёт многострочный PEM во всех значениях env
     // (единый хелпер со сверкой, симметрии — spec t20 §4.1)
     [Fact]
-    public void BuildNodeTlsEnv_ПереносыСЭкранированием_МногострочныйEnv()
+    public void BuildNodeTlsEnv_EscapedNewlines_MultilineEnv()
     {
         // Arrange — CA-пара «сплющена» в etcd-канон (реальные переносы → \n)
         var (caPem, caKeyPem) = NewCa("c1");
@@ -121,7 +121,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: валидный env → true; null/нет ключа → false
     [Fact]
-    public void IsValidNodeEnv_ВалидныйИОтсутствующий()
+    public void IsValidNodeEnv_ValidAndMissing()
     {
         // Arrange
         var (caPem, caKeyPem) = NewCa("c1");
@@ -139,7 +139,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: чужой CA в env → false (сверка Trim-сравнением CA)
     [Fact]
-    public void IsValidNodeEnv_ЧужойCa_False()
+    public void IsValidNodeEnv_ForeignCa_False()
     {
         // Arrange — env от CA#1, ожидание — CA#2
         var (ca1, ca1Key) = NewCa("c1");
@@ -152,7 +152,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: истёкший NotAfter → false
     [Fact]
-    public void IsValidNodeEnv_ИстёкшийСерт_False()
+    public void IsValidNodeEnv_ExpiredCert_False()
     {
         // Arrange — серт валиден по «сейчас», но просрочен по будущим часам
         var (caPem, caKeyPem) = NewCa("c1");
@@ -168,7 +168,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: key≠cert → false (неатомарная запись могла оставить чужую пару)
     [Fact]
-    public void IsValidNodeEnv_КлючНеСоответствуетСерту_False()
+    public void IsValidNodeEnv_KeyNotMatchingCert_False()
     {
         // Arrange — подмена ключа свежей парой RSA
         var (caPem, caKeyPem) = NewCa("c1");
@@ -197,7 +197,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: битый PEM в env → false (перевыпуск, не исключение)
     [Fact]
-    public void IsValidNodeEnv_БитыйPem_False()
+    public void IsValidNodeEnv_BrokenPem_False()
     {
         // Arrange
         var (caPem, _) = NewCa("c1");
@@ -214,7 +214,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: \n-нормализация — env с экранированными переносами сводится к валидному
     [Fact]
-    public void IsValidNodeEnv_ПереносыСЭкранированием_Валиден()
+    public void IsValidNodeEnv_EscapedNewlines_Valid()
     {
         // Arrange — etcd-канон «одной строкой с \n» на границе сверки
         var (caPem, caKeyPem) = NewCa("c1");

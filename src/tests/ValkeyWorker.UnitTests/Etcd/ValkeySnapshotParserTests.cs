@@ -23,7 +23,7 @@ public class ValkeySnapshotParserTests
     // ── Приёмочные: канонические примеры arch/20 §2.1 (дословно) ──
 
     [Fact]
-    public void Config_NotInitialized_ЗаявкаПарситсяДословно()
+    public void Config_NotInitialized_RequestParsedVerbatim()
     {
         // Arrange: заявка создания (arch/20 §2.1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
@@ -39,7 +39,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void Config_ActiveБезState_StateNull()
+    public void Config_ActiveWithoutState_StateNull()
     {
         // Arrange: Active-конфиг (state снят воркером, arch/20 §2.1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
@@ -51,7 +51,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void Config_ToRemove_Читается()
+    public void Config_ToRemove_IsRead()
     {
         // Arrange: заявка удаления (arch/20 §2.1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
@@ -62,7 +62,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void Endpoints_СтрокаЧитаетсяКакДанныеКлюча()
+    public void Endpoints_ValueReadAsIs()
     {
         // Arrange: дискавери-ключ (arch/20 §2.1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/endpoints", "host.docker.internal:17001"));
@@ -72,7 +72,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void Креды_Читаются()
+    public void Creds_AreRead()
     {
         // Arrange: ensure-нутые креды (arch/20 §2.1: "app"/"admin", пароли 32 симв).
         var snap = ParseOne(
@@ -89,7 +89,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void CaPem_CaKey_Читаются()
+    public void CaPem_CaKey_AreRead()
     {
         // Arrange: ключи CA в префиксе кластера (валидный PEM от ValkeyPki, t06).
         var (caPem, caKeyPem) = ValkeyPki.GenerateCa("demo");
@@ -105,7 +105,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void БитыйCaPem_ParseErrorКластерЖив()
+    public void BrokenCaPem_ParseErrorClusterAlive()
     {
         // Arrange: битый PEM в обоих CA-ключах (arch/20 §5) — не роняет парсер.
         var snap = ParseOne(
@@ -123,7 +123,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void NodeState_NotInitialized_Читается()
+    public void NodeState_NotInitialized_IsRead()
     {
         // Arrange: заявка ноды (arch/20 §2.1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/state", "NOT_INITIALIZED"));
@@ -134,7 +134,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void NodeResources_КанонPg93_ЧитаетсяRaw()
+    public void NodeResources_CanonicalPg93_ReadRaw()
     {
         // Arrange: заявка ресурсов (arch/20 §2.1, форматы pg §9.3).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/resources",
@@ -150,7 +150,7 @@ public class ValkeySnapshotParserTests
     // ── Толерантность: все 6 строк таблицы arch/20 §5 ──
 
     [Fact]
-    public void БитыйJsonConfig_ParseErrorБезИсключения()
+    public void BrokenJsonConfig_ParseErrorNoException()
     {
         // Arrange: ключ config с битым JSON.
         var snap = ParseOne(Kv("/valkey/clusters/demo/config", "{not json"));
@@ -161,7 +161,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void НеизвестныйКлюч_СчётчикUnknownKeys()
+    public void UnknownKey_UnknownKeysCounter()
     {
         // Arrange: ключ вне канона внутри префикса кластера.
         var snap = ParseOne(Kv("/valkey/clusters/demo/something_new", "x"));
@@ -171,7 +171,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void НезнакомоеState_ActiveВеткаСRawСтрокой()
+    public void UnfamiliarState_ActiveBranchRawString()
     {
         // Arrange: state вне канона (система развивается, arch/20 §5).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
@@ -183,7 +183,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void ПустойEndpoints_ТрактуетсяКакОтсутствующий()
+    public void EmptyEndpoints_TreatedAsMissing()
     {
         // Arrange/Act: пустой и пробельный варианты.
         var empty = ParseOne(Kv("/valkey/clusters/demo/endpoints", ""));
@@ -195,7 +195,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void НеполныеКреды_PasswordNullНезависимоОтЮзера()
+    public void PartialCreds_PasswordNullIndependentOfUser()
     {
         // Arrange: app_user без пароля.
         var snap = ParseOne(Kv("/valkey/clusters/demo/app_user", "app"));
@@ -206,7 +206,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void Config_Nodes2_ПарсерПропускаетКакЕсть()
+    public void Config_Nodes2_ParserPassesThrough()
     {
         // Arrange: nodes=2 (валидация — API; парсер толерантен, arch/20 §5).
         var snap = ParseOne(Kv("/valkey/clusters/demo/config",
@@ -218,7 +218,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void ЧужойПрефикс_Игнорируется()
+    public void ForeignPrefix_Ignored()
     {
         // Arrange: ключи других доменов в подаче.
         var parsed = ValkeySnapshotParser.Parse([
@@ -231,7 +231,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void БитыйJsonResources_ParseErrorРесурсыNull()
+    public void BrokenJsonResources_ParseErrorResourcesNull()
     {
         // Arrange: resources с битым JSON (arch/20 §5 строка 1).
         var snap = ParseOne(Kv("/valkey/clusters/demo/nodes/node1/resources", "nonsense"));
@@ -242,7 +242,7 @@ public class ValkeySnapshotParserTests
     }
 
     [Fact]
-    public void СписокКластеров_СортированПоИмени()
+    public void ClusterList_SortedByName()
     {
         // Arrange: два кластера в неупорядоченной подаче.
         var parsed = ValkeySnapshotParser.Parse([

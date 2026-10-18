@@ -121,7 +121,7 @@ public class ClusterDriverEnvTests
             ["sh", "-c", "umask 077; exec valkey-server"], 1m, 1024L, Env: env);
 
     [Fact]
-    public async Task Plain_EnsureNode_EnvДоезжаетДоContainerSpec()
+    public async Task Plain_EnsureNode_EnvReachesContainerSpec()
     {
         // Arrange — Plain-драйвер с движком-дублёром (контейнер отсутствует).
         var engine = new StubEngine();
@@ -139,7 +139,7 @@ public class ClusterDriverEnvTests
     }
 
     [Fact]
-    public async Task Plain_NodeEnv_ОтдаётEnvЖивогоКонтейнераИлиNull()
+    public async Task Plain_NodeEnv_ReturnsLiveContainerEnvOrNull()
     {
         // Arrange — движок знает env контейнера vwk-c1-node1.
         var engine = new StubEngine { Env = SampleEnv };
@@ -158,7 +158,7 @@ public class ClusterDriverEnvTests
     }
 
     [Fact]
-    public async Task Plain_CleanupLegacyVolume_УдаляетТомНаВсехEngines()
+    public async Task Plain_CleanupLegacyVolume_RemovesVolumeOnAllEngines()
     {
         // Arrange — два хоста (по движку на каждый).
         var e1 = new StubEngine();
@@ -202,7 +202,7 @@ public class ClusterDriverEnvTests
 
     // AAA: Swarm — Env доезжает до ServiceSpec.TaskTemplate (ContainerSpec).
     [Fact]
-    public async Task Swarm_EnsureNode_EnvДоезжаетДоServiceTemplate()
+    public async Task Swarm_EnsureNode_EnvReachesServiceTemplate()
     {
         // Arrange — Swarm-драйвер с движком-дублёром (ListNodes → h1).
         var engine = new StubEngine();
@@ -220,7 +220,7 @@ public class ClusterDriverEnvTests
 
     // AAA: Swarm — NodeEnvAsync роутится в InspectServiceEnvAsync.
     [Fact]
-    public async Task Swarm_NodeEnv_ИзСервиса()
+    public async Task Swarm_NodeEnv_FromService()
     {
         // Arrange
         var engine = new StubEngine { Env = SampleEnv };

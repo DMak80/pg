@@ -35,7 +35,7 @@ public class ValkeyClusterClassifierTests
     }
 
     [Fact]
-    public void БезState_Active()
+    public void WithoutState_Active()
     {
         // Arrange: Active-кластер (state снят воркером).
         var snap = new ValkeyClusterSnapshot(
@@ -48,7 +48,7 @@ public class ValkeyClusterClassifierTests
     }
 
     [Fact]
-    public void БитыйConfig_Skip()
+    public void BrokenConfig_Skip()
     {
         // Arrange: config-ключа нет/битый (Config == null).
         var snap = new ValkeyClusterSnapshot(
@@ -61,7 +61,7 @@ public class ValkeyClusterClassifierTests
     }
 
     [Fact]
-    public void НезнакомоеСостояние_ActiveRaw()
+    public void UnknownState_ActiveRaw()
     {
         // Arrange: state вне канона (система развивается, arch/20 §5).
         // Act/Assert

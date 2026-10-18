@@ -15,7 +15,7 @@ public sealed class ValkeyMetricsStateTests
 
     // AAA: UpdateCluster затирает предыдущие записи кластера — ушедшие ноды не копятся.
     [Fact]
-    public void UpdateCluster_ЗатираетУшедшиеНоды()
+    public void UpdateCluster_WipesGoneNodes()
     {
         // Arrange: кластер c1 с node1; новый тик приносит только node2.
         var state = new ValkeyMetricsState(new Meter("TestValkeyState"));
@@ -32,7 +32,7 @@ public sealed class ValkeyMetricsStateTests
 
     // AAA: повторный сбор той же ноды перезаписывает значения (не дублирует).
     [Fact]
-    public void UpdateCluster_ПерезаписываетЗначения()
+    public void UpdateCluster_OverwritesValues()
     {
         // Arrange
         var state = new ValkeyMetricsState(new Meter("TestValkeyState"));
@@ -48,7 +48,7 @@ public sealed class ValkeyMetricsStateTests
 
     // AAA: MarkSuccess фиксирует время только явно (консервативный LastSuccess §4.2).
     [Fact]
-    public void MarkSuccess_ФиксируетВремя()
+    public void MarkSuccess_RecordsTime()
     {
         // Arrange
         var state = new ValkeyMetricsState(new Meter("TestValkeyState"));
@@ -63,7 +63,7 @@ public sealed class ValkeyMetricsStateTests
 
     // AAA: поля сэмпла (вкл. role enum-паттерна и null-поля) видны в снапшоте.
     [Fact]
-    public void DebugSnapshot_ПоляСэмплаВключаяRoleИNull()
+    public void DebugSnapshot_SampleFieldsIncludingRoleAndNull()
     {
         // Arrange: сэмпл с отсутствующим maxmemory (null) и ролью slave.
         var state = new ValkeyMetricsState(new Meter("TestValkeyState"));

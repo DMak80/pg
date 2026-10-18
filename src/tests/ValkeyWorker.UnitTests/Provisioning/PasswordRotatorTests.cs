@@ -69,7 +69,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task ПолныйЦикл_ОкноДвухПаролейЗатемОдинNew()
+    public async Task FullCycle_TwoPasswordWindowThenOneNew()
     {
         // Arrange: заявка ротации app.
         const string cluster = "rot";
@@ -96,7 +96,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task ОтказПослеЕ1_ДоигрываниеСТемЖеNew()
+    public async Task FailureAfterE1_ResumeWithSameNew()
     {
         // Arrange: E2-txn падает в первом тике (E1 уже добавил NEW на ноду).
         const string cluster = "resume";
@@ -135,7 +135,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task ОтказPutСтейтаПослеЕ1_ДоигрываниеСТемЖеNew()
+    public async Task StatePutFailureAfterE1_ResumeWithSameNew()
     {
         // Arrange: стейт пишется ДО E1 (e1-pending); отказ put стейта ПОСЛЕ
         // успешного E1 — падает второй put ключа стейта (промоция e1-added).
@@ -180,7 +180,7 @@ public class PasswordRotatorTests
     [Theory]
     [InlineData("e1-added")]
     [InlineData("e2-committed")]
-    public async Task ДоигрываниеБезEndpoints_FailedБезNre(string phase)
+    public async Task ResumeWithoutEndpoints_FailedNoNre(string phase)
     {
         // Arrange: живой стейт ротации, снапшот тика без endpoints (пришёл
         // неполный Active-факт) — guard → Result.Failed, а не NRE.
@@ -207,7 +207,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task ОтказМеждуЕ2иЕ3_ДоигрываниеЕ3БезЗаявки()
+    public async Task FailureBetweenE2AndE3_E3ResumedWithoutTicket()
     {
         // Arrange: E3 (второй вызов SETUSER тика) падает — заявка уже удалена
         // в E2, стейт e2-committed — единственный след недоигранной ротации.
@@ -237,7 +237,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task КрашМеждуЕ2ТхнИСтейтом_ВторойТикПромотитИДоиграет()
+    public async Task CrashBetweenE2TxnAndState_NextTickPromotesAndResumes()
     {
         // Arrange: отказ ТРЕТЬЕЙ записи ключа стейта (промоция e2-committed) —
         // txn E2 уже закоммичена (etcd NEW, заявка снята), стейт остался e1-added.
@@ -281,7 +281,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task СидЕ1ДобавленПарольУжеNew_ТикДоигрываетДоФинала()
+    public async Task SeedE1AddedPasswordAlreadyNew_TickResumesToCompletion()
     {
         // Arrange: сид-кейс окна из прошлого тика — стейт e1-added, app_password
         // в etcd уже == state.New, на ноде OLD+NEW; заявки нет.
@@ -309,7 +309,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task ЧужаяЗаявкаДругойРоли_Е2НеУдаляет_ОбрабатываетсяСледующимТиком()
+    public async Task ForeignTicketOtherRole_E2DoesNotDelete_ProcessedNextTick()
     {
         // Arrange: живой стейт доигрывания app (payload исходной заявки в
         // стейте); панель сняла заявку и поставила ЧУЖУЮ (role=admin).
@@ -353,7 +353,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task СвояЗаявкаПейлоадСовпал_УдаляетсяКакРаньше()
+    public async Task OwnTicketPayloadMatches_DeletedAsBefore()
     {
         // Arrange: стейт e1-added с payload исходной заявки; заявка в etcd —
         // ТА ЖЕ (байт в байт).
@@ -381,7 +381,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task РотацияApp_НеТрогаетAdmin()
+    public async Task AppRotation_DoesNotTouchAdmin()
     {
         // Arrange
         const string cluster = "iso";
@@ -400,7 +400,7 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task БитаяЗаявка_DelСJournal()
+    public async Task BrokenTicket_DelWithJournal()
     {
         // Arrange: role вне канона.
         const string cluster = "junk";

@@ -94,7 +94,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: успешный сбор — стейт обновлён, проба по advertised-хосту, LastSuccess двигается.
     [Fact]
-    public async Task Collect_InfoOk_СерииИLastSuccess()
+    public async Task Collect_InfoOk_SeriesAndLastSuccess()
     {
         // Arrange: INFO-ответ на (localhost, 17001) — advertised приоритетнее portalloc.host.
         var valkey = new FakeValkey { Info = { [("localhost", 17001)] = FullInfo } };
@@ -117,7 +117,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: advertised == null → хост пробы из portalloc-записи (правило §2 arch/21).
     [Fact]
-    public async Task Collect_БезAdvertised_ХостИзPortalloc()
+    public async Task Collect_WithoutAdvertised_HostFromPortalloc()
     {
         // Arrange
         var valkey = new FakeValkey { Info = { [("dockhost", 17001)] = FullInfo } };
@@ -134,7 +134,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: ошибка ноды — тик жив (не бросает), LastSuccess НЕ обновляется (зеркало Kafka).
     [Fact]
-    public async Task Collect_ОшибкаНоды_ТикЖив_LastSuccessМёртв()
+    public async Task Collect_NodeError_TickAlive_LastSuccessDead()
     {
         // Arrange: все INFO-провалы (нода лежит).
         var valkey = new FakeValkey { FailAll = new ApplicationException("connection refused") };
@@ -152,7 +152,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: пустой домен — консервативный успех (LastSuccess двигается; алерт не горит).
     [Fact]
-    public async Task Collect_ПустойДомен_Успех()
+    public async Task Collect_EmptyDomain_Success()
     {
         // Arrange: кластеров нет; portalloc пуст.
         var valkey = new FakeValkey();
@@ -171,7 +171,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: не-Active (Config.State задан) — проб нет; тик успешен (skip ≠ fail).
     [Fact]
-    public async Task Collect_НеActive_ПропускБезПробы()
+    public async Task Collect_NotActive_SkipWithoutProbe()
     {
         // Arrange: заявка PROVISIONING.
         var valkey = new FakeValkey();
@@ -190,7 +190,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: неполные дискавери-креды (AdminUser/AdminPassword null) — пропуск без пробы.
     [Fact]
-    public async Task Collect_БезAdminКредов_ПропускБезПробы()
+    public async Task Collect_WithoutAdminCreds_SkipWithoutProbe()
     {
         // Arrange
         var valkey = new FakeValkey();
@@ -209,7 +209,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: нода без portalloc-записи — пропуск (E9 — забота надзора C), тик успешен.
     [Fact]
-    public async Task Collect_НодаБезPortalloc_Пропуск()
+    public async Task Collect_NodeWithoutPortalloc_Skip()
     {
         // Arrange: portalloc-ключ кластера пуст.
         var valkey = new FakeValkey();
@@ -228,7 +228,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: ошибка чтения снапшота кластеров — тик пропущен, LastSuccess не двигается.
     [Fact]
-    public async Task Collect_СнапшотНедоступен_ТикПропущен()
+    public async Task Collect_SnapshotUnavailable_TickSkipped()
     {
         // Arrange: etcd-отказ (обёртка Failed).
         var valkey = new FakeValkey();
@@ -247,7 +247,7 @@ public sealed class ValkeyMetricsCollectorTests
 
     // AAA: отсутствующие/нечисловые поля INFO → null-поля сэмпла (серии не эмитятся).
     [Fact]
-    public void ToSample_ОтсутствующиеПоля_КонсервативныйNull()
+    public void ToSample_MissingFields_ConservativeNull()
     {
         // Arrange: только used_memory и role.
         IReadOnlyDictionary<string, string> partial = new Dictionary<string, string>
@@ -273,7 +273,7 @@ public sealed class ValkeyMetricsCollectorTests
     [InlineData(0, 30)]
     [InlineData(-5, 30)]
     [InlineData(45, 45)]
-    public void EffectiveIntervalSec_НеПоложительный_Дефолт30(int configured, int expected)
+    public void EffectiveIntervalSec_NonPositive_Default30(int configured, int expected)
     {
         // Arrange/Act/Assert
         ValkeyMetricsCollector.EffectiveIntervalSec(configured).Should().Be(expected);
