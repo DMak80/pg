@@ -16,3 +16,14 @@
 Порядок: канон → воркер → панель → библиотека Puzzle.
 
 ## Задачи
+
+- **`t31-vwk-contour-network`** — контурный режим сетей ValkeyWorker:
+  провижининг vwk-нод в контурную сеть по образцу PgWorker/S3Worker
+  (`PgWorker__Docker__ContourNetwork` / `S3Worker__Docker__ContourNetwork` ←
+  `PGW_CONTOUR_NETWORK` в deploy/docker-compose.yml; канон режима —
+  arch/14 §2.1, arch/24). Без опции — текущее поведение (дефолтный
+  docker-bridge). Цель: весь стенд в одной сети `adminpanel-stand-net`;
+  vwk-ноды сейчас — единственные контейнеры стенда вне её, bridge не
+  резолвит имена контейнеров (алиасы), адресация нод — только хост-публикации
+  портов. Arch-first: сначала режим в [../21-valkeyworker.md](../21-valkeyworker.md),
+  затем код воркера и deploy.
