@@ -17,11 +17,11 @@ public sealed class SdGeneratorLoop(
         var range = await EtcdFailover.CallAsync(endpoints, ep => etcd.RangeAsync(ep, TargetMapping.PortallocPrefix, ct));
         if (!range.IsSuccess)
         {
-            logger.LogWarning("чтение portalloc не удалось: {Error}", range.Error);
+            logger.LogWarning("portalloc read failed: {Error}", range.Error);
             return false;
         }
 
-        var groups = TargetMapping.Map(range.Value, (c, e) => logger.LogWarning("пропуск portalloc {Cluster}: {Error}", c, e));
+        var groups = TargetMapping.Map(range.Value, (c, e) => logger.LogWarning("skipping portalloc {Cluster}: {Error}", c, e));
         writer.WriteIfChanged(TargetMapping.Serialize(groups));
         metrics.MarkSuccess();
         return true;

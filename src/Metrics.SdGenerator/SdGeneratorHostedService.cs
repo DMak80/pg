@@ -14,10 +14,10 @@ internal sealed class SdGeneratorHostedService(
         var intervalSec = SdGeneratorOptions.NormalizeInterval(options.RefreshIntervalSec);
         if (options.RefreshIntervalSec <= 0)
             logger.LogWarning(
-                "интервал тика SdGenerator:RefreshIntervalSec={Given} невалиден → {Sec} с",
+                "SdGenerator:RefreshIntervalSec={Given} tick interval invalid → {Sec} s",
                 options.RefreshIntervalSec, intervalSec);
 
-        logger.LogInformation("старт цикла file_sd-генератора: интервал {Sec} с, файл {Path}",
+        logger.LogInformation("file_sd generator loop started: interval {Sec} s, file {Path}",
             intervalSec, options.OutputPath);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSec));
         try
@@ -31,7 +31,7 @@ internal sealed class SdGeneratorHostedService(
                 // Ошибка тика не валит хост: файл и last_success остаются прежними (консервативная свежесть).
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
-                    logger.LogWarning(e, "тик генератора упал — продолжаю по расписанию");
+                    logger.LogWarning(e, "generator tick failed — continuing on schedule");
                 }
             }
         }

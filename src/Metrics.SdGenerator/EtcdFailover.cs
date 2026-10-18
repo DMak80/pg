@@ -17,6 +17,6 @@ internal static class EtcdFailover
                 return result;
             last = result;
         }
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 }

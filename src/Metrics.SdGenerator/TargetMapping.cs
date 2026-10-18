@@ -74,11 +74,11 @@ public static class TargetMapping
             // Битый JSON / не-словарь → пропуск записи ключа ЦЕЛИКОМ.
             entries = JsonSerializer.Deserialize<Dictionary<string, PortallocEntry>>(raw, Json);
             if (entries is null)
-                throw new JsonException("portalloc-значение — не словарь");
+                throw new JsonException("portalloc value is not a dictionary");
         }
         catch (JsonException e)
         {
-            warn(cluster, $"битая запись portalloc: {e.Message}");
+            warn(cluster, $"malformed portalloc entry: {e.Message}");
             return;
         }
 
@@ -88,14 +88,14 @@ public static class TargetMapping
             var separator = name.IndexOf('/', StringComparison.Ordinal);
             if (separator <= 0 || separator == name.Length - 1)
             {
-                warn(cluster, $"запись «{name}» без shard/node — пропуск");
+                warn(cluster, $"entry '{name}' missing shard/node — skipping");
                 continue;
             }
 
             // host пустой — битая запись (warn + skip).
             if (string.IsNullOrWhiteSpace(entry.Host))
             {
-                warn(cluster, $"запись «{name}» без host — пропуск");
+                warn(cluster, $"entry '{name}' missing host — skipping");
                 continue;
             }
 
