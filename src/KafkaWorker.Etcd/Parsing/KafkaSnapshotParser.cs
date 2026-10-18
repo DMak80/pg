@@ -89,7 +89,7 @@ public static class KafkaSnapshotParser
                     // Окно ротации CA (t07): ca_pem — bundle OLD+NEW — валидное значение.
                     if (value is null || !ClusterPki.TryParseCertificateBundle(value))
                     {
-                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_pem: битый PEM сертификата");
+                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_pem: malformed certificate PEM");
                         acc.CaPem = null;
                     }
                     else
@@ -106,7 +106,7 @@ public static class KafkaSnapshotParser
                     // Битый PEM-ключ — не исключение: parseError + поле null (arch/15 §6).
                     if (value is null || !ClusterPki.TryParseRsaKey(value, out _))
                     {
-                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_key: битый PEM ключа");
+                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_key: malformed key PEM");
                         acc.CaKey = null;
                     }
                     else
@@ -210,7 +210,7 @@ public static class KafkaSnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add($"/kafka/clusters/{cluster}/config: битый JSON config");
+            errors.Add($"/kafka/clusters/{cluster}/config: malformed config JSON");
             return new KafkaClusterConfig(0, 0, 0, 0, 0, null, null);
         }
     }
@@ -223,7 +223,7 @@ public static class KafkaSnapshotParser
             resources = ParseResources(broker.ResourcesRaw);
             if (resources is null)
                 errors.Add(
-                    $"/kafka/clusters/-/brokers/{broker.Name}/resources: битый JSON или неверный формат");
+                    $"/kafka/clusters/-/brokers/{broker.Name}/resources: malformed JSON or invalid format");
         }
 
         return new KafkaBrokerDecl(broker.Name, broker.State, broker.Role, resources);
@@ -291,7 +291,7 @@ public static class KafkaSnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add($"/kafka/clusters/{cluster}/topics/{topic}: битый JSON топика");
+            errors.Add($"/kafka/clusters/{cluster}/topics/{topic}: malformed topic JSON");
             return new KafkaTopicReg(topic, 0, null, null, null, null, null, null, false);
         }
     }
@@ -309,7 +309,7 @@ public static class KafkaSnapshotParser
             var requestedUnix = ReadLong(root, "requested_unix");
             if (requestedUnix is null)
             {
-                errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: нет поля requested_unix");
+                errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: missing requested_unix field");
                 return null;
             }
 
@@ -324,7 +324,7 @@ public static class KafkaSnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: битый JSON заявки");
+            errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: malformed ticket JSON");
             return null;
         }
     }
