@@ -334,7 +334,7 @@ public sealed class ProvisioningProcess(
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var since = _bootWaitSince.GetOrAdd(cluster, now);
         var reason = view.IsSuccess
-            ? $"брокеров в кластере {view.Value.Brokers.Count} из {snap.Config.Brokers}"
+            ? $"brokers in cluster {view.Value.Brokers.Count} of {snap.Config.Brokers}"
             : view.Error!.Message;
 
         if (options.BrokerBootSec <= 0 || now - since > options.BrokerBootSec)
@@ -383,7 +383,7 @@ public sealed class ProvisioningProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"config {key} изменился с момента чтения (compare mod_revision не сошёлся) — ретрай тиком"));
+                $"config {key} changed since read (compare mod_revision mismatch) — retry on next tick"));
 
         return Result.Success();
     }
@@ -488,7 +488,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -505,7 +505,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Канонический config после provisioning: state отсутствует (arch/15 §2.1).

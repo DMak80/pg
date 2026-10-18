@@ -57,7 +57,7 @@ public sealed class DeprovisioningProcess(
             return Fail(cluster, objects.Error!, "listing-objects");
         if (objects.Value.Count > 0)
             return Fail(cluster,
-                new ApplicationException($"объекты {string.Join(",", objects.Value)} ещё живы"),
+                new ApplicationException($"objects {string.Join(",", objects.Value)} are still alive"),
                 "removing-nodes");
 
         // X2: полная etcd-очистка: префикс кластера + координация + заявка ротации.
@@ -78,7 +78,7 @@ public sealed class DeprovisioningProcess(
             return Fail(cluster, config.Error!, "verifying");
         if (config.Value is not null)
             return Fail(cluster,
-                new ApplicationException("config-ключ пережил очистку — повтор тиком"),
+                new ApplicationException("config key survived the cleanup — retry on next tick"),
                 "cleaning-keys");
 
         await claims.ReleaseClusterAsync(cluster, ct); // del ключа + revoke lease — не ждём TTL
@@ -159,7 +159,7 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -173,6 +173,6 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

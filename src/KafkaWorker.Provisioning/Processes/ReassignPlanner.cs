@@ -70,8 +70,8 @@ public static class ReassignPlanner
                 // добавляет брокеров; spec §5.2 D3).
                 if (minIsrByTopic.TryGetValue(topic.Topic, out var minIsr) && replicas.Count < minIsr)
                     return Result<IReadOnlyList<ReassignMove>>.Failed(new ApplicationException(
-                        $"min.insync.replicas недостижим для {topic.Topic} p{partition}: "
-                        + $"план даёт {replicas.Count} реплик, minISR={minIsr} — снизьте minISR или добавьте брокеров"));
+                        $"min.insync.replicas is unreachable for {topic.Topic} p{partition}: "
+                        + $"plan yields {replicas.Count} replicas, minISR={minIsr} — lower minISR or add brokers"));
 
                 moves.Add(new ReassignMove(topic.Topic, partition, replicas));
             }

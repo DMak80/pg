@@ -59,7 +59,7 @@ public sealed class CaRotator(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"rotate-ca {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"rotate-ca {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         var ticket = await GetAsync(TicketKey(cluster), ct);
         if (!ticket.IsSuccess)
@@ -97,7 +97,7 @@ public sealed class CaRotator(
         {
             if (snap.CaPem is null || snap.CaKey is null)
                 return Result.Failed(new ApplicationException(
-                    $"rotate-ca {cluster}: окно открыто, но ca_pem/ca_key отсутствуют — внешняя порча, ретрай тиком"));
+                    $"rotate-ca {cluster}: window is open but ca_pem/ca_key are missing — external corruption, retry on next tick"));
             return await PhasesAsync(snap, ct);
         }
 
@@ -202,7 +202,7 @@ public sealed class CaRotator(
                 return Result.Failed(bundlePut.Error!);
             if (!bundlePut.Value.Succeeded)
                 return Result.Failed(new ApplicationException(
-                    "ca_pem изменился с момента чтения (внешняя запись?) — ретрай тиком"));
+                    "ca_pem changed since read (external write?) — retry on next tick"));
         }
 
         // Фаза R: rolling по одному брокеру за тик; env — серт от NEW CA (кеш R3
@@ -236,7 +236,7 @@ public sealed class CaRotator(
             return Result.Failed(commit.Error!);
         if (!commit.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                "ca_next_key изменился с момента чтения (параллельная ротация?) — ретрай тиком"));
+                "ca_next_key changed since read (parallel rotation?) — retry on next tick"));
 
         return await FinishAsync(cluster, ct);
     }
@@ -317,11 +317,11 @@ public sealed class CaRotator(
         var finalKey = await GetAsync(NextKeyKey(cluster), ct);
         if (!finalKey.IsSuccess || finalKey.Value is null)
             return Result<(string, string)>.Failed(finalKey.Error
-                ?? new ApplicationException($"staging {cluster}: ca_next_key не читается после txn"));
+                ?? new ApplicationException($"staging {cluster}: ca_next_key is not readable after txn"));
         var finalPem = await GetAsync(NextPemKey(cluster), ct);
         if (!finalPem.IsSuccess || finalPem.Value is null)
             return Result<(string, string)>.Failed(finalPem.Error
-                ?? new ApplicationException($"staging {cluster}: ca_next_pem не читается после txn"));
+                ?? new ApplicationException($"staging {cluster}: ca_next_pem is not readable after txn"));
         return Result<(string, string)>.Success((finalKey.Value!.Value, finalPem.Value!.Value));
     }
 
@@ -349,7 +349,7 @@ public sealed class CaRotator(
 
             if (!addresses.Value.TryGetValue(broker.Name, out var addr))
                 return Result<bool>.Failed(new ApplicationException(
-                    $"rotate-ca {cluster}: broker {broker.Name} не закреплён в portalloc"));
+                    $"rotate-ca {cluster}: broker {broker.Name} is not allocated in portalloc"));
 
             var removed = await driver.RemoveNodeAsync(cluster, broker.Name, removeVolume: false, ct);
             if (!removed.IsSuccess)
@@ -445,7 +445,7 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -459,6 +459,6 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

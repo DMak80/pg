@@ -52,7 +52,7 @@ public sealed class NodeRegenerator(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"regen {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"regen {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // J0a: живая заявка ротации (ключ фаз A–B) ИЛИ journal-фаза ротации
         // (фаза C живёт после del заявки; надзор мог перезаписать журнал —
@@ -153,14 +153,14 @@ public sealed class NodeRegenerator(
 
         if (snap.AppUser is null || snap.AppPassword is null)
             return Fail(cluster, new ApplicationException(
-                $"regen {cluster}: нет app-кредов (ensure не выполнен)"), "no-creds");
+                $"regen {cluster}: no app credentials (ensure not done)"), "no-creds");
 
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Fail(cluster, addresses.Error!, "reading-portalloc");
         if (!addresses.Value.TryGetValue(target.Name, out var addr))
             return Fail(cluster, new ApplicationException(
-                $"regen {cluster}: broker {target.Name} не закреплён в portalloc"), "reading-portalloc");
+                $"regen {cluster}: broker {target.Name} is not allocated in portalloc"), "reading-portalloc");
 
         var removed = await driver.RemoveNodeAsync(cluster, target.Name, removeVolume: false, ct);
         if (!removed.IsSuccess)
@@ -263,7 +263,7 @@ public sealed class NodeRegenerator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -277,7 +277,7 @@ public sealed class NodeRegenerator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string key, CancellationToken ct)
@@ -291,6 +291,6 @@ public sealed class NodeRegenerator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

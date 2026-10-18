@@ -328,7 +328,7 @@ public sealed class KafkaAdminClient(
             if (finished != idle)
             {
                 log?.LogWarning(
-                    "Kafka AdminClient ({Bootstrap}): бюджет дрейна dispose {Budget:F0} с исчерпан при {Active} активных операциях — принудительный dispose",
+                    "Kafka AdminClient ({Bootstrap}): drain dispose budget of {Budget:F0} s exhausted with {Active} active operations — forced dispose",
                     bootstrap, budget.TotalSeconds, Volatile.Read(ref _activeOperations));
                 ForceDisposeNative(); // дрейн не дождался — dispose в любом случае
                 return;

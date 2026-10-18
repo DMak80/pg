@@ -80,7 +80,7 @@ public sealed class SecurityMigrator(
         // Мутации — только держателем живого клэйма (arch/16 §5).
         if (!claims.IsMine(cluster))
             return Result<MigrationOutcome>.Failed(new ApplicationException(
-                $"migrate-security {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"migrate-security {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Детект: etcd-поля + env живых контейнеров (best-effort инспект:
         // контейнер не найден → env нет — не блокирует детект по etcd-полям).
@@ -192,11 +192,11 @@ public sealed class SecurityMigrator(
                 var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 var since = _bootWaitSince.GetOrAdd(cluster, now);
                 var reason = view.IsSuccess
-                    ? $"брокеров в кластере {view.Value.Brokers.Count} из {brokers.Count}"
+                    ? $"brokers in cluster {view.Value.Brokers.Count} of {brokers.Count}"
                     : view.Error!.Message;
                 if (options.BrokerBootSec <= 0 || now - since > options.BrokerBootSec)
                     return await FailAsync(cluster, new ApplicationException(
-                        $"migrate-security {cluster}: кластер не собрался за бюджет {options.BrokerBootSec} с: {reason}"),
+                        $"migrate-security {cluster}: cluster did not come up within budget {options.BrokerBootSec} s: {reason}"),
                         PhaseWaitingBrokers, ct);
 
                 return await FinishTickAsync(cluster, PhaseWaitingBrokers, ct);
@@ -272,7 +272,7 @@ public sealed class SecurityMigrator(
             return addresses.Error!;
         if (!addresses.Value.TryGetValue(broker.Name, out var addr))
             return Result.Failed(new ApplicationException(
-                $"migrate-security {cluster}: broker {broker.Name} не закреплён в portalloc"));
+                $"migrate-security {cluster}: broker {broker.Name} is not allocated in portalloc"));
 
         var removed = await driver.RemoveNodeAsync(cluster, broker.Name, removeVolume: false, ct);
         if (!removed.IsSuccess)
@@ -318,7 +318,7 @@ public sealed class SecurityMigrator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private static string BrokerStateKey(string cluster, string broker)
@@ -335,6 +335,6 @@ public sealed class SecurityMigrator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

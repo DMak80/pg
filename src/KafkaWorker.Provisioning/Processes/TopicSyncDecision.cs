@@ -204,7 +204,7 @@ public static class TopicSyncDecision
             // ДО исполнения delete (arch/15 §3.1: «del desired.create; исполняется delete»).
             if (delete is not null && create is not null)
                 actions.Add(new TopicSyncAction.LifecycleCleanup(
-                    group.Key, TopicLifecycleOps.Create, "коллизия с delete-заявкой — delete авторитетен"));
+                    group.Key, TopicLifecycleOps.Create, "collision with a delete ticket — delete is authoritative"));
 
             if (delete is not null)
             {
@@ -212,12 +212,12 @@ public static class TopicSyncDecision
                 // DescribeFactsAsync): заявка на internal-топик — мусор.
                 if (IsInternal(group.Key))
                     actions.Add(new TopicSyncAction.LifecycleCleanup(
-                        group.Key, TopicLifecycleOps.Delete, "internal-топик __* — не исполняется"));
+                        group.Key, TopicLifecycleOps.Delete, "internal topic __* — not executed"));
                 else if (factsByTopic.ContainsKey(group.Key))
                     actions.Add(new TopicSyncAction.LifecycleDelete(group.Key));
                 else
                     actions.Add(new TopicSyncAction.LifecycleCleanup(
-                        group.Key, TopicLifecycleOps.Delete, "топика нет в Kafka — исполнено внешне"));
+                        group.Key, TopicLifecycleOps.Delete, "topic is absent in Kafka — applied externally"));
                 continue;
             }
 
@@ -225,10 +225,10 @@ public static class TopicSyncDecision
             {
                 if (IsInternal(group.Key))
                     actions.Add(new TopicSyncAction.LifecycleCleanup(
-                        group.Key, TopicLifecycleOps.Create, "internal-топик __* — не исполняется"));
+                        group.Key, TopicLifecycleOps.Create, "internal topic __* — not executed"));
                 else if (factsByTopic.ContainsKey(group.Key))
                     actions.Add(new TopicSyncAction.LifecycleCleanup(
-                        group.Key, TopicLifecycleOps.Create, "топик уже существует — параметры заявки не применяются"));
+                        group.Key, TopicLifecycleOps.Create, "topic already exists — ticket parameters are not applied"));
                 else
                     actions.Add(new TopicSyncAction.LifecycleCreate(
                         group.Key, create.Partitions, create.ReplicationFactor ?? 1, create.Configs));

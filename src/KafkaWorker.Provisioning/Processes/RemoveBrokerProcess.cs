@@ -33,7 +33,7 @@ public sealed class RemoveBrokerProcess(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"remove-broker {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"remove-broker {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Порядок: broker-only первыми — демонтаж controller-нод в принципе невозможен
         // (guard ниже), но и порядок обработки не должен прятать guard «последний».
@@ -50,7 +50,7 @@ public sealed class RemoveBrokerProcess(
             if (broker.Role == "controller")
                 return Fail(cluster,
                     new ApplicationException(
-                        $"remove-broker {cluster}: {broker.Name} — controller-нода, демонтаж запрещён"),
+                        $"remove-broker {cluster}: {broker.Name} — controller node, removal is forbidden"),
                     "controller-guard");
 
             // Guard: не последний живой брокер кластера.
@@ -66,7 +66,7 @@ public sealed class RemoveBrokerProcess(
             {
                 var waiting = await journal.WritePhaseAsync(
                     cluster, Op, "waiting-partitions", claims.InstanceId,
-                    $"на {broker.Name} есть реплики партиций — drain идёт (процесс reassign), демонтаж продолжится сам", ct);
+                    $"partition replicas exist on {broker.Name} — drain in progress (reassign process), removal will continue on its own", ct);
                 return waiting; // не ошибка: следующий тик повторит проверку
             }
 
@@ -143,7 +143,7 @@ public sealed class RemoveBrokerProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"endpoints {key} изменился с момента чтения — ретрай тиком"));
+                $"endpoints {key} changed since read — retry on next tick"));
 
         return Result.Success();
     }
@@ -201,7 +201,7 @@ public sealed class RemoveBrokerProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"portalloc {key} изменился с момента чтения — ретрай тиком"));
+                $"portalloc {key} changed since read — retry on next tick"));
 
         return Result.Success();
     }
@@ -231,7 +231,7 @@ public sealed class RemoveBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -245,7 +245,7 @@ public sealed class RemoveBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -259,6 +259,6 @@ public sealed class RemoveBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

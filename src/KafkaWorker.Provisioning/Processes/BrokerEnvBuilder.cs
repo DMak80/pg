@@ -56,7 +56,7 @@ internal static class BrokerEnvBuilder
         var trust = trustCaPem ?? snap.CaPem;
         if (signingPem is null || signingKey is null || snap.AdminPassword is null)
             throw new ApplicationException(
-                $"env {snap.Cluster}/{broker}: премиграционный кластер (нет CA/admin-ключей) — сначала SecurityMigrator M");
+                $"env {snap.Cluster}/{broker}: premigration cluster (no CA/admin keys) — run SecurityMigrator M first");
 
         var decl = snap.Brokers.Single(b => b.Name == broker);
         var advertisedClient = AdvertisedClient(snap, broker, addr, options);

@@ -120,7 +120,7 @@ public sealed class PartitionReassignerProcess(
                 }
 
                 return await JournalAsync(cluster, "waiting-cluster",
-                    "кластер не поднят — ребалансировка ждёт endpoints/кредов", ct);
+                    "cluster is not up — rebalance waits for endpoints/credentials", ct);
             }
 
             return Result.Success();
@@ -146,7 +146,7 @@ public sealed class PartitionReassignerProcess(
             }
 
             var blind = await journal.WritePhaseAsync(cluster, Op, "waiting-cluster", claims.InstanceId,
-                $"метаданные недоступны — слепая проба, подач нет: {described.Error!.Message}", ct);
+                $"metadata unavailable — blind probe, no submissions: {described.Error!.Message}", ct);
             if (!blind.IsSuccess)
                 return blind;
             _lastOk[cluster] = now;
@@ -178,7 +178,7 @@ public sealed class PartitionReassignerProcess(
                 }
 
                 var waiting = await journal.WritePhaseAsync(cluster, Op, "waiting-drain", claims.InstanceId,
-                    $"идёт drain {drainCandidate.Name} — заявка ребалансировки ждёт", ct);
+                    $"drain {drainCandidate.Name} in progress — rebalance ticket waits", ct);
                 if (!waiting.IsSuccess)
                     return waiting;
             }
@@ -199,7 +199,7 @@ public sealed class PartitionReassignerProcess(
 
             _lastOk[cluster] = now;
             return await journal.WritePhaseAsync(cluster, Op, "cancelled", claims.InstanceId,
-                "заявка ребалансировки исчезла — подач больше нет, поданные батчи Kafka доиграет сама", ct);
+                "rebalance ticket disappeared — no more submissions, Kafka will finish the submitted batches on its own", ct);
         }
 
         return await RunBalanceAsync(snap, all, previous, now, ct);
@@ -251,7 +251,7 @@ public sealed class PartitionReassignerProcess(
             .ToList();
         if (targets.Count == 0)
             return Fail(cluster,
-                new ApplicationException($"reassign {cluster}: нет RUNNING-брокеров — цели переезда отсутствуют"),
+                new ApplicationException($"reassign {cluster}: no RUNNING brokers — no move targets"),
                 "no-targets");
 
         // D4: завершение — по факту метаданных: drain вне Replicas и нет USR.
@@ -266,7 +266,7 @@ public sealed class PartitionReassignerProcess(
 
                 _lastOk[cluster] = now;
                 return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
-                    $"drain {drainBroker} завершён — демонтаж продолжится процессом remove", ct);
+                    $"drain {drainBroker} completed — removal continues via the remove process", ct);
             }
 
             // USR-критерий: затронутые топики ещё догоняют ISR.
@@ -279,7 +279,7 @@ public sealed class PartitionReassignerProcess(
 
             _lastOk[cluster] = now;
             return await journal.WritePhaseAsync(cluster, Op, "waiting-sync", claims.InstanceId,
-                $"реплик {drainBroker} больше нет — ждём догон ISR (under-replicated)", ct);
+                $"replicas of {drainBroker} are gone — waiting for ISR catch-up (under-replicated)", ct);
         }
 
         // D3: minISR-план. Юзер-топики: реестр topics/<T> min.insync.replicas
@@ -326,7 +326,7 @@ public sealed class PartitionReassignerProcess(
             .ToList();
         if (targets.Count == 0)
             return Fail(cluster,
-                new ApplicationException($"reassign {cluster}: нет RUNNING-брокеров — цели ребалансировки отсутствуют"),
+                new ApplicationException($"reassign {cluster}: no RUNNING brokers — no rebalance targets"),
                 "no-targets");
 
         var plan = ReassignPlanner.PlanBalance(all, targets, snap.Config.ReplicationFactor);
@@ -352,7 +352,7 @@ public sealed class PartitionReassignerProcess(
 
             _lastOk[cluster] = now;
             return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
-                "факт совпал с планом ребалансировки — заявка исполнена", ct);
+                "actual state matches the rebalance plan — ticket fulfilled", ct);
         }
 
         return await SubmitBatchAsync(snap, all, plan, "balance", null, previous, now, ct);
@@ -528,7 +528,7 @@ public sealed class PartitionReassignerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -542,7 +542,7 @@ public sealed class PartitionReassignerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
@@ -556,6 +556,6 @@ public sealed class PartitionReassignerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

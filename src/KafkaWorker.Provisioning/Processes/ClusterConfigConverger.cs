@@ -63,7 +63,7 @@ public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory
         if (!view.IsSuccess)
             return Result.Failed(view.Error!);
         if (view.Value.Brokers.Count == 0)
-            return Result.Failed(new ApplicationException($"converge {cluster}: список брокеров пуст"));
+            return Result.Failed(new ApplicationException($"converge {cluster}: broker list is empty"));
 
         var current = await admin.DescribeBrokerConfigsAsync(view.Value.Brokers[0].Id, ct);
         if (!current.IsSuccess)

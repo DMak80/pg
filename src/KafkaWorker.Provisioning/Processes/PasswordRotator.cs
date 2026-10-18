@@ -211,7 +211,7 @@ public sealed class PasswordRotator(
         var current = await GetAsync(PasswordKey(role, cluster), ct);
         if (!current.IsSuccess || current.Value is null)
             return Result<bool>.Failed(Fail(cluster,
-                current.Error ?? new ApplicationException($"нет ключа {PasswordKey(role, cluster)}"),
+                current.Error ?? new ApplicationException($"missing key {PasswordKey(role, cluster)}"),
                 role.Phase("phase-c")));
 
         var markedC = await journal.WritePhaseAsync(cluster, Op, role.Phase(PhaseCommitted), claims.InstanceId, null, ct);
@@ -332,7 +332,7 @@ public sealed class PasswordRotator(
 
             if (!addresses.Value.TryGetValue(broker.Name, out var addr))
                 return Result.Failed(new ApplicationException(
-                    $"rotate {cluster}: broker {broker.Name} не закреплён в portalloc"));
+                    $"rotate {cluster}: broker {broker.Name} is not allocated in portalloc"));
 
             var removed = await driver.RemoveNodeAsync(cluster, broker.Name, removeVolume: false, ct);
             if (!removed.IsSuccess)
@@ -384,7 +384,7 @@ public sealed class PasswordRotator(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"{role.PasswordKey} {cluster} изменился с момента чтения (compare value не сошёлся)"));
+                $"{role.PasswordKey} {cluster} changed since read (compare value mismatch)"));
 
         return Result.Success();
     }
@@ -434,7 +434,7 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -448,6 +448,6 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -48,7 +48,7 @@ public sealed class PortAllocIndex(
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
             {
                 // Не наш ключ — не наша ответственность: лог + skip.
-                logger.LogWarning("битый portalloc соседа {Cluster}: {Error}", cluster, ex.Message);
+                logger.LogWarning("malformed portalloc of neighbor {Cluster}: {Error}", cluster, ex.Message);
             }
         }
 
@@ -67,6 +67,6 @@ public sealed class PortAllocIndex(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

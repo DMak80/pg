@@ -178,7 +178,7 @@ public sealed class TopicSyncProcess(
 
             default:
                 return Result.Failed(new ApplicationException(
-                    $"topicsync {cluster}: неизвестное lifecycle-действие {action.GetType().Name}"));
+                    $"topicsync {cluster}: unknown lifecycle action {action.GetType().Name}"));
         }
     }
 
@@ -321,7 +321,7 @@ public sealed class TopicSyncProcess(
 
             default:
                 return Result.Failed(new ApplicationException(
-                    $"topicsync {cluster}: неизвестное действие {action.GetType().Name}"));
+                    $"topicsync {cluster}: unknown action {action.GetType().Name}"));
         }
     }
 
@@ -588,7 +588,7 @@ public sealed class TopicSyncProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -605,7 +605,7 @@ public sealed class TopicSyncProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Канонический JSON значения ключа topics/<T> (arch/15 §3): факт +

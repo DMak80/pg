@@ -107,7 +107,7 @@ public sealed class PortAllocHealer(
         if (found.AdvertisedClient is { } advertised
             && !advertised.EndsWith($":{found.ClientHostPort.ToString(CultureInfo.InvariantCulture)}", StringComparison.Ordinal))
             await journal.WritePhaseAsync(cluster, Op, "reconstructed", claims.InstanceId,
-                $"advertised {advertised} != published :{found.ClientHostPort} — канон PortBindings", ct);
+                $"advertised {advertised} != published :{found.ClientHostPort} — PortBindings is canonical", ct);
         else
             await journal.WritePhaseAsync(cluster, Op, "reconstructed", claims.InstanceId, null, ct);
 
@@ -174,7 +174,7 @@ public sealed class PortAllocHealer(
                 return Result<HealedAddress>.Failed(portTxn.Error!);
             if (!portTxn.Value.Succeeded)
                 return Result<HealedAddress>.Failed(new ApplicationException(
-                    $"portalloc {cluster} изменился под клэймом — ретрай тиком"));
+                    $"portalloc {cluster} changed under the claim — retry on next tick"));
             var address = merged[broker];
 
             // Контейнер по новому адресу (env — как EnsureNodeAsync надзора).
@@ -208,11 +208,11 @@ public sealed class PortAllocHealer(
         var decl = snap.Brokers.FirstOrDefault(b => b.Name == broker);
         if (decl is null)
             return Result.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}: broker {broker} исчез из декларации"));
+                $"healing-portalloc {cluster}: broker {broker} disappeared from the declaration"));
 
         if (snap.AppUser is null || snap.AppPassword is null)
             return Result.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}: нет app-кредов"));
+                $"healing-portalloc {cluster}: no app credentials"));
 
         var env = BrokerEnvBuilder.Build(
             snap, broker, addr, [snap.AppPassword!], [snap.AdminPassword!], options, certificates);
@@ -249,7 +249,7 @@ public sealed class PortAllocHealer(
             return txn.Error!;
         return txn.Value.Succeeded
             ? null
-            : new ApplicationException($"endpoints {key} изменились под клэймом — ретрай тиком");
+            : new ApplicationException($"endpoints {key} changed under the claim — retry on next tick");
     }
 
     // Compare «ключ не менялся с чтения»: отсутствие ключа (revision 0) —
@@ -342,7 +342,7 @@ public sealed class PortAllocHealer(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -359,7 +359,7 @@ public sealed class PortAllocHealer(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Страховка: клэйм не остаётся удержанным при сбое вызывающего между тиками.

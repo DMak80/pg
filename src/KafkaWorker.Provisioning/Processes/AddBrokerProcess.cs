@@ -54,7 +54,7 @@ public sealed class AddBrokerProcess(
 
         if (snap.AppUser is null || snap.AppPassword is null)
             return Fail(cluster,
-                new ApplicationException($"add-broker {cluster}: нет app-кредов (ensure не выполнен)"),
+                new ApplicationException($"add-broker {cluster}: no app credentials (ensure not done)"),
                 "no-creds");
 
         // План: адреса из portalloc + добор портов для новых брокеров (RMW).
@@ -164,7 +164,7 @@ public sealed class AddBrokerProcess(
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
                 if (!txn.Value.Succeeded)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
-                        $"portalloc {key} изменился с момента чтения — ретрай тиком"));
+                        $"portalloc {key} changed since read — retry on next tick"));
             }
             finally
             {
@@ -196,7 +196,7 @@ public sealed class AddBrokerProcess(
         {
             if (!addresses.TryGetValue(broker.Name, out var addr))
                 return Result.Failed(new ApplicationException(
-                    $"add-broker {cluster}: broker {broker.Name} не закреплён в portalloc"));
+                    $"add-broker {cluster}: broker {broker.Name} is not allocated in portalloc"));
 
             var marked = await PutAsync(BrokerStateKey(cluster, broker.Name), "PROVISIONING", ct);
             if (!marked.IsSuccess)
@@ -229,11 +229,11 @@ public sealed class AddBrokerProcess(
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var since = _bootWaitSince.GetOrAdd(cluster, now);
         var reason = view.IsSuccess
-            ? $"брокеров в кластере {view.Value.Brokers.Count} из {snap.Brokers.Count}"
+            ? $"brokers in cluster {view.Value.Brokers.Count} of {snap.Brokers.Count}"
             : view.Error!.Message;
         if (options.BrokerBootSec <= 0 || now - since > options.BrokerBootSec)
             return Result<bool>.Failed(new ApplicationException(
-                $"брокер не присоединился к {cluster} за бюджет {options.BrokerBootSec} с: {reason}"));
+                $"broker did not join {cluster} within budget {options.BrokerBootSec} s: {reason}"));
 
         return Result<bool>.Success(false);
     }
@@ -276,7 +276,7 @@ public sealed class AddBrokerProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"endpoints {key} изменился с момента чтения — ретрай тиком"));
+                $"endpoints {key} changed since read — retry on next tick"));
 
         return Result.Success();
     }
@@ -352,7 +352,7 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -366,7 +366,7 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -380,6 +380,6 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

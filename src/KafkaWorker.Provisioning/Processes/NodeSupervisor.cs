@@ -49,7 +49,7 @@ public sealed class NodeSupervisor(
         // Мутации — только держателем живого клэйма.
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"supervise {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         var pinned = await ReadPortAllocAsync(cluster, ct);
         if (!pinned.IsSuccess)
@@ -64,7 +64,7 @@ public sealed class NodeSupervisor(
         {
             if (_healer is null)
                 return Fail(cluster, new ApplicationException(
-                    $"supervise {cluster}: broker {broker.Name} не закреплён в portalloc (healer не сконфигурирован)"),
+                    $"supervise {cluster}: broker {broker.Name} is not allocated in portalloc (healer not configured)"),
                     "healing-portalloc");
 
             var healed = await _healer.ResolveAsync(snap, broker.Name, addresses, ct);
@@ -216,7 +216,7 @@ public sealed class NodeSupervisor(
                 // RF=1 и том утрачен: чистый том = потеря единственной копии —
                 // journal-warning (документированное поведение, arch/16 §5 C).
                 string? warning = removeVolume && snap.Config.ReplicationFactor <= 1
-                    ? $"брокер {brokerName}: том данных утрачен, RF=1 — единственная копия данных кластера потеряна"
+                    ? $"broker {brokerName}: data volume is lost, RF=1 — the only copy of cluster data is lost"
                     : null;
 
                 var recreated = await RecreateAsync(snap, broker, addresses, removeVolume, ct);
@@ -292,7 +292,7 @@ public sealed class NodeSupervisor(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"endpoints {cluster} изменился с момента чтения — ретрай тиком"));
+                $"endpoints {cluster} changed since read — retry on next tick"));
         return Result.Success();
     }
 
@@ -337,11 +337,11 @@ public sealed class NodeSupervisor(
         var cluster = snap.Cluster;
         if (!addresses.TryGetValue(broker.Name, out var addr))
             return Result.Failed(new ApplicationException(
-                $"supervise {cluster}: broker {broker.Name} не закреплён в portalloc"));
+                $"supervise {cluster}: broker {broker.Name} is not allocated in portalloc"));
 
         if (snap.AppUser is null || snap.AppPassword is null)
             return Result.Failed(new ApplicationException(
-                $"supervise {cluster}: нет app-кредов (ensure не выполнен)"));
+                $"supervise {cluster}: no app credentials (ensure not done)"));
 
         var env = BrokerEnvBuilder.Build(
             snap, broker.Name, addr, [snap.AppPassword!], [snap.AdminPassword!], options, certificates);
@@ -428,7 +428,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -442,7 +442,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Txn через failover (порт ProvisioningProcess.TxnAsync — RMW-сравнения
@@ -461,6 +461,6 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }
