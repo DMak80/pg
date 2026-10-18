@@ -45,10 +45,10 @@ public sealed class BackupPoolResolver(
         var pool = poolResult.Value;
         if (pool is null)
             return Result<BackupPoolContext?>.Failed(
-                new ApplicationException($"s3-pool: пул {s3.Pool} не найден в /s3/clusters/"));
+                new ApplicationException($"s3-pool: pool {s3.Pool} not found in /s3/clusters/"));
         if (pool.ToRemove)
             return Result<BackupPoolContext?>.Failed(
-                new ApplicationException($"s3-pool: пул {s3.Pool} в состоянии TO_REMOVE"));
+                new ApplicationException($"s3-pool: pool {s3.Pool} is in TO_REMOVE state"));
 
         // Креды — env-профиль пула; диагностика без значений (spec §8).
         string? accessKey = null;
@@ -57,7 +57,7 @@ public sealed class BackupPoolResolver(
         if (pool.SecretProfile is null
             || !secrets.TryGet(pool.SecretProfile, out accessKey, out secretKey, out diag))
             return Result<BackupPoolContext?>.Failed(
-                new ApplicationException($"s3-pool: {diag ?? $"пул {pool.Name} без secret_profile"}"));
+                new ApplicationException($"s3-pool: {diag ?? $"pool {pool.Name} without secret_profile"}"));
 
         // Списки записи — по роли источника; имена обязаны быть инстансами пула.
         var writeMasterResult = ResolveWriteList(pool, s3.Pool, "write_master", s3.WriteMaster);
@@ -96,7 +96,7 @@ public sealed class BackupPoolResolver(
     {
         if (names.Count == 0)
             return Result<IReadOnlyList<string>>.Failed(
-                new ApplicationException($"s3-pool: s3.{fieldName} пуст (пул {poolName}) — секция задана, список не заполнен"));
+                new ApplicationException($"s3-pool: s3.{fieldName} is empty (pool {poolName}) — section is set, list is not filled"));
 
         var uris = new List<string>(names.Count);
         foreach (var name in names)
@@ -104,10 +104,10 @@ public sealed class BackupPoolResolver(
             var node = pool.Nodes.FirstOrDefault(n => n.Name == name);
             if (node is null)
                 return Result<IReadOnlyList<string>>.Failed(
-                    new ApplicationException($"s3-pool: s3.{fieldName}: нода {name} не в пуле {poolName} (нет nodes/{name}/placement)"));
+                    new ApplicationException($"s3-pool: s3.{fieldName}: node {name} is not in pool {poolName} (no nodes/{name}/placement)"));
             if (node.Host is null || node.S3Port is null)
                 return Result<IReadOnlyList<string>>.Failed(
-                    new ApplicationException($"s3-pool: s3.{fieldName}: нода {name} без адреса (portalloc) — пул поднимается"));
+                    new ApplicationException($"s3-pool: s3.{fieldName}: node {name} has no address (portalloc) — pool is starting up"));
             uris.Add($"http://{node.Host}:{node.S3Port}");
         }
 

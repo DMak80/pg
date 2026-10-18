@@ -194,7 +194,7 @@ public sealed class BackupOrphanSweeper(
                 var recheck = await poolS3.ListPrefixAsync(delPrefix, ct: ct);
                 if (!recheck.IsSuccess || recheck.Value.Count > 0)
                     return Result.Failed(new ApplicationException(
-                        $"удаление {delPrefix} не завершилось — повторит следующий проход"));
+                        $"deletion of {delPrefix} did not complete — next pass will retry"));
             }
         }
 
@@ -207,8 +207,8 @@ public sealed class BackupOrphanSweeper(
             return putDone;
         await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
             $"orphan-deleted/{candidate}", claims.InstanceId, null, ct);
-        logger?.LogInformation("{Op}: сирота {Prefix} удалена {Reason}", Op, candidate,
-            byRequest ? "по заявке оператора" : "по TTL");
+        logger?.LogInformation("{Op}: orphan {Prefix} deleted {Reason}", Op, candidate,
+            byRequest ? "by operator request" : "by TTL");
 
         // Заявка исполнена — гасим её ключ (санитар следующего прохода тоже бы
         // гасил, но чистим сразу: заявка и запись гасятся вместе — AC4).
@@ -232,7 +232,7 @@ public sealed class BackupOrphanSweeper(
         }
 
         return Result<IReadOnlyList<Kv>>.Failed(last.Error
-            ?? new ApplicationException($"range {prefix}: нет живых endpoints etcd"));
+            ?? new ApplicationException($"range {prefix}: no live etcd endpoints"));
     }
 
     // Одиночный del ключа hold/заявки (failover по endpoints, образец
@@ -249,7 +249,7 @@ public sealed class BackupOrphanSweeper(
         }
 
         return Result.Failed(last.Error ?? new ApplicationException(
-            $"del {key}: нет живых endpoints"));
+            $"del {key}: no live endpoints"));
     }
 
     // «<C>/<X>» — 2 последних сегмента ключа hold/заявки (формат arch/19 §4).
@@ -269,7 +269,7 @@ public sealed class BackupOrphanSweeper(
         }
 
         return Result<IReadOnlyList<Kv>>.Failed(last.Error
-            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+            ?? new EtcdUnreachableException("etcd endpoints not configured"));
     }
 
     // Чтение реестра (failover по endpoints); ключа нет → null; битый → null.
@@ -307,6 +307,6 @@ public sealed class BackupOrphanSweeper(
         }
 
         return Result.Failed(last.Error ?? new ApplicationException(
-            $"put {OrphanRegistry.Key}: нет живых endpoints"));
+            $"put {OrphanRegistry.Key}: no live endpoints"));
     }
 }

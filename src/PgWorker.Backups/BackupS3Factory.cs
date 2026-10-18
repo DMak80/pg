@@ -50,7 +50,7 @@ public sealed class BackupS3Factory(
         var ctx = resolved.Value;
         if (ctx is null)
             return Result<PoolBackupS3>.Failed(new ApplicationException(
-                $"s3-pool: у кластера {cluster} policy без секции s3 — пул не выбран (arch/19 §4)"));
+                $"s3-pool: cluster {cluster} policy has no s3 section — pool not selected (arch/19 §4)"));
         return Result<PoolBackupS3>.Success(Create(ctx));
     }
 
@@ -66,17 +66,17 @@ public sealed class BackupS3Factory(
         var s3pool = read.Value;
         if (s3pool is null)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: пул {pool} не найден в /s3/clusters/"));
+                $"s3-pool: pool {pool} not found in /s3/clusters/"));
         if (s3pool.ToRemove)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: пул {pool} в состоянии TO_REMOVE"));
+                $"s3-pool: pool {pool} in state TO_REMOVE"));
         string? accessKey = null;
         string? secretKey = null;
         string? diag = null;
         if (s3pool.SecretProfile is null
             || !secrets.TryGet(s3pool.SecretProfile, out accessKey, out secretKey, out diag))
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: {diag ?? $"пул {pool} без secret_profile"}"));
+                $"s3-pool: {diag ?? $"pool {pool} without secret_profile"}"));
 
         // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
         // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).

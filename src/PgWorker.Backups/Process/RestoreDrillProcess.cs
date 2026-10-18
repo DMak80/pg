@@ -56,7 +56,7 @@ public sealed class RestoreDrillProcess(
         // Guard 1: клэйм наш (мутации /pgworker/backups/* — только держатель).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Guard 2: только Active-кластер. Backups:Enabled=false — НЕ выход:
         // блокируются только новые запуски (флаг — в отборе); супервиз
@@ -120,7 +120,7 @@ public sealed class RestoreDrillProcess(
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+                poolRead.IsSuccess ? "policy has no s3 section — pool not selected" : poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         await using var s3 = s3Factory.Create(poolCtx);
@@ -139,7 +139,7 @@ public sealed class RestoreDrillProcess(
         var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
         if (!manifest.IsSuccess)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
-                $"полный {backupId} без backup_manifest (недокачан/бит)", ct);
+                $"full backup {backupId} without backup_manifest (incomplete/corrupt)", ct);
 
         // 2. Стартовая точка WAL: etcd-статус; нет — backup_label из S3.
         var walStart = fresh.WalStartSegment;
@@ -149,12 +149,12 @@ public sealed class RestoreDrillProcess(
             walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
             if (walStart is null)
                 return await FailValidationAsync(cluster, shard, backupId, nowUnix,
-                    $"full/{backupId}: backup_label недоступен/бит", ct);
+                    $"full/{backupId}: backup_label unavailable/corrupt", ct);
         }
         var chainStart = WalFileName.TryParse(walStart);
         if (chainStart is null)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
-                $"full/{backupId}: wal_start '{walStart}' не разбирается", ct);
+                $"full/{backupId}: wal_start '{walStart}' cannot be parsed", ct);
 
         // 3. Непрерывность WAL-цепочки (WalChain t03); S3-отказ → transient
         // (статус не трогаем — тик повторит).
@@ -162,13 +162,13 @@ public sealed class RestoreDrillProcess(
         if (!wal.IsSuccess)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
-                claims.InstanceId, "s3 list недоступен — валидация следующим тиком", ct);
+                claims.InstanceId, "s3 list unavailable — validation on next tick", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name));
         if (!chain.IsContinuous)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
-                chain.GapError ?? "дыра WAL-цепочки", ct);
+                chain.GapError ?? "WAL chain gap", ct);
 
         // ── Запуск: journal-before-manipulations — put RUNNING до create
         // (arch/17); хост — первая нода шарда из portalloc (как restore-джоб).
@@ -177,7 +177,7 @@ public sealed class RestoreDrillProcess(
         if (engine is null)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
-                claims.InstanceId, "docker-хост не резолвится — запуск следующим тиком", ct);
+                claims.InstanceId, "docker host not resolvable — start on next tick", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -190,7 +190,7 @@ public sealed class RestoreDrillProcess(
         // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
         // spec §3.2): ensure-семантика — контейнер уже есть → только старт.
         var launched = await LongCallPolling.EnsureAsync(
-            $"create/start drill-джоба {jobName}",
+            $"create/start drill job {jobName}",
             async token =>
             {
                 var list = await engine.ListContainersAsync(jobName, all: true, token);
@@ -212,7 +212,7 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся, тик досоздаст по имени
 
         await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
-        logger.LogInformation("{Op} {cluster}/{shard}: drill-джоб {job} запущен (полный {backupId})",
+        logger.LogInformation("{Op} {cluster}/{shard}: drill job {job} started (full backup {backupId})",
             Op, cluster, shard, jobName, backupId);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -231,7 +231,7 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Failed(put.Error!);
         drillObserver?.Invoke(cluster, shard, "failed"); // t14: FAILED-валидация — итог без джоба
         await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{id}", claims.InstanceId, error, ct);
-        logger.LogWarning("{Op} {cluster}/{shard}: дрилл провален валидацией: {error}",
+        logger.LogWarning("{Op} {cluster}/{shard}: drill failed validation: {error}",
             Op, cluster, shard, error);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -250,7 +250,7 @@ public sealed class RestoreDrillProcess(
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+                poolRead.IsSuccess ? "policy has no s3 section — pool not selected" : poolRead.Error!.Message, ct);
             return;
         }
 
@@ -263,7 +263,7 @@ public sealed class RestoreDrillProcess(
         if (engine is null)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}/{drill.Id}",
-                claims.InstanceId, "docker-хост не резолвится — статус не трогаем", ct);
+                claims.InstanceId, "docker host not resolvable — status left untouched", ct);
             return; // transient — следующий тик
         }
 
@@ -272,7 +272,7 @@ public sealed class RestoreDrillProcess(
         if (!listed.IsSuccess)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}/{drill.Id}",
-                claims.InstanceId, "docker list недоступен — статус не трогаем", ct);
+                claims.InstanceId, "docker list unavailable — status left untouched", ct);
             return; // transport-сбой list → transient (тик повторит)
         }
         var container = listed.Value.FirstOrDefault(c =>
@@ -310,7 +310,7 @@ public sealed class RestoreDrillProcess(
                 {
                     State = DrillStatus.Failed,
                     FinishedUnix = nowUnix,
-                    Error = $"drill-vanished: контейнер отсутствует, возраст {age} с > {options.DrillTimeoutSec} с",
+                    Error = $"drill-vanished: container missing, age {age} s > {options.DrillTimeoutSec} s",
                     Phase = "cleaning",
                 };
                 var put = await PutDrillAsync(cluster, shard, vanished, ct);
@@ -323,7 +323,7 @@ public sealed class RestoreDrillProcess(
             // Молодой RUNNING без контейнера — статус не трогаем (transient).
             // Поллинг create/start — тот же инвариант (arch/14 §6).
             await LongCallPolling.EnsureAsync(
-                $"create/start drill-джоба {containerName}",
+                $"create/start drill job {containerName}",
                 async token =>
                 {
                     var created = await engine.CreateContainerAsync(
@@ -349,7 +349,7 @@ public sealed class RestoreDrillProcess(
             {
                 State = DrillStatus.Failed,
                 FinishedUnix = nowUnix,
-                Error = $"drill-timeout: {nowUnix - drill.StartedUnix} с > {options.DrillTimeoutSec} с",
+                Error = $"drill-timeout: {nowUnix - drill.StartedUnix} s > {options.DrillTimeoutSec} s",
                 Phase = "cleaning",
             };
             var put = await PutDrillAsync(cluster, shard, timedOut, ct);
@@ -485,7 +485,7 @@ public sealed class RestoreDrillProcess(
         await journal.WritePhaseAsync(cluster, Op,
             $"{(drill.State == DrillStatus.Succeeded ? "drill-done" : "drill-failed")}/{shard}/{drill.Id}",
             claims.InstanceId, null, ct);
-        logger.LogInformation("{Op} {cluster}/{shard}: дрилл {id} — {state}, контур снесён на всех хостах ({hosts})",
+        logger.LogInformation("{Op} {cluster}/{shard}: drill {id} — {state}, topology torn down on all hosts ({hosts})",
             Op, cluster, shard, drill.Id, drill.State, hosts.Value.Count);
     }
 
@@ -561,7 +561,7 @@ public sealed class RestoreDrillProcess(
                 return result;
         }
 
-        return Result.Failed(new ApplicationException($"etcd put drill {cluster}/{shard} — все endpoints недоступны"));
+        return Result.Failed(new ApplicationException($"etcd put drill {cluster}/{shard} — all endpoints unavailable"));
     }
 
     private long NowUnix() => time.GetUtcNow().ToUnixTimeSeconds();

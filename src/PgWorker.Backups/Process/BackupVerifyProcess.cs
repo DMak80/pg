@@ -49,7 +49,7 @@ public sealed class BackupVerifyProcess(
         // Guard 1: клэйм наш (мутации /pgworker/backups/* — только держатель).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Guard 2: Backups:Enabled=false → no-op (идущие ephemeral-джобы не убиваем).
         if (!options.Enabled)
@@ -76,7 +76,7 @@ public sealed class BackupVerifyProcess(
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                poolRead.IsSuccess ? "policy без секции s3 — пул не выбран" : poolRead.Error!.Message, ct);
+                poolRead.IsSuccess ? "policy without s3 section — pool not selected" : poolRead.Error!.Message, ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         await using var s3 = s3Factory.Create(poolCtx);
@@ -98,7 +98,7 @@ public sealed class BackupVerifyProcess(
             catch (Exception ex)
             {
                 // ошибка шарда не роняет остальные (arch/17)
-                logger.LogError(ex, "{Op} {cluster}/{shard}: сбой тика шарда", Op, cluster, shard.Name);
+                logger.LogError(ex, "{Op} {cluster}/{shard}: shard tick failed", Op, cluster, shard.Name);
                 await journal.WritePhaseAsync(cluster, Op, "shard-error", claims.InstanceId,
                     $"{shard.Name}: {ex.Message}", ct);
             }
@@ -176,7 +176,7 @@ public sealed class BackupVerifyProcess(
         if (string.IsNullOrEmpty(candidate.WalStartSegment))
         {
             await WritePermanentAsync(cluster, shard, candidate,
-                "нет wal_start_segment — набор не.archiveable (нет точки старта цепочки)", nowUnix, ct);
+                "no wal_start_segment — set is not archiveable (no chain start point)", nowUnix, ct);
             return;
         }
 
@@ -200,7 +200,7 @@ public sealed class BackupVerifyProcess(
         if (start is null)
         {
             await WritePermanentAsync(cluster, shard, candidate,
-                $"битый wal_start_segment {candidate.WalStartSegment}", nowUnix, ct);
+                $"invalid wal_start_segment {candidate.WalStartSegment}", nowUnix, ct);
             return;
         }
 
@@ -211,7 +211,7 @@ public sealed class BackupVerifyProcess(
         if (setSegments.Count == 0)
         {
             await WritePermanentAsync(cluster, shard, candidate,
-                "в наборе нет WAL-сегментов pg_wal", nowUnix, ct);
+                "set contains no pg_wal WAL segments", nowUnix, ct);
             return;
         }
 
@@ -241,7 +241,7 @@ public sealed class BackupVerifyProcess(
         if (!check.IsContinuous)
         {
             await WritePermanentAsync(cluster, shard, candidate,
-                check.GapError ?? "цепочка WAL не проходит проверку", nowUnix, ct);
+                check.GapError ?? "WAL chain check failed", nowUnix, ct);
             return;
         }
 
@@ -278,7 +278,7 @@ public sealed class BackupVerifyProcess(
         if (fallbackHost is not null)
             await journal.WritePhaseAsync(cluster, Op, $"engine-fallback/{shard}",
                 claims.InstanceId, fallbackHost, ct);
-        logger.LogInformation("{Op} {cluster}/{shard}: verify-джоб {job} запущен (id {id})",
+        logger.LogInformation("{Op} {cluster}/{shard}: verify job {job} started (id {id})",
             Op, cluster, shard, jobName, id);
     }
 
@@ -324,7 +324,7 @@ public sealed class BackupVerifyProcess(
                 if (!putQuota.IsSuccess)
                     return; // transient — статус не сменился, снесём следующим тиком
                 await journal.WritePhaseAsync(cluster, Op, $"verify-timeout/{shard}/{id}",
-                    claims.InstanceId, $"verify-джоб старше {options.JobVerifyTimeoutSec} с — kill, попытка зачтена", ct);
+                    claims.InstanceId, $"verify job older than {options.JobVerifyTimeoutSec} s — killed, attempt counted", ct);
                 await CleanupJobAsync(engine, containerName, ct);
             }
 
@@ -443,7 +443,7 @@ public sealed class BackupVerifyProcess(
                 return result;
         }
 
-        return Result.Failed(new ApplicationException($"etcd put {key} — все endpoints недоступны"));
+        return Result.Failed(new ApplicationException($"etcd put {key} — all endpoints unavailable"));
     }
 
     private void observe(string cluster, string shard, string result)

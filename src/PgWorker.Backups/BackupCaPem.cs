@@ -28,12 +28,12 @@ public static class BackupCaPem
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                $"PgWorker:Backups:S3:CaBundlePath={caBundlePath}: файл CA не читается — {ex.Message}", ex);
+                $"PgWorker:Backups:S3:CaBundlePath={caBundlePath}: CA file is not readable — {ex.Message}", ex);
         }
 
         return pem.Trim() is { Length: > 0 } trimmed
             ? trimmed
             : throw new InvalidOperationException(
-                $"PgWorker:Backups:S3:CaBundlePath={caBundlePath}: файл CA пуст");
+                $"PgWorker:Backups:S3:CaBundlePath={caBundlePath}: CA file is empty");
     }
 }

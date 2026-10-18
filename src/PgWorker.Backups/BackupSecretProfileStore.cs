@@ -56,7 +56,7 @@ public sealed class BackupSecretProfileStore(
         secretKey = _getenv($"{Prefix}{profile}__SECRET_KEY");
         if (string.IsNullOrEmpty(accessKey) || string.IsNullOrEmpty(secretKey))
         {
-            diagnostic = $"профиль {profile} не найден или неполон (нужны ACCESS_KEY/SECRET_KEY); доступны: {string.Join(", ", ProfileNames)}";
+            diagnostic = $"profile {profile} not found or incomplete (ACCESS_KEY/SECRET_KEY required); available: {string.Join(", ", ProfileNames)}";
             accessKey = null;
             secretKey = null;
             return false;

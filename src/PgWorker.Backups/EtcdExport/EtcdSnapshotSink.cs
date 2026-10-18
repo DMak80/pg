@@ -140,7 +140,7 @@ public sealed class EtcdSnapshotSink(
         }
 
         return Result<EtcdSnapshotStatus?>.Failed(last.Error
-            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+            ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Ретенция: list префикса → чистый отбор → batch-delete.
@@ -177,7 +177,7 @@ public sealed class EtcdSnapshotSink(
             last = put;
         }
 
-        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Новейший локальный слепок (имя — таймстемп, Ordinal-сортировка = время).

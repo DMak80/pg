@@ -28,6 +28,6 @@ public sealed class BackupPolicyReader(IEtcdGateway etcd, string[] endpoints)
             return parsed.Value.FirstOrDefault(c => c.Cluster == cluster)?.Policy;
         }
 
-        throw last.Error ?? new ApplicationException($"policy {cluster}: etcd endpoints не заданы");
+        throw last.Error ?? new ApplicationException($"policy {cluster}: etcd endpoints not set");
     }
 }

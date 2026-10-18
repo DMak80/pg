@@ -48,7 +48,7 @@ public sealed class BackupSupervisorProcess(
         // Мутации S3/etcd — только держатель клэйма (инвариант arch/14 §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // G0: подсистема выключена — no-op (Enabled-стоп-семантика WalStreamProcess).
         var options = runtime();
@@ -137,13 +137,13 @@ public sealed class BackupSupervisorProcess(
                 var recheck = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
                 if (!recheck.IsSuccess || recheck.Value.Count > 0)
                     throw new ApplicationException(
-                        $"удаление {prefix} не завершилось — повторит следующий проход");
+                        $"deletion of {prefix} did not complete — next pass will retry");
             }
 
             // Объектов не было (пустой префикс) или удалены — журнал-факт.
             await journal.WritePhaseAsync(cluster, Op, $"swept-full/{shard}/{id}",
                 claims.InstanceId, null, ct);
-            logger?.LogInformation("{Op} {Cluster}/{Shard}: префикс {Id} без etcd-ключа удалён",
+            logger?.LogInformation("{Op} {Cluster}/{Shard}: prefix {Id} without etcd key deleted",
                 Op, cluster, shard, id);
         }
     }

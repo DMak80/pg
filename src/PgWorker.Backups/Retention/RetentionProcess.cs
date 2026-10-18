@@ -47,7 +47,7 @@ public sealed class RetentionProcess(
         // Мутации /pgworker/backups/* — только держатель клэйма (arch/19 §4).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // G0: подсистема выключена — no-op (AC8).
         if (!options.Enabled)
@@ -201,12 +201,12 @@ public sealed class RetentionProcess(
                 throw new ApplicationException($"delete {prefix}: {deleted.Error!.Message}");
             var recheck = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
             if (!recheck.IsSuccess || recheck.Value.Count > 0)
-                throw new ApplicationException($"удаление {prefix} не завершилось — повторит следующий проход");
+                throw new ApplicationException($"deletion of {prefix} did not complete — next pass will retry");
         }
 
         var del = await DeleteAsync(BackupNames.FullKey(cluster, shard, deleting.Id), ct);
         if (!del.IsSuccess)
-            throw new ApplicationException($"del ключа {deleting.Id}: {del.Error!.Message}");
+            throw new ApplicationException($"del key {deleting.Id}: {del.Error!.Message}");
         await journal.WritePhaseAsync(cluster, Op, $"deleted-full/{shard}/{deleting.Id}",
             claims.InstanceId, null, ct);
     }
@@ -259,7 +259,7 @@ public sealed class RetentionProcess(
         if (failedPools.Count > 0)
         {
             logger.LogWarning(
-                "{Op}: used_bytes неполный — пулы недоступны: {Pools}; ключ /pgworker/backups/storage не обновляется до полного прохода",
+                "{Op}: used_bytes is incomplete — pools unavailable: {Pools}; key /pgworker/backups/storage is not updated until a full pass",
                 Op, string.Join(", ", failedPools));
             return Result.Success(); // transient — полный проход повторит
         }
@@ -281,7 +281,7 @@ public sealed class RetentionProcess(
                 return Result.Success();
         }
 
-        return Result.Failed(new ApplicationException("запись /pgworker/backups/storage не удалась"));
+        return Result.Failed(new ApplicationException("write of /pgworker/backups/storage failed"));
     }
 
     // Совпадает ли записанное значение ключа storage с наблюдаемой частью
@@ -324,7 +324,7 @@ public sealed class RetentionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string key, CancellationToken ct)
@@ -338,6 +338,6 @@ public sealed class RetentionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

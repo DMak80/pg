@@ -39,7 +39,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
         catch (Exception e)
         {
-            return Result<(bool, string?)>.Failed(new ApplicationException($"слот-зонд {slot}: {e.Message}", e));
+            return Result<(bool, string?)>.Failed(new ApplicationException($"slot probe {slot}: {e.Message}", e));
         }
     }
 
@@ -79,7 +79,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
         catch (Exception e)
         {
-            return Result.Failed(new ApplicationException($"recreate слота {slot}: {e.Message}", e));
+            return Result.Failed(new ApplicationException($"recreate slot {slot}: {e.Message}", e));
         }
     }
 
@@ -103,7 +103,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
         catch (Exception e)
         {
-            return Result.Failed(new ApplicationException($"create слота {slot}: {e.Message}", e));
+            return Result.Failed(new ApplicationException($"create slot {slot}: {e.Message}", e));
         }
     }
 
@@ -121,7 +121,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
         catch (Exception e)
         {
-            return Result<(string, int)>.Failed(new ApplicationException($"LSN-зонд: {e.Message}", e));
+            return Result<(string, int)>.Failed(new ApplicationException($"LSN probe: {e.Message}", e));
         }
     }
 }

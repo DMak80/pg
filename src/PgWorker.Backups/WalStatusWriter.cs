@@ -51,7 +51,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         }
 
         return Result<WalStreamState?>.Failed(last.Error
-            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+            ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     public async Task<Result> WriteIfChangedAsync(
@@ -81,7 +81,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             return Result.Success();
         }
 
-        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     private static Result<WalStreamState?> Parse(string cluster, string shard, string raw)
@@ -91,7 +91,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             var payload = JsonSerializer.Deserialize<WalStatusPayload>(raw, Json);
             if (payload is null || payload.State is null || payload.LastUploadedUnix is null)
                 return Result<WalStreamState?>.Failed(new ApplicationException(
-                    $"битый ключ /pgworker/backups/{cluster}/{shard}/wal"));
+                    $"corrupt key /pgworker/backups/{cluster}/{shard}/wal"));
             return Result<WalStreamState?>.Success(new WalStreamState(
                 StateOf(payload.State), payload.Slot ?? "", payload.MasterNode ?? "",
                 payload.ChainStartSegment ?? "", payload.LastReceivedSegment ?? "",
@@ -103,7 +103,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         catch (JsonException e)
         {
             return Result<WalStreamState?>.Failed(new ApplicationException(
-                $"битый JSON /pgworker/backups/{cluster}/{shard}/wal: {e.Message}", e));
+                $"corrupt JSON /pgworker/backups/{cluster}/{shard}/wal: {e.Message}", e));
         }
     }
 

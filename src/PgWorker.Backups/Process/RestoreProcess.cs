@@ -63,7 +63,7 @@ public sealed class RestoreProcess(
         // Мутации /pgworker/backups/* — только держатель клэйма (arch/19 §4).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"backup-restore {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"backup-restore {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // G0: подсистема выключена — процесс не исполняется (врезка ReconcileLoop
         // тоже гвардит, но процесс самодостаточен при прямом вызове).
@@ -88,7 +88,7 @@ public sealed class RestoreProcess(
         var oldest = actives[0];
         foreach (var dup in actives.Skip(1).Where(p => p.Shard == oldest.Shard))
             await FailPermanentAsync(cluster, dup.Shard, dup.Op,
-                error: $"дубль заявки: активен старейший {oldest.Op.Id}", ct);
+                error: $"duplicate request: oldest {oldest.Op.Id} is active", ct);
 
         var shard = snap.Shards.FirstOrDefault(s => s.Name == oldest.Shard);
         if (shard is null)
@@ -128,7 +128,7 @@ public sealed class RestoreProcess(
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(resolved.Error!);
         if (resolved.Value is not { } ctx)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: у кластера {cluster} policy без секции s3 — пул не выбран"));
+                $"s3-pool: cluster {cluster} policy has no s3 section — pool not selected"));
         return (s3Factory.Create(ctx), ctx);
     }
 
@@ -164,7 +164,7 @@ public sealed class RestoreProcess(
         if (objectNode)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                "restore усыновлённых шардов не поддерживается (ручной путь — docs/backup-restore.md)", ct);
+                "restore of adopted shards is not supported (manual path — docs/backup-restore.md)", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -173,7 +173,7 @@ public sealed class RestoreProcess(
         if (parts.Length != 2 || parts[0].Length == 0 || parts[1].Length == 0)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"битый source '{op.Source}'", ct);
+                $"malformed source '{op.Source}'", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         var (srcC, srcX) = (parts[0], parts[1]);
@@ -198,7 +198,7 @@ public sealed class RestoreProcess(
             if (fulls.Value.Count == 0)
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    $"полные в {srcC}/{srcX} не найдены", ct);
+                    $"no full backups found in {srcC}/{srcX}", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
             backupId = fulls.Value[^1];
@@ -213,7 +213,7 @@ public sealed class RestoreProcess(
         if (!manifest.IsSuccess)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"полный {backupId} без backup_manifest (недокачан/бит)", ct);
+                $"full {backupId} has no backup_manifest (incomplete/corrupt)", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -227,7 +227,7 @@ public sealed class RestoreProcess(
             if (walStart is null)
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    $"full/{backupId}: backup_label недоступен/бит", ct);
+                    $"full/{backupId}: backup_label unavailable/corrupt", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
         }
@@ -235,7 +235,7 @@ public sealed class RestoreProcess(
         if (chainStart is null)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"full/{backupId}: wal_start '{walStart}' не разбирается", ct);
+                $"full/{backupId}: wal_start '{walStart}' cannot be parsed", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -249,7 +249,7 @@ public sealed class RestoreProcess(
         if (!chain.IsContinuous)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                chain.GapError ?? "дыра WAL-цепочки", ct);
+                chain.GapError ?? "WAL chain gap", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -299,7 +299,7 @@ public sealed class RestoreProcess(
         {
             // portalloc рассинхронизирован с декларацией — заявка не исполнима
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"нода {first ?? "?"} шарда {shard.Name} не найдена в portalloc", ct);
+                $"node {first ?? "?"} of shard {shard.Name} not found in portalloc", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         var engine = driver.EngineFor(addr.Host);
@@ -322,13 +322,13 @@ public sealed class RestoreProcess(
                 await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
             }
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"restore-job-timeout: {NowUnix() - opStarted} с > {options.JobRestoreTimeoutSec}", ct);
+                $"restore-job-timeout: {NowUnix() - opStarted}s > {options.JobRestoreTimeoutSec}", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
         if (engine is null)
             return await TransientAsync(cluster, $"engine-unavailable/{shard.Name}/{op.Id}",
-                $"docker-хост {addr.Host} не известен", ct);
+                $"docker host {addr.Host} is unknown", ct);
 
         // Цель: "time:<RFC3339>" → строка конфига recovery_target_time; latest → "".
         // RFC3339 нормализуем к PG-формату: парсер recovery_target_time не
@@ -343,7 +343,7 @@ public sealed class RestoreProcess(
                     out var targetTs))
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    $"target_time не RFC3339: {op.Target["time:".Length..]}", ct);
+                    $"target_time is not RFC3339: {op.Target["time:".Length..]}", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
 
@@ -378,7 +378,7 @@ public sealed class RestoreProcess(
             if (op.BackupId.Length == 0)
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    "backup_id не зафиксирован в заявке (ожидается после валидации)", ct);
+                    "backup_id is not recorded in the request (expected after validation)", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
 
@@ -435,7 +435,7 @@ public sealed class RestoreProcess(
             {
                 await engine.RemoveContainerAsync(name, force: true, ct);
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    $"recovery-бюджет исчерпан ({budgetSec} c)", ct);
+                    $"recovery budget exhausted ({budgetSec}s)", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
 
@@ -585,7 +585,7 @@ public sealed class RestoreProcess(
         if (!addresses.Value.TryGetValue($"{shard.Name}/{first}", out var firstAddr))
         {
             await FailPermanentAsync(cluster, shard.Name, op,
-                $"нода {first} шарда {shard.Name} не найдена в portalloc", ct);
+                $"node {first} of shard {shard.Name} not found in portalloc", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         // Щит initialize (см. DemolishAsync): заполнитель «restore-in-progress»
@@ -604,7 +604,7 @@ public sealed class RestoreProcess(
         else
         {
             logger?.LogWarning(
-                "backup-restore {Cluster}/{Shard}/{Op}: system_id не получен от джобы — initialize остаётся заполнителем",
+                "backup-restore {Cluster}/{Shard}/{Op}: system_id not received from the job — initialize keeps the placeholder",
                 cluster, shard.Name, op.Id);
         }
 
@@ -621,9 +621,9 @@ public sealed class RestoreProcess(
                 work.Error!.Message, ct);
         var restPassword = RestRotation.EffectivePassword(snap.RestPassword, work.Value?.RestPending)
             ?? throw new ApplicationException(
-                $"restore {cluster}: rest_password кластера неизвестен (нет ключа и pending)");
+                $"restore {cluster}: cluster rest_password is unknown (no key and no pending)");
         var firstEnsure = await LongCallPolling.EnsureAsync(
-            $"create/start ноды {first}",
+            $"create/start of node {first}",
             token => driver.EnsureNodeAsync(
                 topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
                 snap.Config.SyncStrict, restPassword, token),
@@ -654,12 +654,12 @@ public sealed class RestoreProcess(
             if (!addresses.Value.TryGetValue($"{shard.Name}/{node}", out var addr))
             {
                 await FailPermanentAsync(cluster, shard.Name, op,
-                    $"нода {node} шарда {shard.Name} не найдена в portalloc", ct);
+                    $"node {node} of shard {shard.Name} not found in portalloc", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
             // Поллинг create/start реплики — тот же инвариант (arch/14 §6).
             var ensured = await LongCallPolling.EnsureAsync(
-                $"create/start ноды {node}",
+                $"create/start of node {node}",
                 token => driver.EnsureNodeAsync(
                     topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
                     snap.Config.SyncStrict, restPassword, token),
@@ -759,7 +759,7 @@ public sealed class RestoreProcess(
                     : "; probe=" + diag.Error!.Message;
             }
             await FailPermanentAsync(cluster, shard, op,
-                $"Patroni не поднялся за {thresholds.PatroniBootSec} с{snapshot}", ct);
+                $"Patroni did not come up within {thresholds.PatroniBootSec}s{snapshot}", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -810,7 +810,7 @@ public sealed class RestoreProcess(
                     : "; probe=" + diag.Error!.Message;
             }
             await FailPermanentAsync(cluster, shard, op,
-                $"мастер не принял SQL за {thresholds.PatroniBootSec} с (проба: {lastError ?? "-"}){snapshot}", ct);
+                $"master did not accept SQL within {thresholds.PatroniBootSec}s (probe: {lastError ?? "-"}){snapshot}", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
@@ -875,7 +875,7 @@ public sealed class RestoreProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // permanent-отказ: FAILED + finished_unix + причина + журнал (повтор заявки — оператор).
@@ -895,7 +895,7 @@ public sealed class RestoreProcess(
             {
                 var del = await etcd.DeleteAsync(endpoints[0], initKey, prefix: false, ct);
                 if (!del.IsSuccess)
-                    logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: заполнитель initialize не удалён — {Error}",
+                    logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: initialize placeholder was not deleted — {Error}",
                         cluster, shard, op.Id, del.Error?.Message);
             }
         }
@@ -906,7 +906,7 @@ public sealed class RestoreProcess(
             Error = error,
         }, ct);
         if (!put.IsSuccess)
-            logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: статус FAILED не записан — {Error}",
+            logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: FAILED status was not written — {Error}",
                 cluster, shard, op.Id, put.Error?.Message);
         else
             restoreObserver?.Invoke(cluster, shard, "failed"); // t14: терминальный исход зафиксирован в etcd

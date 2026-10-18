@@ -71,7 +71,7 @@ public sealed class WalStreamProcess(
         // Мутации — только держателем живого клэйма (инвариант arch/14 §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"backup-wal {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"backup-wal {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         var options = runtime();
 
@@ -139,7 +139,7 @@ public sealed class WalStreamProcess(
         if (passwordKv is not { Value: { Length: > 0 } password })
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-password", claims.InstanceId,
-                $"{shard.Name}: нет /clusters/{cluster}/backup_password (t02 не смержена/ensure не прошёл)", ct);
+                $"{shard.Name}: missing /clusters/{cluster}/backup_password (t02 not merged/ensure failed)", ct);
             return;
         }
 
@@ -161,11 +161,11 @@ public sealed class WalStreamProcess(
             throw new ApplicationException($"portalloc: {addresses.Error!.Message}");
         var master = await shards.ResolveMasterAsync(cluster, shard, addresses.Value, ct);
         if (!master.IsSuccess)
-            throw new ApplicationException($"резолв мастера: {master.Error!.Message}");
+            throw new ApplicationException($"master resolve: {master.Error!.Message}");
         if (master.Value is not { } masterAddr)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-master", claims.InstanceId,
-                $"{shard.Name}: мастер не резолвится (failover-окно)", ct);
+                $"{shard.Name}: master does not resolve (failover window)", ct);
             return;
         }
 
@@ -173,7 +173,7 @@ public sealed class WalStreamProcess(
         var sources = new List<WalSource> { new(masterRef, masterAddr, masterPgHost, masterPgPort) };
         var sync = await shards.ResolveSyncStandbyAsync(cluster, shard, addresses.Value, ct);
         if (!sync.IsSuccess)
-            throw new ApplicationException($"резолв sync-standby: {sync.Error!.Message}");
+            throw new ApplicationException($"sync-standby resolve: {sync.Error!.Message}");
         if (sync.Value is { } syncAddr && syncAddr != masterAddr)
         {
             var (syncRef, syncPgHost, syncPgPort) = ResolveNodeRef(shard, addresses.Value, syncAddr);
@@ -204,7 +204,7 @@ public sealed class WalStreamProcess(
             var dsn = ShardEndpoints.AdminDsn(src.Addr, snap.Config.DbName, secrets);
             var probe = await sql.SlotProbeAsync(dsn, slot, ct);
             if (!probe.IsSuccess)
-                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {probe.Error!.Message}");
+                throw new ApplicationException($"slot probe {slot}@{src.Node}: {probe.Error!.Message}");
             slotProbes.Add((src, dsn, probe.Value.Exists, probe.Value.WalStatus));
         }
         // null-статус существующего слота (старые PG/edge) — живой: лечим только явный lost
@@ -225,8 +225,8 @@ public sealed class WalStreamProcess(
                 // («факт над записью», ревью Ф4-2 №2); факт битого ключа — в журнале.
                 if (wal.LastUploadedUnix is null)
                 {
-                    var invalid = $"last_uploaded_unix отсутствует — битый ключ /pgworker/backups/{cluster}/{shard.Name}/wal "
-                        + "(ручная правка/иной писатель); ветка «слот исчез» идёт с фолбэком времени";
+                    var invalid = $"last_uploaded_unix missing — invalid key /pgworker/backups/{cluster}/{shard.Name}/wal "
+                        + "(manual edit/another writer); the 'slot disappeared' branch runs with the time fallback";
                     logger?.LogWarning("backup-wal {Cluster}/{Shard}: {Message}", cluster, shard.Name, invalid);
                     await journal.WritePhaseAsync(cluster, Op, $"wal-key-invalid/{shard.Name}",
                         claims.InstanceId, invalid, ct);
@@ -241,8 +241,8 @@ public sealed class WalStreamProcess(
                     baseLast: wal.LastUploadedSegment,
                     baseUnix: wal.LastUploadedUnix ?? clock.GetUtcNow().ToUnixTimeSeconds(),
                     error: anyExists
-                        ? $"слот {slot} потерян (wal_status=lost) на всех источниках при живой цепочке — пересними полный бэкап"
-                        : $"слот {slot} исчез при живой цепочке (инвалидация max_slot_wal_keep_size?) — пересними полный бэкап",
+                        ? $"slot {slot} lost (wal_status=lost) on all sources with a live chain — retake the full backup"
+                        : $"slot {slot} disappeared with a live chain (max_slot_wal_keep_size invalidation?) — retake the full backup",
                     recreateSlot: true);
                 return;
             }
@@ -254,7 +254,7 @@ public sealed class WalStreamProcess(
             {
                 var ensured = await sql.EnsureSlotAliveAsync(dead.Dsn, slot, ct);
                 if (!ensured.IsSuccess)
-                    throw new ApplicationException($"ensure слота {slot}@{dead.Src.Node}: {ensured.Error!.Message}");
+                    throw new ApplicationException($"ensure slot {slot}@{dead.Src.Node}: {ensured.Error!.Message}");
             }
         }
         else
@@ -265,10 +265,10 @@ public sealed class WalStreamProcess(
             foreach (var lost in slotProbes.Where(p => p.Exists && p.WalStatus == "lost"))
             {
                 await journal.WritePhaseAsync(cluster, Op, $"slot-recreate/{shard.Name}", claims.InstanceId,
-                    $"{lost.Src.Node}: слот {slot} wal_status=lost — слот пересоздан, агент вернётся от хвоста S3", ct);
+                    $"{lost.Src.Node}: slot {slot} wal_status=lost — slot recreated, agent will catch up from the S3 tail", ct);
                 var recreated = await sql.RecreateSlotAsync(lost.Dsn, slot, ct);
                 if (!recreated.IsSuccess)
-                    throw new ApplicationException($"recreate слота {slot}@{lost.Src.Node}: {recreated.Error!.Message}");
+                    throw new ApplicationException($"recreate slot {slot}@{lost.Src.Node}: {recreated.Error!.Message}");
             }
 
             // отсутствующие на живых источниках → create (ensure-идемпотентность, t27)
@@ -276,7 +276,7 @@ public sealed class WalStreamProcess(
             {
                 var created = await sql.EnsureSlotAliveAsync(missing.Dsn, slot, ct);
                 if (!created.IsSuccess)
-                    throw new ApplicationException($"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
+                    throw new ApplicationException($"ensure slot {slot}@{missing.Src.Node}: {created.Error!.Message}");
             }
         }
 
@@ -316,13 +316,13 @@ public sealed class WalStreamProcess(
             // wal-ключ оставляем (алерт backup-pool-missing — проекция панели).
             // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит
             // teardown, артефактная телеметрия теряет журнал).
-            logger?.LogInformation("backup-wal {Cluster}/{Shard}: пул не выбран (policy без секции s3) — агенты вниз",
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: pool not selected (policy without s3 section) — agents down",
                 cluster, shardName);
             var removed = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
             if (!removed.IsSuccess)
-                throw new ApplicationException($"стоп агента {shardName}: {removed.Error!.Message}");
+                throw new ApplicationException($"agent stop {shardName}: {removed.Error!.Message}");
             await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
-                $"{shardName}: policy без секции s3 — пул не выбран, агенты остановлены", ct);
+                $"{shardName}: policy without s3 section — pool not selected, agents stopped", ct);
             Observe(cluster, shardName, null, null);
             return null;
         }
@@ -331,7 +331,7 @@ public sealed class WalStreamProcess(
         // в живом wal-статусе (алерт backup-pool-unreachable закрывает и случай
         // «policy записана, но резолв не удался»); ретраи тиком.
         // Диагностика (t36-разбор): причина — в host.log (etcd-journal сносит teardown).
-        logger?.LogWarning("backup-wal {Cluster}/{Shard}: резолв пула не удался — {Error}",
+        logger?.LogWarning("backup-wal {Cluster}/{Shard}: pool resolve failed — {Error}",
             cluster, shardName, resolved.Error!.Message);
         await journal.WritePhaseAsync(cluster, Op, "waiting-backup-pool", claims.InstanceId,
             $"{shardName}: {resolved.Error!.Message}", ct);
@@ -363,7 +363,7 @@ public sealed class WalStreamProcess(
     {
         var listed = await driver.ListBackupAgentsAsync(cluster, ct);
         if (!listed.IsSuccess)
-            throw new ApplicationException($"лист агентов: {listed.Error!.Message}");
+            throw new ApplicationException($"agent list: {listed.Error!.Message}");
 
         var desired = sources
             .Select(src => (Src: src, Name: BackupAgentNames.Container(cluster, shard, src.Node)))
@@ -433,7 +433,7 @@ public sealed class WalStreamProcess(
                     && curRead == $"S3_READ_ENDPOINTS={desiredRead}")
                     continue;
                 logger?.LogInformation(
-                    "backup-wal: агент {Agent} — дрейф списков policy, пересоздание", d.Name);
+                    "backup-wal: agent {Agent} — policy list drift, recreate", d.Name);
                 recreateAll = true;
                 break;
             }
@@ -442,13 +442,13 @@ public sealed class WalStreamProcess(
         var toEnsure = recreateAll ? desired : missing;
         if (recreateAll)
         {
-            logger?.LogInformation("backup-wal: агенты {Shard} — пересоздание per-node ({Desired})",
+            logger?.LogInformation("backup-wal: agents {Shard} — per-node recreate ({Desired})",
                 shard, string.Join(",", desired.Select(d => d.Name)));
             // Снос ВСЕХ агентов шарда: старый одноагентный формат (без суффикса
             // ноды) и его -staging-том сносятся тем же демонтажем (миграция §3.6).
             var removed = await driver.RemoveBackupAgentsAsync(cluster, shard, ct);
             if (!removed.IsSuccess)
-                throw new ApplicationException($"демонтаж агентов: {removed.Error!.Message}");
+                throw new ApplicationException($"agent teardown: {removed.Error!.Message}");
         }
 
         if (toEnsure.Count > 0)
@@ -483,7 +483,7 @@ public sealed class WalStreamProcess(
                 // вызов таймаутом короче окна проверки (половина — 7.5 c при
                 // дефолтах), идемпотентный повтор; каждая итерация — лог elapsed.
                 var ensured = await LongCallPolling.EnsureAsync(
-                    $"create агента {d.Name}",
+                    $"create agent {d.Name}",
                     token => driver.EnsureBackupAgentAsync(
                         cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, token),
                     progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
@@ -491,10 +491,10 @@ public sealed class WalStreamProcess(
                         TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
                     AgentCreateBudget, ct);
                 if (!ensured.IsSuccess)
-                    throw new ApplicationException($"подъём агента {d.Name}: {ensured.Error!.Message}");
+                    throw new ApplicationException($"agent start {d.Name}: {ensured.Error!.Message}");
             }
 
-            logger?.LogInformation("backup-wal: агенты {Shard} подняты (слот {Slot})",
+            logger?.LogInformation("backup-wal: agents {Shard} are up (slot {Slot})",
                 shard, slot);
         }
 
@@ -597,7 +597,7 @@ public sealed class WalStreamProcess(
     {
         var read = await status.ReadAsync(cluster, shard, ct);
         if (!read.IsSuccess)
-            throw new ApplicationException($"чтение ключа wal: {read.Error!.Message}");
+            throw new ApplicationException($"wal key read: {read.Error!.Message}");
         return read.Value;
     }
 
@@ -759,12 +759,12 @@ public sealed class WalStreamProcess(
         if (lag > options.WalLagMaxSegments) // null → сравнение false (зонд не удался — не деградация)
         {
             state = WalStreamStatus.Degraded;
-            error = $"отставание WAL-потока {lag} сегментов (порог {options.WalLagMaxSegments})";
+            error = $"WAL stream lag {lag} segments (threshold {options.WalLagMaxSegments})";
         }
         else if (now - lastUploadedUnix > options.WalStaleSec)
         {
             state = WalStreamStatus.Degraded;
-            error = $"тишина загрузок {now - lastUploadedUnix} c (порог {options.WalStaleSec})";
+            error = $"upload silence {now - lastUploadedUnix} s (threshold {options.WalStaleSec})";
         }
 
         // t36 (arch/19 §3): исчерпание write-списка мастер-агента — контроль
@@ -782,7 +782,7 @@ public sealed class WalStreamProcess(
             if (agentLogs.IsSuccess && agentLogs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
             {
                 state = WalStreamStatus.Degraded;
-                error = $"{S3PoolMarkers.Exhausted}: исчерпание write-списка мастер-агентом (ретрай-цикл приёмника)";
+                error = $"{S3PoolMarkers.Exhausted}: write list exhausted by master agent (receiver retry loop)";
             }
         }
 
@@ -800,8 +800,8 @@ public sealed class WalStreamProcess(
 
         // Диагностика (t36-разбор): смена стейта — в host.log (etcd сносит teardown).
         if (state != wal?.State || error != wal?.Error)
-            logger?.LogInformation("backup-wal {Cluster}/{Shard}: контроль {From}→{To}{Error}",
-                cluster, shard, wal?.State.ToString() ?? "<нет>", state,
+            logger?.LogInformation("backup-wal {Cluster}/{Shard}: control {From}→{To}{Error}",
+                cluster, shard, wal?.State.ToString() ?? "<none>", state,
                 error is null ? "" : $"; error={error}");
 
         var next = new WalStreamState(
@@ -857,7 +857,7 @@ public sealed class WalStreamProcess(
             if (!exec.IsSuccess)
             {
                 // нода недоступна — transient: контроль повторит (YAGNI-счётчик)
-                logger?.LogInformation("backup-wal: history {File} недоступна на {Node}: {Error} — повтор следующим контролем",
+                logger?.LogInformation("backup-wal: history {File} unavailable on {Node}: {Error} — retried by the next control",
                     fileName, masterRef, exec.Error!.Message);
                 continue;
             }
@@ -866,7 +866,7 @@ public sealed class WalStreamProcess(
             {
                 // pg_wal ноды не содержит файла (промоут мог ещё не написать/нода старая):
                 // transient — контроль повторит; фактическая структура в журнале ниже.
-                logger?.LogInformation("backup-wal: history {File} не найдена на {Node}: {Listing}",
+                logger?.LogInformation("backup-wal: history {File} not found on {Node}: {Listing}",
                     fileName, masterRef, exec.Value);
                 continue;
             }
@@ -878,7 +878,7 @@ public sealed class WalStreamProcess(
             }
             catch (FormatException e)
             {
-                throw new ApplicationException($"history {fileName}: битый base64 от ноды: {e.Message}: " +
+                throw new ApplicationException($"history {fileName}: bad base64 from node: {e.Message}: " +
                     $"raw[{exec.Value.Trim()[..Math.Min(120, exec.Value.Trim().Length)]}]", e);
             }
 
@@ -887,7 +887,7 @@ public sealed class WalStreamProcess(
                 token => s3.PutObjectAsync($"{cluster}/{shard}/wal/{fileName}", content, sha256, token), ct);
             if (!put.IsSuccess)
                 throw new ApplicationException($"put history {fileName}: {put.Error!.Message}");
-            logger?.LogInformation("backup-wal: history {File} доложена контролем ({Bytes} байт)",
+            logger?.LogInformation("backup-wal: history {File} delivered by control ({Bytes} bytes)",
                 fileName, content.Length);
         }
     }
@@ -915,14 +915,14 @@ public sealed class WalStreamProcess(
         logger?.LogError("backup-wal {Cluster}/{Shard}: {Error}", cluster, shard, error);
         var removed = await driver.RemoveBackupAgentsAsync(cluster, shard, ct);
         if (!removed.IsSuccess)
-            throw new ApplicationException($"стоп агента {shard}: {removed.Error!.Message}");
+            throw new ApplicationException($"agent stop {shard}: {removed.Error!.Message}");
         if (recreateSlot)
         {
             // Ошибка ensure — исключение наверх (пер-шардовый catch → журнал;
             // следующий тик повторит — идемпотентно).
             var ensured = await sql.EnsureSlotAliveAsync(adminDsn, slot, ct);
             if (!ensured.IsSuccess)
-                throw new ApplicationException($"ensure слота {slot}: {ensured.Error!.Message}");
+                throw new ApplicationException($"ensure slot {slot}: {ensured.Error!.Message}");
         }
         var current = wal ?? new WalStreamState(
             WalStreamStatus.Active, slot, masterRef, baseStart, baseLast, baseLast, baseUnix, null, null);
@@ -965,7 +965,7 @@ public sealed class WalStreamProcess(
     {
         var removed = await driver.RemoveBackupAgentsAsync(cluster, shard, ct);
         if (!removed.IsSuccess)
-            throw new ApplicationException($"стоп агента {shard}: {removed.Error!.Message}");
+            throw new ApplicationException($"agent stop {shard}: {removed.Error!.Message}");
         wal ??= await ReadWalAsync(cluster, shard, ct);
         if (wal is not null && wal.State != WalStreamStatus.Stopped)
             await status.WriteIfChangedAsync(cluster, shard,

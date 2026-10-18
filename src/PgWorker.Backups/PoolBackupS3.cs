@@ -138,7 +138,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         }
 
         return Result<bool>.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: bucket-exists — все ноды пула недоступны: {last.Error!.Message}"));
+            $"{S3PoolMarkers.Exhausted}: bucket-exists — all pool nodes are unavailable: {last.Error!.Message}"));
     }
 
     public async Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
@@ -175,7 +175,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
 
         if (!anySuccess)
             return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
-                $"{S3PoolMarkers.Exhausted}: list-wal-union — все ноды пула недоступны: {last.Error!.Message}"));
+                $"{S3PoolMarkers.Exhausted}: list-wal-union — all pool nodes are unavailable: {last.Error!.Message}"));
         return Result<IReadOnlyList<WalObject>>.Success([.. merged.Values]);
     }
 
@@ -198,7 +198,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         }
 
         return Result.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: put {key} — все ноды списка недоступны: {last.Error!.Message}"));
+            $"{S3PoolMarkers.Exhausted}: put {key} — all list nodes are unavailable: {last.Error!.Message}"));
     }
 
     // Удаление — write-семантика put (первая доступная нода, mesh разносит
@@ -215,7 +215,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         }
 
         return Result.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: delete — все ноды списка недоступны: {last.Error!.Message}"));
+            $"{S3PoolMarkers.Exhausted}: delete — all list nodes are unavailable: {last.Error!.Message}"));
     }
 
     public async Task<Result<IReadOnlyList<WalObject>>> ListAsync(
@@ -258,7 +258,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         }
 
         return Result<T>.Failed(new ApplicationException(
-            $"{S3PoolMarkers.Exhausted}: {what} — все ноды пула недоступны: {last.Error!.Message}"));
+            $"{S3PoolMarkers.Exhausted}: {what} — all pool nodes are unavailable: {last.Error!.Message}"));
     }
 
     // Точечные GET: любой отказ (NotFound/транспорт) → следующая; успех — оттуда;

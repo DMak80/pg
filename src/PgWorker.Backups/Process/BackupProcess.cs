@@ -58,7 +58,7 @@ public sealed class BackupProcess(
         // Мутации префикса /pgworker/backups/* — только держатель клэйма (arch/19 §4).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // G0: подсистема выключена — поведение воркера не меняется (no-op).
         if (!options.Enabled)
@@ -269,7 +269,7 @@ public sealed class BackupProcess(
             // итерации с таймаутом короче окна; ensure-семантика: контейнер уже
             // есть → только старт (304 already-started = успех движка).
             var launched = await LongCallPolling.EnsureAsync(
-                $"create/start джоба {name}",
+                $"create/start of job {name}",
                 async token =>
                 {
                     var list = await engine.ListContainersAsync(name, all: true, token);
@@ -293,7 +293,7 @@ public sealed class BackupProcess(
             if (!putRunning.IsSuccess)
                 return Result<ProcessOutcome>.Failed(putRunning.Error!);
             await journal.WritePhaseAsync(cluster, Op, $"started/{shard.Name}/{id}", claims.InstanceId, null, ct);
-            logger.LogInformation("backups {Cluster}/{Shard}: полный {Id} запущен на {Node} (role={Role})",
+            logger.LogInformation("backups {Cluster}/{Shard}: full {Id} started on {Node} (role={Role})",
                 cluster, shard.Name, id, node, role);
         }
 
@@ -351,7 +351,7 @@ public sealed class BackupProcess(
                 {
                     State = FullBackupStatus.Failed,
                     FinishedUnix = nowUnix,
-                    Error = $"job-timeout: {nowUnix - active.StartedUnix} с > {options.JobFullTimeoutSec}",
+                    Error = $"job-timeout: {nowUnix - active.StartedUnix} s > {options.JobFullTimeoutSec}",
                 };
                 var putTimeout = await PutAsync(
                     BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(timedOut), ct);
@@ -415,7 +415,7 @@ public sealed class BackupProcess(
                     var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, jobSource, backupPassword,
                         EndpointsForRole(pool, active.Role), pool.AccessKey, pool.SecretKey);
                     var launched = await LongCallPolling.EnsureAsync(
-                        $"create джоба {name}",
+                        $"create of job {name}",
                         async token =>
                         {
                             var created = await engine.CreateContainerAsync(spec, name, token);
@@ -432,7 +432,7 @@ public sealed class BackupProcess(
                 else
                 {
                     var started = await LongCallPolling.EnsureAsync(
-                        $"start джоба {name}",
+                        $"start of job {name}",
                         token => engine.StartContainerAsync(name, token),
                         progress, logger,
                         TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
@@ -576,6 +576,6 @@ public sealed class BackupProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

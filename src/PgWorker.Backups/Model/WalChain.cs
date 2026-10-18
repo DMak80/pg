@@ -104,15 +104,15 @@ public static class WalChain
                     var entry = entries[^1]; // последняя строка — сам TLI файла
                     if (entry.ParentTli != expected.Tli)
                         return new ChainResult(false,
-                            $"TLI-переход {expected.Tli}→{segment.Tli}: history-файл {segment.Tli:x8}.history: " +
+                            $"TLI transition {expected.Tli}→{segment.Tli}: history file {segment.Tli:x8}.history: " +
                             $"parent {entry.ParentTli} ≠ {expected.Tli}", last);
                     var switchPos = WalFileName.FromLsn(0, entry.SwitchLsn);
                     var inBounds = (switchPos.Log, switchPos.Seg) == (segment.Log, segment.Seg)
                         || (last is { } prev && (switchPos.Log, switchPos.Seg) == (prev.Log, prev.Seg));
                     if (!inBounds)
                         return new ChainResult(false,
-                            $"TLI-переход {expected.Tli}→{segment.Tli}: switchWALLSN {entry.SwitchLsn} " +
-                            $"вне границы сегментов {(last is { } strictPrev ? strictPrev.Name : "нет предыдущего")}/{segment.Name} " +
+                            $"TLI transition {expected.Tli}→{segment.Tli}: switchWALLSN {entry.SwitchLsn} " +
+                            $"outside segment bounds {(last is { } strictPrev ? strictPrev.Name : "no previous")}/{segment.Name} " +
                             $"({segment.Tli:x8}.history)", last);
                 }
                 else
@@ -120,7 +120,7 @@ public static class WalChain
                     // эвристика t03 (Check): history-объект + первый сегмент ∈ {last, Next(last)}
                     if (!histories.Contains(segment.Tli))
                         return new ChainResult(false,
-                            $"TLI-переход {expected.Tli}→{segment.Tli} без {segment.Tli:x8}.history", last);
+                            $"TLI transition {expected.Tli}→{segment.Tli} without {segment.Tli:x8}.history", last);
                     // сравнение ПОЗИЦИЙ (log/seg): TLI первого сегмента нового таймлайна
                     // отличен от прошлого — равенство по record-полям здесь ложно.
                     var lastOrNext = last is { } prev
@@ -129,8 +129,8 @@ public static class WalChain
                         : false;
                     if (!lastOrNext)
                         return new ChainResult(false,
-                            $"TLI-переход {expected.Tli}→{segment.Tli}: первый сегмент {segment.Name} " +
-                            $"не совпадает с точкой переключения ({(last is { } prev2 ? prev2.Name : "нет предыдущего")})", last);
+                            $"TLI transition {expected.Tli}→{segment.Tli}: first segment {segment.Name} " +
+                            $"does not match the switch point ({(last is { } prev2 ? prev2.Name : "no previous")})", last);
                 }
 
                 last = segment;
@@ -148,7 +148,7 @@ public static class WalChain
         // список кончился, end не достигнут: цепочка шла сплошно, но сегмент набора
         // не продублирован в wal/ (дублирование t02, spec §3.4)
         return new ChainResult(false,
-            $"сегмент {reached.Name} из набора бэкапа отсутствует в wal/ (ожидался после " +
+            $"segment {reached.Name} from the backup set is missing in wal/ (expected after " +
             $"{(last is { } l2 ? l2.Name : chainStart.Name)})", last);
     }
 
