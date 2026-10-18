@@ -29,7 +29,7 @@ public sealed class UpdateConfigHandler(IEtcdGateway gateway, string[] endpoints
             errors.Add(new("maxmemoryBytes", $"maxmemoryBytes: > {ValkeyLimits.MinMaxmemoryBytes - 1}"));
         if (request.MaxmemoryPolicy is { } policy && !ValkeyLimits.IsKnownPolicy(policy))
             errors.Add(new("maxmemoryPolicy",
-                $"maxmemoryPolicy: одно из {string.Join('|', ValkeyWriting.KnownPolicies.OrderBy(p => p, StringComparer.Ordinal))}"));
+                $"maxmemoryPolicy: one of {string.Join('|', ValkeyWriting.KnownPolicies.OrderBy(p => p, StringComparer.Ordinal))}"));
 
         var effectiveBytes = request.MaxmemoryBytes ?? config.Value.MaxmemoryBytes;
         // Инвариант R3 против текущих resources etcd (мем может отличаться от снапшота).
@@ -38,7 +38,7 @@ public sealed class UpdateConfigHandler(IEtcdGateway gateway, string[] endpoints
             && effectiveBytes >= ValkeyLimits.MinMaxmemoryBytes
             && !ValkeyLimits.MaxmemoryFitsMem(effectiveBytes, mem))
             errors.Add(new("maxmemoryBytes",
-                $"maxmemoryBytes ({effectiveBytes}) обязан быть < mem-лимита ({mem}Gi) — риск OOM-килла (R3)"));
+                $"maxmemoryBytes ({effectiveBytes}) must be < the mem limit ({mem}Gi) — OOM-kill risk (R3)"));
         if (errors.Count > 0)
             return Result<ValkeyConfigUpdatedDto>.Failed(new ValkeyValidationException(errors));
 

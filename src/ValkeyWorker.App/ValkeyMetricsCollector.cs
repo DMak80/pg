@@ -28,7 +28,7 @@ public sealed class ValkeyMetricsCollector(
         var interval = EffectiveIntervalSec(collectIntervalSec);
         if (collectIntervalSec <= 0)
             logger.LogWarning(
-                "ValkeyWorker:Metrics:CollectIntervalSec={Value} <= 0 — используется дефолт 30 с",
+                "ValkeyWorker:Metrics:CollectIntervalSec={Value} <= 0 — using default 30 s",
                 collectIntervalSec);
 
         while (!stoppingToken.IsCancellationRequested)
@@ -44,7 +44,7 @@ public sealed class ValkeyMetricsCollector(
             catch (Exception ex)
             {
                 // Исключение тика — лог warning, тик жив (метрики не роняют воркер).
-                logger.LogWarning(ex, "тик ValkeyMetricsCollector упал: {Message}", ex.Message);
+                logger.LogWarning(ex, "ValkeyMetricsCollector tick failed: {Message}", ex.Message);
             }
 
             await Task.Delay(TimeSpan.FromSeconds(interval), stoppingToken);
@@ -57,14 +57,14 @@ public sealed class ValkeyMetricsCollector(
         var snapshots = await clustersSnapshot(ct);
         if (!snapshots.IsSuccess)
         {
-            logger.LogWarning("снапшот кластеров недоступен: {Message}", snapshots.Error!.Message);
+            logger.LogWarning("clusters snapshot unavailable: {Message}", snapshots.Error!.Message);
             return; // пропуск тика — LastSuccess не двигается (Stalled сработает)
         }
 
         var allocs = await portAllocSnapshot(ct);
         if (!allocs.IsSuccess)
         {
-            logger.LogWarning("снапшот portalloc недоступен: {Message}", allocs.Error!.Message);
+            logger.LogWarning("portalloc snapshot unavailable: {Message}", allocs.Error!.Message);
             return;
         }
 
@@ -113,7 +113,7 @@ public sealed class ValkeyMetricsCollector(
                     ct);
                 if (!info.IsSuccess)
                 {
-                    logger.LogWarning("кластер {Cluster}: INFO {Node} не удался: {Message}",
+                    logger.LogWarning("cluster {Cluster}: INFO {Node} failed: {Message}",
                         cluster, node, info.Error!.Message);
                     return false;
                 }
@@ -127,7 +127,7 @@ public sealed class ValkeyMetricsCollector(
         catch (Exception ex)
         {
             // Пассивный наблюдатель: исключение сбора — не роняет тик.
-            logger.LogWarning(ex, "кластер {Cluster}: сбор метрик упал: {Message}", cluster, ex.Message);
+            logger.LogWarning(ex, "cluster {Cluster}: metrics collection failed: {Message}", cluster, ex.Message);
             return false;
         }
     }

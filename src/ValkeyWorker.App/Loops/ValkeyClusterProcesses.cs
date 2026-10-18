@@ -44,7 +44,7 @@ internal sealed class ValkeyClusterProcesses(
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
-            throw new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы");
+            throw new ApplicationException("ValkeyWorker:Etcd:Endpoints are not set");
 
         // Снапшот контроль-плейна: Range /valkey/clusters/ c failover.
         var clustersKvs = await RangeWithFailoverAsync(endpoints, "/valkey/clusters/", ct);
@@ -54,9 +54,9 @@ internal sealed class ValkeyClusterProcesses(
         var parsed = ValkeySnapshotParser.Parse(clustersKvs.Value);
         foreach (var cluster in parsed.Value.Clusters)
         foreach (var error in cluster.ParseErrors)
-            logger.LogWarning("пропущен битый ключ: {Error}", error);
+            logger.LogWarning("skipped malformed key: {Error}", error);
         foreach (var unknown in parsed.Value.UnknownKeys)
-            logger.LogWarning("неизвестный ключ в /valkey/: {Key}", unknown);
+            logger.LogWarning("unknown key in /valkey/: {Key}", unknown);
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
         // (journal процесса несёт last_error — следующий тик продолжит).
@@ -91,7 +91,7 @@ internal sealed class ValkeyClusterProcesses(
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
             {
-                logger.LogError(claimed.Error, "клэйм {Cluster} не удался: {Message}", cluster, claimed.Error!.Message);
+                logger.LogError(claimed.Error, "claim {Cluster} failed: {Message}", cluster, claimed.Error!.Message);
                 return;
             }
 
@@ -151,7 +151,7 @@ internal sealed class ValkeyClusterProcesses(
                     break;
 
                 case ValkeyClusterKind.Skip:
-                    logger.LogWarning("кластер {Cluster}: битый config — пропуск тика", cluster);
+                    logger.LogWarning("cluster {Cluster}: malformed config — skipping tick", cluster);
                     break;
             }
         }
@@ -163,7 +163,7 @@ internal sealed class ValkeyClusterProcesses(
         {
             // Страховка контура кластера: даже исключение вне вызова процесса
             // не должно уходить в Task.WhenAll → StopHost.
-            logger.LogError(ex, "кластер {Cluster}: необработанное исключение (тик продолжается)", snap.Cluster);
+            logger.LogError(ex, "cluster {Cluster}: unhandled exception (tick continues)", snap.Cluster);
         }
         finally
         {
@@ -182,7 +182,7 @@ internal sealed class ValkeyClusterProcesses(
             if (outcome.IsSuccess)
                 logger.LogInformation("{Op} {Cluster}: ok", op, cluster);
             else
-                logger.LogError(outcome.Error, "{Op} {Cluster} не прошёл: {Message}", op, cluster, outcome.Error!.Message);
+                logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -190,7 +190,7 @@ internal sealed class ValkeyClusterProcesses(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "процесс {Op} {Cluster} бросил исключение: {Message}", op, cluster, ex.Message);
+            logger.LogError(ex, "process {Op} {Cluster} threw an exception: {Message}", op, cluster, ex.Message);
             try
             {
                 // CancellationToken.None: запись должна доехать даже при остановке host'а.
@@ -199,7 +199,7 @@ internal sealed class ValkeyClusterProcesses(
             }
             catch (Exception journalEx)
             {
-                logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
+                logger.LogWarning(journalEx, "work journal {Cluster} not written after exception", cluster);
             }
         }
     }
@@ -216,6 +216,6 @@ internal sealed class ValkeyClusterProcesses(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

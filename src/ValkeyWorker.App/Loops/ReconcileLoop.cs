@@ -50,7 +50,7 @@ internal sealed class ReconcileLoop(
                     metrics.LoopTick("reconcile", ok: false);
                     // Тик не прошёл (etcd недоступен и т.п.): лог + короткая задержка.
                     StatusError = tick;
-                    logger.LogError(tick.Error, "тик ReconcileLoop не прошёл: {Message}", tick.Error!.Message);
+                    logger.LogError(tick.Error, "ReconcileLoop tick failed: {Message}", tick.Error!.Message);
                     await Task.Delay(
                         TimeSpan.FromMilliseconds(options.CurrentValue.Loops.ErrorDelayMs), stoppingToken);
                 }
@@ -91,7 +91,7 @@ internal sealed class ReconcileLoop(
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
-            return Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы"));
+            return Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints are not set"));
 
         health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
 

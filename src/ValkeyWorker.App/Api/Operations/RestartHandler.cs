@@ -18,7 +18,7 @@ public sealed class RestartHandler(
     public RestartDto Handle(string? requestedBy)
     {
         logger.LogInformation(
-            "POST /api/restart: запрошен перезапуск (оператор {Operator})", requestedBy ?? "unknown");
+            "POST /api/restart: restart requested (operator {Operator})", requestedBy ?? "unknown");
         _ = Task.Run(async () =>
         {
             try
@@ -29,7 +29,7 @@ public sealed class RestartHandler(
             catch (Exception e)
             {
                 // Fire-and-forget: ответ 202 уже ушёл — пишем в журнал.
-                logger.LogError(e, "POST /api/restart: ошибка отложенного StopApplication");
+                logger.LogError(e, "POST /api/restart: delayed StopApplication failed");
             }
         });
         return new RestartDto(true);

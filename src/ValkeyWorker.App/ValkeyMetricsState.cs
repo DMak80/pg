@@ -35,31 +35,31 @@ public sealed class ValkeyMetricsState
     public ValkeyMetricsState(Meter meter)
     {
         Gauge(meter, "valkey.memory.used_bytes", s => s.UsedMemoryBytes,
-            "Потребление памяти нодой, байты (INFO used_memory)");
+            "Node memory usage, bytes (INFO used_memory)");
         Gauge(meter, "valkey.memory.max_bytes", s => s.MaxMemoryBytes,
-            "Предел памяти ноды maxmemory, байты (INFO maxmemory)");
+            "Node maxmemory limit, bytes (INFO maxmemory)");
         Gauge(meter, "valkey.connected_clients", s => s.ConnectedClients,
-            "Подключённые клиенты (INFO connected_clients)");
+            "Connected clients (INFO connected_clients)");
         Gauge(meter, "valkey.blocked_clients", s => s.BlockedClients,
-            "Заблокированные клиенты BLPOP и т.п. (INFO blocked_clients)");
+            "Clients blocked by BLPOP etc. (INFO blocked_clients)");
         Gauge(meter, "valkey.evicted_keys", s => s.EvictedKeys,
-            "Кумулятив выселенных ключей (gauge: сброс при рестарте ноды)");
+            "Cumulative evicted keys (gauge: resets on node restart)");
         Gauge(meter, "valkey.expired_keys", s => s.ExpiredKeys,
-            "Кумулятив истёкших ключей (gauge: сброс при рестарте ноды)");
+            "Cumulative expired keys (gauge: resets on node restart)");
         Gauge(meter, "valkey.keyspace_hits", s => s.KeyspaceHits,
-            "Кумулятив попаданий (hit-rate = hits/(hits+misses))");
+            "Cumulative hits (hit-rate = hits/(hits+misses))");
         Gauge(meter, "valkey.keyspace_misses", s => s.KeyspaceMisses,
-            "Кумулятив промахов ключей");
+            "Cumulative key misses");
         Gauge(meter, "valkey.instantaneous_ops_per_sec", s => s.InstantaneousOpsPerSec,
-            "Операции/сек — готовая скорость INFO (без rate())");
+            "Ops/sec — INFO instantaneous rate (no rate())");
         Gauge(meter, "valkey.total_connections_received", s => s.TotalConnectionsReceived,
-            "Кумулятив принятых соединений (gauge: сброс при рестарте ноды)");
+            "Cumulative connections received (gauge: resets on node restart)");
         Gauge(meter, "valkey.rejected_connections", s => s.RejectedConnections,
-            "Кумулятив отклонённых соединений (maxclients)");
+            "Cumulative rejected connections (maxclients)");
         Gauge(meter, "valkey.total_commands_processed", s => s.TotalCommandsProcessed,
-            "Кумулятив обработанных команд (gauge: сброс при рестарте ноды)");
+            "Cumulative commands processed (gauge: resets on node restart)");
         Gauge(meter, "valkey.connected_slaves", s => s.ConnectedSlaves,
-            "Число реплик (v1 standalone — всегда 0; заготовка под топологии)");
+            "Replica count (v1 standalone — always 0; placeholder for topologies)");
 
         // role: enum-паттерн — 1 в серии с лейблом фактической роли (master|slave);
         // прочие значения INFO серию не эмитят (консервативно).
@@ -71,12 +71,12 @@ public sealed class ValkeyMetricsState
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("node", kv.Key.Node),
                     new KeyValuePair<string, object?>("role", kv.Value.Role)))),
-            description: "Роль ноды: 1 в серии с role=\"master|slave\" (INFO Replication.role)");
+            description: "Node role: 1 in the series with role=\"master|slave\" (INFO Replication.role)");
 
         meter.CreateObservableGauge(
             "valkey.collector.last_success_timestamp_seconds",
             () => Measure(new[] { ReadLastSuccess() }.OfType<Measurement<long>>()),
-            unit: "s", description: "Unix-время последнего успешного тика коллектора");
+            unit: "s", description: "Unix time of the last successful collector tick");
     }
 
     // Обновление стейта кластера тиком: предыдущие записи кластера затираются —

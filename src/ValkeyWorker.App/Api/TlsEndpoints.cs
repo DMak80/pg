@@ -50,22 +50,22 @@ public static class TlsEndpoints
                 break;
             case ManagedCertStatus.Broken:
                 throw new ApplicationException(
-                    $"ValkeyWorker:Api:Tls: ключ /workers/api_tls/valkeyworker бит ({managedCert.Error}) — "
-                    + "исправьте из панели (PUT api-cert) или удалите (DELETE api-cert)");
+                    $"ValkeyWorker:Api:Tls: key /workers/api_tls/valkeyworker is broken ({managedCert.Error}) — "
+                    + "fix it from the panel (PUT api-cert) or delete it (DELETE api-cert)");
             default:
                 serverCert = LoadServerCertificate(tls);
                 source = "env";
                 if (managedCert?.Status == ManagedCertStatus.Unreachable)
-                    warning = $"etcd недоступен ({managedCert.Error}) — стартую на env-серте";
+                    warning = $"etcd unreachable ({managedCert.Error}) — starting with the env certificate";
                 break;
         }
 
         if (serverCert is null)
             throw new ApplicationException(
-                "ValkeyWorker:Api:Tls: серверный серт/ключ не заданы (VWK_API_TLS_CERT/KEY или *_PATH; etcd-ключ /workers/api_tls/valkeyworker; arch/21 §1.1)");
+                "ValkeyWorker:Api:Tls: server certificate/key is not set (VWK_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/valkeyworker; arch/21 §1.1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
-            "ValkeyWorker:Api:Tls: ClientCA не задан (VWK_API_TLS_CLIENT_CA[_PATH])");
+            "ValkeyWorker:Api:Tls: ClientCA is not set (VWK_API_TLS_CLIENT_CA[_PATH])");
 
         // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только mTLS.
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(

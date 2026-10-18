@@ -84,24 +84,24 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
     {
         var errors = new List<ValidationError>();
         if (request.Name is null || !ValkeyLimits.ClusterPattern().IsMatch(request.Name))
-            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (строчные, без дефиса)"));
+            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)"));
 
         var nodes = request.Nodes ?? ValkeyLimits.DefNodes;
         if (nodes != ValkeyLimits.MaxNodes)
-            errors.Add(new("nodes", $"nodes: только {ValkeyLimits.MaxNodes} в v1 (реплики — roadmap)"));
+            errors.Add(new("nodes", $"nodes: only {ValkeyLimits.MaxNodes} in v1 (replicas — roadmap)"));
 
         var maxmemory = request.MaxmemoryBytes ?? ValkeyLimits.DefMaxmemoryBytes;
         if (maxmemory < ValkeyLimits.MinMaxmemoryBytes)
             errors.Add(new("maxmemoryBytes", $"maxmemoryBytes: > {ValkeyLimits.MinMaxmemoryBytes - 1}"));
         if (!ValkeyLimits.IsKnownPolicy(request.MaxmemoryPolicy))
             errors.Add(new("maxmemoryPolicy",
-                $"maxmemoryPolicy: одно из {string.Join('|', ValkeyWriting.KnownPolicies.OrderBy(p => p, StringComparer.Ordinal))}"));
+                $"maxmemoryPolicy: one of {string.Join('|', ValkeyWriting.KnownPolicies.OrderBy(p => p, StringComparer.Ordinal))}"));
 
         var cpu = request.Resources?.Cpu ?? ValkeyLimits.DefCpu;
         var memGi = request.Resources?.MemGi ?? ValkeyLimits.DefMemGi;
         var diskGi = request.Resources?.DiskGi ?? ValkeyLimits.DefDiskGi;
         if (cpu is < ValkeyLimits.MinCpu or > ValkeyLimits.MaxCpu)
-            errors.Add(new("cpu", $"cpu: {ValkeyLimits.MinCpu}..{ValkeyLimits.MaxCpu} ядер"));
+            errors.Add(new("cpu", $"cpu: {ValkeyLimits.MinCpu}..{ValkeyLimits.MaxCpu} cores"));
         if (memGi is < ValkeyLimits.MinGiB or > ValkeyLimits.MaxGiB)
             errors.Add(new("memGi", $"memGi: {ValkeyLimits.MinGiB}..{ValkeyLimits.MaxGiB} GiB"));
         if (diskGi is < ValkeyLimits.MinGiB or > ValkeyLimits.MaxGiB)
@@ -112,7 +112,7 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
             && memGi is >= ValkeyLimits.MinGiB and <= ValkeyLimits.MaxGiB
             && !ValkeyLimits.MaxmemoryFitsMem(maxmemory, memGi))
             errors.Add(new("maxmemoryBytes",
-                $"maxmemoryBytes ({maxmemory}) обязан быть < mem-лимита ({memGi}Gi) — риск OOM-килла (R3)"));
+                $"maxmemoryBytes ({maxmemory}) must be < the mem limit ({memGi}Gi) — OOM-kill risk (R3)"));
 
         return errors;
     }

@@ -35,7 +35,7 @@ public sealed class UpdateResourcesHandler(IEtcdGateway gateway, string[] endpoi
         // Валидация (границы pg §9.3).
         var errors = new List<ValidationError>();
         if (cpu < ValkeyLimits.MinCpu || cpu > ValkeyLimits.MaxCpu)
-            errors.Add(new("cpu", $"cpu: {ValkeyLimits.MinCpu}..{ValkeyLimits.MaxCpu} ядер"));
+            errors.Add(new("cpu", $"cpu: {ValkeyLimits.MinCpu}..{ValkeyLimits.MaxCpu} cores"));
         if (memGi is < ValkeyLimits.MinGiB or > ValkeyLimits.MaxGiB)
             errors.Add(new("memGi", $"memGi: {ValkeyLimits.MinGiB}..{ValkeyLimits.MaxGiB} GiB"));
         if (diskGi is < ValkeyLimits.MinGiB or > ValkeyLimits.MaxGiB)
@@ -46,7 +46,7 @@ public sealed class UpdateResourcesHandler(IEtcdGateway gateway, string[] endpoi
             && config.Value.MaxmemoryBytes >= ValkeyLimits.MinMaxmemoryBytes
             && !ValkeyLimits.MaxmemoryFitsMem(config.Value.MaxmemoryBytes, memGi))
             errors.Add(new("memGi",
-                $"memGi ({memGi}) обязан быть > maxmemory_bytes ({config.Value.MaxmemoryBytes}) — риск OOM-килла (R3)"));
+                $"memGi ({memGi}) must be > maxmemory_bytes ({config.Value.MaxmemoryBytes}) — OOM-kill risk (R3)"));
         if (errors.Count > 0)
             return Result<ValkeyResourcesUpdatedDto>.Failed(new ValkeyValidationException(errors));
 

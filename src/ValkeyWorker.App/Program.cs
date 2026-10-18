@@ -61,12 +61,12 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 // в DI-фабрике драйвера, задача 4);
 // ключ доступа /valkeyworker/api/<id> без URL бессмысленен (arch/21 §1.1).
 builder.Services.AddOptions<ValkeyWorkerOptions>()
-    .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "ValkeyWorker:Etcd:Endpoints не заданы")
+    .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "ValkeyWorker:Etcd:Endpoints are not set")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
-        "ValkeyWorker:Api:AdvertiseUrl не задан (env VWK_API_ADVERTISE_URL)")
+        "ValkeyWorker:Api:AdvertiseUrl is not set (env VWK_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/21 §1.1)")
+        "AdvertiseUrl must be https:// (mTLS-only API, arch/21 §1.1)")
     .ValidateOnStart();
 
 // Управляемый серт API (arch/21 §1.1): чтение ключа /workers/api_tls/valkeyworker
@@ -121,7 +121,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
-            throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm требует ValkeyWorker:Docker:SwarmManager");
+            throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm requires ValkeyWorker:Docker:SwarmManager");
         // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени
         // (hostname из /nodes) — TLS-volume пишет серты на ноду размещения
         // (t06-ревью); пустая таблица (однонодовый контур) — manager.
@@ -133,7 +133,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .Select(h => new HostEndpoint(h.Name, h.Endpoint))
         .ToList();
     if (hosts.Count == 0)
-        throw new ApplicationException("ValkeyWorker:Docker:Mode=Plain требует непустую таблицу ValkeyWorker:Docker:Hosts");
+        throw new ApplicationException("ValkeyWorker:Docker:Mode=Plain requires a non-empty ValkeyWorker:Docker:Hosts table");
     return new PlainClusterDriver(hosts, factory);
 });
 
@@ -322,9 +322,9 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "ValkeyWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/21 §1.1)");
+        "ValkeyWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests only, arch/21 §1.1)");
 if (apiTls.Source is { } certSource)
-    app.Logger.LogInformation("ValkeyWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+    app.Logger.LogInformation("ValkeyWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("ValkeyWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
@@ -370,7 +370,7 @@ static async Task<Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnap
             : Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(parsed.Error!);
     }
 
-    return Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+    return Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
 }
 
 // Источник адресов нод коллектора: Range /valkeyworker/portalloc/ →
@@ -402,7 +402,7 @@ static async Task<Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string,
             }
             catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
             {
-                logger.LogWarning("коллектор метрик: битый portalloc-ключ {Cluster}: {Error}",
+                logger.LogWarning("metrics collector: malformed portalloc key {Cluster}: {Error}",
                     cluster, ex.Message);
             }
         }
@@ -410,7 +410,7 @@ static async Task<Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string,
         return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Success(allocs);
     }
 
-    return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+    return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
 }
 
 // WAF-тесты (ValkeyWorker.IntegrationTests/Api, задача 13): точка входа как public partial.

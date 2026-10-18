@@ -21,7 +21,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
         // 1) Стендовый эндпоинт выключен — 404 (до идемпотентности и записей).
         if (!enabled)
             return Result<SeedDemoDto>.Failed(
-                new WorkerApiNotFoundException("seed-эндпоинт выключен (ValkeyWorker:Api:EnableSeedEndpoint)"));
+                new WorkerApiNotFoundException("seed endpoint is disabled (ValkeyWorker:Api:EnableSeedEndpoint)"));
 
         // 2) Идемпотентность: сбой чтения → 503; config жив → {"seeded":false}.
         var config = await ValkeyEtcdFailover.CallAsync(endpoints,
