@@ -20,9 +20,9 @@ public sealed record PeerTrustAnchor(string Name, string PublicKeyPem)
     public static PeerTrustAnchor FromJson(string json)
     {
         var trust = JsonSerializer.Deserialize<PeerTrustAnchor>(json, Json)
-            ?? throw new InvalidOperationException("пустой JSON trust-anchor");
+            ?? throw new InvalidOperationException("empty trust-anchor JSON");
         if (string.IsNullOrWhiteSpace(trust.Name) || string.IsNullOrWhiteSpace(trust.PublicKeyPem))
-            throw new InvalidOperationException("trust-anchor: обязательные поля пусты");
+            throw new InvalidOperationException("trust-anchor: required fields are empty");
         return trust;
     }
 }

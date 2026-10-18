@@ -22,10 +22,10 @@ public sealed record PeerCertificate(
     public static PeerCertificate FromJson(string json)
     {
         var cert = JsonSerializer.Deserialize<PeerCertificate>(json, Json)
-            ?? throw new InvalidOperationException("пустой JSON сертификата пира");
+            ?? throw new InvalidOperationException("empty peer certificate JSON");
         if (string.IsNullOrWhiteSpace(cert.Name) || string.IsNullOrWhiteSpace(cert.PublicKeyPem)
             || string.IsNullOrWhiteSpace(cert.CaName) || string.IsNullOrWhiteSpace(cert.Signature))
-            throw new InvalidOperationException("сертификат пира: обязательные поля пусты");
+            throw new InvalidOperationException("peer certificate: required fields are empty");
         return cert;
     }
 

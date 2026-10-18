@@ -168,7 +168,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<bool>.Failed(new ApplicationException($"bucket-probe {host}:{port}: таймаут"));
+            return Result<bool>.Failed(new ApplicationException($"bucket-probe {host}:{port}: timeout"));
         }
         catch (Exception ex)
         {
@@ -199,7 +199,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result.Failed(new ApplicationException($"bucket-ensure {host}:{port}: таймаут"));
+            return Result.Failed(new ApplicationException($"bucket-ensure {host}:{port}: timeout"));
         }
         catch (Exception ex)
         {
@@ -236,7 +236,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
             {
                 // null-поля грани (диск недоступен) — транзиент (spec §5 C)
                 return Result<OwnS3NodeUsage>.Failed(new ApplicationException(
-                    $"usage {host}:{port}: дисковые поля отсутствуют/null"));
+                    $"usage {host}:{port}: disk fields missing/null"));
             }
 
             return Result<OwnS3NodeUsage>.Success(
@@ -244,7 +244,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<OwnS3NodeUsage>.Failed(new ApplicationException($"usage {host}:{port}: таймаут"));
+            return Result<OwnS3NodeUsage>.Failed(new ApplicationException($"usage {host}:{port}: timeout"));
         }
         catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException)
         {
@@ -294,7 +294,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return Result<OwnS3ReplicationStatus>.Failed(
-                new ApplicationException($"replication-status {host}:{port}: таймаут"));
+                new ApplicationException($"replication-status {host}:{port}: timeout"));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException)
         {
@@ -339,7 +339,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<OwnS3ProbeReport>.Failed(new ApplicationException($"probe {host}:{port}: таймаут"));
+            return Result<OwnS3ProbeReport>.Failed(new ApplicationException($"probe {host}:{port}: timeout"));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException)
         {
@@ -379,7 +379,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<OwnS3SyncReportPage>.Failed(new ApplicationException($"sync-report {host}:{port}: таймаут"));
+            return Result<OwnS3SyncReportPage>.Failed(new ApplicationException($"sync-report {host}:{port}: timeout"));
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException)
         {
@@ -418,7 +418,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<OwnS3ListPage>.Failed(new ApplicationException($"listing {host}:{port}/{bucket}: таймаут"));
+            return Result<OwnS3ListPage>.Failed(new ApplicationException($"listing {host}:{port}/{bucket}: timeout"));
         }
         catch (Exception ex)
         {
@@ -473,7 +473,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<bool>.Failed(new ApplicationException($"delete-target {host}:{port}: таймаут"));
+            return Result<bool>.Failed(new ApplicationException($"delete-target {host}:{port}: timeout"));
         }
         catch (HttpRequestException ex)
         {
@@ -516,7 +516,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Result<bool>.Failed(new ApplicationException($"denylist {host}:{port}: таймаут"));
+            return Result<bool>.Failed(new ApplicationException($"denylist {host}:{port}: timeout"));
         }
         catch (Exception ex) when (ex is HttpRequestException or CryptographicException or FormatException)
         {

@@ -72,5 +72,5 @@ public static class S3ErrorCatalog
     public static S3ErrorInfo Get(S3ErrorCode code) =>
         Catalog.TryGetValue(code, out var info)
             ? info
-            : throw new ArgumentOutOfRangeException(nameof(code), code, "Код отсутствует в каталоге ошибок S3");
+            : throw new ArgumentOutOfRangeException(nameof(code), code, "Code is missing from the S3 error catalog");
 }
