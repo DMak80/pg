@@ -57,15 +57,15 @@ DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
 // Fail-fast при старте (arch/24 §8): чистые предикаты S3StartupChecks —
 // endpoints etcd, advertise, docker-топология, пороги, bucket, порт-диапазон.
 builder.Services.AddOptions<S3WorkerOptions>()
-    .Validate(o => S3StartupChecks.EtcdEndpoints(o), "S3Worker:Etcd:Endpoints не заданы")
+    .Validate(o => S3StartupChecks.EtcdEndpoints(o), "S3Worker:Etcd:Endpoints are not configured")
     .Validate(o => S3StartupChecks.AdvertiseUrl(o),
-        "S3Worker:Api:AdvertiseUrl не задан или не https:// (env S3W_API_ADVERTISE_URL; mTLS-only API — arch/24 §1.1)")
+        "S3Worker:Api:AdvertiseUrl is not set or not https:// (env S3W_API_ADVERTISE_URL; mTLS-only API — arch/24 §1.1)")
     .Validate(o => S3StartupChecks.DockerTopology(o),
-        "S3Worker:Docker: некорректная топология (Swarm → SwarmManager обязателен; Plain → непустая таблица Hosts без дубликатов имён)")
+        "S3Worker:Docker: invalid topology (Swarm → SwarmManager required; Plain → non-empty Hosts table without duplicate names)")
     .Validate(o => S3StartupChecks.Thresholds(o),
-        "S3Worker:Thresholds: пороги обязаны быть положительными, NodeBootSec ≤ 100")
+        "S3Worker:Thresholds: thresholds must be positive, NodeBootSec ≤ 100")
     .Validate(o => S3StartupChecks.Bucket(o),
-        "S3Worker:Bucket не задан или не соответствует паттерну имени S3-бакета (env S3W_BUCKET)")
+        "S3Worker:Bucket is not set or does not match the S3 bucket name pattern (env S3W_BUCKET)")
     .Validate(o => S3StartupChecks.PortRange(o),
         "S3Worker:Docker:PortRange: 0 < From < To ≤ 65535")
     .ValidateOnStart();
@@ -74,7 +74,7 @@ builder.Services.AddOptions<S3WorkerOptions>()
 // (arch/24 §8 «неполные секретные пары») — воркер с обрезанным env не стартует.
 var secretStore = new S3Worker.Provisioning.SecretProfileStore();
 foreach (var broken in secretStore.ValidateEnvPairs())
-    throw new ApplicationException($"S3W_NODE_SECRETS__{broken}: неполная секретная пара");
+    throw new ApplicationException($"S3W_NODE_SECRETS__{broken}: incomplete secret pair");
 builder.Services.AddSingleton(secretStore);
 
 // HTTP API хендлеры (arch/24 §1.1; Task 14) + счётчик операций.
@@ -371,9 +371,9 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "S3Worker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/24 §1.1)");
+        "S3Worker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/24 §1.1)");
 if (apiTls.Source is { } certSource)
-    app.Logger.LogInformation("S3Worker:Api:Tls: серверный серт API — источник {Source}", certSource);
+    app.Logger.LogInformation("S3Worker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("S3Worker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();

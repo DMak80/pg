@@ -38,7 +38,7 @@ public sealed class ServiceProbes(
                 last = Result.Failed(range.Error!);
             }
 
-            return last.Error ?? new ApplicationException("S3Worker:Etcd:Endpoints не заданы");
+            return last.Error ?? new ApplicationException("S3Worker:Etcd:Endpoints are not configured");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -76,7 +76,7 @@ public sealed class ServiceProbes(
         catch (Exception ex)
         {
             // Catch-all: непредвиденный отказ вне per-host-вызовов — структура, не бросок.
-            results["all"] = Result.Failed(new ApplicationException($"docker-проба: {ex.Message}", ex));
+            results["all"] = Result.Failed(new ApplicationException($"docker probe: {ex.Message}", ex));
         }
 
         return results;

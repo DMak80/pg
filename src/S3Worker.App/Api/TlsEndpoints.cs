@@ -49,22 +49,22 @@ public static class TlsEndpoints
                 break;
             case ManagedCertStatus.Broken:
                 throw new ApplicationException(
-                    $"S3Worker:Api:Tls: ключ /workers/api_tls/s3worker бит ({managedCert.Error}) — "
-                    + "исправьте из панели (PUT api-cert) или удалите (DELETE api-cert)");
+                    $"S3Worker:Api:Tls: key /workers/api_tls/s3worker is broken ({managedCert.Error}) — "
+                    + "fix it from the panel (PUT api-cert) or delete it (DELETE api-cert)");
             default:
                 serverCert = LoadServerCertificate(tls);
                 source = "env";
                 if (managedCert?.Status == ManagedCertStatus.Unreachable)
-                    warning = $"etcd недоступен ({managedCert.Error}) — стартую на env-серте";
+                    warning = $"etcd unreachable ({managedCert.Error}) — starting on the env certificate";
                 break;
         }
 
         if (serverCert is null)
             throw new ApplicationException(
-                "S3Worker:Api:Tls: серверный серт/ключ не заданы (S3W_API_TLS_CERT/KEY или *_PATH; etcd-ключ /workers/api_tls/s3worker; arch/24 §1.1)");
+                "S3Worker:Api:Tls: server certificate/key not set (S3W_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/s3worker; arch/24 §1.1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
-            "S3Worker:Api:Tls: ClientCA не задан (S3W_API_TLS_CLIENT_CA[_PATH])");
+            "S3Worker:Api:Tls: ClientCA not set (S3W_API_TLS_CLIENT_CA[_PATH])");
 
         // Явный Listen подавляет default-URL (ASPNETCORE_HTTP_PORTS) — только mTLS.
         builder.WebHost.ConfigureKestrel(o => o.ListenAnyIP(port, listenOptions => listenOptions.UseHttps(

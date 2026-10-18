@@ -13,42 +13,42 @@ namespace S3Worker.App.Api.Operations;
 
 // Все etcd-endpoint'ы недоступны — писать некуда — 503.
 public sealed class EtcdWriteUnavailableException()
-    : Exception("нет активного etcd-endpoint'а (etcd недоступен)");
+    : Exception("no active etcd endpoint (etcd unreachable)");
 
 // Кластер не найден — 404.
 public sealed class S3ClusterNotFoundException(string cluster)
-    : Exception($"S3-кластер {cluster} не найден");
+    : Exception($"S3 cluster {cluster} not found");
 
 // Кластер не Active (NOT_INITIALIZED/TO_REMOVE) — 409.
 public sealed class S3ClusterNotActiveException(string cluster, string state)
-    : Exception($"S3-кластер {cluster} не Active (state={state}) — операция отклонена");
+    : Exception($"S3 cluster {cluster} is not Active (state={state}) — operation rejected");
 
 // Валидация: 400 с errors по полям (базовый для производных 400-исключений,
 // напр. S3InvalidLinksException).
 public class S3ValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры некорректны")
+    : Exception("invalid parameters")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Профиль секретов отсутствует в env воркера — 422 (перечень — ТОЛЬКО имена).
 public sealed class S3SecretProfileUnavailableException(IReadOnlyList<string> names)
-    : Exception($"профиль секретов не найден в env воркера; доступны: {string.Join(", ", names)}")
+    : Exception($"secret profile not found in worker env; available: {string.Join(", ", names)}")
 {
     public IReadOnlyList<string> Names { get; } = names;
 }
 
 // Кластер с таким именем уже существует — 409.
 public sealed class S3ClusterAlreadyExistsException(string name)
-    : Exception($"S3-кластер {name} уже существует");
+    : Exception($"S3 cluster {name} already exists");
 
 // Нода кластера не найдена — 404.
 public sealed class S3NodeNotFoundException(string cluster, string node)
-    : Exception($"нода {node} S3-кластера {cluster} не найдена");
+    : Exception($"node {node} of S3 cluster {cluster} not found");
 
 // Коллизия имени инстанса — 409 (txn NotExists проигран).
 public sealed class S3NodeAlreadyExistsException(string cluster, string node)
-    : Exception($"инстанс {node} S3-кластера {cluster} уже существует");
+    : Exception($"instance {node} of S3 cluster {cluster} already exists");
 
 // Невалидный граф links (400; ошибки — по полям, S3ValidationException-паттерн).
 public sealed class S3InvalidLinksException(IReadOnlyList<ValidationError> errors)
@@ -59,11 +59,11 @@ public sealed class S3LastNodeException(string message) : Exception(message);
 
 // Живая заявка ротации — 409.
 public sealed class S3RotationAlreadyRequestedException(string cluster)
-    : Exception($"ротация секретов {cluster} уже запрошена — дождитесь исполнения");
+    : Exception($"secret rotation for {cluster} already requested — wait for it to complete");
 
 // RMW-compare проигран — повтор запроса клиентом.
 public sealed class S3ConcurrentWriteException(string key)
-    : Exception($"{key} изменился с момента чтения — повторите запрос");
+    : Exception($"{key} changed since read — retry the request");
 
 // Ресурс/эндпоинт воркера не найден или выключен — 404 (напр., seed за флагом).
 public sealed class WorkerApiNotFoundException(string message) : Exception(message);

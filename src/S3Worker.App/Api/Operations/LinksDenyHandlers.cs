@@ -147,17 +147,17 @@ public static class S3LinksValidator
         {
             var (a, b) = (links[i].A, links[i].B);
             if (a is null || !S3Limits.InstanceNamePattern().IsMatch(a) || !existing.Contains(a))
-                errors.Add(new($"links[{i}].a", $"имя «{a}» не существует в кластере"));
+                errors.Add(new($"links[{i}].a", $"name «{a}» does not exist in the cluster"));
             if (b is null || !S3Limits.InstanceNamePattern().IsMatch(b) || !existing.Contains(b))
-                errors.Add(new($"links[{i}].b", $"имя «{b}» не существует в кластере"));
+                errors.Add(new($"links[{i}].b", $"name «{b}» does not exist in the cluster"));
             if (a is not null && string.Equals(a, b, StringComparison.Ordinal))
-                errors.Add(new($"links[{i}]", "a и b совпадают — связь вырождена"));
+                errors.Add(new($"links[{i}]", "a and b are equal — link is degenerate"));
             if (a is not null && b is not null && !string.Equals(a, b, StringComparison.Ordinal))
             {
                 // Каноническая пара (Ordinal-минимальный первым) — зеркальный дубль ловится тем же множеством.
                 var canonicalPair = string.CompareOrdinal(a, b) < 0 ? (a, b) : (b, a);
                 if (!seen.Add(canonicalPair))
-                    errors.Add(new($"links[{i}]", $"дубль пары {{a,b}} (зеркальность ≡ одна связь)"));
+                    errors.Add(new($"links[{i}]", $"duplicate pair {{a,b}} (mirror ≡ one link)"));
             }
         }
 

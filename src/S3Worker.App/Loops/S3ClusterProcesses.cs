@@ -51,7 +51,7 @@ internal sealed class S3ClusterProcesses(
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
-            throw new ApplicationException("S3Worker:Etcd:Endpoints не заданы");
+            throw new ApplicationException("S3Worker:Etcd:Endpoints are not configured");
 
         // Снапшот контроль-плейна: Range /s3/ c failover.
         var clustersKvs = await RangeWithFailoverAsync(endpoints, "/s3/", ct);
@@ -62,13 +62,13 @@ internal sealed class S3ClusterProcesses(
         foreach (var cluster in parsed.Value.Clusters)
         {
             if (cluster.ParseError is not null)
-                logger.LogWarning("пропущен битый ключ: {Error}", cluster.ParseError);
+                logger.LogWarning("skipped malformed key: {Error}", cluster.ParseError);
             foreach (var node in cluster.Nodes.Where(n => n.ParseError is not null))
-                logger.LogWarning("пропущен битый ключ ноды: {Error}", node.ParseError);
+                logger.LogWarning("skipped malformed node key: {Error}", node.ParseError);
         }
 
         foreach (var unknown in parsed.Value.UnknownKeys)
-            logger.LogWarning("неизвестный ключ в /s3/: {Key}", unknown);
+            logger.LogWarning("unknown key in /s3/: {Key}", unknown);
         if (parsed.Value.UnknownKeys.Count > 0)
             _unknownKeys.Add(parsed.Value.UnknownKeys.Count);
 
@@ -105,7 +105,7 @@ internal sealed class S3ClusterProcesses(
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
             {
-                logger.LogError(claimed.Error, "клэйм {Cluster} не удался: {Message}", cluster, claimed.Error!.Message);
+                logger.LogError(claimed.Error, "claim {Cluster} failed: {Message}", cluster, claimed.Error!.Message);
                 return;
             }
 
@@ -170,7 +170,7 @@ internal sealed class S3ClusterProcesses(
                     break;
 
                 case S3ClusterKind.Skip:
-                    logger.LogWarning("кластер {Cluster}: битый config — пропуск тика", cluster);
+                    logger.LogWarning("cluster {Cluster}: malformed config — skipping tick", cluster);
                     break;
             }
         }
@@ -182,7 +182,7 @@ internal sealed class S3ClusterProcesses(
         {
             // Страховка контура кластера: даже исключение вне вызова процесса
             // не должно уходить в Task.WhenAll → StopHost.
-            logger.LogError(ex, "кластер {Cluster}: необработанное исключение (тик продолжается)", snap.Cluster);
+            logger.LogError(ex, "cluster {Cluster}: unhandled exception (tick continues)", snap.Cluster);
         }
         finally
         {
@@ -201,7 +201,7 @@ internal sealed class S3ClusterProcesses(
             if (outcome.IsSuccess)
                 logger.LogInformation("{Op} {Cluster}: ok", op, cluster);
             else
-                logger.LogError(outcome.Error, "{Op} {Cluster} не прошёл: {Message}", op, cluster, outcome.Error!.Message);
+                logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -209,7 +209,7 @@ internal sealed class S3ClusterProcesses(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "процесс {Op} {Cluster} бросил исключение: {Message}", op, cluster, ex.Message);
+            logger.LogError(ex, "process {Op} {Cluster} threw an exception: {Message}", op, cluster, ex.Message);
             try
             {
                 // CancellationToken.None: запись должна доехать даже при остановке host'а.
@@ -218,7 +218,7 @@ internal sealed class S3ClusterProcesses(
             }
             catch (Exception journalEx)
             {
-                logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
+                logger.LogWarning(journalEx, "work journal for {Cluster} not written after exception", cluster);
             }
         }
     }
@@ -235,7 +235,7 @@ internal sealed class S3ClusterProcesses(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not configured");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
@@ -250,6 +250,6 @@ internal sealed class S3ClusterProcesses(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not configured");
     }
 }

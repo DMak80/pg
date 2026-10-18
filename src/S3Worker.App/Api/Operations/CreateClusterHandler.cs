@@ -91,14 +91,14 @@ public static class S3ClusterValidator
     {
         var errors = new List<ValidationError>();
         if (request.Name is null || !S3Limits.ClusterPattern().IsMatch(request.Name))
-            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (строчные, без дефиса)"));
+            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)"));
 
         if (!string.Equals(request.Platform, S3Limits.Platform, StringComparison.Ordinal))
-            errors.Add(new("platform", $"platform: только \"{S3Limits.Platform}\" (arch/23 §2)"));
+            errors.Add(new("platform", $"platform: only \"{S3Limits.Platform}\" (arch/23 §2)"));
 
         var instances = request.Instances ?? [];
         if (instances.Count > S3Limits.MaxNodes)
-            errors.Add(new("instances", $"instances: 0..{S3Limits.MaxNodes} (арх.23 §2)"));
+            errors.Add(new("instances", $"instances: 0..{S3Limits.MaxNodes} (arch.23 §2)"));
 
         // Имена: паттерн + не резерв + уникальность в теле; placement обязателен
         // каждому; ресурсы — per-instance (диапазоны — прежние).
@@ -107,19 +107,19 @@ public static class S3ClusterValidator
         {
             var instance = instances[i];
             if (instance.Name is null || !S3Limits.InstanceNamePattern().IsMatch(instance.Name))
-                errors.Add(new($"instances[{i}].name", "name: [a-z][a-z0-9_]{0,62} (паттерн кластера)"));
+                errors.Add(new($"instances[{i}].name", "name: [a-z][a-z0-9_]{0,62} (cluster pattern)"));
             else if (string.Equals(instance.Name, S3Limits.ReservedInstanceName, StringComparison.Ordinal))
-                errors.Add(new($"instances[{i}].name", $"«{S3Limits.ReservedInstanceName}» зарезервировано (PKI оркестратора)"));
+                errors.Add(new($"instances[{i}].name", $"«{S3Limits.ReservedInstanceName}» is reserved (orchestrator PKI)"));
             else if (!seen.Add(instance.Name))
-                errors.Add(new($"instances[{i}].name", $"дубль имени «{instance.Name}» в теле"));
+                errors.Add(new($"instances[{i}].name", $"duplicate name «{instance.Name}» in request body"));
             if (instance.Placement is null || instance.Placement.IsEmpty)
-                errors.Add(new($"instances[{i}].placement", "placement: минимум один атрибут (dockerHost|swarmNode|swarmLabels)"));
+                errors.Add(new($"instances[{i}].placement", "placement: at least one attribute (dockerHost|swarmNode|swarmLabels)"));
             ValidateResources(instance.Resources, errors, $"instances[{i}].");
         }
 
         ValidateResources(request.Resources, errors);
         if (string.IsNullOrWhiteSpace(request.SecretProfile))
-            errors.Add(new("secretProfile", "secretProfile: непустое имя env-профиля (arch/23 §6)"));
+            errors.Add(new("secretProfile", "secretProfile: non-empty env profile name (arch/23 §6)"));
 
         return errors;
     }
@@ -129,7 +129,7 @@ public static class S3ClusterValidator
     {
         var cpu = resources?.Cpu ?? 1m;
         if (cpu is < S3Limits.MinCpu or > S3Limits.MaxCpu)
-            errors.Add(new($"{fieldPrefix}cpu", $"cpu: {S3Limits.MinCpu}..{S3Limits.MaxCpu} ядер"));
+            errors.Add(new($"{fieldPrefix}cpu", $"cpu: {S3Limits.MinCpu}..{S3Limits.MaxCpu} cores"));
         var memGi = resources?.MemGi ?? S3Limits.MinGiB;
         if (memGi is < S3Limits.MinGiB or > S3Limits.MaxGiB)
             errors.Add(new($"{fieldPrefix}memGi", $"memGi: {S3Limits.MinGiB}..{S3Limits.MaxGiB}"));

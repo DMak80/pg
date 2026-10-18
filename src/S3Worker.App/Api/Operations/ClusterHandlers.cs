@@ -66,7 +66,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
 
 // Битый config в etcd — 503.
 public sealed class InvalidS3ConfigException(string cluster)
-    : Exception($"config S3-кластера {cluster} не читается (битый JSON)");
+    : Exception($"config of S3 cluster {cluster} is unreadable (malformed JSON)");
 
 // POST /api/s3/clusters/{c}/nodes: имя инстанса из тела (arch/24 §1.1) —
 // гварды (Active; паттерн/резерв; <9) → txn NotExists(nodes/<I>/state) + пакет
@@ -78,12 +78,12 @@ public sealed class AddNodeHandler(IEtcdGateway gateway, string[] endpoints)
         // Валидация (400): имя паттерна + не резерв; ресурсы; placement.
         var errors = new List<ValidationError>();
         if (request.Name is null || !S3Limits.InstanceNamePattern().IsMatch(request.Name))
-            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (паттерн кластера)"));
+            errors.Add(new("name", "name: [a-z][a-z0-9_]{0,62} (cluster pattern)"));
         else if (string.Equals(request.Name, S3Limits.ReservedInstanceName, StringComparison.Ordinal))
-            errors.Add(new("name", $"«{S3Limits.ReservedInstanceName}» зарезервировано (PKI оркестратора)"));
+            errors.Add(new("name", $"«{S3Limits.ReservedInstanceName}» is reserved (orchestrator PKI)"));
         S3ClusterValidator.ValidateResources(request.Resources, errors);
         if (request.Placement is null || request.Placement.IsEmpty)
-            errors.Add(new("placement", "placement: минимум один атрибут (dockerHost|swarmNode|swarmLabels)"));
+            errors.Add(new("placement", "placement: at least one attribute (dockerHost|swarmNode|swarmLabels)"));
         if (errors.Count > 0)
             return Result<string>.Failed(new S3ValidationException(errors));
 
@@ -100,7 +100,7 @@ public sealed class AddNodeHandler(IEtcdGateway gateway, string[] endpoints)
             return Result<string>.Failed(names.Error!);
         if (names.Value.Count >= S3Limits.MaxNodes)
             return Result<string>.Failed(new S3LastNodeException(
-                $"S3-кластер {cluster}: уже {names.Value.Count} инстансов — предел {S3Limits.MaxNodes} (arch/23 §2)"));
+                $"S3 cluster {cluster}: already {names.Value.Count} instances — limit {S3Limits.MaxNodes} (arch/23 §2)"));
 
         var node = request.Name!;
         var ops = new List<TxnOp>
@@ -151,8 +151,8 @@ public sealed class DeleteNodeHandler(IEtcdGateway gateway, string[] endpoints)
             return Result<bool>.Failed(names.Error!);
         if (names.Value.Count <= 1)
             return Result<bool>.Failed(new S3LastNodeException(
-                $"S3-кластер {cluster}: вывод последнего инстанса запрещён — 0 инстансов валиден " +
-                "только созданием; путь к кластеру без инстансов — снос кластера целиком"));
+                $"S3 cluster {cluster}: removing the last instance is forbidden — 0 instances is valid " +
+                "only via creation; the path to a cluster without instances is deleting the whole cluster"));
 
         var put = await S3ApiHelpers.CallAsync<bool>(endpoints, async endpoint =>
         {

@@ -20,7 +20,7 @@ public sealed class SeedDemoHandler(
     {
         if (!options.CurrentValue.Api.EnableSeedEndpoint)
             return Result<SeedDemoDto>.Failed(new WorkerApiNotFoundException(
-                "seed-эндпоинт выключен (S3Worker:Api:EnableSeedEndpoint=false)"));
+                "seed endpoint is disabled (S3Worker:Api:EnableSeedEndpoint=false)"));
 
         // Живой demo → 200 идемпотентно.
         var existing = await S3ApiHelpers.GetConfigAsync(gateway, endpoints, "demo", ct);
