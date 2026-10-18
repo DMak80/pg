@@ -40,7 +40,7 @@ public sealed class AddBrokerProcess(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"add-broker {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"add-broker {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Незавершённые заявки add: NOT_INITIALIZED (свежая) и PROVISIONING (брокер
         // поднимается — тик доводит его до RUNNING по факту DescribeCluster).

@@ -12,7 +12,7 @@ namespace KafkaWorker.UnitTests.Provisioning;
 public sealed class ReassignCliTests
 {
     [Fact]
-    public void Bootstrap_внутренний_listener()
+    public void Bootstrap_Internal_Listener()
     {
         // Arrange: имена живых брокеров (docker-DNS alias в kfw-net-<C>).
 
@@ -24,7 +24,7 @@ public sealed class ReassignCliTests
     }
 
     [Fact]
-    public void BuildAssignmentJson_канонический_формат()
+    public void BuildAssignmentJson_Canonical_Format()
     {
         // Arrange: один move ("t", p0, реплики [1,2,3]).
 
@@ -79,7 +79,7 @@ public sealed class ReassignCliTests
     }
 
     [Fact]
-    public void BuildExecCommand_без_апострофов_в_данных()
+    public void BuildExecCommand_No_Apostrophes_In_Data()
     {
         // Arrange: один move, INTERNAL-bootstrap, креды admin + CA.
         var moves = new[] { new ReassignMove("t", 0, [1, 2, 3]) };

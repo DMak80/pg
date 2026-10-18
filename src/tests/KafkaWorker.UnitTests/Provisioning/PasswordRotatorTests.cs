@@ -263,7 +263,7 @@ public class PasswordRotatorTests
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм не наш");
+        result.Error!.Message.Should().Contain("claim is not ours");
     }
 
     // ===== t03 Ф4: роль admin (заявка /kafkaworker/admin_rotations/<C>) =====

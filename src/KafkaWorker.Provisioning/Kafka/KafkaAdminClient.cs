@@ -569,7 +569,7 @@ public sealed class KafkaAdminClient(
     // сбой клиента (unhealthy-пометка НЕ ставится) — плановая замена кэша.
     private ApplicationException ClientDisposingError()
         => new(
-            $"Kafka AdminClient ({bootstrap}): клиент в dispose (замена/вытеснение кэша) — операция не стартована, повтор следующим вызовом получит свежий клиент");
+            $"Kafka AdminClient ({bootstrap}): client is in dispose (cache replacement/eviction) — operation not started, a retry by the next call will get a fresh client");
 
     // Счётчик операций: декремент в finally — исключение/отмена тоже
     // освобождают слот. Ноль при поставленном ожидании дрейна завершает его

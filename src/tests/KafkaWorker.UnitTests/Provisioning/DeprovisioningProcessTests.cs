@@ -173,7 +173,7 @@ public class DeprovisioningProcessTests
         // клэйм жив); повтор должен довести демонтаж до конца.
         var rig = await NewRig((_, driver) => driver.RemoveFailsOnce = true);
         (await rig.Process.RunAsync("events", ["broker1", "broker2"], CancellationToken.None))
-            .IsSuccess.Should().BeFalse("первый прогон упал на docker");
+            .IsSuccess.Should().BeFalse("first run failed on docker");
 
         // Act: повторный тик.
         var second = await rig.Process.RunAsync("events", ["broker1", "broker2"], CancellationToken.None);
@@ -201,7 +201,7 @@ public class DeprovisioningProcessTests
 
         // Assert: отказ до любых мутаций; ключи живы.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм не наш");
+        result.Error!.Message.Should().Contain("claim is not ours");
         etcd.Store.Should().ContainKey("/kafka/clusters/events/config");
     }
 

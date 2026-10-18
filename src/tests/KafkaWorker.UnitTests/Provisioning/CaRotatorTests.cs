@@ -84,7 +84,7 @@ public class CaRotatorTests
         etcd.Store.Should().NotContainKey($"/kafka/clusters/{Cluster}/ca_next_pem");
         etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
         // Канон ca_pem после коммита — ТОЛЬКО NEW (bundle свёрнут)
-        newPem.Should().NotContain(oldPem, "после коммита доверие OLD снято");
+        newPem.Should().NotContain(oldPem, "after the commit, OLD trust is revoked");
         (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Op
             .Should().Be("rotate-ca");
         (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
@@ -117,7 +117,7 @@ public class CaRotatorTests
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
         first.IsSuccess.Should().BeFalse($"err={first.Error?.Message}");
         etcd.Store.TryGetValue($"/kafka/clusters/{Cluster}/ca_next_key", out var stagingEntry);
-        stagingEntry.Should().NotBeNull($"staging создан в P (err={first.Error?.Message})");
+        stagingEntry.Should().NotBeNull($"staging created in P (err={first.Error?.Message})");
         var stagingKey = stagingEntry!.Value;
 
         // Act 2 — повторный тик на несошедшемся кластере (view: 1 брокер): R ждёт,
@@ -131,8 +131,8 @@ public class CaRotatorTests
         // Assert — тик успешен (waiting-режим), staging стабилен, заявка жива
         second.IsSuccess.Should().BeTrue($"err={second.Error?.Message}");
         etcd.Store.TryGetValue($"/kafka/clusters/{Cluster}/ca_next_key", out var afterSecond);
-        afterSecond.Should().NotBeNull("ротация не завершена — staging жив");
-        afterSecond!.Value.Should().Be(stagingKey, "стейджинг в etcd переживает тики");
+        afterSecond.Should().NotBeNull("rotation not finished — staging alive");
+        afterSecond!.Value.Should().Be(stagingKey, "staging in etcd survives ticks");
         etcd.Store.Should().ContainKey($"/kafka/clusters/{Cluster}/ca_next_pem");
         etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
     }

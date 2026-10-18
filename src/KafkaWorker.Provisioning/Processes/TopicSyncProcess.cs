@@ -50,7 +50,7 @@ public sealed class TopicSyncProcess(
         // Мутации — только держателем живого клэйма (arch/16 §5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"topicsync {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"topicsync {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Кластер не поднят — синкать нечего (endpoints появляются на K5).
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)

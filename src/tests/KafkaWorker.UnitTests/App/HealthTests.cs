@@ -40,7 +40,7 @@ public class HealthTests
         // Assert: структура, не исключение — секция etcd отдаст Degraded с данными.
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeAssignableTo<Exception>();
-        result.Error!.Message.Should().Contain("etcd-проба");
+        result.Error!.Message.Should().Contain("etcd probe");
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public class HealthTests
     private sealed class ThrowingFactory : DockerEngineFactory
     {
         public override IDockerEngine Create(string endpoint, string? hostAlias = null)
-            => throw new ApplicationException("docker engine недоступен");
+            => throw new ApplicationException("docker engine unavailable");
     }
 
     [Fact]
@@ -106,9 +106,9 @@ public class HealthTests
     // вернуть Degraded со структурой, а не исключение.
     private sealed class ThrowingOptionsMonitor : Microsoft.Extensions.Options.IOptionsMonitor<KafkaWorkerOptions>
     {
-        public KafkaWorkerOptions CurrentValue => throw new ApplicationException("конфигурация недоступна");
+        public KafkaWorkerOptions CurrentValue => throw new ApplicationException("configuration unavailable");
 
-        public KafkaWorkerOptions Get(string? name) => throw new ApplicationException("конфигурация недоступна");
+        public KafkaWorkerOptions Get(string? name) => throw new ApplicationException("configuration unavailable");
 
         public IDisposable? OnChange(Action<KafkaWorkerOptions, string?> listener) => null;
     }

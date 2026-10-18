@@ -68,7 +68,7 @@ public class KafkaAdminClientFactoryTests
         config.Get("ssl.ca.location").Should().BeNull();
         var location = withCa.Get("ssl.ca.location");
         location.Should().NotBeNull().And.StartWith(Path.GetTempPath());
-        File.Exists(location).Should().BeTrue("файл truststore создаётся при построении конфига");
+        File.Exists(location).Should().BeTrue("truststore file is created when building the config");
         File.ReadAllText(location!).Should().Contain("-----BEGIN CERTIFICATE-----");
     }
 
@@ -198,7 +198,7 @@ public class KafkaAdminClientFactoryTests
         var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
         var gate = new TaskCompletionSource<Result>();
         var operation = first.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
-        first.ActiveOperations.Should().Be(1, "операция на счётчике");
+        first.ActiveOperations.Should().Be(1, "operation is on the counter");
 
         // Act: пометка Failed + замена (фоновый дрейн обязан ждать нуля).
         first.NotifyFailed();
@@ -208,7 +208,7 @@ public class KafkaAdminClientFactoryTests
         // операция первого всё ещё висит.
         second.Should().NotBeSameAs(first);
         factory.CreatedClients.Should().Be(2);
-        first.DisposeNativeCount.Should().Be(0, "dispose под висящей операцией запрещён");
+        first.DisposeNativeCount.Should().Be(0, "dispose under a pending operation is forbidden");
 
         // Cleanup: отпустить операцию — фоновый дрейн завершится сам.
         gate.TrySetResult(Result.Success());
@@ -227,7 +227,7 @@ public class KafkaAdminClientFactoryTests
         var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
         var drain = client.DisposeWhenIdleAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         await Task.Delay(200, TestContext.Current.CancellationToken);
-        drain.IsCompleted.Should().BeFalse("дрейн ждёт висящую операцию");
+        drain.IsCompleted.Should().BeFalse("drain waits for the pending operation");
 
         // Act: операция завершается.
         gate.SetResult(Result.Success());
@@ -255,12 +255,12 @@ public class KafkaAdminClientFactoryTests
 
         // Assert: принудительный dispose по бюджету; операция не сорвана
         // исключением — завершится своим исходом.
-        client.DisposeNativeCount.Should().Be(1, "бюджет исчерпан — принудительный dispose");
+        client.DisposeNativeCount.Should().Be(1, "budget exhausted — forced dispose");
 
         // Cleanup.
         gate.TrySetResult(Result.Success());
         var done = await operation;
-        done.IsSuccess.Should().BeTrue("операция завершилась своим исходом, не ERR__DESTROYED");
+        done.IsSuccess.Should().BeTrue("operation completed with its own outcome, not ERR__DESTROYED");
     }
 
     // AAA: Create не блокируется дрейном заменяемого (раздача новых клиентов
@@ -283,7 +283,7 @@ public class KafkaAdminClientFactoryTests
         sw.Stop();
 
         // Assert: раздача мгновенна (не ждёт дрейна), reuse нового ключа жив.
-        sw.ElapsedMilliseconds.Should().BeLessThan(3000, "Create не блокируется дрейном");
+        sw.ElapsedMilliseconds.Should().BeLessThan(3000, "Create is not blocked by the drain");
         again.Should().BeSameAs(fresh);
 
         // Cleanup.
@@ -317,8 +317,8 @@ public class KafkaAdminClientFactoryTests
 
         // Assert: Dispose вернулся (не висит) — дождался операции, без
         // принуждения бюджет не потребовался.
-        finished.Should().BeTrue("Dispose детерминирован: дрейн с бюджетом, не вечное ожидание");
-        first.DisposeNativeCount.Should().Be(1, "клиент задиспожен по завершении операции");
+        finished.Should().BeTrue("Dispose is deterministic: drain with budget, not an endless wait");
+        first.DisposeNativeCount.Should().Be(1, "client disposed once the operation completes");
         await operation;
     }
 
@@ -333,17 +333,17 @@ public class KafkaAdminClientFactoryTests
         // Arrange: клиент без операций — дрейн завершён, dispose исполнен.
         var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
         await client.DisposeWhenIdleAsync(TimeSpan.Zero, TestContext.Current.CancellationToken);
-        client.DisposeNativeCount.Should().Be(1, "операций нет — dispose немедленно");
+        client.DisposeNativeCount.Should().Be(1, "no operations — dispose immediately");
 
         // Act: операция на уже диспознутом клиенте.
         var refused = await client.RunUnderOperationAsync(
             _ => Task.FromResult(Result.Success()), TestContext.Current.CancellationToken);
 
         // Assert: транзиентный отказ без старта — счётчик не тронут.
-        refused.IsSuccess.Should().BeFalse("вход операций закрыт флагом dispose");
-        refused.Error!.Message.Should().Contain("клиент в dispose",
-            "отказ управляемый (повтор даст свежий клиент), не сбой клиента");
-        client.ActiveOperations.Should().Be(0, "операция не вставала на счётчик");
+        refused.IsSuccess.Should().BeFalse("operation entry is closed by the dispose flag");
+        refused.Error!.Message.Should().Contain("client is in dispose",
+            "refusal is managed (a retry gets a fresh client), not a client failure");
+        client.ActiveOperations.Should().Be(0, "operation never hit the counter");
     }
 
     // AAA: операция, входящая в гэп «дрейн дождался нуля → dispose», либо
@@ -370,10 +370,10 @@ public class KafkaAdminClientFactoryTests
         // Assert: опоздавшая операция НЕ уничтожена — либо успех (встала на
         // счётчик до dispose, дрейн дождался), либо транзиентный отказ; клиент
         // после гэпа всё же диспозится, счётчик чист.
-        (late.IsSuccess || late.Error!.Message.Contains("клиент в dispose")).Should().BeTrue(
-            $"исход — успех или управляемый транзиент, не ERR__DESTROYED; фактически: " +
+        (late.IsSuccess || late.Error!.Message.Contains("client is in dispose")).Should().BeTrue(
+            $"outcome — success or a managed transient, not ERR__DESTROYED; actually: " +
             $"{(late.IsSuccess ? "success" : late.Error!.Message)}");
-        client.DisposeNativeCount.Should().Be(1, "клиент после гэпа всё же диспозится");
-        client.ActiveOperations.Should().Be(0, "висящих операций не осталось");
+        client.DisposeNativeCount.Should().Be(1, "client still gets disposed after the gap");
+        client.ActiveOperations.Should().Be(0, "no pending operations left");
     }
 }

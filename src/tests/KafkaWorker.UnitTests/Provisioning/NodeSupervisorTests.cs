@@ -152,7 +152,7 @@ public class NodeSupervisorTests
         rig.Driver.Removed.Should().NotContain(r => r.Node == "broker3" && r.RemoveVolume);
         rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker3");
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.LastError.Should().BeNull("том сохранён — потери данных нет");
+        state.Value!.LastError.Should().BeNull("volume kept — no data loss");
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue();
         rig.Driver.Removed.Should().Contain(("broker3", true));
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.LastError.Should().BeNull("RF>1 — rejoin репликацией");
+        state.Value!.LastError.Should().BeNull("RF>1 — rejoin via replication");
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue();
         rig.Driver.Removed.Should().Contain(("broker1", false));
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.LastError.Should().BeNull("том жив — данные на месте");
+        state.Value!.LastError.Should().BeNull("volume alive — data in place");
     }
 
     [Fact]
@@ -398,9 +398,9 @@ public class NodeSupervisorTests
         var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: waiting-portalloc-lock — не ошибка тика; действий не было.
-        result.IsSuccess.Should().BeTrue("waiting-portalloc-lock — InProgress, не ошибка тика");
+        result.IsSuccess.Should().BeTrue("waiting-portalloc-lock — InProgress, not a tick error");
         (await JournalPhaseAsync(rig)).Should().Be("waiting-portalloc-lock");
-        rig.Driver.Ensured.Should().BeEmpty("под чужим клэймом — никаких действий");
+        rig.Driver.Ensured.Should().BeEmpty("under a foreign claim — no actions");
     }
 
     // AAA: portalloc утерян при объявленных брокерах (инцидент 2026-09-04) —
@@ -459,7 +459,7 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue();
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
             CancellationToken.None)).Value!.Value.Should().Be("PROVISIONING",
-            "адреса broker2 (h1:16001) нет в endpoints — RUNNING не наш");
+            "broker2 address (h1:16001) not in endpoints — RUNNING is not ours");
 
         // Act 2: владелец доделал endpoints-RMW (адрес broker2 появился) →
         // следующий тик переводит (перевод читает снапшот начала тика).
@@ -500,12 +500,12 @@ public class NodeSupervisorTests
             .Select(p => $"h1:{p.Value.GetProperty("client").GetInt32()}"));
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None))
             .Value!.Value.Should().Be(expected,
-                "канон = advertise-адреса всех закреплённых брокеров (сходится за один тик)");
+                "canon = advertised addresses of all pinned brokers (converges in one tick)");
 
         // Повторный тик: значение уже канонично — стабильно (ноль записей).
         (await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .IsSuccess.Should().BeTrue();
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None))
-            .Value!.Value.Should().Be(expected, "повторный тик ничего не меняет");
+            .Value!.Value.Should().Be(expected, "a repeated tick changes nothing");
     }
 }

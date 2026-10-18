@@ -30,7 +30,7 @@ public sealed class DeprovisioningProcess(
         // Мутации — только держателем живого клэйма (arch/16 §5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"deprovisioning {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"deprovisioning {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Снапшот P12 «до» (старт демонтажа — точка изменения).
         if (snapshot is not null)

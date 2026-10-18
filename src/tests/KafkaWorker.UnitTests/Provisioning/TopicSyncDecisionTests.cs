@@ -153,7 +153,7 @@ public class TopicSyncDecisionTests
             "desired-partitions-down",
             [Fact("orders", partitions: 6)],
             [Reg("orders", partitions: 6, desired: Desired(partitions: 3))],
-            new TopicSyncAction.Reject("orders", "partitions 3 < факт 6: уменьшение партиций Kafka не поддерживает")
+            new TopicSyncAction.Reject("orders", "partitions 3 < actual 6: Kafka does not support decreasing partitions")
         },
 
         // 12. desired partitions == факт и конфиги равны → заявка исполнена → снять.

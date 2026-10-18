@@ -21,8 +21,8 @@ public class ClusterPkiTests
         caKeyPem.Should().StartWith("-----BEGIN PRIVATE KEY-----"); // PKCS#8 (15 §2.1)
         using var cert = X509Certificate2.CreateFromPem(caPem);
         cert.Subject.Should().StartWith("CN=kfw-events-ca-");
-        cert.Subject.Should().NotBe("CN=kfw-events-ca", "subject дополняется уникальным отпечатком");
-        cert.HasPrivateKey.Should().BeFalse("публичный серт не несёт ключа");
+        cert.Subject.Should().NotBe("CN=kfw-events-ca", "subject is extended with a unique fingerprint");
+        cert.HasPrivateKey.Should().BeFalse("public certificate carries no private key");
         (cert.NotAfter - cert.NotBefore).TotalDays.Should().BeInRange(3600, 3700);
     }
 
@@ -57,7 +57,7 @@ public class ClusterPkiTests
         cert.Subject.Should().Be("CN=broker2");
         var san = cert.Extensions.OfType<X509SubjectAlternativeNameExtension>().Single();
         san.EnumerateDnsNames().Should().Contain(["broker2", "host.docker.internal"]);
-        cert.Issuer.Should().Be(ca.Subject, "серт подписан ключом CA");
+        cert.Issuer.Should().Be(ca.Subject, "certificate signed by the CA key");
         keyPem.Should().StartWith("-----BEGIN PRIVATE KEY-----");
     }
 

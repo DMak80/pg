@@ -171,9 +171,9 @@ public class PlainClusterDriverTests
         // Assert — контейнер ДОВЕДЁН до running (start), пересоздания нет.
         ensured.IsSuccess.Should().BeTrue();
         engine.Calls.Should().ContainSingle(c => c.StartsWith("start:"),
-            "created-контейнер обязан быть запущен — takeover доигрывает подъём ноды");
+            "created container must be started — takeover finishes node bring-up");
         engine.Calls.Should().NotContain(c => c.StartsWith("create:"),
-            "существующий контейнер не пересоздаётся (K3)");
+            "existing container is not recreated (K3)");
         engine.Containers.Should().ContainSingle().Which.State.Should().Be("running");
     }
 

@@ -103,11 +103,11 @@ public class KafkaClusterBackoffTests
 
         // Assert: gone исчез из живых и «вернулся»: первая неудача заново — 15 c.
         clock.Utc += TimeSpan.FromHours(1);
-        backoff.IsBlocked("gone").Should().BeFalse("запись стёрта чисткой");
+        backoff.IsBlocked("gone").Should().BeFalse("record wiped by cleanup");
         backoff.RecordFailure("gone", "down");
         backoff.IsBlocked("gone").Should().BeTrue();
         clock.Utc += TimeSpan.FromSeconds(15);
-        backoff.IsBlocked("gone").Should().BeFalse("окно первой ступени, не 60/300 — счётчик сброшен");
+        backoff.IsBlocked("gone").Should().BeFalse("first-tier window, not 60/300 — counter reset");
 
         // Assert: events (живой) untouched: окно от своей записи; истекло к этому времени.
         backoff.IsBlocked("events").Should().BeFalse();

@@ -17,7 +17,7 @@ public sealed class ReassignPlannerTests
             isr?.Select(p => (IReadOnlyList<int>)[.. p]).ToList());
 
     [Fact]
-    public void PlanDrain_замещает_реплику_когда_целей_достаточно()
+    public void PlanDrain_Replaces_Replica_When_Targets_Suffice()
     {
         // Arrange: топик t: p0 [1,2,4], p1 [2,4,1]; drain broker4, цели 1..3.
         var topics = new[] { TopicView("t", [[1, 2, 4], [2, 4, 1]]) };
@@ -36,7 +36,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanDrain_снижение_RF_при_нехватке_целей()
+    public void PlanDrain_Reduce_RF_When_Targets_Insufficient()
     {
         // Arrange: p0 [1,2,4] RF=3, drain 4, цели только 1 и 2.
         var topics = new[] { TopicView("t", [[1, 2, 4]]) };
@@ -52,7 +52,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanDrain_отказ_когда_минISR_недостижим()
+    public void PlanDrain_Fails_When_MinIsr_Unreachable()
     {
         // Arrange: p0 [1,2,3], drain 3, единственная цель 1; minISR=2.
         var topics = new[] { TopicView("t", [[1, 2, 3]]) };
@@ -69,7 +69,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanDrain_партиции_без_drain_не_в_плане()
+    public void PlanDrain_Partitions_Without_Drain_Not_In_Plan()
     {
         // Arrange: p0 с drain-репликой, p2 [1,2] — без drain.
         var topics = new[] { TopicView("t", [[1, 2, 4], [1, 2], [1, 2]]) };
@@ -85,7 +85,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanBalance_восстанавливает_RF_и_сохраняет_лидера()
+    public void PlanBalance_Restores_RF_And_Keeps_Leader()
     {
         // Arrange: факт RF=2, configRf=3, три живых брокера.
         var topics = new[] { TopicView("t", [[1, 2], [2, 1]]) };
@@ -104,7 +104,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanBalance_детерминизм()
+    public void PlanBalance_Determinism()
     {
         // Arrange: один вход — два прогона.
         var topics = new[] { TopicView("a", [[1, 2], [2, 1]]), TopicView("b", [[3, 1], [1, 3]]) };
@@ -125,7 +125,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void PlanBalance_internal_формулы()
+    public void PlanBalance_Internal_Formulas()
     {
         // Arrange: __consumer_offsets p0 [1,2]; configRf юзер-топиков = 3
         // (на internal не влияет — их RF-цель min(3, B)).
@@ -144,7 +144,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void DrainComplete_и_HasUnderReplicated()
+    public void DrainComplete_And_HasUnderReplicated()
     {
         // Arrange: drain 3 вне реплик; одна партиция с USR (Isr < Replicas);
         // второй топик без ISR-данных (null).
@@ -162,7 +162,7 @@ public sealed class ReassignPlannerTests
     }
 
     [Fact]
-    public void Pending_сортировка_по_топику_и_партиции()
+    public void Pending_Sorted_By_Topic_And_Partition()
     {
         // Arrange: планы для партиций в обратном лексикографическом порядке.
         var topics = new[] { TopicView("b", [[1, 2], [1, 2]]), TopicView("a", [[1, 2]]) };

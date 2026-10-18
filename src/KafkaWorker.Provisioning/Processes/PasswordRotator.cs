@@ -84,7 +84,7 @@ public sealed class PasswordRotator(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"rotate {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"rotate {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // По одной заявке за тик: заявка роли обрабатывалась (или роль доводила
         // свой журнал) — вторая роль ждёт следующего тика.

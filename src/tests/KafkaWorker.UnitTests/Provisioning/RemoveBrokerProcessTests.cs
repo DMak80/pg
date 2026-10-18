@@ -135,7 +135,7 @@ public class RemoveBrokerProcessTests
 
         // Assert: отказ «последний брокер» без docker-мутаций.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("последний");
+        result.Error!.Message.Should().Contain("last broker");
         rig.Driver.Removed.Should().BeEmpty();
     }
 
@@ -165,7 +165,7 @@ public class RemoveBrokerProcessTests
     }
 
     [Fact]
-    public async Task HasPartitions_учитывает_internal_топики()
+    public async Task HasPartitions_Counts_Internal_Topics()
     {
         // Arrange: broker3 broker-only TO_REMOVE, реплики ТОЛЬКО в
         // __consumer_offsets — guard обязан видеть internal-реплики и не

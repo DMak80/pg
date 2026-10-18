@@ -73,7 +73,7 @@ public class KafkaWritingPlanTests
 
         // Assert
         errors.Should().Contain(e => e.Field == "replicationFactor"
-                                     && e.Message.Contains("превышать brokers"));
+                                     && e.Message.Contains("cannot exceed brokers"));
     }
 
     [Theory]

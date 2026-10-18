@@ -105,10 +105,10 @@ public class PortAllocHealerTests
         // Assert: адрес из инспекции, запись восстановлена, контейнер не тронут.
         resolved.IsSuccess.Should().BeTrue();
         resolved.Value.Address.Should().Be(new NodeAddress("h1", 21037));
-        resolved.Value.Recreated.Should().BeFalse("живой контейнер не трогаем");
+        resolved.Value.Recreated.Should().BeFalse("a live container is left untouched");
         (await PortAllocJson(rig)).Should().Contain("21037");
-        rig.Driver.Removed.Should().BeEmpty("живой контейнер не трогаем");
-        rig.Driver.Ensured.Should().BeEmpty("пересоздания не было");
+        rig.Driver.Removed.Should().BeEmpty("a live container is left untouched");
+        rig.Driver.Ensured.Should().BeEmpty("no recreation happened");
     }
 
     // AAA: ветка 3 — контейнера нет (S7): новая аллокация под клэймом,
@@ -124,14 +124,14 @@ public class PortAllocHealerTests
 
         // Assert: аллокация в диапазоне опций + пересоздание + endpoints обновлён.
         resolved.IsSuccess.Should().BeTrue();
-        resolved.Value.Recreated.Should().BeTrue("S7: контейнер пересоздан");
+        resolved.Value.Recreated.Should().BeTrue("S7: container recreated");
         var allocatedPort = resolved.Value.Address.ClientPort;
         allocatedPort.Should().BeInRange(rig.Options.PortFrom, rig.Options.PortTo);
         (await PortAllocJson(rig)).Should().Contain(allocatedPort.ToString());
         rig.Driver.Ensured.Should().ContainSingle(s => s.NodeName == "broker1" && s.ClientHostPort == allocatedPort);
         var endpoints = (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None)).Value;
         endpoints.Should().NotBeNull();
-        endpoints!.Value.Should().Contain(allocatedPort.ToString(), "endpoints RMW-обновлён (клиенты перечитают тиком)");
+        endpoints!.Value.Should().Contain(allocatedPort.ToString(), "endpoints RMW-updated (clients re-read on the next tick)");
     }
 
     // AAA: ветка 1 — адрес уже в portalloc → без записей (ранний выход
@@ -174,7 +174,7 @@ public class PortAllocHealerTests
         // Assert: первый записавший — истина (S5): re-read перекрывает инспекцию.
         resolved.IsSuccess.Should().BeTrue();
         resolved.Value.Address.Should().Be(new NodeAddress("h1", 21050),
-            "первый записавший — истина (S5): re-read перекрывает нашу инспекцию 21037");
+            "first writer wins (S5): re-read overrides our inspection 21037");
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
@@ -193,7 +193,7 @@ public class PortAllocHealerTests
         // Assert: PortLockBusyException, никаких записей под чужим клэймом.
         resolved.IsSuccess.Should().BeFalse();
         resolved.Error.Should().BeOfType<PortLockBusyException>();
-        (await PortAllocJson(rig)).Should().BeNull("никаких записей под чужим клэймом");
+        (await PortAllocJson(rig)).Should().BeNull("no writes under a foreign claim");
         rig.Driver.Ensured.Should().BeEmpty();
     }
 

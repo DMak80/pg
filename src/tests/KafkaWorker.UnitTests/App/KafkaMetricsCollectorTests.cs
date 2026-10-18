@@ -304,7 +304,7 @@ public sealed class KafkaMetricsCollectorTests
 
         // Assert: kafka-контакта не было; skip — не фейл тика.
         factory.CreateCalls.Should().Be(0);
-        state.DebugSnapshot().LastSuccess.Should().NotBeNull("skip — не фейл тика");
+        state.DebugSnapshot().LastSuccess.Should().NotBeNull("skip — not a tick failure");
     }
 
     // AAA: недоступный кластер — ListGroups не зовётся вовсе (t05 pre-gate:
@@ -355,7 +355,7 @@ public sealed class KafkaMetricsCollectorTests
         await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
 
         // Assert: фейл сбора — RecordFailure, окно 15 c активно.
-        backoff.IsBlocked("c1").Should().BeTrue("фейл сбора — RecordFailure, окно 15 c активно");
+        backoff.IsBlocked("c1").Should().BeTrue("collection failure — RecordFailure, 15 s window active");
 
         // Arrange 2: окно должно истечь, иначе гейт (IsBlocked → continue) съест
         // второй тик ДО writer-пути — RecordSuccess недостижим.
@@ -366,7 +366,7 @@ public sealed class KafkaMetricsCollectorTests
         await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
 
         // Assert 2: успех сбора — RecordSuccess, окно снято.
-        backoff.IsBlocked("c1").Should().BeFalse("успех сбора — RecordSuccess, окно снято");
+        backoff.IsBlocked("c1").Should().BeFalse("collection success — RecordSuccess, window cleared");
     }
 
     private sealed class CountingAdminFactory : IKafkaAdminClientFactory
@@ -376,7 +376,7 @@ public sealed class KafkaMetricsCollectorTests
         public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem)
         {
             CreateCalls++;
-            throw new ApplicationException("клиент не должен создаваться: кластер в backoff");
+            throw new ApplicationException("client must not be created: cluster is in backoff");
         }
     }
 

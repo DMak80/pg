@@ -40,7 +40,7 @@ public class LoopsHealthResetTests
         // Arrange: цикл с нулевым интервалом; etcd «падает» на range (RangeFault →
         // тик проваливается, ErrorDelayMs=200 — детерминированное окно), затем оживает.
         var etcd = new Fakes.FakeEtcd();
-        etcd.RangeFault = _ => new ApplicationException("etcd недоступен");
+        etcd.RangeFault = _ => new ApplicationException("etcd unavailable");
         var loop = new ReconcileLoop(
             Options(), etcd,
             new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System),

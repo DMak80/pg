@@ -131,7 +131,7 @@ public class TopicSyncProcessTests
         rig.Admin.AlterTopicCalls.Should().ContainSingle()
             .Which.Configs.Should().ContainKey("retention.ms").WhoseValue.Should().Be("86400000");
         var value = await RegistryValue(rig.Etcd);
-        value.TryGetProperty("desired", out _).Should().BeFalse("заявка исполнена и снята");
+        value.TryGetProperty("desired", out _).Should().BeFalse("ticket applied and cleared");
         value.GetProperty("configs").GetProperty("retention.ms").GetString().Should().Be("86400000");
     }
 
@@ -177,8 +177,8 @@ public class TopicSyncProcessTests
         // Assert
         result.IsSuccess.Should().BeTrue();
         var value = await RegistryValue(rig.Etcd);
-        value.GetProperty("partitions").GetInt32().Should().Be(6, "факт синхронизирован");
-        value.TryGetProperty("desired", out var desired).Should().BeTrue("свежая заявка панели не затёрта");
+        value.GetProperty("partitions").GetInt32().Should().Be(6, "fact synced");
+        value.TryGetProperty("desired", out var desired).Should().BeTrue("fresh panel ticket not overwritten");
         desired.GetProperty("configs").GetProperty("retention.ms").GetString().Should().Be("3600000");
         value.GetProperty("desired_by").GetString().Should().Be("panel");
     }
@@ -209,7 +209,7 @@ public class TopicSyncProcessTests
         // следующий тик разберёт свежую заявку.
         result.IsSuccess.Should().BeTrue();
         (await rig.Etcd.GetAsync(Ep, Key, CancellationToken.None)).Value!.Value
-            .Should().Be(panelValue, "проигрыш compare не портит запись панели");
+            .Should().Be(panelValue, "lost compare does not corrupt the panel record");
     }
 
     [Fact]
@@ -286,7 +286,7 @@ public class TopicSyncProcessTests
         rig.Admin.AlterTopicCalls.Should().BeEmpty();
         rig.Admin.CreatePartitionsCalls.Should().BeEmpty();
         var value = await RegistryValue(rig.Etcd);
-        value.TryGetProperty("desired", out _).Should().BeFalse("заявка снята после отказа");
+        value.TryGetProperty("desired", out _).Should().BeFalse("ticket cleared after rejection");
         value.GetProperty("partitions").GetInt32().Should().Be(6);
     }
 
@@ -305,11 +305,11 @@ public class TopicSyncProcessTests
         var second = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
 
         // Assert
-        first.IsSuccess.Should().BeFalse("транзиент перекрыл ретраи тика — ошибка, desired жив");
+        first.IsSuccess.Should().BeFalse("transient exhausted the tick retries — error, desired intact");
         second.IsSuccess.Should().BeTrue();
         rig.Admin.CallLog.Count(l => l.StartsWith("alter-topic", StringComparison.Ordinal)).Should().Be(4,
-            "3 транзиента тика + 1 успешный повтор");
-        rig.Admin.AlterTopicCalls.Should().HaveCount(1, "применение состоялось один раз");
+            "3 tick transients + 1 successful retry");
+        rig.Admin.AlterTopicCalls.Should().HaveCount(1, "apply happened exactly once");
         var value = await RegistryValue(rig.Etcd);
         value.TryGetProperty("desired", out _).Should().BeFalse();
         value.GetProperty("configs").GetProperty("retention.ms").GetString().Should().Be("86400000");
@@ -331,7 +331,7 @@ public class TopicSyncProcessTests
         // Assert: no-op — ни txn, ни admin-вызовов (кроме describe).
         result.IsSuccess.Should().BeTrue();
         rig.Etcd.Txns.Count.Should().Be(txns);
-        rig.Admin.CallLog.Count.Should().Be(log + 1, "только describe-шаг");
+        rig.Admin.CallLog.Count.Should().Be(log + 1, "describe step only");
     }
 
     [Fact]
@@ -367,7 +367,7 @@ public class TopicSyncProcessTests
 
         // Assert: отказ до любых мутаций.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм");
+        result.Error!.Message.Should().Contain("claim");
         rig.Admin.CallLog.Should().BeEmpty();
     }
 
@@ -479,7 +479,7 @@ public class TopicSyncProcessTests
         // Assert: адаптер вернул AlreadyExists — тик успешен, заявка снята
         // (исходы адаптера — не ошибки; сходимость следующего тика).
         result.IsSuccess.Should().BeTrue();
-        rig.Admin.CreatedTopics.Should().BeEmpty("повторный CreateTopics не выполнялся");
+        rig.Admin.CreatedTopics.Should().BeEmpty("CreateTopics was not called again");
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/audit/desired.create", CancellationToken.None))
             .Value.Should().BeNull();
     }
@@ -510,7 +510,7 @@ public class TopicSyncProcessTests
         // Assert: адаптер вернул NotFound = исполнено — тик успешен, оба ключа
         // удалены (факт-ключ снесён cleanup-веткой txn).
         result.IsSuccess.Should().BeTrue();
-        rig.Admin.DeletedTopics.Should().BeEmpty("DeleteTopics не нашёл топик — NotFound");
+        rig.Admin.DeletedTopics.Should().BeEmpty("DeleteTopics did not find the topic — NotFound");
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders", CancellationToken.None)).Value.Should().BeNull();
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders/desired.delete", CancellationToken.None)).Value.Should().BeNull();
     }

@@ -67,7 +67,7 @@ public class BrokerEnvBuilderTests
         var newSigned = cache.GetOrCreate(Cluster, "broker1", newPem, newKey, "h1:16001");
         var oldSigned = cache.GetOrCreate(Cluster, "broker1", oldPem, oldKey, "h1:16001");
         env["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"].Should().Be(newSigned.CertPem.Replace("\n", "\\n"));
-        newSigned.CertPem.Should().NotBe(oldSigned.CertPem, "новая CA даёт другой серт ноды");
+        newSigned.CertPem.Should().NotBe(oldSigned.CertPem, "the new CA yields a different node certificate");
         env["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"].Should().Be(bundle.Replace("\n", "\\n"));
     }
 }

@@ -56,7 +56,7 @@ public sealed class ProvisioningProcess(
         // Мутации — только держателем живого клэйма (arch/16 §5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"provisioning {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"provisioning {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Снапшот P12 «до» (после claim — порт P12: точка изменения).
         if (snapshot is not null)
@@ -339,7 +339,7 @@ public sealed class ProvisioningProcess(
 
         if (options.BrokerBootSec <= 0 || now - since > options.BrokerBootSec)
             return Result<bool>.Failed(new ApplicationException(
-                $"кластер {cluster} не собрался за бюджет {options.BrokerBootSec} с: {reason}"));
+                $"cluster {cluster} did not come up within budget {options.BrokerBootSec} s: {reason}"));
 
         return Result<bool>.Success(false);
     }

@@ -58,7 +58,7 @@ public sealed class RemoveBrokerProcess(
             if (remaining == 0)
                 return Fail(cluster,
                     new ApplicationException(
-                        $"remove-broker {cluster}: {broker.Name} — последний брокер, демонтаж опустошит кластер"),
+                        $"remove-broker {cluster}: {broker.Name} is the last broker, teardown would empty the cluster"),
                     "last-broker-guard");
 
             // Guard: на брокере нет реплик партиций (факт знает только Kafka).

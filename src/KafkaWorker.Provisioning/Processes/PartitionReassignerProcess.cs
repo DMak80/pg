@@ -79,7 +79,7 @@ public sealed class PartitionReassignerProcess(
         // Мутации — только держателем живого клэйма (arch/16 §5).
         if (!claims.IsMine(cluster))
             return Result.Failed(new ApplicationException(
-                $"reassign {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"reassign {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
         // Троттл IntervalSec (как TopicSync): подряд идущие тики Reconcile
         // не дёргают кластер чаще интервала.

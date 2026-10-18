@@ -142,7 +142,7 @@ public static class TopicSyncDecision
             {
                 actions.Add(new TopicSyncAction.Reject(
                     fact.Topic,
-                    $"partitions {down} < факт {fact.Partitions}: уменьшение партиций Kafka не поддерживает"));
+                    $"partitions {down} < actual {fact.Partitions}: Kafka does not support decreasing partitions"));
                 continue;
             }
 

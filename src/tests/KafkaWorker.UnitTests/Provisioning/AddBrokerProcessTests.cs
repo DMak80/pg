@@ -205,7 +205,7 @@ public class AddBrokerProcessTests
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм не наш");
+        result.Error!.Message.Should().Contain("claim is not ours");
     }
 
     // AAA (t91): клэйм занят чужим инстансом при недоборе портов broker4 →

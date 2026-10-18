@@ -81,7 +81,7 @@ public class PartitionReassignerProcessTests
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })!;
 
     [Fact]
-    public async Task Drain_подаёт_батч_и_пишет_прогресс()
+    public async Task Drain_Submits_Batch_And_Writes_Progress()
     {
         // Arrange: broker4 TO_REMOVE, реплики юзер-топика на нём; exec успешен.
         var rig = await NewRig();
@@ -105,7 +105,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_завершение_очищает_прогресс()
+    public async Task Drain_Completion_Clears_Progress()
     {
         // Arrange: broker4 TO_REMOVE, но реплик его уже нет (drain дошёл),
         // ISR == Replicas.
@@ -129,7 +129,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_minISR_отказ()
+    public async Task Drain_MinIsr_Failure()
     {
         // Arrange: broker4 TO_REMOVE; юзер-топик с minISR=2, но живых целей
         // меньше — план недостижим.
@@ -151,7 +151,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_USR_держит_завершение()
+    public async Task Drain_USR_Holds_Completion()
     {
         // Arrange: реплик drain-брокера нет, но одна партиция under-replicated.
         var rig = await NewRig();
@@ -170,7 +170,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_дедуп_переподачи()
+    public async Task Drain_Resubmit_Dedup()
     {
         // Arrange: реплики на drain; время статично (троттл=0).
         var rig = await NewRig();
@@ -193,7 +193,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_exec_в_drain_контейнер_упал_переподача_через_RUNNING()
+    public async Task Drain_Exec_To_Drain_Container_Failed_Resubmit_Via_RUNNING()
     {
         // Arrange: broker4 TO_REMOVE с репликами; контейнер drain-брокера
         // мёртв (docker-хост умер/выведен, снесён) — exec в него Failed,
@@ -203,7 +203,7 @@ public class PartitionReassignerProcessTests
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
         rig.Driver.ExecHandler = (node, _) => node == "broker4"
-            ? Result<string>.Failed(new ApplicationException("нет running-контейнера kfw-events-broker4"))
+            ? Result<string>.Failed(new ApplicationException("no running container kfw-events-broker4"))
             : Result<string>.Success("");
 
         // Act
@@ -223,7 +223,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_сходится_без_контейнера_drain_брокера()
+    public async Task Drain_Converges_Without_Drain_Broker_Container()
     {
         // Arrange: broker4 TO_REMOVE, его контейнера нет вовсе (exec в broker4
         // всегда Failed); поданный батч Kafka применяется между тиками.
@@ -231,7 +231,7 @@ public class PartitionReassignerProcessTests
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
         rig.Driver.ExecHandler = (node, _) => node == "broker4"
-            ? Result<string>.Failed(new ApplicationException("контейнер не найден"))
+            ? Result<string>.Failed(new ApplicationException("container not found"))
             : Result<string>.Success("");
 
         // Act: тик 1 — отказ в drain-контейнер, переподача через RUNNING;
@@ -253,7 +253,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Balance_исполняет_и_снимает_заявку()
+    public async Task Balance_Executes_And_Retires_Ticket()
     {
         // Arrange: TO_REMOVE нет; заявка жива; факт RF=2 при трёх живых.
         var rig = await NewRig();
@@ -277,7 +277,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Balance_ждёт_drain()
+    public async Task Balance_Waits_For_Drain()
     {
         // Arrange: заявка жива, но есть TO_REMOVE-брокер с репликами — drain
         // приоритетнее баланса.
@@ -301,7 +301,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Balance_отмена_заявки()
+    public async Task Balance_Ticket_Cancellation()
     {
         // Arrange: заявки нет, drain-кандидатов нет, но прогресс-ключ жив —
         // мусор оборванного баланса/отмены.
@@ -322,7 +322,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Слепая_проба()
+    public async Task Blind_Probe()
     {
         // Arrange: describe падает (кластер слеп); прогресс-ключ жив с
         // известным значением — его трогать нельзя.
@@ -344,7 +344,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Клэйм_не_наш()
+    public async Task Claim_Not_Ours()
     {
         // Arrange: клэйм кластера чужой (риг без TryClaim).
         var etcd = new Fakes.FakeEtcd();
@@ -359,7 +359,7 @@ public class PartitionReassignerProcessTests
 
         // Assert: мутации запрещены.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм");
+        result.Error!.Message.Should().Contain("claim");
     }
 
     // ===== t10: экспирация заявки rebalances под тройным гвардом §3.1 =====

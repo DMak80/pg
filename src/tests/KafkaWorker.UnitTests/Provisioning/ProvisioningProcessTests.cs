@@ -173,7 +173,7 @@ public class ProvisioningProcessTests
         // (state=NOT_INITIALIZED на месте); endpoints не записан.
         result.IsSuccess.Should().BeFalse();
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.LastError.Should().Contain("не собрался");
+        state.Value!.LastError.Should().Contain("did not come up");
         rig.Etcd.Store["/kafka/clusters/events/config"].Value.Should().Contain("NOT_INITIALIZED");
         rig.Etcd.Store.Should().NotContainKey("/kafka/clusters/events/endpoints");
         // Но контейнеры уже созданы (K3 до ожидания готовности).
@@ -247,7 +247,7 @@ public class ProvisioningProcessTests
 
         // Assert: отказ до любых мутаций.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("клэйм не наш");
+        result.Error!.Message.Should().Contain("claim is not ours");
         etcd.Store.Should().NotContainKey("/kafka/clusters/events/endpoints");
     }
 
