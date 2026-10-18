@@ -155,7 +155,7 @@ public sealed class PlainClusterDriver(
     {
         if (!_engines.TryGetValue(spec.Host, out var engine))
             return Result.Failed(new ApplicationException(
-                $"хост {spec.Host} не в таблице Docker:Hosts (кластер {spec.Cluster}/{spec.NodeName})"));
+                $"host {spec.Host} not in the Docker:Hosts table (cluster {spec.Cluster}/{spec.NodeName})"));
 
         return await Result.FromAsync(async () =>
         {
@@ -364,7 +364,7 @@ public sealed class SwarmClusterDriver(
                 throw nodes.Error!;
             var target = nodes.Value.FirstOrDefault(n => n.Hostname == spec.Host);
             if (target is null)
-                throw new ApplicationException($"swarm-нода с Hostname={spec.Host} не найдена");
+                throw new ApplicationException($"swarm node with Hostname={spec.Host} not found");
 
             var template = new ContainerSpec(
                 spec.Image,
