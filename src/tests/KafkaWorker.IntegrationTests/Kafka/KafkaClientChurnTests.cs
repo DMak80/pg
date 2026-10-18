@@ -55,7 +55,8 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         var driver = new PlainClusterDriver(
             [new HostEndpoint("local", "unix:///var/run/docker.sock")],
             new DockerEngineFactory());
-        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        // Логгер фабрики — в консоль раннера: дрейн/ротация видны в логе прогона.
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3), logger: AdminFactoryConsoleLogger.Instance);
         var backoff = new KafkaClusterBackoff(TimeProvider.System);
         var supervisor = new NodeSupervisor(
             etcd.Gateway, ep, driver, claims, journal, factory,

@@ -5,6 +5,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
+using Microsoft.Extensions.Logging;
 using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
@@ -44,7 +45,11 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     // Per-class фабрика AdminClient-адаптеров (spec §6.3.3): кеш клиентов
     // живёт с контуром класса и освобождается в DisposeAsync — параллельные
     // классы не делят клиентов (диагностика «Broker handle destroyed» §6.2).
-    private readonly KafkaAdminClientFactory _adminFactory = new(TimeSpan.FromSeconds(10));
+    // Логгер (Warning+) — в консоль раннера: дрейн-события (бюджет dispose,
+    // ротация) видны в логе прогона — xunit-сводка их не несёт, а фабрика
+    // без логгера молчит (недоказуемость диспозера при разборе флейков).
+    private readonly KafkaAdminClientFactory _adminFactory = new(
+        TimeSpan.FromSeconds(10), logger: AdminFactoryConsoleLogger.Instance);
 
     public IKafkaAdminClientFactory AdminFactory => _adminFactory;
 
@@ -315,5 +320,34 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         var appPassword = await GetAsync($"/kafka/clusters/{cluster}/app_password");
         return (endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal),
             caPem!, appUser!, appPassword!);
+    }
+}
+
+// Консольный логгер фабрики AdminClient-ов интеграционных тестов: Warning+
+// в stdout раннера — дрейн-события фабрики (бюджет dispose, принудительный
+// dispose, ротация) видны в логе прогона и грепаются по префиксу; rdkafka-
+// Debug не включаем (зашумляет).
+internal sealed class AdminFactoryConsoleLogger(
+    string prefix = "kfw-adminfactory") : ILogger<KafkaAdminClientFactory>
+{
+    public static readonly AdminFactoryConsoleLogger Instance = new();
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull
+        => null;
+
+    public bool IsEnabled(LogLevel logLevel)
+        => logLevel >= LogLevel.Warning;
+
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        if (!IsEnabled(logLevel))
+            return;
+
+        Console.WriteLine($"[{prefix}] {formatter(state, exception)}");
+        if (exception is not null)
+            Console.WriteLine($"[{prefix}] {exception}");
     }
 }

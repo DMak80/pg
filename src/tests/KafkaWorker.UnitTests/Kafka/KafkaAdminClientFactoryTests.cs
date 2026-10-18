@@ -321,4 +321,59 @@ public class KafkaAdminClientFactoryTests
         first.DisposeNativeCount.Should().Be(1, "клиент задиспожен по завершении операции");
         await operation;
     }
+
+    // ===== Гэп дрейна: операция в окне «ноль счётчика → dispose» =====
+
+    // AAA: после dispose вход операций закрыт — новый вызов получает
+    // управляемый транзиентный отказ (НЕ unhealthy-фейл клиента) и не
+    // уходит на уничтоженный нативный хендл.
+    [Fact]
+    public async Task DisposedClient_NewOperation_RefusedWithTransientError()
+    {
+        // Arrange: клиент без операций — дрейн завершён, dispose исполнен.
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
+        await client.DisposeWhenIdleAsync(TimeSpan.Zero, TestContext.Current.CancellationToken);
+        client.DisposeNativeCount.Should().Be(1, "операций нет — dispose немедленно");
+
+        // Act: операция на уже диспознутом клиенте.
+        var refused = await client.RunUnderOperationAsync(
+            _ => Task.FromResult(Result.Success()), TestContext.Current.CancellationToken);
+
+        // Assert: транзиентный отказ без старта — счётчик не тронут.
+        refused.IsSuccess.Should().BeFalse("вход операций закрыт флагом dispose");
+        refused.Error!.Message.Should().Contain("клиент в dispose",
+            "отказ управляемый (повтор даст свежий клиент), не сбой клиента");
+        client.ActiveOperations.Should().Be(0, "операция не вставала на счётчик");
+    }
+
+    // AAA: операция, входящая в гэп «дрейн дождался нуля → dispose», либо
+    // не стартует (транзиентный отказ), либо спокойно доигрывает (дрейн в
+    // цикле дождётся её нуля) — исход ERR__DESTROYED под операцией исключён,
+    // клиент в итоге диспозится ровно один раз.
+    [Fact]
+    public async Task DisposeWhenIdle_OperationEnteringGap_NotDestroyedAndClientDisposed()
+    {
+        // Arrange: висящая операция + запущенный дрейн (ждёт нуля).
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(30));
+        var gate = new TaskCompletionSource<Result>();
+        var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+        var drain = client.DisposeWhenIdleAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        // Act: отпускаем операцию — дрейн проснётся по нулю; в его гэп
+        // (continuation в очереди пула) стартуем «опоздавшую» операцию.
+        gate.TrySetResult(Result.Success());
+        var late = await client.RunUnderOperationAsync(
+            _ => Task.FromResult(Result.Success()), TestContext.Current.CancellationToken);
+        await operation;
+        await drain;
+
+        // Assert: опоздавшая операция НЕ уничтожена — либо успех (встала на
+        // счётчик до dispose, дрейн дождался), либо транзиентный отказ; клиент
+        // после гэпа всё же диспозится, счётчик чист.
+        (late.IsSuccess || late.Error!.Message.Contains("клиент в dispose")).Should().BeTrue(
+            $"исход — успех или управляемый транзиент, не ERR__DESTROYED; фактически: " +
+            $"{(late.IsSuccess ? "success" : late.Error!.Message)}");
+        client.DisposeNativeCount.Should().Be(1, "клиент после гэпа всё же диспозится");
+        client.ActiveOperations.Should().Be(0, "висящих операций не осталось");
+    }
 }

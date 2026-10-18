@@ -89,11 +89,17 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             user!, password!, caPem!);
     }
 
+    // Провал факта — N подряд неудачных тиков без единого успеха между ними:
+    // транзиент (converge на свежем кластере, замена клиента кэша) — не
+    // провал, следующий тик идемпотентно повторяет все фазы по факту.
+    private const int MaxConsecutiveTickFailures = 3;
+
     // Provisioning-цикл до готовности (config без state).
     private async Task UpAsync(Rig rig, string cluster, int budgetSec)
     {
         var ct = TestContext.Current.CancellationToken;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(budgetSec);
+        var failures = 0;
         while (DateTimeOffset.UtcNow < deadline)
         {
             var snap = await fixture.SnapshotAsync(cluster);
@@ -101,8 +107,20 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 return;
 
             var tick = await rig.Provision.RunAsync(snap, ct);
-            tick.IsSuccess.Should().BeTrue(
-                $"тик provisioning не должен падать (waiting-brokers — успех): {tick.Error?.Message}");
+            if (tick.IsSuccess)
+            {
+                failures = 0; // успех тика (включая waiting-brokers) снимает серию
+            }
+            else
+            {
+                // Транзиентные отказы тика — не провал (как Act-циклу drain ниже):
+                // реальный ReconcileLoop ретраит следующим тиком, здесь — сходимость.
+                failures++;
+                failures.Should().BeLessThan(MaxConsecutiveTickFailures,
+                    $"тик provisioning падал {failures} подряд без успеха " +
+                    $"(waiting-brokers — успех; транзиент — не провал): {tick.Error?.Message}");
+            }
+
             await Task.Delay(3000, ct);
         }
 

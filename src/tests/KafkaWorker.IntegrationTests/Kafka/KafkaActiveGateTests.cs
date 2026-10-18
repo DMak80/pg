@@ -41,7 +41,8 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
         var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
         var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
-        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        // Логгер фабрики — в консоль раннера: дрейн/ротация видны в логе прогона.
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3), logger: AdminFactoryConsoleLogger.Instance);
         var backoff = new KafkaClusterBackoff(TimeProvider.System);
         backoff.RecordFailure(cluster, "connection refused"); // окно 15 c активно
 

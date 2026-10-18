@@ -21,8 +21,10 @@ namespace KafkaWorker.Provisioning.Kafka;
 /// другой ключ (инвалидация по построению; t03: caPem в ключе — клиенты с
 /// разным per-cluster CA не шарятся); Failed операции помечает запись
 /// Unhealthy — следующий Create пересоздаёт, заменяемый Disposeится в фоне
-/// ПОСЛЕ завершения его висящих операций — дрейн по счётчику с бюджетом,
-/// dispose под операцией запрещён (ERR__DESTROYED; arch/16 §6); неактивные
+/// ПОСЛЕ завершения его висящих операций — дрейн по счётчику с бюджетом;
+/// вход операции и dispose-решение атомарны (один замок): dispose под
+/// начатой операцией исключён, опоздавшая операция получает транзиентный
+/// отказ «клиент в dispose» (arch/16 §6); неактивные
 /// &gt; IdleEvictAfter вытесняются при Create; остановка host'а —
 /// детерминированный Dispose всех (IDisposable через DI).
 /// </summary>
@@ -192,6 +194,13 @@ public sealed class KafkaAdminClient(
     // клиент диспозится фоном по нулю операций (continuation последней).
     private int _activeOperations;
 
+    // Dispose стартовал (замена/вытеснение/остановка): вход новых операций
+    // закрыт. Живёт под _clientGate вместе со счётчиком — вход операции и
+    // dispose-решение атомарны: окно «операция началась после проверки нуля,
+    // но до DisposeNative» (ERR__DESTROYED под только что начатой операцией)
+    // исключено по построению.
+    private bool _disposing;
+
     // Ожидание «операций нет» (ставится DisposeWhenIdleAsync; завершается
     // EndOperation при нуле). RunContinuationsAsynchronously — continuation
     // дрейна не выполняется в потоке операции.
@@ -259,13 +268,32 @@ public sealed class KafkaAdminClient(
     // вытеснение/вытеснение-по-неактивности/остановка host'а (DisposeNative).
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    // Реальный Dispose нативного клиента (кэш фабрики; может ждать poll-поток —
-    // зовётся только в фоне или при shutdown). Под _clientGate: Dispose vs
-    // параллельная первая инициализация взаимоисключены (ревью Ф7-2).
-    internal void DisposeNative()
+    // Попытка dispose: атомарна со стартом операции (TryBeginOperation под тем
+    // же _clientGate) — либо операция раньше встала на счётчик (false, дрейн
+    // ждёт её нуля), либо вход закрыт флагом и dispose исполняется. Может
+    // ждать poll-поток — зовётся только в фоне или при shutdown.
+    private bool TryDisposeNative()
     {
         lock (_clientGate)
         {
+            if (_disposing || Volatile.Read(ref _activeOperations) != 0)
+                return false;
+
+            _disposing = true;
+            DisposeNativeCount++;
+            _client?.Dispose();
+            _client = null;
+            return true;
+        }
+    }
+
+    // Принудительный dispose по исчерпании бюджета дрейна («не ждать вечно»):
+    // закрывает вход новых операций флагом и диспозит даже при живом счётчике.
+    private void ForceDisposeNative()
+    {
+        lock (_clientGate)
+        {
+            _disposing = true;
             DisposeNativeCount++;
             _client?.Dispose();
             _client = null;
@@ -273,39 +301,42 @@ public sealed class KafkaAdminClient(
     }
 
     // Dispose после завершения висящих операций (arch/16 §6): операций нет —
-    // немедленно; есть — фоном ждём нуля (continuation последней) с бюджетом;
-    // бюджет исчерпан — принудительный dispose + warning («не ждать вечно»,
-    // диагностика вместо зависания). Гарантии сети не меняются: замена и
-    // раздача клиентов уже произошли (запись удалена из кеша ДО этого вызова).
+    // немедленно (TryDisposeNative); есть — фоном ждём нуля (continuation
+    // последней) с бюджетом; бюджет исчерпан — принудительный dispose +
+    // warning («не ждать вечно», диагностика вместо зависания). Операция,
+    // входящая между нулём счётчика и dispose (гэп пробуждения дрейна),
+    // получает транзиентный отказ «клиент в dispose» — на уничтожаемый
+    // хендл не стартует. Гарантии сети не меняются: замена и раздача
+    // клиентов уже произошли (запись удалена из кеша ДО этого вызова).
     internal async Task DisposeWhenIdleAsync(TimeSpan budget, CancellationToken ct)
     {
-        Task? idle;
-        lock (_clientGate)
+        while (!TryDisposeNative())
         {
-            if (_activeOperations == 0)
-            {
-                idle = null; // операций нет — dispose сразу (ниже, вне гейта)
-            }
-            else
+            Task idle;
+            lock (_clientGate)
             {
                 _drainTcs ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 idle = _drainTcs.Task;
             }
+
+            // Операции могли завершиться в гэпе установки ожидания — повтор
+            // немедленно, не висеть до бюджета.
+            if (TryDisposeNative())
+                return;
+
+            var finished = await Task.WhenAny(idle, Task.Delay(budget, ct)).ConfigureAwait(false);
+            if (finished != idle)
+            {
+                log?.LogWarning(
+                    "Kafka AdminClient ({Bootstrap}): бюджет дрейна dispose {Budget:F0} с исчерпан при {Active} активных операциях — принудительный dispose",
+                    bootstrap, budget.TotalSeconds, Volatile.Read(ref _activeOperations));
+                ForceDisposeNative(); // дрейн не дождался — dispose в любом случае
+                return;
+            }
+
+            // Ноль достигнут — цикл повторит попытку; операция, начатая в гэпе
+            // пробуждения, снова встанет на счётчик и дождётся своей очереди.
         }
-
-        if (idle is null)
-        {
-            DisposeNative();
-            return;
-        }
-
-        var finished = await Task.WhenAny(idle, Task.Delay(budget, ct)).ConfigureAwait(false);
-        if (finished != idle)
-            log?.LogWarning(
-                "Kafka AdminClient ({Bootstrap}): бюджет дрейна dispose {Budget:F0} с исчерпан при {Active} активных операциях — принудительный dispose",
-                bootstrap, budget.TotalSeconds, Volatile.Read(ref _activeOperations));
-
-        DisposeNative(); // дрейн дождался либо бюджет — dispose в любом случае
     }
 
     // Бюджет дрейна dispose (arch/16 §6): операции сами ограничены
@@ -473,9 +504,13 @@ public sealed class KafkaAdminClient(
     // (+ unhealthy-пометка записи кэша, кроме отмены host'а). Операция
     // стоит на счётчике всё время выполнения (arch/16 §6): дрейн-dispose
     // заменяемого ждёт нуля — dispose под висящей операцией исключён.
+    // Клиент в dispose (замена/вытеснение/остановка) операцию не принимает:
+    // транзиентный отказ без unhealthy-пометки — следующий Create раздаст
+    // свежий клиент, повтор идемпотентен.
     private async Task<Result> RunAsync(Func<IAdminClient, Task<Result>> action, CancellationToken ct)
     {
-        BeginOperation();
+        if (!TryBeginOperation())
+            return Result.Failed(ClientDisposingError());
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -495,7 +530,8 @@ public sealed class KafkaAdminClient(
 
     private async Task<Result<T>> RunAsync<T>(Func<IAdminClient, Task<T>> action, CancellationToken ct)
     {
-        BeginOperation();
+        if (!TryBeginOperation())
+            return Result<T>.Failed(ClientDisposingError());
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -513,11 +549,31 @@ public sealed class KafkaAdminClient(
         }
     }
 
-    // Счётчик операций: инкремент до действия, декремент в finally —
-    // исключение/отмена тоже освобождают слот. Ноль при поставленном
-    // ожидании дрейна завершает его (continuation последней операции).
-    private void BeginOperation() => Interlocked.Increment(ref _activeOperations);
+    // Вход операции: под _clientGate вместе с dispose-решением
+    // (TryDisposeNative) — атомарность «операция началась ДО dispose» /
+    // «dispose закрыл вход». Инкремент и декремент по-прежнему симметричны
+    // (finally каркаса), исключение/отмена тоже освобождают слот.
+    private bool TryBeginOperation()
+    {
+        lock (_clientGate)
+        {
+            if (_disposing)
+                return false;
 
+            _activeOperations++;
+            return true;
+        }
+    }
+
+    // Управляемый транзиентный отказ операции на диспозящемся клиенте: не
+    // сбой клиента (unhealthy-пометка НЕ ставится) — плановая замена кэша.
+    private ApplicationException ClientDisposingError()
+        => new(
+            $"Kafka AdminClient ({bootstrap}): клиент в dispose (замена/вытеснение кэша) — операция не стартована, повтор следующим вызовом получит свежий клиент");
+
+    // Счётчик операций: декремент в finally — исключение/отмена тоже
+    // освобождают слот. Ноль при поставленном ожидании дрейна завершает его
+    // (continuation последней операции).
     private void EndOperation()
     {
         if (Interlocked.Decrement(ref _activeOperations) != 0)
