@@ -41,7 +41,7 @@ public static class WalReceiverEnv
             var value = env(key);
             if (string.IsNullOrWhiteSpace(value))
             {
-                failures.Add($"обязательный env {key} отсутствует или пуст");
+                failures.Add($"required env {key} is missing or empty");
                 return "";
             }
 
@@ -52,7 +52,7 @@ public static class WalReceiverEnv
         var pgPortText = Require("PG_PORT");
         int pgPort = 0;
         if (failures.Count == 0 && (!int.TryParse(pgPortText, out pgPort) || pgPort is < 1 or > 65535))
-            failures.Add("env PG_PORT должен быть целым числом 1..65535");
+            failures.Add("env PG_PORT must be an integer 1..65535");
         var pgUser = Require("PG_USER");
         var pgPassword = Require("PG_PASSWORD");
         var pgDbname = Require("PG_DBNAME");
@@ -64,7 +64,7 @@ public static class WalReceiverEnv
         var s3EndpointsText = Require("S3_ENDPOINTS");
         var s3Endpoints = SplitEndpoints(s3EndpointsText);
         if (failures.Count == 0 && s3Endpoints.Count == 0)
-            failures.Add("env S3_ENDPOINTS должен быть непустым списком uri через запятую");
+            failures.Add("env S3_ENDPOINTS must be a non-empty comma-separated list of uri");
         // Read-список опционален: отсутствие = читать с write-целей (однонодовый пул).
         var s3ReadEndpoints = SplitEndpoints(env("S3_READ_ENDPOINTS") ?? "");
         var s3Bucket = Require("S3_BUCKET");

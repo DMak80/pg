@@ -108,7 +108,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
                 : await ShowSegmentSizeAsync(ct);
             if (ParseSegmentSize(raw) is not { } segmentBytes || segmentBytes != WalFileName.SegmentBytes)
                 return Result.Failed(new ApplicationException(
-                    $"wal_segment_size источника {raw} ≠ {WalFileName.SegmentBytes} байт"));
+                    $"source wal_segment_size {raw} ≠ {WalFileName.SegmentBytes} bytes"));
 
             // Прежнее replication-соединение обязано умереть ДО создания
             // нового: transient-цикл приёмника (обрыв источника/рестарт воркера)
@@ -147,7 +147,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
     {
         try
         {
-            var replication = _replication ?? throw new InvalidOperationException("OpenAsync не выполнен");
+            var replication = _replication ?? throw new InvalidOperationException("OpenAsync not called");
             var physicalSlot = new PhysicalReplicationSlot(slot);
             _messages = replication.StartReplication(
                 physicalSlot, (NpgsqlLogSequenceNumber)startLsn, ct);
@@ -167,7 +167,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
 
     private async IAsyncEnumerable<XLogChunk> ReadChunksAsync()
     {
-        var messages = _messages ?? throw new InvalidOperationException("StartReplicationAsync не выполнен");
+        var messages = _messages ?? throw new InvalidOperationException("StartReplicationAsync not called");
         await foreach (var message in messages)
         {
             // Data — поток, валиден только до следующего сообщения: вычитываем целиком
@@ -182,7 +182,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
     {
         try
         {
-            var replication = _replication ?? throw new InvalidOperationException("OpenAsync не выполнен");
+            var replication = _replication ?? throw new InvalidOperationException("OpenAsync not called");
             replication.SetReplicationStatus((NpgsqlLogSequenceNumber)confirmedLsn);
             await replication.SendStatusUpdate(ct);
             return Result.Success();

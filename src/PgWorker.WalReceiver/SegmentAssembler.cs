@@ -78,7 +78,7 @@ public sealed class SegmentAssembler(ulong startLsn)
     {
         if (segmentBytes.Length != (int)WalFileName.SegmentBytes)
             throw new ApplicationException(
-                $"internal: сегмент {segmentBytes.Length} байт ≠ {WalFileName.SegmentBytes}");
+                $"internal: segment {segmentBytes.Length} bytes ≠ {WalFileName.SegmentBytes}");
 
         uint tli;
         if (LeU64(segmentBytes, 8) == _segmentStart)
@@ -87,8 +87,8 @@ public sealed class SegmentAssembler(ulong startLsn)
             tli = inherited;
         else
             throw new ApplicationException(
-                $"первый выгружаемый сегмент на {WalReceiverMarkers.LsnText(_segmentStart)} " +
-                "без валидного page header — TLI не определён");
+                $"first uploadable segment at {WalReceiverMarkers.LsnText(_segmentStart)} " +
+                "without a valid page header — TLI undefined");
 
         _currentTli = tli;
         var segId = (uint)(_segmentStart / (ulong)WalFileName.SegmentBytes);
