@@ -31,7 +31,7 @@ public sealed class MoveRepairProcess(
         // Мутации — только под живым клэймом (MR0).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"repair {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"repair {cluster}: claim is not ours (or lost) — mutations forbidden"));
         if (snap.Config.State != ClusterState.Active)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
 
@@ -64,14 +64,14 @@ public sealed class MoveRepairProcess(
             {
                 dispatched.Add(bucket);
                 logger?.LogInformation(
-                    "repair {cluster}/{bucket}: синтетическая заявка {op} (force={force}) — доведёт MoveProcess",
+                    "repair {cluster}/{bucket}: synthetic ticket {op} (force={force}) — MoveProcess will drive it",
                     cluster, bucket, repair.Op, repair.Force);
             }
         }
 
         if (dispatched.Count > 0)
             await journal.WritePhaseAsync(cluster, "repair", "dispatched", claims.InstanceId,
-                $"статусы: {string.Join(", ", dispatched)}", ct);
+                $"statuses: {string.Join(", ", dispatched)}", ct);
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }

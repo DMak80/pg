@@ -55,21 +55,21 @@ public sealed class AbortSequence(
 
         // (1) Валидация: routing и статус-ключ обязательны; владелец зарегистрирован.
         if (!MoveNames.ValidateIdentifier(bucket))
-            return await RejectAsync(cluster, bucket, claims, $"недопустимое имя бакета '{bucket}'", ct);
+            return await RejectAsync(cluster, bucket, claims, $"invalid bucket name '{bucket}'", ct);
         var owner = snap.Routing.FirstOrDefault(r => $"bucket_{r.Id}" == bucket)?.Owner;
         if (owner is null)
             return await RejectAsync(cluster, bucket, claims,
-                $"нет {MoveNames.RoutingKey(cluster, bucket)} — владелец неизвестен, уборка небезопасна (восстанови контрол-плейн, P12)", ct);
+                $"{MoveNames.RoutingKey(cluster, bucket)} missing — owner unknown, cleanup unsafe (restore control plane, P12)", ct);
         if (snap.Shards.FirstOrDefault(s => s.Name == owner && s.Dsn is not null) is null)
             return await RejectAsync(cluster, bucket, claims,
-                $"владелец '{owner}' не зарегистрирован (нет dsn-ключа)", ct);
+                $"owner '{owner}' is not registered (no dsn key)", ct);
 
         var existing = await status.GetAsync(cluster, bucket, ct);
         if (!existing.IsSuccess)
             return await FailTransientAsync(cluster, claims, existing.Error!, ct);
         if (existing.Value is null)
             return await RejectAsync(cluster, bucket, claims,
-                "статус-ключа нет — бакет ACTIVE, откатывать нечего; пост-flip артефакты убирает finalize", ct);
+                "no status key — bucket is ACTIVE, nothing to roll back; post-flip artifacts are cleaned by finalize", ct);
 
         var prev = existing.Value;
         var resuming = prev.State == MoveStates.Aborting; // продолжение незавершённой уборки
@@ -81,14 +81,14 @@ public sealed class AbortSequence(
             var age = clock.GetUtcNow().ToUnixTimeSeconds() - prev.UpdatedUnix;
             if (age < o.AbortMinAgeSec)
                 return await FailTransientAsync(cluster, claims, new ApplicationException(
-                    $"статус обновлён {age}с назад (< AbortMinAgeSec={o.AbortMinAgeSec}с) — переезд, возможно, ещё жив; если mover точно мёртв — force"), ct);
+                    $"status updated {age}s ago (< AbortMinAgeSec={o.AbortMinAgeSec}s) — the move may still be alive; if the mover is definitely dead — force"), ct);
         }
 
         // routing уже указывает на target: flip прошёл, статус завис — abort станет
         // ДОВЕДЕНИЕМ перевода (как finalize); осознанно — только с force.
         if (prev.Target == owner && !request.Force)
             return await RejectAsync(cluster, bucket, claims,
-                $"routing уже указывает на target '{prev.Target}' — похоже, flip прошёл, а статус-ключ остался; такой abort станет уборкой СТАРОГО шарда (как finalize) — осознанно: force", ct);
+                $"routing already points to target '{prev.Target}' — looks like the flip happened and the status key is left over; such abort would clean up the OLD shard (like finalize) — deliberate: force", ct);
 
         // (2) Инвентаризация артефактов на ВСЕХ шардах: pub/sub/slot по конвенциям
         //     + схема; недоступный шард — картина неполна, уборку не начинаем.
@@ -102,12 +102,12 @@ public sealed class AbortSequence(
         if (scan.Value.Unreachable.Count > 0)
         {
             var blocked = await WriteJournalAsync(cluster, bucket, prev, AbortPhases.Blocked,
-                $"недоступны шарды: {string.Join(", ", scan.Value.Unreachable)} — инвентаризация неполна, уборка не начиналась",
+                $"unreachable shards: {string.Join(", ", scan.Value.Unreachable)} — inventory incomplete, cleanup not started",
                 plan: [], scan.Value.Unreachable, clock, ct);
             if (!blocked.IsSuccess)
                 return Result<ProcessOutcome>.Failed(blocked.Error!);
             return await FailTransientAsync(cluster, claims, new ApplicationException(
-                $"abort {cluster}/{bucket}: недоступны шарды ({string.Join(", ", scan.Value.Unreachable)}) — журнал ABORTING/blocked, повтор после возврата шарда"), ct);
+                $"abort {cluster}/{bucket}: shards unreachable ({string.Join(", ", scan.Value.Unreachable)}) — journal ABORTING/blocked, retry after the shard returns"), ct);
         }
 
         // (3) ★ Журнал ДО любых манипуляций с БД: state=ABORTING + план уборки
@@ -199,24 +199,24 @@ public sealed class AbortSequence(
         if (control.Value.Unreachable.Count > 0)
         {
             var failed = await WriteJournalAsync(cluster, bucket, prev, AbortPhases.Failed,
-                $"при контроле недоступны шарды: {string.Join(", ", control.Value.Unreachable)} — повтор позже",
+                $"shards unreachable during control scan: {string.Join(", ", control.Value.Unreachable)} — retry later",
                 scan.Value.Plan, control.Value.Unreachable, clock, ct);
             if (!failed.IsSuccess)
                 return Result<ProcessOutcome>.Failed(failed.Error!);
             return await FailTransientAsync(cluster, claims, new ApplicationException(
-                $"abort {cluster}/{bucket}: контрольная инвентаризация не прошла — шарды недоступны"), ct);
+                $"abort {cluster}/{bucket}: control inventory failed — shards unreachable"), ct);
         }
 
         var leftover = control.Value.Plan.Where(p => p.Shard != owner || p.Kind != "schema").ToList();
         if (leftover.Count > 0)
         {
             var failed = await WriteJournalAsync(cluster, bucket, prev, AbortPhases.Failed,
-                $"остались артефакты: {string.Join("; ", leftover.Select(p => $"{p.Shard}:{p.Kind} {p.Name}"))}",
+                $"artifacts remain: {string.Join("; ", leftover.Select(p => $"{p.Shard}:{p.Kind} {p.Name}"))}",
                 scan.Value.Plan, [], clock, ct);
             if (!failed.IsSuccess)
                 return Result<ProcessOutcome>.Failed(failed.Error!);
             return await FailTransientAsync(cluster, claims, new ApplicationException(
-                $"abort {cluster}/{bucket}: после уборки остались артефакты ({leftover.Count}) — см. журнал ABORTING/failed"), ct);
+                $"abort {cluster}/{bucket}: artifacts remain after cleanup ({leftover.Count}) — see the ABORTING/failed journal"), ct);
         }
 
         // (6) del статус-ключа = ACTIVE; del СВОЕЙ заявки; снапшот best-effort.
@@ -350,7 +350,7 @@ public sealed class AbortSequence(
                 return last;
             if (ToBool(last.Value) == true)
                 return Result.Failed(new ApplicationException(
-                    $"слот {slot} всё ещё активен — кто-то читает; разберись вручную"));
+                    $"slot {slot} is still active — someone is reading; investigate manually"));
         }
 
         return await sql.ExecuteAsync(dsn, MoveSql.DropSlot(slot), ct);
@@ -406,7 +406,7 @@ public sealed class AbortSequence(
                 return Result<Dictionary<string, string>>.Failed(master.Error!);
             if (master.Value is null)
                 return Result<Dictionary<string, string>>.Failed(new ApplicationException(
-                    $"мастер '{shard.Name}' не определён — ждём (Patroni-выборы?)"));
+                    $"master '{shard.Name}' is not resolved — waiting (Patroni election?)"));
             result[shard.Name] = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, secrets);
         }
 

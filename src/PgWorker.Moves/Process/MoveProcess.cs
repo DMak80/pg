@@ -103,7 +103,7 @@ public sealed class MoveProcess(
             MoveOp.Rollback => await RunRollbackAsync(snap, bucket, request, ct),
             MoveOp.Finalize => await RunFinalizeAsync(snap, bucket, request, ct),
             MoveOp.Abort => await RunAbortAsync(snap, bucket, request, ct),
-            _ => Result<ProcessOutcome>.Failed(new ApplicationException($"неизвестная операция заявки: {request.Op}")),
+            _ => Result<ProcessOutcome>.Failed(new ApplicationException($"unknown ticket op: {request.Op}")),
         };
     }
 
@@ -117,19 +117,19 @@ public sealed class MoveProcess(
         // Валидации заявки — по порядку; каждая: permanent / transient / продолжение.
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
-                $"кластер не Active ({snap.Config.State}) — заявки переездов обрабатываются только в Active", ct);
+                $"cluster is not Active ({snap.Config.State}) — move tickets are processed only while Active", ct);
         if (!MoveNames.ValidateIdentifier(bucket))
-            return await RejectAsync(cluster, bucket, $"недопустимое имя бакета '{bucket}'", ct);
+            return await RejectAsync(cluster, bucket, $"invalid bucket name '{bucket}'", ct);
 
         var owner = snap.Routing.FirstOrDefault(r => $"bucket_{r.Id}" == bucket)?.Owner;
         if (owner is null)
             return await RejectAsync(cluster, bucket,
-                $"нет {MoveNames.RoutingKey(cluster, bucket)} — владелец неизвестен, переезд невозможен (восстанови контрол-плейн, P12)", ct);
+                $"{MoveNames.RoutingKey(cluster, bucket)} missing — owner unknown, move impossible (restore control plane, P12)", ct);
 
         if (request.To is not { } to || !MoveNames.ValidateIdentifier(to))
-            return await RejectAsync(cluster, bucket, "заявка без валидной цели 'to'", ct);
+            return await RejectAsync(cluster, bucket, "ticket has no valid 'to' target", ct);
         if (to == owner)
-            return await RejectAsync(cluster, bucket, $"бакет уже на '{to}'", ct);
+            return await RejectAsync(cluster, bucket, $"bucket is already on '{to}'", ct);
 
         var srcShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
         var dstShard = snap.Shards.FirstOrDefault(s => s.Name == to);
@@ -143,7 +143,7 @@ public sealed class MoveProcess(
                 $"шард-приёмник '{to}' ещё не поднят (add-shard не завершён)", ct);
         if (srcShard?.Dsn is null)
             return await RejectAsync(cluster, bucket,
-                $"шард-источник '{owner}' не зарегистрирован (нет dsn-ключа)", ct);
+                $"source shard '{owner}' is not registered (no dsn key)", ct);
 
         // Статус-ключ: новый переезд / resume (started_unix наследуется) / конфликт.
         var existing = await status.GetAsync(cluster, bucket, ct);
@@ -175,11 +175,11 @@ public sealed class MoveProcess(
                     break;
                 case MoveStates.Aborting:
                     return await RejectAsync(cluster, bucket,
-                        "уборка прерванного переезда не закончена (state=ABORTING) — сначала заверши abort", ct);
+                        "cleanup of the interrupted move is not finished (state=ABORTING) — finish abort first", ct);
                 default:
                     return await RejectAsync(cluster, bucket, prev.State is MoveStates.Syncing or MoveStates.Frozen
-                        ? $"переезд уже идёт на '{prev.Target}', а запрошен '{to}'"
-                        : $"неожиданное состояние статус-ключа: {prev.State}", ct);
+                        ? $"move is already running to '{prev.Target}', but '{to}' was requested"
+                        : $"unexpected status key state: {prev.State}", ct);
             }
         }
 
@@ -194,7 +194,7 @@ public sealed class MoveProcess(
         if (!schemaSrc.IsSuccess)
             return await FailTransientAsync(cluster, schemaSrc.Error!, ct);
         if (ToBool(schemaSrc.Value) != true)
-            return await RejectAsync(cluster, bucket, $"схемы '{bucket}' нет на '{owner}'?! (владелец без схемы бакета)", ct);
+            return await RejectAsync(cluster, bucket, $"schema '{bucket}' is missing on '{owner}'?! (owner without the bucket schema)", ct);
 
         // SQL-префлайт источника: недоступность → transient, факт → permanent.
         var wal = await sql.ScalarAsync(srcDsn, MoveSql.WalLevel(), ct);
@@ -202,7 +202,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, wal.Error!, ct);
         if (ToText(wal.Value) != "logical")
             return await RejectAsync(cluster, bucket,
-                $"wal_level='{ToText(wal.Value)}' на '{owner}', нужно 'logical' (рестарт кластера)", ct);
+                $"wal_level='{ToText(wal.Value)}' on '{owner}', 'logical' required (cluster restart)", ct);
 
         var maxSlots = await sql.ScalarAsync(srcDsn, MoveSql.MaxSlots(), ct);
         if (!maxSlots.IsSuccess)
@@ -212,7 +212,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, usedSlots.Error!, ct);
         if (ToLong(usedSlots.Value) >= ToLong(maxSlots.Value))
             return await RejectAsync(cluster, bucket,
-                $"replication-слоты на '{owner}' кончились ({ToLong(usedSlots.Value)}/{ToLong(maxSlots.Value)})", ct);
+                $"replication slots on '{owner}' are exhausted ({ToLong(usedSlots.Value)}/{ToLong(maxSlots.Value)})", ct);
 
         var maxSenders = await sql.ScalarAsync(srcDsn, MoveSql.MaxWalSenders(), ct);
         if (!maxSenders.IsSuccess)
@@ -222,13 +222,13 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, usedSenders.Error!, ct);
         if (ToLong(usedSenders.Value) >= ToLong(maxSenders.Value))
             return await RejectAsync(cluster, bucket,
-                $"walsender'ы на '{owner}' кончились ({ToLong(usedSenders.Value)}/{ToLong(maxSenders.Value)})", ct);
+                $"walsenders on '{owner}' are exhausted ({ToLong(usedSenders.Value)}/{ToLong(maxSenders.Value)})", ct);
 
         // P4-префлайт: lost-слоты — только предупреждение в журнал (прошлая подписка умерла).
         var lost = await sql.ScalarAsync(srcDsn, MoveSql.LostSlots(), ct);
         if (lost.IsSuccess && ToLong(lost.Value) > 0)
             await journal.WritePhaseAsync(cluster, "move", "preflight", claims.InstanceId,
-                $"warning: на '{owner}' {ToLong(lost.Value)} слотов(а) с wal_status='lost' (P4) — прибери: abort/finalize", ct);
+                $"warning: {ToLong(lost.Value)} slot(s) with wal_status='lost' on '{owner}' (P4) — clean up: abort/finalize", ct);
 
         // Пробы mover-роли ПО MOVER-DSN источника (ревью №2): доступность + REPLICATION.
         var moverDsn = await MoverProbeDsnAsync(snap, srcShard, ct);
@@ -242,7 +242,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, roleOk.Error!, ct);
         if (ToBool(roleOk.Value) != true)
             return await RejectAsync(cluster, bucket,
-                $"mover-роль на '{owner}' без атрибута REPLICATION — подписка не сможет создаться", ct);
+                $"mover role on '{owner}' lacks the REPLICATION attribute — subscription creation will fail", ct);
 
         // P8: sync-standby у мастера приёмника (remote_apply без него вырожден).
         var syncNames = await sql.ScalarAsync(dstDsn, MoveSql.SyncStandbyNames(), ct);
@@ -250,13 +250,13 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, syncNames.Error!, ct);
         if (string.IsNullOrWhiteSpace(ToText(syncNames.Value)))
             return await RejectAsync(cluster, bucket,
-                $"synchronous_standby_names на '{to}' пуст — remote_apply подписки вырожден (P8)", ct);
+                $"synchronous_standby_names is empty on '{to}' — subscription remote_apply is degenerate (P8)", ct);
         var syncCount = await sql.ScalarAsync(dstDsn, MoveSql.SyncStandbyCount(), ct);
         if (!syncCount.IsSuccess)
             return await FailTransientAsync(cluster, syncCount.Error!, ct);
         if (ToLong(syncCount.Value) < 1)
             return await RejectAsync(cluster, bucket,
-                $"у мастера '{to}' нет живого sync/quorum-standby (P8) — remote_apply вырожден", ct);
+                $"master '{to}' has no live sync/quorum standby (P8) — remote_apply is degenerate", ct);
 
         // Приёмник: схема без подписки — только resume и только ПУСТАЯ; остатки _rb — отказ.
         var subDst = await sql.ScalarAsync(dstDsn, MoveSql.SubExists(MoveNames.Sub(bucket)), ct);
@@ -271,14 +271,14 @@ public sealed class MoveProcess(
             // (transient-сбой после DDL не должен убивать заявку на следующем тике).
             if (!request.Resume && !ownMove)
                 return await RejectAsync(cluster, bucket,
-                    $"схема '{bucket}' уже есть на '{to}' без подписки (остаток сорванного запуска?) — resume=true или DROP SCHEMA", ct);
+                    $"schema '{bucket}' already exists on '{to}' without a subscription (leftover of an aborted run?) — resume=true or DROP SCHEMA", ct);
             // resume допустим только для ПУСТОЙ схемы: copy_data=true в непустую даст дубликаты.
             var gen = await sql.ScalarAsync(dstDsn, MoveSql.EmptySchemaCheckSqlGen(bucket), ct);
             if (!gen.IsSuccess)
                 return await FailTransientAsync(cluster, gen.Error!, ct);
             if (ToText(gen.Value) is not { } generatedSql)
                 return await FailTransientAsync(cluster,
-                    new ApplicationException($"генератор проверки пустоты схемы на '{to}' вернул пустоту"), ct);
+                    new ApplicationException($"schema emptiness check generator on '{to}' returned null"), ct);
             var rows = await sql.ScalarAsync(dstDsn, generatedSql, ct);
             if (!rows.IsSuccess)
                 return await FailTransientAsync(cluster, rows.Error!, ct);
@@ -293,13 +293,13 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, pubRb.Error!, ct);
         if (ToLong(pubRb.Value) != 0)
             return await RejectAsync(cluster, bucket,
-                $"на '{to}' осталась {MoveNames.PubRb(bucket)} — сначала разберись (finalize?)", ct);
+                $"{MoveNames.PubRb(bucket)} is still left on '{to}' — investigate first (finalize?)", ct);
         var subRb = await sql.ScalarAsync(srcDsn, MoveSql.SubExists(MoveNames.SubRb(bucket)), ct);
         if (!subRb.IsSuccess)
             return await FailTransientAsync(cluster, subRb.Error!, ct);
         if (ToLong(subRb.Value) != 0)
             return await RejectAsync(cluster, bucket,
-                $"на '{owner}' осталась {MoveNames.SubRb(bucket)} — сначала finalize прошлого переезда", ct);
+                $"{MoveNames.SubRb(bucket)} is still left on '{owner}' — finalize the previous move first", ct);
 
         // SYNCING + обязательная снапшот-точка «после начала» (P12): фаза waiting-snapshot
         // пишется ДО снапшота (крах между ними оставляет «снапшот не взят» — тик повторит),
@@ -320,7 +320,7 @@ public sealed class MoveProcess(
             if (!put.IsSuccess)
                 return await FailTransientAsync(cluster, put.Error!, ct);
 
-            logger?.LogInformation("move {cluster}/{bucket}: SYNCING {owner} → {to} (префлайт пройден)",
+            logger?.LogInformation("move {cluster}/{bucket}: SYNCING {owner} → {to} (preflight passed)",
                 cluster, bucket, owner, to);
 
             // M0-конец: точка старта зафиксирована снапшотом — M1 продолжит следующим
@@ -368,12 +368,12 @@ public sealed class MoveProcess(
                 return await FailTransientAsync(cluster, srcMaster.Error!, ct);
             if (srcMaster.Value is not { } master)
                 return await FailTransientAsync(cluster, new ApplicationException(
-                    $"мастер '{owner}' не определён — имя ноды для pg_dump неизвестно"), ct);
+                    $"master '{owner}' is not resolved — node name for pg_dump unknown"), ct);
             var masterEntry = addresses.Value.FirstOrDefault(p =>
                 p.Key.StartsWith($"{owner}/", StringComparison.Ordinal) && p.Value.Ports.Pg == master.Ports.Pg);
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
-                    $"мастер '{owner}' (pg:{master.Ports.Pg}) не найден среди нод шарда в portalloc"), ct);
+                    $"master '{owner}' (pg:{master.Ports.Pg}) not found among shard nodes in portalloc"), ct);
             var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct,
                 containerOverride: master.Object); // усыновлённая нода: exec в object-контейнер (spec §3.3)
             if (!dump.IsSuccess)
@@ -394,7 +394,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, inventory.Error!, ct);
         if (inventory.Value != true)
             return await RejectAsync(cluster, bucket,
-                $"инвентарь '{bucket}' на '{owner}' и '{to}' расходится (inventory-mismatch) — мораторий DDL (P5) нарушен?", ct);
+                $"inventory of '{bucket}' differs between '{owner}' and '{to}' (inventory-mismatch) — DDL moratorium (P5) violated?", ct);
 
         // M2: pub/sub идемпотентно — pub на источнике, sub на приёмнике (P3/P8).
         var pub = await sql.ScalarAsync(srcDsn, MoveSql.PubExists(MoveNames.Pub(bucket)), ct);
@@ -437,11 +437,11 @@ public sealed class MoveProcess(
         var ready = await sql.ScalarAsync(dstDsn, MoveSql.SubSyncReady(MoveNames.Sub(bucket)), ct);
         if (!ready.IsSuccess)
             return await FailTransientAsync(cluster, new ApplicationException(
-                $"приёмник '{to}' недоступен ({ready.Error!.Message}) — тики продолжаются, бюджеты недоступности: ConnFailBudgetSec={options.ConnFailBudgetSec}с"), ct);
+                $"target '{to}' is unavailable ({ready.Error!.Message}) — ticks continue, unavailability budgets: ConnFailBudgetSec={options.ConnFailBudgetSec}s"), ct);
         var readyText = ToText(ready.Value);
         if (readyText is null || !TryParseReady(readyText, out var done, out var total))
             return await FailTransientAsync(cluster, new ApplicationException(
-                $"нечитаемая готовность подписки на '{to}': '{readyText}'"), ct);
+                $"unreadable subscription readiness on '{to}': '{readyText}'"), ct);
 
         await LogCopyProgressAsync(cluster, bucket, srcDsn, readyText, ct);
 
@@ -452,7 +452,7 @@ public sealed class MoveProcess(
             var cutoverWait = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.CutoverWait, ct);
             if (!cutoverWait.IsSuccess)
                 return await FailTransientAsync(cluster, cutoverWait.Error!, ct);
-            logger?.LogInformation("move {cluster}/{bucket}: initial copy завершён — готов к cutover", cluster, bucket);
+            logger?.LogInformation("move {cluster}/{bucket}: initial copy finished — ready for cutover", cluster, bucket);
         }
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
@@ -478,7 +478,7 @@ public sealed class MoveProcess(
             {
                 var shot = await snapshot(token);
                 if (!shot.IsSuccess)
-                    postFlipErrors.Add($"снапшот flip-{bucket}-{to} не снялся: {shot.Error!.Message} — сними вручную");
+                    postFlipErrors.Add($"flip-{bucket}-{to} snapshot failed: {shot.Error!.Message} — take it manually");
                 return shot;
             });
         if (!flip.IsSuccess)
@@ -500,7 +500,7 @@ public sealed class MoveProcess(
         if (!drop.IsSuccess)
         {
             postFlipErrors.Add(
-                $"не удалось срезать {MoveNames.Sub(bucket)} на '{to}' ({drop.Error!.Message}) — добьёт finalize");
+                $"failed to drop {MoveNames.Sub(bucket)} on '{to}' ({drop.Error!.Message}) — finalize will finish it");
         }
         else if (!request.SkipReverse)
         {
@@ -517,12 +517,12 @@ public sealed class MoveProcess(
                         MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
                 if (!subRb.IsSuccess)
                     postFlipErrors.Add(
-                        $"не удалось поставить {MoveNames.SubRb(bucket)} на '{owner}' ({subRb.Error!.Message}) — rollback недоступен, поставь вручную");
+                        $"failed to create {MoveNames.SubRb(bucket)} on '{owner}' ({subRb.Error!.Message}) — rollback unavailable, create it manually");
             }
             else
             {
                 postFlipErrors.Add(
-                    $"не удалось создать {MoveNames.PubRb(bucket)} на '{to}' ({pubRb.Error!.Message}) — обратная подписка не ставится, rollback недоступен");
+                    $"failed to create {MoveNames.PubRb(bucket)} on '{to}' ({pubRb.Error!.Message}) — reverse subscription not created, rollback unavailable");
             }
         }
 
@@ -539,7 +539,7 @@ public sealed class MoveProcess(
 
         await journal.WritePhaseAsync(cluster, "move", "done", claims.InstanceId,
             postFlipErrors.Count > 0 ? string.Join("; ", postFlipErrors) : null, ct);
-        logger?.LogInformation("move {cluster}/{bucket}: переехал {owner} → {to} (поставлена auto-finalize для уборки {owner})",
+        logger?.LogInformation("move {cluster}/{bucket}: moved {owner} → {to} (auto-finalize queued to clean up {owner})",
             cluster, bucket, owner, to, owner);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -569,7 +569,7 @@ public sealed class MoveProcess(
 
         _lastReady[key] = ready;
         var lag = await sql.ScalarAsync(srcDsn, MoveSql.SlotLag(MoveNames.Sub(bucket)), ct);
-        logger.LogInformation("move {cluster}/{bucket}: таблицы готовы {ready}, лаг слота {lag} байт",
+        logger.LogInformation("move {cluster}/{bucket}: tables ready {ready}, slot lag {lag} bytes",
             cluster, bucket, ready, lag.IsSuccess ? ToLong(lag.Value).ToString() : "?");
     }
 
@@ -595,14 +595,14 @@ public sealed class MoveProcess(
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
-                $"кластер не Active ({snap.Config.State}) — откат недоступен", ct, op);
+                $"cluster is not Active ({snap.Config.State}) — rollback unavailable", ct, op);
         if (!MoveNames.ValidateIdentifier(bucket))
-            return await RejectAsync(cluster, bucket, $"недопустимое имя бакета '{bucket}'", ct, op);
+            return await RejectAsync(cluster, bucket, $"invalid bucket name '{bucket}'", ct, op);
 
         var owner = snap.Routing.FirstOrDefault(r => $"bucket_{r.Id}" == bucket)?.Owner;
         if (owner is null)
             return await RejectAsync(cluster, bucket,
-                $"нет {MoveNames.RoutingKey(cluster, bucket)} — владелец неизвестен (восстанови контрол-плейн, P12)", ct, op);
+                $"{MoveNames.RoutingKey(cluster, bucket)} missing — owner unknown (restore control plane, P12)", ct, op);
 
         // Откат — только из ACTIVE: живой переезд сначала заверши (или отмени abort'ом).
         // ИСКЛЮЧЕНИЕ (ревью №1): фаза rollback-post-flip — flip отката уже состоялся,
@@ -617,12 +617,12 @@ public sealed class MoveProcess(
             {
                 if (live.Owner != owner)
                     return await RejectAsync(cluster, bucket,
-                        $"routing указывает на '{owner}', а фаза доведения отката — на '{live.Owner}' (изменили вручную?) — разбор вручную", ct, op);
+                        $"routing points to '{owner}', but the rollback finalization phase — to '{live.Owner}' (changed manually?) — investigate manually", ct, op);
                 return await FinishRollbackPostFlipAsync(
                     snap, bucket, returned: live.Owner, former: live.Target, ct);
             }
             return await RejectAsync(cluster, bucket,
-                $"откат возможен только из ACTIVE (сейчас state={live.State}) — сначала заверши переезд/abort", ct, op);
+                $"rollback is only possible from ACTIVE (currently state={live.State}) — finish move/abort first", ct, op);
         }
 
         // Обратная подписка — ровно на одном НЕ-владельце (поиск по всем шардам).
@@ -635,7 +635,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, onOwner.Error!, ct, op);
         if (ToLong(onOwner.Value) > 0)
             return await RejectAsync(cluster, bucket,
-                $"странно: {MoveNames.SubRb(bucket)} найдена на текущем владельце '{owner}' — разберись вручную", ct, op);
+                $"unexpected: {MoveNames.SubRb(bucket)} found on the current owner '{owner}' — investigate manually", ct, op);
 
         string? reverseShard = null;
         foreach (var (shard, dsn) in dsns.Value)
@@ -649,14 +649,14 @@ public sealed class MoveProcess(
             {
                 if (reverseShard is not null)
                     return await RejectAsync(cluster, bucket,
-                        $"{MoveNames.SubRb(bucket)} найдена на нескольких шардах ('{reverseShard}', '{shard}') — разберись вручную", ct, op);
+                        $"{MoveNames.SubRb(bucket)} found on multiple shards ('{reverseShard}', '{shard}') — investigate manually", ct, op);
                 reverseShard = shard;
             }
         }
 
         if (reverseShard is null)
             return await RejectAsync(cluster, bucket,
-                $"обратная подписка {MoveNames.SubRb(bucket)} не найдена ни на одном шарде — откат только полным re-copy (§6 доки 11: abort + повторный move)", ct, op);
+                $"reverse subscription {MoveNames.SubRb(bucket)} not found on any shard — rollback only via full re-copy (§6 доки 11: abort + повторный move)", ct, op);
 
         // Зеркальный cutover: Cur=владелец, New=шард с sub_rb (слот sub_rb — на Cur,
         // создан обратной подпиской). Отказ ДО flip: cutover сам разморозит Cur и
@@ -698,7 +698,7 @@ public sealed class MoveProcess(
         if (!dsns.Value.TryGetValue(returned, out var returnedDsn) ||
             !dsns.Value.TryGetValue(former, out var formerDsn))
             return await FailTransientAsync(cluster, new ApplicationException(
-                $"шарды доведения отката ('{returned}'/'{former}') не резолвятся — ждём (Patroni-выборы?)"), ct, op);
+                $"rollback finalization shards ('{returned}'/'{former}') do not resolve — waiting (Patroni election?)"), ct, op);
 
         var postErrors = new List<string>();
 
@@ -710,7 +710,7 @@ public sealed class MoveProcess(
         {
             var subDrop = await SubscriptionDrop.DropAsync(sql, returnedDsn, MoveNames.SubRb(bucket), ct);
             if (!subDrop.IsSuccess)
-                postErrors.Add($"не удалось срезать {MoveNames.SubRb(bucket)} на '{returned}' ({subDrop.Error!.Message}) — добьёт finalize");
+                postErrors.Add($"failed to drop {MoveNames.SubRb(bucket)} on '{returned}' ({subDrop.Error!.Message}) — finalize will finish it");
         }
 
         // DROP pub_rb на бывшем владельце — только если ещё жива (идемпотентность).
@@ -721,7 +721,7 @@ public sealed class MoveProcess(
         {
             var pubDrop = await sql.ExecuteAsync(formerDsn, MoveSql.DropPublication(MoveNames.PubRb(bucket)), ct);
             if (!pubDrop.IsSuccess)
-                postErrors.Add($"не удалось удалить {MoveNames.PubRb(bucket)} на '{former}' ({pubDrop.Error!.Message}) — удали вручную");
+                postErrors.Add($"failed to drop {MoveNames.PubRb(bucket)} on '{former}' ({pubDrop.Error!.Message}) — drop it manually");
         }
 
         // Разморозка вернувшегося владельца — обязательный шаг: сбой transient, фаза
@@ -743,7 +743,7 @@ public sealed class MoveProcess(
 
         await journal.WritePhaseAsync(cluster, op, "done", claims.InstanceId,
             postErrors.Count > 0 ? string.Join("; ", postErrors) : null, ct);
-        logger?.LogInformation("rollback {cluster}/{bucket}: вернулся {former} → {shard} (остатки бывшего владельца — finalize)",
+        logger?.LogInformation("rollback {cluster}/{bucket}: returned to {former} → {shard} (former owner leftovers — finalize)",
             cluster, bucket, former, returned);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -758,14 +758,14 @@ public sealed class MoveProcess(
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
-                $"кластер не Active ({snap.Config.State}) — finalize недоступен", ct, op);
+                $"cluster is not Active ({snap.Config.State}) — finalize unavailable", ct, op);
         if (!MoveNames.ValidateIdentifier(bucket))
-            return await RejectAsync(cluster, bucket, $"недопустимое имя бакета '{bucket}'", ct, op);
+            return await RejectAsync(cluster, bucket, $"invalid bucket name '{bucket}'", ct, op);
 
         var owner = snap.Routing.FirstOrDefault(r => $"bucket_{r.Id}" == bucket)?.Owner;
         if (owner is null)
             return await RejectAsync(cluster, bucket,
-                $"нет {MoveNames.RoutingKey(cluster, bucket)} — владелец неизвестен (восстанови контрол-плейн, P12)", ct, op);
+                $"{MoveNames.RoutingKey(cluster, bucket)} missing — owner unknown (restore control plane, P12)", ct, op);
 
         // Finalize — только из ACTIVE: незавершённый переезд убирает abort.
         var existing = await status.GetAsync(cluster, bucket, ct);
@@ -773,13 +773,13 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, existing.Error!, ct, op);
         if (existing.Value is { } live)
             return await RejectAsync(cluster, bucket,
-                $"finalize возможен только из ACTIVE (сейчас state={live.State}) — незавершённый переезд убирает abort", ct, op);
+                $"finalize is only possible from ACTIVE (currently state={live.State}) — an unfinished move is removed by abort", ct, op);
 
         if (request.OldShard is not { } old || !MoveNames.ValidateIdentifier(old))
-            return await RejectAsync(cluster, bucket, "заявка без валидного old_shard", ct, op);
+            return await RejectAsync(cluster, bucket, "ticket has no valid old_shard", ct, op);
         if (old == owner)
             return await RejectAsync(cluster, bucket,
-                $"old_shard ('{old}') совпадает с текущим владельцем — убирать нечего", ct, op);
+                $"old_shard ('{old}') equals the current owner — nothing to clean up", ct, op);
 
         var oldShard = snap.Shards.FirstOrDefault(s => s.Name == old);
         var ownerShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
@@ -792,7 +792,7 @@ public sealed class MoveProcess(
         }
 
         if (ownerShard?.Dsn is null)
-            return await RejectAsync(cluster, bucket, $"шард-владелец '{owner}' не зарегистрирован (нет dsn-ключа)", ct, op);
+            return await RejectAsync(cluster, bucket, $"owner shard '{owner}' is not registered (no dsn key)", ct, op);
 
         var dsns = await ResolveShardDsnsAsync(snap, oldShard, ownerShard, ct);
         if (!dsns.IsSuccess)
@@ -861,7 +861,7 @@ public sealed class MoveProcess(
                 return await FailTransientAsync(cluster, active.Error!, ct, op);
             if (ToBool(active.Value) == true)
             {
-                warnings.Add($"sync-слот {orphan} на '{old}' ещё активен — пропущен, прибери вручную");
+                warnings.Add($"sync slot {orphan} on '{old}' is still active — skipped, clean it up manually");
                 continue;
             }
             var dropped = await sql.ExecuteAsync(oldDsn, MoveSql.DropSlot(orphan), ct);
@@ -885,7 +885,7 @@ public sealed class MoveProcess(
         {
             var shot = await snapshot(ct);
             if (!shot.IsSuccess)
-                warnings.Add($"снапшот finalize-{bucket} не снялся: {shot.Error!.Message} — сними вручную");
+                warnings.Add($"finalize-{bucket} snapshot failed: {shot.Error!.Message} — take it manually");
         }
 
         var deleted = await requests.DeleteAsync(cluster, bucket, ct);
@@ -894,7 +894,7 @@ public sealed class MoveProcess(
 
         await journal.WritePhaseAsync(cluster, op, "done", claims.InstanceId,
             warnings.Count > 0 ? string.Join("; ", warnings) : null, ct);
-        logger?.LogInformation("finalize {cluster}/{bucket}: старый шард '{old}' вычищен (владелец '{owner}' не тронут)",
+        logger?.LogInformation("finalize {cluster}/{bucket}: old shard '{old}' cleaned up (owner '{owner}' untouched)",
             cluster, bucket, old, owner);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -932,7 +932,7 @@ public sealed class MoveProcess(
                 return last;
             if (ToBool(last.Value) == true)
                 return Result.Failed(new ApplicationException(
-                    $"слот {slot} всё ещё активен — кто-то читает; разберись вручную"));
+                    $"slot {slot} is still active — someone is reading; investigate manually"));
         }
 
         return await sql.ExecuteAsync(dsn, MoveSql.DropSlot(slot), ct);
@@ -958,7 +958,7 @@ public sealed class MoveProcess(
             return Result<ProcessOutcome>.Failed(deleted.Error!);
 
         await journal.WritePhaseAsync(cluster, op, "rejected", claims.InstanceId, reason, ct);
-        logger?.LogWarning("{op} {cluster}/{bucket} отвергнут: {reason}", op, cluster, bucket, reason);
+        logger?.LogWarning("{op} {cluster}/{bucket} rejected: {reason}", op, cluster, bucket, reason);
         return Result<ProcessOutcome>.Failed(new ApplicationException($"{op} {cluster}/{bucket}: {reason}"));
     }
 
@@ -988,7 +988,7 @@ public sealed class MoveProcess(
                 return Result<Dictionary<string, string>>.Failed(master.Error!);
             if (master.Value is null)
                 return Result<Dictionary<string, string>>.Failed(new ApplicationException(
-                    $"мастер '{shard.Name}' не определён — ждём (Patroni-выборы?)"));
+                    $"master '{shard.Name}' is not resolved — waiting (Patroni election?)"));
             result[shard.Name] = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, secrets);
         }
 
@@ -1004,7 +1004,7 @@ public sealed class MoveProcess(
         var shot = await snapshot(ct);
         if (!shot.IsSuccess)
             await journal.WritePhaseAsync(cluster, "move", "post-flip", claims.InstanceId,
-                $"снапшот не снялся: {shot.Error!.Message} — сними вручную (P12)", ct);
+                $"snapshot failed: {shot.Error!.Message} — take it manually (P12)", ct);
         return shot;
     }
 
@@ -1033,7 +1033,7 @@ public sealed class MoveProcess(
             return Result<string>.Failed(master.Error!);
         if (master.Value is not { } m)
             return Result<string>.Failed(new ApplicationException(
-                $"мастер '{srcShard.Name}' не определён — mover-проба невозможна"));
+                $"master '{srcShard.Name}' is not resolved — mover probe impossible"));
 
         // Single-host DSN: Npgsql допускает Target Session Attributes только
         // с multi-host (e2e-факт стенда); адрес и так мастер — атрибут не нужен.
@@ -1066,14 +1066,14 @@ public sealed class MoveProcess(
             return Result<(string, string)>.Failed(srcMaster.Error!);
         if (srcMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"мастер '{srcShard.Name}' не определён — ждём (Patroni-выборы?)"));
+                $"master '{srcShard.Name}' is not resolved — waiting (Patroni election?)"));
 
         var dstMaster = await shards.ResolveMasterAsync(snap.Config.Cluster, dstShard, addresses.Value, ct);
         if (!dstMaster.IsSuccess)
             return Result<(string, string)>.Failed(dstMaster.Error!);
         if (dstMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"мастер '{dstShard.Name}' не определён — ждём (Patroni-выборы?)"));
+                $"master '{dstShard.Name}' is not resolved — waiting (Patroni election?)"));
 
         return Result<(string, string)>.Success((
             ShardEndpoints.AdminDsn(srcMaster.Value, snap.Config.DbName, secrets),

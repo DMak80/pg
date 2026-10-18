@@ -91,7 +91,7 @@ public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
             var parsed = MoveRequest.Parse(bucket, kv.Value);
             if (!parsed.IsSuccess)
             {
-                parseErrors.Add($"заявка {kv.Key}: {parsed.Error!.Message}");
+                parseErrors.Add($"ticket {kv.Key}: {parsed.Error!.Message}");
                 continue;
             }
 
@@ -113,7 +113,7 @@ public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -127,6 +127,6 @@ public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 }

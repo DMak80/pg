@@ -22,17 +22,17 @@ public static class SubscriptionDrop
         var disabled = await sql.ExecuteAsync(dsn, MoveSql.DisableSubscription(sub), ct);
         if (!disabled.IsSuccess)
             return Result.Failed(new ApplicationException(
-                $"подписка {sub}: DROP и DISABLE не прошли — {drop.Error!.Message}", disabled.Error));
+                $"subscription {sub}: DROP and DISABLE failed — {drop.Error!.Message}", disabled.Error));
 
         var detached = await sql.ExecuteAsync(dsn, MoveSql.SetSlotNone(sub), ct);
         if (!detached.IsSuccess)
             return Result.Failed(new ApplicationException(
-                $"подписка {sub}: не отвязать слот (slot_name=NONE) — {detached.Error!.Message}", detached.Error));
+                $"subscription {sub}: cannot detach the slot (slot_name=NONE) — {detached.Error!.Message}", detached.Error));
 
         var retry = await sql.ExecuteAsync(dsn, MoveSql.DropSubscription(sub), ct);
         return retry.IsSuccess
             ? retry
             : Result.Failed(new ApplicationException(
-                $"подписка {sub}: локальный срез не дошёл до DROP — {retry.Error!.Message}", retry.Error));
+                $"subscription {sub}: local drop did not reach DROP — {retry.Error!.Message}", retry.Error));
     }
 }

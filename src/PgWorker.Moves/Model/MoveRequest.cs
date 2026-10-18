@@ -45,7 +45,7 @@ public sealed record MoveRequest(
             var dto = JsonSerializer.Deserialize<MoveRequestDto>(raw, Json);
             if (dto?.Op is not { } op || !TryParseOp(op, out var parsed))
                 return Result<MoveRequest>.Failed(new ApplicationException(
-                    $"неизвестная операция заявки для {bucket}: '{dto?.Op}'"));
+                    $"unknown ticket op for {bucket}: '{dto?.Op}'"));
 
             return new MoveRequest(bucket, parsed, dto.To, dto.OldShard,
                 dto.SkipReverse, dto.Resume, dto.Force, dto.RequestedUnix, dto.RequestedBy);
@@ -53,7 +53,7 @@ public sealed record MoveRequest(
         catch (JsonException e)
         {
             return Result<MoveRequest>.Failed(new ApplicationException(
-                $"битая заявка /pgworker/moves/*/ {bucket}: {e.Message}", e));
+                $"malformed ticket /pgworker/moves/*/ {bucket}: {e.Message}", e));
         }
     }
 
@@ -88,7 +88,7 @@ public sealed record MoveRequest(
         MoveOp.Rollback => "rollback",
         MoveOp.Finalize => "finalize",
         MoveOp.Abort => "abort",
-        _ => throw new ArgumentOutOfRangeException(nameof(op), op, "неизвестная операция заявки"),
+        _ => throw new ArgumentOutOfRangeException(nameof(op), op, "unknown ticket op"),
     };
 
     // DTO-форма: op в JSON — строка (маппинг строки → MoveOp — в Parse).

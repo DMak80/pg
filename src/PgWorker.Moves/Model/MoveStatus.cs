@@ -33,13 +33,13 @@ public sealed record MoveStatus(
         {
             var status = JsonSerializer.Deserialize<MoveStatus>(raw, Json);
             return status is null
-                ? Result<MoveStatus>.Failed(new ApplicationException("пустой статус-ключ"))
+                ? Result<MoveStatus>.Failed(new ApplicationException("empty status key"))
                 : status;
         }
         catch (JsonException e)
         {
             return Result<MoveStatus>.Failed(new ApplicationException(
-                $"битый статус-ключ переезда: {e.Message}", e));
+                $"malformed move status key: {e.Message}", e));
         }
     }
 }
@@ -57,10 +57,10 @@ public sealed class AbortPlanItemConverter : JsonConverter<AbortPlanItem>
     public override AbortPlanItem Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         var raw = reader.GetString()
-                  ?? throw new JsonException("элемент плана уборки — не строка");
+                  ?? throw new JsonException("cleanup plan item is not a string");
         var parts = raw.Split('|');
         if (parts.Length != 3)
-            throw new JsonException($"битый элемент плана уборки (ожидался 'шард|тип|имя'): '{raw}'");
+            throw new JsonException($"malformed cleanup plan item (expected 'shard|kind|name'): '{raw}'");
 
         return new AbortPlanItem(parts[0], parts[1], parts[2]);
     }
@@ -103,7 +103,7 @@ public sealed record AbortJournal(
         {
             var payload = JsonSerializer.Deserialize<AbortJournalPayload>(raw, Json);
             return payload is null
-                ? Result<AbortJournal>.Failed(new ApplicationException("пустой журнал уборки"))
+                ? Result<AbortJournal>.Failed(new ApplicationException("empty cleanup journal"))
                 : new AbortJournal(payload.Bucket, payload.PrevState, payload.Owner, payload.Target,
                     payload.StartedUnix, payload.UpdatedUnix, payload.Phase, payload.LastError,
                     payload.Plan, payload.UnreachableShards);
@@ -111,7 +111,7 @@ public sealed record AbortJournal(
         catch (JsonException e)
         {
             return Result<AbortJournal>.Failed(new ApplicationException(
-                $"битый журнал уборки: {e.Message}", e));
+                $"malformed cleanup journal: {e.Message}", e));
         }
     }
 

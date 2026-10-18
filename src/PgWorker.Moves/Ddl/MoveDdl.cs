@@ -22,7 +22,7 @@ public sealed class MoveDdl(IClusterDriver driver, IMoveSqlExecutor sql)
         CancellationToken ct, string? containerOverride = null)
     {
         if (!MoveNames.ValidateIdentifier(bucket))
-            throw new ArgumentException($"недопустимое имя бакета: '{bucket}' (шаблон ^[a-z][a-z0-9_]*)");
+            throw new ArgumentException($"invalid bucket name: '{bucket}' (pattern ^[a-z][a-z0-9_]*)");
 
         // Канонический pgw-контейнер (Spilo) — exec от root, утилиты под postgres
         // → su postgres. Усыновлённый postgres:18-контейнер работает ОТ юзера

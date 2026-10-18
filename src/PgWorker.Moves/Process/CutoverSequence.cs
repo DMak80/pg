@@ -93,7 +93,7 @@ public sealed class CutoverSequence(
         var startedUnix = existing.Value?.StartedUnix ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
         // 1. Заморозка P1/P5 — до FreezeLockTries, пауза PollIntervalSec между попытками.
-        var freeze = Result.Failed(new ApplicationException("заморозка не выполнялась"));
+        var freeze = Result.Failed(new ApplicationException("freeze has not run"));
         for (var attempt = 1; attempt <= Math.Max(1, o.FreezeLockTries); attempt++)
         {
             var names = await sql.ScalarAsync(curDsn, MoveSql.TableNames(c.Bucket), ct);
@@ -131,7 +131,7 @@ public sealed class CutoverSequence(
             return await FailAsync(c, curDsn, startedUnix, CutoverPhases.LsnFailed, lsn.Error!, unfreeze: true, ct);
         if (ToText(lsn.Value) is not { } lsnText)
             return await FailAsync(c, curDsn, startedUnix, CutoverPhases.LsnFailed,
-                new ApplicationException("пустой pg_current_wal_lsn на источнике"), unfreeze: true, ct);
+                new ApplicationException("empty pg_current_wal_lsn on the source"), unfreeze: true, ct);
 
         // 4. Ожидание слота: активен и подтвердил LSN; таймаут → разморозка + transient.
         var waited = 0;
@@ -145,7 +145,7 @@ public sealed class CutoverSequence(
             if (waited >= o.CutoverTimeoutSec)
                 return await FailAsync(c, curDsn, startedUnix, CutoverPhases.CatchupTimeout,
                     new ApplicationException(
-                        $"слот {c.Slot} не подтвердил LSN за {o.CutoverTimeoutSec}с — разморозил, репликация продолжает догонять (перезапусти позже)"),
+                        $"slot {c.Slot} did not confirm the LSN within {o.CutoverTimeoutSec}s — unfrozen, replication keeps catching up (retry later)"),
                     unfreeze: true, ct);
 
             await Task.Delay(TimeSpan.FromSeconds(o.PollIntervalSec), ct);
@@ -164,7 +164,7 @@ public sealed class CutoverSequence(
             var next = await sql.ScalarAsync(newDsn, MoveSql.SequenceNext(c.Bucket, sequence), ct);
             if (!next.IsSuccess)
                 return await FailAsync(c, curDsn, startedUnix, CutoverPhases.SequencesFailed,
-                    new ApplicationException($"sequence '{sequence}' отсутствует на '{c.New}' (дрейф P5?) — {next.Error!.Message}"),
+                    new ApplicationException($"sequence '{sequence}' is missing on '{c.New}' (P5 drift?) — {next.Error!.Message}"),
                     unfreeze: true, ct);
 
             if (ToLong(next.Value) <= ToLong(issued.Value))
@@ -194,7 +194,7 @@ public sealed class CutoverSequence(
             if (ToLong(src.Value) != ToLong(dst.Value))
                 return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed,
                     new CutoverPermanentException(
-                        $"сверка строк не сошлась — копия дефектна (P8, таблица {table}: {ToLong(src.Value)} против {ToLong(dst.Value)}): abort + повторный move"),
+                        $"row count mismatch — copy is defective (P8, table {table}: {ToLong(src.Value)} vs {ToLong(dst.Value)}): abort + re-run move"),
                     unfreeze: true, ct);
         }
 
@@ -260,11 +260,11 @@ public sealed class CutoverSequence(
         var curShard = snap.Shards.FirstOrDefault(s => s.Name == c.Cur);
         if (curShard is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"cutover {c.Cluster}/{c.Bucket}: шард-источник '{c.Cur}' не найден в снапшоте"));
+                $"cutover {c.Cluster}/{c.Bucket}: source shard '{c.Cur}' not found in the snapshot"));
         var newShard = snap.Shards.FirstOrDefault(s => s.Name == c.New);
         if (newShard is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"cutover {c.Cluster}/{c.Bucket}: шард-приёмник '{c.New}' не найден в снапшоте"));
+                $"cutover {c.Cluster}/{c.Bucket}: target shard '{c.New}' not found in the snapshot"));
 
         var addresses = await shards.ReadPortAllocAsync(c.Cluster, ct);
         if (!addresses.IsSuccess)
@@ -275,14 +275,14 @@ public sealed class CutoverSequence(
             return Result<(string, string)>.Failed(curMaster.Error!);
         if (curMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"cutover {c.Cluster}/{c.Bucket}: мастер '{c.Cur}' не определён — ждём"));
+                $"cutover {c.Cluster}/{c.Bucket}: master of '{c.Cur}' is not resolved — waiting"));
 
         var newMaster = await shards.ResolveMasterAsync(c.Cluster, newShard, addresses.Value, ct);
         if (!newMaster.IsSuccess)
             return Result<(string, string)>.Failed(newMaster.Error!);
         if (newMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
-                $"cutover {c.Cluster}/{c.Bucket}: мастер '{c.New}' не определён — ждём"));
+                $"cutover {c.Cluster}/{c.Bucket}: master of '{c.New}' is not resolved — waiting"));
 
         return Result<(string, string)>.Success((
             ShardEndpoints.AdminDsn(curMaster.Value, snap.Config.DbName, secrets),

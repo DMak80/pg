@@ -82,7 +82,7 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -96,6 +96,6 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not configured");
     }
 }

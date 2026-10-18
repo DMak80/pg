@@ -124,7 +124,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
 
     // Ошибка с ред-DSN в сообщении: пароль не должен попадать в логи/журнал.
     internal static Result WrapError(string dsn, Exception e)
-        => Result.Failed(new ApplicationException($"SQL не выполнен [{Redact(dsn)}]: {e.Message}", e));
+        => Result.Failed(new ApplicationException($"SQL failed [{Redact(dsn)}]: {e.Message}", e));
 
     // Дубль паттерна DatabaseProvisioner.Redact: «;»-Npgsql-пароли и libpq
     // «password=…» (в т.ч. quoted '…'); регистр не важен.

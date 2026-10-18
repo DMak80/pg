@@ -13,7 +13,7 @@ public static class MoveSql
     private static string Ident(string name)
     {
         if (!MoveNames.ValidateIdentifier(name))
-            throw new ArgumentException($"недопустимый идентификатор SQL: '{name}' (шаблон ^[a-z][a-z0-9_]*)");
+            throw new ArgumentException($"invalid SQL identifier: '{name}' (pattern ^[a-z][a-z0-9_]*)");
         return name;
     }
 
