@@ -148,7 +148,7 @@ public sealed class PlainClusterDriver(
     {
         if (!_engines.TryGetValue(spec.Host, out var engine))
             return Result.Failed(new ApplicationException(
-                $"хост {spec.Host} не в таблице Docker:Hosts (кластер {spec.Cluster}/{spec.NodeName})"));
+                $"host {spec.Host} is not in the Docker:Hosts table (cluster {spec.Cluster}/{spec.NodeName})"));
 
         return await Result.FromAsync(async () =>
         {
@@ -384,7 +384,7 @@ public sealed class PlainClusterDriver(
                 return exec.Value;
             }
 
-            throw new ApplicationException($"контейнер брокера {name} не найден (нет running-контейнера ни на одном хосте)");
+            throw new ApplicationException($"broker container {name} not found (no running container on any host)");
         });
     }
 
@@ -432,7 +432,7 @@ public sealed class SwarmClusterDriver(
                 throw nodes.Error!;
             var target = nodes.Value.FirstOrDefault(n => n.Hostname == spec.Host);
             if (target is null)
-                throw new ApplicationException($"swarm-нода с Hostname={spec.Host} не найдена");
+                throw new ApplicationException($"swarm node with Hostname={spec.Host} not found");
 
             var template = new ContainerSpec(
                 spec.Image,
@@ -520,7 +520,7 @@ public sealed class SwarmClusterDriver(
                 t.State == "running" && t.ContainerId is { Length: > 0 });
             if (running is null)
                 throw new ApplicationException(
-                    $"контейнер брокера {cluster}/{nodeName} не найден (нет running-таска)");
+                    $"broker container {cluster}/{nodeName} not found (no running task)");
 
             var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
             if (!exec.IsSuccess)
