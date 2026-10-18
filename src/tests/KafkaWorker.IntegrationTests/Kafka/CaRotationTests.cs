@@ -11,7 +11,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // Интеграция ротации CA (t07, arch/16 §2.3/§5 K): заявка → CaRotator доводит
 // окно двойного доверия на живом docker-кластере; после коммита ca_pem = NEW,
 // staging удалён, клиенты с NEW работают, клиенты со старым CA-кэшем отвергаются.
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class CaRotationCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-carot";
+}
+
+[Collection(CaRotationCollection.Name)]
 public class CaRotationTests(KafkaClusterFixture fixture)
 {
     [Fact]

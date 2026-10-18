@@ -14,7 +14,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // Active ЦИКЛОМ Provision-тиков (порт UpAsync ReassignmentTests) — один тик
 // не поднимает кластер, а дискавери-креды требуют endpoints из K5
 // (ревью Фазы 4, замечания 1–2).
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class NodeRegenCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-noderegen";
+}
+
+[Collection(NodeRegenCollection.Name)]
 public class NodeRegenTests(KafkaClusterFixture fixture)
 {
     private sealed record Rig(

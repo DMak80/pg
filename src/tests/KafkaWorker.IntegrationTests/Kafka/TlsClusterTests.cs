@@ -11,7 +11,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // Маркер-кейс мерж-гейта t03 (spec §8.3): поднятие TLS-кластера канона t03 —
 // provisioning → SASL_SSL endpoints, приложение производит/потребляет через
 // ca_pem + app-кред, ACL: app отказ на админ-операции, admin выполняет.
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class TlsClusterCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-tls";
+}
+
+[Collection(TlsClusterCollection.Name)]
 public class TlsClusterTests(KafkaClusterFixture fixture)
 {
     [Fact]

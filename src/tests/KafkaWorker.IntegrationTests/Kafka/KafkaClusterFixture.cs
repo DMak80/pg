@@ -317,10 +317,3 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
             caPem!, appUser!, appPassword!);
     }
 }
-
-// Один etcd + docker-хост на все kafka-интеграционные классы (кластеры изолированы именами).
-[CollectionDefinition(Name)]
-public sealed class KafkaCollection : ICollectionFixture<KafkaClusterFixture>
-{
-    public const string Name = "kafka-e2e";
-}

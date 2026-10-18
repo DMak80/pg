@@ -15,7 +15,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // кода в src больше нет, единственное допустимое место SASL_PLAINTEXT) → тики
 // SecurityMigrator до NotNeeded → endpoints/данные живы, admin+ACL в новом
 // каноне, app производит/потребляет по SASL_SSL.
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class SecurityMigrationCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-secmig";
+}
+
+[Collection(SecurityMigrationCollection.Name)]
 public class SecurityMigrationTests(KafkaClusterFixture fixture)
 {
     [Fact]

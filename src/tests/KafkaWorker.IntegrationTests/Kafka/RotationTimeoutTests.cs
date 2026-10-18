@@ -25,7 +25,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // state=TO_REMOVE; drain заблокирован minISR-guard'ом навсегда) → точка
 // waiting-drain; идущий balance — снижением config RF (прецедент
 // ReassignmentTests), подача батчей реальна.
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class RotationTimeoutCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-rotto";
+}
+
+[Collection(RotationTimeoutCollection.Name)]
 public class RotationTimeoutTests(KafkaClusterFixture fixture)
 {
     // Риг процессов кластера (как ReassignmentTests): процессы напрямую,

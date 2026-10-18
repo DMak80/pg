@@ -7,7 +7,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // кластера → реконструкция из inspect (ветка 2, без пересозданий); утеря
 // portalloc + снос контейнеров → новая аллокация + RMW endpoints + подъём
 // (ветка 3). Порты — окно фикстуры (FreePortWindow, литералов нет).
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class PortAllocHealingCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-portheal";
+}
+
+[Collection(PortAllocHealingCollection.Name)]
 public class PortAllocHealingTests(KafkaClusterFixture fixture)
 {
     [Fact]
