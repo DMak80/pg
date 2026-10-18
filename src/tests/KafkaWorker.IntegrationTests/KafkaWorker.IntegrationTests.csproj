@@ -1,5 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+    <!-- Канон параллелизма (t24; spec 2026-10-17-kfw-rotation-timeout-flake §6.1):
+         единственный источник потолка — xunit.runner.json (maxParallelThreads=5
+         по прецеденту PgWorker.IntegrationTests; xunit.v3 читает конфиг ТОЛЬКО
+         из output — копирование обязательно; коллекции параллельны по умолчанию,
+         внутри коллекции один поток). Бывший CollectionBehavior-атрибут
+         AssemblyParallelism.cs не действовал и удалён. -->
+    <ItemGroup>
+        <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
+    </ItemGroup>
+
     <ItemGroup>
         <Using Include="FluentAssertions"/>
         <Using Include="Xunit"/>

@@ -41,8 +41,12 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     public IClusterDriver Driver { get; private set; } = null!;
 
-    public IKafkaAdminClientFactory AdminFactory { get; } =
-        new KafkaAdminClientFactory(TimeSpan.FromSeconds(10));
+    // Per-class фабрика AdminClient-адаптеров (spec §6.3.3): кеш клиентов
+    // живёт с контуром класса и освобождается в DisposeAsync — параллельные
+    // классы не делят клиентов (диагностика «Broker handle destroyed» §6.2).
+    private readonly KafkaAdminClientFactory _adminFactory = new(TimeSpan.FromSeconds(10));
+
+    public IKafkaAdminClientFactory AdminFactory => _adminFactory;
 
     // Кеш сертов нод (R3): для процессов, конструируемых в тестах (t03).
     public BrokerCertificateCache Certificates { get; } = new();
@@ -54,15 +58,17 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     public const string AdvertisedClientHost = "localhost";
 
     // Окно хост-портов публикации брокеров — динамическое (AGENTS.md «порты
-    // docker-контейнеров в тестах — динамические»): свободное окно зондится на
-    // рантайме ВНЕ порт-зоны dev-станда (стендовые kfw-брокеры 16xxx) — тесты
-    // не конфликтуют с поднятым стендом и параллельными прогонами.
-    private static readonly (int From, int To) HostPorts = FreePortWindow.Find();
+    // docker-контейнеров в тестах — динамические»), ВНЕ порт-зоны dev-станда
+    // (стендовые kfw-брокеры 16xxx). Поле ИНСТАНСА (spec 2026-10-17 §6.3.3):
+    // per-class фикстура получает СВОЁ непересекающееся окно — FreePortWindow
+    // выдаёт окна курсором без повторов (Size 64 на класс, запас ~78 кандидатов
+    // в 21000–31000); литералов «:16000» нет.
+    private readonly (int From, int To) _hostPorts = FreePortWindow.Find();
 
-    // Фактически выбранное окно — для ассертов тестов (литералов «:16000» нет).
-    public int PortFrom => HostPorts.From;
+    // Фактически выбранное окно — для ассертов тестов.
+    public int PortFrom => _hostPorts.From;
 
-    public int PortTo => HostPorts.To;
+    public int PortTo => _hostPorts.To;
 
     // Уникальный тег прогона: имена кластеров (и контейнеров kfw-<C>-broker<N>)
     // уникальны на каждый запуск — осиротевшие контейнеры прошлых прогонов (упавший
@@ -86,8 +92,14 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     // BrokerBootSec <= 100 (AGENTS.md): тестовый бюджет загрузки брокеров короткий —
     // зависание кластера фейлится быстро, а не мучается минутами.
-    public ProvisioningOptions Options { get; } =
-        new(HostPorts.From, HostPorts.To, BrokerBootSec: 100, NodeDeadSec: 90, AdvertisedClientHost, "apache/kafka:4.0.0");
+    // Инициализация в ctor: field-initializer свойства не видит нестатическое
+    // _hostPorts (CS0236) — окно инстанса подставляется при конструировании.
+    public ProvisioningOptions Options { get; }
+
+    public KafkaClusterFixture()
+    {
+        Options = new(_hostPorts.From, _hostPorts.To, BrokerBootSec: 100, NodeDeadSec: 90, AdvertisedClientHost, "apache/kafka:4.0.0");
+    }
 
     public async ValueTask InitializeAsync()
     {
@@ -148,6 +160,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
             }
         }
 
+        _adminFactory.Dispose(); // кеш AdminClient'ов — с контуром класса (spec §6.3.3)
         _http.Dispose();
         await _etcd.DisposeAsync();
     }
@@ -303,11 +316,4 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         return (endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal),
             caPem!, appUser!, appPassword!);
     }
-}
-
-// Один etcd + docker-хост на все kafka-интеграционные классы (кластеры изолированы именами).
-[CollectionDefinition(Name)]
-public sealed class KafkaCollection : ICollectionFixture<KafkaClusterFixture>
-{
-    public const string Name = "kafka-e2e";
 }

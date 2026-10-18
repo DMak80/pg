@@ -14,7 +14,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // тиком; delete → топик и оба ключа исчезли; сходимость обеих веток после
 // «отказа между мутацией и del» (топик появился/исчез внешне при живой заявке).
 // Фикстура — общая с волной A (etcd + 1-брокерный кластер, как TopicSyncTests).
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class TopicLifecycleCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-topiclifecycle";
+}
+
+[Collection(TopicLifecycleCollection.Name)]
 public class TopicLifecycleTests(KafkaClusterFixture fixture)
 {
     // Подъём кластера + готовый TopicSyncProcess под клэймом (образец TopicSyncTests).

@@ -25,8 +25,18 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // state=TO_REMOVE; drain заблокирован minISR-guard'ом навсегда) → точка
 // waiting-drain; идущий balance — снижением config RF (прецедент
 // ReassignmentTests), подача батчей реальна.
-[Collection(KafkaCollection.Name)]
-public class RotationTimeoutTests(KafkaClusterFixture fixture)
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class RotationTimeoutCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-rotto";
+}
+
+[Collection(RotationTimeoutCollection.Name)]
+public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper output)
 {
     // Риг процессов кластера (как ReassignmentTests): процессы напрямую,
     // тики цикла — тестом.
@@ -36,6 +46,14 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
         ProvisioningProcess Provision,
         DeprovisioningProcess Deprovision,
         PartitionReassignerProcess Reassigner);
+
+    // ===== Механика стабильности AC12 (spec 2026-10-17-kfw-rotation-timeout-flake §5) =====
+
+    // Риг AC12: батч подач 50 партиций (§5.4) — сходимость 100 партиций это
+    // 2 подачи + финальный тик вместо 10+1: меньше exec-JVM-подач — меньше
+    // время и вероятность транзиента. Единая константа для рига и расчёта
+    // backstop финала (§5.3) — риг и расчёт не разъезжаются.
+    private const int ReassignBatchPartitions = 50;
 
     private async Task<Rig> NewRigAsync(string cluster, int brokers)
     {
@@ -59,7 +77,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             new PartitionReassignerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 fixture.AdminFactory,
-                new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, ExecSec: 180, RetrySubmitSec: 120),
+                new ReassignOptions(IntervalSec: 0, BatchPartitions: ReassignBatchPartitions, ExecSec: 180, RetrySubmitSec: 120),
                 TimeProvider.System));
     }
 
@@ -101,6 +119,165 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
         => await fixture.Gateway.PutAsync(fixture.Endpoint, key,
             $$"""{"requested_unix":{{requestedUnix}},"requested_by":"it"}""", lease: null,
             TestContext.Current.CancellationToken);
+
+    // Лимиты стагнации (spec §5.1 — подряд неудачные тики; §5.3 — подряд
+    // успешные с неизменным remaining) и размер кольцевого буфера диагностики.
+    private const int FailedTickLimit = 3;
+    private const int StagnantTickLimit = 3;
+    private const int DiagLimit = 32;
+
+    // Периоды опроса и подачи (spec §5.6): завершённая работа обнаруживается
+    // мгновенно — опрос состояния дешёв (etcd-GET, миллисекунды), тик с exec
+    // дорог (JVM-старт CLI, секунды); интервал тика страхует от спама дешёвых
+    // waiting-тиков и ретраев хелпера. Поллинг AC10/AC11 и UpAsync (3000 мс) —
+    // вне области правки.
+    private const int PollMs = 250;
+
+    private const int TickIntervalMs = 1000;
+
+    // Полный диагностический контекст кластера для сообщений падения
+    // (spec §4.3): прогресс-ключ (вкл. last_error), журнал work/<C>, исход
+    // ticket_outcomes/<C> — всё, что нужно для разбора флейка по выводу
+    // прогона без повторных запусков. Ошибки etcd не всплывают (fixture
+    // возвращает null) — сборщик не может замаскировать причину падения.
+    private async Task<string> DiagContextAsync(string cluster)
+    {
+        var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
+        var journal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+        var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
+        return $"progress={progress ?? "<нет>"}; journal={journal ?? "<нет>"}; outcome={outcome ?? "<нет>"}";
+    }
+
+    // Транзиент-толерантный тик (spec §5.1): одиночный Result.Failed — не
+    // провал теста: процесс идемпотентен, следующий тик переподаст батч
+    // (arch/16 §5 I); подряд FailedTickLimit неудачных — исключение с
+    // ПОЛНЫМ контекстом (DiagContextAsync + хвост ошибок тиков). Backstop
+    // на хелпер не заводится: тик завершается сам (≤30 с etcd-транзиент,
+    // ≤ExecSec=180 exec), три подряд провала — быстрое красное. Возвращает
+    // длительность успешной попытки — скользящий замер темпа для backstop
+    // финала (spec §5.3).
+    private async Task<TimeSpan> TickAsync(string label, string cluster, Func<Task<Result>> tick, Queue<string> diag)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var started = DateTimeOffset.UtcNow;
+            var result = await tick();
+            if (result.IsSuccess)
+                return DateTimeOffset.UtcNow - started;
+
+            EnqueueDiag(diag, $"{label}: тик #{attempt} провален — {result.Error!.Message}");
+            if (attempt >= FailedTickLimit)
+            {
+                var context = await DiagContextAsync(cluster);
+                throw new Xunit.Sdk.XunitException(
+                    $"{label}: стагнация — {FailedTickLimit} подряд неудачных тика; {context}; "
+                    + $"хвост тиков: {string.Join(" | ", diag)}");
+            }
+
+            await Task.Delay(TickIntervalMs, TestContext.Current.CancellationToken);
+        }
+    }
+
+    // Кольцевой буфер диагностики: последние DiagLimit строк.
+    private static void EnqueueDiag(Queue<string> diag, string line)
+    {
+        diag.Enqueue(line);
+        while (diag.Count > DiagLimit)
+            diag.Dequeue();
+    }
+
+    // partitions_remaining из прогресс-ключа balance (null — ключа нет или
+    // поля нет: ключ удаляется только финалом вместе с заявкой).
+    private async Task<int?> ReadRemainingAsync(string cluster)
+    {
+        var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
+        if (progress is null)
+            return null;
+        using var doc = JsonDocument.Parse(progress);
+        return doc.RootElement.TryGetProperty("partitions_remaining", out var rem)
+            ? rem.GetInt32()
+            : null;
+    }
+
+    // Опрос состояния Act2 (spec §5.2/§5.6): различает два валидных исхода —
+    // живой путь (прогресс mode=balance; сэмпл remaining собирается) и
+    // вырожденный (H5 «мгновенная сходимость»: заявка и прогресс отсутствуют,
+    // исход done/rebalance с finished_unix ≥ requested заявки Act2).
+    private async Task<(bool LiveBalance, bool DegenerateDone)> ReadAct2StateAsync(
+        string cluster, long requestedUnix, List<int> remaining)
+    {
+        var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
+        if (progress is not null
+            && progress.Contains("\"mode\":\"balance\"", StringComparison.Ordinal))
+        {
+            using var doc = JsonDocument.Parse(progress);
+            if (doc.RootElement.TryGetProperty("partitions_remaining", out var rem))
+                remaining.Add(rem.GetInt32());
+            return (true, false);
+        }
+
+        if (progress is null
+            && await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is null
+            && await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}") is { } outcome
+            && outcome.Contains("\"kind\":\"rebalance\"", StringComparison.Ordinal)
+            && outcome.Contains("\"outcome\":\"done\"", StringComparison.Ordinal)
+            && TryReadFinishedUnix(outcome, out var finished)
+            && finished >= requestedUnix)
+            return (false, true);
+
+        return (false, false);
+    }
+
+    // finished_unix из JSON исхода ticket_outcomes (false — поля нет/битый JSON).
+    private static bool TryReadFinishedUnix(string outcomeJson, out long finishedUnix)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(outcomeJson);
+            if (doc.RootElement.TryGetProperty("finished_unix", out var fin)
+                && fin.ValueKind == JsonValueKind.Number
+                && fin.TryGetInt64(out finishedUnix))
+                return true;
+        }
+        catch (JsonException)
+        {
+            // битый JSON исхода — вырожденным путём не считается
+        }
+
+        finishedUnix = 0;
+        return false;
+    }
+
+    // Вычисляемый backstop финала (spec §5.3): объём в батчах — из
+    // ФАКТИЧЕСКОГО pending первого успешного тика финального цикла, то есть
+    // из remaining, который этот тик записал в прогресс-ключ (100 — объём
+    // нового плана RF=2), а НЕ из remaining старого ключа до первого тика
+    // (~50 — занизил бы backstop вдвое): batches = ceil(remainingFirst /
+    // BatchPartitions); backstop = batches × фактическая средняя длительность
+    // успешного тика (скользящий замер) × запас 1.5 + 60 с; нижняя граница
+    // 300 с, верхний кап 1800 с. До первого тика — пол 300 с (нет ни замера
+    // темпа, ни объёма нового плана); backstop — предохранитель от вечного
+    // цикла, реальное падение при поломке даёт стагнация-детект раньше него.
+    private static int ConvergeBackstopSec(IReadOnlyList<double> tickSeconds, int? remainingFirst)
+    {
+        if (tickSeconds.Count == 0 || remainingFirst is null)
+            return 300;
+        var batches = Math.Max(1, (int)Math.Ceiling(remainingFirst.Value / (double)ReassignBatchPartitions));
+        var avgTickSec = tickSeconds.Average();
+        return Math.Clamp((int)(batches * avgTickSec * 1.5 + 60), 300, 1800);
+    }
+
+    // Красный финала AC12 с полной диагностикой (spec §4.3, §5.3): причина,
+    // сэмплы partitions_remaining, прогресс-ключ (вкл. last_error), журнал
+    // work/<C>, исход ticket_outcomes, хвост тиков — следующий флейк (если
+    // случится) разбирается по выводу прогона без повторов.
+    private async Task FailConvergeAsync(string cluster, Queue<string> diag, IReadOnlyList<int> remainingSamples, string cause)
+    {
+        var context = await DiagContextAsync(cluster);
+        throw new Xunit.Sdk.XunitException(
+            $"{cause}; сэмплы remaining: {string.Join(",", remainingSamples)}; {context}; "
+            + $"тики: {string.Join(" | ", diag)}");
+    }
 
     // ===== AC10 (spec §6 п.10): дедлок H↔K разорван приоритетом =====
 
@@ -295,11 +472,12 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             // Юзер-топик (100 партиций RF=2): у internal-топиков RF-цель
-            // min(3, цели) и снижение config RF их не двигает; малое число
-            // партиций сходится между тиками — прогресс не поймать. 100
-            // партиций = 10 батчей — окно идущей balance в минуты даже под
-            // нагрузкой серии (флак 30-партиционного варианта: сходимость
-            // обгоняла тики) (прецедент ReassignmentTests).
+            // min(3, цели) и снижение config RF их не двигает; 100 партиций
+            // дают план ровно на 2 батча по 50. Окно идущей balance держится
+            // живым прогресс-ключом mode=balance (гвард экспирации), а не
+            // темпом сходимости; крупные батчи — меньше exec-JVM-подач,
+            // меньше тайминговая поверхность (spec 2026-10-17-...-flake §5.4;
+            // прецедент ReassignmentTests).
             var topic = $"rebrto-{fixture.RunTag}";
             using (var admin = (await fixture.DiscoveryAdminBuilderAsync(cluster, "admin")).Build())
                 await admin.CreateTopicsAsync(
@@ -312,8 +490,13 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             // waiting-drain-точку и снимает заявку.
             await fixture.PutAsync($"/kafka/clusters/{cluster}/brokers/broker1/state", "TO_REMOVE");
             await PutTicketAsync($"/kafkaworker/rebalances/{cluster}", nowUnix - 3700);
-            var tick1 = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick1.IsSuccess.Should().BeTrue($"тик reassigner не должен падать: {tick1.Error?.Message}");
+            // Кольцевой буфер диагностики кейса (spec §4.3): ошибки тиков
+            // хелпера; полный хвост печатается в сообщениях падения.
+            var diag = new Queue<string>();
+            // Expired-тик детерминирован (вечный drain + заявка старше порога);
+            // etcd/exec-транзиент одиночного тика покрывается хелпером (§5.5).
+            await TickAsync("act1-expired", cluster,
+                async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
 
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
                 "заявка ребалансировки снята в waiting-drain-точке (не начата)");
@@ -335,29 +518,90 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             var configRaw = (await fixture.GetAsync($"/kafka/clusters/{cluster}/config"))!;
             await fixture.PutAsync($"/kafka/clusters/{cluster}/config",
                 configRaw.Replace("\"replication_factor\":2", "\"replication_factor\":1", StringComparison.Ordinal));
-            await PutTicketAsync($"/kafkaworker/rebalances/{cluster}",
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+            // Запомненный requested заявки Act2 — различительный предикат
+            // вырожденного исхода (finished_unix ≥ requested, §5.2).
+            var requestedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            await PutTicketAsync($"/kafkaworker/rebalances/{cluster}", requestedUnix);
 
+            // Act2 (spec §5.2, рев.2): ветвление по факту — ОДИН из двух
+            // валидных исходов, различение по состоянию etcd-ключей ПОСЛЕ
+            // каждого тика (немедленно, §5.6):
+            //  - живой путь: прогресс mode=balance прочитан (гварды §2 п.2
+            //    опираются на живость ключа; обновление фиксируют гвард-тики);
+            //    при видимости юзер-топика первый тик подачи оставляет
+            //    pending ≥ 50 — финальная ветка недостижима до применения
+            //    всего плана (§5.4);
+            //  - вырожденный путь (H5): заявка и прогресс отсутствуют, исход
+            //    done/rebalance с finished_unix ≥ requested — «мгновенная
+            //    сходимость» (первый тик увидел пустой pending и дошёл до
+            //    финальной ветки БЕЗ подачи). Валидный исход §2 п.3.
+            // Транзиент-толерантные тики; стагнация — 3 подряд неудачных
+            // (хелпер). Backstop 600 с = 3 × ExecSec (540 с на три подряд
+            // exec-провала) + 60 с хвоста — предохранитель. Опрос — сразу
+            // после каждого тика и каждые PollMs между тиками; подача — не
+            // чаще TickIntervalMs (§5.6: завершённая работа не ждёт пустых
+            // пауз).
             var remaining = new List<int>();
-            var balanceDeadline = DateTimeOffset.UtcNow.AddSeconds(240);
-            while (DateTimeOffset.UtcNow < balanceDeadline)
+            var balanceDeadline = DateTimeOffset.UtcNow.AddSeconds(600);
+            var nextTickAt = DateTimeOffset.UtcNow; // первый тик — немедленно
+            var liveBalance = false;
+            var degenerateDone = false;
+            while (!liveBalance && !degenerateDone)
             {
-                var tick = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                tick.IsSuccess.Should().BeTrue($"тик balance не должен падать: {tick.Error?.Message}");
-                var progress = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
-                if (progress is not null)
+                if (DateTimeOffset.UtcNow >= nextTickAt)
                 {
-                    using var doc = JsonDocument.Parse(progress);
-                    if (doc.RootElement.TryGetProperty("partitions_remaining", out var rem))
-                        remaining.Add(rem.GetInt32());
-                    if (remaining.Count >= 2)
-                        break; // balance жив: прогресс есть и обновляется
+                    await TickAsync("act2-submit", cluster,
+                        async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
+                    nextTickAt = DateTimeOffset.UtcNow.AddMilliseconds(TickIntervalMs);
+                    (liveBalance, degenerateDone) = await ReadAct2StateAsync(cluster, requestedUnix, remaining);
+                    if (liveBalance || degenerateDone)
+                        break;
                 }
 
-                if (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is null)
-                    break; // сошлось между сэмплами — ассерты ниже дадут диагностику
-                await Task.Delay(3000, ct);
+                if (DateTimeOffset.UtcNow >= balanceDeadline)
+                {
+                    var context = await DiagContextAsync(cluster);
+                    throw new Xunit.Sdk.XunitException(
+                        "act2: ни живой баланс (mode=balance), ни вырожденный done за 600 с; заявка="
+                        + (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") ?? "<нет>")
+                        + "; " + context + "; тики: " + string.Join(" | ", diag));
+                }
+
+                await Task.Delay(PollMs, ct);
+                (liveBalance, degenerateDone) = await ReadAct2StateAsync(cluster, requestedUnix, remaining);
             }
+
+            if (degenerateDone)
+            {
+                // Вырожденный путь (H5) — валидный исход §2 п.3: гварды §2 п.2
+                // вырождены (balance не открывалась — снимать нечего), финальный
+                // цикл §5.3 не исполняется (заявки нет; RF юзер-топиков без
+                // заявки воркер не конвергит — arch/16 §5 E); демонтаж —
+                // teardown-гигиеной. Различительная валидация подготовки:
+                // вырожденный исход обязан быть гонкой метаданных (H5-i), НЕ
+                // дефектом подготовки (H5-ii) — снижение RF применилось.
+                output.WriteLine("вырожденный путь: сходимость обогнала первый сэмпл (H5)");
+                var configNow = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
+                configNow.Should().NotBeNull("config-ключ кластера существует");
+                configNow!.Should().Contain("\"replication_factor\":1",
+                    "вырожденный путь: замена RF не применилась — исход вызван дефектом "
+                    + "подготовки, а не гонкой метаданных (spec §5.2, H5-ii)");
+                (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
+                    "вырожденный путь: заявка удалена (финал balance по сходимости, §2 п.3)");
+                (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
+                    "вырожденный путь: прогресс-ключ не создан (§2 п.3)");
+                var degenerateOutcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
+                degenerateOutcome.Should().NotBeNull("вырожденный путь: исход записан");
+                degenerateOutcome!.Should().Contain("\"kind\":\"rebalance\"")
+                    .And.Contain("\"outcome\":\"done\"");
+                TryReadFinishedUnix(degenerateOutcome, out var finished).Should().BeTrue(
+                    "вырожденный путь: finished_unix присутствует в исходе");
+                finished.Should().BeGreaterThanOrEqualTo(requestedUnix,
+                    "вырожденный путь: финал завершил заявку Act2 (finished ≥ requested)");
+                return; // teardown — в finally
+            }
+
+            output.WriteLine("живой путь: баланс открыта (прогресс mode=balance)");
 
             var outcomeAfterBalance = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
             remaining.Should().NotBeEmpty(
@@ -367,15 +611,15 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
                 + "; outcome=" + outcomeAfterBalance);
             var progressLive = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
             progressLive.Should().NotBeNull(
-                "balance не сошлась между сэмплами (100 партиций — окно в минуты); "
+                "balance жив — окно держится живым прогресс-ключом, а не темпом сходимости; "
                 + "journal=" + await fixture.GetAsync($"/kafkaworker/work/{cluster}"))
                 .And.Contain("\"balance\"");
 
             // Старая заявка при идущей balance: тик НЕ снимает (гвард — прогресс
             // balance жив; в balance-ветке экспирационных точек нет вообще).
             await PutTicketAsync($"/kafkaworker/rebalances/{cluster}", nowUnix - 3700);
-            var tick2 = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick2.IsSuccess.Should().BeTrue(tick2.Error?.Message);
+            await TickAsync("guard2-old-ticket", cluster,
+                async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
                 "идущая ребалансировка не снимается никогда (тройной гвард)");
 
@@ -383,8 +627,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             // занулены) + старая заявка → НЕ expired, waiting-cluster.
             var endpointsRaw = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
             await fixture.PutAsync("/kafka/clusters/" + cluster + "/endpoints", "");
-            var tick3 = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-            tick3.IsSuccess.Should().BeTrue(tick3.Error?.Message);
+            await TickAsync("guard3-blind-endpoints", cluster,
+                async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().NotBeNull(
                 "гвард previous mode=balance работает и в endpoints-точке");
             var outcomeLive = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
@@ -394,17 +638,64 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             await fixture.PutAsync($"/kafka/clusters/{cluster}/endpoints", endpointsRaw!);
 
             // --- Финал: возврат RF=2 → balance доигрывается → исход done.
+            // Падение — по стагнации, не по часам (spec §5.3). Механика воркера,
+            // на которую опирается детект: прогресс-ключ пишется тиком как
+            // pending.Count НОВОГО плана (факт vs план этого тика) — при
+            // возврате RF 1→2 первый тик финального цикла переписывает
+            // remaining со старых ~50 на 100: РОСТ remaining — штатная
+            // перепланировка (объём нового плана), а не стагнация. Идеальный
+            // прогон счётчик не зажигает вовсе: 50 → 100 (перепланировка) →
+            // 50 (прогресс) → удаление (выход). Дедуп-тик (RetrySubmitSec=120,
+            // батч не применился за межтик) или затяжка ISR дают равенство —
+            // на ложное красное нужно 3 подряд таких тика.
             var restoredRaw = (await fixture.GetAsync($"/kafka/clusters/{cluster}/config"))!;
             await fixture.PutAsync($"/kafka/clusters/{cluster}/config",
                 restoredRaw.Replace("\"replication_factor\":1", "\"replication_factor\":2", StringComparison.Ordinal));
-            var convergeDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
-            while (DateTimeOffset.UtcNow < convergeDeadline)
+
+            // База детекта — remaining текущего прогресс-ключа на старте цикла.
+            var bestRemaining = await ReadRemainingAsync(cluster) ?? 100;
+            var remainingSamples = new List<int> { bestRemaining };
+            int? remainingFirst = null; // объём нового плана: remaining, записанный первым тиком финала
+            var convergeStarted = DateTimeOffset.UtcNow;
+            var tickSeconds = new List<double>();
+            var stagnantTicks = 0;
+            while (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is not null)
             {
-                var tick = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                tick.IsSuccess.Should().BeTrue($"тик сходимости не должен падать: {tick.Error?.Message}");
-                if (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is null)
-                    break;
-                await Task.Delay(3000, ct);
+                var backstopSec = ConvergeBackstopSec(tickSeconds, remainingFirst);
+                if (DateTimeOffset.UtcNow - convergeStarted >= TimeSpan.FromSeconds(backstopSec))
+                    await FailConvergeAsync(cluster, diag, remainingSamples,
+                        $"финал: backstop {backstopSec} с исчерпан при живой заявке "
+                        + $"(remainingFirst={(remainingFirst?.ToString() ?? "—")}, тиков={tickSeconds.Count}, "
+                        + $"средний тик={(tickSeconds.Count > 0 ? tickSeconds.Average().ToString("F1") : "—")} с) — сходимости нет");
+
+                var tick = await TickAsync("converge", cluster,
+                    async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
+                tickSeconds.Add(tick.TotalSeconds);
+
+                var remainingNow = await ReadRemainingAsync(cluster);
+                if (remainingNow is null)
+                    continue; // прогресс-ключ ушёл вместе с финалом — выход по while
+
+                remainingSamples.Add(remainingNow.Value);
+                remainingFirst ??= remainingNow.Value; // первый тик финала определил объём нового плана
+                if (remainingNow.Value != bestRemaining)
+                {
+                    // Убывание — прогресс (батчи применяются), рост —
+                    // перепланировка (новый объём работы): движение в обе
+                    // стороны сбрасывает счётчик, база следует за фактом.
+                    bestRemaining = remainingNow.Value;
+                    stagnantTicks = 0;
+                }
+                else if (++stagnantTicks >= StagnantTickLimit)
+                {
+                    await FailConvergeAsync(cluster, diag, remainingSamples,
+                        $"финал: стагнация — {stagnantTicks} подряд успешных тика с неизменным "
+                        + $"partitions_remaining={bestRemaining} (дедуп RetrySubmitSec или затяжка ISR)");
+                }
+
+                // Между тиками — интервал подачи (§5.6); опрос remaining —
+                // немедленно после каждого тика (ReadRemainingAsync выше).
+                await Task.Delay(TickIntervalMs, ct);
             }
 
             (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(

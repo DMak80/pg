@@ -6,13 +6,21 @@ namespace KafkaWorker.IntegrationTests.Etcd;
 
 // Координация /kafkaworker/ на реальном etcd (арх-план A14; порт
 // EtcdCoordinationTests PgWorker под kafka-префикс): exclusivity клэймов
-// и takeover по истечении lease TTL.
-[Collection(Kafka.KafkaCollection.Name)]
-public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
+// и takeover по истечении lease TTL. Своя etcd-only коллекция (spec
+// 2026-10-17 §6.3.4): брокерная фикстура не нужна — свой etcd-контур,
+// ассерты адресные по InstanceId.
+[CollectionDefinition(Name)]
+public sealed class ClaimStoreCollection : ICollectionFixture<EtcdFixture>
 {
-    private string Endpoint => fixture.Endpoint;
+    public const string Name = "kfw-etcd-claims";
+}
 
-    private EtcdGateway Gateway => fixture.Gateway;
+[Collection(ClaimStoreCollection.Name)]
+public class ClaimStoreTests(EtcdFixture etcd)
+{
+    private string Endpoint => etcd.Endpoint;
+
+    private EtcdGateway Gateway => etcd.Gateway;
 
     private ClaimStore NewClaimStore() => new("/kafkaworker", [Endpoint], Gateway, TimeProvider.System);
 
@@ -82,9 +90,12 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
 
         // Assert — контракт snake_case (arch/02 §2.3.2): {"url","instance","since_unix"};
         // NotContain-проверки ловят регрессию к PascalCase (PayloadJson без policy).
-        var api = await Gateway.RangeAsync(Endpoint, "/kafkaworker/api/", cts.Token);
+        // Адресно по своему InstanceId (spec §6.3.4): ContainSingle по всему
+        // префиксу в общем etcd ловил ключи соседей («found 2»); в своём
+        // контуре ключ доказуем точечным чтением.
+        var api = await Gateway.GetAsync(Endpoint, $"/kafkaworker/api/{store.InstanceId}", cts.Token);
         api.IsSuccess.Should().BeTrue();
-        var kv = api.Value.Should().ContainSingle().Subject;
+        var kv = api.Value!;
         kv.Key.Should().Be($"/kafkaworker/api/{store.InstanceId}");
         kv.Value.Should().Contain("\"url\":\"http://kafkaworker:8080\"")
             .And.Contain($"\"instance\":\"{store.InstanceId}\"")

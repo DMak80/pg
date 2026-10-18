@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using Confluent.Kafka;
+using KafkaWorker.Core;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.UnitTests.Provisioning;
 
@@ -180,5 +182,143 @@ public class KafkaAdminClientFactoryTests
         // Assert: кэш пуст — построен свежий клиент.
         second.Should().NotBeSameAs(first);
         factory.CreatedClients.Should().Be(2);
+    }
+
+    // ===== Дрейн-dispose заменяемого (arch/16 §6): dispose под висящей
+    // операцией запрещён (ERR__DESTROYED) — тесты через шов
+    // RunUnderOperationAsync (нативный клиент не строится). =====
+
+    // AAA: замена Unhealthy при висящей операции НЕ диспозит клиент — dispose
+    // ждёт завершения операции (дрейн).
+    [Fact]
+    public async Task UnhealthyReplace_DoesNotDisposeUnderActiveOperation()
+    {
+        // Arrange: клиент в кэше; операция висит (TCS управляет завершением).
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
+        var gate = new TaskCompletionSource<Result>();
+        var operation = first.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+        first.ActiveOperations.Should().Be(1, "операция на счётчике");
+
+        // Act: пометка Failed + замена (фоновый дрейн обязан ждать нуля).
+        first.NotifyFailed();
+        var second = factory.Create("h:9092", "app", "pw", caPem: null);
+
+        // Assert: замена мгновенна (новый клиент), dispose НЕ исполнился —
+        // операция первого всё ещё висит.
+        second.Should().NotBeSameAs(first);
+        factory.CreatedClients.Should().Be(2);
+        first.DisposeNativeCount.Should().Be(0, "dispose под висящей операцией запрещён");
+
+        // Cleanup: отпустить операцию — фоновый дрейн завершится сам.
+        gate.TrySetResult(Result.Success());
+        await operation;
+    }
+
+    // AAA: дрейн исполняет dispose по завершении последней операции
+    // (continuation), не дожидаясь бюджета.
+    [Fact]
+    public async Task DisposeWhenIdle_WaitsForLastOperation_ThenDisposes()
+    {
+        // Arrange: клиент (вне фабричной замены — наблюдаем детерминированно);
+        // дрейн запущен при висящей операции.
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
+        var gate = new TaskCompletionSource<Result>();
+        var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+        var drain = client.DisposeWhenIdleAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        drain.IsCompleted.Should().BeFalse("дрейн ждёт висящую операцию");
+
+        // Act: операция завершается.
+        gate.SetResult(Result.Success());
+        await operation;
+        await drain;
+
+        // Assert: dispose исполнен по нулю операций — без исчерпания бюджета.
+        client.DisposeNativeCount.Should().Be(1);
+        client.ActiveOperations.Should().Be(0);
+    }
+
+    // AAA: бюджет дрейна — по исчерпании принудительный dispose (не ждать
+    // вечно), операция при этом остаётся при своём исходе.
+    [Fact]
+    public async Task DisposeWhenIdle_BudgetExhausted_ForcesDispose()
+    {
+        // Arrange: операция висит дольше бюджета.
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
+        var gate = new TaskCompletionSource<Result>();
+        var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+
+        // Act: дрейн с коротким бюджетом.
+        var drain = client.DisposeWhenIdleAsync(TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+        await drain;
+
+        // Assert: принудительный dispose по бюджету; операция не сорвана
+        // исключением — завершится своим исходом.
+        client.DisposeNativeCount.Should().Be(1, "бюджет исчерпан — принудительный dispose");
+
+        // Cleanup.
+        gate.TrySetResult(Result.Success());
+        var done = await operation;
+        done.IsSuccess.Should().BeTrue("операция завершилась своим исходом, не ERR__DESTROYED");
+    }
+
+    // AAA: Create не блокируется дрейном заменяемого (раздача новых клиентов
+    // жива, пока старый дрейнит).
+    [Fact]
+    public async Task Create_NotBlockedByDrainOfReplaced()
+    {
+        // Arrange: заменяемый клиент с висящей операцией (дрейн ждёт).
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
+        var gate = new TaskCompletionSource<Result>();
+        var operation = first.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+        first.NotifyFailed();
+        factory.Create("h:9092", "app", "pw", caPem: null); // замена запустила фоновый дрейн
+
+        // Act: новые Create по ДРУГОМУ ключу и по ключу заменённого — замер.
+        var sw = Stopwatch.StartNew();
+        var fresh = factory.Create("h2:9092", "app", "pw", caPem: null);
+        var again = factory.Create("h2:9092", "app", "pw", caPem: null);
+        sw.Stop();
+
+        // Assert: раздача мгновенна (не ждёт дрейна), reuse нового ключа жив.
+        sw.ElapsedMilliseconds.Should().BeLessThan(3000, "Create не блокируется дрейном");
+        again.Should().BeSameAs(fresh);
+
+        // Cleanup.
+        gate.TrySetResult(Result.Success());
+        await operation;
+    }
+
+    // AAA: Dispose фабрики при висящей операции дожидается её завершения
+    // (дрейн с позитивным исходом — без принуждения) и детерминированно
+    // возвращается.
+    [Fact]
+    public async Task FactoryDispose_DrainsActiveOperation_Deterministically()
+    {
+        // Arrange: клиент с операцией, освобождающейся через 200 мс.
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
+        var gate = new TaskCompletionSource<Result>();
+        var operation = first.RunUnderOperationAsync(
+            async _ =>
+            {
+                await Task.Delay(200);
+                return await gate.Task;
+            }, TestContext.Current.CancellationToken);
+
+        // Act: остановка фабрики (внутренний seam — короткий бюджет теста).
+        var disposeTask = Task.Run(
+            () => factory.Dispose(TimeSpan.FromSeconds(5)), TestContext.Current.CancellationToken);
+        gate.TrySetResult(Result.Success());
+        var finished = await Task.WhenAny(
+            disposeTask, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken)) == disposeTask;
+
+        // Assert: Dispose вернулся (не висит) — дождался операции, без
+        // принуждения бюджет не потребовался.
+        finished.Should().BeTrue("Dispose детерминирован: дрейн с бюджетом, не вечное ожидание");
+        first.DisposeNativeCount.Should().Be(1, "клиент задиспожен по завершении операции");
+        await operation;
     }
 }

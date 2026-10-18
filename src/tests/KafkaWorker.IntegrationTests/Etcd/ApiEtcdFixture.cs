@@ -120,10 +120,6 @@ public sealed class EtcdFixture : IAsyncLifetime
     }
 }
 
-// Один etcd-контейнер на etcd-only тест-классы сборки (t91; порт EtcdCollection
-// PgWorker): ключи тестов не пересекаются, контейнер поднимается один.
-[CollectionDefinition(Name)]
-public sealed class EtcdCollection : ICollectionFixture<EtcdFixture>
-{
-    public const string Name = "kafka-etcd";
-}
+// EtcdFixture — per-class etcd-контур: каждый etcd-only тест-класс объявляет
+// собственную коллекцию со своим инстансом фикстуры (spec 2026-10-17 §6.3.6,
+// канон t24/AGENTS.base §13); бывшая общая коллекция упразднена.

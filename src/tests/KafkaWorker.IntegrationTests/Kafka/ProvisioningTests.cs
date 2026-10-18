@@ -12,7 +12,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // 1-брокерного кластера → ключи факта → дискавери-подключение ТОЛЬКО по ключам
 // etcd (endpoints + app_*) → заявка ротации + TO_REMOVE → полный демонтаж с
 // очисткой координации (вкл. rotations). Готовность брокера ≤ 120 с.
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class ProvisioningCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-provisioning";
+}
+
+[Collection(ProvisioningCollection.Name)]
 public class ProvisioningTests(KafkaClusterFixture fixture)
 {
     [Fact]

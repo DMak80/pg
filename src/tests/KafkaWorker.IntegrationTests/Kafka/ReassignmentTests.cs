@@ -14,7 +14,17 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // §11.5/§11.7): drain непустого broker-only со снижением RF 4→3 (данные целы,
 // internal-топики уехали), идемпотентность повторной подачи того же assignment.
 
-[Collection(KafkaCollection.Name)]
+// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
+// своё окно портов и AdminFactory; классы параллельны (потолок —
+// xunit.runner.json), факты класса последовательны.
+[CollectionDefinition(Name)]
+public sealed class ReassignmentCollection : ICollectionFixture<KafkaClusterFixture>
+{
+    public const string Name = "kfw-kafka-reassignment";
+}
+
+[Collection(ReassignmentCollection.Name)]
 public class ReassignmentTests(KafkaClusterFixture fixture)
 {
     // Риг процессов кластера (как ProvisioningTests): процессы напрямую,
