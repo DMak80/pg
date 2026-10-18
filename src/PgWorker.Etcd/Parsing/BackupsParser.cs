@@ -138,7 +138,7 @@ public static class BackupsParser
             {
                 // валидный JSON-не-объект (число/строка/массив) — не исключение,
                 // а толерантный пропуск записи (TryGetProperty вне объекта бросает)
-                errors.Add($"/pgworker/backups/{cluster}/policy: значение не JSON-объект");
+                errors.Add($"/pgworker/backups/{cluster}/policy: value is not a JSON object");
                 return null;
             }
 
@@ -194,7 +194,7 @@ public static class BackupsParser
         }
         catch (JsonException)
         {
-            errors.Add($"/pgworker/backups/{cluster}/policy: битый JSON");
+            errors.Add($"/pgworker/backups/{cluster}/policy: broken JSON");
             return null;
         }
     }
@@ -269,7 +269,7 @@ public static class BackupsParser
             var node = ReadString(root, "node");
             if (state is null || role is null || startedUnix is null || string.IsNullOrEmpty(node))
             {
-                errors.Add($"{key}: битый JSON или неизвестное state/role, обязательное поле отсутствует");
+                errors.Add($"{key}: broken JSON or unknown state/role, mandatory field missing");
                 return null;
             }
 
@@ -285,7 +285,7 @@ public static class BackupsParser
                     _ => (BackupVerifyStatus?)null,
                 };
                 if (verifyState is null)
-                    errors.Add($"{key}: неизвестное verify.state — verify пропущен");
+                    errors.Add($"{key}: unknown verify.state — verify skipped");
                 else
                     verify = new BackupVerify(verifyState.Value, ReadLong(verifyEl, "checked_unix"), ReadString(verifyEl, "error"));
             }
@@ -297,7 +297,7 @@ public static class BackupsParser
         }
         catch (JsonException)
         {
-            errors.Add($"{key}: битый JSON");
+            errors.Add($"{key}: broken JSON");
             return null;
         }
     }
@@ -336,7 +336,7 @@ public static class BackupsParser
                 || string.IsNullOrEmpty(target) || string.IsNullOrEmpty(node)
                 || requestedUnix is null || string.IsNullOrEmpty(requestedBy))
             {
-                errors.Add($"{key}: битый JSON или неизвестное state, обязательное поле отсутствует");
+                errors.Add($"{key}: broken JSON or unknown state, mandatory field missing");
                 return null;
             }
 
@@ -354,7 +354,7 @@ public static class BackupsParser
         }
         catch (JsonException)
         {
-            errors.Add($"{key}: битый JSON");
+            errors.Add($"{key}: broken JSON");
             return null;
         }
     }
@@ -386,7 +386,7 @@ public static class BackupsParser
             if (state is null || string.IsNullOrEmpty(id) || string.IsNullOrEmpty(backupId)
                 || startedUnix is null)
             {
-                errors.Add($"{key}: битый JSON или неизвестное state, обязательное поле отсутствует");
+                errors.Add($"{key}: broken JSON or unknown state, mandatory field missing");
                 return null;
             }
 
@@ -397,7 +397,7 @@ public static class BackupsParser
         }
         catch (JsonException)
         {
-            errors.Add($"{key}: битый JSON");
+            errors.Add($"{key}: broken JSON");
             return null;
         }
     }
@@ -440,7 +440,7 @@ public static class BackupsParser
                 || string.IsNullOrEmpty(chainStart) || string.IsNullOrEmpty(lastReceived)
                 || string.IsNullOrEmpty(lastUploaded) || lastUploadedUnix is null)
             {
-                errors.Add($"{key}: битый JSON или неизвестное state, обязательное поле отсутствует");
+                errors.Add($"{key}: broken JSON or unknown state, mandatory field missing");
                 return null;
             }
 
@@ -451,7 +451,7 @@ public static class BackupsParser
         }
         catch (JsonException)
         {
-            errors.Add($"{key}: битый JSON");
+            errors.Add($"{key}: broken JSON");
             return null;
         }
     }

@@ -52,7 +52,7 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
             ? null
             : S3PoolModel.ParseConfig(config.Value.Value);
         if (config.Value is not null && cfg is null)
-            logger?.LogWarning("битый config пула {Pool} — пул пропущен", pool);
+            logger?.LogWarning("broken config of pool {Pool} — pool skipped", pool);
         if (config.Value is null || cfg is null)
             return Result<S3Pool?>.Success((S3Pool?)null);
 
@@ -156,7 +156,7 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
         }
 
         return Result<IReadOnlyList<Kv>>.Failed(
-            last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+            last.Error ?? new EtcdUnreachableException("etcd endpoints not set"));
     }
 
     // Точечное чтение через RangeAsync (ключ известен по схеме; лишние значения

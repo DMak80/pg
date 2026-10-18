@@ -128,7 +128,7 @@ public static class ClusterSnapshotParser
                     if (TryBucketId(segments[5], out var id))
                         acc.Routing[id] = kv.Value;
                     else
-                        errors.Add($"{kv.Key}: нечисловой id бакета в имени ключа");
+                        errors.Add($"{kv.Key}: non-numeric bucket id in key name");
                     break;
                 }
 
@@ -138,7 +138,7 @@ public static class ClusterSnapshotParser
                     if (TryBucketId(segments[5], out var id))
                         acc.StatusRaw[id] = kv.Value;
                     else
-                        errors.Add($"{kv.Key}: нечисловой id бакета в имени ключа");
+                        errors.Add($"{kv.Key}: non-numeric bucket id in key name");
                     break;
                 }
 
@@ -263,7 +263,7 @@ public static class ClusterSnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add($"/clusters/{cluster}/config: битый JSON config");
+            errors.Add($"/clusters/{cluster}/config: broken JSON config");
             return new ClusterConfig(cluster, 0, string.Empty, null, ClusterState.Active, null, null);
         }
     }
@@ -277,7 +277,7 @@ public static class ClusterSnapshotParser
             if (int.TryParse(shard.ReplicasRaw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
                 replicas = parsed;
             else
-                errors.Add(prefix + "replicas: значение не целое число");
+                errors.Add(prefix + "replicas: value is not an integer");
         }
 
         var nodes = shard.Nodes
@@ -317,7 +317,7 @@ public static class ClusterSnapshotParser
                 && !TryParseStatus(raw, out status, out moveSource, out moveTarget,
                     out movePhase, out moveUpdatedUnix))
             {
-                errors.Add($"/clusters/{acc.Name}/buckets/status/bucket_{id}: битый JSON или неизвестное state");
+                errors.Add($"/clusters/{acc.Name}/buckets/status/bucket_{id}: broken JSON or unknown state");
                 status = null;
             }
 

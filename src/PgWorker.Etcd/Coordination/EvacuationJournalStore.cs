@@ -43,7 +43,7 @@ public sealed class EvacuationJournalStore(IEtcdGateway gateway, string[] endpoi
         catch (JsonException e)
         {
             return Result<EvacuationJournal?>.Failed(new ApplicationException(
-                $"битый журнал эвакуации /pgworker/evacuations/{cluster}/{shard}: {e.Message}", e));
+                $"broken evacuation journal /pgworker/evacuations/{cluster}/{shard}: {e.Message}", e));
         }
     }
 
@@ -59,7 +59,7 @@ public sealed class EvacuationJournalStore(IEtcdGateway gateway, string[] endpoi
                 return result;
             last = result;
         }
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not set");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -72,6 +72,6 @@ public sealed class EvacuationJournalStore(IEtcdGateway gateway, string[] endpoi
                 return result;
             last = result;
         }
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints not set");
     }
 }
