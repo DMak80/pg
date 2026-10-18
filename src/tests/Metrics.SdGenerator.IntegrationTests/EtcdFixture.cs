@@ -97,6 +97,6 @@ public sealed class EtcdFixture : IAsyncDisposable
         }
 
         throw new InvalidOperationException(
-            $"etcd в {Endpoint} не поднялся за 30 c (попыток {attempts})");
+            $"etcd at {Endpoint} did not come up within 30 s (attempts: {attempts})");
     }
 }

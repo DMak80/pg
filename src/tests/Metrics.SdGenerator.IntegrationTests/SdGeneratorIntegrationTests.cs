@@ -199,7 +199,7 @@ public class SdGeneratorIntegrationTests
             await WaitForAsync(
                 () => File.Exists(harness.Path)
                     && File.ReadAllText(harness.Path).Contains("h1:8008"),
-                TimeSpan.FromSeconds(10), "hosted-сервис не освежил файл за 10 c");
+                TimeSpan.FromSeconds(10), "hosted service did not refresh the file within 10 s");
         }
         finally
         {
