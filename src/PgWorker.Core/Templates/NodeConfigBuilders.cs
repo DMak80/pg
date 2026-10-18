@@ -144,11 +144,11 @@ public static class SpiloEnvBuilder
     // внедрения PGTune (справка: это поведение изолированных путей/старых тестов).
     private static string CanonicalParametersBlock() => string.Join("\n",
     [
-        "        # P15: 55 pg_doorman + 2 админ/mover + 3 reserved",
+        "        # P15: 55 pg_doorman + 2 admin/mover + 3 reserved",
         "        max_connections: \"60\"",
         "        shared_buffers: \"2GB\"",
         "        effective_cache_size: \"6GB\"",
-        "        # P3: логическое декодирование + failover slots",
+        "        # P3: logical decoding + failover slots",
         "        wal_level: logical",
         "        hot_standby: \"on\"",
         "        sync_replication_slots: \"on\"",

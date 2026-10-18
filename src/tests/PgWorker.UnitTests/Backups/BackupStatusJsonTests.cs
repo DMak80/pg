@@ -68,7 +68,7 @@ public class BackupStatusJsonTests
         // Arrange
         var full = new FullBackupState("20260911120000Z", FullBackupStatus.Completed, "n1",
             BackupSourceRole.Replica, 1757500000, 1757500300, "000000010000000000000001",
-            1024, null, new BackupVerify(BackupVerifyStatus.Failed, 1757500600, "дыра WAL-цепочки: ожидался X, найден Y"));
+            1024, null, new BackupVerify(BackupVerifyStatus.Failed, 1757500600, "WAL chain gap: expected X, found Y"));
 
         // Act
         var json = BackupStatusJson.Serialize(full);
@@ -78,7 +78,7 @@ public class BackupStatusJsonTests
         var verify = doc.RootElement.GetProperty("verify");
         verify.GetProperty("state").GetString().Should().Be("FAILED");
         verify.GetProperty("checked_unix").GetInt64().Should().Be(1757500600);
-        verify.GetProperty("error").GetString().Should().Contain("дыра WAL-цепочки");
+        verify.GetProperty("error").GetString().Should().Contain("WAL chain gap");
     }
 
     // AAA: verify без error — поля error в JSON нет (опционально, как остальные nullable)

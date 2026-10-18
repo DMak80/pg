@@ -297,7 +297,7 @@ public class NodeConfigBuildersTests
         spilo.Should().Contain("max_connections: \"60\"");
         spilo.Should().Contain("shared_buffers: \"2GB\"");
         spilo.Should().Contain("random_page_cost: \"1.1\"");
-        spilo.Should().Contain("# P15: 55 pg_doorman + 2 админ/mover + 3 reserved");
+        spilo.Should().Contain("# P15: 55 pg_doorman + 2 admin/mover + 3 reserved");
     }
 
     // AAA (t06, spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs

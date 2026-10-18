@@ -41,7 +41,7 @@ public class MoveOpsHandlersTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().BeOfType<BucketNotActiveForMoveOpException>()
-            .Which.Message.Should().Contain("только из ACTIVE").And.Contain("FROZEN");
+            .Which.Message.Should().Contain("is only possible from ACTIVE").And.Contain("FROZEN");
     }
 
     [Fact]

@@ -740,7 +740,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             Unix(now.AddMinutes(-5)), "000000010000000000000042", 1048576, null, null);
         var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
             "000000010000000000000044", "000000010000000000000044", "000000010000000000000044",
-            Unix(now.AddMinutes(-30)), null, "дыра WAL-цепочки");
+            Unix(now.AddMinutes(-30)), null, "WAL chain gap");
         var backups = new IReadOnlyList<ClusterBackups>[]
         {
             [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
@@ -776,7 +776,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             Unix(now.AddMinutes(-5)), "000000010000000000000046", 1048576, null, null);
         var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
             "000000010000000000000042", "000000010000000000000042", "000000010000000000000042",
-            Unix(now.AddMinutes(-30)), null, "дыра WAL-цепочки");
+            Unix(now.AddMinutes(-30)), null, "WAL chain gap");
         var backups = new IReadOnlyList<ClusterBackups>[]
         {
             [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>

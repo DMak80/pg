@@ -134,7 +134,7 @@ public class BackupsParserTests
                 "{\"state\":\"BROKEN\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
                 "\"chain_start_segment\":\"000000010000000000000029\",\"last_received_segment\":\"000000010000000000000029\"," +
                 "\"last_uploaded_segment\":\"000000010000000000000029\",\"last_uploaded_unix\":1789324156," +
-                "\"error\":\"дыра WAL-цепочки: ожидался 00000001000000000000002a, найден 00000001000000000000002b\"}", 1),
+                "\"error\":\"WAL chain gap: expected 00000001000000000000002a, found 00000001000000000000002b\"}", 1),
         };
 
         // Act

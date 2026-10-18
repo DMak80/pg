@@ -42,7 +42,7 @@ public class WalStatusWriterTests
     public void ToJson_ErrorNull_Omitted_DegradedCarriesError()
     {
         // Arrange
-        var degraded = Sample(WalStreamStatus.Degraded) with { Error = "дыра WAL-цепочки: ожидался X" };
+        var degraded = Sample(WalStreamStatus.Degraded) with { Error = "WAL chain gap: expected X" };
 
         // Act
         var active = WalStatusWriter.ToJson(Sample());
@@ -50,7 +50,7 @@ public class WalStatusWriterTests
 
         // Assert
         active.Should().NotContain("\"error\"");
-        degradedJson.Should().Contain("\"error\":\"дыра WAL-цепочки: ожидался X\"");
+        degradedJson.Should().Contain("\"error\":\"WAL chain gap: expected X\"");
     }
 
     // AAA: BROKEN пишется как "BROKEN" и читается обратно (контракт arch/19 §4, t07)
@@ -61,7 +61,7 @@ public class WalStatusWriterTests
         var state = new WalStreamState(
             WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
             "000000010000000000000005", "000000010000000000000005",
-            "000000010000000000000005", 1757500000, null, "дыра WAL-цепочки: ожидался 000000010000000000000006");
+            "000000010000000000000005", 1757500000, null, "WAL chain gap: expected 000000010000000000000006");
 
         // Act
         var json = WalStatusWriter.ToJson(state);
@@ -81,7 +81,7 @@ public class WalStatusWriterTests
         var broken = new WalStreamState(
             WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
             "000000010000000000000005", "000000010000000000000005",
-            "000000010000000000000005", 1757500000, null, "дыра WAL-цепочки");
+            "000000010000000000000005", 1757500000, null, "WAL chain gap");
         await writer.WriteIfChangedAsync("c1", "shard1", broken, ct: TestContext.Current.CancellationToken);
 
         // Act
