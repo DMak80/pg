@@ -50,20 +50,20 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
 
         // Counter-инструменты: пишутся марк-методами напрямую.
         var loopTicks = meter.CreateCounter<long>(
-            "worker.loop.ticks", description: "Тики циклов воркера (arch/18 §2.2)");
+            "worker.loop.ticks", description: "Worker loop ticks (arch/18 §2.2)");
         var operations = meter.CreateCounter<long>(
-            "worker.operation.total", description: "Завершённые операции (result: ok/error/expired)");
+            "worker.operation.total", description: "Completed operations (result: ok/error/expired)");
         var backupVerify = meter.CreateCounter<long>(
-            "pgworker_backup_verify_total", description: "Результаты verify полных бэкапов (arch/19 §5, t04)");
+            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5, t04)");
         var backupRestore = meter.CreateCounter<long>(
             "pgworker_backup_restore_total",
-            description: "Терминальные исходы restore-заявок (arch/18 §2.7)");
+            description: "Terminal outcomes of restore jobs (arch/18 §2.7)");
         var backupDrill = meter.CreateCounter<long>(
             "pgworker_backup_drill_total",
-            description: "Терминальные исходы дрилов восстановимости (arch/18 §2.7)");
+            description: "Terminal outcomes of restore drills (arch/18 §2.7)");
         var watchdogRestarts = meter.CreateCounter<long>(
             "worker_watchdog_restarts_total",
-            description: "Инициированные watchdog-остановки по staleness (arch/18 §2.2)");
+            description: "Watchdog-initiated stops on staleness (arch/18 §2.2)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -71,18 +71,18 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             "worker.loop.last_success_timestamp_seconds",
             () => Measure(() => _lastSuccess.Select(kv =>
                 new Measurement<long>(kv.Value, new KeyValuePair<string, object?>("loop", kv.Key)))),
-            unit: "s", description: "Unix-время последнего успешного тика цикла");
+            unit: "s", description: "Unix timestamp of the last successful loop tick");
 
         meter.CreateObservableGauge(
             "worker.loop.duration_seconds",
             () => Measure(() => _lastDuration.Select(kv =>
                 new Measurement<double>(kv.Value, new KeyValuePair<string, object?>("loop", kv.Key)))),
-            unit: "s", description: "Длительность последнего тика цикла");
+            unit: "s", description: "Duration of the last loop tick");
 
         meter.CreateObservableGauge(
             "worker.claims_held",
             () => Measure(() => new[] { new Measurement<int>(_claimsHeld) }),
-            description: "Число кластеров под клэймом");
+            description: "Number of clusters held under claim");
 
         meter.CreateObservableGauge(
             "pgworker_backup_wal_lag_segments",
@@ -90,7 +90,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "{segment}", description: "Отставание WAL-потока бэкапов, сегментов (arch/19 §3)");
+            unit: "{segment}", description: "Backup WAL stream lag, segments (arch/19 §3)");
 
         // t14 (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
         // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
@@ -102,7 +102,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Возраст последнего валидного полного бэкапа, с (arch/18 §2.7)");
+            unit: "s", description: "Age of the last valid full backup, s (arch/18 §2.7)");
 
         meter.CreateObservableGauge(
             "pgworker_backup_full_max_age_seconds",
@@ -110,7 +110,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Порог full_max_age_sec эффективной политики кластера (arch/18 §2.7)");
+            unit: "s", description: "full_max_age_sec threshold of the effective cluster policy (arch/18 §2.7)");
 
         meter.CreateObservableGauge(
             "pgworker_backup_wal_last_uploaded_age_seconds",
@@ -119,7 +119,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Возраст последней загрузки WAL-сегмента в S3, с (arch/18 §2.7)");
+            unit: "s", description: "Age of the last WAL segment upload to S3, s (arch/18 §2.7)");
 
         // t17 (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
         // (resolved − detected, arch/14 §3.3); открытого события/факта нет — серия
@@ -130,7 +130,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Длительность последнего завершённого failover, с (arch/14 §3.3)");
+            unit: "s", description: "Duration of the last completed failover, s (arch/14 §3.3)");
 
         meter.CreateObservableGauge(
             "pgworker_ha_rebuild_duration_seconds",
@@ -138,7 +138,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 new Measurement<long>(kv.Value,
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
-            unit: "s", description: "Длительность последнего завершённого rebuild, с (arch/14 §3.3)");
+            unit: "s", description: "Duration of the last completed rebuild, s (arch/14 §3.3)");
 
         meter.CreateObservableGauge(
             "worker.process.phase.duration_seconds",
@@ -151,14 +151,14 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("process", kv.Key.Process),
                     new KeyValuePair<string, object?>("phase", kv.Value.Phase)));
             }),
-            unit: "s", description: "Возраст текущей фазы процесса на кластере");
+            unit: "s", description: "Age of the current process phase on a cluster");
 
         meter.CreateObservableGauge(
             "worker.snapshot.age_seconds",
             () => Measure(() => _lastSnapshotTaken is { } taken
                 ? new[] { new Measurement<double>(Math.Max(0, (_clock.GetUtcNow() - taken).TotalSeconds)) }
                 : []),
-            unit: "s", description: "Возраст последнего снапшота P12");
+            unit: "s", description: "Age of the last P12 snapshot");
 
         LoopTickMark = (loop, ok) =>
         {
