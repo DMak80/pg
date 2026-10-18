@@ -335,7 +335,7 @@ public sealed class NodeSupervisor(
             cluster, node, address.Host, address.ClientPort, options.NodeImage,
             NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
-            Env: NodeTlsProvisioner.BuildNodeTlsEnv(snap.CaPem!, snap.CaKey!, node, advertised)), ct);
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(snap.CaPem!, snap.CaKey!, node, advertised)), options.ContourNetwork, ct);
         if (!ensured.IsSuccess)
             return ensured;
 

@@ -211,7 +211,7 @@ public sealed class CaRotator(
             cluster, "node1", address.Host, address.ClientPort, options.NodeImage,
             NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
-            Env: NodeTlsProvisioner.BuildNodeTlsEnv(nextPem, nextKey, "node1", advertised)), ct);
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(nextPem, nextKey, "node1", advertised)), options.ContourNetwork, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "phase-r/node1", ct);
         var provisioning = await ProcessCommon.WriteNodeStateAsync(

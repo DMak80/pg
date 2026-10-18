@@ -6,30 +6,33 @@
 ## Быстрый старт
 
 ```bash
-# всё — одним скриптом; стенд = ОДИН контур ОДНА сеть adminpanel-stand-net
-# (AGENTS.md): панель (докер, localhost:5050, admin/admin), PG-ноды demo
-# канонические (движок, Spilo/Patroni, pgw-demo-*), kafkaworker/valkeyworker,
-# PgWorker+owns3 (deploy/, contour-override) — и ВСЕ на одном etcd-кластере
-# as-etcd-1/2/3 (источник правды, 3 узла — зеркало прода, arch/04 §8)
+# всё — одним скриптом; стенд = ЯДРО + ПАНЕЛЬ на пустом контуре, ОДИН контур
+# ОДНА сеть adminpanel-stand-net (AGENTS.md): панель (докер, localhost:5050,
+# admin/admin), kafkaworker/valkeyworker, PgWorker/S3Worker (deploy/,
+# contour-override), прометей/графана — и ВСЕ на одном etcd-кластере
+# as-etcd-1/2/3 (источник правды, 3 узла — зеркало прода, arch/04 §8).
+# Ресурсы (PG-кластеры, S3-пулы, valkey/kafka демо) НЕ создаются — их создаёт
+# оператор вручную через панель; сиды чеков — checks/05-seed.sh вручную.
 cd dev-stand/adminpanel && checks/00-up.sh
-# или: docker compose up -d   # стенд части: etcd-кластер+панель (без PG/kafka/PgWorker);
+# или: docker compose up -d   # стенд части: etcd-кластер+панель (без воркеров);
 #                             # сиды — отдельно через checks/05-seed.sh
 
 open http://localhost:5050
 ```
 
 Порт панели/логин переопределяются: `ADMINPANEL_URL` (чеки), env `AdminPanel__Auth__*`
-сервиса `adminpanel`. Панель живёт в стендовой сети: etcd/ownS3/kafka — по
-compose-DNS, канонические ноды demo — по advertised portalloc-адресам
-(`host.docker.internal:15xxx/:18xxx`, extra_hosts) — HostMap не нужен.
+сервиса `adminpanel`. Панель живёт в стендовой сети: etcd/kafka — по
+compose-DNS, ноды кластеров (созданных вручную через панель) — по advertised
+portalloc-адресам (`host.docker.internal:15xxx/:17xxx/:18xxx`, extra_hosts) —
+HostMap не нужен.
 
 ## Профили
 
 | Профиль | Состав | Для чего |
 |---|---|---|
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
-| full | + as-minio (переходный архив, :9000/:9001) | live-пробы, failover, e2e |
-| kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
+| full | + as-minio (переходный архив, :9000/:9001) — поднимается вручную, в подъём `00-up.sh` НЕ входит | live-пробы, failover, e2e |
+| kafka | + kafkaworker | живой воркер: управление кафкой; входит в `00-up.sh` всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 | metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
 
 ## Мониторинг (профиль metrics)
@@ -50,24 +53,23 @@ compose-DNS, канонические ноды demo — по advertised portallo
   запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
 - Канон мониторинга — `../../arch/18-metrics.md` §5.
 
-## Хранилище бэкапов (ownS3, arch/19 + arch/owns3)
+## Хранилище бэкапов (arch/19 + arch/24)
 
-Хранилище бэкапов стенда — **ownS3** (deploy-контур, alias стендовой сети
-`owns3:9000` внутри; `:9010` — наружу: чеки/миграция/оператор): bucket
-`pgworker-backups` создаёт `00-up.sh` (`mc mb --ignore-existing`
-root-кредами, идемпотентно); воркер (deploy-проект) ходит по имени сети
-writer-ключом `pgw-backups-writer` (env-блок `PGW_BACKUP_S3_*` =
-`OWNS3_ACCESS_KEYS__0__*` в `deploy/.env`, один комплект — arch/19 §7).
-Панель читает bucket read-only (грань «Хранилище бэкапов»): ключ
-`panel-reader`, env `AdminPanel__Backups__S3__*` сервиса `adminpanel`;
-проверка — `checks/45-backups-storage.sh` (дерево — реальные бэкапы
-`demo/shard1` + идемпотентный налив: configured/health/objects/без
-секретов), smoke ownS3 — `checks/46-owns3.sh`.
+Хранилище бэкапов стенда — S3-пул (кластер `/s3/`), который провижинит
+S3Worker по заявке оператора через панель (контейнеры `s3w-<C>-<I>`,
+bucket создаётся провижинингом пула; `00-up.sh` ничего не наливает).
+Грань панели «Хранилище бэкапов» до создания пула — configured с
+health-отказом (endpoint `http://s3w-backups-node1:9000` отвечает после
+провижининга пула) — ожидаемое состояние пустого контура. Панель читает
+bucket read-only: ключ `panel-reader`, env `AdminPanel__Backups__S3__*`
+сервиса `adminpanel`; проверка грани — `checks/45-backups-storage.sh`
+(после создания пула вручную через панель). Standalone-`owns3` deploy-проекта
+— ручной подъём при необходимости (проверка — чек `46-owns3.sh` после
+ручного подъёма).
 
-demo-кластер — канонический: `00-up.sh` создаёт его `POST /api/clusters`
-(Spilo/Patroni, контейнеры движка `pgw-demo-*`, шард1/shard2); стенд задаёт
-`PGW_CONTOUR_NETWORK` = `adminpanel-stand-net` (режим сети контура движка,
-arch/14 §2.1 — ноды/wal-агенты/джобы бэкапов в одной сети со всем контуром).
+Кластеры создаются вручную через панель (API воркеров); стенд задаёт
+`PGW_CONTOUR_NETWORK` = `adminpanel-stand-net` (режим сети контура движков
+pg/vwk/s3w — ноды в одной сети со всем контуром).
 
 Профиль `full`: `as-minio` (S3 API `:9000`, консоль `:9001`, креды
 `minioadmin`/`minioadmin`) — переходный read-only-архив старых цепочек:
@@ -82,9 +84,9 @@ arch/14 §2.1 — ноды/wal-агенты/джобы бэкапов в одн�
 ## Сиды через API воркеров
 
 Прямая запись etcdctl'ом упразднена (spec etcd-via-worker-api §3.5).
-Pg-демо-контур сидом НЕ наливается — кластер demo создаёт `00-up.sh` через
-`POST /api/clusters` (канонический, движок); kafka/valkey-домены наливаются
-`05-seed.sh` (`POST /api/seed/demo` соответствующего воркера, за флагом
+Pg-демо-контур сидом НЕ наливается — кластер создаётся вручную через панель
+(API воркера); kafka/valkey-домены наливаются `05-seed.sh`
+(`POST /api/seed/demo` соответствующего воркера, за флагом
 `EnableSeedEndpoint`). Идемпотентны: повторный вызов — no-op.
 
 - `checks/05-seed.sh [kafka|valkey|all]` (default `all`) — поднимает нужного
@@ -92,8 +94,8 @@ Pg-демо-контур сидом НЕ наливается — кластер
   `--profile valkey`), ждёт `/healthz`, зовёт `POST /api/seed/demo`, в
   kafka-режиме дожидается живого lease-ключа `/kafkaworker/api/<id>`. Жизнью
   воркера ПОСЛЕ наливки НЕ управляет — решает потребитель сида.
-- `00-up.sh` зовёт `05-seed.sh valkey` после создания demo (kafka-сид в
-  полный подъём не входит — e2e 55-го идёт на чистом `/kafka/`).
+- `05-seed.sh` — НЕ часть штатного подъёма: его зовут чеки `50`/`51` и
+  ручные прогоны.
 - Совместимость kafka-сида с живым воркером: у сида нет контейнеров брокеров →
   пробы воркера слепые (arch/16 §5 C: слепая проба = бездействие) → сидовые
   заявки (lifecycle/rotate/rebalance) не исполняются, данные сида стабильны.
@@ -117,6 +119,15 @@ Pg-демо-контур сидом НЕ наливается — кластер
   `--profile kafka`; панельные мутации физически идут через прокси в API
   живого воркера. Порт 2379 хоста не должен быть занят внешним etcd.
 
+## Valkey-чеки
+
+- `checks/52-valkey-contour.sh` — ручная приёмка контурного режима сетей
+  ValkeyWorker (arch/21 §2): создание valkey-кластера (уникальное имя) через
+  панель → wait Active/нода RUNNING → контейнер `vwk-<C>-node1` в сети
+  `adminpanel-stand-net`, endpoints — advertised `host:port` (portalloc) →
+  удаление через панель → чистота (ни контейнера, ни ключей
+  `/valkey/clusters/<C>/`).
+
 ## HostMap
 
 Панель в докере резолвит стендовые адреса сетью compose — HostMap для
@@ -133,10 +144,9 @@ checks/90-down.sh -v        # если стенд уже поднимался
 checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
   && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh \
   && checks/50-kafka-api.sh
-# демо создаёт 00-up (POST /api/clusters); сиды — внутри: 00-up наливает
-# valkey-сид (05-seed.sh valkey), 50-й — kafka-сид (05-seed.sh kafka, живой
-# API, финальный stop воркера); e2e 55-й — отдельно с чистого состояния
-# (разбирает стенд)
+# полный прогон 10–60 — ПОСЛЕ ручного создания ресурсов через панель
+# (демо-кластер / S3-пул) и/или сидов checks/05-seed.sh; e2e 55-й —
+# отдельно с чистого состояния (разбирает стенд)
 ```
 
 Порядок важен: 30-й делает Patroni-failover shard1 (kill мастера → промоут

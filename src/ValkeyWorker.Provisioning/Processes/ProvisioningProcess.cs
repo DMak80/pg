@@ -331,7 +331,7 @@ public sealed class ProvisioningProcess(
             var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
                 cluster, node, address.Host, address.ClientPort, options.NodeImage, cmd,
                 limits?.Cpu, limits?.MemBytes,
-                Env: env), ct);
+                Env: env), options.ContourNetwork, ct);
             progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
             if (!ensured.IsSuccess)
                 return ensured;

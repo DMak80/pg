@@ -40,7 +40,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
             .TakeWhile((arg, i) => arg != "--tls-port").ToArray();
         (await fx.Driver.EnsureNodeAsync(new(
             cluster, "node1", ValkeyClusterFixture.DockerHost, port, fx.Options.NodeImage, plainArgs,
-            1m, 1024L * 1024 * 1024), ct)).IsSuccess.Should().BeTrue();
+            1m, 1024L * 1024 * 1024), null, ct)).IsSuccess.Should().BeTrue();
         await fx.PutAsync($"/valkey/clusters/{cluster}/endpoints", $"localhost:{port}");
         await fx.PutAsync($"/valkey/clusters/{cluster}/nodes/node1/state", "RUNNING");
 
@@ -178,7 +178,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
                 536870912, "allkeys-lru", creds.Value.AdminPassword, creds.Value.AppPassword)),
             1m, 1024L * 1024 * 1024,
             Env: NodeTlsProvisioner.BuildNodeTlsEnv(
-                nextPem, nextKey, "node1", ValkeyClusterFixture.AdvertisedClientHost)), ct);
+                nextPem, nextKey, "node1", ValkeyClusterFixture.AdvertisedClientHost)), null, ct);
         ensuredNode.IsSuccess.Should().BeTrue(ensuredNode.Error?.Message);
         var idBefore = ContainerId($"vwk-{cluster}-node1");
         idBefore.Should().NotBeEmpty();

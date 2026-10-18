@@ -139,4 +139,38 @@ public class OptionsValidationTests
         // Assert
         S3StartupChecks.PortRange(o).Should().Be(expected);
     }
+
+    [Theory]
+    [InlineData("Swarm")]
+    [InlineData("swarm")]
+    public void ContourNetwork_SwarmMode_FailFast(string mode)
+    {
+        // Arrange — swarm (в любом регистре) + контурная сеть: ошибка конфигурации.
+        var o = Valid();
+        o.Docker.Mode = mode;
+        o.Docker.ContourNetwork = "adminpanel-stand-net";
+
+        // Act
+        var act = () => S3StartupChecks.EnsureContourNetworkMode(o.Docker);
+
+        // Assert
+        act.Should().Throw<ApplicationException>().WithMessage(
+            "S3Worker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
+    }
+
+    [Fact]
+    public void ContourNetwork_PlainOrEmpty_NoFailFast()
+    {
+        // Arrange — Plain с сетью и Swarm без сети: валидные комбинации.
+        var plain = Valid();
+        plain.Docker.ContourNetwork = "adminpanel-stand-net";
+        var swarmEmpty = Valid();
+        swarmEmpty.Docker.Mode = "Swarm";
+        swarmEmpty.Docker.SwarmManager = "tcp://mgr:2376";
+        swarmEmpty.Docker.ContourNetwork = "";
+
+        // Act/Assert
+        S3StartupChecks.EnsureContourNetworkMode(plain.Docker);
+        S3StartupChecks.EnsureContourNetworkMode(swarmEmpty.Docker);
+    }
 }

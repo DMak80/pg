@@ -49,4 +49,14 @@ internal static partial class S3StartupChecks
         => o.Docker.PortRange.From > 0
            && o.Docker.PortRange.From < o.Docker.PortRange.To
            && o.Docker.PortRange.To <= 65535;
+
+    // Контурная сеть (arch/24 §2): не поддерживается в Mode=Swarm — сеть
+    // overlay назначает сам Swarm (fail-fast старта, канон PgWorker).
+    public static void EnsureContourNetworkMode(DockerOptions docker)
+    {
+        if (!string.IsNullOrWhiteSpace(docker.ContourNetwork)
+            && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+            throw new ApplicationException(
+                "S3Worker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
+    }
 }

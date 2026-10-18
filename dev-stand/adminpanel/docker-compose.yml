@@ -280,6 +280,8 @@ services:
       ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
       ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
+      # Контурный режим сетей (arch/21 §2): ноды vwk-* — в стендовой сети контура.
+      ValkeyWorker__Docker__ContourNetwork: adminpanel-stand-net
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
       VWK_API_TLS_KEY_PATH: /tls/server.key
@@ -308,6 +310,8 @@ services:
       ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
       ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
+      # Контурный режим сетей (arch/21 §2): ноды vwk-* — в стендовой сети контура.
+      ValkeyWorker__Docker__ContourNetwork: adminpanel-stand-net
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker-2:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
       VWK_API_TLS_KEY_PATH: /tls/server.key

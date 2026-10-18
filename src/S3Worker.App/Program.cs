@@ -178,6 +178,9 @@ builder.Services.AddSingleton<S3Worker.Docker.Drivers.IS3ClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
+    // Контурная сеть (arch/24 §2): Mode=Swarm + ContourNetwork — ошибка
+    // конфигурации (сеть overlay назначает сам Swarm) — fail-fast старта.
+    S3StartupChecks.EnsureContourNetworkMode(docker);
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени

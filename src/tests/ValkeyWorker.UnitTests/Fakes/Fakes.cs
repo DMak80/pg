@@ -282,7 +282,7 @@ internal static class Fakes
             return Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
         }
 
-        public Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct)
+        public Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, string? contourNetwork, CancellationToken ct)
         {
             lock (_gate)
             {

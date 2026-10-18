@@ -156,10 +156,18 @@ per-install API-CA; клиенты без валидного серта — от
   env-CA == `ca_pem`(etcd) == NEW — переиспользование при
   следующих пересозданиях).
 - **Сеть**: per-cluster сеть НЕ создаётся (нет inter-node трафика;
-  клиентский доступ — публикация host-порта из portalloc; контейнер живёт
-  в сети запуска воркера — деталь t02). Прямое следствие: домен не порождает
-  `*-net-*` объектов, пул подсетей docker не расходует (урок инцидента t05
-  про kfw-net).
+  клиентский доступ — публикация host-порта из portalloc; без контурного
+  режима контейнер живёт в default bridge docker-хоста запуска). Прямое
+  следствие: домен не порождает `*-net-*` объектов, пул подсетей docker
+  не расходует. Опция `ContourNetwork` (стенд/E2E) — ноды создаются в
+  сети контура поставки (стенд — единая стендовая сеть всего контура;
+  E2E-класс — своя изолированная сеть): сеть воркером не создаётся и не
+  удаляется (владелец — поставка/сценарий), advertised-правило §2 и
+  portalloc НЕ меняются — клиентская адресация остаётся публикациями
+  host-портов (как [24-s3worker.md](24-s3worker.md) §2; образец режима —
+  [14-pgworker.md](14-pgworker.md) §2.1). Пусто (прод/умолчание) —
+  прежнее поведение. Не поддерживается в Mode=Swarm — fail-fast старта:
+  сеть overlay назначает сам Swarm.
 - **Порты**: диапазон `17000–17999` (продолжение ряда pg 15000–15999 /
   kafka 16000–16999), **1 клиентский порт на ноду** (контейнерный 6379 →
   выделенный host-порт), закрепление `/valkeyworker/portalloc/<C>`;
@@ -601,7 +609,9 @@ Health `/healthz` по канону честного health (t09): послед�
 ```
 ValkeyWorker:Etcd { Endpoints[] }                  # список всех узлов HA-контура — 04 §8 (env VWK_ETCD_ENDPOINT_0..2)
 ValkeyWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
-                      PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"} }
+                      PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"},
+                      ContourNetwork=null }   # сеть контура (стенд/E2E), §2;
+                                             # не поддерживается в Mode=Swarm
 ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                      Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
                      # watchdog зависших циклов: порог сноса = Multiplier ×
