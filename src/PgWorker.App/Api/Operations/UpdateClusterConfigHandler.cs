@@ -21,7 +21,7 @@ public sealed class UpdateClusterConfigHandler(IEtcdGateway gateway, string[] en
         // 1) Тело: поле обязательно.
         if (request.SynchronousModeStrict is not { } strict)
             return Result.Failed(new UpdateClusterConfigValidationException(
-                [new ValidationError("synchronousModeStrict", "поле обязательно: boolean (true|false)")]));
+                [new ValidationError("synchronousModeStrict", "field is required: boolean (true|false)")]));
 
         // 2) Имя каноническое + чтение config с mod_revision (напрямую у etcd).
         if (!CreateClusterLimits.NamePattern().IsMatch(cluster))
@@ -65,7 +65,7 @@ public sealed class UpdateClusterConfigHandler(IEtcdGateway gateway, string[] en
                 return Result.Failed(new UpdateClusterConfigValidationException(
                 [
                     new ValidationError("syncStrict",
-                        $"включение strict требует replicas ≥ 2 на всех шардах (шард {undersized} с меньшим числом реплик; без sync-standby запись блокируется)"),
+                        $"enabling strict requires replicas ≥ 2 on every shard (shard {undersized} has fewer replicas; without sync-standby writes are blocked)"),
                 ]));
         }
 

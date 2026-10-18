@@ -71,7 +71,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
         var root = doc.RootElement;
         if (!root.TryGetProperty("buckets", out var buckets) || buckets.ValueKind != JsonValueKind.Number
             || !root.TryGetProperty("dbname", out var dbname) || dbname.ValueKind != JsonValueKind.String)
-            throw new JsonException("config без обязательных полей buckets/dbname");
+            throw new JsonException("config missing required fields buckets/dbname");
         long? created = root.TryGetProperty("created_unix", out var createdEl)
             && createdEl.ValueKind == JsonValueKind.Number
             ? createdEl.GetInt64()

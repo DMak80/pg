@@ -20,9 +20,9 @@ public static class RollbackBucketsValidator
     {
         var errors = new List<ValidationError>();
         if (request.Buckets is null || request.Buckets.Count == 0)
-            errors.Add(new("buckets", "выберите хотя бы один бакет"));
+            errors.Add(new("buckets", "select at least one bucket"));
         else if (request.Buckets.Distinct().Count() != request.Buckets.Count)
-            errors.Add(new("buckets", "дубликаты бакетов не допускаются"));
+            errors.Add(new("buckets", "duplicate buckets are not allowed"));
         return errors;
     }
 }

@@ -60,7 +60,7 @@ internal sealed class ReconcileLoop(
                     metrics.LoopTick("reconcile", ok: false);
                     // Тик не прошёл (etcd недоступен и т.п.): лог + короткая задержка.
                     StatusError = tick;
-                    logger.LogError(tick.Error, "тик ReconcileLoop не прошёл: {Message}", tick.Error!.Message);
+                    logger.LogError(tick.Error, "ReconcileLoop tick failed: {Message}", tick.Error!.Message);
                     await Task.Delay(
                         TimeSpan.FromMilliseconds(options.CurrentValue.Loops.ErrorDelayMs), stoppingToken);
                 }
@@ -102,7 +102,7 @@ internal sealed class ReconcileLoop(
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
-            return Result.Failed(new ApplicationException("PgWorker:Etcd:Endpoints не заданы"));
+            return Result.Failed(new ApplicationException("PgWorker:Etcd:Endpoints are not set"));
 
         health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
 
@@ -122,14 +122,14 @@ internal sealed class ReconcileLoop(
             return Result.Failed(backupsKvs.Error!);
         var backupsParsed = BackupsParser.Parse(backupsKvs.Value, out var backupsErrors);
         foreach (var error in backupsErrors)
-            logger.LogWarning("пропущен битый ключ бэкапов: {Error}", error);
+            logger.LogWarning("skipped broken backups key: {Error}", error);
         IReadOnlyList<ClusterBackups> backups = backupsParsed.Value;
 
         health.MarkEtcdOk();
 
         var parsed = ClusterSnapshotParser.ParseClusters(clustersKvs.Value, out var parseErrors);
         foreach (var error in parseErrors)
-            logger.LogWarning("пропущен битый ключ: {Error}", error);
+            logger.LogWarning("skipped broken key: {Error}", error);
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
         // (journal процесса уже несёт last_error — следующий тик продолжит).
@@ -169,7 +169,7 @@ internal sealed class ReconcileLoop(
             var claimed = await claims.TryClaimClusterAsync(cluster, ct);
             if (!claimed.IsSuccess)
             {
-                logger.LogError(claimed.Error, "клэйм {Cluster} не удался: {Message}", cluster, claimed.Error!.Message);
+                logger.LogError(claimed.Error, "claim {Cluster} failed: {Message}", cluster, claimed.Error!.Message);
                 return;
             }
 
@@ -287,7 +287,7 @@ internal sealed class ReconcileLoop(
         {
             // Страховка контура кластера (rework №3): даже исключение вне
             // вызова процесса не должно уходить в Task.WhenAll → StopHost.
-            logger.LogError(ex, "кластер {Cluster}: необработанное исключение (тик продолжается)",
+            logger.LogError(ex, "cluster {Cluster}: unhandled exception (tick continues)",
                 snap.Config.Cluster);
         }
         finally
@@ -331,7 +331,7 @@ internal sealed class ReconcileLoop(
             var supervised = await processes.SuperviseAsync(snap, backups, ct);
             if (!supervised.IsSuccess)
             {
-                logger.LogError(supervised.Error, "supervise {Cluster} не прошёл: {Message}",
+                logger.LogError(supervised.Error, "supervise {Cluster} failed: {Message}",
                     cluster, supervised.Error!.Message);
                 return null;
             }
@@ -353,7 +353,7 @@ internal sealed class ReconcileLoop(
     // не только из логов; op для журнала = метка до «/» (evacuate/shard1 → evacuate).
     private async Task LogCrashAsync(string cluster, string op, Exception ex)
     {
-        logger.LogError(ex, "процесс {Op} {Cluster} бросил исключение: {Message}", op, cluster, ex.Message);
+        logger.LogError(ex, "process {Op} {Cluster} threw exception: {Message}", op, cluster, ex.Message);
         try
         {
             // CancellationToken.None: запись должна доехать даже при остановке
@@ -363,7 +363,7 @@ internal sealed class ReconcileLoop(
         }
         catch (Exception journalEx)
         {
-            logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
+            logger.LogWarning(journalEx, "work journal for {Cluster} not written after exception", cluster);
         }
     }
 
@@ -372,7 +372,7 @@ internal sealed class ReconcileLoop(
         if (outcome.IsSuccess)
             logger.LogInformation("{Op} {Cluster}: {Outcome}", op, cluster, outcome.Value);
         else
-            logger.LogError(outcome.Error, "{Op} {Cluster} не прошёл: {Message}", op, cluster, outcome.Error!.Message);
+            logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
 
         return Task.CompletedTask;
     }
@@ -389,6 +389,6 @@ internal sealed class ReconcileLoop(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

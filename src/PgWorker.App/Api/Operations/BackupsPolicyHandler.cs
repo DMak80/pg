@@ -63,12 +63,12 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         catch (JsonException)
         {
             return Result<string>.Failed(new BackupsPolicyValidationException(
-                [new ValidationError("body", "тело запроса — JSON вида {\"retention\":{...},\"full_max_age_sec\":..,\"verify\":{\"on_create\":..}}")]));
+                [new ValidationError("body", "request body must be JSON of the form {\"retention\":{...},\"full_max_age_sec\":..,\"verify\":{\"on_create\":..}}")]));
         }
 
         if (body is null)
             return Result<string>.Failed(new BackupsPolicyValidationException(
-                [new ValidationError("body", "тело запроса обязательно")]));
+                [new ValidationError("body", "request body is required")]));
 
         // 4) Валидация диапазонов (400 с перечнем): days [1..365], weeks [0..52],
         //    months [0..120], full_max_age_sec >= 600, on_create — bool из JSON-схемы.
@@ -81,18 +81,18 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         var maxAge = body.FullMaxAgeSec ?? 86400;
         var onCreate = body.Verify?.OnCreate ?? true;
         if (days is < 1 or > 365)
-            errors.Add(new("retention.days", "дневная гранула — целое в [1..365]"));
+            errors.Add(new("retention.days", "daily granularity — integer in [1..365]"));
         if (weeks is < 0 or > 52)
-            errors.Add(new("retention.weeks", "недельная гранула — целое в [0..52]"));
+            errors.Add(new("retention.weeks", "weekly granularity — integer in [0..52]"));
         if (months is < 0 or > 120)
-            errors.Add(new("retention.months", "месячная гранула — целое в [0..120]"));
+            errors.Add(new("retention.months", "monthly granularity — integer in [0..120]"));
         if (maxAge < 600)
-            errors.Add(new("full_max_age_sec", "минимум 600 c"));
+            errors.Add(new("full_max_age_sec", "minimum 600 sec"));
         // reliability t02: период дрилов — целое в [0..3650]; 0 — дрилл
         // кластера выключен; поле отсутствует → секции drill в policy не будет.
         var drillDays = body.Drill?.IntervalDays;
         if (drillDays is < 0 or > 3650)
-            errors.Add(new("drill.interval_days", "период дрилов — целое в [0..3650]"));
+            errors.Add(new("drill.interval_days", "drill interval — integer in [0..3650]"));
 
         // t36: секция s3 — живая валидация пула/нод/списков (400 по полям;
         // etcd-отказ чтения /s3/ → 503 через EtcdWriteUnavailableException).

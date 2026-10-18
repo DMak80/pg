@@ -394,7 +394,7 @@ public static class ApiModule
                 {
                     return Results.Problem(
                         statusCode: StatusCodes.Status400BadRequest, title: "Invalid body",
-                        detail: "тело запроса — JSON вида {\"mode\":\"soft|hard\"}");
+                        detail: "request body must be JSON of the form {\"mode\":\"soft|hard\"}");
                 }
             }
 
@@ -429,7 +429,7 @@ public static class ApiModule
         {
             if (body is null)
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
-                    title: "Invalid body", detail: "тело запроса обязательно: {\"confirm\":\"<shard>\", …}");
+                    title: "Invalid body", detail: "request body is required: {\"confirm\":\"<shard>\", …}");
             var requestedBy = !string.IsNullOrWhiteSpace(body.RequestedBy)
                 ? body.RequestedBy
                 : http.Headers.TryGetValue("X-Requested-By", out var by) && !string.IsNullOrWhiteSpace(by)
@@ -509,7 +509,7 @@ public static class ApiModule
         {
             if (body is null)
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
-                    title: "Invalid body", detail: "тело запроса обязательно: {\"confirm\":\"<C>/<X>\"}");
+                    title: "Invalid body", detail: "request body is required: {\"confirm\":\"<C>/<X>\"}");
             var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
                 && !string.IsNullOrWhiteSpace(by) ? by.ToString() : "operator";
             var result = await handler.RequestAsync(cluster, shard, body, requestedBy, ct);

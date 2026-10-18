@@ -45,7 +45,7 @@ internal sealed class SnapshotLoop(
                 {
                     var became = await claims.TryBecomeLeaderAsync(stoppingToken);
                     if (became.IsSuccess && became.Value)
-                        logger.LogInformation("захвачено лидерство снапшотов: {InstanceId}", claims.InstanceId);
+                        logger.LogInformation("snapshot leadership acquired: {InstanceId}", claims.InstanceId);
                 }
 
                 if (claims.IsLeader)
@@ -73,16 +73,16 @@ internal sealed class SnapshotLoop(
                         StatusError = Result.Success();
                         health.MarkSnapshotTaken();
                         metrics.SnapshotTaken(clock.GetUtcNow());
-                        logger.LogInformation("снапшот etcd снят: {Path}", shot.Value);
+                        logger.LogInformation("etcd snapshot taken: {Path}", shot.Value);
                         // Обслуживание etcd: compact + defrag (не чаще раза в час).
                         var maintenance = await snapshots.MaintainAsync(stoppingToken);
                         if (!maintenance.IsSuccess)
-                            logger.LogWarning(maintenance.Error, "обслуживание etcd не выполнено: {Message}", maintenance.Error!.Message);
+                            logger.LogWarning(maintenance.Error, "etcd maintenance failed: {Message}", maintenance.Error!.Message);
                     }
                     else
                     {
                         StatusError = shot;
-                        logger.LogError(shot.Error, "снапшот etcd не снят: {Message}", shot.Error!.Message);
+                        logger.LogError(shot.Error, "etcd snapshot failed: {Message}", shot.Error!.Message);
                     }
 
                     health.MarkSnapshotTick();

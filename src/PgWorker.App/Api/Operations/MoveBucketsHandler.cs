@@ -24,15 +24,15 @@ public static class MoveBucketsValidator
         var fromEmpty = string.IsNullOrWhiteSpace(request.From);
         var toEmpty = string.IsNullOrWhiteSpace(request.To);
         if (fromEmpty)
-            errors.Add(new("from", "шард-источник обязателен"));
+            errors.Add(new("from", "source shard is required"));
         if (toEmpty)
-            errors.Add(new("to", "шард-приёмник обязателен"));
+            errors.Add(new("to", "target shard is required"));
         if (!fromEmpty && !toEmpty && request.From == request.To)
-            errors.Add(new("to", "приёмник должен отличаться от источника"));
+            errors.Add(new("to", "target must differ from source"));
         if (request.Buckets is null || request.Buckets.Count == 0)
-            errors.Add(new("buckets", "выберите хотя бы один бакет"));
+            errors.Add(new("buckets", "select at least one bucket"));
         else if (request.Buckets.Distinct().Count() != request.Buckets.Count)
-            errors.Add(new("buckets", "дубликаты бакетов не допускаются"));
+            errors.Add(new("buckets", "duplicate buckets are not allowed"));
         return errors;
     }
 }

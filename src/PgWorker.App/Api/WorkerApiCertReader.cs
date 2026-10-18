@@ -52,7 +52,7 @@ public static class WorkerApiCertReader
         }
 
         return new(ManagedCertStatus.Unreachable, null, null,
-            lastError ?? "endpoints не заданы");
+            lastError ?? "endpoints not set");
     }
 
     // JSON {cert_pem, key_pem} → пара; битый JSON/отсутствие полей — исключение.
@@ -65,7 +65,7 @@ public static class WorkerApiCertReader
             || cert.ValueKind != JsonValueKind.String
             || !root.TryGetProperty("key_pem", out var key)
             || key.ValueKind != JsonValueKind.String)
-            throw new ApplicationException("value ключа обязан быть JSON {cert_pem, key_pem}");
+            throw new ApplicationException("key value must be JSON {cert_pem, key_pem}");
         return (cert.GetString()!, key.GetString()!);
     }
 

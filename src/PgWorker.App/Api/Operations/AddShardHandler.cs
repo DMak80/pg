@@ -62,7 +62,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
             return Result<ShardAddedDto>.Failed(new AddShardValidationException(
             [
                 new ValidationError("replicas",
-                    "strict-кластер: replicas ≥ 2 на каждом шарде (без sync-standby запись блокируется); выключите strict (PUT config) для однорепликных шардов"),
+                    "strict cluster: replicas ≥ 2 on every shard (without sync-standby writes are blocked); disable strict (PUT config) for single-replica shards"),
             ]));
 
         // 3) Имя shard<max+1> по фактическому префиксу shards/ (range).

@@ -29,15 +29,15 @@ public sealed class PgWorkerHealth(
         var etcd = await probes.EtcdReachableAsync(ct);
         data["etcd"] = etcd.IsSuccess ? "reachable" : etcd.Error!.Message;
         if (!etcd.IsSuccess)
-            degraded.Add("etcd недоступен");
+            degraded.Add("etcd unavailable");
 
         // docker-hosts: ping каждого хоста конфигурации.
         var hosts = await probes.PingDockerHostsAsync(ct);
         data["docker-hosts"] = hosts.Count == 0
-            ? "нет настроенных хостов"
+            ? "no configured hosts"
             : string.Join("; ", hosts.Select(p => $"{p.Key}={(p.Value.IsSuccess ? "ok" : p.Value.Error!.Message)}"));
         foreach (var failed in hosts.Where(p => !p.Value.IsSuccess))
-            degraded.Add($"docker-хост {failed.Key} недоступен");
+            degraded.Add($"docker host {failed.Key} unavailable");
 
         // loops-alive: возраст последнего тика каждого цикла (пассивно, HealthState);
         // пороги — общий хелпер LoopStaleness (потребитель — только healthz;
@@ -62,9 +62,9 @@ public sealed class PgWorkerHealth(
                  })
         {
             if (at is null)
-                degraded.Add($"цикл {name} ещё не тикал");
+                degraded.Add($"loop {name} has not ticked yet");
             else if (clock.GetUtcNow() - at.Value > threshold)
-                degraded.Add($"цикл {name} не тикал {(clock.GetUtcNow() - at.Value).TotalSeconds:F0} с");
+                degraded.Add($"loop {name} has not ticked for {(clock.GetUtcNow() - at.Value).TotalSeconds:F0} s");
         }
 
         // watchdog: состояние компонента (Enabled=false — не зарегистрирован);
@@ -72,7 +72,7 @@ public sealed class PgWorkerHealth(
         var watchdog = services.GetService<Shared.Core.Hosting.LoopWatchdog>();
         data["watchdog"] = watchdog is null
             ? "disabled"
-            : watchdog.Armed ? $"armed; stale={watchdog.StaleLoop ?? "нет"}" : "starting";
+            : watchdog.Armed ? $"armed; stale={watchdog.StaleLoop ?? "none"}" : "starting";
 
         // claims: сколько клэймов удерживает инстанс + лидерство снапшотов (Д2).
         data["claims"] = $"held={snapshot.ClaimsHeld}; leader={claims.IsLeader}; instance={claims.InstanceId}";
@@ -81,21 +81,21 @@ public sealed class PgWorkerHealth(
         if (snapshot.LastSnapshotTaken is { } taken)
         {
             var age = clock.GetUtcNow() - taken;
-            data["snapshot"] = $"возраст {age.TotalMinutes:F0} мин";
+            data["snapshot"] = $"age {age.TotalMinutes:F0} min";
             var limit = TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin + 10);
             if (claims.IsLeader && age > limit)
-                degraded.Add($"снапшот старше лимита ({age.TotalMinutes:F0} мин)");
+                degraded.Add($"snapshot older than limit ({age.TotalMinutes:F0} min)");
         }
         else
         {
-            data["snapshot"] = claims.IsLeader ? "ещё не снят (лидер)" : "снимает другой инстанс (лидер)";
+            data["snapshot"] = claims.IsLeader ? "not taken yet (leader)" : "being taken by another instance (leader)";
         }
 
         return degraded.Count == 0
-            ? HealthCheckResult.Healthy("PgWorker жив", data)
+            ? HealthCheckResult.Healthy("PgWorker is alive", data)
             : HealthCheckResult.Degraded(string.Join("; ", degraded), data: data);
     }
 
     private string LoopEntry(string name, DateTimeOffset? at)
-        => at is null ? $"{name}=нет тиков" : $"{name}={(clock.GetUtcNow() - at.Value).TotalSeconds:F0}с назад";
+        => at is null ? $"{name}=no ticks" : $"{name}={(clock.GetUtcNow() - at.Value).TotalSeconds:F0}s ago";
 }

@@ -85,9 +85,9 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
         {
             var errors = new List<ValidationError>();
             if (!hasSourceCluster)
-                errors.Add(new ValidationError("source_cluster", "указан source_shard без source_cluster"));
+                errors.Add(new ValidationError("source_cluster", "source_shard specified without source_cluster"));
             if (!hasSourceShard)
-                errors.Add(new ValidationError("source_shard", "указан source_cluster без source_shard"));
+                errors.Add(new ValidationError("source_shard", "source_cluster specified without source_shard"));
             return Result<RestoreRequestedDto>.Failed(new RestoreValidationException(errors));
         }
         source = hasSourceCluster ? $"{body.SourceCluster}/{body.SourceShard}" : $"{cluster}/{shard}";
@@ -101,10 +101,10 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
                 return Result<RestoreRequestedDto>.Failed(poolRead.Error!);
             if (poolRead.Value is null)
                 return Result<RestoreRequestedDto>.Failed(new RestoreValidationException(
-                    [new ValidationError("source_pool", $"пул {body.SourcePool} не найден в /s3/clusters/")]));
+                    [new ValidationError("source_pool", $"pool {body.SourcePool} not found in /s3/clusters/")]));
             if (poolRead.Value.ToRemove)
                 return Result<RestoreRequestedDto>.Failed(new RestoreValidationException(
-                    [new ValidationError("source_pool", $"пул {body.SourcePool} в состоянии TO_REMOVE")]));
+                    [new ValidationError("source_pool", $"pool {body.SourcePool} is in TO_REMOVE state")]));
         }
 
         // 6) Гвард «максимум один активный restore на шард» (§3.1) + существующие

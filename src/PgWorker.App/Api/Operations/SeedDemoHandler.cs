@@ -20,7 +20,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
         // 1) Стендовый эндпоинт выключен — 404 (до идемпотентности и записей).
         if (!enabled)
             return Result<SeedDemoDto>.Failed(
-                new WorkerApiNotFoundException("seed-эндпоинт выключен (PgWorker:Api:EnableSeedEndpoint)"));
+                new WorkerApiNotFoundException("seed endpoint disabled (PgWorker:Api:EnableSeedEndpoint)"));
 
         // 2) Идемпотентность: сбой чтения → 503; config жив → no-op.
         var config = await EtcdFailover.CallAsync(endpoints,

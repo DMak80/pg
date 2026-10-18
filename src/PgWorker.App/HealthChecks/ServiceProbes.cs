@@ -34,7 +34,7 @@ public sealed class ServiceProbes(
             last = Result.Failed(range.Error!);
         }
 
-        return last.Error ?? new ApplicationException("PgWorker:Etcd:Endpoints не заданы");
+        return last.Error ?? new ApplicationException("PgWorker:Etcd:Endpoints not set");
     }
 
     /// <summary>docker-хосты: ping каждого (plain: таблица Hosts; swarm: manager).</summary>

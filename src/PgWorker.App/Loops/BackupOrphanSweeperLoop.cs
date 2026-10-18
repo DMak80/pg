@@ -34,7 +34,7 @@ internal sealed class BackupOrphanSweeperLoop(
                     var became = await claims.TryBecomeLeaderAsync(stoppingToken);
                     if (became.IsSuccess && became.Value)
                         logger.LogInformation(
-                            "захвачено лидерство (orphan-sweeper): {InstanceId}", claims.InstanceId);
+                            "leadership acquired (orphan-sweeper): {InstanceId}", claims.InstanceId);
                 }
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)

@@ -65,22 +65,22 @@ public static class ApiTlsEndpoints
                 break;
             case ManagedCertStatus.Broken:
                 throw new ApplicationException(
-                    $"PgWorker:Api:Tls: ключ /workers/api_tls/pgworker бит ({managedCert.Error}) — "
-                    + "исправьте из панели (PUT api-cert) или удалите (DELETE api-cert)");
+                    $"PgWorker:Api:Tls: key /workers/api_tls/pgworker is broken ({managedCert.Error}) — "
+                    + "fix it from the panel (PUT api-cert) or delete it (DELETE api-cert)");
             default:
                 serverCert = LoadServerCertificate(tls);
                 source = "env";
                 if (managedCert?.Status == ManagedCertStatus.Unreachable)
-                    warning = $"etcd недоступен ({managedCert.Error}) — стартую на env-серте";
+                    warning = $"etcd unreachable ({managedCert.Error}) — starting on env cert";
                 break;
         }
 
         if (serverCert is null)
             throw new ApplicationException(
-                "PgWorker:Api:Tls: серверный серт/ключ не заданы (PGW_API_TLS_CERT/KEY или *_PATH; etcd-ключ /workers/api_tls/pgworker; arch/14 §1.1)");
+                "PgWorker:Api:Tls: server cert/key not set (PGW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/pgworker; arch/14 §1.1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
-            "PgWorker:Api:Tls: ClientCA не задан (PGW_API_TLS_CLIENT_CA[_PATH])");
+            "PgWorker:Api:Tls: ClientCA not set (PGW_API_TLS_CLIENT_CA[_PATH])");
 
         var port = ResolvePort(builder.Configuration);
         // Явный Listen подавляет default-URL — только mTLS-грань.

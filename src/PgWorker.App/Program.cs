@@ -51,10 +51,10 @@ builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("Pg
 // Fail-fast: advertise без URL бессмысленен; http-advertise запрещён при mTLS-каноне (arch/14 §1.1).
 builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
-        "PgWorker:Api:AdvertiseUrl не задан (URL API, достижимый панелью; env PGW_API_ADVERTISE_URL)")
+        "PgWorker:Api:AdvertiseUrl is not set (API URL reachable by the panel; env PGW_API_ADVERTISE_URL)")
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
-        "PgWorker:Api:AdvertiseUrl обязан быть https:// (mTLS-only API, arch/14 §1.1)")
+        "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/14 §1.1)")
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
     // t36: Enabled=true требует непустой Bucket + хотя бы один env-профиль
@@ -64,24 +64,24 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // мимо DI и делал валидацию несовместимой с тестовыми хостами).
     .Validate<BackupSecretProfileStore>(
         (o, profiles) => o.Backups.IsValid(profiles.ProfileNames.Count),
-        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один профиль PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
+        "PgWorker:Backups: Enabled=true requires non-empty PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) and at least one profile PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
     // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
     // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (t36, env
     // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
     .Validate(o => o.Snapshots.Export.IsValid(),
-        "PgWorker:Snapshots:Export: Enabled=true требует полную пару PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
+        "PgWorker:Snapshots:Export: Enabled=true requires a complete pair PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
     .Validate(o => o.Pgtune.IsValid(),
-        "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
+        "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop is forbidden — incompatible with P3); " +
         "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
-        "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
+        "ExcludeParams — only PGTune output names (§5.2). Memory/CPU are not set here: etcd requests use request_{cpu,mem}")
     // REST-TLS нод (t22, arch/14 §8): поставка без TLS-пакета считается битой —
     // HTTP-режим провижининга не существует (симметрия запрета Pgtune:DbType=desktop).
     .Validate(o => o.Docker.RestTls.IsComplete(),
-        "PgWorker:Docker:RestTls обязателен: оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
-        "(per-install CA для REST-TLS нод; HTTP-режим не существует)")
+        "PgWorker:Docker:RestTls is required: both PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
+        "(per-install CA for REST-TLS nodes; HTTP mode does not exist)")
     .ValidateOnStart();
 
 // t36 (arch/19 §9): полупары env-профилей кредов пулов — fail-fast старта
@@ -92,7 +92,7 @@ var backupProfiles = new BackupSecretProfileStore();
 var halfPairs = backupProfiles.ValidateEnvPairs();
 if (halfPairs.Count > 0)
     throw new ApplicationException(
-        $"PGW_BACKUP_S3_PROFILES__: полупары env-профилей (ACCESS_KEY и SECRET_KEY задаются вместе): {string.Join(", ", halfPairs)}");
+        $"PGW_BACKUP_S3_PROFILES__: half-pairs of env profiles (ACCESS_KEY and SECRET_KEY must be set together): {string.Join(", ", halfPairs)}");
 builder.Services.AddSingleton(backupProfiles);
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
@@ -142,8 +142,8 @@ builder.Services.AddSingleton(sp =>
     if (!RestTlsOptions.IsValidPemPair(caPem, caKeyPem)
         || !RestPki.TryParseCertificate(caPem!, out var ca) || ca is null)
         throw new ApplicationException(
-            "PgWorker:Docker:RestTls: per-install CA не задан/не разбирается — " +
-            "оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] обязательны (REST-TLS нод; HTTP-режим не существует)");
+            "PgWorker:Docker:RestTls: per-install CA is not set / cannot be parsed — " +
+            "both PGW_REST_TLS_{CA,CA_KEY}[_PATH] are required (REST-TLS nodes; HTTP mode does not exist)");
     return new RestTlsMaterial(caPem!, caKeyPem!, ca);
 });
 
@@ -303,10 +303,10 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
             throw new ApplicationException(
-                "PgWorker:Docker:AdvertisedHost не поддерживается в Mode=Swarm (multi-host адресация)");
+                "PgWorker:Docker:AdvertisedHost is not supported in Mode=Swarm (multi-host addressing)");
         if (docker.Hosts.Length != 1)
             throw new ApplicationException(
-                "PgWorker:Docker:AdvertisedHost требует ровно один хост в PgWorker:Docker:Hosts (single-host/tunnel)");
+                "PgWorker:Docker:AdvertisedHost requires exactly one host in PgWorker:Docker:Hosts (single-host/tunnel)");
     }
 
     // ScrapeNetwork (t15, arch/18 §5.4): сетевой attach нод реализован для
@@ -316,7 +316,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (!string.IsNullOrWhiteSpace(docker.ScrapeNetwork)
         && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
         throw new ApplicationException(
-            "PgWorker:Docker:ScrapeNetwork не поддерживается в Mode=Swarm — сетевой attach нод реализован для plain-контейнеров");
+            "PgWorker:Docker:ScrapeNetwork is not supported in Mode=Swarm — node network attach is implemented for plain containers");
 
     // ContourNetwork (t41, arch/14 §2.1): контур-режим сетей движка — ноды/
     // wal-агенты/джобы бэкапов в одной внешней сети поставки; для swarm-сервисов
@@ -324,12 +324,12 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (!string.IsNullOrWhiteSpace(docker.ContourNetwork)
         && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
         throw new ApplicationException(
-            "PgWorker:Docker:ContourNetwork не поддерживается в Mode=Swarm — режим сети контура реализован для plain-контейнеров");
+            "PgWorker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
 
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
-            throw new ApplicationException("PgWorker:Docker:Mode=Swarm требует PgWorker:Docker:SwarmManager");
+            throw new ApplicationException("PgWorker:Docker:Mode=Swarm requires PgWorker:Docker:SwarmManager");
         return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
             pgtuneExclude: pgtuneExclude,
             restCertificates: sp.GetRequiredService<RestCertificateCache>());
@@ -339,7 +339,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .Select(h => new HostEndpoint(h.Name, h.Endpoint))
         .ToList();
     if (hosts.Count == 0)
-        throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
+        throw new ApplicationException("PgWorker:Docker:Mode=Plain requires a non-empty PgWorker:Docker:Hosts list");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
         pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
         contourNetwork: docker.ContourNetwork is { Length: > 0 } ? docker.ContourNetwork : null,
@@ -867,9 +867,9 @@ if (loopsWatchdog.Enabled)
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
-        "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/14 §1.1)");
+        "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/14 §1.1)");
 if (apiTls.Source is { } certSource)
-    app.Logger.LogInformation("PgWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+    app.Logger.LogInformation("PgWorker:Api:Tls: API server certificate — source {Source}", certSource);
 if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
@@ -884,7 +884,7 @@ static InstallSecrets SecretsFromEnv()
     string Required(string name) =>
         Environment.GetEnvironmentVariable(name)
         ?? throw new ApplicationException(
-            $"не задан обязательный env-секрет {name} (Д7: per-install, не в git и не в etcd)");
+            $"required env secret {name} is not set (Д7: per-install, not in git and not in etcd)");
 
     return new InstallSecrets(
         Required("PGW_PG_SUPERUSER_PASSWORD"),

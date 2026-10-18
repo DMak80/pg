@@ -20,7 +20,7 @@ public static class AbortBucketValidator
     {
         var errors = new List<ValidationError>();
         if (request.Bucket is null)
-            errors.Add(new("bucket", "укажите бакет"));
+            errors.Add(new("bucket", "bucket is required"));
         return errors;
     }
 }

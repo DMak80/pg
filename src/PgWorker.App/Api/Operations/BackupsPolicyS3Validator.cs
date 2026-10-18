@@ -45,7 +45,7 @@ public sealed class BackupsPolicyS3Validator(IEtcdGateway gateway, string[] endp
             return Result<System.Collections.Generic.IReadOnlyList<ValidationError>>.Success(errors);
         }
         if (read.Value.ToRemove)
-            errors.Add(new ValidationError("s3.pool", $"пул {poolName} в состоянии TO_REMOVE"));
+            errors.Add(new ValidationError("s3.pool", $"pool {poolName} is in TO_REMOVE state"));
 
         ValidateList("s3.write_master", "write_master", s3.WriteMaster, read.Value, errors);
         ValidateList("s3.write_replica", "write_replica", s3.WriteReplica, read.Value, errors);

@@ -9,75 +9,75 @@ namespace PgWorker.App.Api.Operations;
 // Валидация policy бэкапов не прошла: 400 с errors по полям (t06, arch/19 §4).
 public sealed class BackupsPolicyValidationException(
     IReadOnlyList<ValidationError> errors)
-    : Exception("политика бэкапов некорректна")
+    : Exception("backup policy is invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Валидация не прошла: 400 с errors по полям (arch/02 §9.3).
 public sealed class CreateClusterValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры создания кластера некорректны")
+    : Exception("cluster creation parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Клэйм-txn не сошёлся: имя занято (arch/02 §9.2) — 409.
 public sealed class ClusterAlreadyExistsException(string name)
-    : Exception($"кластер {name} уже существует (config-ключ присутствует)");
+    : Exception($"cluster {name} already exists (config key is present)");
 
 // Все etcd-endpoint'ы недоступны — писать некуда — 503.
 public sealed class EtcdWriteUnavailableException()
-    : Exception("нет активного etcd-endpoint'а (снапшот пуст или etcd недоступен)");
+    : Exception("no active etcd endpoint (snapshot is empty or etcd is unavailable)");
 
 // Кластера нет (config-ключ отсутствует) или имя неканоническое — 404 (arch/02 §9.4).
 public sealed class ClusterNotFoundException(string name)
-    : Exception($"кластер {name} не найден (config-ключ отсутствует)");
+    : Exception($"cluster {name} not found (config key is missing)");
 
 // Config-ключ есть, но не парсится/без обязательных полей — 503 (arch/02 §9.4).
 public sealed class InvalidClusterConfigException(string name)
-    : Exception($"config кластера {name} битый или без обязательных полей buckets/dbname");
+    : Exception($"cluster {name} config is malformed or missing required fields buckets/dbname");
 
 // Валидация add-shard не прошла: 400 с errors по полям (arch/02 §9.5).
 public sealed class AddShardValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры добавления шарда некорректны")
+    : Exception("shard addition parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Валидация мутации config не прошла: 400 с errors по полям (t06, 02 §9.10).
 public sealed class UpdateClusterConfigValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры мутации config некорректны")
+    : Exception("config mutation parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // RMW-txn проигран: config изменился между чтением и записью — 503, retry клиентом (t06).
 public sealed class ClusterConcurrentWriteException(string key)
-    : Exception($"конкурентная запись изменила {key} между чтением и записью — повторите запрос");
+    : Exception($"concurrent write modified {key} between read and write — retry the request");
 
 // Кластер не Active: NOT_INITIALIZED («дождитесь инициализации») или TO_REMOVE
 // («кластер удаляется») — подсказка оператору по state (§9.5/§9.6).
 public sealed class ClusterNotActiveException(string name, string state)
     : Exception(state == "NOT_INITIALIZED"
-        ? $"кластер {name} ещё инициализируется (NOT_INITIALIZED) — дождитесь инициализации"
-        : $"кластер {name} удаляется (TO_REMOVE) — операция запрещена");
+        ? $"cluster {name} is still initializing (NOT_INITIALIZED) — wait for initialization"
+        : $"cluster {name} is being removed (TO_REMOVE) — operation is forbidden");
 
 // Клэйм-txn имени не сошёлся: конкурентный POST занял имя (arch/02 §9.5).
 public sealed class ShardNameTakenException(string cluster, string shard)
-    : Exception($"имя шарда {cluster}/{shard} занято (replicas-ключ присутствует)");
+    : Exception($"shard name {cluster}/{shard} is taken (replicas key is present)");
 
 // shard<max+1> превысил предел числа шардов (§9.3: ≤128).
 public sealed class ShardLimitReachedException(string cluster)
-    : Exception($"кластер {cluster} достиг предела числа шардов (128)");
+    : Exception($"cluster {cluster} has reached the shard limit (128)");
 
 // Нешардированная БД (1 бакет, ≤1 шард — arch/03 §2): шарды есть только в
 // шардированной; добавить шард к нешардированной нельзя — это просто кластер.
 public sealed class NonShardedClusterException(string cluster)
-    : Exception($"БД {cluster} нешардированная — шарды только в шардированной (для полного демонтажа/расширения пересоздайте кластер нужного типа)");
+    : Exception($"database {cluster} is non-sharded — shards exist only in sharded clusters (to fully dismantle or extend, recreate the cluster of the desired type)");
 
 // Шард не найден (replicas-ключ отсутствует) — 404 (arch/02 §9.6).
 public sealed class ShardNotFoundException(string cluster, string shard)
-    : Exception($"шард {cluster}/{shard} не найден (replicas-ключ отсутствует)");
+    : Exception($"shard {cluster}/{shard} not found (replicas key is missing)");
 
 // Быстрая серверная пред-проверка guard'ов (Д4): воркер перепроверит авторитетно.
 public sealed class ShardRemoveBlockedException(string reason) : Exception(reason)
@@ -86,22 +86,22 @@ public sealed class ShardRemoveBlockedException(string reason) : Exception(reaso
         => new($"на шарде {count} бакетов — сначала явно перевезите (UI переездов — t07)");
 
     public static ShardRemoveBlockedException UnfinishedMove()
-        => new("незавершённый переезд бакета — завершите/отмените");
+        => new("unfinished bucket move — complete or cancel it");
 
     public static ShardRemoveBlockedException LastShard()
-        => new("нельзя снять последний шард — для полного демонтажа удалите кластер");
+        => new("cannot remove the last shard — delete the cluster for a full teardown");
 
     public static ShardRemoveBlockedException Quarantine()
-        => new("шард в карантине после эвакуации — сначала разбор данных");
+        => new("shard is quarantined after evacuation — investigate the data first");
 }
 
 // Пред-проверки не смогли прочитать данные (все endpoints недоступны) — 503.
 public sealed class ShardPrecheckUnavailableException()
-    : Exception("снапшот панели отстаёт — повторите запрос");
+    : Exception("panel snapshot is stale — retry the request");
 
 // Валидация тела заявок переездов не прошла: 400 (arch/02 §9.7).
 public sealed class MoveBucketsValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры переноса бакетов некорректны")
+    : Exception("bucket move parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
@@ -109,7 +109,7 @@ public sealed class MoveBucketsValidationException(IReadOnlyList<ValidationError
 // Приёмник в демонтаже: на удаляемый шард везти нельзя (arch/02 §9.7 п.2; источник
 // TO_REMOVE допустим — эвакуация перед демонтажем, spec Д9).
 public sealed class MoveTargetRemovingException(string cluster, string shard)
-    : Exception($"шард-приёмник {cluster}/{shard} удаляется (TO_REMOVE) — выберите другой приёмник");
+    : Exception($"target shard {cluster}/{shard} is being removed (TO_REMOVE) — choose another target");
 
 // Бакет не годен для переезда с источника: не его владелец / не ACTIVE / вне диапазона.
 public sealed class BucketNotOnSourceException(int bucket, string? owner, string state)
@@ -117,16 +117,16 @@ public sealed class BucketNotOnSourceException(int bucket, string? owner, string
 
 // На бакете уже стоит иная заявка — чужие не перезаписываем (arch/02 §9.7 п.3).
 public sealed class MoveRequestConflictException(string bucket, string op, string? to)
-    : Exception($"на {bucket} уже стоит заявка (op={op}, to={to ?? "—"}) — дождитесь её обработки или уберите ключ");
+    : Exception($"{bucket} already has a move request (op={op}, to={to ?? "—"}) — wait for it to be processed or remove the key");
 
 // Txn-клэйм не сошёлся: конкурентная заявка заняла ключ между чтением и записью.
 public sealed class MoveClaimLostException(int bucket)
-    : Exception($"конкурентная заявка заняла bucket_{bucket} между чтением и записью — повторите запрос");
+    : Exception($"a concurrent request claimed bucket_{bucket} between read and write — retry the request");
 
 // Валидация тел move-ops (rollback/finalize/abort) не прошла: 400 с errors
 // по полям (arch/02 §9.7.2–§9.7.4) — тот же маппинг, что у MoveBucketsValidationException.
 public sealed class MoveOpValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("параметры операции переездов некорректны")
+    : Exception("move operation parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
@@ -139,13 +139,13 @@ public sealed class BucketNotActiveForMoveOpException(string message) : Exceptio
         => new($"{op} bucket_{bucket} возможен только из ACTIVE (владелец: {owner ?? "—"}, состояние: {state})");
 
     public static BucketNotActiveForMoveOpException AbortActive(int bucket)
-        => new($"бакет bucket_{bucket} ACTIVE — отменять нечего; пост-flip артефакты убирает finalize");
+        => new($"bucket bucket_{bucket} is ACTIVE — nothing to abort; post-flip artifacts are cleaned up by finalize");
 
     public static BucketNotActiveForMoveOpException AbortNotInitialized(int bucket)
         => new($"бакет bucket_{bucket} NOT_INITIALIZED — начальное состояние создаваемого кластера, не переезд");
 
     public static BucketNotActiveForMoveOpException OutOfRange(string op, int bucket)
-        => new($"бакет {bucket} вне диапазона или без routing — операция {op} невозможна");
+        => new($"bucket {bucket} is out of range or has no routing — operation {op} is not possible");
 }
 
 // Finalize: выбранный шард — текущий владелец, убирать нечего (02 §9.7.3) — 409.
@@ -154,7 +154,7 @@ public sealed class FinalizeTargetIsOwnerException(string cluster, int bucket, s
 
 // Abort: статус-ключ свежий, mover возможно жив (02 §9.7.4; порт текста AbortSequence) — 409.
 public sealed class MoveStatusFreshException(long ageSec, long thresholdSec)
-    : Exception($"статус обновлён {ageSec}с назад (< AbortMinAgeSec={thresholdSec}с) — переезд, возможно, ещё жив; если mover точно мёртв — force");
+    : Exception($"status was updated {ageSec}s ago (< AbortMinAgeSec={thresholdSec}s) — the move may still be alive; if the mover is definitely dead — force");
 
 // Abort: routing уже указывает на target — доведение осознанно (02 §9.7.4) — 409.
 public sealed class MoveAlreadyFlippedException(string target)
@@ -166,19 +166,19 @@ public sealed class MoveTicketNotFoundException(string cluster, string bucket)
 
 // Живая заявка ротации уже стоит: не перезаписываем (отмена — runbook/etcdctl).
 public sealed class RotationAlreadyRequestedException(string cluster)
-    : Exception($"ротация app-пароля {cluster} уже запрошена — дождитесь исполнения (ключ /pgworker/rotations/{cluster})");
+    : Exception($"rotation of the app password for {cluster} has already been requested — wait for it to complete (key /pgworker/rotations/{cluster})");
 
 // Неизвестный режим пересоздания (допустимы только soft|hard).
 public sealed class InvalidRecreateModeException(string mode)
-    : Exception($"режим пересоздания «{mode}» недопустим: только soft или hard");
+    : Exception($"recreate mode '{mode}' is invalid: only soft or hard");
 
 // HA-скоп не найден — 404.
 public sealed class ScopeNotFoundException(string scope)
-    : Exception($"HA-скоп {scope} не найден");
+    : Exception($"HA scope {scope} not found");
 
 // Нода не найдена в скопе — 404.
 public sealed class NodeNotFoundException(string scope, string node)
-    : Exception($"нода {node} не найдена в скопе {scope}");
+    : Exception($"node {node} not found in scope {scope}");
 
 // Последняя живая нода: пересоздание невозможно (нет источника для basebackup).
 public sealed class LastNodeException(string scope, string node)
@@ -189,7 +189,7 @@ public sealed class LastNodeException(string scope, string node)
 
 // Все остальные ноды уже в процессе пересоздания (REBUILDING/TO_RECREATE).
 public sealed class AllOthersRecreatingException(string scope, string node)
-    : Exception($"все остальные ноды скопа {scope} уже пересоздаются — дождитесь завершения")
+    : Exception($"all other nodes of scope {scope} are already being recreated — wait for completion")
 {
     public string Node { get; } = node;
 }
@@ -202,20 +202,20 @@ public sealed class WorkerApiNotFoundException(string message) : Exception(messa
 
 // confirm != имя шарда — 400 (необратимая операция: защита от ошибки оператора).
 public sealed class ConfirmMismatchException(string expected, string got)
-    : Exception($"confirm обязан совпадать с именем шарда: ожидался '{expected}', получен '{got}'");
+    : Exception($"confirm must match the shard name: expected '{expected}', got '{got}'");
 
 // target_time не RFC3339 — 400.
 public sealed class InvalidTargetTimeException(string raw)
-    : Exception($"target_time не RFC3339: '{raw}'");
+    : Exception($"target_time is not RFC3339: '{raw}'");
 
 // Активный (PLANNED/RUNNING/REJOINING) restore шарда уже есть — 409 (§3.1:
 // максимум один активный restore на шард).
 public sealed class RestoreAlreadyActiveException(string cluster, string shard)
-    : Exception($"restore шарда {cluster}/{shard} уже активен — дождитесь завершения (ключ restore/<id>)");
+    : Exception($"restore of shard {cluster}/{shard} is already active — wait for completion (key restore/<id>)");
 
 // Поля тела — 400 с errors по полям (паттерн CreateClusterValidationException).
 public sealed class RestoreValidationException(IReadOnlyList<ValidationError> errors)
-    : Exception("тело заявки restore не прошло валидацию")
+    : Exception("restore request body failed validation")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
@@ -224,16 +224,16 @@ public sealed class RestoreValidationException(IReadOnlyList<ValidationError> er
 
 // Префикса нет в реестре сирот / имена неканонические — 404.
 public sealed class OrphanNotFoundException(string prefix)
-    : Exception($"сирота {prefix} не найдена в реестре /pgworker/backups/orphans");
+    : Exception($"orphan {prefix} not found in the /pgworker/backups/orphans registry");
 
 // Запись в DELETING — доводку начатого удаления не спасти — 409.
 public sealed class OrphanDeletingException(string prefix)
-    : Exception($"сирота {prefix} уже в DELETING — удаление идёт, доводку не остановить");
+    : Exception($"orphan {prefix} is already DELETING — deletion is in progress and cannot be stopped");
 
 // confirm != "<C>/<X>" — 400 (осознанная потеря DR-источника).
 public sealed class OrphanConfirmMismatchException(string expected, string got)
-    : Exception($"confirm обязан совпадать с префиксом сироты: ожидался '{expected}', получен '{got}'");
+    : Exception($"confirm must match the orphan prefix: expected '{expected}', got '{got}'");
 
 // Подсистема бэкапов выключена — 503 (заявки копятся? нет — API не принимает).
 public sealed class BackupsDisabledException()
-    : Exception("подсистема бэкапов выключена (PgWorker:Backups:Enabled=false) — операции сирот недоступны");
+    : Exception("backups subsystem is disabled (PgWorker:Backups:Enabled=false) — orphan operations are unavailable");
