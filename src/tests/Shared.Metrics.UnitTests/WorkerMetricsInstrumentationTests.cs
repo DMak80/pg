@@ -189,7 +189,7 @@ public sealed class WorkerMetricsInstrumentationTests
     }
 
     [Fact]
-    public void BackupWalLag_Серии_по_шардам_null_удаляет()
+    public void BackupWalLag_SeriesPerShard_nullRemoves()
     {
         // Arrange — два шарда под наблюдением контрольного прохода WalStreamProcess
         using var meter = new Meter("TestWorker");
@@ -208,7 +208,7 @@ public sealed class WorkerMetricsInstrumentationTests
     // AAA: counter pgworker_backup_verify_total{cluster,shard,result} — лейблы
     // cluster/shard добавлены (миграция серии t14, arch/18 §2.7): инкременты по тройке
     [Fact]
-    public void BackupVerify_ИнкрементыПоКластеруШардуРезультату()
+    public void BackupVerify_IncrementsPerClusterShardResult()
     {
         // Arrange
         using var meter = new Meter("TestWorker");
@@ -228,7 +228,7 @@ public sealed class WorkerMetricsInstrumentationTests
 
     // AAA: counter pgworker_backup_restore_total{cluster,shard,result} — исходы restore
     [Fact]
-    public void BackupRestore_ИнкрементыПоИсходам()
+    public void BackupRestore_IncrementsPerOutcome()
     {
         // Arrange
         using var meter = new Meter("TestWorker");
@@ -248,7 +248,7 @@ public sealed class WorkerMetricsInstrumentationTests
 
     // AAA: counter pgworker_backup_drill_total{cluster,shard,result} — исходы дрилов
     [Fact]
-    public void BackupDrill_ИнкрементыПоИсходам()
+    public void BackupDrill_IncrementsPerOutcome()
     {
         // Arrange
         using var meter = new Meter("TestWorker");
@@ -283,7 +283,7 @@ public sealed class WorkerMetricsInstrumentationTests
     // AAA: t14 — набор тика замещает стейт кластера ЦЕЛИКОМ: age null → age-серия
     // отсутствует, max_age пишется всегда, ушедший из набора шард не эмитится
     [Fact]
-    public void BackupFullAge_ЗамещениеНабора_nullУбираетAge_maxAgeВсегда()
+    public void BackupFullAge_SetReplacesState_nullRemovesAge_maxAgeAlways()
     {
         // Arrange — тик 1: s1 с валидным, s2 без
         using var meter = new Meter("TestWorker");
@@ -310,7 +310,7 @@ public sealed class WorkerMetricsInstrumentationTests
 
     // AAA: t14 — age-серия шарда исчезает при null-факте, max_age остаётся
     [Fact]
-    public void BackupFullAge_nullУбираетТолькоAge_шардыРазныхКластеровНезависимы()
+    public void BackupFullAge_nullRemovesOnlyAge_shardsOfDifferentClustersIndependent()
     {
         // Arrange — два кластера
         using var meter = new Meter("TestWorker");
@@ -330,7 +330,7 @@ public sealed class WorkerMetricsInstrumentationTests
     // AAA: t14 — uploaded-age хранится как unix-факт (now − age на момент
     // наблюдения — колбэк гейджа пересчитывает на каждом scrape); null удаляет
     [Fact]
-    public void BackupWalUploadedAge_unixФакт_nullУдаляет()
+    public void BackupWalUploadedAge_unixFact_nullRemoves()
     {
         // Arrange — часы на T=10_000
         var clock = new FakeTimeProvider { Now = DateTimeOffset.UnixEpoch.AddSeconds(10_000) };
@@ -349,7 +349,7 @@ public sealed class WorkerMetricsInstrumentationTests
     // AAA: t17 — единый марк-метод HaDurations: набор шардов тика замещает стейт
     // кластера целиком; null-факт — серия шарда исчезает (arch/18 §2.7)
     [Fact]
-    public void HaDurations_ЗамещениеНабора_nullУбирает_СериюШардаИсчезает()
+    public void HaDurations_SetReplacesState_nullRemoves_ShardSeriesDisappears()
     {
         // Arrange
         using var meter = new Meter("test");
@@ -375,7 +375,7 @@ public sealed class WorkerMetricsInstrumentationTests
 
     // AAA: t17 — кластеры независимы (failover/rebuild — независимые серии)
     [Fact]
-    public void HaDurations_РазныеКластерыНезависимы()
+    public void HaDurations_DifferentClustersIndependent()
     {
         // Arrange
         using var meter = new Meter("test");
