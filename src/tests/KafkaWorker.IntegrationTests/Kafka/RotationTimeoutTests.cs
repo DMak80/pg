@@ -37,6 +37,14 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
         DeprovisioningProcess Deprovision,
         PartitionReassignerProcess Reassigner);
 
+    // ===== Механика стабильности AC12 (spec 2026-10-17-kfw-rotation-timeout-flake §5) =====
+
+    // Риг AC12: батч подач 50 партиций (§5.4) — сходимость 100 партиций это
+    // 2 подачи + финальный тик вместо 10+1: меньше exec-JVM-подач — меньше
+    // время и вероятность транзиента. Единая константа для рига и расчёта
+    // backstop финала (§5.3) — риг и расчёт не разъезжаются.
+    private const int ReassignBatchPartitions = 50;
+
     private async Task<Rig> NewRigAsync(string cluster, int brokers)
     {
         var ct = TestContext.Current.CancellationToken;
@@ -59,7 +67,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             new PartitionReassignerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 fixture.AdminFactory,
-                new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, ExecSec: 180, RetrySubmitSec: 120),
+                new ReassignOptions(IntervalSec: 0, BatchPartitions: ReassignBatchPartitions, ExecSec: 180, RetrySubmitSec: 120),
                 TimeProvider.System));
     }
 
@@ -295,11 +303,12 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
             // Юзер-топик (100 партиций RF=2): у internal-топиков RF-цель
-            // min(3, цели) и снижение config RF их не двигает; малое число
-            // партиций сходится между тиками — прогресс не поймать. 100
-            // партиций = 10 батчей — окно идущей balance в минуты даже под
-            // нагрузкой серии (флак 30-партиционного варианта: сходимость
-            // обгоняла тики) (прецедент ReassignmentTests).
+            // min(3, цели) и снижение config RF их не двигает; 100 партиций
+            // дают план ровно на 2 батча по 50. Окно идущей balance держится
+            // живым прогресс-ключом mode=balance (гвард экспирации), а не
+            // темпом сходимости; крупные батчи — меньше exec-JVM-подач,
+            // меньше тайминговая поверхность (spec 2026-10-17-...-flake §5.4;
+            // прецедент ReassignmentTests).
             var topic = $"rebrto-{fixture.RunTag}";
             using (var admin = (await fixture.DiscoveryAdminBuilderAsync(cluster, "admin")).Build())
                 await admin.CreateTopicsAsync(
