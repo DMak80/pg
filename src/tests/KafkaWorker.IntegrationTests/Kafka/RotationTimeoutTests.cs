@@ -528,16 +528,61 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             await fixture.PutAsync($"/kafka/clusters/{cluster}/endpoints", endpointsRaw!);
 
             // --- Финал: возврат RF=2 → balance доигрывается → исход done.
+            // Падение — по стагнации, не по часам (spec §5.3). Механика воркера,
+            // на которую опирается детект: прогресс-ключ пишется тиком как
+            // pending.Count НОВОГО плана (факт vs план этого тика) — при
+            // возврате RF 1→2 первый тик финального цикла переписывает
+            // remaining со старых ~50 на 100: РОСТ remaining — штатная
+            // перепланировка (объём нового плана), а не стагнация. Идеальный
+            // прогон счётчик не зажигает вовсе: 50 → 100 (перепланировка) →
+            // 50 (прогресс) → удаление (выход). Дедуп-тик (RetrySubmitSec=120,
+            // батч не применился за межтик) или затяжка ISR дают равенство —
+            // на ложное красное нужно 3 подряд таких тика.
             var restoredRaw = (await fixture.GetAsync($"/kafka/clusters/{cluster}/config"))!;
             await fixture.PutAsync($"/kafka/clusters/{cluster}/config",
                 restoredRaw.Replace("\"replication_factor\":1", "\"replication_factor\":2", StringComparison.Ordinal));
-            var convergeDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
-            while (DateTimeOffset.UtcNow < convergeDeadline)
+
+            // База детекта — remaining текущего прогресс-ключа на старте цикла.
+            var bestRemaining = await ReadRemainingAsync(cluster) ?? 100;
+            var remainingSamples = new List<int> { bestRemaining };
+            int? remainingFirst = null; // объём нового плана: remaining, записанный первым тиком финала
+            var convergeStarted = DateTimeOffset.UtcNow;
+            var tickSeconds = new List<double>();
+            var stagnantTicks = 0;
+            while (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is not null)
             {
-                var tick = await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                tick.IsSuccess.Should().BeTrue($"тик сходимости не должен падать: {tick.Error?.Message}");
-                if (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is null)
-                    break;
+                var backstopSec = ConvergeBackstopSec(tickSeconds, remainingFirst);
+                if (DateTimeOffset.UtcNow - convergeStarted >= TimeSpan.FromSeconds(backstopSec))
+                    await FailConvergeAsync(cluster, diag, remainingSamples,
+                        $"финал: backstop {backstopSec} с исчерпан при живой заявке "
+                        + $"(remainingFirst={(remainingFirst?.ToString() ?? "—")}, тиков={tickSeconds.Count}, "
+                        + $"средний тик={(tickSeconds.Count > 0 ? tickSeconds.Average().ToString("F1") : "—")} с) — сходимости нет");
+
+                var tick = await TickAsync("converge", cluster,
+                    async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
+                tickSeconds.Add(tick.TotalSeconds);
+
+                var remainingNow = await ReadRemainingAsync(cluster);
+                if (remainingNow is null)
+                    continue; // прогресс-ключ ушёл вместе с финалом — выход по while
+
+                remainingSamples.Add(remainingNow.Value);
+                remainingFirst ??= remainingNow.Value; // первый тик финала определил объём нового плана
+                if (remainingNow.Value != bestRemaining)
+                {
+                    // Убывание — прогресс (батчи применяются), рост —
+                    // перепланировка (новый объём работы): движение в обе
+                    // стороны сбрасывает счётчик, база следует за фактом.
+                    bestRemaining = remainingNow.Value;
+                    stagnantTicks = 0;
+                }
+                else if (++stagnantTicks >= StagnantTickLimit)
+                {
+                    await FailConvergeAsync(cluster, diag, remainingSamples,
+                        $"финал: стагнация — {stagnantTicks} подряд успешных тика с неизменным "
+                        + $"partitions_remaining={bestRemaining} (дедуп RetrySubmitSec или затяжка ISR)");
+                }
+
                 await Task.Delay(3000, ct);
             }
 
