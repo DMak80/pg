@@ -99,10 +99,10 @@ public static class ValkeyPki
         var beginMarker = $"-----BEGIN {label}-----";
         var endMarker = $"-----END {label}-----";
         var start = pem.IndexOf(beginMarker, StringComparison.Ordinal);
-        if (start < 0) throw new ArgumentException($"PEM не содержит блока {label}");
+        if (start < 0) throw new ArgumentException($"PEM does not contain a {label} block");
         var bodyStart = start + beginMarker.Length;
         var end = pem.IndexOf(endMarker, bodyStart, StringComparison.Ordinal);
-        if (end < 0) throw new ArgumentException($"PEM не содержит конца блока {label}");
+        if (end < 0) throw new ArgumentException($"PEM does not contain the end of the {label} block");
         var base64 = new string(pem[bodyStart..end].Where(c => !char.IsWhiteSpace(c)).ToArray());
         return Convert.FromBase64String(base64);
     }

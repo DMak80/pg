@@ -59,7 +59,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             // соединение = один endpoint).
             if (!ValkeyPki.TryParseCertificate(ep.CaPem, out var ca) || ca is null)
                 return Result<T>.Failed(new ApplicationException(
-                    $"valkey {ep.Host}:{ep.Port}: ca_pem — невалидный PEM ({command[0]})"));
+                    $"valkey {ep.Host}:{ep.Port}: ca_pem is not a valid PEM ({command[0]})"));
             using (ca)
             {
                 // Валидатор — ЗАМЫКАНИЕ на распарсенный CA и ep.Host (не поле
@@ -105,7 +105,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         catch (OperationCanceledException ex)
         {
             return Result<T>.Failed(new TimeoutException(
-                $"valkey {ep.Host}:{ep.Port} не ответил за {_timeout.TotalSeconds:F1} c ({command[0]})", ex));
+                $"valkey {ep.Host}:{ep.Port} did not respond within {_timeout.TotalSeconds:F1} s ({command[0]})", ex));
         }
         catch (System.Security.Authentication.AuthenticationException ex)
         {
@@ -143,7 +143,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
     private static Result<T> FailedReply<T>(string command, object? reply)
         => reply is RespError error
             ? Result<T>.Failed(new ApplicationException($"{command}: {error.Message}"))
-            : Result<T>.Failed(new ApplicationException($"{command}: неожиданный ответ сервера"));
+            : Result<T>.Failed(new ApplicationException($"{command}: unexpected server reply"));
 
     // CONFIG GET → плоский массив [k1, v1, k2, v2…] (RESP2) → словарь;
     // null-элементы (bulk null) → пустая строка (ключ без значения не валиден).
@@ -232,7 +232,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
                 ':' => long.TryParse(await ReadLineAsync(stream, ct), out var n) ? n : 0, // integer
                 '$' => await ReadBulkAsync(stream, ct), // bulk string / null
                 '*' => await ReadArrayAsync(stream, ct), // array
-                _ => new RespError($"неизвестный тип RESP-кадра '{type}'"),
+                _ => new RespError($"unknown RESP frame type '{type}'"),
             };
         }
 
@@ -240,7 +240,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         {
             var line = await ReadLineAsync(stream, ct);
             if (!int.TryParse(line, out var size))
-                throw new ApplicationException($"RESP bulk: нечисловая длина '{line}'");
+                throw new ApplicationException($"RESP bulk: non-numeric length '{line}'");
             if (size < 0)
                 return null; // $-1 — bulk null
 
@@ -254,7 +254,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         {
             var line = await ReadLineAsync(stream, ct);
             if (!int.TryParse(line, out var count))
-                throw new ApplicationException($"RESP array: нечисловая длина '{line}'");
+                throw new ApplicationException($"RESP array: non-numeric length '{line}'");
 
             var items = new List<object?>(Math.Max(count, 0));
             for (var i = 0; i < count; i++)
@@ -282,7 +282,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         {
             var lf = await ReadByteAsync(stream, ct);
             if (lf != '\n')
-                throw new ApplicationException("RESP: ожидался \\n после \\r");
+                throw new ApplicationException("RESP: expected \\n after \\r");
         }
 
         // Терминатор bulk-данных: "\r\n" после ровно size байтов.
@@ -290,7 +290,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         {
             var cr = await ReadByteAsync(stream, ct);
             if (cr != '\r')
-                throw new ApplicationException("RESP: ожидался \\r после bulk-данных");
+                throw new ApplicationException("RESP: expected \\r after bulk data");
             await ExpectLFAsync(stream, ct);
         }
 
@@ -301,7 +301,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(offset..), ct);
                 if (read == 0)
-                    throw new ApplicationException("RESP: поток закрыт посреди кадра");
+                    throw new ApplicationException("RESP: stream closed mid-frame");
                 offset += read;
             }
         }
@@ -311,7 +311,7 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             var one = new byte[1];
             var read = await stream.ReadAsync(one, ct);
             if (read == 0)
-                throw new ApplicationException("RESP: поток закрыт посреди кадра");
+                throw new ApplicationException("RESP: stream closed mid-frame");
             return one[0];
         }
     }
