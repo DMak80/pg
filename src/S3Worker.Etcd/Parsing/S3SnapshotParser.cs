@@ -142,7 +142,7 @@ public static class S3SnapshotParser
         var errors = new List<string>();
         var config = ParseConfig(acc.ConfigRaw);
         if (acc.ConfigRaw is not null && config is null)
-            errors.Add("/config: битый JSON config");
+            errors.Add("/config: invalid JSON config");
 
         var links = ParseLinks(acc.LinksRaw, errors);
         var denyList = ParseDenyList(acc.DenyListRaw, errors);
@@ -257,7 +257,7 @@ public static class S3SnapshotParser
                 ReadString(root, "swarm_node"),
                 ReadLabels(root, "swarm_labels", err)));
         if (node.PlacementRaw is not null && placement is null)
-            errors.Add($"placement: битый JSON");
+            errors.Add($"placement: invalid JSON");
 
         var resources = ParseJson<S3NodeResources>(node.ResourcesRaw, (root, _) =>
             new S3NodeResources(
@@ -265,14 +265,14 @@ public static class S3SnapshotParser
                 ReadString(root, "mem"),
                 ReadString(root, "disk")));
         if (node.ResourcesRaw is not null && resources is null)
-            errors.Add($"resources: битый JSON");
+            errors.Add($"resources: invalid JSON");
 
         var usage = ParseJson<S3NodeUsage>(node.UsageRaw, (root, _) => new S3NodeUsage(
             ReadLong(root, "used_bytes") ?? 0,
             ReadLong(root, "total_bytes") ?? 0,
             ReadLong(root, "updated_unix") ?? 0));
         if (node.UsageRaw is not null && usage is null)
-            errors.Add($"usage: битый JSON");
+            errors.Add($"usage: invalid JSON");
 
         return new S3NodeSnapshot(
             node.Name,
