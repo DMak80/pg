@@ -59,14 +59,14 @@ public sealed class KafkaProbeLoop(
     {
         if (!kafkaOptions.Value.Enabled)
         {
-            logger.LogInformation("AdminPanel:Probes:Kafka: проба выключена — тик не запускается");
+            logger.LogInformation("AdminPanel:Probes:Kafka: probe disabled — tick not started");
             return;
         }
 
         var seconds = kafkaOptions.Value.IntervalSeconds;
         if (seconds <= 0)
         {
-            logger.LogWarning("AdminPanel:Probes:Kafka:IntervalSeconds <= 0 — использую 15 c");
+            logger.LogWarning("AdminPanel:Probes:Kafka:IntervalSeconds <= 0 — using 15 s");
             seconds = 15;
         }
 
@@ -110,7 +110,7 @@ public sealed class KafkaProbeLoop(
             {
                 results.Add(new ProbeResult(
                     cluster.Name, "kafka", false, null,
-                    $"{backoff.LastError}; backoff {backoff.ConsecutiveFailures} неудач подряд, следующая проба ~{backoff.NextAttemptUtc:HH:mm:ss}Z",
+                    $"{backoff.LastError}; backoff {backoff.ConsecutiveFailures} consecutive failures, next probe ~{backoff.NextAttemptUtc:HH:mm:ss}Z",
                     at));
                 continue;
             }
@@ -151,7 +151,7 @@ public sealed class KafkaProbeLoop(
         if (!secrets.Current.TryGetValue(cluster.Name, out var creds))
             return new KafkaProbeOutcome(null, new ProbeResult(
                 cluster.Name, "kafka", false, null,
-                "нет admin-кредов/CA кластера в etcd (премиграционный кластер или ensure не выполнен)", at));
+                "no admin creds/CA for the cluster in etcd (pre-migration cluster or ensure not run)", at));
 
         var view = await client.DescribeClusterAsync(
             bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, timeout, ct);
@@ -198,7 +198,7 @@ public sealed class KafkaProbeLoop(
         var delay = BackoffAfter(failures, interval);
         _backoff[cluster] = new ClusterBackoffState(failures, at + delay, error);
         logger.LogDebug(
-            "AdminPanel:Probes:Kafka: {Cluster} — {Failures} неудач подряд, следующая проба через {Delay}",
+            "AdminPanel:Probes:Kafka: {Cluster} — {Failures} consecutive failures, next probe in {Delay}",
             cluster, failures, delay);
     }
 

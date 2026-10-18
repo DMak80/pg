@@ -97,7 +97,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     // Вызов при выключенной грани — ошибка вызова, не транспорта (callers guard
     // IsConfigured; сюда можно попасть только в обход гварда).
     private static Result<T> NotConfigured<T>() => Result<T>.Failed(
-        new InvalidOperationException("S3 endpoint не задан — грань «Хранилище бэкапов» выключена"));
+        new InvalidOperationException("S3 endpoint not set — the «Backup Storage» facet is disabled"));
 
     // t36: перебор целей с первого доступного (list-семантика 02 §2.5) —
     // первая Success выигрывает; исчерпание — последняя ошибка (алерт

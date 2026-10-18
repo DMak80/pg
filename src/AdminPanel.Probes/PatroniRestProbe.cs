@@ -52,7 +52,7 @@ public sealed class PatroniRestProbe(
             var latency = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var entry = PatroniClusterParser.Parse(json).FirstOrDefault(m => m.Name == member.Name)
                 ?? throw new PatroniProbeException(
-                    $"member {member.Name} не найден в ответе /cluster scope {scope.Scope}");
+                    $"member {member.Name} not found in /cluster reply of scope {scope.Scope}");
 
             return new PatroniMemberResult(
                 new HaMemberProbe(entry.Role, entry.State, entry.Timeline, entry.LagBytes, at, null),

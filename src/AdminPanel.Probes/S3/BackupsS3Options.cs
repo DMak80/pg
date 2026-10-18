@@ -33,19 +33,19 @@ public class BackupsS3Options
             return;
         if (string.IsNullOrWhiteSpace(S3.Bucket))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:Bucket пуст при заданных Endpoint/Endpoints");
+                "AdminPanel:Backups:S3:Bucket is empty while Endpoint/Endpoints are set");
         if (string.IsNullOrWhiteSpace(S3.AccessKey))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:AccessKey пуст при заданных Endpoint/Endpoints");
+                "AdminPanel:Backups:S3:AccessKey is empty while Endpoint/Endpoints are set");
         if (string.IsNullOrWhiteSpace(S3.SecretKey))
             throw new InvalidOperationException(
-                "AdminPanel:Backups:S3:SecretKey пуст при заданных Endpoint/Endpoints");
+                "AdminPanel:Backups:S3:SecretKey is empty while Endpoint/Endpoints are set");
         if (IntervalSec <= 0)
             throw new InvalidOperationException(
-                "AdminPanel:Backups:IntervalSec <= 0 при заданных Endpoint/Endpoints");
+                "AdminPanel:Backups:IntervalSec <= 0 while Endpoint/Endpoints are set");
         if (TimeoutSec <= 0)
             throw new InvalidOperationException(
-                "AdminPanel:Backups:TimeoutSec <= 0 при заданных Endpoint/Endpoints");
+                "AdminPanel:Backups:TimeoutSec <= 0 while Endpoint/Endpoints are set");
     }
 
     public sealed class S3Options

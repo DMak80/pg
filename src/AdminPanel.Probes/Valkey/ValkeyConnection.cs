@@ -22,13 +22,13 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         // Failed с диагнозом (алерт valkey-security-missing подхватит HasCaPem=false).
         if (target.CaPem is null)
             return Shared.Core.Result.Failed(new ApplicationException(
-                $"valkey {target.Host}:{target.Port}: нет ca_pem — TLS-проба невозможна (миграция t06 не доиграна?)"));
+                $"valkey {target.Host}:{target.Port}: no ca_pem — TLS probe impossible (t06 migration incomplete?)"));
 
         // Мини-парсер PEM: панель не ссылается на ValkeyWorker.Core; битый PEM →
         // Failed (толерантность как у кредов, arch/02 §11.1).
         if (!TryParseCertificate(target.CaPem, out var ca) || ca is null)
             return Shared.Core.Result.Failed(new ApplicationException(
-                $"valkey {target.Host}:{target.Port}: ca_pem — невалидный PEM (PING)"));
+                $"valkey {target.Host}:{target.Port}: ca_pem — invalid PEM (PING)"));
 
         try
         {
@@ -76,7 +76,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         catch (OperationCanceledException ex)
         {
             return Shared.Core.Result.Failed(new TimeoutException(
-                $"valkey {target.Host}:{target.Port} не ответил за {timeout.TotalSeconds:F1} c (PING)", ex));
+                $"valkey {target.Host}:{target.Port} did not respond within {timeout.TotalSeconds:F1} s (PING)", ex));
         }
         catch (System.Security.Authentication.AuthenticationException ex)
         {
@@ -130,7 +130,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
             var bodyStart = start < 0 ? -1 : start + begin.Length;
             var stop = bodyStart < 0 ? -1 : pem.IndexOf(end, bodyStart, StringComparison.Ordinal);
             if (stop < 0)
-                throw new FormatException("PEM не содержит блока CERTIFICATE");
+                throw new FormatException("PEM does not contain a CERTIFICATE block");
             var base64 = new string(pem[bodyStart..stop].Where(c => !char.IsWhiteSpace(c)).ToArray());
             certificate = X509CertificateLoader.LoadCertificate(Convert.FromBase64String(base64));
             return true;
@@ -146,7 +146,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         => reply is RespError error
             ? Shared.Core.Result.Failed(new ApplicationException($"{command}: {error.Message}"))
             : Shared.Core.Result.Failed(new ApplicationException(
-                $"{command}: valkey {target.Host}:{target.Port} — неожиданный ответ сервера"));
+                $"{command}: valkey {target.Host}:{target.Port} — unexpected server reply"));
 
     /// <summary>Ошибка протокола (-ERR…): отдельный тип — клиент переводит в Failed.</summary>
     internal sealed record RespError(string Message);
@@ -185,7 +185,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
                 ':' => long.TryParse(await ReadLineAsync(stream, ct), out var n) ? n : 0, // integer
                 '$' => await ReadBulkAsync(stream, ct), // bulk string / null
                 '*' => await ReadArrayAsync(stream, ct), // array
-                _ => new RespError($"неизвестный тип RESP-кадра '{type}'"),
+                _ => new RespError($"unknown RESP frame type '{type}'"),
             };
         }
 
@@ -193,7 +193,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         {
             var line = await ReadLineAsync(stream, ct);
             if (!int.TryParse(line, out var size))
-                throw new ApplicationException($"RESP bulk: нечисловая длина '{line}'");
+                throw new ApplicationException($"RESP bulk: non-numeric length '{line}'");
             if (size < 0)
                 return null; // $-1 — bulk null
 
@@ -207,7 +207,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         {
             var line = await ReadLineAsync(stream, ct);
             if (!int.TryParse(line, out var count))
-                throw new ApplicationException($"RESP array: нечисловая длина '{line}'");
+                throw new ApplicationException($"RESP array: non-numeric length '{line}'");
 
             var items = new List<object?>(Math.Max(count, 0));
             for (var i = 0; i < count; i++)
@@ -235,7 +235,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         {
             var lf = await ReadByteAsync(stream, ct);
             if (lf != '\n')
-                throw new ApplicationException("RESP: ожидался \\n после \\r");
+                throw new ApplicationException("RESP: expected \\n after \\r");
         }
 
         // Терминатор bulk-данных: "\r\n" после ровно size байтов.
@@ -243,7 +243,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
         {
             var cr = await ReadByteAsync(stream, ct);
             if (cr != '\r')
-                throw new ApplicationException("RESP: ожидался \\r после bulk-данных");
+                throw new ApplicationException("RESP: expected \\r after bulk data");
             await ExpectLFAsync(stream, ct);
         }
 
@@ -254,7 +254,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(offset..), ct);
                 if (read == 0)
-                    throw new ApplicationException("RESP: поток закрыт посреди кадра");
+                    throw new ApplicationException("RESP: stream closed mid-frame");
                 offset += read;
             }
         }
@@ -264,7 +264,7 @@ public sealed class ValkeyConnection : IValkeyProbeClient
             var one = new byte[1];
             var read = await stream.ReadAsync(one, ct);
             if (read == 0)
-                throw new ApplicationException("RESP: поток закрыт посреди кадра");
+                throw new ApplicationException("RESP: stream closed mid-frame");
             return one[0];
         }
     }

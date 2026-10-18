@@ -26,7 +26,7 @@ public static class ModuleExtensions
                 if (seconds <= 0)
                 {
                     sp.GetRequiredService<ILogger<PatroniRestProbe>>()
-                       .LogWarning("AdminPanel:Probes:TimeoutSeconds <= 0 — использую 3 c");
+                       .LogWarning("AdminPanel:Probes:TimeoutSeconds <= 0 — using 3 s");
                     seconds = 3;
                 }
 

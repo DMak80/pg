@@ -23,7 +23,7 @@ public sealed class S3InventoryLoop(
         if (!options.Value.IsConfigured)
         {
             logger.LogInformation(
-                "AdminPanel:Backups:S3:Endpoint не задан — S3-грань выключена, инвентарь-тик не запускается");
+                "AdminPanel:Backups:S3:Endpoint not set — S3 facet disabled, inventory tick not started");
             return;
         }
 
@@ -106,7 +106,7 @@ public sealed class S3InventoryLoop(
 
             var inventory = S3Inventory.Build(objects);
             logger.LogInformation(
-                "AdminPanel:Backups: S3-инвентарь обновлён — {Clusters} кластеров, {Bytes} байт, {Objects} объектов",
+                "AdminPanel:Backups: S3 inventory updated — {Clusters} clusters, {Bytes} bytes, {Objects} objects",
                 inventory.Clusters.Count, inventory.UsedBytes, inventory.ObjectCount);
 
             store.Replace(new S3StorageInfo(
@@ -128,7 +128,7 @@ public sealed class S3InventoryLoop(
     {
         var previous = store.Current;
         logger.LogWarning(
-            "AdminPanel:Backups: S3-инвентарь-тик не удался ({Failures} подряд): {Error}",
+            "AdminPanel:Backups: S3 inventory tick failed ({Failures} in a row): {Error}",
             (previous?.ConsecutiveFailures ?? 0) + 1, message);
         store.Replace(
             previous is null

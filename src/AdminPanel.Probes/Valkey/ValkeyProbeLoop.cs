@@ -43,14 +43,14 @@ public sealed class ValkeyProbeLoop(
         var valkey = probesOptions.Value.Valkey;
         if (!valkey.Enabled)
         {
-            logger.LogInformation("AdminPanel:Probes:Valkey: проба выключена — тик не запускается");
+            logger.LogInformation("AdminPanel:Probes:Valkey: probe disabled — tick not started");
             return;
         }
 
         var seconds = valkey.IntervalSec;
         if (seconds <= 0)
         {
-            logger.LogWarning("AdminPanel:Probes:Valkey:IntervalSec <= 0 — использую 15 c");
+            logger.LogWarning("AdminPanel:Probes:Valkey:IntervalSec <= 0 — using 15 s");
             seconds = 15;
         }
 

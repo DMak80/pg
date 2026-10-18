@@ -25,14 +25,14 @@ public sealed class ProbeOrchestrator(
         if (!value.PatroniEnabled && !value.SqlEnabled)
         {
             // Обе пробы выключены — цикл не нужен (spec §3.15); hosted-регистрация остаётся.
-            logger.LogInformation("AdminPanel:Probes: обе пробы выключены — тик проб не запускается");
+            logger.LogInformation("AdminPanel:Probes: both probes disabled — probe tick not started");
             return;
         }
 
         var seconds = value.IntervalSeconds;
         if (seconds <= 0)
         {
-            logger.LogWarning("AdminPanel:Probes:IntervalSeconds <= 0 — использую 15 c");
+            logger.LogWarning("AdminPanel:Probes:IntervalSeconds <= 0 — using 15 s");
             seconds = 15;
         }
 
