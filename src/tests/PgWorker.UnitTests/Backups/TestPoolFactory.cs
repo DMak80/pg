@@ -26,7 +26,7 @@ public static class TestPoolFactory
             store, secrets,
             () => "pgworker-backups", () => null, TimeSpan.FromSeconds(5),
             targetFactory: _ => throw new NotSupportedException(
-                "the unit scenario of the S3 operations planner does not execute));
+                "the unit scenario of the S3 operations planner does not execute"));
     }
 
     private sealed class FixedPoolStore(S3Pool? pool) : IS3PoolStore
