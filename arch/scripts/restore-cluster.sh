@@ -52,8 +52,8 @@ EOF
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   local a=""
-  read -rp "$1 [введите YES]: " a
-  [ "${a:-}" = "YES" ] || { echo "Отменено."; exit 1; }
+  read -rp "$1 [type YES]: " a
+  [ "${a:-}" = "YES" ] || { echo "Cancelled."; exit 1; }
 }
 
 # ── сбор фактов: схемы bucket_* на шардах кластера ────────────────────────────
@@ -65,7 +65,7 @@ gather_facts() {
   for s in $(cluster_shards); do
     dsn="$(shard_dsn "$s")"
     [ "$(poll_scalar "$dsn" 'SELECT 1' 3)" = "1" ] \
-      || { err "шард '$s' недоступен — сверка с неполной картиной невозможна"; exit 3; }
+      || { err "shard '$s' is unreachable — cannot reconcile with an incomplete picture"; exit 3; }
     while IFS= read -r sch; do
       [ -n "$sch" ] || continue
       FACTS="${FACTS}${s} ${sch}
@@ -115,9 +115,9 @@ cmd_verify() {
   local n i b line cls owner target state hs bad=0 ok=0 copies=0
   etcd_alive
   [ -n "$(cluster_config)" ] \
-    || { err "кластер '$CLUSTER_NAME' не инициализирован (нет $(config_key))"; exit 3; }
+    || { err "cluster '$CLUSTER_NAME' is not initialized ($(config_key) missing)"; exit 3; }
   n="$(cfg_field buckets)"
-  step "P12: сверка карты etcd с фактом — кластер '$CLUSTER_NAME' (N=$n, шарды: $(cluster_shards | paste -sd, -))"
+  step "P12: reconciling the etcd map with reality — cluster '$CLUSTER_NAME' (N=$n, shards: $(cluster_shards | paste -sd, -))"
   gather_facts
 
   for i in $(seq 0 $((n - 1))); do
@@ -127,25 +127,25 @@ cmd_verify() {
     case "$cls" in
       OK) ok=$((ok + 1)) ;;
       HEAL_CREATE)
-        echo "  ❌ $b: routing НЕТ — схема на '$hs'. Чинится автоматически: $0 --cluster $CLUSTER_NAME heal"
+        echo "  ❌ $b: no routing — the schema is on '$hs'. Fixed automatically: $0 --cluster $CLUSTER_NAME heal"
         bad=$((bad + 1)) ;;
       HEAL_REDIRECT)
-        echo "  ❌ $b: routing='$owner', схемы там НЕТ — схема на '$hs'. Чинится автоматически: heal (routing → $hs)"
+        echo "  ❌ $b: routing='$owner', no schema there — the schema is on '$hs'. Fixed automatically: heal (routing → $hs)"
         bad=$((bad + 1)) ;;
       NO_DATA)
-        echo "  ❌ $b: схемы НЕТ нигде (routing='${owner:-нет}') — данных нет: восстановливай шард из бэкапа (08-operations.md), потом heal"
+        echo "  ❌ $b: no schema anywhere (routing='${owner:-none}') — no data: restore the shard from a backup (08-operations.md), then heal"
         bad=$((bad + 1)) ;;
       AMBIG)
-        echo "  ❌ $b: схема на: $hs (routing='${owner:-нет}') — окно переезда (restore из ДО-flip снапшота?). Руками: move --resume / abort-move abort (P7)"
+        echo "  ❌ $b: schema on: $hs (routing='${owner:-none}') — move window (restored from a PRE-flip snapshot?). Manually: move --resume / abort-move abort (P7)"
         bad=$((bad + 1)) ;;
       MOVE_WIN)
-        echo "  ⚠️ $b: прерванный переезд ($state, → '$target', владелец '$owner'): move --to $target --resume или abort-move abort"
+        echo "  ⚠️ $b: interrupted move ($state, → '$target', owner '$owner'): move --to $target --resume or abort-move abort"
         copies=$((copies + 1)) ;;
       COPY_LEFT)
-        echo "  ⚠️ $b: копия на: $hs — пост-flip остаток: finalize --old-shard <шард из списка>"
+        echo "  ⚠️ $b: copy on: $hs — post-flip leftover: finalize --old-shard <a shard from the list>"
         copies=$((copies + 1)) ;;
       STUCK_STATUS)
-        echo "  ⚠️ $b: статус $state завис, routing уже = target '$target': abort-move abort --force (доведение перевода, P7)"
+        echo "  ⚠️ $b: status $state stuck, routing already = target '$target': abort-move abort --force (catch-up completion, P7)"
         copies=$((copies + 1)) ;;
     esac
   done
@@ -156,13 +156,13 @@ cmd_verify() {
     case "$b" in
       bucket_[0-9]*)
         [[ "${b#bucket_}" =~ ^[0-9]+$ ]] && [ "${b#bucket_}" -ge "$n" ] \
-          && echo "  ⚠️ схема '$b' вне диапазона 0..$((n - 1)) (N поменяли? P18) — проверь руками" ;;
+          && echo "  ⚠️ schema '$b' is outside the 0..$((n - 1)) range (N changed? P18) — check manually" ;;
     esac
   done <<<"$(awk '{print $2}' <<<"$FACTS" | sort -u)"
   echo
-  echo "Итог: согласовано $ok/$n; расхождений: $bad; ситуаций переездов: $copies"
+  echo "Summary: consistent $ok/$n; mismatches: $bad; move situations: $copies"
   [ "$bad" = 0 ] || return 1
-  info "карта кластера согласована с фактом"
+  info "the cluster map is consistent with reality"
 }
 
 # ── heal ──────────────────────────────────────────────────────────────────────
@@ -186,9 +186,9 @@ cmd_heal() {
   local n i b line cls owner hs plan="" cnt=0
   etcd_alive
   [ -n "$(cluster_config)" ] \
-    || { err "кластер '$CLUSTER_NAME' не инициализирован (нет $(config_key))"; exit 3; }
+    || { err "cluster '$CLUSTER_NAME' is not initialized ($(config_key) missing)"; exit 3; }
   n="$(cfg_field buckets)"
-  step "P12: автоприведение карты — кластер '$CLUSTER_NAME' (однозначные случаи)"
+  step "P12: auto-healing the map — cluster '$CLUSTER_NAME' (unambiguous cases)"
   gather_facts
 
   for i in $(seq 0 $((n - 1))); do
@@ -197,31 +197,31 @@ cmd_heal() {
     IFS='|' read -r cls owner _ _ hs <<<"$line"
     case "$cls" in
       HEAL_CREATE)
-        plan="${plan}  $b: routing НЕТ → $hs
+        plan="${plan}  $b: no routing → $hs
 "; cnt=$((cnt + 1)) ;;
       HEAL_REDIRECT)
-        plan="${plan}  $b: $owner → $hs (схемы на '$owner' нет)
+        plan="${plan}  $b: $owner → $hs (no schema on '$owner')
 "; cnt=$((cnt + 1)) ;;
     esac
   done
 
-  [ "$cnt" -gt 0 ] || { info "однозначных расхождений нет — чинить нечего (см. verify)"; return 0; }
+  [ "$cnt" -gt 0 ] || { info "no unambiguous mismatches — nothing to fix (see verify)"; return 0; }
   echo "$plan"
-  confirm "Переписать routing для $cnt бакета(ов)? (журнал — $(cluster_root)/heals/*)"
+  confirm "Rewrite routing for $cnt bucket(s)? (journal — $(cluster_root)/heals/*)"
   for i in $(seq 0 $((n - 1))); do
     b="bucket_$i"
     line="$(scan_bucket "$b")"
     IFS='|' read -r cls owner _ _ hs <<<"$line"
     case "$cls" in
       HEAL_CREATE)
-        heal_tx "$b" "-" "$hs" && info "$b: routing → $hs (создан)" \
-          || err "$b: routing появился под руками — пропущено, перезапусти verify" ;;
+        heal_tx "$b" "-" "$hs" && info "$b: routing → $hs (created)" \
+          || err "$b: routing appeared underneath — skipped, rerun verify" ;;
       HEAL_REDIRECT)
         heal_tx "$b" "$owner" "$hs" && info "$b: routing $owner → $hs" \
-          || err "$b: routing изменился под руками — пропущено, перезапусти verify" ;;
+          || err "$b: routing changed underneath — skipped, rerun verify" ;;
     esac
   done
-  echo "Повтори сверку: $0 --cluster $CLUSTER_NAME verify"
+  echo "Re-run the check: $0 --cluster $CLUSTER_NAME verify"
 }
 
 # ── snapshot ──────────────────────────────────────────────────────────────────
@@ -234,19 +234,19 @@ cmd_snapshot() {
 cmd_restore() {
   local f="$SNAPFILE" sd="${STAND_DIR:-$(cd "$SCRIPT_DIR/../stand" 2>/dev/null && pwd)}"
   [ -n "$f" ] || usage
-  [ -r "$f" ] || { err "файл '$f' не читается"; exit 2; }
+  [ -r "$f" ] || { err "file '$f' is not readable"; exit 2; }
 
   if command -v docker >/dev/null 2>&1 && [ -n "${sd:-}" ] && [ -f "$sd/docker-compose.yml" ]; then
     local img vname
     img="$(awk '/image: .*etcd/ {print $2; exit}' "$sd/docker-compose.yml")"
     vname="$(awk '/^name:/ {print $2; exit}' "$sd/docker-compose.yml")_etcd-data"
-    [ -n "$img" ] || { err "не найти образ etcd в $sd/docker-compose.yml"; exit 9; }
-    step "P12: восстановление etcd стенда из $(basename "$f")"
-    echo "  статус снапшота:"
+    [ -n "$img" ] || { err "cannot find the etcd image in $sd/docker-compose.yml"; exit 9; }
+    step "P12: restoring the stand's etcd from $(basename "$f")"
+    echo "  snapshot status:"
     docker run --rm -v "$(cd "$(dirname "$f")" && pwd)":/snap:ro "$img" \
-      etcdctl snapshot status "/snap/$(basename "$f")" || { err "снапшот битый"; exit 3; }
-    echo "  ⚠️ Весь etcd (ВСЕ кластеры стенда) вернётся к моменту снятия снапшота."
-    confirm "Остановить etcd, пересоздать data-dir из снапшота?"
+      etcdctl snapshot status "/snap/$(basename "$f")" || { err "the snapshot is corrupt"; exit 3; }
+    echo "  ⚠️ The whole etcd (ALL clusters of the stand) will revert to the snapshot moment."
+    confirm "Stop etcd and recreate the data-dir from the snapshot?"
     # контейнер именно УДАЛЯЕМ (rm -sf), не stop: volume занят даже
     # остановленным контейнером и не удалится
     docker compose --project-directory "$sd" rm -sf etcd >/dev/null
@@ -259,19 +259,19 @@ cmd_restore() {
       docker exec etcd etcdctl --endpoints=http://localhost:2379 endpoint health >/dev/null 2>&1 && { ok=1; break; }
       sleep 1
     done
-    [ -n "$ok" ] || { err "etcd не поднялся после restore"; exit 3; }
-    info "etcd поднят из снапшота; дальше из ops-бокса: restore-cluster.sh verify → heal"
+    [ -n "$ok" ] || { err "etcd did not come up after restore"; exit 3; }
+    info "etcd is up from the snapshot; next, from the ops box: restore-cluster.sh verify → heal"
   else
-    step "P12: процедура восстановления etcd (прод-хост; выполняется админом etcd)"
+    step "P12: etcd restore procedure (prod host; performed by the etcd admin)"
     cat <<EOF
-  1) проверить снапшот:      etcdctl snapshot status $f
-  2) развернуть в НОВЫЙ каталог (не поверх живого data-dir!):
+  1) check the snapshot:      etcdctl snapshot status $f
+  2) restore into a NEW directory (never over the live data-dir!):
        etcdctl snapshot restore $f --data-dir /var/lib/etcd-restored
-  3) остановить etcd, подменить data-dir (старый сохранить), запустить
-     (04-deploy-etcd.md; для кластера 3+ нод — restore на ОДНОЙ, остальные
-     добавляются как new members через etcdctl member add)
-  ⚠️ Снапшот вернёт ВСЕ кластеры этого etcd к моменту снятия.
-  4) сверить карту с фактом и починить однозначное:
+  3) stop etcd, swap the data-dir (keep the old one), start
+     (04-deploy-etcd.md; for a 3+ node cluster — restore on ONE node, the others
+     are added as new members via etcdctl member add)
+  ⚠️ The snapshot reverts ALL clusters of this etcd to the snapshot moment.
+  4) reconcile the map with reality and fix the unambiguous cases:
        $0 --cluster $CLUSTER_NAME verify
        $0 --cluster $CLUSTER_NAME heal
 EOF
@@ -302,7 +302,7 @@ done
 # restore не привязан к кластеру (физический уровень etcd); остальные — да
 if [ "$CMD" != "restore" ]; then
   [ -n "$CLUSTER" ] && cluster_set "$CLUSTER"
-  [ -n "${CLUSTER_NAME:-}" ] || { err "кластер не задан: --cluster или CLUSTER_NAME в buckets.env"; exit 9; }
+  [ -n "${CLUSTER_NAME:-}" ] || { err "cluster not set: --cluster or CLUSTER_NAME in buckets.env"; exit 9; }
   require_bins psql jq etcdctl
 fi
 

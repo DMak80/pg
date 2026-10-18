@@ -30,7 +30,7 @@ ip()  { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{en
 # basebackup создаст заново). Пропускаем, если s2b уже живая реплика.
 if [ "$(docker inspect -f '{{.State.Running}}' s2b 2>/dev/null)" != "true" ] \
    || [ "$(docker exec s2b psql -U postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" != "t" ]; then
-  echo ">>> Arrange: пересоздаю s2b (реплика s2a, sync-standby)"
+  echo ">>> Arrange: recreating s2b (a replica of s2a, sync-standby)"
   docker compose rm -sf hc2b s2b >/dev/null 2>&1 || true
   dropped=""
   for i in $(seq 1 15); do
@@ -41,7 +41,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' s2b 2>/dev/null)" != "true" ] \
       && { dropped=1; break; }
     sleep 1
   done
-  [ -n "$dropped" ] || { echo "❌ не срезать слот s2b_phys на s2a"; exit 1; }
+  [ -n "$dropped" ] || { echo "❌ cannot drop the s2b_phys slot on s2a"; exit 1; }
   docker compose up -d s2b hc2b >/dev/null 2>&1
   until docker exec s2b pg_isready -U postgres -q 2>/dev/null; do sleep 2; done
   until [ "$(docker exec s2b psql -U postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "t" ]; do
@@ -54,11 +54,11 @@ for i in $(seq 1 60); do
   st="$(h2 -c "select sync_state from pg_stat_replication where application_name='s2b'" 2>/dev/null || true)"
   [ "$st" = "sync" ] && break; sleep 1
 done
-[ "$st" = "sync" ] || { echo "❌ s2b не вернулась sync-standby (P8-предусловие)"; exit 1; }
-echo "  s2: sync-standby s2b жив"
+[ "$st" = "sync" ] || { echo "❌ s2b did not return as sync-standby (P8 precondition)"; exit 1; }
+echo "  s2: sync-standby s2b is alive"
 
 # ═══ Arrange 1: чистка хвостов прошлого прогона ═══════════════════════════════
-echo ">>> Arrange: чистка хвостов (кластеры alpha/beta, схемы bucket_0..7, БД beta)"
+echo ">>> Arrange: tail cleanup (alpha/beta clusters, bucket_0..7 schemas, the beta DB)"
 ect del /clusters/alpha --prefix >/dev/null 2>&1 || true
 ect del /clusters/beta  --prefix >/dev/null 2>&1 || true
 h1 -c "DROP SCHEMA IF EXISTS bucket_0 CASCADE; DROP SCHEMA IF EXISTS bucket_1 CASCADE; DROP SCHEMA IF EXISTS bucket_2 CASCADE; DROP SCHEMA IF EXISTS bucket_3 CASCADE;
@@ -73,106 +73,106 @@ h1 -c "CREATE DATABASE beta;" >/dev/null
 h2 -c "CREATE DATABASE beta;" >/dev/null
 
 # ═══ Act 1: init alpha ════════════════════════════════════════════════════════
-echo ">>> Act 1: init-cluster.sh --cluster alpha (2 шарда, N=8, dbname=postgres)"
+echo ">>> Act 1: init-cluster.sh --cluster alpha (2 shards, N=8, dbname=postgres)"
 ops init-cluster.sh --cluster alpha --buckets 8 --dbname postgres --replicas 1 --yes \
      --shard "s1=host=hap1 port=5432 dbname=postgres user=postgres" \
      --shard "s2=host=hap2 port=5432 dbname=postgres user=postgres" \
      2>&1 | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 
-echo ">>> Assert 1: config (константы), dsn/replicas шардов, routing поровну 4/4"
+echo ">>> Assert 1: config (constants), shard dsn/replicas, routing even 4/4"
 cfg="$(ect get /clusters/alpha/config --print-value-only)"
 echo "$cfg" | jq -e '.buckets == 8 and .dbname == "postgres"' >/dev/null \
-  || { echo "❌ config неверен: $cfg"; exit 1; }
+  || { echo "❌ wrong config: $cfg"; exit 1; }
 [ "$(ect get /clusters/alpha/shards/s1/dsn --print-value-only)" = "host=hap1 port=5432 dbname=postgres user=postgres" ] \
-  || { echo "❌ dsn s1 не записан/с паролем"; exit 1; }
+  || { echo "❌ s1 dsn not written / contains a password"; exit 1; }
 [ "$(ect get /clusters/alpha/shards/s1/replicas --print-value-only)" = "1" ] \
   || { echo "❌ replicas s1 != 1"; exit 1; }
 dist="$(ect get /clusters/alpha/buckets/routing/ --prefix --print-value-only | sort | uniq -c | awk '{print $2":"$1}' | sort | tr '\n' ' ')"
-[ "$dist" = "s1:4 s2:4 " ] || { echo "❌ распределение не 4/4: $dist"; exit 1; }
+[ "$dist" = "s1:4 s2:4 " ] || { echo "❌ distribution is not 4/4: $dist"; exit 1; }
 echo "  routing: $dist"
 # round-robin строго чередуется: bucket_0→s1, bucket_1→s2, ...
 [ "$(ect get /clusters/alpha/buckets/routing/bucket_0 --print-value-only)" = "s1" ] \
   && [ "$(ect get /clusters/alpha/buckets/routing/bucket_1 --print-value-only)" = "s2" ] \
-  || { echo "❌ round-robin нарушен"; exit 1; }
+  || { echo "❌ round-robin violated"; exit 1; }
 for i in 0 2 4 6; do
-  [ "$(h1 -c "SELECT to_regnamespace('bucket_$i') IS NOT NULL")" = "t" ] || { echo "❌ схемы bucket_$i нет на s1"; exit 1; }
+  [ "$(h1 -c "SELECT to_regnamespace('bucket_$i') IS NOT NULL")" = "t" ] || { echo "❌ schema bucket_$i missing on s1"; exit 1; }
 done
 for i in 1 3 5 7; do
-  [ "$(h2 -c "SELECT to_regnamespace('bucket_$i') IS NOT NULL")" = "t" ] || { echo "❌ схемы bucket_$i нет на s2"; exit 1; }
+  [ "$(h2 -c "SELECT to_regnamespace('bucket_$i') IS NOT NULL")" = "t" ] || { echo "❌ schema bucket_$i missing on s2"; exit 1; }
 done
-echo "  схемы: s1=bucket_0,2,4,6; s2=bucket_1,3,5,7; USAGE app_role: $(h1 -c "SELECT count(*) FROM pg_namespace n WHERE n.nspname ~ '^bucket_[0-7]$' AND has_schema_privilege('app_role', n.oid, 'USAGE')")/4"
+echo "  schemas: s1=bucket_0,2,4,6; s2=bucket_1,3,5,7; USAGE for app_role: $(h1 -c "SELECT count(*) FROM pg_namespace n WHERE n.nspname ~ '^bucket_[0-7]$' AND has_schema_privilege('app_role', n.oid, 'USAGE')")/4"
 
 # ═══ Act 2: повторный init → отказ ════════════════════════════════════════════
-echo ">>> Act 2: повторный init alpha → отказ (константы неизменяемы, P18)"
+echo ">>> Act 2: repeated init alpha → refusal (constants are immutable, P18)"
 if ops init-cluster.sh --cluster alpha --buckets 8 --dbname postgres --yes \
      --shard "s1=host=hap1 port=5432 dbname=postgres user=postgres" \
      >logs/72-reinit.log 2>&1; then
-  echo "❌ повторный init должен отказаться"; exit 1
+  echo "❌ repeated init must refuse"; exit 1
 fi
-grep -q "уже инициализирован" logs/72-reinit.log || { echo "❌ неожиданный отказ:"; cat logs/72-reinit.log; exit 1; }
-echo "  отказ: $(grep -o 'уже инициализирован' logs/72-reinit.log | head -1) ✓"
+grep -q "already initialized" logs/72-reinit.log || { echo "❌ unexpected refusal:"; cat logs/72-reinit.log; exit 1; }
+echo "  refusal: $(grep -o 'already initialized' logs/72-reinit.log | head -1) ✓"
 
 # ═══ Act 3: init beta на том же etcd → изоляция кластеров ═════════════════════
-echo ">>> Act 3: init-cluster.sh --cluster beta (N=4, dbname=beta) на том же etcd"
+echo ">>> Act 3: init-cluster.sh --cluster beta (N=4, dbname=beta) on the same etcd"
 routing_alpha_before="$(ect get /clusters/alpha/buckets/routing/ --prefix | md5)"
 ops init-cluster.sh --cluster beta --buckets 4 --dbname beta --replicas 1 --yes \
      --shard "s1=host=hap1 port=5432 dbname=beta user=postgres" \
      --shard "s2=host=hap2 port=5432 dbname=beta user=postgres" \
      2>&1 | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-echo ">>> Assert 3: beta живёт в своей БД, alpha не задета"
+echo ">>> Assert 3: beta lives in its own DB, alpha untouched"
 [ "$(ect get /clusters/beta/config --print-value-only | jq -r .dbname)" = "beta" ] \
-  || { echo "❌ config beta неверен"; exit 1; }
+  || { echo "❌ wrong beta config"; exit 1; }
 [ "$(hb1 -c "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'bucket_%'")" = "2" ] \
-  || { echo "❌ бакеты beta не в БД beta"; exit 1; }
+  || { echo "❌ beta buckets are not in the beta DB"; exit 1; }
 routing_alpha_after="$(ect get /clusters/alpha/buckets/routing/ --prefix | md5)"
 [ "$routing_alpha_before" = "$routing_alpha_after" ] \
-  || { echo "❌ routing alpha изменился при init beta"; exit 1; }
+  || { echo "❌ alpha routing changed during beta init"; exit 1; }
 [ "$(h1 -c "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'bucket_%' AND nspname ~ '^bucket_[0-7]$'")" = "4" ] \
-  || { echo "❌ схемы alpha в postgres задеты"; exit 1; }
-echo "  beta: схемы в БД beta; alpha routing/схемы нетронуты ✓"
+  || { echo "❌ alpha schemas in postgres were touched"; exit 1; }
+echo "  beta: schemas in the beta DB; alpha routing/schemas untouched ✓"
 
 # ═══ Act 4: add-shard (пустой) + негатив create-bucket вне диапазона ══════════
-echo ">>> Act 4: add-shard.sh s1x → пустой шард"
+echo ">>> Act 4: add-shard.sh s1x → an empty shard"
 ops add-shard.sh --cluster alpha s1x --dsn 'host=hap1 port=5432 dbname=postgres user=postgres' \
      2>&1 | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-[ -n "$(ect get /clusters/alpha/shards/s1x/dsn --print-value-only)" ] || { echo "❌ s1x не зарегистрирован"; exit 1; }
+[ -n "$(ect get /clusters/alpha/shards/s1x/dsn --print-value-only)" ] || { echo "❌ s1x not registered"; exit 1; }
 dist2="$(ect get /clusters/alpha/buckets/routing/ --prefix --print-value-only | sort | uniq -c | awk '{print $2":"$1}' | sort | tr '\n' ' ')"
-[ "$dist2" = "s1:4 s2:4 " ] || { echo "❌ add-shard тронул routing: $dist2"; exit 1; }
-echo "  s1x зарегистрирован, бакеты не двигались ✓"
+[ "$dist2" = "s1:4 s2:4 " ] || { echo "❌ add-shard touched routing: $dist2"; exit 1; }
+echo "  s1x registered, buckets not moved ✓"
 if ops create-bucket.sh --cluster alpha bucket_99 --shard s1 >logs/72-create99.log 2>&1; then
-  echo "❌ create-bucket вне диапазона должен отказаться"; exit 1
+  echo "❌ create-bucket outside the range must refuse"; exit 1
 fi
-grep -q "вне диапазона" logs/72-create99.log || { echo "❌ неожиданный отказ create-bucket:"; cat logs/72-create99.log; exit 1; }
-echo "  create-bucket bucket_99 (N=8) → отказ ✓"
+grep -q "outside cluster" logs/72-create99.log || { echo "❌ unexpected create-bucket refusal:"; cat logs/72-create99.log; exit 1; }
+echo "  create-bucket bucket_99 (N=8) → refusal ✓"
 
 # ═══ Act 5: move bucket_0 s1 → s2 ═════════════════════════════════════════════
-echo ">>> Act 5: move-bucket.sh --cluster alpha move bucket_0 --to s2 (пустой бакет, полный cutover)"
+echo ">>> Act 5: move-bucket.sh --cluster alpha move bucket_0 --to s2 (an empty bucket, full cutover)"
 ops move-bucket.sh --cluster alpha move bucket_0 --to s2 --yes --skip-reverse \
      2>&1 | tee logs/72-move.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 [ "$(ect get /clusters/alpha/buckets/routing/bucket_0 --print-value-only)" = "s2" ] \
   || { echo "❌ routing bucket_0 != s2"; exit 1; }
 [ -z "$(ect get /clusters/alpha/buckets/status/bucket_0 --print-value-only)" ] \
-  || { echo "❌ статус-ключ bucket_0 не удалён"; exit 1; }
+  || { echo "❌ bucket_0 status key not deleted"; exit 1; }
 [ "$(h2 -c "SELECT to_regnamespace('bucket_0') IS NOT NULL")" = "t" ] \
-  || { echo "❌ схемы bucket_0 нет на s2"; exit 1; }
-echo "  bucket_0: s1 → s2, атомарный flip ✓"
+  || { echo "❌ schema bucket_0 missing on s2"; exit 1; }
+echo "  bucket_0: s1 → s2, atomic flip ✓"
 
 # ═══ Act 6: remove-shard непустого → отказ; пустого → успех ═══════════════════
-echo ">>> Act 6: remove-shard.sh s2 (непустой) → отказ (инвариант P23)"
+echo ">>> Act 6: remove-shard.sh s2 (non-empty) → refusal (P23 invariant)"
 if ops remove-shard.sh --cluster alpha s2 --yes >logs/72-rm-s2.log 2>&1; then
-  echo "❌ remove-shard непустого должен отказаться"; exit 1
+  echo "❌ remove-shard of a non-empty shard must refuse"; exit 1
 fi
-grep -Eq "есть бакеты" logs/72-rm-s2.log || { echo "❌ неожиданный отказ:"; cat logs/72-rm-s2.log; exit 1; }
+grep -Eq "still has buckets" logs/72-rm-s2.log || { echo "❌ unexpected refusal:"; cat logs/72-rm-s2.log; exit 1; }
 grep -v "Container\|Creating\|Created" logs/72-rm-s2.log | sed 's/^/  /'
 [ -n "$(ect get /clusters/alpha/shards/s2/dsn --print-value-only)" ] \
-  || { echo "❌ отказ удалил регистрацию s2!"; exit 1; }
+  || { echo "❌ the refusal deleted the s2 registration!"; exit 1; }
 
-echo ">>> Act 6b: remove-shard.sh s1x (пустой) → успех"
+echo ">>> Act 6b: remove-shard.sh s1x (empty) → success"
 ops remove-shard.sh --cluster alpha s1x --yes 2>&1 | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 [ -z "$(ect get /clusters/alpha/shards/s1x/dsn --print-value-only)" ] \
-  || { echo "❌ регистрация s1x не удалена"; exit 1; }
-echo "  alpha: шарды s1 s2 (s1x снят) ✓"
+  || { echo "❌ s1x registration not deleted"; exit 1; }
+echo "  alpha: shards s1 s2 (s1x removed) ✓"
 
-echo "✓ жизненный цикл: init (константы, поровну round-robin) → отказ повторного init →"
-echo "  второй кластер на том же etcd изолирован (своя БД, alpha нетронута) → add-shard пустым →"
-echo "  move с атомарным flip → remove непустого отказал (P23), пустого снят"
+echo "✓ lifecycle: init (constants, even round-robin) → repeated init refused →"
+echo "  a second cluster on the same etcd is isolated (its own DB, alpha untouched) → add-shard empty →"
+echo "  move with an atomic flip → remove of a non-empty shard refused (P23), an empty one removed"

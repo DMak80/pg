@@ -30,7 +30,7 @@ abort() { docker compose run --rm -T opsbox bash /arch/scripts/abort-move.sh "$@
 ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 docker compose --profile ops build opsbox >logs/60-opsbox-build.log 2>&1
-echo "opsbox собран (psql+etcdctl+jq, профиль ops)"
+echo "opsbox built (psql+etcdctl+jq, ops profile)"
 
 # Arrange (общий для фаз): зависший переезд bucket_43 s1 → s2 — данные и
 # публикация у s1, живая подписка (настоящий initial copy) и схема на s2,
@@ -88,9 +88,9 @@ arrange_stuck_move() {
 
 # ═══ Фаза 1: зависший FROZEN, переключение НЕ произошло ═════════════════════
 
-echo ">>> Фаза 1 / Arrange: зависший FROZEN bucket_43 (s1 → s2), routing=s1"
+echo ">>> Phase 1 / Arrange: a stuck FROZEN bucket_43 (s1 → s2), routing=s1"
 arrange_stuck_move
-echo "  initial copy готов, подписка стримит, s1 заморожен"
+echo "  initial copy done, the subscription is streaming, s1 is frozen"
 # etcd: routing + зависший статус (обновлён час назад — mover точно мёртв)
 ect put /clusters/legacy/buckets/routing/bucket_43 s1 >/dev/null
 ect put /clusters/legacy/buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
@@ -99,47 +99,47 @@ ect put /clusters/legacy/buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"targe
 echo ">>> abort-move.sh list: bucket_43 = FROZEN"
 abort list >logs/60-list.log 2>&1
 grep -q "bucket_43.*FROZEN" logs/60-list.log \
-  || { echo "❌ list не показал зависший переезд"; cat logs/60-list.log; exit 1; }
+  || { echo "❌ list did not show the stuck move"; cat logs/60-list.log; exit 1; }
 
 # ── Assert: отказы-защиты ────────────────────────────────────────────────────
-echo ">>> отказы: ACTIVE-бакет (нет статуса) и свежий статус (mover жив?)"
+echo ">>> refusals: an ACTIVE bucket (no status) and a fresh status (mover alive?)"
 ect put /clusters/legacy/buckets/routing/bucket_42 s1 >/dev/null
 if abort abort bucket_42 --yes 2>logs/60-refuse1.log; then
-  echo "❌ abort должен отказаться: бакет ACTIVE (нет статус-ключа)"; exit 1
+  echo "❌ abort must refuse: the bucket is ACTIVE (no status key)"; exit 1
 fi
-grep -q "статус-ключа" logs/60-refuse1.log || { echo "❌ неожиданный отказ:"; cat logs/60-refuse1.log; exit 1; }
+grep -q "no status key" logs/60-refuse1.log || { echo "❌ unexpected refusal:"; cat logs/60-refuse1.log; exit 1; }
 ect del /clusters/legacy/buckets/routing/bucket_42 >/dev/null
 ect put /clusters/legacy/buckets/routing/bucket_44 s1 >/dev/null
 ect put /clusters/legacy/buckets/status/bucket_44 "{\"state\":\"SYNCING\",\"target\":\"s2\",\"updated_unix\":$(date +%s)}" >/dev/null
 if abort abort bucket_44 --yes 2>logs/60-refuse2.log; then
-  echo "❌ abort должен отказаться: статус свежий, mover может быть жив"; exit 1
+  echo "❌ abort must refuse: the status is fresh, the mover may be alive"; exit 1
 fi
-grep -q "ещё жив" logs/60-refuse2.log || { echo "❌ неожиданный отказ:"; cat logs/60-refuse2.log; exit 1; }
+grep -q "may still be alive" logs/60-refuse2.log || { echo "❌ unexpected refusal:"; cat logs/60-refuse2.log; exit 1; }
 ect del /clusters/legacy/buckets/status/bucket_44 >/dev/null
 ect del /clusters/legacy/buckets/routing/bucket_44 >/dev/null
-echo "  ✓ оба отказа корректны"
+echo "  ✓ both refusals are correct"
 
 # ── Act: крах уборки — приёмник недоступен ──────────────────────────────────
-echo ">>> s2 недоступен → abort пишет журнал (phase=blocked) и НЕ трогает БД"
+echo ">>> s2 unreachable → abort writes the journal (phase=blocked) and does NOT touch the DB"
 docker stop s2a > /dev/null
 if abort abort bucket_43 --yes >logs/60-abort-blocked.log 2>&1; then
-  echo "❌ abort должен был споткнуться о недоступный s2"; docker start s2a >/dev/null; exit 1
+  echo "❌ abort should have stumbled over the unreachable s2"; docker start s2a >/dev/null; exit 1
 fi
 grep -v "Container\|Creating\|Created" logs/60-abort-blocked.log | sed 's/^/  /'
 # Assert: журнал в etcd УЖЕ есть, а в БД ещё НИЧЕГО не тронуто —
 # журнал строго ДО манипуляций
 j="$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)"
-echo "  журнал: $j"
+echo "  journal: $j"
 echo "$j" | jq -e '.state=="ABORTING" and .phase=="blocked" and (.unreachable_shards|index("s2"))!=null' >/dev/null \
-  || { echo "❌ журнал blocked не записан/не так записан"; exit 1; }
+  || { echo "❌ the blocked journal was not written / not written as expected"; exit 1; }
 [ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname='pub_bucket_43'")" = "1" ] \
-  || { echo "❌ публикация исчезла ДО разрешения убирать — манипуляции без журнала?!"; exit 1; }
-grep -q "журнал записан" logs/60-abort-blocked.log \
-  || { echo "❌ в выводе нет записи журнала"; exit 1; }
-echo "  ✓ журнал в etcd есть, БД не тронута"
+  || { echo "❌ the publication vanished BEFORE cleanup was allowed — DB manipulations without a journal?!"; exit 1; }
+grep -q "journal written" logs/60-abort-blocked.log \
+  || { echo "❌ no journal-writing line in the output"; exit 1; }
+echo "  ✓ the journal is in etcd, the DB is untouched"
 
 # ── Act: s2 вернулся → повторный abort продолжает (resume по журналу) ────────
-echo ">>> s2 вернулся → повторный abort дочищает"
+echo ">>> s2 is back → the repeated abort finishes the cleanup"
 docker start s2a >/dev/null
 # сайдкар не переподключается к новому netns перезапущенной ноды — рестартуем
 docker restart hc2a >/dev/null 2>&1 || true
@@ -147,74 +147,74 @@ until docker exec s2a pg_isready -U postgres -q; do sleep 1; done
 # abort ходит через hap2 — ждём, пока HAProxy снова видит живой бэкенд (health-check)
 until [ "$(h2 -c 'SELECT 1' 2>/dev/null)" = "1" ]; do sleep 1; done
 abort abort bucket_43 --yes 2>&1 | tee logs/60-abort-resume.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-grep -q "продолжаю" logs/60-abort-resume.log || { echo "❌ resume не увидел журнал ABORTING"; exit 1; }
+grep -q "continuing" logs/60-abort-resume.log || { echo "❌ resume did not see the ABORTING journal"; exit 1; }
 
 # ── Assert: откат к старому владельцу, чисто ────────────────────────────────
-echo ">>> Фаза 1 / Assert: артефактов нет, данные целы, заморозка снята, etcd = ACTIVE на s1"
-[ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'pub_bucket_43%'")" = "0" ] || { echo "❌ публикация на s1"; exit 1; }
-[ "$(h1 -c "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ слот на s1"; exit 1; }
-[ "$(h1 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "1" ] || { echo "❌ схема владельца пропала с s1!"; exit 1; }
-[ "$(h2 -c "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ подписка на s2"; exit 1; }
-[ "$(h2 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "0" ] || { echo "❌ схема-копия осталась на s2"; exit 1; }
+echo ">>> Phase 1 / Assert: no artifacts, data intact, the freeze lifted, etcd = ACTIVE at s1"
+[ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'pub_bucket_43%'")" = "0" ] || { echo "❌ publication on s1"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ slot on s1"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "1" ] || { echo "❌ the owner schema vanished from s1!"; exit 1; }
+[ "$(h2 -c "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ subscription on s2"; exit 1; }
+[ "$(h2 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "0" ] || { echo "❌ the schema copy remains on s2"; exit 1; }
 # заморозка P1 снята: app-роль снова пишет; мораторий P5 снят: CREATE работает
 h1a -c "INSERT INTO bucket_43.orders(note) VALUES ('after-abort');" \
-  || { echo "❌ app_role не пишет на s1 после abort"; exit 1; }
+  || { echo "❌ app_role does not write on s1 after abort"; exit 1; }
 h1a -c "CREATE TABLE bucket_43.tmp_app_ddl(id int);" \
-  || { echo "❌ app_role не делает DDL на s1 после abort (P5)"; exit 1; }
+  || { echo "❌ app_role does not do DDL on s1 after abort (P5)"; exit 1; }
 h1 -c "DROP TABLE bucket_43.tmp_app_ddl;"
-[ "$(h1 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ данные владельца повреждены"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ owner data corrupted"; exit 1; }
 # etcd: статус-ключ удалён (нет ключа = ACTIVE), routing не изменился
-[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
-[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s1" ] || { echo "❌ routing изменился"; exit 1; }
-echo "  ✓ фаза 1 зелёная: откат к ACTIVE у s1"
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ status key not deleted"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s1" ] || { echo "❌ routing changed"; exit 1; }
+echo "  ✓ phase 1 green: rolled back to ACTIVE at s1"
 
 # ═══ Фаза 2: routing==target — переключение ПРОИЗОШЛО, статус завис ═════════
 
-echo ">>> Фаза 2 / Arrange: то же в БД, но routing УЖЕ на s2 (flip прошёл, статус остался)"
+echo ">>> Phase 2 / Arrange: same in the DB, but routing is ALREADY on s2 (the flip completed, the status remained)"
 arrange_stuck_move
 ect put /clusters/legacy/buckets/routing/bucket_43 s2 >/dev/null
 ect put /clusters/legacy/buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
 [ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "50" ] \
-  || { echo "❌ arrange: копия на s2 не догнала"; exit 1; }
-echo "  etcd: routing=s2 (flip прошёл), status=FROZEN (завис)"
+  || { echo "❌ arrange: the copy on s2 has not caught up"; exit 1; }
+echo "  etcd: routing=s2 (flip completed), status=FROZEN (stuck)"
 
 # ── Act/Assert: без --force — отказ, НЕ трогая ни БД, ни etcd ────────────────
-echo ">>> abort БЕЗ --force: должен отказаться («flip прошёл») и ничего не тронуть"
+echo ">>> abort WITHOUT --force: must refuse ('flip completed') and touch nothing"
 if abort abort bucket_43 --yes >logs/60-refuse3.log 2>&1; then
-  echo "❌ abort не отказался на routing==target"; exit 1
+  echo "❌ abort did not refuse on routing==target"; exit 1
 fi
-grep -q "flip прошёл" logs/60-refuse3.log \
-  || { echo "❌ неожиданный отказ:"; cat logs/60-refuse3.log; exit 1; }
+grep -q "flip seems complete" logs/60-refuse3.log \
+  || { echo "❌ unexpected refusal:"; cat logs/60-refuse3.log; exit 1; }
 ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only | grep -q FROZEN \
-  || { echo "❌ статус-ключ тронут при отказе"; exit 1; }
+  || { echo "❌ the status key was touched during the refusal"; exit 1; }
 [ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname='pub_bucket_43'")" = "1" ] \
-  || { echo "❌ БД тронута при отказе"; exit 1; }
-echo "  ✓ отказ без каких-либо действий"
+  || { echo "❌ the DB was touched during the refusal"; exit 1; }
+echo "  ✓ refused without any action"
 
 # ── Act: с --force — ДОВЕСТИ перевод до конца ───────────────────────────────
-echo ">>> abort --force: довести перевод (владелец s2 не трогается, s1 вычищается)"
+echo ">>> abort --force: complete the handover (owner s2 untouched, s1 cleaned up)"
 abort abort bucket_43 --yes --force 2>&1 | tee logs/60-abort-force.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 
 # ── Assert: перевод доведён, владелец — s2 ──────────────────────────────────
-echo ">>> Фаза 2 / Assert: s2 — владелец с данными, s1 вычищен, etcd = ACTIVE на s2"
-[ "$(h2 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "1" ] || { echo "❌ схема нового владельца пропала"; exit 1; }
-[ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "50" ] || { echo "❌ данные нового владельца повреждены"; exit 1; }
-[ "$(h2 -c "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ подписка на s2"; exit 1; }
-[ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'pub_bucket_43%'")" = "0" ] || { echo "❌ публикация на s1"; exit 1; }
-[ "$(h1 -c "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ слот на s1"; exit 1; }
-[ "$(h1 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "0" ] || { echo "❌ схема-копия осталась на s1"; exit 1; }
+echo ">>> Phase 2 / Assert: s2 is the owner with data, s1 cleaned up, etcd = ACTIVE at s2"
+[ "$(h2 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "1" ] || { echo "❌ the new owner's schema vanished"; exit 1; }
+[ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "50" ] || { echo "❌ new owner data corrupted"; exit 1; }
+[ "$(h2 -c "SELECT count(*) FROM pg_subscription WHERE subname LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ subscription on s2"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'pub_bucket_43%'")" = "0" ] || { echo "❌ publication on s1"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_43%'")" = "0" ] || { echo "❌ slot on s1"; exit 1; }
+[ "$(h1 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_43'")" = "0" ] || { echo "❌ the schema copy remains on s1"; exit 1; }
 # unfreeze отработал на НОВОМ владельце: app_role пишет и делает DDL на s2
 h2a -c "INSERT INTO bucket_43.orders(note) VALUES ('after-force-abort');" \
-  || { echo "❌ app_role не пишет на s2 после abort --force"; exit 1; }
+  || { echo "❌ app_role does not write on s2 after abort --force"; exit 1; }
 h2a -c "CREATE TABLE bucket_43.tmp_app_ddl(id int);" \
-  || { echo "❌ app_role не делает DDL на s2 после abort --force (P5)"; exit 1; }
+  || { echo "❌ app_role does not do DDL on s2 after abort --force (P5)"; exit 1; }
 h2 -c "DROP TABLE bucket_43.tmp_app_ddl;"
-[ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ данные нового владельца повреждены"; exit 1; }
-[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
-[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s2" ] || { echo "❌ routing изменился"; exit 1; }
+[ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ new owner data corrupted"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ status key not deleted"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s2" ] || { echo "❌ routing changed"; exit 1; }
 abort list >logs/60-list-final.log 2>&1
 if grep -q "bucket_43" logs/60-list-final.log; then
-  echo "❌ list всё ещё видит bucket_43"; cat logs/60-list-final.log; exit 1
+  echo "❌ list still sees bucket_43"; cat logs/60-list-final.log; exit 1
 fi
-echo "✓ P7 подтверждён: фаза 1 — журнал до манипуляций, resume, откат в ACTIVE у s1;"
-echo "                 фаза 2 — routing==target: отказ без --force, --force доводит перевод (ACTIVE на s2)"
+echo "✓ P7 verified: phase 1 — journal before manipulations, resume, rollback to ACTIVE at s1;"
+echo "              phase 2 — routing==target: refusal without --force, --force completes the handover (ACTIVE at s2)"

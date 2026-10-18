@@ -69,7 +69,7 @@ def apply_addr(srv, ip, why=""):
     # «IP changed from ... to ...»; остальное — ошибка runtime-команды
     ok = (not out.strip()) or ("no need to change" in out) or out.lstrip().startswith("IP changed")
     if not ok:
-        print(f"{srv}: ⚠️ runtime ответил: {out.strip()}", flush=True)
+        print(f"{srv}: ⚠️ runtime replied: {out.strip()}", flush=True)
         return False
     state[srv] = ip
     if not out.strip():
@@ -89,7 +89,7 @@ while True:
             ip = etcd_get("/cluster/nodes/" + srv)
         except Exception as e:
             # etcd недоступен: держим последние применённые адреса (P9)
-            print(f"{srv}: etcd недоступен ({e}) — держу последний адрес", flush=True)
+            print(f"{srv}: etcd unreachable ({e}) — keeping the last address", flush=True)
             missing[srv] = 0
             continue
 
@@ -98,7 +98,7 @@ while True:
             # ключ исчез (lease истёк = нода мертва): после grace уводим адрес
             # в 127.0.0.1 — health-check роняет сервер, чужие запросы не идут
             if missing[srv] >= MISSING_GRACE and state.get(srv) != "127.0.0.1":
-                if apply_addr(srv, "127.0.0.1", " (регистрация исчезла — нода мертва)"):
+                if apply_addr(srv, "127.0.0.1", " (registration vanished — node is dead)"):
                     missing[srv] = MISSING_GRACE
             continue
 
@@ -108,17 +108,17 @@ while True:
         try:
             name = whoami(ip)
         except Exception as e:
-            print(f"{srv}: {ip} не отвечает /whoami ({e}) — адрес не применяю", flush=True)
+            print(f"{srv}: {ip} does not answer /whoami ({e}) — not applying the address", flush=True)
             continue
         if name != srv:
             # анти-коллизия: по этому адресу живёт ДРУГАЯ нода (docker пере-
             # использовал освободившийся IP) — не подставляем её вместо srv
-            print(f"{srv}: {ip} отвечает именем '{name}' — это не {srv}, адрес не применяю", flush=True)
+            print(f"{srv}: {ip} answers with name '{name}' — that is not {srv}, not applying the address", flush=True)
             continue
         try:
             apply_addr(srv, ip)
         except Exception as e:
-            print(f"{srv}: HAProxy runtime недоступен ({e}) — повтор", flush=True)
+            print(f"{srv}: HAProxy runtime unreachable ({e}) — retrying", flush=True)
             state.clear()
             break
     time.sleep(INTERVAL)

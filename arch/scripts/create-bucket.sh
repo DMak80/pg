@@ -36,9 +36,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   cat >&2 <<EOF
 Usage: $0 [--cluster <C>] <bucket> --shard <shard> [--ddl <file.sql> | --template <bucket>]
-  --cluster  кластер в etcd (дефолт CLUSTER_NAME из buckets.env)
-  bucket     имя бакета = имя схемы, напр. bucket_42
-  --shard    шард-владелец (etcd-реестр или SHARDS в buckets.env)
+  --cluster  cluster in etcd (default CLUSTER_NAME from buckets.env)
+  bucket     bucket name = schema name, e.g. bucket_42
+  --shard    owner shard (etcd registry or SHARDS in buckets.env)
 EOF
   exit 2
 }
@@ -56,16 +56,16 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CLUSTER" ] && cluster_set "$CLUSTER"
 [ -n "$BUCKET" ] && [ -n "$SHARD" ] || usage
-[ -z "$DDL_FILE" ] || [ -z "$TEMPLATE" ] || { echo "❌ --ddl и --template взаимоисключающие" >&2; exit 2; }
+[ -z "$DDL_FILE" ] || [ -z "$TEMPLATE" ] || { echo "❌ --ddl and --template are mutually exclusive" >&2; exit 2; }
 
 require_bins psql pg_dump perl etcdctl
-valid_bucket "$BUCKET" || { echo "❌ неверное имя бакета '$BUCKET' (шаблон: ^[a-z][a-z0-9_]*$)" >&2; exit 2; }
-valid_shard "$SHARD"   || { echo "❌ неизвестный шард '$SHARD' (etcd-реестр кластера '$CLUSTER_NAME' или SHARDS в buckets.env: ${SHARDS})" >&2; exit 2; }
+valid_bucket "$BUCKET" || { echo "❌ invalid bucket name '$BUCKET' (pattern: ^[a-z][a-z0-9_]*$)" >&2; exit 2; }
+valid_shard "$SHARD"   || { echo "❌ unknown shard '$SHARD' (cluster '$CLUSTER_NAME' etcd registry or SHARDS in buckets.env: ${SHARDS})" >&2; exit 2; }
 if [ -n "$TEMPLATE" ]; then
-  valid_bucket "$TEMPLATE" || { echo "❌ неверное имя шаблона '$TEMPLATE'" >&2; exit 2; }
+  valid_bucket "$TEMPLATE" || { echo "❌ invalid template name '$TEMPLATE'" >&2; exit 2; }
 fi
 if [ -n "$DDL_FILE" ]; then
-  [ -r "$DDL_FILE" ] || { echo "❌ файл DDL не читается: $DDL_FILE" >&2; exit 2; }
+  [ -r "$DDL_FILE" ] || { echo "❌ DDL file is not readable: $DDL_FILE" >&2; exit 2; }
 fi
 
 etcd_alive
@@ -78,12 +78,12 @@ if [ -n "$cfg" ]; then
   if [[ "$BUCKET" =~ ^bucket_([0-9]+)$ ]]; then
     idx="${BASH_REMATCH[1]}"
     if [ -z "$N" ] || [ "$idx" -ge "$N" ]; then
-      echo "❌ бакет '$BUCKET' вне диапазона кластера '$CLUSTER_NAME' (N=$N: bucket_0..bucket_$((N - 1)))" >&2
-      echo "   Штатно все бакеты создаёт init-cluster.sh; расширить N нельзя (P18)." >&2
+      echo "❌ bucket '$BUCKET' is outside cluster '$CLUSTER_NAME' range (N=$N: bucket_0..bucket_$((N - 1)))" >&2
+      echo "   Normally all buckets are created by init-cluster.sh; N cannot be extended (P18)." >&2
       exit 3
     fi
   else
-    echo "❌ в инициализированном кластере имена бакетов фиксированы: bucket_0..bucket_$(( ${N:-?} - 1 ))" >&2
+    echo "❌ in an initialized cluster bucket names are fixed: bucket_0..bucket_$(( ${N:-?} - 1 ))" >&2
     exit 3
   fi
 fi
@@ -93,24 +93,24 @@ DSN="$(shard_dsn "$SHARD")"
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) Проверки: бакета ещё нет ни в etcd, ни на шарде
 # ─────────────────────────────────────────────────────────────────────────────
-step "Проверки"
+step "Checks"
 if [ -n "$(routing_get "$BUCKET")" ]; then
-  err "бакет '$BUCKET' уже зарегистрирован: $(routing_key "$BUCKET") → $(routing_get "$BUCKET")"
+  err "bucket '$BUCKET' is already registered: $(routing_key "$BUCKET") → $(routing_get "$BUCKET")"
   exit 3
 fi
-[ "$(poll_scalar "$DSN" 'SELECT 1' 3)" = "1" ] || { err "шард '$SHARD' недоступен"; exit 3; }
-schema_exists "$DSN" "$BUCKET" && { err "схема '$BUCKET' уже существует на '$SHARD'"; exit 3; }
-info "etcd: бакета нет; шард '$SHARD' доступен; схемы нет"
+[ "$(poll_scalar "$DSN" 'SELECT 1' 3)" = "1" ] || { err "shard '$SHARD' is unreachable"; exit 3; }
+schema_exists "$DSN" "$BUCKET" && { err "schema '$BUCKET' already exists on '$SHARD'"; exit 3; }
+info "etcd: no bucket; shard '$SHARD' is reachable; no schema"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) CREATE SCHEMA + структура
 # ─────────────────────────────────────────────────────────────────────────────
-step "Создаю схему '$BUCKET' на '$SHARD'"
+step "Creating schema '$BUCKET' on '$SHARD'"
 sql "$DSN" "CREATE SCHEMA $BUCKET"
 
 if [ -n "$TEMPLATE" ]; then
-  schema_exists "$DSN" "$TEMPLATE" || { err "шаблон '$TEMPLATE' не найден на '$SHARD'"; exit 3; }
-  echo "  Копирую структуру из '$TEMPLATE' (pg_dump --schema-only) ..."
+  schema_exists "$DSN" "$TEMPLATE" || { err "template '$TEMPLATE' not found on '$SHARD'"; exit 3; }
+  echo "  Copying structure from '$TEMPLATE' (pg_dump --schema-only) ..."
   # Замена имени схемы по границе слова. CREATE SCHEMA из дампа выкидываем —
   # схема уже создана выше. Ограничение: если имя шаблона встречается внутри
   # строковых литералов/тел функций — оно тоже будет заменено (проверь DDL сам).
@@ -118,44 +118,44 @@ if [ -n "$TEMPLATE" ]; then
     | grep -v "^CREATE SCHEMA $TEMPLATE;" \
     | perl -pe "s/\b\Q$TEMPLATE\E\b/$BUCKET/g" \
     | psql "$DSN" -X -q -v ON_ERROR_STOP=1 >/dev/null \
-    || { err "не удалось применить DDL из шаблона; схема '$BUCKET' осталась — дозаполни вручную или удали"; exit 4; }
-  info "структура скопирована из '$TEMPLATE'"
+    || { err "failed to apply template DDL; schema '$BUCKET' remains — complete it manually or drop it"; exit 4; }
+  info "structure copied from '$TEMPLATE'"
 elif [ -n "$DDL_FILE" ]; then
   psql "$DSN" -X -q -v ON_ERROR_STOP=1 -f "$DDL_FILE" \
-    || { err "не удалось применить $DDL_FILE; схема '$BUCKET' осталась — исправь файл и накати повторно"; exit 4; }
-  info "DDL применён из $DDL_FILE"
+    || { err "failed to apply $DDL_FILE; schema '$BUCKET' remains — fix the file and apply it again"; exit 4; }
+  info "DDL applied from $DDL_FILE"
 else
-  echo "  --ddl/--template не заданы: создана пустая схема (DDL накатит приложение-миграциями)"
+  echo "  --ddl/--template not set: created an empty schema (the app will apply DDL via migrations)"
 fi
 
 TABLES="$(scalar "$DSN" "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                          WHERE n.nspname='$BUCKET' AND c.relkind='r'")"
-info "таблиц в '$BUCKET': $TABLES"
+info "tables in '$BUCKET': $TABLES"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3) Базовые гранты app-роли (§4): до первого переезда права обязаны быть —
 #    заморозка P1 на cutover их ОТНИМАЕТ и возвращает при abort/rollback
 # ─────────────────────────────────────────────────────────────────────────────
 if [ -n "${APP_ROLE:-}" ]; then
-  valid_bucket "$APP_ROLE" || { err "APP_ROLE='$APP_ROLE' не похоже на имя роли (^[a-z][a-z0-9_]*$)"; exit 9; }
+  valid_bucket "$APP_ROLE" || { err "APP_ROLE='$APP_ROLE' does not look like a role name (^[a-z][a-z0-9_]*$)"; exit 9; }
   if [ "$(scalar "$DSN" "SELECT count(*) FROM pg_roles WHERE rolname='$APP_ROLE'")" = "0" ]; then
     sql "$DSN" "CREATE ROLE $APP_ROLE LOGIN"
-    info "роль $APP_ROLE создана на '$SHARD'"
+    info "role $APP_ROLE created on '$SHARD'"
   fi
   sql "$DSN" "GRANT USAGE ON SCHEMA $BUCKET TO $APP_ROLE;
               GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA $BUCKET TO $APP_ROLE;
               GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA $BUCKET TO $APP_ROLE;"
   [ "${APP_GRANT_CREATE:-0}" = 1 ] && sql "$DSN" "GRANT CREATE ON SCHEMA $BUCKET TO $APP_ROLE"
-  info "базовые гранты $APP_ROLE выданы"
+  info "base grants for $APP_ROLE issued"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4) Регистрация в etcd: routing-ключ = владелец; нет статус-ключа = ACTIVE
 # ─────────────────────────────────────────────────────────────────────────────
-step "Регистрирую в etcd"
+step "Registering in etcd"
 ect put "$(routing_key "$BUCKET")" "$SHARD" >/dev/null
-info "готово: $(routing_key "$BUCKET") → $SHARD (ACTIVE)"
+info "done: $(routing_key "$BUCKET") → $SHARD (ACTIVE)"
 
 echo
-echo "Дальше: роутер приложения читает routing из etcd (watch) — и следи за DDL-миграциями:"
+echo "Next: the app router reads routing from etcd (watch) — and watch the DDL migrations:"
 echo "  ./scripts/move-bucket.sh status $BUCKET"

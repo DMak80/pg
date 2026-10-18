@@ -15,15 +15,15 @@ ip_s1b="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 # Arrange: пачка W2 через write-эндпоинт
 base="$(q s2a -c 'select count(*) from bucket_42.customers')"
 exp=$((base + 100))
-echo ">>> Arrange: W2 (100 строк) через hap1 (бэкенд сейчас: $(via_hap -c 'select inet_server_addr()')); было $base"
+echo ">>> Arrange: W2 (100 rows) via hap1 (backend now: $(via_hap -c 'select inet_server_addr()')); before: $base"
 via_hap -c "INSERT INTO bucket_42.customers(name) SELECT 'w2-'||g FROM generate_series(1,100) g;" >/dev/null
 for i in $(seq 1 60); do
   [ "$(q s2a -c 'select count(*) from bucket_42.customers')" = "$exp" ] && break; sleep 1
 done
-echo "  применено на s2: $(q s2a -c 'select count(*) from bucket_42.customers') строк (ожидалось $exp)"
+echo "  applied on s2: $(q s2a -c 'select count(*) from bucket_42.customers') rows (expected $exp)"
 s1b_cnt="$(q s1b -c 'select count(*) from bucket_42.customers')"
-echo "  replay на реплике s1b: $s1b_cnt строк (данные физически на standby)"
-[ "$s1b_cnt" = "$exp" ] || { echo "❌ standby не догнал — промоушен потерял бы хвост (см. P3 «принятый риск»)"; exit 1; }
+echo "  replay on replica s1b: $s1b_cnt rows (the data is physically on the standby)"
+[ "$s1b_cnt" = "$exp" ] || { echo "❌ standby has not caught up — a promotion would lose the tail (see P3 'accepted risk')"; exit 1; }
 
 # Act: отказ мастера + promote реплики
 echo; echo ">>> Act: docker stop s1a + promote s1b"
@@ -45,8 +45,8 @@ for i in $(seq 1 60); do
   sleep 1
 done
 q s1b -c "select slot_name, active, wal_status, failover, synced from pg_replication_slots where slot_name like 'sub_bucket_42%';"
-[ -n "$conv" ] || { echo "❌ досинк слота не сошёлся (s1a: $pa, s1b: $pb) — промо потерял бы его"; exit 1; }
-echo "  досинк сошёлся: $pa (мастер) == $pb (реплика)"
+[ -n "$conv" ] || { echo "❌ slot catch-up did not converge (s1a: $pa, s1b: $pb) — the promotion would lose it"; exit 1; }
+echo "  catch-up converged: $pa (master) == $pb (replica)"
 docker stop -t 3 s1a >/dev/null
 PGD="$(docker exec s1b psql -U postgres -tAc 'show data_directory' | tr -d '[:space:]')"
 docker exec -u postgres s1b pg_ctl promote -D "$PGD" >/dev/null 2>&1 || true
@@ -56,7 +56,7 @@ until [ "$(q s1b -c 'select pg_is_in_recovery()')" = "f" ]; do sleep 1; done
 # в SyncRep бесконечно (ловушка синхронной репликации). Промоушен без второй
 # реплики обязан сопровождаться очисткой sync-имён.
 q s1b -c "ALTER SYSTEM SET synchronous_standby_names = ''" -c "SELECT pg_reload_conf()" >/dev/null
-echo "  s1b повышен до мастера (sync-имена сняты: реплики под ним нет)"
+echo "  s1b promoted to master (sync names cleared: it has no replica under it)"
 
 # Assert 1: HAProxy переключился сам (health-check /primary)
 got=""
@@ -65,7 +65,7 @@ for i in $(seq 1 60); do
   [ "$got" = "$ip_s1b" ] && break; sleep 1
 done
 echo "  hap1:5432 -> $got"
-[ "$got" = "$ip_s1b" ] || { echo "❌ HAProxy не переключился на s1b"; exit 1; }
+[ "$got" = "$ip_s1b" ] || { echo "❌ HAProxy did not switch to s1b"; exit 1; }
 
 # Assert 2: подписка переподключилась сама (P2: conninfo host=hap1 не менялся)
 w=""
@@ -73,8 +73,8 @@ for i in $(seq 1 60); do
   w="$(q s2a -c "select count(*) from pg_stat_subscription where subname='sub_bucket_42' and pid is not null")"
   [ "$w" = "1" ] && break; sleep 1
 done
-echo "  apply-воркер подписки активен: $w"
-[ "$w" = "1" ] || { echo "❌ подписка не переподключилась"; exit 1; }
+echo "  subscription apply worker active: $w"
+[ "$w" = "1" ] || { echo "❌ the subscription did not reconnect"; exit 1; }
 
 # Assert 3: поток продолжился, данные целы, duplicate-key нет (P3: origin пропускает повторную доставку)
 via_hap -c "INSERT INTO bucket_42.customers(name) VALUES ('w3-after-failover');" >/dev/null
@@ -84,9 +84,9 @@ for i in $(seq 1 60); do
 done
 c_s1b="$(q s1b -c 'select count(*) from bucket_42.customers')"
 c_s2="$(q s2a  -c 'select count(*) from bucket_42.customers')"
-echo "  counts после failover: s1b=$c_s1b  s2=$c_s2"
-[ "$c_s1b" = "$c_s2" ] || { echo "❌ расхождение источник/приёмник"; exit 1; }
+echo "  counts after failover: s1b=$c_s1b  s2=$c_s2"
+[ "$c_s1b" = "$c_s2" ] || { echo "❌ source/target mismatch"; exit 1; }
 dups="$(docker logs s2a 2>&1 | grep -c 'duplicate key' || true)"
-echo "  ошибок duplicate key в логах приёмника: $dups"
-[ "$dups" = "0" ] || { echo "❌ duplicate-key при повторной доставке"; exit 1; }
-echo "✓ P2: адресация стабильна, watcher не нужен; P3: слот пережил failover, репликация продолжилась"
+echo "  duplicate key errors in the target logs: $dups"
+[ "$dups" = "0" ] || { echo "❌ duplicate key on redelivery"; exit 1; }
+echo "✓ P2: addressing is stable, no watcher needed; P3: the slot survived failover, replication continued"

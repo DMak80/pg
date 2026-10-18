@@ -52,40 +52,40 @@ done
 require_bins psql jq etcdctl
 [ -n "$CLUSTER" ] && [ -n "$SHARD" ] && [ -n "$DSN" ] || usage
 cluster_set "$CLUSTER"
-[[ "$SHARD" =~ ^[a-z][a-z0-9_]*$ ]] || { err "неверное имя шарда '$SHARD'"; exit 2; }
+[[ "$SHARD" =~ ^[a-z][a-z0-9_]*$ ]] || { err "invalid shard name '$SHARD'"; exit 2; }
 REPLICAS="${REPLICAS:-1}"
-[[ "$REPLICAS" =~ ^[0-9]+$ ]] || { err "--replicas: целое >= 0"; exit 2; }
+[[ "$REPLICAS" =~ ^[0-9]+$ ]] || { err "--replicas: integer >= 0"; exit 2; }
 DSN="$(dsn_strip_password "$DSN")"
 grep -qE '(^| )host=' <<<"$DSN" && grep -qE '(^| )dbname=' <<<"$DSN" && grep -qE '(^| )user=' <<<"$DSN" \
-  || { err "DSN обязан содержать host=, dbname= и user=: '$DSN'"; exit 2; }
+  || { err "DSN must contain host=, dbname= and user=: '$DSN'"; exit 2; }
 
 step "1) Guards"
 etcd_alive
 [ -n "$(cluster_config)" ] \
-  || { err "кластер '$CLUSTER_NAME' не инициализирован: нет $(config_key). Сначала init-cluster.sh."; exit 3; }
+  || { err "cluster '$CLUSTER_NAME' is not initialized: $(config_key) missing. Run init-cluster.sh first."; exit 3; }
 [ -z "$(etcd_value "$(shard_key "$SHARD")/dsn")" ] \
-  || { err "шард '$SHARD' уже зарегистрирован: $(shard_key "$SHARD")/dsn"; exit 3; }
-info "кластер '$CLUSTER_NAME' инициализирован, шард '$SHARD' свободен"
+  || { err "shard '$SHARD' is already registered: $(shard_key "$SHARD")/dsn"; exit 3; }
+info "cluster '$CLUSTER_NAME' is initialized, shard '$SHARD' is free"
 
-step "2) Доступность шарда"
+step "2) Shard availability"
 if [ "$NO_CHECK" = 1 ]; then
-  echo "  --no-check: проверка пропущена"
+  echo "  --no-check: check skipped"
 else
   dsn_full="$(dsn_with_password "$DSN" "$SHARD")"
   [ "$(poll_scalar "$dsn_full" 'SELECT 1' 3)" = "1" ] \
-    || { err "шард '$SHARD' недоступен (пароль: SHARD_${SHARD}_PASSWORD; заранее — --no-check)"; exit 3; }
-  info "шард доступен"
+    || { err "shard '$SHARD' is unreachable (password: SHARD_${SHARD}_PASSWORD; to register in advance — --no-check)"; exit 3; }
+  info "shard is reachable"
 fi
 
-step "3) Регистрация в etcd"
+step "3) Registration in etcd"
 ect put "$(shard_key "$SHARD")/dsn" "$DSN" >/dev/null
 ect put "$(shard_key "$SHARD")/replicas" "$REPLICAS" >/dev/null
 info "$(shard_key "$SHARD")/dsn = $DSN"
 info "$(shard_key "$SHARD")/replicas = $REPLICAS"
 
 echo
-echo "Готово: шард '$SHARD' подключён ПУСТЫМ (бакеты не переносились)."
-echo "  Напоминание §4 доки 11: wal_level=logical на всех нодах, failover slots,"
-echo "  роли bucket_mover/app, sync-standby — без них move откажется в preflight."
-echo "  Перенести бакеты:  ./move-bucket.sh --cluster $CLUSTER_NAME move <бакет> --to $SHARD"
-echo "  Список шардов:     $(printf '%s\n' "$(shards_list)" | tr '\n' ' ')"
+echo "Done: shard '$SHARD' joined EMPTY (no buckets were moved)."
+echo "  Reminder of §4 of doc 11: wal_level=logical on all nodes, failover slots,"
+echo "  roles bucket_mover/app, sync-standby — without them move will refuse in preflight."
+echo "  Move buckets:      ./move-bucket.sh --cluster $CLUSTER_NAME move <bucket> --to $SHARD"
+echo "  Shard list:        $(printf '%s\n' "$(shards_list)" | tr '\n' ' ')"

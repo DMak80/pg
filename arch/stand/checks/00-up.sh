@@ -19,11 +19,11 @@ patch_hba() {
      psql -U postgres -d postgres -qtAc "select pg_reload_conf()" >/dev/null'
 }
 patch_hba s1a
-echo "  pg_hba s1a: replication-trust добавлен"
+echo "  pg_hba s1a: replication-trust added"
 until docker exec s2a pg_isready -U postgres -q; do sleep 1; done
 echo "  s2a ready"
 patch_hba s2a
-echo "  pg_hba s2a: replication-trust добавлен"
+echo "  pg_hba s2a: replication-trust added"
 
 for c in s1b s2b; do
   until docker exec "$c" pg_isready -U postgres -q; do sleep 1; done
@@ -33,13 +33,13 @@ for c in s1b s2b; do
   until [ "$(docker exec "$c" psql -U postgres -tAc 'select pg_is_in_recovery()')" = "t" ]; do
     sleep 1
   done
-  echo "  $c в recovery (реплика своего шарда)"
+  echo "  $c in recovery (replica of its shard)"
 done
 
 until docker exec etcd etcdctl endpoint health --endpoints=http://localhost:2379 >/dev/null 2>&1; do
   sleep 1
 done
-echo "  etcd ready (контрол-плейн)"
+echo "  etcd ready (control plane)"
 
 # Assert: ноды зарегистрировали адреса в etcd — источник правды топологии
 # (сайдкары hc* пишут /cluster/nodes/<node>; hasync транслирует их в HAProxy)
@@ -51,7 +51,7 @@ for c in s1a s1b s2a s2b; do
     [ "$(ect get /cluster/nodes/$c --print-value-only 2>/dev/null)" = "$(ip $c)" ] && { ok=1; break; }
     sleep 1
   done
-  [ -n "$ok" ] || { echo "❌ $c не зарегистрировался в etcd (сайдкар hc*/NODE_NAME?)"; exit 1; }
+  [ -n "$ok" ] || { echo "❌ $c did not register in etcd (sidecar hc*/NODE_NAME?)"; exit 1; }
   echo "  etcd /cluster/nodes/$c → $(ip $c)"
 done
 
@@ -66,7 +66,7 @@ for pair in "hap1 s1a $(ip s1a)" "hap2 s2a $(ip s2a)"; do
     sleep 1
   done
   echo "  $hap:5432 -> $got"
-  [ "$got" = "$want" ] || { echo "❌ HAProxy $hap не ведёт на $node"; exit 1; }
+  [ "$got" = "$want" ] || { echo "❌ HAProxy $hap does not route to $node"; exit 1; }
 done
 
 # Assert/Arrange: sync-standby подключён (предусловие P8: remote_apply у подписок
@@ -85,7 +85,7 @@ for pair in "s1a s1b" "s2a s2b"; do
     [ "$st" = "sync" ] && break
     sleep 1
   done
-  echo "  $master: sync-standby $rep → ${st:-нет}"
-  [ "$st" = "sync" ] || { echo "❌ $rep не sync-standby у $master (P8-предусловие)"; exit 1; }
+  echo "  $master: sync-standby $rep → ${st:-none}"
+  [ "$st" = "sync" ] || { echo "❌ $rep is not a sync-standby of $master (P8 precondition)"; exit 1; }
 done
-echo "✓ стенд поднят: $(docker exec s1a psql -U postgres -tAc 'show server_version' | tr -d ' ')"
+echo "✓ stand is up: $(docker exec s1a psql -U postgres -tAc 'show server_version' | tr -d ' ')"

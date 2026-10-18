@@ -24,8 +24,8 @@
 
 BUCKETS_ENV="${BUCKETS_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../configs/buckets" && pwd)/buckets.env}"
 if [ ! -r "$BUCKETS_ENV" ]; then
-  echo "❌ ОШИБКА: не найден конфиг $BUCKETS_ENV" >&2
-  echo "  Скопируй configs/buckets/buckets.env.example → buckets.env и заполни адреса." >&2
+  echo "❌ ERROR: config $BUCKETS_ENV not found" >&2
+  echo "  Copy configs/buckets/buckets.env.example → buckets.env and fill in the addresses." >&2
   exit 9
 fi
 # shellcheck disable=SC1090
@@ -47,13 +47,13 @@ CLUSTER_NAME="${CLUSTER_NAME:-}"
 
 info() { echo "✓ $*"; }
 step() { echo; echo ">>> $*"; }
-err()  { echo "❌ ОШИБКА: $*" >&2; }
+err()  { echo "❌ ERROR: $*" >&2; }
 
 # Бинарки, нужные на машине запуска (ops-боксе)
 require_bins() { # require_bins psql pg_dump ... — выход 9, если чего-то нет
   local b
   for b in "$@"; do
-    command -v "$b" >/dev/null 2>&1 || { err "не найден '$b' (нужен на машине запуска)"; exit 9; }
+    command -v "$b" >/dev/null 2>&1 || { err "'$b' not found (required on the machine running this)"; exit 9; }
   done
 }
 
@@ -64,12 +64,12 @@ valid_cluster() { [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]]; }
 cluster_set() { # $1 = значение --cluster: валидация + перекрытие env-дефолта
   CLUSTER_NAME="$1"
   valid_cluster "$CLUSTER_NAME" \
-    || { err "неверное имя кластера '$CLUSTER_NAME' (шаблон: ^[a-z][a-z0-9_-]*$)"; exit 2; }
+    || { err "invalid cluster name '$CLUSTER_NAME' (pattern: ^[a-z][a-z0-9_-]*$)"; exit 2; }
 }
 
 cluster_root() { # префикс кластера в etcd; отказ, если кластер не выбран
   [ -n "${CLUSTER_NAME:-}" ] \
-    || { err "кластер не задан: передай --cluster или CLUSTER_NAME в buckets.env"; exit 9; }
+    || { err "cluster not set: pass --cluster or set CLUSTER_NAME in buckets.env"; exit 9; }
   printf '/clusters/%s' "$CLUSTER_NAME"
 }
 
@@ -137,7 +137,7 @@ shard_dsn() { # $1 = имя шарда → полная DSN для psql/pg_dump 
   local d
   d="$(shard_dsn_base "$1")"
   [ -n "$d" ] \
-    || { err "для шарда '$1' нет DSN: ни в etcd ($(shard_key "$1")/dsn), ни SHARD_${1}_DSN в buckets.env"; exit 9; }
+    || { err "no DSN for shard '$1': neither in etcd ($(shard_key "$1")/dsn) nor SHARD_${1}_DSN in buckets.env"; exit 9; }
   dsn_with_password "$d" "$1"
 }
 
@@ -154,7 +154,7 @@ mover_conninfo() { # $1 = имя шарда → conninfo, по которому 
   fi
   v="MOVER_CONNINFO_${1}"
   local d2="${!v:-}"
-  [ -n "$d2" ] || { err "для шарда '$1' не задан ${v} в buckets.env (нужен для CREATE SUBSCRIPTION)"; exit 9; }
+  [ -n "$d2" ] || { err "${v} is not set in buckets.env for shard '$1' (needed for CREATE SUBSCRIPTION)"; exit 9; }
   printf '%s' "$d2"
 }
 
@@ -197,7 +197,7 @@ etcd_prefix_keys() { # <префикс> → ключи построчно
 
 etcd_alive() {
   ect get / --prefix --limit=1 -w json >/dev/null 2>&1 \
-    || { err "etcd недоступен: $ETCD_ENDPOINTS"; exit 9; }
+    || { err "etcd is unreachable: $ETCD_ENDPOINTS"; exit 9; }
 }
 
 # ── P12: снапшоты контрол-плейна ──────────────────────────────────────────────
@@ -209,17 +209,17 @@ etcd_alive() {
 etcd_snapshot() { # <label> → имя файла в выводе; код 1 = не снялся
   local dir="${SNAPSHOT_DIR:-/var/lib/etcd-snapshots}" f sz
   if [ ! -d "$dir" ]; then
-    echo "⚠️ P12: нет каталога снапшотов '$dir' (создай / укажи SNAPSHOT_DIR)"
+    echo "⚠️ P12: snapshot directory '$dir' does not exist (create it / set SNAPSHOT_DIR)"
     return 1
   fi
   # .snapshot — суффикс ставим сами: etcdctl пишет ровно по заданному пути
   f="$dir/snap-${CLUSTER_NAME:-default}-$(date -u +%Y%m%dT%H%M%SZ)-$1.snapshot"
   if ! ect snapshot save "$f" >/dev/null 2>&1; then
-    echo "⚠️ P12: etcdctl snapshot save НЕ удался (etcd недоступен?)"
+    echo "⚠️ P12: etcdctl snapshot save FAILED (etcd unreachable?)"
     return 1
   fi
   sz="$(ect snapshot status -w json "$f" 2>/dev/null | jq -r '.totalSize // "?"')"
-  info "P12: снапшот контрол-плейна → $f (${sz} байт)"
+  info "P12: control-plane snapshot → $f (${sz} bytes)"
 }
 
 jstr() { [ -n "${2:-}" ] && jq -r "$1 // empty" <<<"$2" 2>/dev/null || true; }
@@ -274,17 +274,17 @@ check_sync_standby() { # <dsn> <shard> — отказ (exit 3), если sync-st
   local names n
   names="$(poll_scalar "$1" 'SHOW synchronous_standby_names' 3)" || true
   if [ -z "$names" ]; then
-    err "на приёмнике '$2' пусто synchronous_standby_names — remote_apply подписки (P8) будет вырожден в асинхронность."
-    echo "  Настрой кластер приёмника: synchronous_standby_names + живая реплика (11-bucket-sharding.md §4)." >&2
+    err "synchronous_standby_names is empty on target '$2' — the subscription's remote_apply (P8) will degrade to async."
+    echo "  Configure the target cluster: synchronous_standby_names + a live replica (11-bucket-sharding.md §4)." >&2
     return 1
   fi
   n="$(poll_scalar "$1" "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')" 3)"
   if [ "$n" -lt 1 ]; then
-    err "у мастера приёмника '$2' нет подключённого sync-standby (pg_stat_replication пуст) — remote_apply (P8) не защищает."
-    echo "  Переезд требует здоровых ОБЕИХ кластеров: верни реплику приёмника и повтори." >&2
+    err "the target's primary '$2' has no connected sync-standby (pg_stat_replication is empty) — remote_apply (P8) gives no protection."
+    echo "  A move requires BOTH clusters to be healthy: restore the target's replica and retry." >&2
     return 1
   fi
-  info "P8: у приёмника '$2' есть sync-standby — подписка будет с synchronous_commit=$SUB_SYNCCOMMIT"
+  info "P8: target '$2' has a sync-standby — the subscription will run with synchronous_commit=$SUB_SYNCCOMMIT"
 }
 
 # ── P5/P8: сверка инвентаря и строк ───────────────────────────────────────────
@@ -305,10 +305,10 @@ verify_row_counts() { # <src_dsn> <dst_dsn> <schema>
   local src="$1" dst="$2" sch="$3" t c1 c2 bad=0
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    c1="$(poll_scalar "$src" "SELECT count(*) FROM $sch.$t" 5)" || { err "не посчитать $sch.$t на источнике"; return 1; }
-    c2="$(poll_scalar "$dst" "SELECT count(*) FROM $sch.$t" 5)" || { err "не посчитать $sch.$t на приёмнике"; return 1; }
+    c1="$(poll_scalar "$src" "SELECT count(*) FROM $sch.$t" 5)" || { err "cannot count $sch.$t on the source"; return 1; }
+    c2="$(poll_scalar "$dst" "SELECT count(*) FROM $sch.$t" 5)" || { err "cannot count $sch.$t on the target"; return 1; }
     if [ "$c1" != "$c2" ]; then
-      echo "  $sch.$t: источник=$c1 приёмник=$c2"
+      echo "  $sch.$t: source=$c1 target=$c2"
       bad=1
     fi
   done <<<"$(scalar "$src" "SELECT format('%I', c.relname)
@@ -328,15 +328,15 @@ sync_sequences_forward() { # <src_dsn> <dst_dsn> <schema> <label-src> — код
   seqs="$(scalar "$src" "SELECT s.relname FROM pg_class s
                          JOIN pg_namespace ns ON ns.oid=s.relnamespace
                          WHERE s.relkind='S' AND ns.nspname='$sch' ORDER BY 1")" || return 1
-  if [ -z "$seqs" ]; then info "sequences в '$sch' нет — пропускаю"; return 0; fi
+  if [ -z "$seqs" ]; then info "no sequences in '$sch' — skipping"; return 0; fi
   for seq in $seqs; do
     qseq="$(scalar "$src" "SELECT format('%I.%I', '$sch', '$seq')")" || return 1
     # последнее ВЫДАННОЕ на источнике: is_called→last_value, иначе last_value-1
     issued="$(scalar "$src" "SELECT CASE WHEN is_called THEN last_value ELSE last_value-1 END
                             FROM $qseq" 2>/dev/null)" \
-      || { echo "  ⚠️ не прочитался sequence $sch.$seq на '$srcl' — пропускаю"; continue; }
+      || { echo "  ⚠️ failed to read sequence $sch.$seq on '$srcl' — skipping"; continue; }
     if [ "$(scalar "$dst" "SELECT to_regclass('$sch.$seq') IS NOT NULL")" != "t" ]; then
-      err "у приёмника нет sequence $sch.$seq (дрейф схем, P5) — проверь DDL!"
+      err "the target has no sequence $sch.$seq (schema drift, P5) — check the DDL!"
       return 1
     fi
     # следующее, которое выдаст sequence приёмника: is_called→last_value+1, иначе last_value
@@ -344,9 +344,9 @@ sync_sequences_forward() { # <src_dsn> <dst_dsn> <schema> <label-src> — код
                           FROM $qseq")" || return 1
     if [ "$next" -le "$issued" ]; then
       scalar "$dst" "SELECT setval('$qseq', $issued, true)" >/dev/null || return 1
-      info "P6: $sch.$seq → setval($issued) на приёмнике (следующее $((issued + 1)) > выданного на '$srcl')"
+      info "P6: $sch.$seq → setval($issued) on the target (next $((issued + 1)) > issued on '$srcl')"
       fixed=1
     fi
   done
-  [ "$fixed" = 1 ] || info "P6: инвариант уже соблюдён — sequences не трогаю"
+  [ "$fixed" = 1 ] || info "P6: invariant already holds — leaving sequences untouched"
 }

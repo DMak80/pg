@@ -45,14 +45,14 @@ if command -v etcdctl >/dev/null 2>&1; then
   ETCDCTL_API=3 etcdctl --endpoints="$ETCD_ENDPOINTS" endpoint health --cluster 2>&1 \
     | sed 's/^/    /' || echo "    etcdctl failed"
 else
-  echo "    (etcdctl не установлен — пропускаю; используйте 'docker exec etcd etcdctl ...')"
+  echo "    (etcdctl is not installed — skipping; use 'docker exec etcd etcdctl ...')"
 fi
 echo
 
 # 4) patronictl list (если есть docker)
-echo "→ patronictl list (через контейнер postgres):"
+echo "→ patronictl list (via the postgres container):"
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^postgres$'; then
   docker exec -i postgres patronictl list 2>&1 | sed 's/^/    /' || true
 else
-  echo "    (контейнер 'postgres' не найден локально — запусти на ноде БД или используй scripts/patronictl.sh)"
+  echo "    (no local 'postgres' container — run on a DB node or use scripts/patronictl.sh)"
 fi

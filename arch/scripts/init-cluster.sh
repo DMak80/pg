@@ -48,14 +48,14 @@ Usage:
   $0 --cluster <C> --buckets <N> --dbname <DB> [--replicas <R>] \\
      --shard <name>=<DSN> [--shard <name>=<DSN> ...]
 
-  --cluster   имя создаваемого кластера (префикс /clusters/<C>/ в etcd)
-  --buckets   N — число бакетов, КОНСТАНТА на всю жизнь кластера (P18)
-  --dbname    имя базы PG (одна на кластер, создаётся заранее на шардах)
-  --replicas  декларативное число реплик шарда (дефолт 1; фактическое
-              настраивается в Patroni каждого шарда)
-  --shard     имя шарда = DSN его write-эндпоинта (без пароля; повторяемый).
-              DSN должен содержать host=, dbname= и user=. Пароль —
-              SHARD_<X>_PASSWORD в buckets.env, в etcd не попадает.
+  --cluster   name of the cluster being created (the /clusters/<C>/ prefix in etcd)
+  --buckets   N — number of buckets, a CONSTANT for the cluster's lifetime (P18)
+  --dbname    PG database name (one per cluster, created on the shards in advance)
+  --replicas  declarative number of shard replicas (default 1; the actual
+              number is configured in each shard's Patroni)
+  --shard     shard name = DSN of its write endpoint (no password; repeatable).
+              The DSN must contain host=, dbname= and user=. The password is
+              SHARD_<X>_PASSWORD in buckets.env, never stored in etcd.
 EOF
   exit 2
 }
@@ -63,8 +63,8 @@ EOF
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   local a=""
-  read -rp "$1 [введите YES]: " a
-  [ "${a:-}" = "YES" ] || { echo "Отменено."; exit 1; }
+  read -rp "$1 [type YES]: " a
+  [ "${a:-}" = "YES" ] || { echo "Cancelled."; exit 1; }
 }
 
 CLUSTER="" BUCKETS="" DBNAME="" REPLICAS="" ASSUME_YES=0
@@ -87,89 +87,89 @@ require_bins psql jq etcdctl
 cluster_set "$CLUSTER"
 valid_cluster "$CLUSTER_NAME" || usage
 
-[[ "$BUCKETS" =~ ^[1-9][0-9]*$ ]] || { err "--buckets: целое > 0 (получили '$BUCKETS')"; exit 2; }
+[[ "$BUCKETS" =~ ^[1-9][0-9]*$ ]] || { err "--buckets: integer > 0 (got '$BUCKETS')"; exit 2; }
 REPLICAS="${REPLICAS:-1}"
-[[ "$REPLICAS" =~ ^[0-9]+$ ]] || { err "--replicas: целое >= 0"; exit 2; }
-valid_dbname "$DBNAME" || { err "неверное имя БД '$DBNAME' (шаблон: ^[a-z_][a-z0-9_]*$)"; exit 2; }
+[[ "$REPLICAS" =~ ^[0-9]+$ ]] || { err "--replicas: integer >= 0"; exit 2; }
+valid_dbname "$DBNAME" || { err "invalid DB name '$DBNAME' (pattern: ^[a-z_][a-z0-9_]*$)"; exit 2; }
 
 # ── Шарды: разбор name=dsn, валидация имён/уникальности/DSN ───────────────────
 SHARD_NAMES=()
 declare -A SHARD_DSN=()
 for a in "${SHARD_ARGS[@]}"; do
   name="${a%%=*}"; dsn="${a#*=}"
-  [ "$name" != "$dsn" ] || { err "--shard: ожидает <имя>=<DSN> (получили '$a')"; exit 2; }
-  [[ "$name" =~ ^[a-z][a-z0-9_]*$ ]] || { err "неверное имя шарда '$name'"; exit 2; }
-  [ -z "${SHARD_DSN[$name]:-}" ] || { err "шард '$name' указан дважды"; exit 2; }
+  [ "$name" != "$dsn" ] || { err "--shard: expects <name>=<DSN> (got '$a')"; exit 2; }
+  [[ "$name" =~ ^[a-z][a-z0-9_]*$ ]] || { err "invalid shard name '$name'"; exit 2; }
+  [ -z "${SHARD_DSN[$name]:-}" ] || { err "shard '$name' specified twice"; exit 2; }
   dsn="$(dsn_strip_password "$dsn")"
   grep -qE '(^| )host=' <<<"$dsn" && grep -qE '(^| )dbname=' <<<"$dsn" && grep -qE '(^| )user=' <<<"$dsn" \
-    || { err "DSN шарда '$name' обязан содержать host=, dbname= и user=: '$dsn'"; exit 2; }
+    || { err "shard '$name' DSN must contain host=, dbname= and user=: '$dsn'"; exit 2; }
   SHARD_NAMES+=("$name"); SHARD_DSN["$name"]="$dsn"
 done
 S_COUNT="${#SHARD_NAMES[@]}"
 
 # ── 1) Guards контрол-плейна ─────────────────────────────────────────────────
-step "1) Проверки etcd"
+step "1) etcd checks"
 etcd_alive
 if [ -n "$(etcd_prefix_keys "$(cluster_root)")" ]; then
-  err "префикс $(cluster_root) не пуст — кластер '$CLUSTER_NAME' уже инициализирован (или её остатки)."
-  echo "  Константы неизменяемы (P18). Полуинициализированный префикс (схем ещё нет):" >&2
-  echo "    etcdctl del $(cluster_root) --prefix   — и повтори init." >&2
+  err "prefix $(cluster_root) is not empty — cluster '$CLUSTER_NAME' is already initialized (or its leftovers remain)."
+  echo "  Constants are immutable (P18). A half-initialized prefix (no schemas yet):" >&2
+  echo "    etcdctl del $(cluster_root) --prefix   — then rerun init." >&2
   exit 3
 fi
-info "префикс $(cluster_root) пуст"
+info "prefix $(cluster_root) is empty"
 
 # ── 2) Шарды доступны, БД существует ─────────────────────────────────────────
-step "2) Проверка доступности шардов и БД '$DBNAME'"
+step "2) Checking shard and DB '$DBNAME' availability"
 for s in "${SHARD_NAMES[@]}"; do
   dsn="$(dsn_with_password "${SHARD_DSN[$s]}" "$s")"
   if [ "$(poll_scalar "$dsn" 'SELECT 1' 3)" != "1" ]; then
-    err "шард '$s' недоступен по DSN (пароль: SHARD_${s}_PASSWORD в buckets.env, если нужен)"
+    err "shard '$s' is unreachable via DSN (password: SHARD_${s}_PASSWORD in buckets.env, if needed)"
     exit 3
   fi
-  info "шард '$s': доступен ($(grep -oE 'host=[^ ]+' <<<"${SHARD_DSN[$s]}"))"
+  info "shard '$s': reachable ($(grep -oE 'host=[^ ]+' <<<"${SHARD_DSN[$s]}"))"
 done
 
 # ── 3) Схемы bucket_0..N-1: существующих (непустых) быть не должно ────────────
-step "3) Проверка схем bucket_0..bucket_$((BUCKETS - 1))"
+step "3) Checking schemas bucket_0..bucket_$((BUCKETS - 1))"
 bucket_shard() { printf '%s' "${SHARD_NAMES[$(( $1 % S_COUNT ))]}"; }
 for s in "${SHARD_NAMES[@]}"; do
   clash="$(scalar "$(dsn_with_password "${SHARD_DSN[$s]}" "$s")" \
-    "SELECT string_agg(format('%s (%s объектов)', n.nspname,
+    "SELECT string_agg(format('%s (%s objects)', n.nspname,
             (SELECT count(*) FROM pg_class c WHERE c.relnamespace=n.oid)), ', ')
      FROM pg_namespace n
      WHERE n.nspname LIKE 'bucket_%' AND n.nspname ~ '^bucket_[0-9]+$'
        AND substr(n.nspname, 8)::int < $BUCKETS")" || clash=""
   [ -z "$clash" ] || {
-    err "на '$s' уже есть схемы диапазона: $clash"
-    echo "  Инициализируем чистые схемы: очисти их или выбери другое имя кластера/БД." >&2
+    err "'$s' already has range schemas: $clash"
+    echo "  Initialization expects clean schemas: drop them or choose another cluster/DB name." >&2
     exit 3
   }
 done
-info "существующих схем диапазона нет"
+info "no existing range schemas"
 
 # ── 4) План ──────────────────────────────────────────────────────────────────
 per=$(( BUCKETS / S_COUNT )); rem=$(( BUCKETS % S_COUNT ))
-step "4) План"
-echo "  кластер:     $CLUSTER_NAME  (etcd: $(cluster_root))"
-echo "  константы:   бакетов N=$BUCKETS (bucket_0..bucket_$((BUCKETS - 1))), БД '$DBNAME'"
-echo "  шарды:       $S_COUNT, декларативно реплик: $REPLICAS"
+step "4) Plan"
+echo "  cluster:     $CLUSTER_NAME  (etcd: $(cluster_root))"
+echo "  constants:   buckets N=$BUCKETS (bucket_0..bucket_$((BUCKETS - 1))), DB '$DBNAME'"
+echo "  shards:      $S_COUNT, declarative replicas: $REPLICAS"
 for s in "${SHARD_NAMES[@]}"; do
   echo "    $s: ${SHARD_DSN[$s]}"
 done
-echo "  распределение поровну (round-robin):"
+echo "  even distribution (round-robin):"
 for i in "${!SHARD_NAMES[@]}"; do
   s="${SHARD_NAMES[$i]}"; n="$per"; [ "$i" -lt "$rem" ] && n=$((per + 1))
-  echo "    $s: $n бакет(ов)"
+  echo "    $s: $n bucket(s)"
 done
 if [ -n "${APP_ROLE:-}" ]; then
-  echo "  app-роль:    $APP_ROLE (CREATE ROLE если нет + GRANT USAGE на схемы)"
+  echo "  app role:    $APP_ROLE (CREATE ROLE if missing + GRANT USAGE on schemas)"
 else
-  echo "  app-роль:    не задана (гранты выдашь позже по §4 доки 11)"
+  echo "  app role:    not set (grant later per §4 of doc 11)"
 fi
-confirm "Инициализировать кластер '$CLUSTER_NAME'?"
+confirm "Initialize cluster '$CLUSTER_NAME'?"
 
 # ── 5) Схемы + гранты (идемпотентно) ─────────────────────────────────────────
-step "5) Создание схем и грантов"
+step "5) Creating schemas and grants"
 for s in "${SHARD_NAMES[@]}"; do
   dsn="$(dsn_with_password "${SHARD_DSN[$s]}" "$s")"
   ddl=""; grant=""
@@ -178,21 +178,21 @@ for s in "${SHARD_NAMES[@]}"; do
     ddl+="CREATE SCHEMA IF NOT EXISTS bucket_$i; "
     grant+="GRANT USAGE ON SCHEMA bucket_$i TO $APP_ROLE; "
   done
-  sql "$dsn" "$ddl" || { err "не удалось создать схемы на '$s'"; exit 4; }
-  info "схемы на '$s' готовы"
+  sql "$dsn" "$ddl" || { err "failed to create schemas on '$s'"; exit 4; }
+  info "schemas on '$s' are ready"
   if [ -n "${APP_ROLE:-}" ]; then
-    valid_bucket "$APP_ROLE" || { err "APP_ROLE='$APP_ROLE' не похоже на имя роли"; exit 9; }
+    valid_bucket "$APP_ROLE" || { err "APP_ROLE='$APP_ROLE' does not look like a role name"; exit 9; }
     if [ "$(scalar "$dsn" "SELECT count(*) FROM pg_roles WHERE rolname='$APP_ROLE'")" = "0" ]; then
       sql "$dsn" "CREATE ROLE $APP_ROLE LOGIN" || exit 4
-      info "роль $APP_ROLE создана на '$s'"
+      info "role $APP_ROLE created on '$s'"
     fi
-    sql "$dsn" "$grant" || { err "не удалось выдать гранты на '$s'"; exit 4; }
-    info "GRANT USAGE на схемы — $APP_ROLE"
+    sql "$dsn" "$grant" || { err "failed to issue grants on '$s'"; exit 4; }
+    info "GRANT USAGE on schemas — $APP_ROLE"
   fi
 done
 
 # ── 6) Регистрация в etcd ────────────────────────────────────────────────────
-step "6) Регистрация в etcd"
+step "6) Registration in etcd"
 now="$(date +%s)"
 config_json="$(jq -n --argjson n "$BUCKETS" --arg db "$DBNAME" --argjson ts "$now" \
   '{buckets:$n, dbname:$db, created_unix:$ts}')"
@@ -206,10 +206,10 @@ for (( i = 0; i < BUCKETS; i++ )); do
 done
 info "$(config_key) = $config_json"
 info "shards: ${SHARD_NAMES[*]} (dsn + replicas=$REPLICAS)"
-echo "  routing: $BUCKETS ключей $(cluster_root)/buckets/routing/bucket_0..$((BUCKETS - 1))"
+echo "  routing: $BUCKETS keys $(cluster_root)/buckets/routing/bucket_0..$((BUCKETS - 1))"
 
 echo
-echo "Готово: кластер '$CLUSTER_NAME' инициализирован ($BUCKETS бакетов, БД '$DBNAME')."
-echo "  Подключить шард:        ./add-shard.sh --cluster $CLUSTER_NAME <шард> --dsn '<...>'"
-echo "  Мигрировать бакет:      ./move-bucket.sh --cluster $CLUSTER_NAME move <бакет> --to <шард>"
-echo "  Снять пустой шард:      ./remove-shard.sh --cluster $CLUSTER_NAME <шард>"
+echo "Done: cluster '$CLUSTER_NAME' initialized ($BUCKETS buckets, DB '$DBNAME')."
+echo "  Add a shard:            ./add-shard.sh --cluster $CLUSTER_NAME <shard> --dsn '<...>'"
+echo "  Migrate a bucket:       ./move-bucket.sh --cluster $CLUSTER_NAME move <bucket> --to <shard>"
+echo "  Remove an empty shard:  ./remove-shard.sh --cluster $CLUSTER_NAME <shard>"

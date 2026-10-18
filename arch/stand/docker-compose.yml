@@ -66,7 +66,7 @@ services:
         set -e
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           while ! pg_basebackup -h s1a -U postgres -D "$$PGDATA" -X stream -R -C -S s1b_phys; do
-            echo "s1b: жду s1a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+            echo "s1b: waiting for s1a (initialization/hba)..."; sleep 2; rm -rf "$$PGDATA"
           done
           chmod 700 "$$PGDATA"
           sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres application_name=s1b'|" \
@@ -149,7 +149,7 @@ services:
           for i in $$(seq 1 15); do
             if pg_isready -h s2b -U postgres -q 2>/dev/null \
                && [ "$$(psql -h s2b -U postgres -d postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ]; then
-              echo "s2a: клонируюсь от мастера s2b"
+              echo "s2a: cloning from master s2b"
               rm -rf "$$PGDATA"
               psql -h s2b -U postgres -d postgres -tAc "select pg_drop_replication_slot('s2a_phys')" >/dev/null 2>&1 || true
               pg_basebackup -h s2b -U postgres -D "$$PGDATA" -X stream -R -C -S s2a_phys
@@ -161,7 +161,7 @@ services:
             sleep 1
           done
           if [ "$$cloned" = 0 ]; then
-            echo "s2a: peer s2b не мастер — первый старт, initdb-мастер"
+            echo "s2a: peer s2b is not the master — first start, initdb master"
             exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 \
                  -c max_replication_slots=16 -c max_slot_wal_keep_size=32MB
           fi
@@ -186,7 +186,7 @@ services:
         set -e
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           while ! pg_basebackup -h s2a -U postgres -D "$$PGDATA" -X stream -R -C -S s2b_phys; do
-            echo "s2b: жду s2a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+            echo "s2b: waiting for s2a (initialization/hba)..."; sleep 2; rm -rf "$$PGDATA"
           done
           chmod 700 "$$PGDATA"
           sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2a port=5432 user=postgres dbname=postgres application_name=s2b'|" \

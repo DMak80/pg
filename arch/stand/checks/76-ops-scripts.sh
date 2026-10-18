@@ -33,83 +33,83 @@ ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # ═══ Arrange 0: предусловие — состояние после 74-го ═══════════════════════════
 [ "$(h2 -c 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ] \
-  || { echo "❌ hap2 не ведёт на мастера s2a — запусти после 74-го"; exit 1; }
+  || { echo "❌ hap2 does not route to master s2a — run after check 74"; exit 1; }
 [ "$(docker exec s2b psql -U postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "t" ] \
-  || { echo "❌ s2b не реплика — запусти после 74-го"; exit 1; }
+  || { echo "❌ s2b is not a replica — run after check 74"; exit 1; }
 [ "$(ect get /clusters/gamma/buckets/routing/bucket_0 --print-value-only 2>/dev/null)" = "s2" ] \
-  || { echo "❌ gamma не в пост-74 состоянии — запусти после 74-го"; exit 1; }
-echo "  предусловия: s2a мастер + s2b реплика, gamma жива (bucket_0 → s2) ✓"
+  || { echo "❌ gamma is not in the post-74 state — run after check 74"; exit 1; }
+echo "  preconditions: s2a master + s2b replica, gamma alive (bucket_0 → s2) ✓"
 
 # ═══ Act 1: синтаксис всех ops-скриптов ════════════════════════════════════════
-echo ">>> Act 1: bash -n всех arch/scripts/*.sh (patronictl/switchover/rebuild-node на стенде не запускаются — нет Patroni)"
+echo ">>> Act 1: bash -n of all arch/scripts/*.sh (patronictl/switchover/rebuild-node do not run on the stand — no Patroni)"
 for f in ../scripts/*.sh; do
-  bash -n "$f" || { echo "❌ синтаксис $f"; exit 1; }
+  bash -n "$f" || { echo "❌ syntax error in $f"; exit 1; }
 done
-echo "  синтаксис ок: $(ls ../scripts/*.sh | wc -l | tr -d ' ') скриптов ✓"
+echo "  syntax ok: $(ls ../scripts/*.sh | wc -l | tr -d ' ') scripts ✓"
 
 # ═══ Act 2: Patroni-REST скрипты против сайдкаров (эмуляция Patroni API) ══════
-echo ">>> Act 2: find-leader / get-role / health / cluster-state (сайдкары = Patroni REST)"
+echo ">>> Act 2: find-leader / get-role / health / cluster-state (sidecars = Patroni REST)"
 
 # find-leader: etcd-DCS (/service/* на стенде нет) и Patroni /cluster (сайдкар
 # не отдаёт) отпадают — лидер находится опросом /primary (200 только у мастера)
 out="$(rest find-leader.sh)"
-grep -q 'Leader = s2a' <<<"$out" || { echo "❌ find-leader не нашёл s2a: $out"; exit 1; }
-grep -q 'source: patroni /primary == 200' <<<"$out" || { echo "❌ find-leader не через /primary: $out"; exit 1; }
-echo "  find-leader: Leader = s2a (fallback-цепочка дошла до /primary) ✓"
+grep -q 'Leader = s2a' <<<"$out" || { echo "❌ find-leader did not find s2a: $out"; exit 1; }
+grep -q 'source: patroni /primary == 200' <<<"$out" || { echo "❌ find-leader did not use /primary: $out"; exit 1; }
+echo "  find-leader: Leader = s2a (the fallback chain reached /primary) ✓"
 
 # get-role: мастер rc=0, реплика rc=1 (коды — контракт для скриптов мониторинга)
 out="$(rest get-role.sh s2a)"
 grep -q 's2a: MASTER (leader)' <<<"$out" || { echo "❌ get-role s2a: $out"; exit 1; }
 rc=0; out="$(rest get-role.sh s2b)" || rc=$?
-[ "$rc" = 1 ] || { echo "❌ get-role s2b: ждали rc=1 (REPLICA), получили $rc"; exit 1; }
+[ "$rc" = 1 ] || { echo "❌ get-role s2b: expected rc=1 (REPLICA), got $rc"; exit 1; }
 grep -q 's2b: REPLICA' <<<"$out" || { echo "❌ get-role s2b: $out"; exit 1; }
 echo "  get-role: s2a=MASTER (rc 0), s2b=REPLICA (rc 1) ✓"
 
 # health: стендовой etcd ОДИН — кворума 2/3 нет, health честно ругается (ровно
 # 1 проблема); лидер один, API отвечают. В проде etcd x3 — эта ветка зелёная.
 rc=0; out="$(rest health.sh)" || rc=$?
-[ "$rc" = 1 ] || { echo "❌ health: ждали rc=1 (одиночный etcd без кворума), получили $rc"; exit 1; }
-grep -q 'etcd: кворума НЕТ' <<<"$out" || { echo "❌ health не заметил одиночный etcd: $out"; exit 1; }
-grep -q 'лидер: ровно один (s2a)' <<<"$out" || { echo "❌ health: лидер не один: $out"; exit 1; }
-grep -q 'RESULT: PROBLEMS (1)' <<<"$out" || { echo "❌ health: проблем не одна? $out"; exit 1; }
-echo "  health: ровно 1 проблема — кворум etcd (стенд одиночный — честно); лидер/API ок ✓"
+[ "$rc" = 1 ] || { echo "❌ health: expected rc=1 (a single etcd without quorum), got $rc"; exit 1; }
+grep -q 'etcd: NO quorum' <<<"$out" || { echo "❌ health did not notice the single etcd: $out"; exit 1; }
+grep -q 'leader: exactly one (s2a)' <<<"$out" || { echo "❌ health: the leader is not single: $out"; exit 1; }
+grep -q 'RESULT: PROBLEMS (1)' <<<"$out" || { echo "❌ health: the problem count is not 1? $out"; exit 1; }
+echo "  health: exactly 1 problem — etcd quorum (a single-node stand, honestly reported); leader/API ok ✓"
 
 # cluster-state: сводка не падает, лидер и etcd-health в выводе (JSON-ролей
 # сайдкар не отдаёт — колонки ролей пусты, ограничение эмуляции; patronictl-
 # блок отрабатывает graceful — docker на ops-машине не ставится)
 out="$(rest cluster-state.sh)"
-grep -q 'Leader = s2a' <<<"$out" || { echo "❌ cluster-state без лидера: $out"; exit 1; }
-grep -q 'is healthy' <<<"$out" || { echo "❌ cluster-state: etcd health не показан: $out"; exit 1; }
-echo "  cluster-state: лидер + etcd health в сводке ✓"
+grep -q 'Leader = s2a' <<<"$out" || { echo "❌ cluster-state without a leader: $out"; exit 1; }
+grep -q 'is healthy' <<<"$out" || { echo "❌ cluster-state: etcd health not shown: $out"; exit 1; }
+echo "  cluster-state: leader + etcd health in the summary ✓"
 
 # ═══ Act 3: restore-system.sh (P22) — plan + run на живой системе ══════════════
-echo ">>> Act 3: restore-system.sh plan/run (кластер gamma, всё живо)"
+echo ">>> Act 3: restore-system.sh plan/run (the gamma cluster, everything alive)"
 out="$(ops restore-system.sh --cluster gamma plan 2>&1)"
-grep -q 'etcd: доступен' <<<"$out" || { echo "❌ plan: etcd не увиден: $out"; exit 1; }
-grep -q 'инициализирован (N=4' <<<"$out" || { echo "❌ plan: кластер не увиден: $out"; exit 1; }
-grep -q "шард 's1': доступен" <<<"$out" || { echo "❌ plan: s1 недоступен: $out"; exit 1; }
-grep -q "шард 's2': доступен" <<<"$out" || { echo "❌ plan: s2 недоступен: $out"; exit 1; }
-echo "  plan: etcd доступен, кластер инициализирован, оба шарда доступны ✓"
+grep -q 'etcd: reachable' <<<"$out" || { echo "❌ plan: etcd not seen: $out"; exit 1; }
+grep -q 'initialized (N=4' <<<"$out" || { echo "❌ plan: cluster not seen: $out"; exit 1; }
+grep -q "shard 's1': reachable" <<<"$out" || { echo "❌ plan: s1 unreachable: $out"; exit 1; }
+grep -q "shard 's2': reachable" <<<"$out" || { echo "❌ plan: s2 unreachable: $out"; exit 1; }
+echo "  plan: etcd reachable, cluster initialized, both shards reachable ✓"
 
 ops restore-system.sh --cluster gamma run 2>&1 | tee logs/76-run.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-grep -q 'restore не требуется' logs/76-run.log || { echo "❌ run: живой etcd не должен ресторить"; exit 1; }
-grep -q 'карта согласована — восстановление завершено' logs/76-run.log \
-  || { echo "❌ run: не дошёл до конца"; exit 1; }
+grep -q 'no restore needed' logs/76-run.log || { echo "❌ run: a live etcd must not restore"; exit 1; }
+grep -q 'the map is consistent — restore finished' logs/76-run.log \
+  || { echo "❌ run: did not reach the end"; exit 1; }
 [ "$(ect get /clusters/gamma/buckets/routing/bucket_0 --print-value-only)" = "s2" ] \
-  || { echo "❌ run изменил routing (не должен)"; exit 1; }
-echo "  run: шаги 1–3 пройдены, verify зелёный, routing не тронут ✓"
+  || { echo "❌ run changed routing (it must not)"; exit 1; }
+echo "  run: steps 1–3 passed, verify green, routing untouched ✓"
 
 # ═══ Act 4: потеря контрол-плейна — диагностика и отказ-путь ═══════════════════
-echo ">>> Act 4: etcd остановлен — plan указывает шаг 1; run --snapshot честно завершается кодом 3"
+echo ">>> Act 4: etcd stopped — plan points to step 1; run --snapshot honestly exits with code 3"
 ops restore-cluster.sh --cluster gamma snapshot check76 >/dev/null 2>&1
 snap="$(ls -t snapshots/snap-gamma-*check76.snapshot | head -1)"
-[ -n "$snap" ] || { echo "❌ снапшот check76 не снялся"; exit 1; }
-echo "  снапшот на случай: $(basename "$snap")"
+[ -n "$snap" ] || { echo "❌ the check76 snapshot was not taken"; exit 1; }
+echo "  a just-in-case snapshot: $(basename "$snap")"
 
 docker compose stop etcd >/dev/null 2>&1
 out="$(ops restore-system.sh --cluster gamma plan 2>&1)"
-grep -q 'etcd НЕдоступен' <<<"$out" || { echo "❌ plan не заметил потерю etcd: $out"; exit 1; }
-echo "  plan на остановленном etcd: «etcd НЕдоступен — шаг 1: поднять слой + restore» ✓"
+grep -q 'etcd is UNREACHABLE' <<<"$out" || { echo "❌ plan did not notice the etcd loss: $out"; exit 1; }
+echo "  plan on a stopped etcd: 'etcd is UNREACHABLE — step 1: bring the layer up + restore' ✓"
 
 # run --snapshot: делегат restore-cluster restore на ops-машине БЕЗ docker
 # печатает прод-процедуру и не восстанавливает — run завершается кодом 3
@@ -117,12 +117,12 @@ echo "  plan на остановленном etcd: «etcd НЕдоступен �
 # docker-автоматикой с хоста стенда проверен чеком 74)
 rc=0; ops restore-system.sh --cluster gamma run --snapshot "/snapshots/$(basename "$snap")" --yes \
       >logs/76-run-snap.log 2>&1 || rc=$?
-[ "$rc" = 3 ] || { echo "❌ run --snapshot: ждали rc=3, получили $rc"; cat logs/76-run-snap.log; exit 1; }
-grep -q 'процедура восстановления etcd' logs/76-run-snap.log \
-  || { echo "❌ делегат не напечатал прод-процедуру"; cat logs/76-run-snap.log; exit 1; }
-grep -q 'всё ещё недоступен' logs/76-run-snap.log \
-  || { echo "❌ run не отказался после невосстановления"; cat logs/76-run-snap.log; exit 1; }
-echo "  run --snapshot: делегирование → прод-процедура → честный отказ (rc=3) ✓"
+[ "$rc" = 3 ] || { echo "❌ run --snapshot: expected rc=3, got $rc"; cat logs/76-run-snap.log; exit 1; }
+grep -q 'etcd restore procedure' logs/76-run-snap.log \
+  || { echo "❌ the delegate did not print the prod procedure"; cat logs/76-run-snap.log; exit 1; }
+grep -q 'still unreachable' logs/76-run-snap.log \
+  || { echo "❌ run did not refuse after the failed restore"; cat logs/76-run-snap.log; exit 1; }
+echo "  run --snapshot: delegation → prod procedure → an honest refusal (rc=3) ✓"
 
 docker compose start etcd >/dev/null 2>&1
 ok=""
@@ -130,13 +130,13 @@ for _ in $(seq 1 30); do
   docker exec etcd etcdctl --endpoints=http://localhost:2379 endpoint health >/dev/null 2>&1 && { ok=1; break; }
   sleep 1
 done
-[ -n "$ok" ] || { echo "❌ etcd не вернулся после start"; exit 1; }
+[ -n "$ok" ] || { echo "❌ etcd did not come back after start"; exit 1; }
 
 ops restore-system.sh --cluster gamma run 2>&1 | tee logs/76-run-after.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-grep -q 'карта согласована — восстановление завершено' logs/76-run-after.log \
-  || { echo "❌ повторный run не дошёл до конца"; exit 1; }
-echo "  etcd возвращён → run довёл восстановление до зелёного verify ✓"
+grep -q 'the map is consistent — restore finished' logs/76-run-after.log \
+  || { echo "❌ the repeated run did not reach the end"; exit 1; }
+echo "  etcd returned → run carried the restore to a green verify ✓"
 
-echo "✓ ops-скрипты на стенде: REST-скрипты работают через сайдкары (эмуляция"
-echo "  Patroni API); restore-system.sh (P22): plan/run на живой системе, диагностика"
-echo "  потери etcd, отказ-путь делегирования без docker и доведение после возврата"
+echo "✓ ops scripts on the stand: the REST scripts work via sidecars (Patroni API emulation);"
+echo "  restore-system.sh (P22): plan/run on a live system, etcd-loss diagnostics,"
+echo "  the no-docker delegation refusal path, and completion after etcd returns"

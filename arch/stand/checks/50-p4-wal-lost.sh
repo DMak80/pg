@@ -33,9 +33,9 @@ for i in $(seq 1 15); do
   a="$(q -c "select active from pg_replication_slots where slot_name='stuck_move'")"
   [ "$a" = "t" ] && break; sleep 1
 done
-echo "— слот создан, «зависший подписчик» подключён (active=$a, подтверждений нет):"
+echo "— slot created, the 'stuck subscriber' connected (active=$a, no confirmations):"
 q -c "select slot_name, active, wal_status from pg_replication_slots where slot_name='stuck_move';"
-[ "$a" = "t" ] || { echo "❌ потребитель не подключился: $(docker exec s1b cat /tmp/sc.log 2>/dev/null)"; exit 1; }
+[ "$a" = "t" ] || { echo "❌ the consumer did not connect: $(docker exec s1b cat /tmp/sc.log 2>/dev/null)"; exit 1; }
 
 # Act: пачки несжимаемого WAL (~28МБ) + checkpoint → ждём wal_status='lost'
 st=""
@@ -51,14 +51,14 @@ for i in 1 2 3 4 5 6; do
 done
 
 # Assert
-echo "— итоговое состояние слота:"
+echo "— final slot state:"
 q -c "select slot_name, active, wal_status, safe_wal_size from pg_replication_slots where slot_name='stuck_move';"
-[ "$st" = "lost" ] || { echo "❌ слот не инвалидировался (wal_status=$st)"; exit 1; }
-echo "  ✓ wal_status='lost': умер ПЕРЕЕЗД, а не шард"
-echo "— шард жив: запись и чтение работают"
+[ "$st" = "lost" ] || { echo "❌ the slot was not invalidated (wal_status=$st)"; exit 1; }
+echo "  ✓ wal_status='lost': the MOVE died, not the shard"
+echo "— the shard is alive: writes and reads work"
 q -c "CREATE TABLE p4_alive(id int); INSERT INTO p4_alive VALUES (1); SELECT count(*) FROM p4_alive; DROP TABLE p4_alive;"
-echo "— уборка (= move-bucket.sh rollback): срезаем слот и артефакты, WAL освобождается"
+echo "— cleanup (= move-bucket.sh rollback): dropping the slot and artifacts, WAL is released"
 docker exec s1b pkill -f slowconsumer 2>/dev/null || true
 q -c "SELECT pg_drop_replication_slot('stuck_move');" >/dev/null
 q -c "DROP TABLE walgen; DROP PUBLICATION pub_p4;" >/dev/null
-echo "✓ P4 подтверждён: изоляция взрыва WAL работает"
+echo "✓ P4 verified: WAL blast-radius isolation works"

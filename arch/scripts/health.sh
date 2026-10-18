@@ -27,12 +27,12 @@ echo "Health check @ $(date -u +%FT%TZ):"
 if command -v etcdctl >/dev/null 2>&1; then
   healthy="$(ETCDCTL_API=3 etcdctl --endpoints="$ETCD_ENDPOINTS" endpoint health --cluster 2>/dev/null | grep -c 'is healthy' || echo 0)"
   if [ "$healthy" -ge 2 ]; then
-    ok "etcd: кворум есть ($healthy/3 healthy)"
+    ok "etcd: quorum present ($healthy/3 healthy)"
   else
-    warn "etcd: кворума НЕТ (healthy=$healthy/3)"
+    warn "etcd: NO quorum (healthy=$healthy/3)"
   fi
 else
-  ok "etcd: (etcdctl нет — пропускается)"
+  ok "etcd: (no etcdctl — skipped)"
 fi
 
 # --- должен быть ровно один лидер ---
@@ -46,11 +46,11 @@ for h in $ALL_NODES; do
   fi
 done
 if [ "$primary_count" -eq 1 ]; then
-  ok "лидер: ровно один ($primary_node)"
+  ok "leader: exactly one ($primary_node)"
 elif [ "$primary_count" -eq 0 ]; then
-  warn "лидер: НЕТ (кластер без мастера)"
+  warn "leader: NONE (cluster without a primary)"
 else
-  warn "лидер: БОЛЬШЕ ОДНОГО ($primary_count) — возможен split-brain!"
+  warn "leader: MORE THAN ONE ($primary_count) — possible split-brain!"
 fi
 
 # --- все Patroni API отвечают ---
@@ -60,9 +60,9 @@ for h in $ALL_NODES; do
   [ "$code" = "200" ] && alive=$((alive+1))
 done
 if [ "$alive" -ge 2 ]; then
-  ok "Patroni API: $alive/3 нод отвечают"
+  ok "Patroni API: $alive/3 nodes responding"
 else
-  warn "Patroni API: только $alive/3 нод отвечают (< 2 — нет большинства)"
+  warn "Patroni API: only $alive/3 nodes responding (< 2 — no majority)"
 fi
 
 echo

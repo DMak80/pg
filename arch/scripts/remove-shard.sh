@@ -34,8 +34,8 @@ EOF
 confirm() {
   [ "$ASSUME_YES" = 1 ] && return 0
   local a=""
-  read -rp "$1 [введите YES]: " a
-  [ "${a:-}" = "YES" ] || { echo "Отменено."; exit 1; }
+  read -rp "$1 [type YES]: " a
+  [ "${a:-}" = "YES" ] || { echo "Cancelled."; exit 1; }
 }
 
 CLUSTER="" SHARD="" ASSUME_YES=0
@@ -51,17 +51,17 @@ done
 require_bins jq etcdctl
 [ -n "$CLUSTER" ] && [ -n "$SHARD" ] || usage
 cluster_set "$CLUSTER"
-[[ "$SHARD" =~ ^[a-z][a-z0-9_]*$ ]] || { err "неверное имя шарда '$SHARD'"; exit 2; }
+[[ "$SHARD" =~ ^[a-z][a-z0-9_]*$ ]] || { err "invalid shard name '$SHARD'"; exit 2; }
 
 step "1) Guards"
 etcd_alive
 [ -n "$(cluster_config)" ] \
-  || { err "кластер '$CLUSTER_NAME' не инициализирован: нет $(config_key)"; exit 3; }
+  || { err "cluster '$CLUSTER_NAME' is not initialized: $(config_key) missing"; exit 3; }
 [ -n "$(etcd_value "$(shard_key "$SHARD")/dsn")" ] \
-  || { err "шард '$SHARD' не зарегистрирован в кластере '$CLUSTER_NAME'"; exit 3; }
-info "шард '$SHARD' зарегистрирован"
+  || { err "shard '$SHARD' is not registered in cluster '$CLUSTER_NAME'"; exit 3; }
+info "shard '$SHARD' is registered"
 
-step "2) Инвариант P23: шард обязан быть ПУСТЫМ"
+step "2) P23 invariant: the shard must be EMPTY"
 # (обход через if: "[ ... ] && echo" последней итерацией вернул бы 1 и уронил
 #  пайп целиком под set -o pipefail)
 owners=""
@@ -71,11 +71,11 @@ while IFS= read -r k; do
   if [ "$v" = "$SHARD" ]; then owners+="${k##*/} "; fi
 done <<<"$(etcd_prefix_keys "$(cluster_root)/buckets/routing/")"
 if [ -n "$owners" ]; then
-  err "на шарде '$SHARD' есть бакеты: $owners"
-  echo "  Сначала мигрируй их:  ./move-bucket.sh --cluster $CLUSTER_NAME move <бакет> --to <другой шард>" >&2
+  err "shard '$SHARD' still has buckets: $owners"
+  echo "  Migrate them first:  ./move-bucket.sh --cluster $CLUSTER_NAME move <bucket> --to <another shard>" >&2
   exit 3
 fi
-info "routing: бакетов на шарде нет"
+info "routing: no buckets on the shard"
 moves=""
 while IFS= read -r k; do
   [ -n "$k" ] || continue
@@ -83,20 +83,20 @@ while IFS= read -r k; do
   if [ "$t" = "$SHARD" ]; then moves+="${k##*/} "; fi
 done <<<"$(etcd_prefix_keys "$(cluster_root)/buckets/status/")"
 if [ -n "$moves" ]; then
-  err "есть незавершённые переезды с target='$SHARD': $moves"
-  echo "  Заверши или отмени их (move-bucket.sh / abort-move.sh) и повтори." >&2
+  err "unfinished moves with target='$SHARD' exist: $moves"
+  echo "  Finish or abort them (move-bucket.sh / abort-move.sh) and retry." >&2
   exit 3
 fi
-info "status: незавершённых переездов на шард нет"
+info "status: no unfinished moves to the shard"
 
-step "3) Удаление регистрации"
-confirm "Отключить шард '$SHARD' от кластера '$CLUSTER_NAME'? (контрол-плейн only)"
+step "3) Removing registration"
+confirm "Detach shard '$SHARD' from cluster '$CLUSTER_NAME'? (control plane only)"
 ect del "$(shard_key "$SHARD")/dsn" >/dev/null
 ect del "$(shard_key "$SHARD")/replicas" >/dev/null 2>&1 || true
 ect del "$(shard_key "$SHARD")/master" >/dev/null 2>&1 || true
-info "ключи $(shard_key "$SHARD")/{dsn,replicas,master} удалены"
+info "keys $(shard_key "$SHARD")/{dsn,replicas,master} deleted"
 
 echo
-echo "Готово: шард '$SHARD' исключён из контрол-плейна кластера '$CLUSTER_NAME'."
-echo "  Физический демонтаж кластера (контейнеры/диски) — вручную; Patroni-scope"
-echo "  шарда в /service/<scope>/ затронут не был."
+echo "Done: shard '$SHARD' removed from the control plane of cluster '$CLUSTER_NAME'."
+echo "  Physical teardown of the shard cluster (containers/disks) is manual; the Patroni"
+echo "  scope of the shard under /service/<scope>/ was not touched."

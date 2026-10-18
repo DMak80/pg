@@ -8,7 +8,7 @@ mkdir -p logs
 q() { docker exec -i "$1" psql -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 "$@"; }
 via_hap() { docker exec -i s2a psql -h hap1 -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 "$@"; }
 
-echo ">>> Arrange: бакет с «неудобными» sequences (кейс P6)"
+echo ">>> Arrange: a bucket with 'inconvenient' sequences (P6 case)"
 # самоочистка артефактов прошлых запусков (идемпотентность)
 q s2a  -c "DROP SUBSCRIPTION IF EXISTS sub_bucket_42; DROP SCHEMA IF EXISTS bucket_42 CASCADE;" >/dev/null
 q s1a -c "DROP PUBLICATION IF EXISTS pub_bucket_42;" >/dev/null
@@ -34,7 +34,7 @@ echo "  customers=$(q s1a -c 'select count(*) from bucket_42.customers')  \
 seq_ticket.last_value=$(q s1a -c 'select last_value from bucket_42.seq_ticket')  \
 tickets.max=$(q s1a -c 'select max(ticket_no) from bucket_42.tickets')"
 
-echo; echo ">>> Act: перенос DDL + подписка через HAProxy (P2)"
+echo; echo ">>> Act: DDL transfer + subscription via HAProxy (P2)"
 docker exec s1a pg_dump -U postgres -d postgres --schema-only --schema=bucket_42 \
   --no-owner --no-privileges \
   | docker exec -i s2a psql -U postgres -d postgres -q -v ON_ERROR_STOP=1
@@ -47,10 +47,10 @@ q s1a -c "CREATE PUBLICATION pub_bucket_42 FOR TABLES IN SCHEMA bucket_42;"
 q s2a  -c "CREATE SUBSCRIPTION sub_bucket_42
            CONNECTION 'host=hap1 port=5432 dbname=postgres user=postgres'
            PUBLICATION pub_bucket_42 WITH (copy_data = true, failover = true);"
-echo "  подписка создана: conninfo host=hap1 (write-эндпоинт шарда, не нода — P2);"
-echo "  failover=true — иначе sync_replication_slots НЕ скопирует слот на реплику"
+echo "  subscription created: conninfo host=hap1 (the shard write endpoint, not a node — P2);"
+echo "  failover=true — otherwise sync_replication_slots will NOT copy the slot to the replica"
 
-echo "— жду initial copy..."
+echo "— waiting for initial copy..."
 st=""
 for i in $(seq 1 120); do
   st="$(q s2a -c "select coalesce(sum((srsubstate='r')::int),0)||'/'||count(*)
@@ -59,18 +59,18 @@ for i in $(seq 1 120); do
   [ "$st" = "2/2" ] && break
   sleep 1
 done
-echo "  initial copy: $st таблиц готово"
-[ "$st" = "2/2" ] || { echo "❌ initial copy не завершился"; exit 1; }
-echo "  приёмник: customers=$(q s2a -c 'select count(*) from bucket_42.customers')  tickets=$(q s2a -c 'select count(*) from bucket_42.tickets')"
+echo "  initial copy: $st tables ready"
+[ "$st" = "2/2" ] || { echo "❌ initial copy did not finish"; exit 1; }
+echo "  target: customers=$(q s2a -c 'select count(*) from bucket_42.customers')  tickets=$(q s2a -c 'select count(*) from bucket_42.tickets')"
 
-echo "— стриминг: вставка на источнике ЧЕРЕЗ hap1 → появляется на приёмнике"
+echo "— streaming: an insert on the source THROUGH hap1 → appears on the target"
 via_hap -c "INSERT INTO bucket_42.customers(name) VALUES ('stream-check');" >/dev/null
 for i in $(seq 1 30); do
   [ "$(q s2a -c 'select count(*) from bucket_42.customers')" = "51" ] && break; sleep 1
 done
 echo "  s2/customers = $(q s2a -c 'select count(*) from bucket_42.customers')"
 
-echo; echo ">>> Assert: слот подписки СИНХРОНИЗИРОВАН на реплику s1b (P3)"
+echo; echo ">>> Assert: the subscription slot is SYNCHRONIZED to replica s1b (P3)"
 synced=""
 for i in $(seq 1 60); do
   synced="$(q s1b -c "select coalesce(bool_and(synced),false) from pg_replication_slots where slot_name like 'sub_bucket_42%'")"
@@ -82,5 +82,5 @@ for i in $(seq 1 60); do
   sleep 1
 done
 q s1b -c "select slot_name, active, wal_status, failover, synced from pg_replication_slots where slot_name like 'sub_bucket_42%';"
-[ "$synced" = "t" ] || { echo "❌ слот не синхронизировался на s1b — failover его потеряет"; exit 1; }
-echo "✓ P2 (подписка за HAProxy) и предпосылки P3 (failover slots: synced=t, ре-синк чистый) на месте"
+[ "$synced" = "t" ] || { echo "❌ the slot did not synchronize to s1b — failover would lose it"; exit 1; }
+echo "✓ P2 (subscription behind HAProxy) and P3 preconditions (failover slots: synced=t, clean re-sync) are in place"
