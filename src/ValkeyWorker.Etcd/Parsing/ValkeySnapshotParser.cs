@@ -129,14 +129,14 @@ public static class ValkeySnapshotParser
         var caPem = acc.CaPem;
         if (caPem is not null && !ValkeyPki.TryParseCertificate(caPem, out _))
         {
-            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_pem: битый PEM");
+            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_pem: invalid PEM");
             caPem = null;
         }
 
         var caKey = acc.CaKey;
         if (caKey is not null && !ValkeyPki.TryParseRsaKey(caKey, out _))
         {
-            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_key: битый PEM");
+            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_key: invalid PEM");
             caKey = null;
         }
 
@@ -177,7 +177,7 @@ public static class ValkeySnapshotParser
         }
         catch (JsonException)
         {
-            errors.Add($"/valkey/clusters/{cluster}/config: битый JSON config");
+            errors.Add($"/valkey/clusters/{cluster}/config: invalid JSON config");
             return null;
         }
     }
@@ -189,7 +189,7 @@ public static class ValkeySnapshotParser
         {
             resources = ParseResources(node.ResourcesRaw);
             if (resources is null)
-                errors.Add($"/valkey/clusters/-/nodes/{node.Name}/resources: битый JSON");
+                errors.Add($"/valkey/clusters/-/nodes/{node.Name}/resources: invalid JSON");
         }
 
         return new ValkeyNodeSnapshot(node.Name, node.State, resources);
