@@ -160,7 +160,7 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
@@ -174,6 +174,6 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

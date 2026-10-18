@@ -53,7 +53,7 @@ public sealed partial class ClusterSecretRotator(
         // Мутации — только держателем живого клэйма (инвариант arch/14 §3.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // R0: заявка (цикл префикс /pgworker/ не читает — читаем ключ сами).
         var ticket = await GetAsync(TicketKey(cluster), ct);
@@ -123,7 +123,7 @@ public sealed partial class ClusterSecretRotator(
             if (master is null)
                 return await FailAsync(cluster,
                     new ApplicationException(
-                        $"шард {shard.Name}: мастер недоступен (master-ключ/Patroni REST) — ретрай тиком"),
+                        $"shard {shard.Name}: master is unreachable (master key/Patroni REST) — retry on the next tick"),
                     $"waiting-master/{shard.Name}", ct);
 
             var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
@@ -240,7 +240,7 @@ public sealed partial class ClusterSecretRotator(
         if (!commit.Value.Succeeded)
             return await FailAsync(cluster,
                 new ApplicationException(
-                    "креды/dsn изменились с момента чтения (внешняя запись?) — ретрай тиком"),
+                    "credentials/dsn changed since they were read (external write?) — retry on the next tick"),
                 "commit-conflict", ct, dropRestPending: true);
 
         // R4: снапшот P12 (точка изменения, best-effort делегат) + journal done.
@@ -418,7 +418,7 @@ public sealed partial class ClusterSecretRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -435,6 +435,6 @@ public sealed partial class ClusterSecretRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

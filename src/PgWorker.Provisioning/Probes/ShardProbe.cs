@@ -56,7 +56,7 @@ public sealed class ShardProbe(HttpClient http)
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
         {
             return Result<IReadOnlyList<PatroniMember>>.Failed(new ApplicationException(
-                $"Patroni {node.Host}:{node.Ports.Patroni} /cluster недоступен: {e.Message}", e));
+                $"Patroni {node.Host}:{node.Ports.Patroni} /cluster unreachable: {e.Message}", e));
         }
     }
 
@@ -148,7 +148,7 @@ public sealed class ShardProbe(HttpClient http)
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
         {
             return Result<string?>.Failed(new ApplicationException(
-                $"Patroni {node.Host}:{node.Ports.Patroni} /config недоступен: {e.Message}", e));
+                $"Patroni {node.Host}:{node.Ports.Patroni} /config unreachable: {e.Message}", e));
         }
     }
 
@@ -177,7 +177,7 @@ public sealed class ShardProbe(HttpClient http)
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
         {
             return Result.Failed(new ApplicationException(
-                $"Patroni {node.Host}:{node.Ports.Patroni} PATCH /config недоступен: {e.Message}", e));
+                $"Patroni {node.Host}:{node.Ports.Patroni} PATCH /config unreachable: {e.Message}", e));
         }
     }
 
@@ -210,7 +210,7 @@ public sealed class ShardProbe(HttpClient http)
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
         {
             return Result.Failed(new ApplicationException(
-                $"Patroni {leader.Host}:{leader.Ports.Patroni} /switchover недоступен: {e.Message}", e));
+                $"Patroni {leader.Host}:{leader.Ports.Patroni} /switchover unreachable: {e.Message}", e));
         }
     }
 

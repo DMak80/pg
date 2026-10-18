@@ -47,7 +47,7 @@ public sealed class BucketEvacuator(
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"evacuate {cluster}/{deadShard}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"evacuate {cluster}/{deadShard}: claim is not ours (or lost) — mutations forbidden"));
 
         // t05 §3.4 второй рубеж: надзор не отдаёт шардов в restore, но DONE-журнал
         // прошлой эвакуации / гонка снапшота не должны привести к эвакуации или
@@ -59,7 +59,7 @@ public sealed class BucketEvacuator(
                 is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
         {
             await journal.WritePhaseAsync(cluster, "evacuate", "skipped-restore", claims.InstanceId,
-                $"шард {deadShard} в restore — эвакуация не выполняется", ct);
+                $"shard {deadShard} is in restore — evacuation is not performed", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
@@ -78,9 +78,9 @@ public sealed class BucketEvacuator(
         if (moving is not null)
         {
             await journal.WritePhaseAsync(cluster, "evacuate", "blocked-moving", claims.InstanceId,
-                $"бакет {moving.Id} в статусе {moving.Status} — эвакуация заблокирована", ct);
+                $"bucket {moving.Id} has status {moving.Status} — evacuation is blocked", ct);
             return Result<ProcessOutcome>.Failed(new InvalidOperationException(
-                $"бакет {moving.Id} в статусе {moving.Status} — незавершённый переезд"));
+                $"bucket {moving.Id} has status {moving.Status} — unfinished move"));
         }
 
         // Guard: эвакуировать некуда — ждём живых (при N живых=0 — ждать, E0).
@@ -126,7 +126,7 @@ public sealed class BucketEvacuator(
             if (!resolved.IsSuccess)
                 return Result<ProcessOutcome>.Failed(resolved.Error!);
             if (resolved.Value is not { } master)
-                return await FailWaiting(cluster, deadShard, $"нет мастера целевого шарда {target.Key}", ct);
+                return await FailWaiting(cluster, deadShard, $"no master of target shard {target.Key}", ct);
 
             var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
             var schemas = await db.ExecuteAsync(
@@ -162,7 +162,7 @@ public sealed class BucketEvacuator(
             var conflict = evacuation with { State = "CONFLICT" };
             await evacuations.WriteAsync(cluster, deadShard, conflict, ct);
             return Result<ProcessOutcome>.Failed(new InvalidOperationException(
-                $"routing bucket_{assignment.BucketId} = '{current.Value?.Value}' (ожидался '{assignment.FromShard}') — конкурентное изменение, эвакуация остановлена"));
+                $"routing bucket_{assignment.BucketId} = '{current.Value?.Value}' (expected '{assignment.FromShard}') — concurrent change, evacuation stopped"));
         }
 
         // E3: ноды мёртвого шарда — QUARANTINED; контейнеры НЕ удаляются (данные
@@ -301,7 +301,7 @@ public sealed class BucketEvacuator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -315,7 +315,7 @@ public sealed class BucketEvacuator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteEvacuationAsync(string cluster, string shard, CancellationToken ct)
@@ -329,7 +329,7 @@ public sealed class BucketEvacuator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -343,6 +343,6 @@ public sealed class BucketEvacuator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

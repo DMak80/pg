@@ -135,7 +135,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         foreach (var id in bucketIds.OrderBy(i => i))
         {
             if (id < 0)
-                throw new ArgumentException($"идентификатор бакета не может быть отрицательным: {id}");
+                throw new ArgumentException($"bucket id cannot be negative: {id}");
 
             sb.AppendLine($"CREATE SCHEMA IF NOT EXISTS bucket_{id};");
             sb.AppendLine($"GRANT USAGE ON SCHEMA bucket_{id} TO \"{appUser}\", \"{bucketAdminUser}\", \"bucket_mover\";");
@@ -167,7 +167,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         }
         catch (Exception e)
         {
-            return Result.Failed(new ApplicationException($"SQL не выполнен [{Redact(dsn)}]: {e.Message}", e));
+            return Result.Failed(new ApplicationException($"SQL failed [{Redact(dsn)}]: {e.Message}", e));
         }
     }
 
@@ -188,7 +188,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         }
         catch (Exception e)
         {
-            return Result<object?>.Failed(new ApplicationException($"SQL-скаляр не выполнен [{Redact(dsn)}]: {e.Message}", e));
+            return Result<object?>.Failed(new ApplicationException($"SQL scalar failed [{Redact(dsn)}]: {e.Message}", e));
         }
     }
 
@@ -214,7 +214,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     private static void ValidateIdentifier(string name)
     {
         if (!IdentifierRegex().IsMatch(name))
-            throw new ArgumentException($"недопустимый идентификатор SQL: '{name}' (шаблон ^[a-z_][a-z0-9_]*)");
+            throw new ArgumentException($"invalid SQL identifier: '{name}' (pattern ^[a-z_][a-z0-9_]*)");
     }
 
     // Экранирование литерала: одинарная кавычка удваяется (SQL-инъекции паролей).

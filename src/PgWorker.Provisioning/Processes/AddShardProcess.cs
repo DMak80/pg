@@ -61,7 +61,7 @@ public sealed partial class AddShardProcess(
         // Мутации — только держателем живого клэйма (инвариант §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"add-shard {cluster}/{shardName}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"add-shard {cluster}/{shardName}: claim is not ours (or lost) — mutations forbidden"));
 
         var shard = snap.Shards.FirstOrDefault(s => s.Name == shardName);
         if (shard is null)
@@ -82,7 +82,7 @@ public sealed partial class AddShardProcess(
         if (!ShardNamePattern().IsMatch(shardName))
             return await FailAsync(cluster,
                 new ApplicationException(
-                    $"имя шарда '{shardName}' неканоническое (^[a-z][a-z0-9_]{{0,30}}$) — разбор оператором (etcdctl)"),
+                    $"shard name '{shardName}' is non-canonical (^[a-z][a-z0-9_]{{0,30}}$) — operator investigation (etcdctl)"),
                 "invalid-name", ct);
         var scope = $"{cluster}-{shardName}";
         // Guard коллизии имён (§4.4): initialize scope'а с ЧУЖИМ лидером (или без
@@ -95,7 +95,7 @@ public sealed partial class AddShardProcess(
             && (takenState.LeaderName is null || shard.Nodes.All(n => n.Name != takenState.LeaderName)))
             return await FailAsync(cluster,
                 new ApplicationException(
-                    $"scope {scope} занят живым Patroni-кластером (initialize существует) — коллизия имён, разбор оператором"),
+                    $"scope {scope} is taken by a live Patroni cluster (initialize exists) — name collision, operator investigation"),
                 "scope-taken", ct);
         if (!IsFullyDeclared(shard))
             return await Finish(cluster, "waiting-keys", ProcessOutcome.InProgress, ct);
@@ -153,7 +153,7 @@ public sealed partial class AddShardProcess(
         // идемпотентна — итерация с таймаутом короче окна повторяет её
         // с начала; каждая итерация — Mark по факту + лог elapsed.
         var sqlDone = await LongCallPolling.EnsureAsync(
-            $"sql шарда {shard.Name}",
+            $"sql of shard {shard.Name}",
             token => ProvisionShardSqlAsync(snap, shard, topology, master, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
             TimeSpan.FromTicks(Math.Max(
@@ -235,7 +235,7 @@ public sealed partial class AddShardProcess(
                 PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
-                    $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}"));
+                    $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}")); // FLAG: ассертится в AddShardProcessTests.cs:369,372,379
 
             foreach (var (merged, addr) in allocated.Value)
                 existing[merged] = addr;
@@ -294,7 +294,7 @@ public sealed partial class AddShardProcess(
             // повтор; каждая итерация — Mark по факту + лог elapsed (внутри
             // LongCallPolling). Бюджет — существующий порог PatroniBootSec.
             var ensured = await LongCallPolling.EnsureAsync(
-                $"create/start ноды {node.Name}",
+                $"create/start of node {node.Name}",
                 token => driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
                     tuning, syncStrict, restPassword, token),
@@ -356,7 +356,7 @@ public sealed partial class AddShardProcess(
                 // бюджет заново (E3, симметрично ProvisioningProcess).
                 _patroniWaitSince.TryRemove(scope, out _);
                 return Result<bool>.Failed(new ApplicationException(
-                    $"Patroni шарда {scope} не поднялся за бюджет {placementOpts.PatroniBootSec} с"));
+                    $"Patroni of shard {scope} did not come up within the budget of {placementOpts.PatroniBootSec} s"));
             }
 
             return Result<bool>.Success(false);
@@ -528,7 +528,7 @@ public sealed partial class AddShardProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
@@ -545,6 +545,6 @@ public sealed partial class AddShardProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

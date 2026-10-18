@@ -44,7 +44,7 @@ public sealed class AdoptionProcess(
         // Мутации — только держателем живого клэйма (инвариант arch/14 §3.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"{Op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{Op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
         if (snap.Config.State != ClusterState.Active)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // провижининг/демонтаж — свои процессы
 
@@ -130,7 +130,7 @@ public sealed class AdoptionProcess(
         var skipped = wanted.Where(n => !discovered.Value.ContainsKey(n)).ToList();
         if (skipped.Count > 0)
             await journal.WritePhaseAsync(cluster, Op, "skipped", claims.InstanceId,
-                $"контейнеры не опознаны (неоднозначность/отсутствие): {string.Join(", ", skipped)}", ct);
+                $"containers not identified (ambiguous/missing): {string.Join(", ", skipped)}", ct);
 
         // AD2: merge portalloc — только отсутствующие записи, под клэймом.
         var merged = new Dictionary<string, NodeAddress>(existing.Value);
@@ -174,7 +174,7 @@ public sealed class AdoptionProcess(
                 return await FailAsync(cluster, master.Error!, ct);
             if (master.Value is null)
                 return await FailAsync(cluster, new ApplicationException(
-                    $"{Op} {cluster}: мастер шарда '{shard.Name}' не определён — повтор следующим тиком"), ct);
+                    $"{Op} {cluster}: master of shard '{shard.Name}' is not determined — retry on the next tick"), ct);
 
             var provisioned = await EnsureShardDatabaseAsync(master.Value, shard, snap, creds.Value, ct);
             if (!provisioned.IsSuccess)
@@ -186,8 +186,8 @@ public sealed class AdoptionProcess(
             await snapshot(ct); // неудача — не повод откатывать усыновление (журналируется SnapshotJob)
 
         await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
-            $"усыновлено нод: {discovered.Value.Count} ({string.Join(", ", discovered.Value.Keys.OrderBy(n => n, StringComparer.Ordinal))})"
-            + (skipped.Count > 0 ? $"; пропущено: {skipped.Count}" : ""), ct);
+            $"adopted nodes: {discovered.Value.Count} ({string.Join(", ", discovered.Value.Keys.OrderBy(n => n, StringComparer.Ordinal))})"
+            + (skipped.Count > 0 ? $"; skipped: {skipped.Count}" : ""), ct);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
@@ -524,7 +524,7 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Put-if-absent (txn NotExists = version==0): операторские nodes-ключи не
@@ -542,7 +542,7 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Заявки ресурсов шарда (arch/14 §2.1 п.4): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
@@ -570,7 +570,7 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
@@ -584,6 +584,6 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

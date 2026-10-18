@@ -24,12 +24,12 @@ public sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneI
         // только etcd-заявка — выдумывать его нельзя ни при каких условиях.
         if (resources?.MemoryBytes is not { } memoryBytes)
             throw new InvalidOperationException(
-                "pgtune: обязательная заявка request_mem отсутствует/нечитаема — расчёт PGTune невозможен " +
-                "(заявку пишет панель при создании шарда; arch/14 §2.1)");
+                "pgtune: mandatory request_mem request is missing/unreadable — PGTune calculation is impossible " +
+                "(the request is written by the panel when creating a shard; arch/14 §2.1)");
         if (resources.CpuCores is null)
             throw new InvalidOperationException(
-                "pgtune: обязательная заявка request_cpu отсутствует/нечитаема — расчёт PGTune невозможен " +
-                "(заявку пишет панель при создании шарда; arch/14 §2.1)");
+                "pgtune: mandatory request_cpu request is missing/unreadable — PGTune calculation is impossible " +
+                "(the request is written by the panel when creating a shard; arch/14 §2.1)");
 
         // Память: floor(MemoryBytes/1024) от etcd-заявки request_mem.
         var totalMemoryKb = memoryBytes / 1024;
@@ -77,6 +77,6 @@ public sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneI
         }
 
         throw new InvalidOperationException(
-            $"pgtune: значение '{value}' не в домене {typeof(T).Name} (PgWorker:Pgtune)");
+            $"pgtune: value '{value}' is outside the domain of {typeof(T).Name} (PgWorker:Pgtune)");
     }
 }

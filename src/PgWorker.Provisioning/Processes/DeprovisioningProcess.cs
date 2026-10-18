@@ -33,7 +33,7 @@ public sealed class DeprovisioningProcess(
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"deprovisioning {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"deprovisioning {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // D0: journal-before-manipulations (P7).
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
@@ -67,7 +67,7 @@ public sealed class DeprovisioningProcess(
         if (objects.Value.Count > 0)
             return await FailAsync(
                 cluster,
-                new ApplicationException($"объекты {string.Join(",", objects.Value)} ещё живы"),
+                new ApplicationException($"objects {string.Join(",", objects.Value)} are still alive"),
                 "removing-nodes",
                 ct);
 
@@ -93,7 +93,7 @@ public sealed class DeprovisioningProcess(
         if (config.Value is not null)
             return await FailAsync(
                 cluster,
-                new ApplicationException("config-ключ пережил очистку — повтор тиком"),
+                new ApplicationException("config key survived the cleanup — retry on the next tick"),
                 "cleaning-keys",
                 ct);
 
@@ -234,7 +234,7 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -248,7 +248,7 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -262,6 +262,6 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

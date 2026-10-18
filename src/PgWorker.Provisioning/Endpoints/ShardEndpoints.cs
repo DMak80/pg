@@ -51,7 +51,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             return Portalloc.Parse(cluster, kv.Value);
         }
 
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Мастер шарда для SQL (adopt-repair §3.3, arch/14 §5 F — цепочка):
@@ -180,7 +180,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             return result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // ── DSN-билдеры ──

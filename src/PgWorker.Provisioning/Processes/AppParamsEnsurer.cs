@@ -53,6 +53,6 @@ public sealed class AppParamsEnsurer(IEtcdGateway etcd, string[] endpoints, stri
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

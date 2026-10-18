@@ -72,7 +72,7 @@ public sealed class ProvisioningProcess(
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"provisioning {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"provisioning {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // Guard входа (arch/14 §5 A): полный набор ключей панели, иначе
         // полуфабрикат NOT_INITIALIZED не provisioning'уем.
@@ -194,7 +194,7 @@ public sealed class ProvisioningProcess(
             // короче окна повторяет её с начала; каждая итерация — Mark по факту +
             // лог elapsed. Бюджет — существующий порог PatroniBootSec.
             var sqlDone = await LongCallPolling.EnsureAsync(
-                $"sql шарда {shard.Name}",
+                $"sql of shard {shard.Name}",
                 token => ProvisionShardSqlAsync(snap, shard, topology, master, creds.Value, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 TimeSpan.FromTicks(Math.Max(
@@ -490,7 +490,7 @@ public sealed class ProvisioningProcess(
             // повтор; каждая итерация — Mark по факту + лог elapsed (внутри
             // LongCallPolling). Бюджет — существующий порог PatroniBootSec.
             var ensured = await LongCallPolling.EnsureAsync(
-                $"create/start ноды {node.Name}",
+                $"create/start of node {node.Name}",
                 token => driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
                     tuning, syncStrict, restPassword, token),
@@ -583,7 +583,7 @@ public sealed class ProvisioningProcess(
                     .Where((n, i) => presences[i] == DataPresence.Present).Select(n => n.Name));
                 if (alive.Length > 0)
                     return Result<WaitPatroniOutcome>.Failed(new ApplicationException(
-                        $"{scope}: данные есть (ноды {alive}), лидера нет {placementOpts.PatroniBootSec} с — разбор оператора: чистка scope уничтожила бы данные"));
+                        $"{scope}: данные есть (ноды {alive}), лидера нет {placementOpts.PatroniBootSec} с — разбор оператора: чистка scope уничтожила бы данные")); // FLAG: ассертится в ProvisioningProcessTests.cs:437,894
 
                 return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.Waiting); // Unknown: утрата не доказана — новый бюджет
             }
@@ -783,7 +783,7 @@ public sealed class ProvisioningProcess(
             return txn;
         if (!txn.Value.Succeeded)
             return Result.Failed(new ApplicationException(
-                $"config {key} изменился с момента чтения (compare mod_revision не сошёлся) — ретрай тиком"));
+                $"config {key} changed since it was read (compare mod_revision mismatch) — retry on the next tick"));
 
         return Result.Success();
     }
@@ -870,7 +870,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -884,7 +884,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
@@ -904,7 +904,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Канонический config после provisioning (Д1): state отсутствует.

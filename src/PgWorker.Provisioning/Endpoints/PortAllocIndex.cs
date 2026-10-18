@@ -35,7 +35,7 @@ public sealed class PortAllocIndex(
             if (!parsed.IsSuccess)
             {
                 // Не наш ключ — не наша ответственность: лог + skip (spec §2.3-принцип).
-                logger.LogWarning("битый portalloc соседа {Cluster}: {Error}", cluster, parsed.Error!.Message);
+                logger.LogWarning("neighbor portalloc is corrupt {Cluster}: {Error}", cluster, parsed.Error!.Message);
                 continue;
             }
 
@@ -64,6 +64,6 @@ public sealed class PortAllocIndex(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

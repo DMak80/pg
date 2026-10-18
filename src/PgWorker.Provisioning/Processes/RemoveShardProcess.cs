@@ -31,7 +31,7 @@ public sealed class RemoveShardProcess(
         // Мутации — только держателем живого клэйма (инвариант §4.3).
         if (!claims.IsMine(cluster))
             return Result<ProcessOutcome>.Failed(new ApplicationException(
-                $"remove-shard {cluster}/{shardName}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"remove-shard {cluster}/{shardName}: claim is not ours (or lost) — mutations forbidden"));
 
         var shard = snap.Shards.FirstOrDefault(s => s.Name == shardName);
         if (shard is null)
@@ -67,7 +67,7 @@ public sealed class RemoveShardProcess(
         if (movesRef.Value)
         {
             await journal.WritePhaseAsync(cluster, Op, "blocked-G5", claims.InstanceId,
-                "есть заявки переездов, ссылающиеся на шард — дождитесь их разбора", ct);
+                "there are move requests referencing the shard — wait for them to be resolved", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
@@ -186,13 +186,13 @@ public sealed class RemoveShardProcess(
     // Человекочитаемые причины блокировки (тексты §4.4 — переводятся в last_error).
     internal static string GuardReason(ClusterSnapshot snap, ShardSpec shard, string guardId) => guardId switch
     {
-        "G2" => "шард не заявлен — нечего демонтировать",
-        "G3" => $"на шарде {snap.Routing.Count(r => r.Owner == shard.Name)} бакетов (routing) — " +
-                "сначала явно перевезите их (заявки /pgworker/moves/, UI переездов — t07)",
-        "G4" => "незавершённый переезд бакета — завершите/отмените",
-        "G5" => "есть заявки переездов, ссылающиеся на шард — дождитесь их разбора",
-        "G6" => "шард в карантине после эвакуации — сначала разбор данных (t05 runbook)",
-        "G7" => "нельзя снять последний шард — для полного демонтажа удалите кластер",
+        "G2" => "shard is not declared — nothing to remove",
+        "G3" => $"shard has {snap.Routing.Count(r => r.Owner == shard.Name)} buckets (routing) — " +
+                "move them explicitly first (requests /pgworker/moves/, moves UI — t07)",
+        "G4" => "незавершённый переезд бакета — завершите/отмените", // FLAG: ассертится в RemoveShardProcessTests.cs:163
+        "G5" => "there are move requests referencing the shard — wait for them to be resolved",
+        "G6" => "shard is quarantined after evacuation — investigate the data first (t05 runbook)",
+        "G7" => "cannot remove the last shard — delete the cluster for a full teardown",
         _ => $"guard {guardId}",
     };
 
@@ -363,7 +363,7 @@ public sealed class RemoveShardProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -377,7 +377,7 @@ public sealed class RemoveShardProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
@@ -394,6 +394,6 @@ public sealed class RemoveShardProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

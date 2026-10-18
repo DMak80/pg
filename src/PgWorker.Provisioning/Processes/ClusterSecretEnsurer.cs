@@ -108,7 +108,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         }
 
         if (!txnDone)
-            return Result<ClusterCredentials>.Failed(lastTxnError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+            return Result<ClusterCredentials>.Failed(lastTxnError.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
 
         // Re-read: txn мог проиграть (гонка) — актуальны существующие значения.
         var final = await ReadAsync(cluster, ct);
@@ -119,7 +119,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             return Result<ClusterCredentials>.Success(ToCredentials(final.Value));
 
         return Result<ClusterCredentials>.Failed(new ApplicationException(
-            $"ensure per-cluster кредов {cluster}: после txn ключи неполны " +
+            $"ensure per-cluster credentials {cluster}: keys are incomplete after txn " +
             $"(app_user: {Filled(final.Value.AppUser)}, app_password: {Filled(final.Value.AppPassword)}, " +
             $"mover_password: {Filled(final.Value.MoverPassword)}, " +
             $"bucket_admin_user: {Filled(final.Value.BucketAdminUser)}, " +
@@ -225,7 +225,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 RawOrNull(restPassword.Value?.Value)));
         }
 
-        return Result<RawSecrets>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<RawSecrets>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // null — ключ отсутствует; пробельно-пустой raw — как есть (compare по нему);

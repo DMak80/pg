@@ -54,7 +54,7 @@ public static class LongCallPolling
                 // (буква приказа п.4: «каждая итерация поллинга даёт отметку
                 // активности И пишет в лог elapsed»)
                 logger.LogInformation(
-                    "provisioning: фаза {Phase}: уже {Elapsed:F0} c (итерация {Attempt}: успех)",
+                    "provisioning: phase {Phase}: already {Elapsed:F0} s (iteration {Attempt}: success)",
                     phase, Stopwatch.GetElapsedTime(started).TotalSeconds, attempt);
                 return result;
             }
@@ -67,7 +67,7 @@ public static class LongCallPolling
             {
                 if (ct.IsCancellationRequested)
                     throw new OperationCanceledException(
-                        $"provisioning: фаза {phase}: внешняя отмена", error, ct);
+                        $"provisioning: phase {phase}: external cancellation", error, ct);
                 if (attemptCts.IsCancellationRequested && IsCancellation(error))
                 {
                     TimeoutIteration(phase, progress, logger, started, attempt, singleCallTimeout);
@@ -80,7 +80,7 @@ public static class LongCallPolling
             // Ошибка вызова неотменного характера — наверх без повторов
             // (следующий тик продолжит; поллинг ловит молчание, не сбои).
             logger.LogInformation(
-                "provisioning: фаза {Phase}: уже {Elapsed:F0} c (итерация {Attempt}: ошибка: {Error})",
+                "provisioning: phase {Phase}: already {Elapsed:F0} s (iteration {Attempt}: error: {Error})",
                 phase, Stopwatch.GetElapsedTime(started).TotalSeconds, attempt, result.Error?.Message);
             return result;
         }
@@ -93,13 +93,13 @@ public static class LongCallPolling
     {
         progress?.Mark();
         logger.LogInformation(
-            "provisioning: фаза {Phase}: уже {Elapsed:F0} c — итерация {Attempt} отменена по таймауту ({Timeout:F0} c), повтор",
+            "provisioning: phase {Phase}: already {Elapsed:F0} s — iteration {Attempt} cancelled by timeout ({Timeout:F0} s), retrying",
             phase, Stopwatch.GetElapsedTime(started).TotalSeconds, attempt, singleCallTimeout.TotalSeconds);
     }
 
     private static Result BudgetExhausted(string phase, TimeSpan budget, int attempt)
         => Result.Failed(new ApplicationException(
-            $"фаза {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан ({attempt} итераций)"));
+            $"фаза {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан ({attempt} итераций)")); // FLAG: ассертится в LongCallPollingTests.cs:105,192
 
     // Отмена в цепочке ошибки (само исключение или любое InnerException):
     // вызов-обёртка конвертирует OCE в Result.Failed («The operation was

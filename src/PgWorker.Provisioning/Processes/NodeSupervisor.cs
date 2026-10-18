@@ -69,7 +69,7 @@ public sealed class NodeSupervisor(
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
             return Fail(new ApplicationException(
-                $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"supervise {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // Состояние надзора одним чтением: трек недоступности + HA-факты
         // (takeover продолжает открытые события от сохранённого detected).
@@ -204,7 +204,7 @@ public sealed class NodeSupervisor(
         var supervisionPut = await journal.WriteSupervisionAsync(
             cluster, claims.InstanceId, track, null, ct, haFacts.ToRecord());
         if (!supervisionPut.IsSuccess)
-            log.LogWarning("supervise {Cluster}: финальная запись work-ключа не удалась: {Error}",
+            log.LogWarning("supervise {Cluster}: final work-key write failed: {Error}",
                 cluster, supervisionPut.Error!.Message);
 
         // RTO-серии (arch/18 §2.7): только завершённые длительности; наблюдатель
@@ -399,8 +399,8 @@ public sealed class NodeSupervisor(
         if (resources is null || resources.MemoryBytes is null || resources.CpuCores is null)
         {
             log.LogWarning(
-                "supervise {Cluster}/{Shard}: pgtune-конвергенция пропущена — заявка request_{{cpu,mem}} отсутствует/неполна " +
-                "(аномалия данных; тайминги DCS-конфига конвергируются без параметров)",
+                "supervise {Cluster}/{Shard}: pgtune convergence skipped — request_{{cpu,mem}} request is missing/incomplete " +
+                "(data anomaly; DCS config timings converge without parameters)",
                 cluster, shard.Name);
         }
         else
@@ -431,10 +431,10 @@ public sealed class NodeSupervisor(
 
         // Postmaster-параметры Patroni пометит pending_restart — штатно до
         // ближайшего рестарта ноды (воркер рестарт не инициирует).
-        var note = $"{shard.Name}: DCS-конфиг сконвергирован к канону " +
+        var note = $"{shard.Name}: DCS config converged to canon " +
                    $"(updated:{divergence.Updated} added:{divergence.Added} removed:{divergence.Removed}" +
                    (divergence.PostmasterTouched
-                       ? "; postmaster-параметры → pending_restart (применение при ближайшем рестарте ноды)"
+                       ? "; postmaster parameters → pending_restart (applied at the node's next restart)"
                        : string.Empty) +
                    $") ({divergence.Patch})";
         await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge", claims.InstanceId,
@@ -606,7 +606,7 @@ public sealed class NodeSupervisor(
                 var engine = driver.EngineFor(addr.Host);
                 if (engine is null)
                     return Result.Failed(new ApplicationException(
-                        $"supervise {cluster}: docker-хост {addr.Host} не известен (rest-tls шаг)"));
+                        $"supervise {cluster}: docker host {addr.Host} is unknown (rest-tls step)"));
                 var containerName = $"pgw-{cluster}-{shard.Name}-{node.Name}";
                 var stopped = await engine.StopContainerAsync(containerName, timeoutSec: 10, ct);
                 if (!stopped.IsSuccess)
@@ -698,7 +698,7 @@ public sealed class NodeSupervisor(
             if (addr.Object is not null)
             {
                 await journal.WritePhaseAsync(cluster, "supervise", "recreate-external", claims.InstanceId,
-                    $"{shard.Name}/{node.Name}: усыновлённая нода — пересоздание вручную (object={addr.Object})", ct);
+                    $"{shard.Name}/{node.Name}: adopted node — manual recreation (object={addr.Object})", ct);
                 continue;
             }
 
@@ -1041,7 +1041,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
@@ -1055,7 +1055,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Failover-обёртка удаления ключа (маркер режима recreate).
@@ -1070,7 +1070,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
@@ -1084,6 +1084,6 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }
