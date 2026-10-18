@@ -21,7 +21,7 @@ public class SdGeneratorLoopTests : IDisposable
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
             => Task.FromResult(_ranges.TryGetValue(endpoint, out var result)
                 ? result
-                : Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException($"{endpoint}: нет мока")));
+                : Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException($"{endpoint}: no mock configured")));
 
         public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
             => throw new NotSupportedException();
@@ -124,8 +124,8 @@ public class SdGeneratorLoopTests : IDisposable
         // Arrange: файл pre-written «X», успехов ещё не было (метрика null)
         var (loop, metrics, path, etcd) = NewLoop("ep1", "ep2");
         await File.WriteAllTextAsync(path, "X", TestContext.Current.CancellationToken);
-        etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 лежит")));
-        etcd.SetRange("ep2", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep2 лежит")));
+        etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 unreachable")));
+        etcd.SetRange("ep2", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep2 unreachable")));
         var contentBefore = await File.ReadAllBytesAsync(path, TestContext.Current.CancellationToken);
 
         // Act
@@ -142,7 +142,7 @@ public class SdGeneratorLoopTests : IDisposable
     {
         // Arrange: ep1 недоступен, ep2 отвечает
         var (loop, _, path, etcd) = NewLoop("ep1", "ep2");
-        etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 лежит")));
+        etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 unreachable")));
         etcd.SetRange("ep2", Result<IReadOnlyList<Kv>>.Success(
             [new Kv("/pgworker/portalloc/c1", KvValue, ModRevision: 1)]));
 
