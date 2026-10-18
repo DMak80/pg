@@ -41,11 +41,11 @@ MC_N=0
 for ep in $(echo "$PGW_BK_S3_ENDPOINTS" | tr ',' ' '); do
   S3_SCHEME="${ep%%://*}"
   S3_REST="${ep#*://}"
-  [ -n "$S3_REST" ] && [ "$S3_REST" != "$ep" ] || FAIL "PGW_BK_S3_ENDPOINTS: элемент без схемы: $ep"
+  [ -n "$S3_REST" ] && [ "$S3_REST" != "$ep" ] || FAIL "PGW_BK_S3_ENDPOINTS: item without scheme: $ep"
   export MC_HOST_pgw$MC_N="$S3_SCHEME://$PGW_BK_S3_ACCESS_KEY:$PGW_BK_S3_SECRET_KEY@$S3_REST"
   S3_ALIASES="$S3_ALIASES pgw$MC_N"; MC_N=$((MC_N+1))
 done
-[ "$MC_N" -gt 0 ] || FAIL "PGW_BK_S3_ENDPOINTS: пустой список пула"
+[ "$MC_N" -gt 0 ] || FAIL "PGW_BK_S3_ENDPOINTS: empty pool list"
 
 # До загрузки — выбор первого доступного (короткая mc-проба, таймаут per-попытки).
 alias_alive() { timeout 5 mc ls "$1/$PGW_BK_S3_BUCKET" >/dev/null 2>&1; }
@@ -53,7 +53,7 @@ FIRST_ALIVE=""
 for a in $S3_ALIASES; do
   alias_alive "$a" && { FIRST_ALIVE="$a"; break; }
 done
-[ -n "$FIRST_ALIVE" ] || FAIL "s3-pool-exhausted: mc ls недоступен на всех нодах пула"
+[ -n "$FIRST_ALIVE" ] || FAIL "s3-pool-exhausted: mc ls unavailable on all pool nodes"
 
 # Загрузка: первая живая нода; падение загрузки → следующая по списку
 # (переливка идемпотентна: имена объектов детерминированы; маркер исчерпания —

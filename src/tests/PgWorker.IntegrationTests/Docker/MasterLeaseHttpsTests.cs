@@ -168,7 +168,7 @@ public class MasterLeaseHttpsTests
 
         // Assert: local_role → None (http-запроса нет) — лог-ошибка и выход.
         var log = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);
-        log.Should().Contain("PGW_NODE_CA не задан");
+        log.Should().Contain("PGW_NODE_CA is not set");
         var pid = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
             "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
         pid.Trim().Should().Be("no");

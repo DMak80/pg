@@ -39,7 +39,7 @@ def local_role():
     on_start Patroni не передаёт роль аргументами."""
     ca = os.getenv("PGW_NODE_CA", "")
     if not ca:
-        print("master-lease: PGW_NODE_CA не задан — https /primary недоступен", flush=True)
+        print("master-lease: PGW_NODE_CA is not set - https /primary unavailable", flush=True)
         return None
     try:
         ctx = ssl.create_default_context(cafile=ca)
@@ -147,7 +147,7 @@ def lease_loop():
 
 def main():
     if not KEY or not HOST:
-        print("master-lease: PGW_MASTER_KEY/PGW_NODE_HOST не заданы — выходим", flush=True)
+        print("master-lease: PGW_MASTER_KEY/PGW_NODE_HOST are not set - exiting", flush=True)
         return
 
     # Новая роль приходит аргументами callback (master/leader/replica); для
@@ -160,7 +160,7 @@ def main():
     else:
         role = local_role()
         if role is None:
-            print("master-lease: роль не передана и Patroni недоступен — выходим", flush=True)
+            print("master-lease: role not passed and Patroni unavailable - exiting", flush=True)
             return
         is_master = role == "master"
 
@@ -168,7 +168,7 @@ def main():
 
     if not is_master:
         # Реплика не держит мастер-ключ: ключ старого lease истечёт сам ≤TTL.
-        print("master-lease: роль не мастер — демон погашен", flush=True)
+        print("master-lease: role is not master - daemon stopped", flush=True)
         return
 
     pid = os.fork()
