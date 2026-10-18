@@ -77,7 +77,7 @@ public sealed class S3ParserTests
         Assert.Null(n1.Resources);                               // cpu не число → весь resources битый (parseError)
         Assert.Null(n1.Usage);                                   // нет total_bytes → битый usage
         Assert.Equal("DOWN", odd.Connectivity!.State);
-        Assert.Equal("все ноды молчат", odd.Connectivity.ProbeError);
+        Assert.Equal("all nodes are silent", odd.Connectivity.ProbeError);
         Assert.Equal("DIVERGED", odd.Sync!.State);
         Assert.Equal(1024L, odd.Sync.Pairs[0].LagBytes);
         Assert.Equal("diff page", odd.Sync.LastError);

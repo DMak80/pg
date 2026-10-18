@@ -24,7 +24,7 @@ public class WorkerAlertRulesTests
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             WorkerHealth = [new WorkerHealth("w1", "http://pgworker:8080", WorkerHealthStatus.Degraded,
-                Now, "цикл reconcile не тикал 120 с")],
+                Now, "reconcile loop has not ticked for 120 s")],
         };
 
         // Act

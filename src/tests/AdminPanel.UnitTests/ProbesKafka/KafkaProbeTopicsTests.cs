@@ -166,7 +166,7 @@ public class KafkaProbeTopicsTests
         // Assert
         var group = store.Current!.Clusters["events"].Groups!.Single();
         group.Group.Should().Be("fresh");
-        group.TotalLag.Should().Be(0, "нет committed — лаг по committed-семантике не определён");
+        group.TotalLag.Should().Be(0, "no committed — lag is undefined under committed semantics");
     }
 
     [Fact]

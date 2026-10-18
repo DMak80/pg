@@ -35,7 +35,7 @@ public class S3PoolMappingTests
         pool.Nodes.Should().HaveCount(2);
         pool.Nodes[0].Name.Should().Be("east1");
         pool.Nodes[0].State.Should().Be("RUNNING");
-        pool.Nodes[1].State.Should().BeNull("placement есть, state нет — заявлена");
+        pool.Nodes[1].State.Should().BeNull("placement present, state absent — declared");
         pool.Endpoints.Should().Equal("h1:18001", "h2:18002");
     }
 

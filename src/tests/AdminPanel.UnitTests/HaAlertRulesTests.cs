@@ -466,9 +466,9 @@ public class HaAlertRulesTests
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Id.Should().Be("slot-wal-lost:demo/s1/move_bucket_3");
         alert.Remedy.Should().Be(AlertRemedy.WorkerAuto,
-            "lost-слот лечит воркер автоматически — ручной разбор не нужен");
-        alert.RemedyText.Should().Contain("воркер");
-        alert.Hint.Should().NotContain("runbook", "ручной разбор не предлагается");
+            "lost slot is remediated by the worker automatically — no manual intervention needed");
+        alert.RemedyText.Should().Contain("worker");
+        alert.Hint.Should().NotContain("runbook", "no manual remediation is suggested");
     }
 
     [Fact]
@@ -586,7 +586,7 @@ public class HaAlertRulesTests
         // Assert
         strictAlerts.Single().Severity.Should().Be(AlertSeverity.Critical);
         looseAlerts.Single().Severity.Should().Be(AlertSeverity.Warning);
-        strictAlerts.Single().RemedyText.Should().Contain("выключите strict");
+        strictAlerts.Single().RemedyText.Should().Contain("disable strict");
     }
 
     [Fact]
@@ -712,7 +712,7 @@ public class HaAlertRulesTests
         var alerts = new InventoryMismatchRule().Evaluate(snapshot, Context()).ToList();
 
         // Assert: bucket_1 на s1 — «лишняя» (routing → s2), но подавлена окном rollback.
-        alerts.Should().BeEmpty("окно rollback до finalize — управляемое состояние");
+        alerts.Should().BeEmpty("rollback window until finalize is a managed state");
     }
 
     [Fact]
@@ -742,7 +742,7 @@ public class HaAlertRulesTests
 
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
-        alert.Details!["extra"].Should().Be("bucket_2", "схема без окна rollback — рассинхрон");
+        alert.Details!["extra"].Should().Be("bucket_2", "schema without rollback window — out of sync");
     }
 
     [Fact]

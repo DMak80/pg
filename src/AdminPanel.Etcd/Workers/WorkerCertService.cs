@@ -12,7 +12,7 @@ namespace AdminPanel.Etcd.Workers;
 
 // 422: сертификат влияет на исходящие коммуникации (spec §4.3 правила 1–3).
 public sealed class WorkerCertAffectsOutgoingException(string reason)
-    : Exception($"сертификат влияет на коммуникации воркеров с их подчинёнными сервисами: {reason}");
+    : Exception($"certificate affects the communication of workers with their subordinate services: {reason}");
 
 // 400: не годен как серверный (правила 4–6).
 public sealed class WorkerCertInvalidException(string reason) : Exception(reason);

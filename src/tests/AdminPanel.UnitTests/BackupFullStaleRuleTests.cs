@@ -61,7 +61,7 @@ public class BackupFullStaleRuleTests
         alert.Target.Should().Be("demo/s1");
         alert.Id.Should().Be("backup-full-stale:demo/s1");
         alert.Details!["maxAgeSeconds"].Should().Be("86400");
-        alert.Message.Should().Contain("порог 86400 c");
+        alert.Message.Should().Contain("threshold 86400 s");
     }
 
     // AAA: ключи есть, COMPLETED нет — «никогда не завершался» (never-ветка)
@@ -78,7 +78,7 @@ public class BackupFullStaleRuleTests
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Critical);
-        alert.Message.Should().Contain("никогда не завершался");
+        alert.Message.Should().Contain("never completed");
         alert.Details!["lastCompletedUnix"].Should().BeEmpty();
     }
 
@@ -128,6 +128,6 @@ public class BackupFullStaleRuleTests
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Critical);
-        alert.Message.Should().Contain("никогда не завершался");
+        alert.Message.Should().Contain("never completed");
     }
 }

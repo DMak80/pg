@@ -82,7 +82,7 @@ public class S3StorageClientFailoverTests
 
         // Assert
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("все цели инвентаря недоступны");
+        result.Error!.Message.Should().Contain("all inventory targets are unreachable");
         result.Error.Message.Should().Contain("connection refused (b)");
     }
 

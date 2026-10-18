@@ -42,7 +42,7 @@ public class WalAlertRulesTests
     // ── Парсер ──
 
     [Fact]
-    public void Парсер_валидный_wal_ключ_модель()
+    public void Parser_ValidWalKey_Model()
     {
         // Arrange
         var kvs = new[]
@@ -64,12 +64,12 @@ public class WalAlertRulesTests
     }
 
     [Fact]
-    public void Парсер_битый_json_errors_без_исключения()
+    public void Parser_BrokenJson_ErrorsWithoutException()
     {
         // Arrange — не-JSON и не-объект значения
         var kvs = new[]
         {
-            Kv("/pgworker/backups/demo/s1/wal", "{битый"),
+            Kv("/pgworker/backups/demo/s1/wal", "{broken"),
             Kv("/pgworker/backups/demo/s2/wal", "[]"),
         };
 
@@ -82,7 +82,7 @@ public class WalAlertRulesTests
     }
 
     [Fact]
-    public void Парсер_full_и_policy_без_wal_не_ломают_wal_словарь()
+    public void Parser_FullAndPolicyWithoutWal_DoNotBreakWalDictionary()
     {
         // Arrange — full/policy разбираются t02-семантикой (шард в словаре с null);
         // wal-словарь шарда при отсутствии wal-ключа пуст → wal-правила молчат
@@ -106,11 +106,11 @@ public class WalAlertRulesTests
     // ── wal-chain-broken ──
 
     [Fact]
-    public void ChainBroken_DEGRADED_живой_кластер_critical()
+    public void ChainBroken_Degraded_ActiveCluster_Critical()
     {
         // Arrange — DEGRADED-поток у шарда живого Active-кластера
         var snapshot = SnapshotWith(Backups("demo",
-            new Dictionary<string, WalStreamInfo?> { ["s1"] = Wal(WalStreamInfoState.Degraded, error: "дыра WAL-цепочки: ожидался ..02, найден ..03") }));
+            new Dictionary<string, WalStreamInfo?> { ["s1"] = Wal(WalStreamInfoState.Degraded, error: "WAL chain hole: expected ..02, found ..03") }));
 
         // Act
         var alerts = new WalChainBrokenRule().Evaluate(snapshot, Context()).ToList();
@@ -119,11 +119,11 @@ public class WalAlertRulesTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Id.Should().Be("wal-chain-broken:demo/s1");
-        alert.Message.Should().Contain("дыра WAL-цепочки");
+        alert.Message.Should().Contain("WAL chain hole");
     }
 
     [Fact]
-    public void ChainBroken_ACTIVE_нет_алерта()
+    public void ChainBroken_Active_NoAlert()
     {
         // Arrange
         var snapshot = SnapshotWith(Backups("demo",
@@ -136,7 +136,7 @@ public class WalAlertRulesTests
     // ── wal-stream-lag ──
 
     [Fact]
-    public void StreamLag_лаг_выше_порога_warning()
+    public void StreamLag_LagAboveThreshold_Warning()
     {
         // Arrange — ACTIVE с лагом 5000 (порог по умолчанию 1024)
         var snapshot = SnapshotWith(Backups("demo",
@@ -149,11 +149,11 @@ public class WalAlertRulesTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Warning);
         alert.Kind.Should().Be("wal-stream-lag");
-        alert.Message.Should().Contain("отстаёт");
+        alert.Message.Should().Contain("lags by");
     }
 
     [Fact]
-    public void StreamLag_свежий_и_малый_лаг_нет_алерта()
+    public void StreamLag_FreshAndSmallLag_NoAlert()
     {
         // Arrange — свежая загрузка, лаг 0
         var snapshot = SnapshotWith(Backups("demo",
@@ -164,7 +164,7 @@ public class WalAlertRulesTests
     }
 
     [Fact]
-    public void StreamLag_тишина_дольше_порога_warning()
+    public void StreamLag_SilenceLongerThanThreshold_Warning()
     {
         // Arrange — last_uploaded = now − 3600 (порог 300)
         var snapshot = SnapshotWith(Backups("demo",
@@ -175,13 +175,13 @@ public class WalAlertRulesTests
 
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
-        alert.Message.Should().Contain("молчит");
+        alert.Message.Should().Contain("silent");
     }
 
     // ── wal-stream-stopped ──
 
     [Fact]
-    public void StreamStopped_STOPPED_живой_шард_warning()
+    public void StreamStopped_Stopped_LiveShard_Warning()
     {
         // Arrange
         var snapshot = SnapshotWith(Backups("demo",
@@ -197,7 +197,7 @@ public class WalAlertRulesTests
     }
 
     [Fact]
-    public void StreamStopped_несуществующий_шард_нет_алерта()
+    public void StreamStopped_NonexistentShard_NoAlert()
     {
         // Arrange — ключ wal от шарда, которого в кластере нет
         var snapshot = SnapshotWith(Backups("demo",

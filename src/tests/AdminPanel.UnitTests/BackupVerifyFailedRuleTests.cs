@@ -20,7 +20,7 @@ public class BackupVerifyFailedRuleTests
 
     // AAA: FAILED → critical с текстом verify.error и target C/X (AC7)
     [Fact]
-    public void FailedVerify_CriticalAlertСErrorТекстом()
+    public void FailedVerify_CriticalAlertWithErrorText()
     {
         // Arrange — шарда s1: невалидный полный с причиной цепочки
         var rule = new BackupVerifyFailedRule();
@@ -29,7 +29,7 @@ public class BackupVerifyFailedRuleTests
             null,
             ShardVerifyFailures: new Dictionary<string, ShardVerifyFailure>
             {
-                ["s1"] = new("s1", "20260911120000Z", "дыра WAL-цепочки: ожидался A, найден B", 1757500600),
+                ["s1"] = new("s1", "20260911120000Z", "WAL chain hole: expected A, found B", 1757500600),
             }));
 
         // Act
@@ -41,13 +41,13 @@ public class BackupVerifyFailedRuleTests
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Target.Should().Be("demo/s1");
         alert.Id.Should().Be("backup-verify-failed:demo/s1");
-        alert.Message.Should().Contain("20260911120000Z").And.Contain("дыра WAL-цепочки");
+        alert.Message.Should().Contain("20260911120000Z").And.Contain("WAL chain hole");
         alert.Details!["backupId"].Should().Be("20260911120000Z");
     }
 
     // AAA: без FAILED — молчит (AC7)
     [Fact]
-    public void БезFailed_Молчит()
+    public void NoFailures_Silent()
     {
         // Arrange — свежие валидные полные, failures пуст
         var rule = new BackupVerifyFailedRule();
@@ -65,7 +65,7 @@ public class BackupVerifyFailedRuleTests
 
     // AAA: пустой префикс — молчит (AC7)
     [Fact]
-    public void ПустойПрефикс_Молчит()
+    public void EmptyPrefix_Silent()
     {
         // Arrange — подсистема не включена (нет Backups вовсе)
         var rule = new BackupVerifyFailedRule();

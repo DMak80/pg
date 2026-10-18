@@ -175,7 +175,7 @@ public class BackupStorageQueryTests
     // AAA (AC7): джойн реестр×hold×заявка — бейджи защиты в DTO; TtlLeftSec
     // только у незащищённых
     [Fact]
-    public void MergeOrphans_защита_и_заявки_в_DTO()
+    public void MergeOrphans_ProtectionAndRequests_InDto()
     {
         // Arrange — реестр: g/s1 с полным, g/s2 без; hold на g/s2; заявка на g/s1
         var registry = new BackupOrphansInfo(
@@ -194,17 +194,17 @@ public class BackupStorageQueryTests
         s1.HasValidFull.Should().BeTrue();
         s1.DeleteRequested.Should().BeTrue();
         s1.DeleteRequestedBy.Should().Be("operator");
-        s1.TtlLeftSec.Should().BeNull("защищён полным + заявка");
+        s1.TtlLeftSec.Should().BeNull("protected by full backup + delete request");
         var s2 = dto.Orphans.Single(o => o.Prefix == "g/s2");
         s2.Held.Should().BeTrue();
         s2.HeldBy.Should().Be("panel");
-        s2.TtlLeftSec.Should().BeNull("под hold");
+        s2.TtlLeftSec.Should().BeNull("under hold");
     }
 
     // AAA (AC7): незащищённая просроченная сирота без заявки — TtlLeftSec не null
     // (отрицательный — «следующий проход»)
     [Fact]
-    public void MergeOrphans_незащищённый_TtlLeft_не_null()
+    public void MergeOrphans_Unprotected_TtlLeft_NotNull()
     {
         // Arrange — реестр с одной незащищённой сиротой g/s3, TTL давно истёк
         var registry = new BackupOrphansInfo(
@@ -219,7 +219,7 @@ public class BackupStorageQueryTests
         s3.HasValidFull.Should().BeFalse();
         s3.Held.Should().BeFalse();
         s3.DeleteRequested.Should().BeFalse();
-        s3.TtlLeftSec.Should().NotBeNull().And.BeLessThan(0, "истёк — удаление следующим проходом");
+        s3.TtlLeftSec.Should().NotBeNull().And.BeLessThan(0, "expired — deletion on the next pass");
     }
 
     // ——— маппер деталей шарда — AAA ———

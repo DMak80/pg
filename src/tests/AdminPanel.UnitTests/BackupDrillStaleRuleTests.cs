@@ -68,7 +68,7 @@ public class BackupDrillStaleRuleTests
 
         // Assert
         staleAlerts.Should().ContainSingle(a => a.Kind == "backup-drill-stale");
-        freshAlerts.Should().BeEmpty("свежий успех — восстановимость доказывается");
+        freshAlerts.Should().BeEmpty("fresh success — recoverability is proven");
     }
 
     // AAA: последний FAILED не «освежает» — при включённом интервале без

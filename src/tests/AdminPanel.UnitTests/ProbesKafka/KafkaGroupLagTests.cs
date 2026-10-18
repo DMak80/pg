@@ -44,7 +44,7 @@ public class KafkaGroupLagTests
         var total = KafkaGroupLag.Total(end, new Dictionary<(string Topic, int Partition), long>());
 
         // Assert
-        total.Should().Be(15, "отсутствие коммита = весь end как лаг");
+        total.Should().Be(15, "no commit = entire end as lag");
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public class KafkaGroupLagTests
         var total = KafkaGroupLag.Total(end, committed);
 
         // Assert
-        total.Should().Be(0, "отрицательный лаг по партиции не уменьшает общий");
+        total.Should().Be(0, "negative per-partition lag does not reduce the total");
     }
 
     [Fact]

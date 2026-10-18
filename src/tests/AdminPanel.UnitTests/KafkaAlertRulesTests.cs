@@ -48,7 +48,7 @@ public class KafkaAlertRulesTests
         var a = alerts.Should().ContainSingle(
             x => x.Kind == "worker-unhealthy" && x.Target == "kafkaworker/kw1").Subject;
         a.Severity.Should().Be(AlertSeverity.Warning);
-        a.Message.Should().Contain("не-200");
+        a.Message.Should().Contain("non-200");
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public class KafkaAlertRulesTests
 
         // Act/Assert: «недостижим по URL lease-ключа».
         Evaluate(next).Should().ContainSingle(
-            x => x.Kind == "worker-unhealthy" && x.Message.Contains("недостижим"));
+            x => x.Kind == "worker-unhealthy" && x.Message.Contains("unreachable"));
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public class KafkaAlertRulesTests
 
     private static Alert AlertOf(string id, long sinceUnix) => new(
         id, AlertSeverity.Critical, id[..id.IndexOf(':')], "", "", null, sinceUnix,
-        "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
+        "test hint", AlertRemedy.WorkerAuto, "test action");
 
     // ===== Волна C (план C3): missing-desired / stale / under-replicated / lag-high =====
 

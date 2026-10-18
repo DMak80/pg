@@ -38,7 +38,7 @@ public class BackupDrillFailedRuleTests
     {
         // Arrange — FAILED с причиной на живом шарде demo/s1.
         var snapshot = Snapshot(ClusterInfo("demo",
-            [("s1", "FAILED", "recovery-бюджет исчерпан")]));
+            [("s1", "FAILED", "recovery budget exhausted")]));
 
         // Act
         var alerts = Evaluate(_rule, snapshot);
@@ -48,7 +48,7 @@ public class BackupDrillFailedRuleTests
         alert.Kind.Should().Be("backup-drill-failed");
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Target.Should().Be("demo/s1");
-        alert.Message.Should().Contain("recovery-бюджет исчерпан");
+        alert.Message.Should().Contain("recovery budget exhausted");
         alert.Details!["drillId"].Should().Be("20261001120000Z");
         alert.Details["backupId"].Should().Be("20261001090000Z");
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
@@ -87,7 +87,7 @@ public class BackupDrillFailedRuleTests
         var alerts = Evaluate(_rule, snapshot);
 
         // Assert
-        alerts.Should().BeEmpty("шард удалён из декларации — правило молчит");
+        alerts.Should().BeEmpty("shard removed from declaration — rule stays silent");
     }
 
     // AAA: drill-ключей нет (подсистема не включена) — молчим.

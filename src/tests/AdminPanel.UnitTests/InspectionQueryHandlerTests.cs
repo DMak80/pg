@@ -61,7 +61,7 @@ public class InspectionQueryHandlerTests
         var store = new SnapshotStore();
         store.Replace(TestSnapshots.Healthy(_time.Utc) with
         {
-            Alerts = [new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие")],
+            Alerts = [new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null, "test hint", AlertRemedy.WorkerAuto, "test action")],
         });
         var handler = new OverviewQueryHandler(store, new KafkaSnapshotStore(), new ValkeySnapshotStore(), new S3SnapshotStore(), _time, Options.Create(new EtcdOptions()));
 
@@ -84,8 +84,8 @@ public class InspectionQueryHandlerTests
         {
             Alerts =
             [
-                new Alert("a:1", AlertSeverity.Critical, "a", "1", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
-                new Alert("b:1", AlertSeverity.Warning, "b", "1", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
+                new Alert("a:1", AlertSeverity.Critical, "a", "1", "m", null, null, "test hint", AlertRemedy.WorkerAuto, "test action"),
+                new Alert("b:1", AlertSeverity.Warning, "b", "1", "m", null, null, "test hint", AlertRemedy.WorkerAuto, "test action"),
             ],
         });
         var handler = new AlertsQueryHandler(store, new KafkaSnapshotStore(), new ValkeySnapshotStore(), new S3SnapshotStore());

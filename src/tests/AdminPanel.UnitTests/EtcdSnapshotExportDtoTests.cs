@@ -11,7 +11,7 @@ public class EtcdSnapshotExportDtoTests
 {
     // AAA: маппер статуса выгрузки — 1:1; null → null (карточка «не включена»)
     [Fact]
-    public void MapEtcdSnapshots_полный_1к1()
+    public void MapEtcdSnapshots_Full_OneToOne()
     {
         // Arrange
         var info = new EtcdSnapshotExportInfo(true, "OK", 1759330000, "etcd/snapshot-x.db", "abc123", 2048, 360, null);
@@ -24,7 +24,7 @@ public class EtcdSnapshotExportDtoTests
     }
 
     [Fact]
-    public void MapEtcdSnapshots_null_нет_ключа()
+    public void MapEtcdSnapshots_Null_NoKey()
     {
         // Act/Assert
         BackupStorageMappers.MapEtcdSnapshots(null).Should().BeNull();

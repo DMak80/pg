@@ -11,7 +11,7 @@ public class EtcdSnapshotsParserTests
 {
     // AAA: полный формат → модель 1:1
     [Fact]
-    public void Parse_полный_ключ()
+    public void Parse_FullKey()
     {
         // Arrange
         var kv = new Kv("/pgworker/etcd-snapshots",
@@ -31,10 +31,10 @@ public class EtcdSnapshotsParserTests
 
     // AAA: FAILED c error — модель несёт ошибку
     [Fact]
-    public void Parse_случай_FAILED_с_ошибкой()
+    public void Parse_FailedCase_WithError()
     {
         // Arrange
-        var kv = new Kv("/pgworker/etcd-snapshots", """{"enabled":true,"state":"FAILED","error":"S3 недоступен"}""", 1);
+        var kv = new Kv("/pgworker/etcd-snapshots", """{"enabled":true,"state":"FAILED","error":"S3 unavailable"}""", 1);
 
         // Act
         var (parsed, errors) = EtcdSnapshotsParser.Parse(kv);
@@ -43,16 +43,16 @@ public class EtcdSnapshotsParserTests
         errors.Should().BeEmpty();
         var info = parsed!;
         info.State.Should().Be("FAILED");
-        info.Error.Should().Be("S3 недоступен");
+        info.Error.Should().Be("S3 unavailable");
         info.LastUploadedUnix.Should().BeNull();
     }
 
     // AAA: битый JSON — parseError-запись, модель null (правила молчат)
     [Fact]
-    public void Parse_битый_json_parseError()
+    public void Parse_BrokenJson_ParseError()
     {
         // Arrange
-        var kv = new Kv("/pgworker/etcd-snapshots", "{не-json", 1);
+        var kv = new Kv("/pgworker/etcd-snapshots", "{not-json", 1);
 
         // Act
         var (info, errors) = EtcdSnapshotsParser.Parse(kv);
@@ -64,7 +64,7 @@ public class EtcdSnapshotsParserTests
 
     // AAA: ключа нет (null) — «выгрузка не включена», без ошибок
     [Fact]
-    public void Parse_нет_ключа_null()
+    public void Parse_NoKey_Null()
     {
         // Act
         var (info, errors) = EtcdSnapshotsParser.Parse(null);

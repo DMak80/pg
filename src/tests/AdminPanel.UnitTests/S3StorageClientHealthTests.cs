@@ -28,7 +28,7 @@ public class S3StorageClientHealthTests
         {
             Requests.Add(request.RequestUri!.AbsolutePath);
             if (deadEndpoint)
-                throw new HttpRequestException("нет ответа");
+                throw new HttpRequestException("no response");
             var (status, body) = routes.TryGetValue(
                 request.RequestUri!.AbsolutePath, out var route)
                 ? route

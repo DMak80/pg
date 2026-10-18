@@ -78,7 +78,7 @@ public class WorkerProxyCommandTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(409,
-                """{"title":"Cluster already exists","status":409,"detail":"кластер smoke уже существует"}"""),
+                """{"title":"Cluster already exists","status":409,"detail":"cluster smoke already exists"}"""),
         };
         var handler = new CreateClusterCommandHandler(api);
 
@@ -101,7 +101,7 @@ public class WorkerProxyCommandTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(400,
-                """{"title":"Validation failed","status":400,"detail":"параметры некорректны","errors":{"buckets":["бакеты: целое 1..8192"]}}"""),
+                """{"title":"Validation failed","status":400,"detail":"parameters are invalid","errors":{"buckets":["buckets: integer 1..8192"]}}"""),
         };
         var handler = new CreateClusterCommandHandler(api);
 
@@ -258,7 +258,7 @@ public class WorkerProxyCommandTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(409,
-                """{"title":"Broker resources update rejected","status":409,"detail":"брокер заявлен к удалению"}"""),
+                """{"title":"Broker resources update rejected","status":409,"detail":"broker is queued for deletion"}"""),
         };
         var handler = new UpdateKafkaBrokerResourcesCommandHandler(api);
 

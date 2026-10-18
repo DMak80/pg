@@ -212,7 +212,7 @@ public class ValkeyAlertRulesTests
         // Arrange
         var next = Snapshot() with
         {
-            ParseErrors = [new KeyParseError("/valkey/clusters/bad/config", "битый JSON config")],
+            ParseErrors = [new KeyParseError("/valkey/clusters/bad/config", "broken JSON config")],
         };
 
         // Act/Assert
@@ -278,7 +278,7 @@ public class ValkeyAlertRulesTests
     // AAA: Active-кластер HasCaPem=false → critical valkey-security-missing;
     // с HasCaPem=true — алерта нет.
     [Fact]
-    public void ActiveCluster_БезCaPem_CriticalSecurityMissing()
+    public void ActiveCluster_WithoutCaPem_CriticalSecurityMissing()
     {
         // Arrange: Active-кластер без ca_pem (миграция не доиграна).
         var withoutCa = Snapshot(ActiveCluster());

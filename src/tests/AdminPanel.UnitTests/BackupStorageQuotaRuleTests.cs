@@ -63,8 +63,8 @@ public class BackupStorageQuotaRuleTests
         alert.Kind.Should().Be("backup-storage-quota");
         alert.Severity.Should().Be(AlertSeverity.Warning);
         alert.Message.Should().Contain("820").And.Contain("82%");
-        alert.Hint.Should().Contain("ретенционный проход");
-        alert.RemedyText.Should().Contain("квоту");
+        alert.Hint.Should().Contain("retention pass");
+        alert.RemedyText.Should().Contain("quota");
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
     }
 

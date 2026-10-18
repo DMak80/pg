@@ -43,7 +43,7 @@ public class BackupPoolUnreachableRuleTests
         // Arrange
         var snapshot = Snapshot([Cluster(wal: new WalStreamInfo(
             "demo", "s1", WalStreamInfoState.Degraded, "slot", "n1", 1760000000,
-            null, $"{Marker}: put wal/000000010000000000000001 — все ноды списка недоступны"))]);
+            null, $"{Marker}: put wal/000000010000000000000001 — all endpoints in the list are unreachable"))]);
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -75,7 +75,7 @@ public class BackupPoolUnreachableRuleTests
         // Arrange
         var snapshot = Snapshot([Cluster(wal: new WalStreamInfo(
             "demo", "s1", WalStreamInfoState.Degraded, "slot", "n1", 1760000000,
-            5, "отставание WAL-потока 5 сегментов"))]);
+            5, "WAL stream lagging by 5 segments"))]);
 
         // Act
         var alerts = Evaluate(snapshot);

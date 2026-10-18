@@ -31,13 +31,13 @@ public class BackupChainBrokenRuleTests
     // AAA (AC8→алерт): wal=BROKEN живого Active-кластера → critical backup-chain-broken
     // с текстом сбоя И действия воркера
     [Fact]
-    public void Broken_ЖивойКластер_Critical()
+    public void Broken_ActiveCluster_Critical()
     {
         // Arrange — кластер demo Active из TestSnapshots.Healthy; шарда s1 нет в
         // кластере → нужно имя шарда из кластера: берём демо-шард FullCluster()
         var cluster = TestSnapshots.FullCluster();
         var shardName = cluster.Shards[0].Name;
-        var wal = Wal(WalStreamInfoState.Broken, "дыра WAL-цепочки: ожидался X") with { Shard = shardName };
+        var wal = Wal(WalStreamInfoState.Broken, "WAL chain hole: expected X") with { Shard = shardName };
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             Backups = [new ClusterBackupsInfo("demo", null,
@@ -53,15 +53,15 @@ public class BackupChainBrokenRuleTests
         alert.Kind.Should().Be("backup-chain-broken");
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Remedy.Should().Be(AlertRemedy.WorkerAuto);
-        alert.Message.Should().Contain(shardName).And.Contain("дыра").And.Contain("переснимает");
+        alert.Message.Should().Contain(shardName).And.Contain("hole").And.Contain("re-runs the full backup");
     }
 
     // AAA: DEGRADED — не правило t07 (домен wal-chain-broken t03); молчание
     [Fact]
-    public void Degraded_Молчание()
+    public void Degraded_Silent()
     {
         // Arrange
-        var snapshot = SnapshotWith(ClusterOf(Wal(WalStreamInfoState.Degraded, "отставание WAL-потока")));
+        var snapshot = SnapshotWith(ClusterOf(Wal(WalStreamInfoState.Degraded, "WAL stream lagging")));
 
         // Act
         var alerts = Evaluate(snapshot);
@@ -72,7 +72,7 @@ public class BackupChainBrokenRuleTests
 
     // AAA: BROKEN мёртвого (не-Active) кластера — молчание
     [Fact]
-    public void Broken_МёртвыйКластер_Молчание()
+    public void Broken_DeadCluster_Silent()
     {
         // Arrange — кластер ghost в снапшоте отсутствует → живого Active нет
         var snapshot = TestSnapshots.Healthy(Now) with

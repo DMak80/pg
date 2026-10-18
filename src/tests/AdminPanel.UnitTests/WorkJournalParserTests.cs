@@ -27,7 +27,7 @@ public class WorkJournalParserTests
         var w = result.Items.Should().ContainSingle().Subject;
         w.Cluster.Should().Be("shop");
         w.Op.Should().Be("provision");
-        w.LastError.Should().Contain("не поднялся");
+        w.LastError.Should().Contain("did not start");
         w.FailCount.Should().Be(3);
         w.FailFirstUnix.Should().Be(1756005400);
         w.RetryNotBeforeUnix.Should().Be(1756009215);
@@ -55,7 +55,7 @@ public class WorkJournalParserTests
         // Arrange: битый JSON ключа — ключ скипается с ParseError (домен воркера, не трогаем).
 
         // Act
-        var result = WorkJournalParser.Parse([WorkKv("bad", "{не-json")]);
+        var result = WorkJournalParser.Parse([WorkKv("bad", "{not-json")]);
 
         // Assert
         result.Items.Should().BeEmpty();

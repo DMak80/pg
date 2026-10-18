@@ -100,7 +100,7 @@ public class BackupsS3OptionsTests
 
         // Assert
         configured.Should().BeTrue(
-            "непустые Endpoints при пустом Endpoint — грань включена (02 §2.5)");
+            "non-empty Endpoints with empty Endpoint — facet enabled (02 §2.5)");
         act.Should().NotThrow();
     }
 

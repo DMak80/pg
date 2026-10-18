@@ -24,10 +24,10 @@ public class EtcdSnapshotExportRuleTests
 
     // AAA 1: FAILED + enabled → critical etcd-snapshot-export-failed, Description содержит error
     [Fact]
-    public void Failed_включено_critical_алерт_с_ошибкой()
+    public void Failed_Enabled_CriticalAlertWithError()
     {
         // Arrange — снапшот с FAILED-статусом выгрузки
-        var snapshot = Snapshot(new EtcdSnapshotExportInfo(true, "FAILED", 1759330000, null, "abc", 1, 360, "S3 недоступен"));
+        var snapshot = Snapshot(new EtcdSnapshotExportInfo(true, "FAILED", 1759330000, null, "abc", 1, 360, "S3 unavailable"));
 
         // Act
         var alerts = Evaluate(_failedRule, snapshot);
@@ -35,12 +35,12 @@ public class EtcdSnapshotExportRuleTests
         // Assert
         alerts.Should().ContainSingle(a => a.Kind == "etcd-snapshot-export-failed"
             && a.Severity == AlertSeverity.Critical
-            && a.Message.Contains("S3 недоступен"));
+            && a.Message.Contains("S3 unavailable"));
     }
 
     // AAA 2: FAILED + enabled=false → молчат оба (выключено)
     [Fact]
-    public void Failed_выключено_молчит()
+    public void Failed_Disabled_Silent()
     {
         // Arrange — enabled=false (ключ воркера при выключенной опции)
         var snapshot = Snapshot(new EtcdSnapshotExportInfo(false, "FAILED", null, null, null, null, 360, "err"));
@@ -52,7 +52,7 @@ public class EtcdSnapshotExportRuleTests
 
     // AAA 3: EtcdSnapshots=null (ключа нет/битый) → оба правила молчат
     [Fact]
-    public void Нет_ключа_молчат_оба()
+    public void NoKey_BothSilent()
     {
         // Arrange
         var snapshot = Snapshot(null);
@@ -64,7 +64,7 @@ public class EtcdSnapshotExportRuleTests
 
     // AAA 4: OK + enabled, last_uploaded старше 2×interval_min (interval_min=360) → warning stale
     [Fact]
-    public void Устаревшая_выгрузка_warning_stale()
+    public void StaleExport_WarningStale()
     {
         // Arrange — выгрузка 2 суток назад, порог 2×360 мин = 12 ч
         // 1790683200 = Now − 48 ч (порог 2×360 мин = 12 ч)
@@ -81,7 +81,7 @@ public class EtcdSnapshotExportRuleTests
     // слепок (плановый и внеочередной) продвигает last_uploaded_unix —
     // исправный контур под порогом, stale молчит (семантика «покрытия» §3.1/§3.7)
     [Fact]
-    public void Свежая_выгрузка_молчит()
+    public void FreshExport_Silent()
     {
         // Arrange — выгрузка 1 ч назад (порог 12 ч)
         // 1790852400 = Now − 1 ч
@@ -94,7 +94,7 @@ public class EtcdSnapshotExportRuleTests
 
     // AAA 6: OK + enabled, last_uploaded отсутствует → warning stale («выгрузка молчит»)
     [Fact]
-    public void Без_выгрузок_warning_stale()
+    public void NoUploads_WarningStale()
     {
         // Arrange — включено, но ни одной успешной выгрузки
         var snapshot = Snapshot(new EtcdSnapshotExportInfo(true, "OK", null, null, null, null, 360, null));
@@ -107,7 +107,7 @@ public class EtcdSnapshotExportRuleTests
 
     // AAA 7: interval_min отсутствует → панельный дефолт 360 (порог 720 мин)
     [Fact]
-    public void Без_интервала_дефолт_360()
+    public void NoInterval_Default360()
     {
         // Arrange — выгрузка 11 ч назад: под порогом дефолта 2×360 мин
         // 1790816400 = Now − 11 ч
@@ -117,7 +117,7 @@ public class EtcdSnapshotExportRuleTests
         var stale = Snapshot(new EtcdSnapshotExportInfo(true, "OK", 1790809200, null, null, null, null, null));
 
         // Act/Assert — 11 ч < 12 ч → молчит; 13 ч > 12 ч → stale
-        Evaluate(_staleRule, fresh).Should().BeEmpty("порог по дефолту 360 мин = 12 ч");
+        Evaluate(_staleRule, fresh).Should().BeEmpty("default threshold 360 min = 12 h");
         Evaluate(_staleRule, stale).Should().ContainSingle(a => a.Kind == "etcd-snapshot-export-stale");
     }
 }

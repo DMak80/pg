@@ -33,7 +33,7 @@ public class BackupOrphanRuleTests
     // AAA (AC7→алерт): запись OBSERVED в реестре → warning с prefix, size и
     // остатком TTL («удаление по TTL через …»)
     [Fact]
-    public void Orphan_Observed_Warning_СTtl()
+    public void Orphan_Observed_Warning_WithTtl()
     {
         // Arrange — first_seen 2 суток назад (Now − 172800), ttl 7 сут → остаток ~5 сут
         var snapshot = SnapshotWith(new BackupOrphansInfo(
@@ -47,12 +47,12 @@ public class BackupOrphanRuleTests
         alert.Kind.Should().Be("backup-orphan");
         alert.Severity.Should().Be(AlertSeverity.Warning);
         alert.Remedy.Should().Be(AlertRemedy.WorkerAuto);
-        alert.Message.Should().Contain("ghost1/s1").And.Contain("ГиБ").And.Contain("TTL").And.Contain("сут");
+        alert.Message.Should().Contain("ghost1/s1").And.Contain("GiB").And.Contain("TTL").And.Contain(" d");
     }
 
     // AAA (AC7): OrphanTtlSec=0 → «удаление вручную», Remedy OperatorRunbook
     [Fact]
-    public void Orphan_TtlZero_Ручное()
+    public void Orphan_TtlZero_Manual()
     {
         // Arrange — панельный порог 0 (воркер авто-удаление выключил)
         var options = Options.Create(new AlertsOptions
@@ -67,12 +67,12 @@ public class BackupOrphanRuleTests
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
-        alert.Message.Should().Contain("вручную");
+        alert.Message.Should().Contain("manual deletion");
     }
 
     // AAA: DELETING-запись → «идёт удаление» (даже при ttl=0 — доводка важнее)
     [Fact]
-    public void Orphan_Deleting_ИдётУдаление()
+    public void Orphan_Deleting_DeletionInProgress()
     {
         // Arrange
         var snapshot = SnapshotWith(new BackupOrphansInfo(
@@ -83,13 +83,13 @@ public class BackupOrphanRuleTests
 
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
-        alert.Message.Should().Contain("идёт удаление");
+        alert.Message.Should().Contain("deletion in progress");
         alert.Remedy.Should().Be(AlertRemedy.WorkerAuto);
     }
 
     // AAA: ключа реестра нет — правило молчит (подсистема сирот не включалась)
     [Fact]
-    public void Нет_Ключа_Молчание()
+    public void NoKey_Silent()
     {
         // Arrange / Act / Assert
         Evaluate(SnapshotWith(null)).Should().BeEmpty();
@@ -101,7 +101,7 @@ public class BackupOrphanRuleTests
     // AAA (AC7): OBSERVED+hold → «защищён hold-флагом (<by>) — удаление только
     // явной командой», Remedy OperatorRunbook
     [Fact]
-    public void Orphan_Hold_ФразаЗащищён_ИРунбук()
+    public void Orphan_Hold_ProtectedPhrase_AndRunbook()
     {
         // Arrange — сирота под hold панелью (вне TTL-отбора воркера)
         var snapshot = SnapshotWith(new BackupOrphansInfo(
@@ -119,15 +119,15 @@ public class BackupOrphanRuleTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Warning);
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
-        alert.Message.Should().Contain("защищён hold-флагом (panel)")
-            .And.Contain("только явной командой");
+        alert.Message.Should().Contain("protected by hold flag (panel)")
+            .And.Contain("only via explicit command");
         alert.Details!["heldBy"].Should().Be("panel");
     }
 
     // AAA (AC7): OBSERVED+has_valid_full → «защищён автоправилом (есть валидный
     // полный) — удаление только явной командой», Remedy OperatorRunbook
     [Fact]
-    public void Orphan_Полный_ФразаАвтоправило()
+    public void Orphan_FullBackup_AutoRulePhrase()
     {
         // Arrange — сирота с валидным полным (автоправило последнего полного)
         var snapshot = SnapshotWith(new BackupOrphansInfo(
@@ -140,15 +140,15 @@ public class BackupOrphanRuleTests
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
-        alert.Message.Should().Contain("защищён автоправилом (есть валидный полный)")
-            .And.Contain("только явной командой");
+        alert.Message.Should().Contain("protected by auto-rule (valid full backup exists)")
+            .And.Contain("only via explicit command");
         alert.Details!["hasValidFull"].Should().Be("true");
     }
 
     // AAA (AC7): OBSERVED+заявка delete → «к удалению заявкой оператора —
     // ближайший проход воркера», Remedy WorkerAuto
     [Fact]
-    public void Orphan_Заявка_КУдалению()
+    public void Orphan_DeleteRequest_QueuedForDeletion()
     {
         // Arrange — заявка явного удаления на незащищённую сироту
         var snapshot = SnapshotWith(new BackupOrphansInfo(
@@ -165,8 +165,8 @@ public class BackupOrphanRuleTests
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Remedy.Should().Be(AlertRemedy.WorkerAuto);
-        alert.Message.Should().Contain("к удалению заявкой оператора")
-            .And.Contain("ближайший проход");
+        alert.Message.Should().Contain("queued for deletion by operator request")
+            .And.Contain("next worker pass");
         alert.Details!["deleteRequested"].Should().Be("true");
     }
 }

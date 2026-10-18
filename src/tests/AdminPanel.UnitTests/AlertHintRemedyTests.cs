@@ -141,7 +141,7 @@ public class AlertHintRemedyTests
                 ], null),
             ],
             Probes = [new ProbeResult("moving-s1/s1a", "patroni", false, 5.0, "connection refused", Now)],
-            ParseErrors = [new KeyParseError("/clusters/demo/buckets/status/bucket_9", "битый JSON")],
+            ParseErrors = [new KeyParseError("/clusters/demo/buckets/status/bucket_9", "broken JSON")],
             PgWorkerEndpoints = [], // worker-api-unreachable (pg-грань)
         };
     }
@@ -158,7 +158,7 @@ public class AlertHintRemedyTests
         // Assert: покрыты ВСЕ kinds каталога (потеря kind'а — регресс) и каждый
         // алерт несёт непустые Hint/RemedyText (инвариант arch/03 §4.1).
         var kinds = alerts.Select(a => a.Kind).ToHashSet();
-        kinds.Should().BeEquivalentTo(PgKinds, $"покрыты: {string.Join(", ", kinds.OrderBy(k => k))}");
+        kinds.Should().BeEquivalentTo(PgKinds, $"covered: {string.Join(", ", kinds.OrderBy(k => k))}");
         alerts.Should().NotBeEmpty();
         alerts.Should().OnlyContain(a => !string.IsNullOrWhiteSpace(a.Hint)
             && !string.IsNullOrWhiteSpace(a.RemedyText));
@@ -184,7 +184,7 @@ public class AlertHintRemedyTests
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Kind.Should().Be("worker-api-unreachable");
         alert.Target.Should().Be("pgworker");
-        alert.Hint.Should().Contain("lease-ключ");
+        alert.Hint.Should().Contain("lease key");
     }
 
     [Fact]
@@ -235,7 +235,7 @@ public class AlertHintRemedyTests
 
         // Assert: покрыты все kinds kafka-каталога; Hint/RemedyText непустые.
         var kinds = alerts.Select(a => a.Kind).ToHashSet();
-        kinds.Should().BeEquivalentTo(KafkaKinds, $"покрыты: {string.Join(", ", kinds.OrderBy(k => k))}");
+        kinds.Should().BeEquivalentTo(KafkaKinds, $"covered: {string.Join(", ", kinds.OrderBy(k => k))}");
         alerts.Should().OnlyContain(a => !string.IsNullOrWhiteSpace(a.Hint)
             && !string.IsNullOrWhiteSpace(a.RemedyText));
         alerts.Should().Contain(a => a.Kind == "worker-api-unreachable" && a.Target == "kafkaworker"

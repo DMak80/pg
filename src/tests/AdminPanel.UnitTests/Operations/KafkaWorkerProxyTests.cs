@@ -76,7 +76,7 @@ public class KafkaWorkerProxyTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(409,
-                """{"title":"Cluster already exists","status":409,"detail":"kafka-кластер events уже существует"}"""),
+                """{"title":"Cluster already exists","status":409,"detail":"kafka cluster events already exists"}"""),
         };
         var handler = new CreateKafkaClusterCommandHandler(api);
 
@@ -208,7 +208,7 @@ public class KafkaWorkerProxyTests
                 ? new WorkerApiResult(201,
                     """{"cluster":"events","requestedUnix":1756000000,"requestedBy":"opsuser"}""")
                 : new WorkerApiResult(404,
-                    """{"title":"Not found","status":404,"detail":"заявка ребалансировки events не найдена"}"""),
+                    """{"title":"Not found","status":404,"detail":"rebalance request for events not found"}"""),
         };
         var request = new RequestKafkaRebalanceCommandHandler(api);
         var cancel = new CancelKafkaRebalanceCommandHandler(api);

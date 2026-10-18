@@ -116,7 +116,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
         }
 
         return Result<T>.Failed(new ApplicationException(
-            $"{what}: все цели инвентаря недоступны: {last.Error!.Message}"));
+            $"{what}: all inventory targets are unreachable: {last.Error!.Message}"));
     }
 
     // Клиент одной цели (креды общие per-install, ServiceURL — по цели).

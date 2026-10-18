@@ -113,7 +113,7 @@ public class OrphansCommandsTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(409,
-                """{"title":"Orphan delete rejected","status":409,"detail":"сирота c1/s1 уже в DELETING — удаление идёт, доводку не остановить"}"""),
+                """{"title":"Orphan delete rejected","status":409,"detail":"orphan c1/s1 already in DELETING — deletion in progress, the in-flight pass cannot be stopped"}"""),
         };
         var handler = new DeleteOrphanCommandHandler(api);
 

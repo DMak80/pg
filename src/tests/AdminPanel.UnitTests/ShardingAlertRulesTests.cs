@@ -413,7 +413,7 @@ public class ShardingAlertRulesTests
         var snapshot = Snapshot(TestSnapshots.FullCluster() with { State = ClusterState.NotInitialized }) with
         {
             PgWorkerWork = [new WorkJournalInfo("demo", "provision", "shard-provision", "w-1",
-                UpdatedUnix: NowUnix - 10, LastError: "Patroni шарда demo-s1 не поднялся за бюджет 600 с",
+                UpdatedUnix: NowUnix - 10, LastError: "Patroni of shard demo-s1 did not start within the 600 s budget",
                 FailCount: 3, FailFirstUnix: NowUnix - 400, RetryNotBeforeUnix: NowUnix + 20)],
         };
 
@@ -425,7 +425,7 @@ public class ShardingAlertRulesTests
         alert.Kind.Should().Be("provision-stuck");
         alert.Target.Should().Be("demo");
         alert.Severity.Should().Be(AlertSeverity.Warning);
-        alert.Message.Should().Contain("не поднялся");
+        alert.Message.Should().Contain("did not start");
         alert.Details!["fail_count"].Should().Be("3");
     }
 

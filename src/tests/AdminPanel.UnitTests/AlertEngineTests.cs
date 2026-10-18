@@ -21,7 +21,7 @@ public class AlertEngineTests
 
     private static Alert Make(
         string id, AlertSeverity severity, string kind, string target, long? sinceUnix = null)
-        => new(id, severity, kind, target, "message", null, sinceUnix, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
+        => new(id, severity, kind, target, "message", null, sinceUnix, "test hint", AlertRemedy.WorkerAuto, "test action");
 
     [Fact]
     public void Evaluate_NoRules_EmptyList()
@@ -285,8 +285,8 @@ public class AlertEngineTests
         {
             ParseErrors =
             [
-                new KeyParseError("/clusters/demo/config", "битый JSON"),
-                new KeyParseError("/clusters/demo/shards/s1/replicas", "не целое"),
+                new KeyParseError("/clusters/demo/config", "broken JSON"),
+                new KeyParseError("/clusters/demo/shards/s1/replicas", "not an integer"),
             ],
         };
 
@@ -296,7 +296,7 @@ public class AlertEngineTests
         // Assert: по одному алерту на запись, target = ключ.
         var malformed = alerts.Where(a => a.Kind == "key-malformed").ToList();
         malformed.Should().HaveCount(2);
-        malformed.Should().Contain(a => a.Target == "/clusters/demo/config" && a.Details!["reason"] == "битый JSON");
+        malformed.Should().Contain(a => a.Target == "/clusters/demo/config" && a.Details!["reason"] == "broken JSON");
     }
 
     [Fact]
@@ -305,9 +305,9 @@ public class AlertEngineTests
         // Arrange: previous содержал key-malformed, новый снапшот — без ошибок парсинга.
         var previous = TestSnapshots.Healthy(BuiltAt) with
         {
-            ParseErrors = [new KeyParseError("/clusters/demo/config", "битый JSON")],
+            ParseErrors = [new KeyParseError("/clusters/demo/config", "broken JSON")],
             Alerts = [new Alert("key-malformed:/clusters/demo/config", AlertSeverity.Warning,
-                "key-malformed", "/clusters/demo/config", "ключ не разобран", null, 1000, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие")],
+                "key-malformed", "/clusters/demo/config", "key not parsed", null, 1000, "test hint", AlertRemedy.WorkerAuto, "test action")],
         };
 
         // Act
@@ -330,7 +330,7 @@ public class AlertEngineTests
                 Alarms = [new EtcdAlarm(42, EtcdAlarmType.NoSpace)],
             },
             Clusters = [TestSnapshots.FullCluster(), TestSnapshots.GhostCluster()],
-            ParseErrors = [new KeyParseError("/clusters/demo/config", "битый JSON")],
+            ParseErrors = [new KeyParseError("/clusters/demo/config", "broken JSON")],
         };
 
         // Act: 30 c с постройки → snapshot-stale тоже активен.

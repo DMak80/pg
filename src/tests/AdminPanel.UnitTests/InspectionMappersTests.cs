@@ -19,8 +19,8 @@ public class InspectionMappersTests
         {
             Alerts =
             [
-                new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
-                new Alert("b:etcd", AlertSeverity.Warning, "b", "etcd", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
+                new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null, "test hint", AlertRemedy.WorkerAuto, "test action"),
+                new Alert("b:etcd", AlertSeverity.Warning, "b", "etcd", "m", null, null, "test hint", AlertRemedy.WorkerAuto, "test action"),
             ],
         };
 
@@ -298,7 +298,7 @@ public class InspectionMappersTests
         // Arrange
         var alert = new Alert(
             "k:t", AlertSeverity.Warning, "k", "t", "msg",
-            new Dictionary<string, string> { ["reason"] = "битый JSON" }, 1755800000, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
+            new Dictionary<string, string> { ["reason"] = "broken JSON" }, 1755800000, "test hint", AlertRemedy.WorkerAuto, "test action");
 
         // Act
         var dto = AlertsMapper.Map([alert]).Single();
@@ -306,7 +306,7 @@ public class InspectionMappersTests
         // Assert
         dto.Id.Should().Be("k:t");
         dto.Message.Should().Be("msg");
-        dto.Details!["reason"].Should().Be("битый JSON");
+        dto.Details!["reason"].Should().Be("broken JSON");
         dto.SinceUnix.Should().Be(1755800000);
     }
 

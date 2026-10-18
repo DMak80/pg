@@ -181,7 +181,7 @@ public class KafkaProbeTests
         // Assert: клиент не дёргался; результат с пояснением.
         client.Calls.Should().BeEmpty();
         probeStore.Current!.Results.Should().ContainSingle()
-            .Which.Error.Should().Contain("admin-кредов");
+            .Which.Error.Should().Contain("admin creds");
     }
 
     [Fact]

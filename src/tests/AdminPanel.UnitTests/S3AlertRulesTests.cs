@@ -171,7 +171,7 @@ public sealed class S3AlertRulesTests
     {
         var alerts = Evaluate(Snapshot(
             rotations: [new S3RotationTicket("demo", 1760158000, "admin")],
-            parseErrors: [new KeyParseError("/s3/clusters/bad/config", "битый JSON")])).Alerts;
+            parseErrors: [new KeyParseError("/s3/clusters/bad/config", "broken JSON")])).Alerts;
 
         Assert.Contains(alerts, a => a.Kind == "s3-rotation-pending" && a.Severity == AlertSeverity.Info);
         Assert.Contains(alerts, a => a.Kind == "s3-rotation-stale" && a.Severity == AlertSeverity.Warning);
@@ -219,7 +219,7 @@ public sealed class S3AlertRulesTests
         var alerts = Evaluate(Snapshot(
             clusters: [Cluster("x", S3ClusterState.NotInitialized)],
             rotations: [new S3RotationTicket("x", 1, null)],
-            parseErrors: [new KeyParseError("/s3/clusters/b/config", "битый")])).Alerts;
+            parseErrors: [new KeyParseError("/s3/clusters/b/config", "broken")])).Alerts;
 
         Assert.All(alerts, a =>
         {

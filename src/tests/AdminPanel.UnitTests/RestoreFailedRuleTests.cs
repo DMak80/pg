@@ -38,7 +38,7 @@ public class RestoreFailedRuleTests
     {
         // Arrange — FAILED с причиной в живом кластере demo/s1
         var snapshot = Snapshot(ClusterInfo(
-            [("20260911120000Z", "FAILED", "дыра WAL-цепочки: ожидался 000000010000000000000003")]));
+            [("20260911120000Z", "FAILED", "WAL chain hole: expected 000000010000000000000003")]));
 
         // Act
         var alerts = Evaluate(_rule, snapshot);
@@ -49,7 +49,7 @@ public class RestoreFailedRuleTests
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Target.Should().Be("demo/s1");
         alert.Id.Should().Be("restore-failed:demo/s1/20260911120000Z");
-        alert.Message.Should().Contain("дыра WAL-цепочки");
+        alert.Message.Should().Contain("WAL chain hole");
         alert.Details!["restoreId"].Should().Be("20260911120000Z");
         alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
         alert.Hint.Should().Contain("backup-restore.md");

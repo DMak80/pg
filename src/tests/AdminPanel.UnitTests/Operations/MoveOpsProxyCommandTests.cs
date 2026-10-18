@@ -67,7 +67,7 @@ public class MoveOpsProxyCommandTests
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(409,
-                """{"title":"Move ops rejected","status":409,"detail":"шард c/shard1 — текущий владелец bucket_0, убирать нечего"}"""),
+                """{"title":"Move ops rejected","status":409,"detail":"shard c/shard1 — current owner of bucket_0, nothing to remove"}"""),
         };
         var handler = new FinalizeBucketCommandHandler(api);
 
@@ -79,7 +79,7 @@ public class MoveOpsProxyCommandTests
         result.IsSuccess.Should().BeFalse();
         var problem = result.Error.Should().BeOfType<WorkerProblemDetails>().Subject;
         problem.StatusCode.Should().Be(409);
-        problem.Body.Should().Contain("убирать нечего");
+        problem.Body.Should().Contain("nothing to remove");
     }
 
     [Fact]

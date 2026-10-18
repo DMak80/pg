@@ -122,7 +122,7 @@ public class WorkerCertServiceTests
         // Act / Assert: 422 с явной формулировкой
         var ex = Assert.Throws<WorkerCertAffectsOutgoingException>(
             () => Service().ValidateAndBuildMeta("pgworker", ca, caKey));
-        ex.Message.Should().Contain("подчинёнными сервисами");
+        ex.Message.Should().Contain("subordinate services");
     }
 
     [Fact]

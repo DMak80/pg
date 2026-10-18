@@ -130,7 +130,7 @@ public class KafkaMappersLifecycleTests
         orders.Lifecycle.RequestedBy.Should().Be("admin");
 
         var audit = dto.Topics.Single(t => t.Name == "audit");
-        audit.Partitions.Should().Be(0, "виртуальная строка — факта нет");
+        audit.Partitions.Should().Be(0, "virtual row — no fact");
         audit.ReplicationFactor.Should().BeNull();
         audit.RetentionMs.Should().BeNull();
         audit.MinInSyncReplicas.Should().BeNull();
