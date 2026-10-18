@@ -27,14 +27,14 @@ public static class EvacuationPlanner
         if (moving is not null)
             return Result<IReadOnlyList<EvacuationAssignment>>.Failed(
                 new InvalidOperationException(
-                    $"EvacuationPlanner: бакет {moving.Id} в статусе {moving.Status} — " +
-                    "незавершённый переезд, эвакуация заблокирована"));
+                    $"EvacuationPlanner: bucket {moving.Id} in status {moving.Status} — " +
+                    "incomplete move, evacuation blocked"));
 
         // Guard: эвакуировать некуда.
         if (aliveShards.Count == 0)
             return Result<IReadOnlyList<EvacuationAssignment>>.Failed(
                 new InvalidOperationException(
-                    $"EvacuationPlanner: нет живых шардов для эвакуации {deadShard}"));
+                    $"EvacuationPlanner: no alive shards to evacuate {deadShard}"));
 
         // Round-robin по живым шардам (по имени) для бакетов dead-шарда по возрастанию id.
         var targets = aliveShards.OrderBy(s => s).ToList();

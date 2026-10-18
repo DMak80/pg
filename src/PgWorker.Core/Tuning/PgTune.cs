@@ -125,7 +125,7 @@ public static class PgTune
             PgTuneDbType.Dw => 40,
             PgTuneDbType.Desktop => 20,
             PgTuneDbType.Mixed => 100,
-            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "неизвестный тип БД"),
+            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "unknown database type"),
         };
 
         // 4.2 shared_buffers: floor(RAM/D), D = 16 только у desktop.
@@ -160,7 +160,7 @@ public static class PgTune
             PgTuneDbType.Dw => (4194304L, 16777216L),
             PgTuneDbType.Desktop => (102400L, 2097152L),
             PgTuneDbType.Mixed => (1048576L, 4194304L),
-            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "неизвестный тип БД"),
+            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "unknown database type"),
         };
 
         // 4.8 wal_buffers: 3% от SB; кап 16MB ДО «округления вверх», минимум 32 — последним (§8 п.4).
@@ -185,7 +185,7 @@ public static class PgTune
             PgTuneHdType.Ssd => "200",
             PgTuneHdType.San => "300",
             PgTuneHdType.Nvme => "1000",
-            _ => throw new ArgumentOutOfRangeException(nameof(input), input.HdType, "неизвестный тип диска"),
+            _ => throw new ArgumentOutOfRangeException(nameof(input), input.HdType, "unknown disk type"),
         } : null;
 
         // 4.12 параллельные: только при cpuNum ≥ 4; иначе pfw = 8 (§4.12/§8 п.5).
@@ -217,7 +217,7 @@ public static class PgTune
             PgTuneDbType.Web or PgTuneDbType.Oltp => Math.Floor(wmv),
             PgTuneDbType.Dw or PgTuneDbType.Mixed => Math.Floor(wmv / 2),
             PgTuneDbType.Desktop => Math.Floor(wmv / 6),
-            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "неизвестный тип БД"),
+            _ => throw new ArgumentOutOfRangeException(nameof(input), input.DbType, "unknown database type"),
         });
         if (input.DbSize == PgTuneDbSize.LessRam)
             wm = (long)Math.Floor(wm * 1.3); // кэш ОС недогружен
@@ -301,7 +301,7 @@ public static class PgTune
                 PgTuneHdType.Ssd => "SSDs",
                 PgTuneHdType.Nvme => "NVMe drives",
                 PgTuneHdType.San => "SAN storage",
-                _ => throw new ArgumentOutOfRangeException(nameof(input), input.HdType, "неизвестный тип диска"),
+                _ => throw new ArgumentOutOfRangeException(nameof(input), input.HdType, "unknown disk type"),
             };
             AddGroup(
                 $"Cost parameters for Data Warehouses on {medium} are left at defaults",
@@ -366,7 +366,7 @@ public static class PgTune
         PgTuneMemoryUnit.MB => 1024L * 1024,
         PgTuneMemoryUnit.GB => 1024L * 1024 * 1024,
         PgTuneMemoryUnit.TB => 1024L * 1024 * 1024 * 1024,
-        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, "неизвестная единица памяти"),
+        _ => throw new ArgumentOutOfRangeException(nameof(unit), unit, "unknown memory unit"),
     };
 
     /// <summary>Валидация границ входа §2 — до расчёта (§8 п.9). KB — внутренний
@@ -375,10 +375,10 @@ public static class PgTune
     {
         if (input.DbVersion is < 10 or > 18)
             throw new ArgumentException(
-                $"dbVersion {input.DbVersion} вне допустимых значений 10..18 (§2 спецификации алгоритма)", nameof(input));
+                $"dbVersion {input.DbVersion} out of allowed range 10..18 (§2 of the algorithm spec)", nameof(input));
         if (input.TotalMemory <= 0)
             throw new ArgumentException(
-                $"totalMemory {input.TotalMemory} обязан быть > 0 (§2 спецификации алгоритма)", nameof(input));
+                $"totalMemory {input.TotalMemory} must be > 0 (§2 of the algorithm spec)", nameof(input));
         switch (input.TotalMemoryUnit)
         {
             case PgTuneMemoryUnit.KB:
@@ -386,28 +386,28 @@ public static class PgTune
             case PgTuneMemoryUnit.MB:
                 if (input.TotalMemory < 512)
                     throw new ArgumentException(
-                        $"totalMemory {input.TotalMemory} MB < 512 (§2 спецификации алгоритма)", nameof(input));
+                        $"totalMemory {input.TotalMemory} MB < 512 (§2 of the algorithm spec)", nameof(input));
                 if (input.TotalMemory > 999999)
                     throw new ArgumentException(
-                        $"totalMemory {input.TotalMemory} MB > 999999 (§2 спецификации алгоритма)", nameof(input));
+                        $"totalMemory {input.TotalMemory} MB > 999999 (§2 of the algorithm spec)", nameof(input));
                 break;
             case PgTuneMemoryUnit.GB:
             case PgTuneMemoryUnit.TB:
                 if (input.TotalMemory > 999999)
                     throw new ArgumentException(
-                        $"totalMemory {input.TotalMemory} {input.TotalMemoryUnit} > 999999 (§2 спецификации алгоритма)", nameof(input));
+                        $"totalMemory {input.TotalMemory} {input.TotalMemoryUnit} > 999999 (§2 of the algorithm spec)", nameof(input));
                 break;
             default:
                 throw new ArgumentOutOfRangeException(
-                    nameof(input), input.TotalMemoryUnit, "неизвестная единица памяти");
+                    nameof(input), input.TotalMemoryUnit, "unknown memory unit");
         }
 
         if (input.CpuNum is < 1)
             throw new ArgumentException(
-                $"cpuNum {input.CpuNum} вне допустимых значений 1..999999 (§2 спецификации алгоритма)", nameof(input));
+                $"cpuNum {input.CpuNum} out of allowed range 1..999999 (§2 of the algorithm spec)", nameof(input));
         if (input.ConnectionNum is < 20)
             throw new ArgumentException(
-                $"connectionNum {input.ConnectionNum} вне допустимых значений 20..999999 (§2 спецификации алгоритма)", nameof(input));
+                $"connectionNum {input.ConnectionNum} out of allowed range 20..999999 (§2 of the algorithm spec)", nameof(input));
     }
 
     /// <summary>Форматирование памяти §5.1: кратность GB первой, затем MB, иначе kB.</summary>

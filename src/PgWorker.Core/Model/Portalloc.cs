@@ -53,7 +53,7 @@ public static class Portalloc
         catch (JsonException e)
         {
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(
-                new ApplicationException($"битый portalloc {cluster}: {e.Message}", e));
+                new ApplicationException($"malformed portalloc {cluster}: {e.Message}", e));
         }
     }
 }

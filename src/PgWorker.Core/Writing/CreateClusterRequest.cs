@@ -59,23 +59,23 @@ public static class CreateClusterValidator
     {
         var errors = new List<ValidationError>();
         if (!CreateClusterLimits.NamePattern().IsMatch(request.Name ?? ""))
-            errors.Add(new("name", "имя: ^[a-z][a-z0-9_]{0,62}$ (без дефиса)"));
+            errors.Add(new("name", "name: ^[a-z][a-z0-9_]{0,62}$ (no hyphen)"));
         if (request.Buckets is < CreateClusterLimits.MinBuckets or > CreateClusterLimits.MaxBuckets)
-            errors.Add(new("buckets", $"бакеты: целое {CreateClusterLimits.MinBuckets}..{CreateClusterLimits.MaxBuckets}"));
+            errors.Add(new("buckets", $"buckets: integer {CreateClusterLimits.MinBuckets}..{CreateClusterLimits.MaxBuckets}"));
         if (request.Shards is < CreateClusterLimits.MinShards or > CreateClusterLimits.MaxShards
             || request.Shards > request.Buckets)
             errors.Add(new("shards", $"шарды: целое {CreateClusterLimits.MinShards}..{CreateClusterLimits.MaxShards} и не больше бакетов"));
         if (request.Replicas is < CreateClusterLimits.MinReplicas or > CreateClusterLimits.MaxReplicas)
-            errors.Add(new("replicas", $"реплики: целое {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
+            errors.Add(new("replicas", $"replicas: integer {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
         // t06: strict-режим требует sync-standby → replicas ≥ 2; отсутствие опции = true.
         if ((request.SyncStrict ?? true) && request.Replicas < 2)
-            errors.Add(new("syncStrict", "strict-режим требует replicas ≥ 2 на каждом шарде (без sync-standby запись блокируется)"));
+            errors.Add(new("syncStrict", "strict mode requires replicas ≥ 2 on every shard (without sync-standby writes are blocked)"));
         if (request.RequestCpu < CreateClusterLimits.MinCpu || request.RequestCpu > CreateClusterLimits.MaxCpu)
-            errors.Add(new("requestCpu", $"CPU (ядра): {CreateClusterLimits.MinCpu}..{CreateClusterLimits.MaxCpu}"));
+            errors.Add(new("requestCpu", $"CPU (cores): {CreateClusterLimits.MinCpu}..{CreateClusterLimits.MaxCpu}"));
         if (request.RequestMem is < CreateClusterLimits.MinGiB or > CreateClusterLimits.MaxGiB)
-            errors.Add(new("requestMem", $"память (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
+            errors.Add(new("requestMem", $"memory (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
         if (request.RequestDisk is < CreateClusterLimits.MinGiB or > CreateClusterLimits.MaxGiB)
-            errors.Add(new("requestDisk", $"диск (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
+            errors.Add(new("requestDisk", $"disk (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
         return errors;
     }
 

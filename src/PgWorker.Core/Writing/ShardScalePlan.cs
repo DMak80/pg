@@ -13,16 +13,16 @@ public static class AddShardValidator
         var errors = new List<ValidationError>();
         if (request.Replicas is < CreateClusterLimits.MinReplicas or > CreateClusterLimits.MaxReplicas)
             errors.Add(new("replicas",
-                $"реплики: целое {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
+                $"replicas: integer {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
         if (request.RequestCpu < CreateClusterLimits.MinCpu || request.RequestCpu > CreateClusterLimits.MaxCpu)
             errors.Add(new("requestCpu",
-                $"CPU (ядра): {CreateClusterLimits.MinCpu}..{CreateClusterLimits.MaxCpu}"));
+                $"CPU (cores): {CreateClusterLimits.MinCpu}..{CreateClusterLimits.MaxCpu}"));
         if (request.RequestMem is < CreateClusterLimits.MinGiB or > CreateClusterLimits.MaxGiB)
             errors.Add(new("requestMem",
-                $"память (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
+                $"memory (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
         if (request.RequestDisk is < CreateClusterLimits.MinGiB or > CreateClusterLimits.MaxGiB)
             errors.Add(new("requestDisk",
-                $"диск (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
+                $"disk (GiB): {CreateClusterLimits.MinGiB}..{CreateClusterLimits.MaxGiB}"));
         return errors;
     }
 }

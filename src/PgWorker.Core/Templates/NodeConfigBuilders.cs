@@ -124,9 +124,9 @@ public static class SpiloEnvBuilder
                     postgresql:
                       use_pg_rewind: true
                       callbacks:
-                        # P11: ключ /clusters/<C>/shards/<X>/master под etcd-lease.
-                        # on_start — старт ноды (роль может быть уже master);
-                        # on_role_change — промоушен/демоут.
+                        # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
+                        # on_start — node start (role may already be master);
+                        # on_role_change — promotion/demote.
                         on_start: /home/postgres/master-lease.py
                         on_role_change: /home/postgres/master-lease.py
                       parameters:
@@ -207,8 +207,8 @@ public static class DoormanConfigBuilder
 {
     public static string Build(string dbname, int serverConnections) =>
         $"""
-        # pg_doorman: единственный пул {dbname} на ноду (P13/P14/P15/P17).
-        # Клиенты подключаются на :6432 с sslmode=require (P17).
+        # pg_doorman: single pool {dbname} per node (P13/P14/P15/P17).
+        # Clients connect on :6432 with sslmode=require (P17).
 
         [pg_doorman]
         listen = "0.0.0.0:6432"
@@ -219,7 +219,7 @@ public static class DoormanConfigBuilder
         tls_mode = "require"
 
         [databases]
-        # P14: dbname = имя кластера, бакеты — схемы; один пул на всю БД ноды.
+        # P14: dbname = cluster name, buckets are schemas; one pool for the whole node DB.
         {dbname} = host=127.0.0.1 port=5432 dbname={dbname}
         """;
 
@@ -234,8 +234,8 @@ public static class DoormanConfigBuilder
         var raw = tuning["max_connections"];
         if (raw is null || !int.TryParse(raw, CultureInfo.InvariantCulture, out var maxConnections))
             throw new ApplicationException(
-                "pgtune: рассчитанный тюнинг не содержит числового max_connections " +
-                "(параметр выводится всегда — §4.0 спецификации алгоритма)");
+                "pgtune: calculated tuning does not contain a numeric max_connections " +
+                "(the parameter is always emitted — §4.0 of the algorithm spec)");
         return Math.Max(10, maxConnections - 5);
     }
 }
@@ -251,8 +251,8 @@ public static class HaproxyConfigBuilder
     {
         var sb = new StringBuilder();
         sb.AppendLine("""
-            # haproxy: write-фронтенд :5432 к текущему лидеру шарда (P2).
-            # Health-check — Patroni REST /primary каждой ноды (port patroni).
+            # haproxy: write-frontend :5432 to the current shard leader (P2).
+            # Health-check — Patroni REST /primary of each node (port patroni).
 
             global
                 log stdout format raw local0
