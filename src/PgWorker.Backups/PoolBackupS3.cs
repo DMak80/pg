@@ -8,6 +8,9 @@ namespace PgWorker.Backups;
 /// (endpoint+креды одного адреса), кэш per-цели. Перебор всегда С ПЕРВОЙ цели
 /// («первый доступный по списку»); каждая попытка несёт per-попыточный таймаут
 /// S3-клиента цели — «быстрый отказ/успех, не молчание» (R3, arch/23 §7).
+/// Транспортный отказ цели открывает circuit-breaker: цель исключается из
+/// перебора на окно восстановления (arch/19 §5 «Исключение отказавшей цели»),
+/// истечение окна или успешный ответ возвращают её в перебор.
 /// Семантика: put/delete — write-список с перебором (исчерпание → маркер);
 /// точечные GET — read-список до найденного (NotFound → следующая, исходная
 /// ошибка наружу); листинги — первая доступная (пустой список = успех);
@@ -15,10 +18,20 @@ namespace PgWorker.Backups;
 /// </summary>
 public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
 {
+    // Окно исключения отказавшей цели (arch/19 §5): закрывает тыл
+    // ретрай-циклам источников (приёмник WAL — 30-35 с) — мёртвая цель не
+    // зондируется чаще её собственного цикла; полокна (≈22 с) + следующий
+    // тик укладывают возвращение поднявшейся ноды в минуту.
+    internal static readonly TimeSpan DefaultBreakerWindow = TimeSpan.FromSeconds(45);
+
     private readonly IReadOnlyList<string> _writeTargets;
     private readonly IReadOnlyList<string> _readTargets;
     private readonly Func<string, IBackupS3> _targetFactory;
     private readonly Dictionary<string, IBackupS3> _cache = new(StringComparer.Ordinal);
+    private readonly TimeSpan _breakerWindow;
+    private readonly TimeProvider _clock;
+    private readonly object _breakerGate = new();
+    private readonly Dictionary<string, (DateTimeOffset Until, string Error)> _broken = new(StringComparer.Ordinal);
 
     public PoolBackupS3(
         IReadOnlyList<string> writeTargets,
@@ -26,6 +39,8 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         string accessKey, string secretKey,
         string bucket, string? caBundlePath,
         TimeSpan? requestTimeout = null,
+        TimeSpan? breakerWindow = null,
+        TimeProvider? clock = null,
         Func<string, IBackupS3>? targetFactory = null)
     {
         _writeTargets = writeTargets;
@@ -36,6 +51,78 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         _targetFactory = targetFactory ?? (uri => new BackupS3(
             new S3ClientOptions(uri, bucket, accessKey, secretKey, CaBundlePath: caBundlePath),
             requestTimeout));
+        _breakerWindow = breakerWindow ?? DefaultBreakerWindow;
+        _clock = clock ?? TimeProvider.System;
+    }
+
+    // ── Circuit-breaker цели (arch/19 §5): транспортный отказ исключает цель
+    // из перебора на окно; NotFound — не отказ (сервер отвечает — цель жива
+    // для union-семантики чтения); успех возвращает цель сразу.
+
+    // Попытка цели под breaker-семантикой: цель в окне → сохранённая причина
+    // (участвует в маркере исчерпания как исходная ошибка); после вызова —
+    // успех закрывает окно, транспортный отказ открывает.
+    private async Task<Result<T>> AttemptAsync<T>(string uri, Func<Task<Result<T>>> call)
+    {
+        if (IsExcluded(uri, out var saved))
+            return Result<T>.Failed(new ApplicationException(saved));
+        var result = await call();
+        if (result.IsSuccess)
+        {
+            NoteSuccess(uri);
+            return result;
+        }
+
+        var message = result.Error!.Message;
+        if (!IsNotFound(message))
+            NoteFailure(uri, message);
+        return result;
+    }
+
+    // Не-генерик-перегрузка: put/delete — Result без значения.
+    private async Task<Result> AttemptAsync(string uri, Func<Task<Result>> call)
+    {
+        if (IsExcluded(uri, out var saved))
+            return Result.Failed(new ApplicationException(saved));
+        var result = await call();
+        if (result.IsSuccess)
+        {
+            NoteSuccess(uri);
+            return result;
+        }
+
+        var message = result.Error!.Message;
+        if (!IsNotFound(message))
+            NoteFailure(uri, message);
+        return result;
+    }
+
+    private bool IsExcluded(string uri, out string error)
+    {
+        lock (_breakerGate)
+        {
+            if (_broken.TryGetValue(uri, out var broken)
+                && broken.Until > _clock.GetUtcNow())
+            {
+                error = broken.Error;
+                return true;
+            }
+
+            error = "";
+            return false;
+        }
+    }
+
+    private void NoteFailure(string uri, string error)
+    {
+        lock (_breakerGate)
+            _broken[uri] = (_clock.GetUtcNow() + _breakerWindow, error);
+    }
+
+    private void NoteSuccess(string uri)
+    {
+        lock (_breakerGate)
+            _broken.Remove(uri);
     }
 
     public async Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
@@ -44,7 +131,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result<bool> last = default;
         foreach (var uri in _writeTargets.Concat(_readTargets))
         {
-            var result = await Target(uri).BucketExistsAsync(ct);
+            var result = await AttemptAsync(uri, () => Target(uri).BucketExistsAsync(ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -74,7 +161,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         var anySuccess = false;
         foreach (var uri in _readTargets)
         {
-            var result = await Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
+            var result = await AttemptAsync(uri, () => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct));
             if (!result.IsSuccess)
             {
                 last = result;
@@ -104,7 +191,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _writeTargets)
         {
-            var result = await Target(uri).PutObjectAsync(key, data, sha256, ct);
+            var result = await AttemptAsync(uri, () => Target(uri).PutObjectAsync(key, data, sha256, ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -121,7 +208,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         Result last = default;
         foreach (var uri in _writeTargets)
         {
-            var result = await Target(uri).DeleteKeysAsync(keys, ct);
+            var result = await AttemptAsync(uri, () => Target(uri).DeleteKeysAsync(keys, ct));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -160,12 +247,11 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     // исчерпание — маркер (алертная грань «пул недоступен»).
     private async Task<Result<T>> FirstAliveAsync<T>(
         Func<string, Task<Result<T>>> call, string what)
-        where T : class
     {
         Result<T> last = default;
         foreach (var uri in _readTargets)
         {
-            var result = await call(uri);
+            var result = await AttemptAsync(uri, () => call(uri));
             if (result.IsSuccess)
                 return result;
             last = result;
@@ -175,15 +261,15 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             $"{S3PoolMarkers.Exhausted}: {what} — все ноды пула недоступны: {last.Error!.Message}"));
     }
 
-    // Точечные GET: любой отказ (NotFound/транспорт) → следующая; успех —
-    // оттуда; исчерпание — ПОСЛЕДНЯЯ исходная ошибка (текст причины).
+    // Точечные GET: любой отказ (NotFound/транспорт) → следующая; успех — оттуда;
+    // исчерпание — ПОСЛЕДНЯЯ исходная ошибка (текст причины).
     private async Task<Result<string>> FirstFoundAsync(
         Func<string, Task<Result<string>>> call, string what)
     {
         Result<string> last = default;
         foreach (var uri in _readTargets)
         {
-            var result = await call(uri);
+            var result = await AttemptAsync(uri, () => call(uri));
             if (result.IsSuccess)
                 return result;
             last = result;

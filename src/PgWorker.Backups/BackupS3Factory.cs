@@ -83,7 +83,7 @@ public sealed class BackupS3Factory(
         var endpoints = BackupPoolResolver.ReadAllUris(s3pool);
         return Result<(PoolBackupS3, BackupPoolContext)>.Success((
             new PoolBackupS3(endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
-                requestTimeout, targetFactory),
+                requestTimeout, targetFactory: targetFactory),
             new BackupPoolContext(pool, accessKey!, secretKey!, endpoints, endpoints, endpoints)));
     }
 

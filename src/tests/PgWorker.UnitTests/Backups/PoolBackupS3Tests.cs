@@ -43,8 +43,11 @@ public class PoolBackupS3Tests
 
         public Task<Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default)
-            => (get ?? ((_ => Task.FromResult(Result<string>.Failed(
+        {
+            Calls++;
+            return (get ?? ((_ => Task.FromResult(Result<string>.Failed(
                 new ApplicationException("S3 get: not found"))))))(key);
+        }
 
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
@@ -69,6 +72,29 @@ public class PoolBackupS3Tests
         return new PoolBackupS3(
             ["http://n1:9000", "http://n2:9000"], ["http://n1:9000", "http://n2:9000"],
             "ak", "sk", "b", null,
+            targetFactory: uri => map[uri]);
+    }
+
+    // Управляемое время breaker-окна (arch/19 §5): сдвиг часов имитирует
+    // истечение окна исключения отказавшей цели.
+    private sealed class FakeClock : TimeProvider
+    {
+        public DateTimeOffset Now = DateTimeOffset.UnixEpoch;
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private static PoolBackupS3 Pool(FakeTargetS3 t1, FakeTargetS3 t2, FakeClock clock)
+    {
+        var map = new Dictionary<string, IBackupS3>
+        {
+            ["http://n1:9000"] = t1,
+            ["http://n2:9000"] = t2,
+        };
+        return new PoolBackupS3(
+            ["http://n1:9000", "http://n2:9000"], ["http://n1:9000", "http://n2:9000"],
+            "ak", "sk", "b", null,
+            clock: clock,
             targetFactory: uri => map[uri]);
     }
 
@@ -187,5 +213,126 @@ public class PoolBackupS3Tests
 
         // Assert
         result.IsSuccess.Should().BeTrue();
+    }
+
+    // ===== Circuit-breaker цели (arch/19 §5 «Исключение отказавшей цели») =====
+
+    // AAA: транспортный отказ первой цели исключает её из перебора на окно
+    // breaker'а — повторный вызов идёт сразу на вторую цель (без пер-попыточного
+    // таймаута мёртвой), результат успех.
+    [Fact]
+    public async Task Put_TargetFails_ExcludedForBreakerWindow()
+    {
+        // Arrange — n1 всегда отказывает (транспорт), n2 жива; часы стоят.
+        var t1 = new FakeTargetS3(put: _ => Task.FromResult(Result.Failed(
+            new ApplicationException("S3 put: conn refused"))));
+        var t2 = new FakeTargetS3();
+        var pool = Pool(t1, t2, new FakeClock());
+
+        // Act — два вызова подряд в пределах окна.
+        var first = await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+        var second = await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+
+        // Assert — первый прошёл через отказ n1 (1 вызов), второй миновал n1
+        // (breaker) и ушёл на n2.
+        first.IsSuccess.Should().BeTrue();
+        second.IsSuccess.Should().BeTrue();
+        t1.Calls.Should().Be(1, "после отказа n1 исключена из перебора на окно");
+        t2.Calls.Should().Be(2);
+    }
+
+    // AAA: истечение окна breaker'а возвращает цель в перебор (периодический
+    // зонд мёртвой ноды) — после сдвига часов цель снова вызывается, снова
+    // отказывает и снова исключается.
+    [Fact]
+    public async Task Put_BreakerWindowExpired_TargetReturnsToRotation()
+    {
+        // Arrange — n1 всегда отказывает, n2 жива; часы управляемые.
+        var t1 = new FakeTargetS3(put: _ => Task.FromResult(Result.Failed(
+            new ApplicationException("S3 put: conn refused"))));
+        var t2 = new FakeTargetS3();
+        var clock = new FakeClock();
+        var pool = Pool(t1, t2, clock);
+        await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+        await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+
+        // Act — окно истекло (сдвиг часов за 45 с), третий вызов.
+        clock.Now += TimeSpan.FromSeconds(46);
+        var third = await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+
+        // Assert — n1 вернулась в перебор (зонд), результат — успех от n2.
+        third.IsSuccess.Should().BeTrue();
+        t1.Calls.Should().Be(2, "истечение окна вернуло цель в перебор");
+        t2.Calls.Should().Be(3);
+    }
+
+    // AAA: успешная цель НЕ исключается из перебора — приоритет первой цели
+    // сохраняется на каждом вызове.
+    [Fact]
+    public async Task Put_TargetAlive_NeverExcluded()
+    {
+        // Arrange — обе цели живы.
+        var t1 = new FakeTargetS3();
+        var t2 = new FakeTargetS3();
+        var pool = Pool(t1, t2, new FakeClock());
+
+        // Act — два вызова.
+        await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+        await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+
+        // Assert — всё ушло в первую цель, вторая не тронута.
+        t1.Calls.Should().Be(2);
+        t2.Calls.Should().Be(0);
+    }
+
+    // AAA: NotFound — НЕ отказ цели (сервер жив и отвечает): breaker не
+    // открывается, цель остаётся в переборе чтения (union-семантика
+    // «где данные есть» — отстающая mesh-нода не выпадает).
+    [Fact]
+    public async Task Get_NotFoundDoesNotOpenBreaker()
+    {
+        // Arrange — n1 отдаёт NotFound (объекта нет), n2 — тело.
+        var t1 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Failed(
+            new ApplicationException("S3 get k: not found"))));
+        var t2 = new FakeTargetS3(get: _ => Task.FromResult(Result<string>.Success("body")));
+        var pool = Pool(t1, t2, new FakeClock());
+
+        // Act — два вызова get в пределах окна.
+        var first = await pool.GetObjectAsync("c", "s", "wal/x", CancellationToken.None);
+        var second = await pool.GetObjectAsync("c", "s", "wal/x", CancellationToken.None);
+
+        // Assert — оба раза n1 опрошена (окно не открылось), значение — со второй.
+        first.Value.Should().Be("body");
+        second.Value.Should().Be("body");
+        t1.Calls.Should().Be(2, "NotFound не открывает breaker — цель жива");
+        t2.Calls.Should().Be(2);
+    }
+
+    // AAA: единственная write-цель в окне breaker'а — маркер исчерпания несёт
+    // ИСХОДНУЮ причину отказа (сохранённую при открытии окна), а не пустую.
+    [Fact]
+    public async Task Put_BrokenTargetInWindow_MarkerCarriesOriginalError()
+    {
+        // Arrange — write-список только из n1 (read — обе).
+        var t1 = new FakeTargetS3(put: _ => Task.FromResult(Result.Failed(
+            new ApplicationException("S3 put: conn refused"))));
+        var t2 = new FakeTargetS3();
+        var map = new Dictionary<string, IBackupS3>
+        {
+            ["http://n1:9000"] = t1, ["http://n2:9000"] = t2,
+        };
+        var pool = new PoolBackupS3(
+            ["http://n1:9000"], ["http://n1:9000", "http://n2:9000"],
+            "ak", "sk", "b", null, clock: new FakeClock(),
+            targetFactory: uri => map[uri]);
+
+        // Act — первый вызов открывает окно отказом, второй идёт мимо n1.
+        await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+        var second = await pool.PutObjectAsync("k", [1], null, CancellationToken.None);
+
+        // Assert — исчерпание с исходной ошибкой первой попытки.
+        second.IsSuccess.Should().BeFalse();
+        second.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+        second.Error!.Message.Should().Contain("conn refused");
     }
 }
