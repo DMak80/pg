@@ -284,7 +284,7 @@ public sealed class LongCallPollingTests
 
         // Assert: ошибка наверх первым вызовом (тик повторит), поллинг не крутится
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("host is not in the table");
+        result.Error!.Message.Should().Contain("not in the Docker:Hosts table");
         calls.Should().Be(1, "a non-cancellation error goes up without retries (spec §1.2 p.4a)");
     }
 
