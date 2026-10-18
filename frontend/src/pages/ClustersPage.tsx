@@ -30,24 +30,24 @@ export function ClustersPage() {
   return (
     <>
       <Group justify="space-between" mb="md">
-        <Title order={2}>Кластеры</Title>
-        <Button onClick={() => setCreateOpened(true)}>Создать кластер</Button>
+        <Title order={2}>Clusters</Title>
+        <Button onClick={() => setCreateOpened(true)}>Create cluster</Button>
       </Group>
       <ClusterCreateModal opened={createOpened} onClose={() => setCreateOpened(false)} />
       <Card withBorder padding="md" radius="md">
         {clusters.length === 0 ? (
-          <Text c="dimmed">Кластеры не найдены</Text>
+          <Text c="dimmed">No clusters found</Text>
         ) : (
           <Table.ScrollContainer minWidth={800}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Кластер</Table.Th>
-                  <Table.Th>БД</Table.Th>
-                  <Table.Th>Бакеты</Table.Th>
-                  <Table.Th>Шарды</Table.Th>
-                  <Table.Th>Переезды</Table.Th>
-                  <Table.Th>Пометки</Table.Th>
+                  <Table.Th>Cluster</Table.Th>
+                  <Table.Th>DB</Table.Th>
+                  <Table.Th>Buckets</Table.Th>
+                  <Table.Th>Shards</Table.Th>
+                  <Table.Th>Moves</Table.Th>
+                  <Table.Th>Flags</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -91,20 +91,20 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
           ? <Badge color="red" variant="light" ml={cluster.incomplete ? 5 : 0}>strict</Badge>
           : <Badge color="teal" variant="light" ml={cluster.incomplete ? 5 : 0}>avail.</Badge>}
         {cluster.notInitialized ? (
-          <Tooltip label="кластер заявлен, ноды не подняты">
-            <Badge color="gray" variant="light" ml={cluster.incomplete ? 5 : 0}>не инициализирован</Badge>
+          <Tooltip label="cluster requested, nodes not up">
+            <Badge color="gray" variant="light" ml={cluster.incomplete ? 5 : 0}>not initialized</Badge>
           </Tooltip>
         ) : null}
         {cluster.toRemove ? (
-          <Tooltip label="переведён в TO_REMOVE, ждёт очистки оркестратором">
+          <Tooltip label="moved to TO_REMOVE, waiting for orchestrator cleanup">
             <Badge color="red" variant="light" ml={cluster.incomplete || cluster.notInitialized ? 5 : 0}>
-              к удалению
+              to remove
             </Badge>
           </Tooltip>
         ) : null}
         {mastersMissing > 0 ? (
           <Badge color="red" variant="light" ml={cluster.incomplete || cluster.notInitialized ? 5 : 0}>
-            {mastersMissing} без мастера
+            {mastersMissing} masterless
           </Badge>
         ) : null}
       </Table.Td>

@@ -18,9 +18,9 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
   return (
     <Stack gap="md">
       <Group justify="space-between">
-        <Title order={4}>Граф репликации</Title>
+        <Title order={4}>Replication graph</Title>
         {canMutate ? (
-          <Button size="xs" onClick={() => setEditorOpened(true)}>Изменить граф</Button>
+          <Button size="xs" onClick={() => setEditorOpened(true)}>Edit graph</Button>
         ) : null}
       </Group>
       <LinksEditorModal
@@ -34,13 +34,13 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
         <Table verticalSpacing="xs" withTableBorder>
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Связь</Table.Th>
-              <Table.Th>Хосты</Table.Th>
+              <Table.Th>Link</Table.Th>
+              <Table.Th>Hosts</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {cluster.links.length === 0 ? (
-              <Table.Tr><Table.Td colSpan={2}><Text c="dimmed">линков не настроено</Text></Table.Td></Table.Tr>
+              <Table.Tr><Table.Td colSpan={2}><Text c="dimmed">no links configured</Text></Table.Td></Table.Tr>
             ) : (
               cluster.links.map((l) => {
                 const sameHost = placedOn.get(l.a) != null && placedOn.get(l.a) === placedOn.get(l.b);
@@ -49,15 +49,15 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
                     <Table.Td>
                       <Group gap="xs">
                         <Text>{l.a}</Text>
-                        {denied.has(l.a) ? <Badge color="orange" variant="light">отозван</Badge> : null}
+                        {denied.has(l.a) ? <Badge color="orange" variant="light">revoked</Badge> : null}
                         <Text>→</Text>
                         <Text>{l.b}</Text>
-                        {denied.has(l.b) ? <Badge color="orange" variant="light">отозван</Badge> : null}
+                        {denied.has(l.b) ? <Badge color="orange" variant="light">revoked</Badge> : null}
                       </Group>
                     </Table.Td>
                     <Table.Td>
                       {sameHost ? (
-                        <Text size="sm" c="red">один хост: {placedOn.get(l.a)}</Text>
+                        <Text size="sm" c="red">same host: {placedOn.get(l.a)}</Text>
                       ) : (
                         <Text size="sm" c="dimmed">
                           {placedOn.get(l.a) ?? '—'} / {placedOn.get(l.b) ?? '—'}
@@ -78,7 +78,7 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
           <Table withTableBorder verticalSpacing="xs">
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>нода × нода</Table.Th>
+                <Table.Th>node × node</Table.Th>
                 {names.map((n) => <Table.Th key={n}>{n}</Table.Th>)}
               </Table.Tr>
             </Table.Thead>
@@ -88,7 +88,7 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
                   <Table.Td>
                     <Group gap="xs">
                       <Text c={denied.has(row) ? 'dimmed' : undefined}>{row}</Text>
-                      {denied.has(row) ? <Badge color="orange" variant="light">отозван</Badge> : null}
+                      {denied.has(row) ? <Badge color="orange" variant="light">revoked</Badge> : null}
                     </Group>
                   </Table.Td>
                   {names.map((col) => {
@@ -110,13 +110,13 @@ export function ReplicationTab({ cluster, canMutate }: { cluster: S3ClusterDto; 
           </Table>
         </Table.ScrollContainer>
       ) : (
-        <Text c="dimmed">Нод нет — граф пуст (добавьте ноды во вкладке «Ноды»)</Text>
+        <Text c="dimmed">No nodes — the graph is empty (add nodes in the "Nodes" tab)</Text>
       )}
 
       <Text size="sm" c="dimmed">
-        Полный меш не обязателен; ноды одного кластера — на разных хостах/площадках
-        (гео-раснос — обязанность оператора). Совпадение placed_on у концов связи
-        подсвечено в таблице пар.
+        A full mesh is not required; nodes of one cluster live on different hosts/sites
+        (geo separation is the operator's responsibility). A placed_on match between
+        link ends is highlighted in the pair table.
       </Text>
     </Stack>
   );

@@ -87,31 +87,31 @@ export function AddNodeModal({
 
   function submit() {
     // Валидация-зеркало 02 §12.3.
-    if (!NAME_RE.test(name)) return void setError('имя: [a-z][a-z0-9_]{0,62}');
-    if (name === RESERVED_NAME) return void setError('имя orchestrator зарезервировано');
-    if (mode === 'dockerHost' && dockerHost.trim() === '') return void setError('укажите docker_host');
-    if (mode === 'swarmNode' && swarmNode.trim() === '') return void setError('укажите swarm_node');
+    if (!NAME_RE.test(name)) return void setError('name: [a-z][a-z0-9_]{0,62}');
+    if (name === RESERVED_NAME) return void setError('the orchestrator name is reserved');
+    if (mode === 'dockerHost' && dockerHost.trim() === '') return void setError('specify docker_host');
+    if (mode === 'swarmNode' && swarmNode.trim() === '') return void setError('specify swarm_node');
     if (mode === 'swarmLabels' && !labels.some((l) => l.key.trim() !== ''))
-      return void setError('добавьте минимум одну метку swarm_labels');
+      return void setError('add at least one swarm_labels label');
     if (cpu !== '' && (Number(cpu) < 0.01 || Number(cpu) > 64)) return void setError('cpu 0.01..64');
     if (memGi !== '' && (!Number.isInteger(Number(memGi)) || Number(memGi) < 1 || Number(memGi) > 65536))
-      return void setError('memGi — целое 1..65536');
+      return void setError('memGi — integer 1..65536');
     if (diskGi !== '' && (!Number.isInteger(Number(diskGi)) || Number(diskGi) < 1 || Number(diskGi) > 65536))
-      return void setError('diskGi — целое 1..65536');
+      return void setError('diskGi — integer 1..65536');
     setError(null);
     mutation.mutate();
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Добавить ноду — ${cluster}`} centered>
+    <Modal opened={opened} onClose={onClose} title={`Add node — ${cluster}`} centered>
       <Stack gap="sm">
         <TextInput
-          label="Имя инстанса"
+          label="Instance name"
           placeholder="node2"
           value={name}
           onChange={(e) => setName(e.currentTarget.value)}
         />
-        <Radio.Group label="Размещение (placement)" value={mode}
+        <Radio.Group label="Placement" value={mode}
           onChange={(v) => setMode(v as PlacementMode)}>
           <Group mt="xs">
             <Radio value="dockerHost" label="docker_host" />
@@ -130,14 +130,14 @@ export function AddNodeModal({
             {labels.map((label, j) => (
               <Group key={j} align="flex-end" gap="xs">
                 <TextInput
-                  label={j === 0 ? 'Метка: ключ' : undefined}
+                  label={j === 0 ? 'Label: key' : undefined}
                   placeholder="geo"
                   value={label.key}
                   onChange={(e) => setLabel(j, { key: e.currentTarget.value })}
                   maw={160}
                 />
                 <TextInput
-                  label={j === 0 ? 'значение' : undefined}
+                  label={j === 0 ? 'value' : undefined}
                   placeholder="dc1"
                   value={label.value}
                   onChange={(e) => setLabel(j, { value: e.currentTarget.value })}
@@ -159,16 +159,16 @@ export function AddNodeModal({
               size="xs"
               onClick={() => setLabels([...labels, { key: '', value: '' }])}
             >
-              + метка
+              + label
             </Button>
           </Stack>
         )}
         <Group grow>
           <NumberInput label="CPU" placeholder="0.5" value={cpu || ''} step={0.1}
             min={0.01} max={64} onChange={(v) => setCpu(v === undefined ? '' : String(v))} />
-          <NumberInput label="Память, GiB" placeholder="4" value={memGi || ''}
+          <NumberInput label="Memory, GiB" placeholder="4" value={memGi || ''}
             min={1} onChange={(v) => setMemGi(v === undefined ? '' : String(v))} />
-          <NumberInput label="Диск, GiB" placeholder="200" value={diskGi || ''}
+          <NumberInput label="Disk, GiB" placeholder="200" value={diskGi || ''}
             min={1} onChange={(v) => setDiskGi(v === undefined ? '' : String(v))} />
         </Group>
         {error !== null ? <Alert color="red" variant="light">{error}</Alert> : null}
@@ -176,8 +176,8 @@ export function AddNodeModal({
           <Alert color="red" variant="light">{mutation.error.message}</Alert>
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button loading={mutation.isPending} onClick={submit}>Добавить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={mutation.isPending} onClick={submit}>Add</Button>
         </Group>
       </Stack>
     </Modal>

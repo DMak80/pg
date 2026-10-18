@@ -57,13 +57,13 @@ export function NodesTab({ cluster, canMutate }: { cluster: S3ClusterDto; canMut
         <Table highlightOnHover verticalSpacing="xs">
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Имя</Table.Th>
-              <Table.Th>Состояние</Table.Th>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>State</Table.Th>
               <Table.Th>placed_on</Table.Th>
               <Table.Th>Placement</Table.Th>
-              <Table.Th>Ресурсы</Table.Th>
-              <Table.Th>Занятость</Table.Th>
-              <Table.Th>Действия</Table.Th>
+              <Table.Th>Resources</Table.Th>
+              <Table.Th>Usage</Table.Th>
+              <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -99,7 +99,7 @@ function NodeRow({ cluster, node, canMutate, onEditResources }: {
         <Group gap="xs">
           <Text>{node.name}</Text>
           {node.denied ? (
-            <Badge color="orange" variant="light">отозван</Badge>
+            <Badge color="orange" variant="light">revoked</Badge>
           ) : null}
         </Group>
       </Table.Td>
@@ -116,9 +116,9 @@ function NodeRow({ cluster, node, canMutate, onEditResources }: {
       <Table.Td>
         <Text size="sm" c={hot ? 'red' : undefined}>
           {usage !== null
-            ? `${usagePercent}% · ${Math.round(usage.usedBytes / GIB)}/${Math.round(usage.totalBytes / GIB)} ГБ`
+            ? `${usagePercent}% · ${Math.round(usage.usedBytes / GIB)}/${Math.round(usage.totalBytes / GIB)} GB`
             : '—'}
-          {declaredPercent !== null ? ` · от декларации ${declaredPercent}%` : ''}
+          {declaredPercent !== null ? ` · of declared ${declaredPercent}%` : ''}
         </Text>
       </Table.Td>
       <Table.Td>
@@ -126,7 +126,7 @@ function NodeRow({ cluster, node, canMutate, onEditResources }: {
           {canMutate && !node.denied ? <DenyNodeButton cluster={cluster.name} node={node.name} /> : null}
           {canMutate && node.denied ? <AllowNodeButton cluster={cluster.name} node={node.name} /> : null}
           {canMutate ? (
-            <Button size="xs" variant="default" onClick={onEditResources}>Изменить ресурсы</Button>
+            <Button size="xs" variant="default" onClick={onEditResources}>Edit resources</Button>
           ) : null}
           {canMutate ? <RemoveNodeButton cluster={cluster.name} node={node.name} /> : null}
         </Group>

@@ -22,16 +22,16 @@ export function ConnectivitySyncTab({ cluster }: { cluster: S3ClusterDto }) {
   return (
     <Stack gap="md">
       <Text size="xs" c="dimmed">
-        Источник — зонд S3Worker (ключи /s3/clusters/{cluster.name}/{'{'}connectivity,sync{'}'})
+        Source — the S3Worker probe (keys /s3/clusters/{cluster.name}/{'{'}connectivity,sync{'}'})
       </Text>
 
       {/* Связность: state + штамп + probe_error + матрица ok/offline. */}
       <Stack gap="xs">
         <Group gap="sm">
-          <Title order={4}>Связность</Title>
+          <Title order={4}>Connectivity</Title>
           <ProbeBadge state={connectivity?.state ?? null} />
           <Text size="sm" c="dimmed">
-            проверено: {formatUnix(connectivity?.checkedUnix ?? null)}
+            checked: {formatUnix(connectivity?.checkedUnix ?? null)}
           </Text>
         </Group>
         {connectivity?.probeError ? (
@@ -42,8 +42,8 @@ export function ConnectivitySyncTab({ cluster }: { cluster: S3ClusterDto }) {
             <Table withTableBorder verticalSpacing="xs">
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>нода → сосед</Table.Th>
-                  <Table.Th>Статус</Table.Th>
+                  <Table.Th>node → peer</Table.Th>
+                  <Table.Th>Status</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -62,17 +62,17 @@ export function ConnectivitySyncTab({ cluster }: { cluster: S3ClusterDto }) {
             </Table>
           </Table.ScrollContainer>
         ) : (
-          <Text c="dimmed">линков не настроено</Text>
+          <Text c="dimmed">no links configured</Text>
         )}
       </Stack>
 
       {/* Синхронность: state + штамп + last_error + таблица пар. */}
       <Stack gap="xs">
         <Group gap="sm">
-          <Title order={4}>Синхронность</Title>
+          <Title order={4}>Sync</Title>
           <ProbeBadge state={sync?.state ?? null} />
           <Text size="sm" c="dimmed">
-            проверено: {formatUnix(sync?.checkedUnix ?? null)}
+            checked: {formatUnix(sync?.checkedUnix ?? null)}
           </Text>
         </Group>
         {sync?.lastError ? (
@@ -106,7 +106,7 @@ export function ConnectivitySyncTab({ cluster }: { cluster: S3ClusterDto }) {
             </Table>
           </Table.ScrollContainer>
         ) : (
-          <Text c="dimmed">пар сверки нет (0 RUNNING-нод или зонд ещё не гонялся)</Text>
+          <Text c="dimmed">no reconcile pairs (0 RUNNING nodes or the probe has not run yet)</Text>
         )}
       </Stack>
     </Stack>

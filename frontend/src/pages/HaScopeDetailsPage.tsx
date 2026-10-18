@@ -16,8 +16,8 @@ import { ApiError } from '../api/client';
 // Карта ролей Patroni: русские подписи известных, канон — в Tooltip (t09 spec §4.6);
 // master — violet, рифма с Badge «лидер» etcd-панели (t08 EtcdPage).
 const ROLE_META: Record<string, { color: string; label: string }> = {
-  master: { color: 'violet', label: 'мастер' },
-  replica: { color: 'blue', label: 'реплика' },
+  master: { color: 'violet', label: 'master' },
+  replica: { color: 'blue', label: 'replica' },
   sync_standby: { color: 'teal', label: 'sync-standby' },
 };
 
@@ -51,7 +51,7 @@ export function HaScopeDetailsPage() {
         onRetry={() => void query.refetch()}
         notFound={
           <Stack gap="xs">
-            <Text>Скоп не найден</Text>
+            <Text>Scope not found</Text>
             <Anchor component={Link} to="/ha" size="sm">← HA</Anchor>
           </Stack>
         }
@@ -68,14 +68,14 @@ export function HaScopeDetailsPage() {
         <Group gap="sm" mt={4}>
           <Title order={2} ff="monospace">{data.scope}</Title>
           {data.matched ? null : (
-            <Tooltip label="scope не сопоставлен кластеру (arch/02 §7)">
+            <Tooltip label="scope is not mapped to a cluster (arch/02 §7)">
               <Badge color="yellow" variant="light">unmatched</Badge>
             </Tooltip>
           )}
         </Group>
         <Group gap="sm" mt={4}>
           <Text c="dimmed" size="sm">
-            Кластер/шард:{' '}
+            Cluster/shard:{' '}
             {data.cluster === null ? '—' : (
               <Anchor component={Link} to={`/clusters/${data.cluster}`} size="sm">
                 {data.cluster}/{data.shard ?? '—'}
@@ -83,15 +83,15 @@ export function HaScopeDetailsPage() {
             )}
           </Text>
           <Text c="dimmed" size="sm">
-            Лидер:{' '}
+            Leader:{' '}
             {data.leaderName === null ? (
-              <Badge color={data.matched ? 'red' : 'gray'} variant="light">нет лидера</Badge>
+              <Badge color={data.matched ? 'red' : 'gray'} variant="light">no leader</Badge>
             ) : (
               <Text ff="monospace" size="sm" span>{data.leaderName}</Text>
             )}
           </Text>
           <Text c="dimmed" size="sm">
-            optime лидера:{' '}
+            leader optime:{' '}
             <Text ff="monospace" size="sm" span>{data.optimeLeader ?? '—'}</Text>
           </Text>
         </Group>
@@ -103,7 +103,7 @@ export function HaScopeDetailsPage() {
       <MembersTable members={data.members} leaderName={data.leaderName} />
       {data.requests === null ? null : (
         <Group gap="sm">
-          <Text c="dimmed" size="sm">Заявленные ресурсы нод:</Text>
+          <Text c="dimmed" size="sm">Declared node resources:</Text>
           <Badge variant="light" color="gray">{data.requests.cpu} CPU</Badge>
           <Badge variant="light" color="gray">{data.requests.mem}</Badge>
           <Badge variant="light" color="gray">{data.requests.disk}</Badge>
@@ -144,7 +144,7 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
 
   const options = members.map((m) => ({
     value: m.name,
-    label: m.name + (m.nodeState && recreatingStates.has(m.nodeState) ? ' (уже пересоздаётся)' : ''),
+    label: m.name + (m.nodeState && recreatingStates.has(m.nodeState) ? ' (already recreating)' : ''),
     disabled: !canRecreate(m),
   }));
 
@@ -157,7 +157,7 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
       await queryClient.invalidateQueries({ queryKey: queryKeys.haScope(scope) });
     },
     onError: (e: unknown) => {
-      setError(e instanceof ApiError ? e.message : 'Не удалось поставить маркер пересоздания');
+      setError(e instanceof ApiError ? e.message : 'Failed to queue the recreate marker');
     },
   });
 
@@ -171,41 +171,41 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
   return (
     <>
       <Button size="xs" variant="light" color="orange" onClick={openModal}>
-        Пересоздать ноду
+        Recreate node
       </Button>
-      <Modal opened={opened} onClose={() => { setOpened(false); setError(null); }} title="Пересоздать ноду" centered>
+      <Modal opened={opened} onClose={() => { setOpened(false); setError(null); }} title="Recreate node" centered>
         <Stack gap="sm">
           <Text size="sm" c="dimmed">
-            Нода будет удалена (контейнер и volume) и пересоздана с тем же адресом. Patroni сделает pg_basebackup с живой реплики.
+            The node will be deleted (container and volume) and recreated with the same address. Patroni will run pg_basebackup from a live replica.
           </Text>
           <Select
-            label="Нода"
-            placeholder="Выберите ноду"
+            label="Node"
+            placeholder="Select a node"
             data={options}
             value={selected}
             onChange={setSelected}
             searchable={false}
           />
           <Radio.Group
-            label="Режим (важен для лидера)"
+            label="Mode (matters for the leader)"
             value={mode}
             onChange={(v) => setMode(v as RecreateMode)}
           >
             <Stack gap="xs" mt={4}>
-              <Radio value="soft" label="Мягко — сначала switchover: лидерство переезжает без паузы на запись, затем пересоздание" />
-              <Radio value="hard" label="Грубо — снести сразу: Patroni сам сделает failover (короткая пауза на запись)" />
+              <Radio value="soft" label="Soft — switchover first: leadership moves without a write pause, then the node is recreated" />
+              <Radio value="hard" label="Hard — tear down immediately: Patroni will run failover itself (short write pause)" />
             </Stack>
           </Radio.Group>
           {error ? <Alert color="red" variant="light">{error}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => { setOpened(false); setError(null); }}>Отмена</Button>
+            <Button variant="default" onClick={() => { setOpened(false); setError(null); }}>Cancel</Button>
             <Button
               color="orange"
               loading={mutation.isPending}
               disabled={selected === null}
               onClick={() => selected && mutation.mutate(selected)}
             >
-              Пересоздать
+              Recreate
             </Button>
           </Group>
         </Stack>
@@ -217,19 +217,19 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
 // Таблица членов: имя (+метка лидера), адрес, роль, состояние, timeline, лаг,
 // probe-статус (t09 spec §4.5).
 function MembersTable({ members, leaderName }: { members: HaMemberDto[]; leaderName: string | null }) {
-  if (members.length === 0) return <Text c="dimmed">Члены не найдены</Text>;
+  if (members.length === 0) return <Text c="dimmed">No members found</Text>;
   return (
     <Table.ScrollContainer minWidth={900}>
       <Table highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Имя</Table.Th>
-            <Table.Th>Адрес</Table.Th>
-            <Table.Th>Роль</Table.Th>
-            <Table.Th>Состояние</Table.Th>
+            <Table.Th>Name</Table.Th>
+            <Table.Th>Address</Table.Th>
+            <Table.Th>Role</Table.Th>
+            <Table.Th>State</Table.Th>
             <Table.Th>Timeline</Table.Th>
-            <Table.Th>Лаг</Table.Th>
-            <Table.Th>Проба</Table.Th>
+            <Table.Th>Lag</Table.Th>
+            <Table.Th>Probe</Table.Th>
             <Table.Th>Node state</Table.Th>
           </Table.Tr>
         </Table.Thead>
@@ -249,7 +249,7 @@ function MemberRow({ member, isLeader }: { member: HaMemberDto; isLeader: boolea
       <Table.Td>
         <Group gap="xs" wrap="nowrap">
           <Text ff="monospace" size="sm">{member.name}</Text>
-          {isLeader ? <Badge color="violet" variant="light">лидер</Badge> : null}
+          {isLeader ? <Badge color="violet" variant="light">leader</Badge> : null}
         </Group>
       </Table.Td>
       <Table.Td>
@@ -290,7 +290,7 @@ function ProbeCell({ member }: { member: HaMemberDto }) {
     return (
       <Group gap="xs" wrap="nowrap">
         <Tooltip label={member.probeError} multiline>
-          <Badge color="red" variant="light">ошибка</Badge>
+          <Badge color="red" variant="light">error</Badge>
         </Tooltip>
         {member.probeAtUtc === null ? null : (
           <Text size="sm" c="dimmed">{formatIsoAge(member.probeAtUtc)}</Text>

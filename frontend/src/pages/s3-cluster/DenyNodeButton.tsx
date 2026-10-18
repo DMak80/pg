@@ -22,21 +22,21 @@ export function DenyNodeButton({ cluster, node }: { cluster: string; node: strin
   return (
     <>
       <Button color="orange" variant="light" size="xs" onClick={() => setOpened(true)}>
-        Отозвать ключ
+        Revoke key
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Отозвать ключ ${node} — ${cluster}`} centered>
+        title={`Revoke key of ${node} — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Инстанс <b>{node}</b> будет отозван: настройки связей с ним сносятся
-            воркером, будущие join запрещены (denylist). Инстанс остаётся
-            читаемым для своих объектов до демонтажа.
+            Instance <b>{node}</b> will be revoked: link settings with it are torn
+            down by the worker, future joins are forbidden (denylist). The instance
+            stays readable for its objects until teardown.
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="orange" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Отозвать
+              Revoke
             </Button>
           </Group>
         </Stack>

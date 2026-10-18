@@ -29,24 +29,24 @@ export function KafkaClustersPage() {
   return (
     <>
       <Group justify="space-between" mb="md">
-        <Title order={2}>Kafka-кластеры</Title>
-        <Button onClick={() => setCreateOpened(true)}>Создать кластер</Button>
+        <Title order={2}>Kafka clusters</Title>
+        <Button onClick={() => setCreateOpened(true)}>Create cluster</Button>
       </Group>
       <CreateKafkaClusterModal opened={createOpened} onClose={() => setCreateOpened(false)} />
       <Card withBorder padding="md" radius="md">
         {clusters.length === 0 ? (
-          <Text c="dimmed">Kafka-кластеры не найдены</Text>
+          <Text c="dimmed">No Kafka clusters found</Text>
         ) : (
           <Table.ScrollContainer minWidth={900}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Кластер</Table.Th>
-                  <Table.Th>Состояние</Table.Th>
-                  <Table.Th>Брокеры</Table.Th>
-                  <Table.Th>Топики</Table.Th>
+                  <Table.Th>Cluster</Table.Th>
+                  <Table.Th>State</Table.Th>
+                  <Table.Th>Brokers</Table.Th>
+                  <Table.Th>Topics</Table.Th>
                   <Table.Th>Endpoints</Table.Th>
-                  <Table.Th>Пометки</Table.Th>
+                  <Table.Th>Flags</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -71,12 +71,12 @@ function KafkaClusterRow({ cluster }: { cluster: KafkaClusterSummaryDto }) {
         {cluster.state === 'ACTIVE' ? (
           <Badge color="green" variant="light">ACTIVE</Badge>
         ) : cluster.state === 'NOT_INITIALIZED' ? (
-          <Tooltip label="кластер заявлен, брокеры не подняты">
-            <Badge color="gray" variant="light">не инициализирован</Badge>
+          <Tooltip label="cluster requested, brokers not up">
+            <Badge color="gray" variant="light">not initialized</Badge>
           </Tooltip>
         ) : (
-          <Tooltip label="TO_REMOVE: воркер демонтирует контейнеры и ключи">
-            <Badge color="red" variant="light">к удалению</Badge>
+          <Tooltip label="TO_REMOVE: worker tears down containers and keys">
+            <Badge color="red" variant="light">to remove</Badge>
           </Tooltip>
         )}
       </Table.Td>
@@ -92,13 +92,13 @@ function KafkaClusterRow({ cluster }: { cluster: KafkaClusterSummaryDto }) {
       <Table.Td>
         <Group gap="xs">
           {cluster.rotationPending ? (
-            <Tooltip label="заявка ротации app-пароля жива: исполняет воркер (фазы A/B/C)">
-              <Badge color="blue" variant="light">ротация</Badge>
+            <Tooltip label="app-password rotation ticket is live: executed by the worker (phases A/B/C)">
+              <Badge color="blue" variant="light">rotation</Badge>
             </Tooltip>
           ) : null}
           {cluster.caRotationPending ? (
-            <Tooltip label="заявка ротации CA/сертов жива: воркер играет окно двойного доверия (P/D/R/C)">
-              <Badge color="grape" variant="light">CA-ротация</Badge>
+            <Tooltip label="CA/cert rotation ticket is live: worker plays the dual-trust window (P/D/R/C)">
+              <Badge color="grape" variant="light">CA rotation</Badge>
             </Tooltip>
           ) : null}
         </Group>

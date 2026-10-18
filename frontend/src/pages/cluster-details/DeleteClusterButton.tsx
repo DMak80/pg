@@ -25,18 +25,19 @@ export function DeleteClusterButton({ name }: { name: string }) {
 
   return (
     <>
-      <Button color="red" variant="light" onClick={() => setOpened(true)}>Удалить кластер</Button>
-      <Modal opened={opened} onClose={() => setOpened(false)} title="Удалить кластер" centered>
+      <Button color="red" variant="light" onClick={() => setOpened(true)}>Delete cluster</Button>
+      <Modal opened={opened} onClose={() => setOpened(false)} title="Delete cluster" centered>
         <Stack gap="sm">
           <Text>
-            Кластер <b>{name}</b> перейдёт в состояние <b>TO_REMOVE</b>. Ключи etcd и ноды панель
-            не удаляет — снятие ресурсов выполняет внешний оркестратор.
+            Cluster <b>{name}</b> will move to the <b>TO_REMOVE</b> state. The panel
+            does not delete etcd keys or nodes — resource teardown is performed by
+            an external orchestrator.
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Удалить
+              Delete
             </Button>
           </Group>
         </Stack>

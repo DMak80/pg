@@ -16,13 +16,13 @@ function StateBadge({ state }: { state: S3ClusterSummaryDto['state'] }) {
     return <Badge color="green" variant="light">ACTIVE</Badge>;
   if (state === 'NOT_INITIALIZED')
     return (
-      <Tooltip label="кластер заявлен, инстансы не подняты">
-        <Badge color="gray" variant="light">не инициализирован</Badge>
+      <Tooltip label="cluster requested, instances not up">
+        <Badge color="gray" variant="light">not initialized</Badge>
       </Tooltip>
     );
   return (
-    <Tooltip label="TO_REMOVE: воркер демонтирует инстансы и ключи">
-      <Badge color="red" variant="light">к удалению</Badge>
+    <Tooltip label="TO_REMOVE: worker tears down instances and keys">
+      <Badge color="red" variant="light">to remove</Badge>
     </Tooltip>
   );
 }
@@ -59,25 +59,25 @@ export function S3ClustersPage() {
   return (
     <>
       <Group justify="space-between" mb="md">
-        <Title order={2}>S3-кластеры</Title>
-        <Button onClick={() => setCreateOpened(true)}>Создать кластер</Button>
+        <Title order={2}>S3 clusters</Title>
+        <Button onClick={() => setCreateOpened(true)}>Create cluster</Button>
       </Group>
       <CreateS3ClusterModal opened={createOpened} onClose={() => setCreateOpened(false)} />
       <Card withBorder padding="md" radius="md">
         {clusters.length === 0 ? (
-          <Text c="dimmed">S3-кластеров нет</Text>
+          <Text c="dimmed">No S3 clusters</Text>
         ) : (
           <Table.ScrollContainer minWidth={1000}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Кластер</Table.Th>
-                  <Table.Th>Состояние</Table.Th>
-                  <Table.Th>Ноды</Table.Th>
+                  <Table.Th>Cluster</Table.Th>
+                  <Table.Th>State</Table.Th>
+                  <Table.Th>Nodes</Table.Th>
                   <Table.Th>Endpoints</Table.Th>
-                  <Table.Th>Связность</Table.Th>
-                  <Table.Th>Синхронность</Table.Th>
-                  <Table.Th>Ротация</Table.Th>
+                  <Table.Th>Connectivity</Table.Th>
+                  <Table.Th>Sync</Table.Th>
+                  <Table.Th>Rotation</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -119,8 +119,8 @@ function S3ClusterRow({ cluster }: { cluster: S3ClusterSummaryDto }) {
       </Table.Td>
       <Table.Td>
         {cluster.rotationPending ? (
-          <Tooltip label="заявка ротации секретов жива: воркер переиздаёт профиль rolling-пересозданием">
-            <Badge color="blue" variant="light">ротация…</Badge>
+          <Tooltip label="secrets rotation ticket is live: worker re-issues the profile via rolling recreation">
+            <Badge color="blue" variant="light">rotating…</Badge>
           </Tooltip>
         ) : null}
       </Table.Td>

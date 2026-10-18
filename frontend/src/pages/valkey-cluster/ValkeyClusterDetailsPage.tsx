@@ -45,23 +45,23 @@ export function ValkeyClusterDetailsPage() {
         <Group gap="sm">
           <Title order={2}>Valkey: {c.name}</Title>
           {c.state === 'TO_REMOVE' ? (
-            <Tooltip label="воркер демонтирует контейнер ноды и ключи etcd">
-              <Badge color="red" variant="light">к удалению</Badge>
+            <Tooltip label="the worker tears down the node container and etcd keys">
+              <Badge color="red" variant="light">to remove</Badge>
             </Tooltip>
           ) : c.state === 'NOT_INITIALIZED' ? (
-            <Badge color="gray" variant="light">не инициализирован</Badge>
+            <Badge color="gray" variant="light">not initialized</Badge>
           ) : null}
           {c.rotation !== null ? (
-            <Tooltip label={`заявка ротации ${c.rotation.role}-пароля жива: воркер применяет окно двух паролей`}>
+            <Tooltip label={`the ${c.rotation.role}-password rotation ticket is live: the worker applies the two-password window`}>
               <Badge color="blue" variant="light">
-                ротация {c.rotation.role}-пароля · {rotationAgeMinutes(c.rotation.requestedUnix)}
+                {c.rotation.role}-password rotation · {rotationAgeMinutes(c.rotation.requestedUnix)}
               </Badge>
             </Tooltip>
           ) : null}
           {c.caRotation != null ? (
-            <Tooltip label={`заявка ротации CA жива: воркер применяет окно двойного доверия (${c.caRotation.requestedBy ?? '—'})`}>
+            <Tooltip label={`the CA rotation ticket is live: the worker applies the dual-trust window (${c.caRotation.requestedBy ?? '—'})`}>
               <Badge color="violet" variant="light">
-                ротация CA · {rotationAgeMinutes(c.caRotation.requestedUnix)}
+                CA rotation · {rotationAgeMinutes(c.caRotation.requestedUnix)}
               </Badge>
             </Tooltip>
           ) : null}
@@ -79,14 +79,14 @@ export function ValkeyClusterDetailsPage() {
 
       <Card withBorder padding="md" radius="md">
         <SimpleGrid cols={{ base: 2, md: 4 }}>
-          <Field label="Нод">{String(c.nodesTotal)}</Field>
+          <Field label="Nodes">{String(c.nodesTotal)}</Field>
           <Field label="maxmemory">
             {`${Math.round(c.maxmemoryBytes / MIB)} MiB · ${c.maxmemoryPolicy}`}
           </Field>
           <Field label="Endpoints">
             <Text size="sm" ff="monospace">{c.endpoints ?? '—'}</Text>
           </Field>
-          <Field label="Создан">
+          <Field label="Created">
             {c.createdUnix !== null ? new Date(c.createdUnix * 1000).toLocaleString() : '—'}
           </Field>
         </SimpleGrid>
@@ -96,9 +96,9 @@ export function ValkeyClusterDetailsPage() {
       {node !== null ? (
         <Card withBorder padding="md" radius="md">
           <Group justify="space-between" mb="sm">
-            <Title order={4}>Нода</Title>
+            <Title order={4}>Node</Title>
             {canMutate ? (
-              <Button size="xs" onClick={() => setResourcesNode(node)}>Изменить ресурсы</Button>
+              <Button size="xs" onClick={() => setResourcesNode(node)}>Edit resources</Button>
             ) : null}
           </Group>
           {resourcesNode !== null ? (
@@ -110,28 +110,28 @@ export function ValkeyClusterDetailsPage() {
             />
           ) : null}
           <SimpleGrid cols={{ base: 2, md: 5 }}>
-            <Field label="Имя">{node.name}</Field>
-            <Field label="Состояние"><NodeStateBadge state={node.state} /></Field>
-            <Field label="Ресурсы">
+            <Field label="Name">{node.name}</Field>
+            <Field label="State"><NodeStateBadge state={node.state} /></Field>
+            <Field label="Resources">
               {`${node.cpu ?? '—'} cpu · ${node.memGi ?? '—'} Gi · ${node.diskGi ?? '—'} Gi`}
             </Field>
             <Field label="Live">
               {node.live === null ? (
-                <Tooltip label={node.probeError ?? 'проба молчит (кредов нет или тик не дошёл)'}>
-                  <Text c="dimmed">проба молчит</Text>
+                <Tooltip label={node.probeError ?? 'the probe is silent (no credentials or the tick has not arrived)'}>
+                  <Text c="dimmed">probe silent</Text>
                 </Tooltip>
               ) : node.live ? (
-                <Badge color="green" variant="light">жив</Badge>
+                <Badge color="green" variant="light">alive</Badge>
               ) : (
-                <Tooltip label={node.probeError ?? 'PING не ответил'}>
-                  <Badge color="red" variant="light">не отвечает</Badge>
+                <Tooltip label={node.probeError ?? 'PING did not respond'}>
+                  <Badge color="red" variant="light">not responding</Badge>
                 </Tooltip>
               )}
             </Field>
-            <Field label="Проба">
+            <Field label="Probe">
               {node.probeError !== null ? (
                 <Tooltip label={node.probeError}>
-                  <Text size="sm" c="orange" style={{ maxWidth: 220 }} truncate>ошибка пробы</Text>
+                  <Text size="sm" c="orange" style={{ maxWidth: 220 }} truncate>probe error</Text>
                 </Tooltip>
               ) : (
                 <Text c="dimmed">—</Text>
@@ -141,7 +141,7 @@ export function ValkeyClusterDetailsPage() {
         </Card>
       ) : (
         <Card withBorder padding="md" radius="md">
-          <Text c="dimmed">Ноды не заявлены</Text>
+          <Text c="dimmed">No nodes declared</Text>
         </Card>
       )}
 
@@ -156,7 +156,7 @@ export function ValkeyClusterDetailsPage() {
 // Возраст живой заявки ротации в минутах (бейдж шапки).
 function rotationAgeMinutes(requestedUnix: number): string {
   const minutes = Math.max(0, Math.floor((Date.now() / 1000 - requestedUnix) / 60));
-  return `${minutes} мин`;
+  return `${minutes} min`;
 }
 
 // Строка «Последний исход заявки» (t10) — порт kafka-деталей.
@@ -164,9 +164,9 @@ function TicketOutcomeLine({ outcome }: { outcome: TicketOutcomeDto }) {
   const expired = outcome.outcome === 'expired';
   return (
     <Text size="sm" c={expired ? 'yellow' : undefined}>
-      Последний исход заявки: {outcome.kind} → {outcome.outcome} (
+      Last ticket outcome: {outcome.kind} → {outcome.outcome} (
       {new Date(outcome.finishedUnix * 1000).toLocaleString()})
-      {outcome.reason ? ` — причина: ${outcome.reason}` : ''}
+      {outcome.reason ? ` — reason: ${outcome.reason}` : ''}
     </Text>
   );
 }

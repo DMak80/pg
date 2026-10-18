@@ -11,9 +11,9 @@ export function PollingToggle() {
       value={interval}
       onChange={(value) => setInterval(value as PollingInterval)}
       data={[
-        { value: '2', label: '2 c' },
-        { value: '5', label: '5 c' },
-        { value: '15', label: '15 c' },
+        { value: '2', label: '2 s' },
+        { value: '5', label: '5 s' },
+        { value: '15', label: '15 s' },
         { value: 'off', label: 'off' },
       ]}
     />

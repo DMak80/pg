@@ -43,36 +43,36 @@ export function KafkaClusterDetailsPage() {
         <Group gap="sm">
           <Title order={2}>Kafka: {c.name}</Title>
           {c.state === 'TO_REMOVE' ? (
-            <Tooltip label="воркер демонтирует контейнеры/тома и ключи etcd">
-              <Badge color="red" variant="light">к удалению</Badge>
+            <Tooltip label="the worker tears down containers/volumes and etcd keys">
+              <Badge color="red" variant="light">to remove</Badge>
             </Tooltip>
           ) : c.state === 'NOT_INITIALIZED' ? (
-            <Badge color="gray" variant="light">не инициализирован</Badge>
+            <Badge color="gray" variant="light">not initialized</Badge>
           ) : null}
           {c.rotation !== null ? (
-            <Tooltip label="заявка ротации жива: rolling-перезапуск брокеров (фазы A/B/C)">
-              <Badge color="blue" variant="light">ротация app-пароля</Badge>
+            <Tooltip label="rotation ticket is live: rolling broker restart (phases A/B/C)">
+              <Badge color="blue" variant="light">app-password rotation</Badge>
             </Tooltip>
           ) : null}
           {c.caRotation !== null ? (
-            <Tooltip label="заявка CA-ротации жива: окно двойного доверия (P/D/R/C), брокеры перезапускаются по одному">
-              <Badge color="grape" variant="light">ротация CA</Badge>
+            <Tooltip label="CA rotation ticket is live: dual-trust window (P/D/R/C), brokers restart one by one">
+              <Badge color="grape" variant="light">CA rotation</Badge>
             </Tooltip>
           ) : null}
           {c.reassignment !== null ? (
-            <Tooltip label="reassignment выполняется воркером: перенос реплик батчами">
+            <Tooltip label="reassignment is executed by the worker: replica moves in batches">
               <Badge color="violet" variant="light">
                 {c.reassignment.mode === 'drain'
                   ? `drain ${c.reassignment.drainBroker ?? ''}`.trim()
-                  : 'ребалансировка'}
-                : осталось {c.reassignment.partitionsRemaining}/{c.reassignment.partitionsTotal} партиций
+                  : 'rebalance'}
+                : {c.reassignment.partitionsRemaining}/{c.reassignment.partitionsTotal} partitions remaining
               </Badge>
             </Tooltip>
           ) : null}
           {c.regen !== null ? (
-            <Tooltip label="rolling-пересоздание брокеров выполняется воркером (тома сохраняются)">
+            <Tooltip label="rolling broker recreation is executed by the worker (volumes are preserved)">
               <Badge color="indigo" variant="light">
-                регенерация {c.regen.brokersTotal - c.regen.brokersRemaining}/{c.regen.brokersTotal}
+                regeneration {c.regen.brokersTotal - c.regen.brokersRemaining}/{c.regen.brokersTotal}
               </Badge>
             </Tooltip>
           ) : null}
@@ -90,33 +90,33 @@ export function KafkaClusterDetailsPage() {
       </Group>
 
       {c.probeOk === false ? (
-        <Alert color="orange" variant="light" title="Live-проба недоступна">
-          {c.probeError ?? 'DescribeCluster не отвечает'} — данные etcd актуальны, live-часть скрыта.
+        <Alert color="orange" variant="light" title="Live probe unavailable">
+          {c.probeError ?? 'DescribeCluster is not responding'} — etcd data is up to date, the live part is hidden.
         </Alert>
       ) : null}
 
       <Card withBorder padding="md" radius="md">
         <SimpleGrid cols={{ base: 2, md: 4 }}>
-          <Field label="Брокеры">{String(c.brokers)}</Field>
+          <Field label="Brokers">{String(c.brokers)}</Field>
           <Field label="RF">{String(c.replicationFactor)}</Field>
           <Field label="Min ISR">{String(c.minInSyncReplicas)}</Field>
-          <Field label="Партиций по умолчанию">{String(c.defaultPartitions)}</Field>
-          <Field label="Retention, дней">{String(c.defaultRetentionMs / DAY_MS)}</Field>
+          <Field label="Default partitions">{String(c.defaultPartitions)}</Field>
+          <Field label="Retention, days">{String(c.defaultRetentionMs / DAY_MS)}</Field>
           <Field label="Endpoints">
             <Text size="sm" ff="monospace">{c.endpoints ?? '—'}</Text>
           </Field>
-          <Field label="Топиков">{String(c.topics.length)}</Field>
-          <Field label="Live-проба">
-            {c.probeOk === null ? '—' : c.probeOk ? 'ok' : 'недоступна'}
+          <Field label="Topics">{String(c.topics.length)}</Field>
+          <Field label="Live probe">
+            {c.probeOk === null ? '—' : c.probeOk ? 'ok' : 'unavailable'}
           </Field>
         </SimpleGrid>
       </Card>
 
       {c.regen !== null ? (
         <Text size="sm" c="indigo">
-          Регенерация брокеров: осталось {c.regen.brokersRemaining} из{' '}
-          {c.regen.brokersTotal}
-          {c.regen.currentBroker !== null ? ` (текущий ${c.regen.currentBroker})` : ''}
+          Broker regeneration: {c.regen.brokersRemaining} of{' '}
+          {c.regen.brokersTotal} remaining
+          {c.regen.currentBroker !== null ? ` (current ${c.regen.currentBroker})` : ''}
         </Text>
       ) : null}
 
@@ -153,9 +153,9 @@ export function TicketOutcomeLine({ outcome }: { outcome: TicketOutcomeDto }) {
   const expired = outcome.outcome === 'expired';
   return (
     <Text size="sm" c={expired ? 'yellow' : undefined}>
-      Последний исход заявки: {outcome.kind} → {outcome.outcome} (
+      Last ticket outcome: {outcome.kind} → {outcome.outcome} (
       {new Date(outcome.finishedUnix * 1000).toLocaleString()})
-      {outcome.reason ? ` — причина: ${outcome.reason}` : ''}
+      {outcome.reason ? ` — reason: ${outcome.reason}` : ''}
     </Text>
   );
 }

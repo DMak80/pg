@@ -12,9 +12,9 @@ import { usePollingIntervalMs } from '../polling/PollingContext';
 import { UploadWorkerCertModal } from './workers/UploadWorkerCertModal';
 
 const WORKER_TITLES: Record<string, string> = {
-  pgworker: 'PgWorker (бд)',
-  kafkaworker: 'KafkaWorker (кафки)',
-  s3worker: 'S3Worker (хранилище S3)',
+  pgworker: 'PgWorker (DB)',
+  kafkaworker: 'KafkaWorker (Kafka)',
+  s3worker: 'S3Worker (S3 storage)',
 };
 
 // Действия с confirm-модалом (тексты предупреждений — arch/adminpanel/03 §3.7).
@@ -56,7 +56,7 @@ export function WorkersPage() {
       await refresh();
       const failed = dto.results.filter((r) => !r.accepted);
       if (failed.length > 0)
-        setBanner(`перезапуск: не все инстансы приняли команду — ${failed.map((r) => `${r.instance}: ${r.error ?? 'отказ'}`).join('; ')}`);
+        setBanner(`restart: not all instances accepted the command — ${failed.map((r) => `${r.instance}: ${r.error ?? 'refused'}`).join('; ')}`);
     },
     onError: showError,
   });
@@ -71,15 +71,15 @@ export function WorkersPage() {
   const confirmBusy =
     generateMutation.isPending || deleteMutation.isPending || restartMutation.isPending;
   const confirmText: Record<NonNullable<ConfirmAction>['kind'], string> = {
-    generate: 'Сгенерировать self-signed сертификат? Применится только после перезапуска воркера.',
-    delete: 'Убрать управляемый сертификат? Воркер вернётся к env-серту после перезапуска.',
-    restart: 'Перезапустить воркера? Идущие операции продолжатся после подъёма (клэймы и журнал — в etcd); краткое окно недоступности API (секунды).',
+    generate: 'Generate a self-signed certificate? It will be applied only after the worker restart.',
+    delete: 'Remove the managed certificate? The worker will fall back to the env certificate after restart.',
+    restart: 'Restart the worker? Running operations will continue after startup (claims and journal live in etcd); brief API unavailability window (seconds).',
   };
 
   return (
     <>
       <Group justify="space-between" mb="md">
-        <Title order={2}>Воркеры</Title>
+        <Title order={2}>Workers</Title>
       </Group>
       {banner !== null && (
         <Alert color="red" mb="md" withCloseButton onClose={() => setBanner(null)}>{banner}</Alert>
@@ -110,13 +110,13 @@ export function WorkersPage() {
         <Stack gap="sm">
           <Text>{confirm === null ? '' : confirmText[confirm.kind]}</Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setConfirm(null)}>Отмена</Button>
+            <Button variant="default" onClick={() => setConfirm(null)}>Cancel</Button>
             {confirm?.kind === 'generate' && (
               <Button
                 loading={confirmBusy}
                 onClick={() => { if (confirm !== null) generateMutation.mutate(confirm.worker); setConfirm(null); }}
               >
-                Сгенерировать
+                Generate
               </Button>
             )}
             {confirm?.kind === 'delete' && (
@@ -125,7 +125,7 @@ export function WorkersPage() {
                 loading={confirmBusy}
                 onClick={() => { if (confirm !== null) deleteMutation.mutate(confirm.worker); setConfirm(null); }}
               >
-                Убрать сертификат
+                Remove certificate
               </Button>
             )}
             {confirm?.kind === 'restart' && (
@@ -134,7 +134,7 @@ export function WorkersPage() {
                 loading={confirmBusy}
                 onClick={() => { if (confirm !== null) restartMutation.mutate(confirm.worker); setConfirm(null); }}
               >
-                Перезапустить
+                Restart
               </Button>
             )}
           </Group>
@@ -147,10 +147,10 @@ export function WorkersPage() {
 // Бейдж статуса применения (applied/pending restart/unmanaged/unknown, 03 §3.7).
 function ApplyStatusBadge({ status }: { status: WorkerApplyStatus }) {
   const pair: Record<WorkerApplyStatus, [string, string]> = {
-    'applied': ['green', 'целевой серт применён на грани'],
-    'pending restart': ['yellow', 'требуется перезапуск'],
-    'unmanaged': ['gray', 'env-сертификат, ключа в etcd нет'],
-    'unknown': ['gray', 'инстанс не сообщает thumbprint (старая версия)'],
+    'applied': ['green', 'target cert applied on the edge'],
+    'pending restart': ['yellow', 'restart required'],
+    'unmanaged': ['gray', 'env certificate, no key in etcd'],
+    'unknown': ['gray', 'instance does not report a thumbprint (old version)'],
   };
   const [color, tooltip] = pair[status];
   return <Tooltip label={tooltip}><Badge color={color} variant="light">{status}</Badge></Tooltip>;
@@ -184,11 +184,11 @@ function WorkerCard({ view, onGenerate, onUpload, onDelete, onRestart }: {
         <Group justify="space-between">
           <Title order={3}>{WORKER_TITLES[view.worker] ?? view.worker}</Title>
           <Group gap="xs">
-            <Button size="xs" variant="light" onClick={onGenerate}>Сгенерировать сертификат</Button>
-            <Button size="xs" variant="light" onClick={onUpload}>Загрузить сертификат</Button>
-            <Button size="xs" color="red" variant="light" onClick={onRestart}>Перезапустить воркера</Button>
+            <Button size="xs" variant="light" onClick={onGenerate}>Generate certificate</Button>
+            <Button size="xs" variant="light" onClick={onUpload}>Upload certificate</Button>
+            <Button size="xs" color="red" variant="light" onClick={onRestart}>Restart worker</Button>
             {cert !== null && cert !== undefined && (
-              <Button size="xs" color="red" variant="light" onClick={onDelete}>Убрать управляемый сертификат</Button>
+              <Button size="xs" color="red" variant="light" onClick={onDelete}>Remove managed certificate</Button>
             )}
           </Group>
         </Group>
@@ -197,17 +197,17 @@ function WorkerCard({ view, onGenerate, onUpload, onDelete, onRestart }: {
           <Table>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Инстанс</Table.Th>
+                <Table.Th>Instance</Table.Th>
                 <Table.Th>URL</Table.Th>
-                <Table.Th>Поднят</Table.Th>
+                <Table.Th>Up since</Table.Th>
                 <Table.Th>Health</Table.Th>
-                <Table.Th>Thumbprint грани</Table.Th>
-                <Table.Th>Статус</Table.Th>
+                <Table.Th>Edge thumbprint</Table.Th>
+                <Table.Th>Status</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {view.instances.length === 0 ? (
-                <Table.Tr><Table.Td colSpan={6}><Text c="dimmed">живых инстансов нет</Text></Table.Td></Table.Tr>
+                <Table.Tr><Table.Td colSpan={6}><Text c="dimmed">no live instances</Text></Table.Td></Table.Tr>
               ) : (
                 view.instances.map((i) => <InstanceRow key={i.instance} instance={i} />)
               )}
@@ -217,17 +217,17 @@ function WorkerCard({ view, onGenerate, onUpload, onDelete, onRestart }: {
 
         {cert !== null && cert !== undefined && (
           <Stack gap={4}>
-            <Text size="sm" fw={600}>Целевой сертификат</Text>
+            <Text size="sm" fw={600}>Target certificate</Text>
             <Text size="sm">Subject: {cert.subject}</Text>
             <Text size="sm">Issuer: {cert.issuer}</Text>
             <Text size="sm">SAN: {cert.san.join(', ')}</Text>
             <Text size="sm">
-              Действует: {formatUnix(cert.notBeforeUnix)} — {formatUnix(cert.notAfterUnix)}
+              Valid: {formatUnix(cert.notBeforeUnix)} — {formatUnix(cert.notAfterUnix)}
             </Text>
             <Text size="sm">Thumbprint: <Thumb value={cert.thumbprint} /></Text>
             <Text size="sm" c="dimmed">
-              обновлён {cert.updatedBy ?? '—'} · {formatUnix(cert.updatedUnix)}
-              ({formatUnixAge(cert.updatedUnix)} назад)
+              updated {cert.updatedBy ?? '—'} · {formatUnix(cert.updatedUnix)}
+              ({formatUnixAge(cert.updatedUnix)} ago)
             </Text>
           </Stack>
         )}
@@ -242,7 +242,7 @@ function InstanceRow({ instance }: { instance: WorkerInstanceDto }) {
       <Table.Td>{instance.instance}</Table.Td>
       <Table.Td style={{ fontFamily: 'monospace', fontSize: 12 }}>{instance.url}</Table.Td>
       <Table.Td>
-        {instance.sinceUnix === 0 ? '—' : `${formatUnix(instance.sinceUnix)} (${formatUnixAge(instance.sinceUnix)} назад)`}
+        {instance.sinceUnix === 0 ? '—' : `${formatUnix(instance.sinceUnix)} (${formatUnixAge(instance.sinceUnix)} ago)`}
       </Table.Td>
       <Table.Td><HealthBadge health={instance.health} /></Table.Td>
       <Table.Td><Thumb value={instance.certThumbprint} /></Table.Td>

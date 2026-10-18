@@ -80,7 +80,7 @@ export function OverviewPage() {
   );
   return (
     <Stack gap="md">
-      <Title order={2}>Обзор</Title>
+      <Title order={2}>Overview</Title>
       {/* Мин. ширина карточки 330px = 1.5× проектного минимума старой 4-колоночной
           сетки (220px при lg); колонки перестраиваются auto-fill'ом по ширине. */}
       <SimpleGrid minColWidth={330}>
@@ -124,15 +124,15 @@ function ReliabilityCard({ data, activeClusters, isPending, onRetry }: {
   if (data === undefined)
     return isPending ? (
       <Card withBorder padding="md" radius="md">
-        <Text fw={600} mb="xs">Надёжность</Text>
-        <Text c="dimmed" size="sm">Загрузка надёжности…</Text>
+        <Text fw={600} mb="xs">Reliability</Text>
+        <Text c="dimmed" size="sm">Loading reliability…</Text>
       </Card>
     ) : (
       <Card withBorder padding="md" radius="md">
-        <Text fw={600} mb="xs">Надёжность</Text>
+        <Text fw={600} mb="xs">Reliability</Text>
         <Stack gap="xs" align="flex-start">
-          <Alert color="red">Нет данных надёжности</Alert>
-          <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+          <Alert color="red">No reliability data</Alert>
+          <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
         </Stack>
       </Card>
     );
@@ -161,20 +161,20 @@ function ReliabilityCard({ data, activeClusters, isPending, onRetry }: {
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Надёжность</Text>
-        <Anchor size="sm" component={Link} to="/reliability">детали</Anchor>
+        <Text fw={600}>Reliability</Text>
+        <Anchor size="sm" component={Link} to="/reliability">details</Anchor>
       </Group>
       <Stack gap="xs">
         <Text size="sm">
-          Худший RPO-потенциал: {worst === null ? '—' : formatAge(worst * 1000)}
+          Worst RPO potential: {worst === null ? '—' : formatAge(worst * 1000)}
         </Text>
         <Text size="sm" c={fullCount > 0 ? 'orange' : undefined}>
-          RPO держится только полными: {fullCount} {offCount > 0 ? `· off: ${offCount}` : ''}
+          RPO held by fulls only: {fullCount} {offCount > 0 ? `· off: ${offCount}` : ''}
         </Text>
         <Text size="sm" c="dimmed">
-          Последний failover: {lastFailover === null
+          Last failover: {lastFailover === null
             ? '—'
-            : `${formatAge(lastFailover.durationSec * 1000)} (${formatUnixAge(lastFailover.atUnix)} назад)`}
+            : `${formatAge(lastFailover.durationSec * 1000)} (${formatUnixAge(lastFailover.atUnix)} ago)`}
         </Text>
       </Stack>
     </Card>
@@ -194,11 +194,11 @@ function EtcdCard({ data }: { data: OverviewDto }) {
       <Group justify="space-between" mb="xs">
         <Text fw={600}>etcd</Text>
         <Badge color={etcd.reachable ? 'teal' : 'red'} variant="light">
-          {etcd.reachable ? 'доступен' : 'недоступен'}
+          {etcd.reachable ? 'reachable' : 'unreachable'}
         </Badge>
       </Group>
       <Text size="sm" c="dimmed">endpoints: {etcd.endpointsOk}/{etcd.endpointsTotal}</Text>
-      <Anchor component={Link} to="/etcd" size="sm" mt="xs" display="inline-block">Детали →</Anchor>
+      <Anchor component={Link} to="/etcd" size="sm" mt="xs" display="inline-block">Details →</Anchor>
     </Card>
   );
 }
@@ -207,9 +207,9 @@ function EtcdCard({ data }: { data: OverviewDto }) {
 function ClustersCard({ data }: { data: OverviewDto }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Кластеры</Text>
+      <Text fw={600} mb="xs">Clusters</Text>
       {data.clusters.length === 0 ? (
-        <Text c="dimmed" size="sm">Кластеры не найдены</Text>
+        <Text c="dimmed" size="sm">No clusters found</Text>
       ) : (
         <Stack gap={4}>
           {data.clusters.map((c) => (
@@ -217,17 +217,17 @@ function ClustersCard({ data }: { data: OverviewDto }) {
               <Group gap="xs" wrap="nowrap">
                 <Anchor component={Link} to={`/clusters/${c.name}`} size="sm" truncate="end">{c.name}</Anchor>
                 {c.notInitialized ? (
-                  <Badge color="gray" variant="light">не инициализирован</Badge>
+                  <Badge color="gray" variant="light">not initialized</Badge>
                 ) : null}
               </Group>
               <Group gap={5} wrap="nowrap">
-                <Text size="sm" c="dimmed">шарды {c.shards}</Text>
-                <Text size="sm" c="dimmed">бакеты {c.buckets}</Text>
+                <Text size="sm" c="dimmed">shards {c.shards}</Text>
+                <Text size="sm" c="dimmed">buckets {c.buckets}</Text>
                 {c.activeMoves > 0 ? (
-                  <Badge color="yellow" variant="light">переезды: {c.activeMoves}</Badge>
+                  <Badge color="yellow" variant="light">moves: {c.activeMoves}</Badge>
                 ) : null}
                 {c.masterlessShards > 0 ? (
-                  <Badge color="red" variant="light">без мастера: {c.masterlessShards}</Badge>
+                  <Badge color="red" variant="light">masterless: {c.masterlessShards}</Badge>
                 ) : null}
               </Group>
             </Group>
@@ -245,21 +245,21 @@ function KafkaCard({ data }: { data: OverviewDto }) {
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" wrap="nowrap" mb="xs">
         <Text fw={600}>Kafka</Text>
-        <Anchor component={Link} to="/kafka" size="sm">все кластеры →</Anchor>
+        <Anchor component={Link} to="/kafka" size="sm">all clusters →</Anchor>
       </Group>
       {data.kafka === null ? (
-        <Text c="dimmed" size="sm">Kafka-снапшот ещё не собран</Text>
+        <Text c="dimmed" size="sm">Kafka snapshot not collected yet</Text>
       ) : (
         <Group gap="md">
           <Group gap={5}>
             <Text size="xl" fw={600}>{data.kafka.clustersTotal}</Text>
-            <Text size="sm" c="dimmed">кластеров</Text>
+            <Text size="sm" c="dimmed">clusters</Text>
           </Group>
           <Group gap={5}>
             <Text size="xl" fw={600} c={data.kafka.clustersCritical > 0 ? 'red' : undefined}>
               {data.kafka.clustersCritical}
             </Text>
-            <Text size="sm" c="dimmed">критических</Text>
+            <Text size="sm" c="dimmed">critical</Text>
           </Group>
         </Group>
       )}
@@ -274,21 +274,21 @@ function S3Card({ data }: { data: OverviewDto }) {
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" wrap="nowrap" mb="xs">
         <Text fw={600}>S3</Text>
-        <Anchor component={Link} to="/s3" size="sm">все кластеры →</Anchor>
+        <Anchor component={Link} to="/s3" size="sm">all clusters →</Anchor>
       </Group>
       {data.s3 === null ? (
-        <Text c="dimmed" size="sm">S3-снапшот ещё не собран</Text>
+        <Text c="dimmed" size="sm">S3 snapshot not collected yet</Text>
       ) : (
         <Group gap="md">
           <Group gap={5}>
             <Text size="xl" fw={600}>{data.s3.clustersTotal}</Text>
-            <Text size="sm" c="dimmed">кластеров</Text>
+            <Text size="sm" c="dimmed">clusters</Text>
           </Group>
           <Group gap={5}>
             <Text size="xl" fw={600} c={data.s3.clustersCritical > 0 ? 'red' : undefined}>
               {data.s3.clustersCritical}
             </Text>
-            <Text size="sm" c="dimmed">критических</Text>
+            <Text size="sm" c="dimmed">critical</Text>
           </Group>
         </Group>
       )}
@@ -309,15 +309,15 @@ function BackupsCard({ data, isPending, onRetry }: {
   let content;
   if (data === undefined)
     content = isPending ? (
-      <Text c="dimmed" size="sm">Загрузка бэкапов…</Text>
+      <Text c="dimmed" size="sm">Loading backups…</Text>
     ) : (
       <Stack gap="xs" align="flex-start">
-        <Alert color="red">Нет данных о хранилище бэкапов</Alert>
-        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+        <Alert color="red">No backup storage data</Alert>
+        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
       </Stack>
     );
   else if (!data.configured)
-    content = <Text c="dimmed" size="sm">Хранилище бэкапов не настроено</Text>;
+    content = <Text c="dimmed" size="sm">Backup storage is not configured</Text>;
   else
     content = (
       <Stack gap="xs">
@@ -332,7 +332,7 @@ function BackupsCard({ data, isPending, onRetry }: {
             </Badge>
           )}
           {data.inventoryError ? (
-            <Badge color="yellow" variant="light">инвентарь устаревает</Badge>
+            <Badge color="yellow" variant="light">inventory lagging</Badge>
           ) : null}
         </Group>
         {data.health?.apiError ? (
@@ -342,21 +342,21 @@ function BackupsCard({ data, isPending, onRetry }: {
         ) : null}
         <Text size="sm">
           {data.etcd === null
-            ? 'Место: ключ /pgworker/backups/storage в etcd отсутствует'
-            : `Место: ${formatBytes(data.etcd.usedBytes)}${
-                data.etcd.quotaBytes === null ? '' : ` из ${formatBytes(data.etcd.quotaBytes)}`
+            ? 'Space: /pgworker/backups/storage key is missing in etcd'
+            : `Space: ${formatBytes(data.etcd.usedBytes)}${
+                data.etcd.quotaBytes === null ? '' : ` of ${formatBytes(data.etcd.quotaBytes)}`
               }${data.etcd.usedPercent === null ? '' : ` (${data.etcd.usedPercent.toFixed(1)}%)`}`}
         </Text>
         <Text size="sm" c="dimmed">
-          Live-инвентарь: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
+          Live inventory: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
         </Text>
       </Stack>
     );
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" wrap="nowrap" mb="xs">
-        <Text fw={600}>Бэкапы</Text>
-        <Anchor component={Link} to="/backups-storage" size="sm">Детали →</Anchor>
+        <Text fw={600}>Backups</Text>
+        <Anchor component={Link} to="/backups-storage" size="sm">Details →</Anchor>
       </Group>
       {content}
     </Card>
@@ -366,7 +366,7 @@ function BackupsCard({ data, isPending, onRetry }: {
 // Бейджи health S3 — цветовая логика 1:1 с HealthCard страницы
 // /backups-storage (api/live teal/red, cluster gray при n/a).
 function HealthBadges({ health }: { health: S3HealthDto | null }) {
-  if (health === null) return <Text size="sm" c="dimmed">health: нет данных (первый тик)</Text>;
+  if (health === null) return <Text size="sm" c="dimmed">health: no data (first tick)</Text>;
   return (
     <Group gap="xs">
       <Badge color={health.apiOk ? 'teal' : 'red'} variant="light">
@@ -386,7 +386,7 @@ function HealthBadges({ health }: { health: S3HealthDto | null }) {
 function AlertsCard({ data }: { data: OverviewDto }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Алерты</Text>
+      <Text fw={600} mb="xs">Alerts</Text>
       <Group gap="md">
         <Badge
           color={data.alertsCritical > 0 ? 'red' : 'gray'}
@@ -403,7 +403,7 @@ function AlertsCard({ data }: { data: OverviewDto }) {
           warning: {data.alertsWarning}
         </Badge>
       </Group>
-      <Anchor component={Link} to="/alerts" size="sm" mt="xs" display="inline-block">Все алерты →</Anchor>
+      <Anchor component={Link} to="/alerts" size="sm" mt="xs" display="inline-block">All alerts →</Anchor>
     </Card>
   );
 }
@@ -412,19 +412,19 @@ function AlertsCard({ data }: { data: OverviewDto }) {
 function MovesSection({ data }: { data: OverviewDto }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Активные переезды</Text>
+      <Text fw={600} mb="xs">Active moves</Text>
       {data.activeMoves.length === 0 ? (
-        <Text c="dimmed" size="sm">Активных переездов нет</Text>
+        <Text c="dimmed" size="sm">No active moves</Text>
       ) : (
         <Table.ScrollContainer minWidth={700}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Кластер</Table.Th>
-                <Table.Th>Бакет</Table.Th>
-                <Table.Th>Состояние</Table.Th>
-                <Table.Th>Маршрут</Table.Th>
-                <Table.Th>Обновлён</Table.Th>
+                <Table.Th>Cluster</Table.Th>
+                <Table.Th>Bucket</Table.Th>
+                <Table.Th>State</Table.Th>
+                <Table.Th>Route</Table.Th>
+                <Table.Th>Updated</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -459,15 +459,15 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
   rows: { id: string; severity: AlertSeverityName; kind: string; target: string; message: string; sinceUnix: number | null }[];
 }) {
   let content;
-  if (isPending) content = <Text c="dimmed" size="sm">Загрузка алертов…</Text>;
+  if (isPending) content = <Text c="dimmed" size="sm">Loading alerts…</Text>;
   else if (isError)
     content = (
       <Stack gap="xs" align="flex-start">
-        <Alert color="red">Нет данных об алертах</Alert>
-        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+        <Alert color="red">No alerts data</Alert>
+        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
       </Stack>
     );
-  else if (rows.length === 0) content = <Text c="teal" size="sm">Критических алертов нет</Text>;
+  else if (rows.length === 0) content = <Text c="teal" size="sm">No critical alerts</Text>;
   else
     content = (
       <Stack gap={4}>
@@ -479,7 +479,7 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
             <Text size="sm" style={{ flex: 1 }}>{a.message}</Text>
             <Tooltip label={formatUnix(a.sinceUnix)}>
               <span>
-                <Text size="sm" c="dimmed">{a.sinceUnix === null ? '—' : `с ${formatUnixAge(a.sinceUnix)}`}</Text>
+                <Text size="sm" c="dimmed">{a.sinceUnix === null ? '—' : `for ${formatUnixAge(a.sinceUnix)}`}</Text>
               </span>
             </Tooltip>
           </Group>
@@ -489,8 +489,8 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Лента алертов</Text>
-        <Anchor component={Link} to="/alerts" size="sm">Все алерты →</Anchor>
+        <Text fw={600}>Alerts feed</Text>
+        <Anchor component={Link} to="/alerts" size="sm">All alerts →</Anchor>
       </Group>
       {content}
     </Card>
@@ -510,23 +510,23 @@ function HaCard({ scopes, isPending, onRetry }: {
   let content;
   if (scopes === undefined)
     content = isPending ? (
-      <Text c="dimmed" size="sm">Загрузка HA…</Text>
+      <Text c="dimmed" size="sm">Loading HA…</Text>
     ) : (
       <Stack gap="xs" align="flex-start">
-        <Alert color="red">Нет данных HA</Alert>
-        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+        <Alert color="red">No HA data</Alert>
+        <Anchor size="sm" onClick={onRetry}>Retry</Anchor>
       </Stack>
     );
-  else if (scopes.length === 0) content = <Text c="dimmed" size="sm">HA-scope'ы не найдены</Text>;
+  else if (scopes.length === 0) content = <Text c="dimmed" size="sm">No HA scopes found</Text>;
   else {
     const withoutLeader = scopes.filter((s) => s.matched && s.leaderName === null).length;
     const unmatched = scopes.filter((s) => !s.matched).length;
     content = (
       <Stack gap={4}>
         <Group gap="xs" wrap="nowrap">
-          <Text size="sm" c="dimmed">скопов: {scopes.length}</Text>
+          <Text size="sm" c="dimmed">scopes: {scopes.length}</Text>
           <Badge color={withoutLeader > 0 ? 'red' : 'gray'} variant="light">
-            без лидера: {withoutLeader}
+            no leader: {withoutLeader}
           </Badge>
           <Badge color={unmatched > 0 ? 'yellow' : 'gray'} variant="light">
             unmatched: {unmatched}
@@ -545,7 +545,7 @@ function HaCard({ scopes, isPending, onRetry }: {
             </Anchor>
             <Group gap={5} wrap="nowrap">
               {s.matched && s.leaderName === null ? (
-                <Badge color="red" variant="light">нет лидера</Badge>
+                <Badge color="red" variant="light">no leader</Badge>
               ) : null}
               {!s.matched ? <Badge color="yellow" variant="light">unmatched</Badge> : null}
             </Group>

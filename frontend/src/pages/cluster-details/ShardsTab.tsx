@@ -23,34 +23,34 @@ export function ShardsTab({ cluster, canScale, shards, bucketCounts, strict }: {
   return (
     <Stack gap="xs">
       <Group justify="space-between">
-        <Text fw={500}>Шарды</Text>
+        <Text fw={500}>Shards</Text>
         {canScale ? (
           <Group gap="xs">
-            <Button size="xs" variant="light" onClick={() => setAddOpened(true)}>Добавить шард</Button>
+            <Button size="xs" variant="light" onClick={() => setAddOpened(true)}>Add shard</Button>
             <AddShardModal cluster={cluster} strict={strict} opened={addOpened}
               onClose={() => setAddOpened(false)} />
           </Group>
         ) : null}
       </Group>
       {shards.length === 0 ? (
-        <Text c="dimmed">Шарды не найдены</Text>
+        <Text c="dimmed">No shards found</Text>
       ) : (
         <Table.ScrollContainer minWidth={1200}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Шард</Table.Th>
+                <Table.Th>Shard</Table.Th>
                 <Table.Th>DSN</Table.Th>
-                <Table.Th>Реплики</Table.Th>
-                <Table.Th>Мастер</Table.Th>
-                <Table.Th>Ноды</Table.Th>
-                <Table.Th>Ресурсы на ноду</Table.Th>
+                <Table.Th>Replicas</Table.Th>
+                <Table.Th>Master</Table.Th>
+                <Table.Th>Nodes</Table.Th>
+                <Table.Th>Resources per node</Table.Th>
                 <Table.Th>Sync-standby</Table.Th>
-                <Table.Th>Лаг слотов</Table.Th>
+                <Table.Th>Slot lag</Table.Th>
                 <Table.Th>WAL lost</Table.Th>
-                <Table.Th>Подписки</Table.Th>
-                <Table.Th>Схемы</Table.Th>
-                {canScale ? <Table.Th>Действия</Table.Th> : null}
+                <Table.Th>Subscriptions</Table.Th>
+                <Table.Th>Schemas</Table.Th>
+                {canScale ? <Table.Th>Actions</Table.Th> : null}
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -63,10 +63,10 @@ export function ShardsTab({ cluster, canScale, shards, bucketCounts, strict }: {
         </Table.ScrollContainer>
       )}
       {probesOff ? (
-        <Text c="dimmed" size="sm">Пробы отключены — runtime-данные отсутствуют</Text>
+        <Text c="dimmed" size="sm">Probes are off — no runtime data</Text>
       ) : null}
       {probeErrors.map((s) => (
-        <Text key={s.name} c="red" size="sm">Ошибки проб: шард {s.name}: {s.runtime?.error}</Text>
+        <Text key={s.name} c="red" size="sm">Probe errors: shard {s.name}: {s.runtime?.error}</Text>
       ))}
     </Stack>
   );
@@ -84,7 +84,7 @@ function ShardRow({ shard, cluster, canScale, bucketCount }: {
             {shard.name}
           </Anchor>
           {shard.state === 'TO_REMOVE' ? (
-            <Badge color="red" variant="light">к удалению</Badge>
+            <Badge color="red" variant="light">to remove</Badge>
           ) : null}
         </Group>
       </Table.Td>
@@ -96,9 +96,9 @@ function ShardRow({ shard, cluster, canScale, bucketCount }: {
       <Table.Td>{shard.replicasDeclared ?? '—'}</Table.Td>
       <Table.Td>
         {shard.masterAddress === null ? (
-          <Badge color="red" variant="light">нет мастера</Badge>
+          <Badge color="red" variant="light">no master</Badge>
         ) : (
-          <Tooltip label="master-lease жив (ключ присутствует)">
+          <Tooltip label="master-lease is alive (key present)">
             <span>
               <Text size="sm" ff="monospace" span>{shard.masterAddress} </Text>
               <Badge color="teal" variant="light">lease</Badge>

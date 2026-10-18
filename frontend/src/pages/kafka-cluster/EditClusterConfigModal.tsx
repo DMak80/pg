@@ -34,12 +34,12 @@ export function EditClusterConfigModal({ cluster }: { cluster: KafkaClusterDto }
 
   return (
     <>
-      <Button variant="light" onClick={() => setOpened(true)}>Изменить параметры</Button>
+      <Button variant="light" onClick={() => setOpened(true)}>Edit parameters</Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Параметры — ${cluster.name}`} centered>
+        title={`Parameters — ${cluster.name}`} centered>
         <Stack gap="sm">
           <Text size="sm" c="dimmed">
-            Изменения применяет воркер как dynamic broker configs — без рестартов брокеров.
+            Changes are applied by the worker as dynamic broker configs — without broker restarts.
           </Text>
           <Group grow>
             <NumberInput label="Replication factor" value={rf} min={1} max={9}
@@ -48,16 +48,16 @@ export function EditClusterConfigModal({ cluster }: { cluster: KafkaClusterDto }
               onChange={(v) => setMinIsr(Number(v ?? 0))} />
           </Group>
           <Group grow>
-            <NumberInput label="Партиций по умолчанию" value={partitions} min={1} max={1000}
+            <NumberInput label="Default partitions" value={partitions} min={1} max={1000}
               onChange={(v) => setPartitions(Number(v ?? 0))} />
-            <NumberInput label="Retention, дней" value={retentionDays} min={1}
+            <NumberInput label="Retention, days" value={retentionDays} min={1}
               onChange={(v) => setRetentionDays(Number(v ?? 0))} />
           </Group>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Сохранить
+              Save
             </Button>
           </Group>
         </Stack>

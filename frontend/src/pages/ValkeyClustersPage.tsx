@@ -39,24 +39,24 @@ export function ValkeyClustersPage() {
   return (
     <>
       <Group justify="space-between" mb="md">
-        <Title order={2}>Valkey-кластеры</Title>
-        <Button onClick={() => setCreateOpened(true)}>Создать кластер</Button>
+        <Title order={2}>Valkey clusters</Title>
+        <Button onClick={() => setCreateOpened(true)}>Create cluster</Button>
       </Group>
       <CreateValkeyClusterModal opened={createOpened} onClose={() => setCreateOpened(false)} />
       <Card withBorder padding="md" radius="md">
         {clusters.length === 0 ? (
-          <Text c="dimmed">Valkey-кластеры не найдены</Text>
+          <Text c="dimmed">No Valkey clusters found</Text>
         ) : (
           <Table.ScrollContainer minWidth={900}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Кластер</Table.Th>
-                  <Table.Th>Состояние</Table.Th>
-                  <Table.Th>Нода</Table.Th>
+                  <Table.Th>Cluster</Table.Th>
+                  <Table.Th>State</Table.Th>
+                  <Table.Th>Node</Table.Th>
                   <Table.Th>Endpoints</Table.Th>
                   <Table.Th>maxmemory</Table.Th>
-                  <Table.Th>Пометки</Table.Th>
+                  <Table.Th>Flags</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -81,12 +81,12 @@ function ValkeyClusterRow({ cluster }: { cluster: ValkeyClusterSummaryDto }) {
         {cluster.state === 'ACTIVE' ? (
           <Badge color="green" variant="light">ACTIVE</Badge>
         ) : cluster.state === 'NOT_INITIALIZED' ? (
-          <Tooltip label="кластер заявлен, нода не поднята">
-            <Badge color="gray" variant="light">не инициализирован</Badge>
+          <Tooltip label="cluster requested, node not up">
+            <Badge color="gray" variant="light">not initialized</Badge>
           </Tooltip>
         ) : (
-          <Tooltip label="TO_REMOVE: воркер демонтирует контейнер и ключи">
-            <Badge color="red" variant="light">к удалению</Badge>
+          <Tooltip label="TO_REMOVE: worker tears down the container and keys">
+            <Badge color="red" variant="light">to remove</Badge>
           </Tooltip>
         )}
       </Table.Td>
@@ -105,8 +105,8 @@ function ValkeyClusterRow({ cluster }: { cluster: ValkeyClusterSummaryDto }) {
       </Table.Td>
       <Table.Td>
         {cluster.rotationPending ? (
-          <Tooltip label="заявка ротации пароля жива: воркер применяет окно двух паролей">
-            <Badge color="blue" variant="light">ротация</Badge>
+          <Tooltip label="password rotation ticket is live: worker applies the two-password window">
+            <Badge color="blue" variant="light">rotation</Badge>
           </Tooltip>
         ) : null}
       </Table.Td>

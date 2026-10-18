@@ -13,9 +13,9 @@ export function StaleBadge() {
     refetchInterval: usePollingIntervalMs(),
   });
 
-  if (isError) return <Badge color="red" variant="light">нет данных</Badge>;
+  if (isError) return <Badge color="red" variant="light">no data</Badge>;
   if (data === undefined) return null;
   if (data.stale)
     return <Badge color="yellow" variant="light">stale: {formatAge(data.snapshotAgeMs)}</Badge>;
-  return <Badge color="gray" variant="light">данные: {formatAge(data.snapshotAgeMs)}</Badge>;
+  return <Badge color="gray" variant="light">data: {formatAge(data.snapshotAgeMs)}</Badge>;
 }

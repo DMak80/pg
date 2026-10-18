@@ -53,9 +53,9 @@ export function BackupsStoragePage() {
   if (!data.configured)
     return (
       <Stack gap="md">
-        <Title order={2}>Хранилище бэкапов</Title>
-        <Alert color="gray" title="Хранилище бэкапов не настроено">
-          {data.notConfiguredReason ?? 'AdminPanel:Backups:S3 не задан'} — грань выключена
+        <Title order={2}>Backup Storage</Title>
+        <Alert color="gray" title="Backup storage is not configured">
+          {data.notConfiguredReason ?? 'AdminPanel:Backups:S3 is not set'} — the edge is disabled
         </Alert>
       </Stack>
     );
@@ -63,14 +63,14 @@ export function BackupsStoragePage() {
   return (
     <Stack gap="md">
       <Group gap="sm">
-        <Title order={2}>Хранилище бэкапов</Title>
+        <Title order={2}>Backup Storage</Title>
         <Text c="dimmed" size="sm" ff="monospace">
           {data.endpoints.join(', ')} / {data.bucket}
         </Text>
       </Group>
       {data.inventoryError ? (
-        <Alert color="yellow" title="Инвентарь устаревает">
-          Последний успешный тик инвентаря S3-хранилища не обновлялся:{' '}
+        <Alert color="yellow" title="Inventory lagging">
+          The last successful S3 storage inventory tick has not been updated:{' '}
           {data.inventoryError}
         </Alert>
       ) : null}
@@ -92,10 +92,10 @@ export function BackupsStoragePage() {
       ) : null}
       <OrphansCard orphans={data.orphans} />
       <Text c="dimmed" size="sm">
-        Инвентарь обновлён:{' '}
+        Inventory updated:{' '}
         {data.inventoryUpdatedUnix === 0
-          ? 'ещё собирается (первый тик)'
-          : `${formatUnix(data.inventoryUpdatedUnix)} (${formatUnixAge(data.inventoryUpdatedUnix)} назад)`}
+          ? 'still collecting (first tick)'
+          : `${formatUnix(data.inventoryUpdatedUnix)} (${formatUnixAge(data.inventoryUpdatedUnix)} ago)`}
       </Text>
     </Stack>
   );
@@ -107,7 +107,7 @@ function HealthCard({ health }: { health: S3HealthDto | null }) {
     <Card withBorder padding="md" radius="md" w={340}>
       <Text fw={600} mb="xs">Health S3</Text>
       {health === null ? (
-        <Text c="dimmed" size="sm">Нет данных (первый тик ещё шёл)</Text>
+        <Text c="dimmed" size="sm">No data (first tick was still running)</Text>
       ) : (
         <Stack gap="xs">
           <Group gap="xs">
@@ -128,7 +128,7 @@ function HealthCard({ health }: { health: S3HealthDto | null }) {
           ) : null}
           {health.totalDrives !== null ? (
             <Text size="sm" c="dimmed">
-              Диски: здоровых {health.healthyDrives ?? '—'} / offline {health.offlineDrives ?? '—'} / healing {health.healingDrives ?? '—'} / всего {health.totalDrives}
+              Drives: healthy {health.healthyDrives ?? '—'} / offline {health.offlineDrives ?? '—'} / healing {health.healingDrives ?? '—'} / total {health.totalDrives}
             </Text>
           ) : null}
         </Stack>
@@ -146,11 +146,11 @@ function StorageCard({ data }: { data: BackupStorageDto }) {
   return (
     <Card withBorder padding="md" radius="md" w={380}>
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Место</Text>
+        <Text fw={600}>Space</Text>
         {etcd === null ? null : <Badge color={stateColor} variant="light">{etcd.state}</Badge>}
       </Group>
       {etcd === null ? (
-        <Text c="dimmed" size="sm">Ключ /pgworker/backups/storage в etcd отсутствует</Text>
+        <Text c="dimmed" size="sm">Key /pgworker/backups/storage is missing in etcd</Text>
       ) : (
         <Stack gap="xs">
           <Progress
@@ -160,13 +160,13 @@ function StorageCard({ data }: { data: BackupStorageDto }) {
           />
           <Text size="sm">
             {formatBytes(etcd.usedBytes)}
-            {etcd.quotaBytes === null ? '' : ` из ${formatBytes(etcd.quotaBytes)}`}
+            {etcd.quotaBytes === null ? '' : ` of ${formatBytes(etcd.quotaBytes)}`}
             {percent === null ? '' : ` (${percent.toFixed(1)}%)`}
           </Text>
         </Stack>
       )}
       <Text size="sm" c="dimmed" mt="xs">
-        Live-инвентарь: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
+        Live inventory: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
       </Text>
     </Card>
   );
@@ -178,8 +178,8 @@ function EtcdSnapshotsCard({ etcd }: { etcd: EtcdSnapshotsDto | null }) {
   if (etcd === null) {
     return (
       <Card withBorder padding="md" radius="md" w={340}>
-        <Text fw={600} mb="xs">etcd-снапшоты</Text>
-        <Text c="dimmed" size="sm">Выгрузка не включена (ключа /pgworker/etcd-snapshots нет)</Text>
+        <Text fw={600} mb="xs">etcd snapshots</Text>
+        <Text c="dimmed" size="sm">Upload not enabled (/pgworker/etcd-snapshots key missing)</Text>
       </Card>
     );
   }
@@ -187,21 +187,21 @@ function EtcdSnapshotsCard({ etcd }: { etcd: EtcdSnapshotsDto | null }) {
   return (
     <Card withBorder padding="md" radius="md" w={340}>
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>etcd-снапшоты</Text>
+        <Text fw={600}>etcd snapshots</Text>
         <Badge color={ok ? 'green' : 'red'} variant="light">{etcd.state ?? '?'}</Badge>
       </Group>
       <Stack gap="xs">
         <Text size="sm">
-          Последняя выгрузка:{' '}
+          Last upload:{' '}
           {etcd.lastUploadedUnix === null
             ? '—'
-            : `${formatUnix(etcd.lastUploadedUnix)} (${formatUnixAge(etcd.lastUploadedUnix)} назад)`}
+            : `${formatUnix(etcd.lastUploadedUnix)} (${formatUnixAge(etcd.lastUploadedUnix)} ago)`}
         </Text>
         <Text size="sm" c="dimmed" ff="monospace">
           sha256: {etcd.lastSha256 === null ? '—' : etcd.lastSha256.slice(0, 12)}
         </Text>
         <Text size="sm" c="dimmed">
-          размер: {etcd.sizeBytes === null ? '—' : formatBytes(etcd.sizeBytes)}
+          size: {etcd.sizeBytes === null ? '—' : formatBytes(etcd.sizeBytes)}
         </Text>
         {!ok && etcd.error !== null ? <Text size="sm" c="red">{etcd.error}</Text> : null}
       </Stack>
@@ -215,7 +215,7 @@ function BucketsCard({ buckets }: { buckets: string[] }) {
     <Card withBorder padding="md" radius="md" w={280}>
       <Text fw={600} mb="xs">Buckets</Text>
       {buckets.length === 0 ? (
-        <Text c="dimmed" size="sm">Нет данных</Text>
+        <Text c="dimmed" size="sm">No data</Text>
       ) : (
         <Stack gap={4}>
           {buckets.map((b) => (
@@ -235,22 +235,22 @@ function ClustersTable({ data, onOpenPool }: {
 }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Кластеры → шарды</Text>
+      <Text fw={600} mb="xs">Clusters → shards</Text>
       {data.clusters.length === 0 ? (
-        <Text c="dimmed" size="sm">Дерево пусто (инвентарь ещё не собран или bucket пуст)</Text>
+        <Text c="dimmed" size="sm">Tree is empty (inventory not collected yet or bucket is empty)</Text>
       ) : (
         <Table.ScrollContainer minWidth={760}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Кластер</Table.Th>
-                <Table.Th>Шард</Table.Th>
-                <Table.Th>Размер</Table.Th>
-                <Table.Th>Полные</Table.Th>
-                <Table.Th>WAL-сегменты</Table.Th>
-                <Table.Th>Сверка</Table.Th>
-                <Table.Th>Пул</Table.Th>
-                <Table.Th>Действия</Table.Th>
+                <Table.Th>Cluster</Table.Th>
+                <Table.Th>Shard</Table.Th>
+                <Table.Th>Size</Table.Th>
+                <Table.Th>Fulls</Table.Th>
+                <Table.Th>WAL segments</Table.Th>
+                <Table.Th>Reconcile</Table.Th>
+                <Table.Th>Pool</Table.Th>
+                <Table.Th>Actions</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -268,7 +268,7 @@ function ClustersTable({ data, onOpenPool }: {
                     <Table.Td><PoolBadge poolName={c.policy?.s3?.pool ?? null} /></Table.Td>
                     <Table.Td>
                       <Button size="compact-sm" variant="light" onClick={() => onOpenPool(c.cluster)}>
-                        Пул бэкапов
+                        Backup pool
                       </Button>
                     </Table.Td>
                   </Table.Tr>
@@ -297,13 +297,13 @@ function ClustersTable({ data, onOpenPool }: {
                       <Table.Td>
                         <Group gap="xs">
                           {s.hasS3Only ? (
-                            <Tooltip label="есть объекты полного без etcd-ключа">
-                              <Badge color="yellow" variant="light">объекты без ключа</Badge>
+                            <Tooltip label="full objects without an etcd key exist">
+                              <Badge color="yellow" variant="light">objects without key</Badge>
                             </Tooltip>
                           ) : null}
                           {s.orphan ? (
-                            <Tooltip label="префикс без владельца в /clusters/">
-                              <Badge color="red" variant="light">сирота</Badge>
+                            <Tooltip label="prefix without an owner in /clusters/">
+                              <Badge color="red" variant="light">orphan</Badge>
                             </Tooltip>
                           ) : null}
                           {!s.hasS3Only && !s.orphan ? <Text c="dimmed" size="sm">—</Text> : null}
@@ -313,7 +313,7 @@ function ClustersTable({ data, onOpenPool }: {
                       <Table.Td>
                         {s.shard === c.shards[0]?.shard ? (
                           <Button size="compact-sm" variant="light" onClick={() => onOpenPool(s.cluster)}>
-                            Пул бэкапов
+                            Backup pool
                           </Button>
                         ) : null}
                       </Table.Td>
@@ -336,8 +336,8 @@ function PoolBadge({ poolName }: { poolName: string | null }) {
       <Badge color="blue" variant="light" ff="monospace">{poolName}</Badge>
     </Tooltip>
   ) : (
-    <Tooltip label="policy без секции s3 — бэкапы кластера не пишутся (backup-pool-missing)">
-      <Badge color="red" variant="light">пул не выбран</Badge>
+    <Tooltip label="policy without an s3 section — cluster backups are not written (backup-pool-missing)">
+      <Badge color="red" variant="light">no pool selected</Badge>
     </Tooltip>
   );
 }
@@ -350,9 +350,9 @@ function PoolBadge({ poolName }: { poolName: string | null }) {
 function DrillIntervalBadge({ intervalDays }: { intervalDays: number | null }) {
   if (intervalDays === null) return null;
   return (
-    <Tooltip label="интервал дрилов восстановимости (policy)">
+    <Tooltip label="recovery drill interval (policy)">
       <Badge color={intervalDays === 0 ? 'gray' : 'blue'} variant="light">
-        дрилл: {intervalDays === 0 ? 'выкл' : `${intervalDays} сут`}
+        drill: {intervalDays === 0 ? 'off' : `${intervalDays} d`}
       </Badge>
     </Tooltip>
   );
@@ -362,21 +362,21 @@ function OrphansCard({ orphans }: { orphans: BackupOrphanDto[] }) {
   const [deleting, setDeleting] = useState<BackupOrphanDto | null>(null);
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Осиротевшие префиксы</Text>
+      <Text fw={600} mb="xs">Orphaned prefixes</Text>
       {orphans.length === 0 ? (
-        <Text c="teal" size="sm">Сирот не обнаружено</Text>
+        <Text c="teal" size="sm">No orphans found</Text>
       ) : (
         <>
           <Table.ScrollContainer minWidth={860}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Префикс</Table.Th>
-                  <Table.Th>Тип</Table.Th>
-                  <Table.Th>Размер</Table.Th>
-                  <Table.Th>Реестр воркера</Table.Th>
-                  <Table.Th>Защита</Table.Th>
-                  <Table.Th>Действия</Table.Th>
+                  <Table.Th>Prefix</Table.Th>
+                  <Table.Th>Type</Table.Th>
+                  <Table.Th>Size</Table.Th>
+                  <Table.Th>Worker registry</Table.Th>
+                  <Table.Th>Protection</Table.Th>
+                  <Table.Th>Actions</Table.Th>
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -408,20 +408,20 @@ function ProtectionBadges({ orphan }: { orphan: BackupOrphanDto }) {
   return (
     <Group gap="xs">
       {orphan.hasValidFull ? (
-        <Tooltip label="в префиксе есть валидный полный — TTL-автоматика не удаляет">
-          <Badge color="teal" variant="light">полный: защита</Badge>
+        <Tooltip label="a valid full exists in the prefix — TTL automation will not delete it">
+          <Badge color="teal" variant="light">full: protected</Badge>
         </Tooltip>
       ) : null}
       {orphan.held ? (
-        <Tooltip label="hold-флаг оператора — TTL-отбор исключён">
+        <Tooltip label="operator hold flag — excluded from TTL selection">
           <Badge color="indigo" variant="light">
             hold{orphan.heldBy !== null ? ` (${orphan.heldBy})` : ''}
           </Badge>
         </Tooltip>
       ) : null}
       {orphan.deleteRequested ? (
-        <Tooltip label="заявка явного удаления — исполнит sweeper ближайшим проходом">
-          <Badge color="red" variant="light">к удалению</Badge>
+        <Tooltip label="explicit delete ticket — sweeper will execute it on the next pass">
+          <Badge color="red" variant="light">to remove</Badge>
         </Tooltip>
       ) : null}
     </Group>
@@ -451,14 +451,14 @@ function OrphanRow({ orphan, onDelete }: { orphan: BackupOrphanDto; onDelete: ()
               {orphan.registryState ?? '—'}
             </Badge>
             <Text size="sm" c="dimmed">
-              замечен {formatUnix(orphan.firstSeenUnix)}
+              first seen {formatUnix(orphan.firstSeenUnix)}
               {orphan.ttlLeftSec === null
                 ? ''
-                : `, удаление по TTL через ${formatTtlLeft(orphan.ttlLeftSec)}`}
+                : `, TTL deletion in ${formatTtlLeft(orphan.ttlLeftSec)}`}
             </Text>
           </Group>
         ) : (
-          <Text size="sm" c="yellow">панель видит, в реестре нет</Text>
+          <Text size="sm" c="yellow">seen by the panel, not in registry</Text>
         )}
       </Table.Td>
       <Table.Td><ProtectionBadges orphan={orphan} /></Table.Td>
@@ -496,11 +496,11 @@ function orphanPrefix(orphan: BackupOrphanDto): [string, string] {
 
 // Остаток TTL в человекочитаемом виде: «2 д 3 ч», «45 мин».
 function formatTtlLeft(sec: number): string {
-  if (sec < 60) return `${sec} с`;
+  if (sec < 60) return `${sec} s`;
   const minutes = Math.floor(sec / 60);
-  if (minutes < 60) return `${minutes} мин`;
+  if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours} ч`;
+  if (hours < 48) return `${hours} h`;
   const days = Math.floor(hours / 24);
-  return `${days} д ${hours % 24} ч`;
+  return `${days} d ${hours % 24} h`;
 }

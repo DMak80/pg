@@ -23,9 +23,9 @@ export function RotatePasswordButton({
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: 'Ротацию выполнит воркер (фазы A/B/C, rolling-перезапуск брокеров). '
-          + 'После применения клиенты должны перечитать app_password из etcd.',
+        title: 'Ticket submitted',
+        message: 'The rotation will be performed by the worker (phases A/B/C, rolling broker restart). '
+          + 'After it is applied, clients must re-read app_password from etcd.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
@@ -41,28 +41,28 @@ export function RotatePasswordButton({
         disabled={disabled}
         onClick={() => setOpened(true)}
       >
-        Сменить app-пароль
+        Rotate app password
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Сменить app-пароль — ${cluster}`} centered>
+        title={`Rotate app password — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер выполнит ротацию фазами: A) rolling-перезапуск брокеров с ДВУМЯ
-            кредами (старым и новым), B) атомарная замена <b>app_password</b> в etcd,
-            C) rolling-снятие старого креда.
+            The worker will rotate the password in phases: A) rolling broker restart
+            with TWO credentials (old and new), B) atomic replacement of
+            <b> app_password</b> in etcd, C) rolling removal of the old credential.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            Rolling-перезапуск брокеров — выполняйте в тихое окно.
+          <Alert color="yellow" variant="light" title="Warning">
+            Rolling broker restart — perform this in a quiet window.
             <List size="sm" mt={4}>
-              <List.Item>окна «брокер не принимает рабочий кред» нет по построению</List.Item>
-              <List.Item>после фазы C подключения со старым паролем отвергаются</List.Item>
+              <List.Item>a "broker does not accept the working credential" window is impossible by design</List.Item>
+              <List.Item>after phase C, connections with the old password are rejected</List.Item>
             </List>
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Сменить пароль
+              Rotate password
             </Button>
           </Group>
         </Stack>

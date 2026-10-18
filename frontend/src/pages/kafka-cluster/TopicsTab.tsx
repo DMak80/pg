@@ -30,29 +30,29 @@ export function TopicsTab({
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="sm">
-        <Title order={4}>Топики</Title>
+        <Title order={4}>Topics</Title>
         {canMutate ? (
-          <Button size="compact-sm" onClick={() => setCreateOpened(true)}>+ Создать топик</Button>
+          <Button size="compact-sm" onClick={() => setCreateOpened(true)}>+ Create topic</Button>
         ) : null}
       </Group>
       <Text size="sm" c="dimmed" mb="sm">
-        Создание/удаление топиков — заявками панели; внешние изменения
-        (CLI/клиенты) подхватываются автосинком.
+        Topic creation/deletion goes through panel tickets; external changes
+        (CLI/clients) are picked up by autosync.
       </Text>
       {topics.length === 0 ? (
-        <Text c="dimmed">Топиков в реестре нет</Text>
+        <Text c="dimmed">No topics in the registry</Text>
       ) : (
         <Table.ScrollContainer minWidth={900}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Топик</Table.Th>
-                <Table.Th>Партиции</Table.Th>
+                <Table.Th>Topic</Table.Th>
+                <Table.Th>Partitions</Table.Th>
                 <Table.Th>RF</Table.Th>
                 <Table.Th>Retention</Table.Th>
                 <Table.Th>Min ISR</Table.Th>
                 <Table.Th>USR</Table.Th>
-                <Table.Th>Заявка</Table.Th>
+                <Table.Th>Ticket</Table.Th>
                 <Table.Th />
               </Table.Tr>
             </Table.Thead>
@@ -105,7 +105,7 @@ function TopicRow({
       setError(null);
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
     },
-    onError: (e) => setError(e instanceof ApiError ? e.message : 'ошибка отмены'),
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'cancel failed'),
   });
   const cancelLifecycle = useMutation({
     mutationFn: () => cancelTopicLifecycle(cluster, topic.name, topic.lifecycle!.op),
@@ -113,7 +113,7 @@ function TopicRow({
       setError(null);
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
     },
-    onError: (e) => setError(e instanceof ApiError ? e.message : 'ошибка отмены заявки'),
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'ticket cancel failed'),
   });
 
   // Виртуальная строка create-заявки: факта нет — прочерки в факт-полях.
@@ -130,7 +130,7 @@ function TopicRow({
         {topic.underReplicatedPartitions === null ? (
           <Text c="dimmed">—</Text>
         ) : topic.underReplicatedPartitions > 0 ? (
-          <Tooltip label="партиции с ISR < RF (данные live-пробы)">
+          <Tooltip label="partitions with ISR < RF (live probe data)">
             <Badge color="yellow" variant="light">USR: {topic.underReplicatedPartitions}</Badge>
           </Tooltip>
         ) : (
@@ -140,14 +140,14 @@ function TopicRow({
       <Table.Td>
         {topic.lifecycle !== null ? (
           <Group gap="xs" wrap="nowrap">
-            <Tooltip label={`${formatAge(topic.lifecycle.requestedUnix)} · автор: ${topic.lifecycle.requestedBy ?? '—'}`}>
+            <Tooltip label={`${formatAge(topic.lifecycle.requestedUnix)} · author: ${topic.lifecycle.requestedBy ?? '—'}`}>
               {topic.lifecycle.op === 'create' ? (
                 <Badge color="blue" variant="light">
-                  создание{topic.lifecycle.partitions !== null ? `: ${topic.lifecycle.partitions} партиций` : ''}
+                  create{topic.lifecycle.partitions !== null ? `: ${topic.lifecycle.partitions} partitions` : ''}
                   {topic.lifecycle.replicationFactor !== null ? `, RF ${topic.lifecycle.replicationFactor}` : ''}
                 </Badge>
               ) : (
-                <Badge color="red" variant="light">удаление — ожидает тика воркера</Badge>
+                <Badge color="red" variant="light">delete — waiting for the worker tick</Badge>
               )}
             </Tooltip>
             {canMutate ? (
@@ -158,18 +158,18 @@ function TopicRow({
                 loading={cancelLifecycle.isPending}
                 onClick={() => cancelLifecycle.mutate()}
               >
-                Отменить заявку
+                Cancel ticket
               </Button>
             ) : null}
           </Group>
         ) : topic.missing ? (
-          <Tooltip label="топик отсутствует в Kafka при живой заявке; отмените заявку, чтобы убрать ключ, или пересоздайте топик заявкой создания">
-            <Badge color="red" variant="light">missing: топик отсутствует</Badge>
+          <Tooltip label="the topic is missing from Kafka while the ticket is live; cancel the ticket to remove the key, or recreate the topic with a create ticket">
+            <Badge color="red" variant="light">missing: topic absent</Badge>
           </Tooltip>
         ) : topic.desired !== null ? (
-          <Tooltip label={`заявка ${formatAge(topic.desired.requestedUnix)} · автор: ${topic.desired.requestedBy ?? '—'}`}>
+          <Tooltip label={`ticket ${formatAge(topic.desired.requestedUnix)} · author: ${topic.desired.requestedBy ?? '—'}`}>
             <Badge color="blue" variant="light">
-              заявка{topic.desired.partitions !== null ? `: партиций ${topic.desired.partitions}` : ''}
+              ticket{topic.desired.partitions !== null ? `: partitions ${topic.desired.partitions}` : ''}
               {topic.desired.retentionMs !== null ? `, retention ${formatRetention(topic.desired.retentionMs)}` : ''}
             </Badge>
           </Tooltip>
@@ -180,7 +180,7 @@ function TopicRow({
       <Table.Td>
         <Group gap="xs" wrap="nowrap">
           {canMutate && !topic.missing && !virtual ? (
-            <Button size="compact-xs" variant="light" onClick={onDesired}>Изменить конфиги</Button>
+            <Button size="compact-xs" variant="light" onClick={onDesired}>Edit configs</Button>
           ) : null}
           {canMutate && topic.desired !== null ? (
             <Button
@@ -190,12 +190,12 @@ function TopicRow({
               loading={cancel.isPending}
               onClick={() => cancel.mutate()}
             >
-              Отменить заявку
+              Cancel ticket
             </Button>
           ) : null}
           {canMutate && !topic.missing && topic.lifecycle?.op !== 'create' ? (
             <Button size="compact-xs" variant="light" color="red" onClick={onDelete}>
-              Удалить топик
+              Delete topic
             </Button>
           ) : null}
         </Group>
@@ -213,12 +213,12 @@ function formatRetention(ms: number | null): string {
   if (ms === null)
     return '—';
   const days = ms / DAY_MS;
-  return Number.isInteger(days) ? `${days} д` : `${ms} мс`;
+  return Number.isInteger(days) ? `${days} d` : `${ms} ms`;
 }
 
 function formatAge(unix: number | null): string {
   if (unix === null)
     return '';
   const minutes = Math.max(0, Math.round((Date.now() / 1000 - unix) / 60));
-  return minutes < 60 ? `${minutes} мин назад` : `${Math.round(minutes / 60)} ч назад`;
+  return minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`;
 }

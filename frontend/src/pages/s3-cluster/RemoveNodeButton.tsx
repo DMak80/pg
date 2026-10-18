@@ -22,22 +22,22 @@ export function RemoveNodeButton({ cluster, node }: { cluster: string; node: str
   return (
     <>
       <Button color="red" variant="light" size="xs" onClick={() => setOpened(true)}>
-        Убрать ноду
+        Remove node
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Убрать ноду ${node} — ${cluster}`} centered>
+        title={`Remove node ${node} — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Инстанс <b>{node}</b> уйдёт в демонтаж (one-way): S3Worker снесёт
-            его контейнер и volume. Копия данных останется на остальных
-            инстансах при настроенных связях репликации; без связей объекты
-            этого инстанса теряются.
+            Instance <b>{node}</b> will go into teardown (one-way): S3Worker will
+            remove its container and volume. A copy of the data stays on the other
+            instances when replication links are configured; without links, the
+            objects of this instance are lost.
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Убрать
+              Remove
             </Button>
           </Group>
         </Stack>

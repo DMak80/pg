@@ -41,8 +41,8 @@ export function EditClusterConfigModal({ cluster }: { cluster: ValkeyClusterDto 
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   function validate(): string | null {
-    if (!Number.isInteger(maxmemoryMib) || maxmemoryMib < 1) return 'maxmemory: целое ≥ 1 MiB';
-    if (!KNOWN_POLICIES.includes(policy)) return 'maxmemoryPolicy: выберите из списка';
+    if (!Number.isInteger(maxmemoryMib) || maxmemoryMib < 1) return 'maxmemory: integer ≥ 1 MiB';
+    if (!KNOWN_POLICIES.includes(policy)) return 'maxmemoryPolicy: choose from the list';
     return null;
   }
 
@@ -55,32 +55,32 @@ export function EditClusterConfigModal({ cluster }: { cluster: ValkeyClusterDto 
 
   return (
     <>
-      <Button variant="light" onClick={() => setOpened(true)}>Изменить конфиг</Button>
+      <Button variant="light" onClick={() => setOpened(true)}>Edit config</Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Конфиг — ${cluster.name}`} centered>
+        title={`Config — ${cluster.name}`} centered>
         <Stack gap="sm">
           <Text size="sm" c="dimmed">
-            Применяется воркером (CONFIG + ACL-конверге) без рестарта ноды.
+            Applied by the worker (CONFIG + ACL converge) without a node restart.
           </Text>
           <Group grow>
             <NumberInput label="maxmemory, MiB" value={maxmemoryMib} min={1}
               onChange={(v) => setMaxmemoryMib(Number(v ?? 0))} />
-            <Select label="Политика вытеснения" data={KNOWN_POLICIES} value={policy}
+            <Select label="Eviction policy" data={KNOWN_POLICIES} value={policy}
               onChange={(v) => setPolicy(v ?? 'allkeys-lru')} />
           </Group>
           {/* Инвариант R3: maxmemory обязан оставаться меньше mem-лимита ноды. */}
           {cluster.nodesList[0]?.memGi !== null && cluster.nodesList[0]?.memGi !== undefined
             && maxmemoryMib * MIB >= cluster.nodesList[0].memGi! * GIB ? (
             <Alert color="yellow" variant="light">
-              maxmemory ≥ mem-лимита ноды ({cluster.nodesList[0].memGi} GiB) — воркер отклонит:
-              OOM-килл контейнера (R3).
+              maxmemory ≥ node mem limit ({cluster.nodesList[0].memGi} GiB) — the worker will reject it:
+              container OOM kill (R3).
             </Alert>
           ) : null}
           {formError !== null ? <Alert color="red" variant="light">{formError}</Alert> : null}
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
-            <Button loading={mutation.isPending} onClick={submit}>Сохранить</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
+            <Button loading={mutation.isPending} onClick={submit}>Save</Button>
           </Group>
         </Stack>
       </Modal>

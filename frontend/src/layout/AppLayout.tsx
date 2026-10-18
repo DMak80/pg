@@ -10,17 +10,17 @@ import { AlertsNavCounters } from './AlertsNavCounters';
 // Пункты навигации: маршрут + человекочитаемое имя (arch/03 §3).
 // Активность: '/' — точное совпадение, остальные — по префиксу (t08 spec §4.2).
 const NAV_ITEMS = [
-  { to: '/', label: 'Обзор' },
-  { to: '/workers', label: 'Воркеры' },
+  { to: '/', label: 'Overview' },
+  { to: '/workers', label: 'Workers' },
   { to: '/etcd', label: 'etcd' },
-  { to: '/clusters', label: 'Кластеры' },
-  { to: '/backups-storage', label: 'Хранилище бэкапов' },
+  { to: '/clusters', label: 'Clusters' },
+  { to: '/backups-storage', label: 'Backup Storage' },
   { to: '/kafka', label: 'Kafka' },
   { to: '/valkey', label: 'Valkey' },
   { to: '/s3', label: 'S3' },
   { to: '/ha', label: 'HA' },
-  { to: '/reliability', label: 'Надёжность' },
-  { to: '/alerts', label: 'Алерты' },
+  { to: '/reliability', label: 'Reliability' },
+  { to: '/alerts', label: 'Alerts' },
 ];
 
 export function AppLayout() {
@@ -53,8 +53,8 @@ export function AppLayout() {
   if (session.isError)
     return (
       <Stack align="center" pt="xl" gap="sm">
-        <Text c="red">Панель недоступна</Text>
-        <Button variant="light" onClick={() => void session.refetch()}>Повторить</Button>
+        <Text c="red">Panel is unavailable</Text>
+        <Button variant="light" onClick={() => void session.refetch()}>Retry</Button>
       </Stack>
     );
 
@@ -73,7 +73,7 @@ export function AppLayout() {
           <Group gap="sm">
             <PollingToggle />
             <Text c="dimmed" size="sm">{session.data?.username}</Text>
-            <Button size="xs" variant="light" onClick={() => void handleLogout()}>Выйти</Button>
+            <Button size="xs" variant="light" onClick={() => void handleLogout()}>Sign out</Button>
           </Group>
         </Group>
       </AppShell.Header>

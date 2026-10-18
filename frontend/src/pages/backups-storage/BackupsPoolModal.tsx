@@ -47,7 +47,7 @@ function OrderedList({
     <div>
       <Text size="sm" fw={600}>{label}</Text>
       {nodes.length === 0 ? (
-        <Text c="dimmed" size="sm">в пуле нет нод</Text>
+        <Text c="dimmed" size="sm">no nodes in the pool</Text>
       ) : (
         nodes.map((n) => {
           const index = value.indexOf(n.name);
@@ -63,7 +63,7 @@ function OrderedList({
                 <>
                   <Button size="compact-xs" variant="default" onClick={() => move(index, -1)}>↑</Button>
                   <Button size="compact-xs" variant="default" onClick={() => move(index, 1)}>↓</Button>
-                  {index === 0 ? <Badge size="sm" variant="light">приоритет 1</Badge> : null}
+                  {index === 0 ? <Badge size="sm" variant="light">priority 1</Badge> : null}
                 </>
               ) : null}
             </Group>
@@ -111,14 +111,14 @@ export function BackupsPoolModal({ cluster, policy, pools, onClose, onSaved }: P
   };
 
   return (
-    <Modal opened onClose={onClose} title={`Пул бэкапов — ${cluster}`} size="lg">
+    <Modal opened onClose={onClose} title={`Backup pool — ${cluster}`} size="lg">
       <Stack gap="md">
         <Select
-          label="Пул"
-          placeholder="Не выбрано (бэкапы выключены)"
+          label="Pool"
+          placeholder="Not selected (backups disabled)"
           data={pools.map((p) => ({
             value: p.name,
-            label: `${p.name} (${p.nodes.length} ${p.nodes.length === 1 ? 'нода' : 'ноды'})`,
+            label: `${p.name} (${p.nodes.length} ${p.nodes.length === 1 ? 'node' : 'nodes'})`,
           }))}
           value={pool}
           onChange={(v) => {
@@ -131,18 +131,19 @@ export function BackupsPoolModal({ cluster, policy, pools, onClose, onSaved }: P
         />
         {pool ? (
           <>
-            <OrderedList label="Запись мастера (write_master)" nodes={poolNodes} value={master} onChange={setMaster} />
-            <OrderedList label="Запись реплики (write_replica)" nodes={poolNodes} value={replica} onChange={setReplica} />
+            <OrderedList label="Master writes (write_master)" nodes={poolNodes} value={master} onChange={setMaster} />
+            <OrderedList label="Replica writes (write_replica)" nodes={poolNodes} value={replica} onChange={setReplica} />
             <Text c="dimmed" size="xs">
-              Разные ноды мастера/реплики разводят потоки записи (отказ ноды с диском не убивает оба);
-              одна нода — общий случай. Порядок = приоритет.
+              Different master/replica nodes separate the write flows (a node failure
+              with a disk does not kill both); a single node is the common case.
+              Order = priority.
             </Text>
           </>
         ) : null}
         {error ? <Text c="red" size="sm">{error}</Text> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button onClick={save} disabled={saving} loading={saving}>Сохранить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving} loading={saving}>Save</Button>
         </Group>
       </Stack>
     </Modal>

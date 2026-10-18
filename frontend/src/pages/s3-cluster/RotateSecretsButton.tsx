@@ -20,9 +20,9 @@ export function RotateSecretsButton({ cluster, disabled }: { cluster: string; di
       setError(null);
       notifications.show({
         color: 'green',
-        title: 'Заявка ротации отправлена',
-        message: 'S3Worker переиздаст env-профиль rolling-пересозданием инстансов; '
-          + 'бейдж ротации появится следующим тиком refresher\'а.',
+        title: 'Rotation ticket submitted',
+        message: 'S3Worker will re-issue the env profile via rolling instance recreation; '
+          + 'the rotation badge will appear on the next refresher tick.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: s3QueryKeys.clusters });
@@ -34,25 +34,25 @@ export function RotateSecretsButton({ cluster, disabled }: { cluster: string; di
   return (
     <>
       <Button variant="light" disabled={disabled} onClick={() => setOpened(true)}>
-        Ротация секретов
+        Rotate secrets
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Ротация секретов профиля — ${cluster}`} centered>
+        title={`Profile secrets rotation — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер выполнит rolling-пересоздание инстансов кластера с новым env
-            профиля <b>{cluster}</b>. На время пересоздания каждого инстанса
-            хранилище деградирует по ёмкости.
+            The worker will perform a rolling recreation of the cluster instances with
+            the new env of profile <b>{cluster}</b>. During each instance recreation
+            the storage degrades in capacity.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            PKI переиспользуется — ключи нод переживают пересоздание; отмены
-            заявки из панели нет (снятие — только воркером).
+          <Alert color="yellow" variant="light" title="Warning">
+            PKI is reused — node keys survive recreation; the ticket cannot be
+            cancelled from the panel (withdrawal is only by the worker).
           </Alert>
           {error !== null ? <Alert color="red" variant="light">{error}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Заявить ротацию
+              Submit rotation
             </Button>
           </Group>
         </Stack>

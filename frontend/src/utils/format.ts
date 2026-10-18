@@ -1,18 +1,18 @@
 // Возраст данных в человекочитаемом виде (spec §7.10): «12 с», «3 мин 5 с», «62 мин».
 export function formatAge(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds} с`;
+  if (totalSeconds < 60) return `${totalSeconds} s`;
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  if (minutes < 60) return seconds === 0 ? `${minutes} мин` : `${minutes} мин ${seconds} с`;
-  return `${minutes} мин`;
+  if (minutes < 60) return seconds === 0 ? `${minutes} min` : `${minutes} min ${seconds} s`;
+  return `${minutes} min`;
 }
 
 // Размер в байтах → «823 Б», «20.0 КБ», «4.1 МБ» (t08 spec §4.16); null → «—».
 export function formatBytes(bytes: number | null): string {
   if (bytes === null) return '—';
-  if (bytes < 1024) return `${bytes} Б`;
-  const units = ['КБ', 'МБ', 'ГБ', 'ТБ'];
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
   let value = bytes;
   let unitIndex = -1;
   do {

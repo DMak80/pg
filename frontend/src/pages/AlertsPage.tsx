@@ -49,25 +49,25 @@ export function AlertsPage() {
   const rows = filter === 'all' ? all : all.filter((a) => a.severity === filter);
   return (
     <Stack gap="md">
-      <Title order={2}>Алерты</Title>
+      <Title order={2}>Alerts</Title>
       <Group justify="space-between">
         <SegmentedControl
           value={filter}
           onChange={(value) => setFilter(value as SeverityFilter)}
           data={[
-            { value: 'all', label: 'все' },
+            { value: 'all', label: 'all' },
             { value: 'critical', label: 'critical' },
             { value: 'warning', label: 'warning' },
             { value: 'info', label: 'info' },
           ]}
         />
-        <Text size="sm" c="dimmed">{rows.length} из {all.length}</Text>
+        <Text size="sm" c="dimmed">{rows.length} of {all.length}</Text>
       </Group>
       {rows.length === 0 ? (
         filter === 'all' ? (
-          <Text c="teal" size="sm">Алертов нет</Text>
+          <Text c="teal" size="sm">No alerts</Text>
         ) : (
-          <Text c="dimmed" size="sm">Нет алертов этого уровня</Text>
+          <Text c="dimmed" size="sm">No alerts of this severity</Text>
         )
       ) : (
         <Table.ScrollContainer minWidth={800}>
@@ -77,8 +77,8 @@ export function AlertsPage() {
                 <Table.Th>Severity</Table.Th>
                 <Table.Th>Kind</Table.Th>
                 <Table.Th>Target</Table.Th>
-                <Table.Th>Сообщение</Table.Th>
-                <Table.Th>Присутствует с</Table.Th>
+                <Table.Th>Message</Table.Th>
+                <Table.Th>Present since</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -130,7 +130,7 @@ function AlertRow({ alert }: { alert: AlertDto }) {
         <Tooltip label={formatUnix(alert.sinceUnix)}>
           <span>
             <Text size="sm" c="dimmed">
-              {alert.sinceUnix === null ? '—' : `с ${formatUnixAge(alert.sinceUnix)}`}
+              {alert.sinceUnix === null ? '—' : `for ${formatUnixAge(alert.sinceUnix)}`}
             </Text>
           </span>
         </Tooltip>

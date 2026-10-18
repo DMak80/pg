@@ -71,24 +71,24 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
   // buckets/shards проверяются только для шардированной (spec §3.4).
   function validate(): boolean {
     const errors: Record<string, string> = {};
-    if (!NAME_RE.test(form.name)) errors.name = 'a-z, 0-9, _; начинается с буквы; без дефиса';
+    if (!NAME_RE.test(form.name)) errors.name = 'a-z, 0-9, _; starts with a letter; no hyphen';
     if (form.sharded) {
       if (!Number.isInteger(form.buckets) || form.buckets < 1 || form.buckets > 8192)
-        errors.buckets = 'целое 1..8192';
+        errors.buckets = 'integer 1..8192';
       if (!Number.isInteger(form.shards) || form.shards < 1 || form.shards > 128 || form.shards > form.buckets)
-        errors.shards = 'целое 1..128 и не больше бакетов';
+        errors.shards = 'integer 1..128 and not greater than buckets';
     }
     if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
-      errors.replicas = 'целое 1..26 (1 = только мастер)';
+      errors.replicas = 'integer 1..26 (1 = master only)';
     // t06: strict + replicas=1 → ошибка у поля реплик (зеркало серверной 02 §9.3);
     // при выключенном strict ограничений нет.
     if (form.syncStrict && form.replicas < 2)
-      errors.replicas = 'strict-режим требует реплик ≥ 2 (выключите strict для 1)';
+      errors.replicas = 'strict mode requires at least 2 replicas (disable strict for 1)';
     if (form.requestCpu < 0.01 || form.requestCpu > 64) errors.requestCpu = '0.01..64';
     if (!Number.isInteger(form.requestMem) || form.requestMem < 1 || form.requestMem > 65536)
-      errors.requestMem = 'целое 1..65536';
+      errors.requestMem = 'integer 1..65536';
     if (!Number.isInteger(form.requestDisk) || form.requestDisk < 1 || form.requestDisk > 65536)
-      errors.requestDisk = 'целое 1..65536';
+      errors.requestDisk = 'integer 1..65536';
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   }
@@ -126,11 +126,11 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Создать кластер" centered>
+    <Modal opened={opened} onClose={onClose} title="Create cluster" centered>
       <Stack gap="sm">
         <TextInput
-          label="Имя кластера"
-          description="уникально; dbname = имя"
+          label="Cluster name"
+          description="unique; dbname = name"
           placeholder="shop"
           value={form.name}
           error={fieldErrors.name}
@@ -139,12 +139,12 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
         {/* Тип БД: Mantine 9.5 SegmentedControl без label-prop — подпись Text
             над контролом (паттерн как «Ресурсы нод»), выбор — spec §8.4 */}
         <Stack gap={4}>
-          <Text size="sm" fw={500}>Тип базы данных</Text>
+          <Text size="sm" fw={500}>Database type</Text>
           <SegmentedControl
             fullWidth
             data={[
-              { value: 'sharded', label: 'Шардированная' },
-              { value: 'single', label: 'Нешардированная' },
+              { value: 'sharded', label: 'Sharded' },
+              { value: 'single', label: 'Non-sharded' },
             ]}
             value={form.sharded ? 'sharded' : 'single'}
             onChange={(v) => set('sharded', v === 'sharded')}
@@ -154,49 +154,49 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
           // Paper вместо Box: у Box в Mantine 9.5 нет withBorder (spec §3.4 —
           // визуальный блок с рамкой; отклонение от сниппета плана по API)
           <Paper withBorder radius="md" p="sm">
-            <Text size="sm" fw={500} mb="xs">Шардирование</Text>
+            <Text size="sm" fw={500} mb="xs">Sharding</Text>
             <Group grow gap="sm">
-              <NumberInput label="Бакеты" min={1} max={8192} value={form.buckets}
+              <NumberInput label="Buckets" min={1} max={8192} value={form.buckets}
                 error={fieldErrors.buckets} onChange={(v) => set('buckets', Number(v ?? 0))} />
-              <NumberInput label="Шарды" min={1} max={128} value={form.shards}
+              <NumberInput label="Shards" min={1} max={128} value={form.shards}
                 error={fieldErrors.shards} onChange={(v) => set('shards', Number(v ?? 0))} />
             </Group>
           </Paper>
         ) : null}
         {/* Реплики — общий ряд обоих типов; description больше не ломает
             выравнивание соседей (NBSP-хак d2549ba удалён, spec §8.8) */}
-        <NumberInput label="Реплики" min={1} max={26} value={form.replicas}
-          description="2 = мастер + реплика"
+        <NumberInput label="Replicas" min={1} max={26} value={form.replicas}
+          description="2 = master + replica"
           error={fieldErrors.replicas} onChange={(v) => set('replicas', Number(v ?? 0))} />
         {/* t06: strict-режим — дефолт включён; выключение допускает replicas=1 */}
         <Switch
-          label="Синхронный strict-режим (блокировать запись при потере sync-реплики)"
-          description="strict: без синхронной реплики запись блокируется (нет потерь); требует реплик ≥ 2"
+          label="Synchronous strict mode (block writes when the sync replica is lost)"
+          description="strict: without a synchronous replica writes are blocked (no losses); requires at least 2 replicas"
           checked={form.syncStrict}
           onChange={(e) => set('syncStrict', e.currentTarget.checked)}
         />
-        <Text size="sm" c="dimmed">Ресурсы нод (заявка, на каждую ноду)</Text>
+        <Text size="sm" c="dimmed">Node resources (requested, per node)</Text>
         <Group grow gap="sm">
-          <NumberInput label="CPU (ядра)" min={0.01} max={64} step={0.1} decimalScale={2}
+          <NumberInput label="CPU (cores)" min={0.01} max={64} step={0.1} decimalScale={2}
             value={form.requestCpu} error={fieldErrors.requestCpu}
             onChange={(v) => set('requestCpu', Number(v ?? 0))} />
-          <NumberInput label="Память (GiB)" min={1} max={65536} value={form.requestMem}
+          <NumberInput label="Memory (GiB)" min={1} max={65536} value={form.requestMem}
             error={fieldErrors.requestMem} onChange={(v) => set('requestMem', Number(v ?? 0))} />
-          <NumberInput label="Диск (GiB)" min={1} max={65536} value={form.requestDisk}
+          <NumberInput label="Disk (GiB)" min={1} max={65536} value={form.requestDisk}
             error={fieldErrors.requestDisk} onChange={(v) => set('requestDisk', Number(v ?? 0))} />
         </Group>
         {serverError !== null ? (
           <Alert color={serverError.status === 409 ? 'yellow' : 'red'} variant="light">
             {serverError.status === 409
-              ? 'Имя уже занято — выберите другое'
+              ? 'The name is already taken — choose another one'
               : serverError.status === 400
-                ? (serverError.detail ?? 'Проверьте параметры')
-                : 'etcd недоступен — повторите позже'}
+                ? (serverError.detail ?? 'Check the parameters')
+                : 'etcd is unavailable — retry later'}
           </Alert>
         ) : null}
         <Group justify="flex-end" mt="xs">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button loading={mutation.isPending} onClick={submit}>Создать</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={mutation.isPending} onClick={submit}>Create</Button>
         </Group>
       </Stack>
     </Modal>

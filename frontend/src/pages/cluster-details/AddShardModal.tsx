@@ -40,14 +40,14 @@ export function AddShardModal({ cluster, strict, opened, onClose }: {
   function validate(): boolean {
     const errors: Record<string, string> = {};
     if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
-      errors.replicas = 'целое 1..26 (1 = только мастер)';
+      errors.replicas = 'integer 1..26 (1 = master only)';
     if (strict && form.replicas < 2)
-      errors.replicas = 'strict-кластер: минимум 2 реплики';
+      errors.replicas = 'strict cluster: at least 2 replicas';
     if (form.requestCpu < 0.01 || form.requestCpu > 64) errors.requestCpu = '0.01..64';
     if (!Number.isInteger(form.requestMem) || form.requestMem < 1 || form.requestMem > 65536)
-      errors.requestMem = 'целое 1..65536';
+      errors.requestMem = 'integer 1..65536';
     if (!Number.isInteger(form.requestDisk) || form.requestDisk < 1 || form.requestDisk > 65536)
-      errors.requestDisk = 'целое 1..65536';
+      errors.requestDisk = 'integer 1..65536';
     setFieldErrors(errors);
     return Object.keys(errors).length === 0;
   }
@@ -56,41 +56,41 @@ export function AddShardModal({ cluster, strict, opened, onClose }: {
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Добавить шард" centered>
+    <Modal opened={opened} onClose={onClose} title="Add shard" centered>
       <Stack gap="sm">
-        <Text size="sm" c="dimmed">Имя генерируется автоматически (shard&lt;N+1&gt;).</Text>
+        <Text size="sm" c="dimmed">The name is generated automatically (shard&lt;N+1&gt;).</Text>
         {/* t06: у strict-кластера поле «Реплики» — минимум 2 */}
-        <NumberInput label="Реплики" min={strict ? 2 : 1} max={26} value={form.replicas}
-          description="2 = мастер + реплика"
+        <NumberInput label="Replicas" min={strict ? 2 : 1} max={26} value={form.replicas}
+          description="2 = master + replica"
           error={fieldErrors.replicas} onChange={(v) => set('replicas', Number(v ?? 0))} />
-        {strict ? <Text size="sm" c="dimmed">кластер в strict-режиме</Text> : null}
-        <Text size="sm" c="dimmed">Ресурсы нод (заявка, на каждую ноду)</Text>
+        {strict ? <Text size="sm" c="dimmed">cluster is in strict mode</Text> : null}
+        <Text size="sm" c="dimmed">Node resources (requested, per node)</Text>
         <Group grow gap="sm">
-          <NumberInput label="CPU (ядра)" min={0.01} max={64} step={0.1} decimalScale={2}
+          <NumberInput label="CPU (cores)" min={0.01} max={64} step={0.1} decimalScale={2}
             value={form.requestCpu} error={fieldErrors.requestCpu}
             onChange={(v) => set('requestCpu', Number(v ?? 0))} />
-          <NumberInput label="Память (GiB)" min={1} max={65536} value={form.requestMem}
+          <NumberInput label="Memory (GiB)" min={1} max={65536} value={form.requestMem}
             error={fieldErrors.requestMem} onChange={(v) => set('requestMem', Number(v ?? 0))} />
-          <NumberInput label="Диск (GiB)" min={1} max={65536} value={form.requestDisk}
+          <NumberInput label="Disk (GiB)" min={1} max={65536} value={form.requestDisk}
             error={fieldErrors.requestDisk} onChange={(v) => set('requestDisk', Number(v ?? 0))} />
         </Group>
         <Text size="sm" c="dimmed">
-          Шард стартует пустым — перераспределение бакетов выполняется отдельными
-          явными переездами (UI переездов — t07).
+          The shard starts empty — bucket redistribution is done by separate
+          explicit moves (moves UI — t07).
         </Text>
         {serverError !== null ? (
           <Alert color={serverError.status === 409 ? 'yellow' : 'red'} variant="light">
             {serverError.status === 409
-              ? (serverError.detail ?? 'Кластер не Active или имя шарда занято')
+              ? (serverError.detail ?? 'Cluster is not Active or the shard name is taken')
               : serverError.status === 400
-                ? (serverError.detail ?? 'Проверьте параметры')
-                : 'etcd недоступен — повторите позже'}
+                ? (serverError.detail ?? 'Check the parameters')
+                : 'etcd is unavailable — retry later'}
           </Alert>
         ) : null}
         <Group justify="flex-end" mt="xs">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button loading={mutation.isPending}
-            onClick={() => validate() && mutation.mutate(form)}>Добавить</Button>
+            onClick={() => validate() && mutation.mutate(form)}>Add</Button>
         </Group>
       </Stack>
     </Modal>

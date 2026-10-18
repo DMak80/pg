@@ -13,23 +13,23 @@ export function GroupsTab({
 }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Title order={4} mb="sm">Группы</Title>
+      <Title order={4} mb="sm">Groups</Title>
       {groups === null ? (
         <Alert color={probeOk === false ? 'orange' : 'gray'} variant="light">
           {probeOk === false
-            ? 'Live-проба недоступна — группы консьюмеров не видны (etcd-данные кластера актуальны).'
-            : 'Проба ещё не собрала данные о группах — подождите тика (15 c) или включите AdminPanel:Probes:Kafka.'}
+            ? 'The live probe is unavailable — consumer groups are not visible (cluster etcd data is up to date).'
+            : 'The probe has not collected group data yet — wait for a tick (15 s) or enable AdminPanel:Probes:Kafka.'}
         </Alert>
       ) : groups.length === 0 ? (
-        <Text c="dimmed">Консьюмер-групп нет</Text>
+        <Text c="dimmed">No consumer groups</Text>
       ) : (
         <Table.ScrollContainer minWidth={600}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Группа</Table.Th>
-                <Table.Th>Состояние</Table.Th>
-                <Table.Th>Участников</Table.Th>
+                <Table.Th>Group</Table.Th>
+                <Table.Th>State</Table.Th>
+                <Table.Th>Members</Table.Th>
                 <Table.Th>Total lag</Table.Th>
               </Table.Tr>
             </Table.Thead>

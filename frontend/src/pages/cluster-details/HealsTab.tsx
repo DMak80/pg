@@ -4,17 +4,17 @@ import type { HealDto } from '../../api/dto';
 import { formatUnix } from '../../utils/format';
 
 export function HealsTab({ heals }: { heals: HealDto[] }) {
-  if (heals.length === 0) return <Text c="dimmed">Журнал пуст</Text>;
+  if (heals.length === 0) return <Text c="dimmed">Journal is empty</Text>;
   return (
     <Table.ScrollContainer minWidth={700}>
       <Table highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Бакет</Table.Th>
-            <Table.Th>Было</Table.Th>
-            <Table.Th>Стало</Table.Th>
-            <Table.Th>Причина</Table.Th>
-            <Table.Th>Время</Table.Th>
+            <Table.Th>Bucket</Table.Th>
+            <Table.Th>Was</Table.Th>
+            <Table.Th>Now</Table.Th>
+            <Table.Th>Reason</Table.Th>
+            <Table.Th>Time</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>

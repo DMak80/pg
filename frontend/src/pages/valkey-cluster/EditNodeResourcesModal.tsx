@@ -31,9 +31,9 @@ export function EditNodeResourcesModal({
       onClose();
       notifications.show({
         color: 'green',
-        title: 'Декларация ресурсов обновлена',
-        message: 'Воркер применит её автоматически пересозданием контейнера ноды '
-          + '(PROVISIONING → RUNNING; кеш восполним — volume нет).',
+        title: 'Resource declaration updated',
+        message: 'The worker will apply it automatically by recreating the node container '
+          + '(PROVISIONING → RUNNING; cache is refillable — the volume is not).',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: valkeyQueryKeys.cluster(cluster) });
@@ -49,24 +49,24 @@ export function EditNodeResourcesModal({
 
   return (
     <Modal opened={opened} onClose={onClose}
-      title={`Ресурсы ${node.name} — ${cluster}`} centered>
+      title={`Resources of ${node.name} — ${cluster}`} centered>
       <Stack gap="sm">
         <Group grow>
           <NumberInput label="CPU" value={cpu} step={0.5} min={0.01} max={64}
             onChange={(v) => setCpu(Number(v ?? 0))} />
-          <NumberInput label="Память, GiB" value={memGi} min={1} max={65536}
+          <NumberInput label="Memory, GiB" value={memGi} min={1} max={65536}
             onChange={(v) => setMemGi(Number(v ?? 0))} />
-          <NumberInput label="Диск, GiB" value={diskGi} min={1} max={65536}
+          <NumberInput label="Disk, GiB" value={diskGi} min={1} max={65536}
             onChange={(v) => setDiskGi(Number(v ?? 0))} />
         </Group>
         <Text size="sm" c="dimmed">
-          Применяется пересозданием контейнера — кеш восполним; disk — инфо-поле
-          (квот нет). Держите maxmemory меньше нового mem-лимита (R3).
+          Applied by recreating the container — the cache is refillable; disk is an
+          info field (no quotas). Keep maxmemory below the new mem limit (R3).
         </Text>
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button disabled={unchanged} loading={mutation.isPending}>Применить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button disabled={unchanged} loading={mutation.isPending}>Apply</Button>
         </Group>
       </Stack>
     </Modal>

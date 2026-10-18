@@ -4,11 +4,11 @@ import type { BucketStateName } from '../api/dto';
 
 // Подпись — русская; каноническое значение — в Tooltip.
 const STATE_META: Record<BucketStateName, { color: string; label: string }> = {
-  ACTIVE: { color: 'teal', label: 'активен' },
-  SYNCING: { color: 'blue', label: 'синхронизация' },
-  FROZEN: { color: 'yellow', label: 'заморожен' },
-  ABORTING: { color: 'red', label: 'отменяется' },
-  NOT_INITIALIZED: { color: 'gray', label: 'не инициализирован' },
+  ACTIVE: { color: 'teal', label: 'active' },
+  SYNCING: { color: 'blue', label: 'syncing' },
+  FROZEN: { color: 'yellow', label: 'frozen' },
+  ABORTING: { color: 'red', label: 'aborting' },
+  NOT_INITIALIZED: { color: 'gray', label: 'not initialized' },
 };
 
 export function BucketStateBadge({ state }: { state: BucketStateName }) {

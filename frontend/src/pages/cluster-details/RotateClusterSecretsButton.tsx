@@ -19,10 +19,10 @@ export function RotateClusterSecretsButton({ name }: { name: string }) {
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: 'Ротацию per-cluster секретов (app, bucket_admin, bucket_mover) выполнит '
-          + 'PgWorker (фоновые тики). После применения клиенты должны перечитать '
-          + 'креды и dsn из etcd.',
+        title: 'Ticket submitted',
+        message: 'The per-cluster secrets rotation (app, bucket_admin, bucket_mover) will be '
+          + 'performed by PgWorker (background ticks). After it is applied, clients must '
+          + 're-read the credentials and dsn from etcd.',
         autoClose: 8000,
       });
     },
@@ -33,28 +33,28 @@ export function RotateClusterSecretsButton({ name }: { name: string }) {
 
   return (
     <>
-      <Button variant="light" onClick={() => setOpened(true)}>Сменить per-cluster секреты</Button>
-      <Modal opened={opened} onClose={() => setOpened(false)} title="Сменить per-cluster секреты" centered>
+      <Button variant="light" onClick={() => setOpened(true)}>Rotate per-cluster secrets</Button>
+      <Modal opened={opened} onClose={() => setOpened(false)} title="Rotate per-cluster secrets" centered>
         <Stack gap="sm">
           <Text>
-            Кластер <b>{name}</b>: PgWorker сменит пароли ролей <b>app</b>,{' '}
-            <b>bucket_admin</b> и <b>bucket_mover</b> на всех шардах, обновит ключи
-            app_password/mover_password/bucket_admin_password и перезапишет dsn в etcd.
+            Cluster <b>{name}</b>: PgWorker will rotate the passwords of the <b>app</b>,{' '}
+            <b>bucket_admin</b> and <b>bucket_mover</b> roles on all shards, update the
+            app_password/mover_password/bucket_admin_password keys and rewrite the dsn in etcd.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            После применения (секунды) подключения со старыми паролями начнут отвергаться,
-            пока клиенты не перечитают креды (app) и dsn (bucket_admin) из etcd.
-            Выполняйте в тихое окно.
+          <Alert color="yellow" variant="light" title="Warning">
+            After it is applied (seconds), connections with the old passwords will start
+            being rejected until clients re-read the credentials (app) and dsn
+            (bucket_admin) from etcd. Perform this in a quiet window.
             <List size="sm" mt={4}>
-              <List.Item>заявка ставится в очередь и выполняется фоново (тики PgWorker)</List.Item>
-              <List.Item>при недоступном шарде ротация повторяется автоматически</List.Item>
+              <List.Item>the ticket is queued and executed in the background (PgWorker ticks)</List.Item>
+              <List.Item>if a shard is unavailable, the rotation retries automatically</List.Item>
             </List>
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Сменить пароль
+              Rotate password
             </Button>
           </Group>
         </Stack>

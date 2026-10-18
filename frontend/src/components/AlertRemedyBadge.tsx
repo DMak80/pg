@@ -11,8 +11,8 @@ const REMEDY_COLORS: Record<AlertRemedyName, string> = {
 };
 
 const REMEDY_LABELS: Record<AlertRemedyName, string> = {
-  'worker-auto': 'воркер закроет',
-  'operator-api': 'действие API',
+  'worker-auto': 'worker will close',
+  'operator-api': 'API action',
   'operator-runbook': 'runbook',
 };
 

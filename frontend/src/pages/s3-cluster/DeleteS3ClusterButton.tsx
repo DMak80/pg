@@ -25,24 +25,25 @@ export function DeleteS3ClusterButton({ cluster }: { cluster: string }) {
 
   return (
     <>
-      <Button color="red" variant="light" onClick={() => setOpened(true)}>Удалить кластер</Button>
+      <Button color="red" variant="light" onClick={() => setOpened(true)}>Delete cluster</Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Удалить s3-кластер ${cluster}`} centered>
+        title={`Delete S3 cluster ${cluster}`} centered>
         <Stack gap="sm">
-          <Alert color="red" variant="light" title="Данные бэкапов будут уничтожены">
-            Снос кластера уничтожает данные бэкапов на дисках всех его инстансов —
-            это осознанное действие; восстановление невозможно.
+          <Alert color="red" variant="light" title="Backup data will be destroyed">
+            Tearing down the cluster destroys the backup data on the disks of all its
+            instances — this is a deliberate action; recovery is impossible.
           </Alert>
           <Text>
-            Кластер <b>{cluster}</b> уйдёт в TO_REMOVE (обратного перехода нет).
-            Демонтаж асинхронный: S3Worker снимет контейнеры инстансов, их тома
-            и весь префикс /s3/clusters/{cluster}/ (включая заявку ротации).
+            Cluster <b>{cluster}</b> will move to TO_REMOVE (no way back).
+            Teardown is asynchronous: S3Worker will remove the instance containers,
+            their volumes and the entire /s3/clusters/{cluster}/ prefix (including
+            the rotation ticket).
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Удалить
+              Delete
             </Button>
           </Group>
         </Stack>

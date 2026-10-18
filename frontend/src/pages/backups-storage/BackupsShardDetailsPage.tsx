@@ -50,10 +50,10 @@ const RECONCILE_COLORS: Record<BackupReconcileStatusName, string> = {
 
 const RECONCILE_LABELS: Record<BackupReconcileStatusName, string> = {
   Ok: 'ok',
-  S3Only: 'объекты без ключа',
-  EtcdOnly: 'ключ без объектов',
-  InProgress: 'идёт',
-  Deleting: 'удаляется',
+  S3Only: 'objects without key',
+  EtcdOnly: 'key without objects',
+  InProgress: 'in progress',
+  Deleting: 'deleting',
 };
 
 // Размер страницы on-demand list («Загрузить ещё»); потолок API — 1000.
@@ -76,8 +76,8 @@ export function BackupsShardDetailsPage() {
         onRetry={() => void query.refetch()}
         notFound={
           <Stack gap="xs">
-            <Text>Шард {cluster}/{shard} отсутствует и в etcd, и в S3-дереве инвентаря</Text>
-            <Anchor component={Link} to="/backups-storage" size="sm">← Хранилище бэкапов</Anchor>
+            <Text>Shard {cluster}/{shard} is missing from both etcd and the inventory S3 tree</Text>
+            <Anchor component={Link} to="/backups-storage" size="sm">← Backup Storage</Anchor>
           </Stack>
         }
       />
@@ -89,7 +89,7 @@ export function BackupsShardDetailsPage() {
   return (
     <Stack gap="md">
       <div>
-        <Anchor component={Link} to="/backups-storage" size="sm">← Хранилище бэкапов</Anchor>
+        <Anchor component={Link} to="/backups-storage" size="sm">← Backup Storage</Anchor>
         <Group gap="sm" mt={4}>
           <Title order={2} ff="monospace">{data.cluster}/{data.shard}</Title>
           {/* Бейдж активного restore: только статус, кнопок нет (arch/19 §3.5). */}
@@ -105,7 +105,7 @@ export function BackupsShardDetailsPage() {
           )}
         </Group>
         {data.reconcileNote ? (
-          <Text size="sm" c="yellow" mt={4}>Сверка: {data.reconcileNote}</Text>
+          <Text size="sm" c="yellow" mt={4}>Reconcile: {data.reconcileNote}</Text>
         ) : null}
       </div>
       <FullsTable fulls={data.fulls} />
@@ -121,22 +121,22 @@ export function BackupsShardDetailsPage() {
 function FullsTable({ fulls }: { fulls: BackupFullDto[] }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Полные бэкапы</Text>
+      <Text fw={600} mb="xs">Full backups</Text>
       {fulls.length === 0 ? (
-        <Text c="dimmed" size="sm">Полных нет ни в S3, ни в etcd</Text>
+        <Text c="dimmed" size="sm">No fulls in either S3 or etcd</Text>
       ) : (
         <Table.ScrollContainer minWidth={900}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>ID</Table.Th>
-                <Table.Th>Размер (S3)</Table.Th>
-                <Table.Th>Объектов</Table.Th>
-                <Table.Th>Дата (S3)</Table.Th>
+                <Table.Th>Size (S3)</Table.Th>
+                <Table.Th>Objects</Table.Th>
+                <Table.Th>Date (S3)</Table.Th>
                 <Table.Th>etcd state</Table.Th>
                 <Table.Th>Verify</Table.Th>
-                <Table.Th>etcd размер</Table.Th>
-                <Table.Th>Сверка</Table.Th>
+                <Table.Th>etcd size</Table.Th>
+                <Table.Th>Reconcile</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -187,7 +187,7 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
     return (
       <Card withBorder padding="md" radius="md">
         <Text fw={600} mb="xs">WAL</Text>
-        <Text c="dimmed" size="sm">WAL-данных нет ни в etcd, ни в S3</Text>
+        <Text c="dimmed" size="sm">No WAL data in either etcd or S3</Text>
       </Card>
     );
   return (
@@ -196,7 +196,7 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
       <Table w="auto">
         <Table.Tbody>
           <Table.Tr>
-            <Table.Td c="dimmed" w={220}>etcd-статус цепочки</Table.Td>
+            <Table.Td c="dimmed" w={220}>etcd chain state</Table.Td>
             <Table.Td>
               <Group gap="xs">
                 {wal.etcdState === null ? (
@@ -210,18 +210,18 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
                   </Badge>
                 )}
                 <Text size="sm">
-                  последний сегмент: <Text span ff="monospace">{wal.etcdLastSegment ?? '—'}</Text>
+                  last segment: <Text span ff="monospace">{wal.etcdLastSegment ?? '—'}</Text>
                   {wal.etcdLastUnix === null ? '' : ` (${formatUnix(wal.etcdLastUnix)})`}
                 </Text>
               </Group>
             </Table.Td>
           </Table.Tr>
           <Table.Tr>
-            <Table.Td c="dimmed">S3-факт</Table.Td>
+            <Table.Td c="dimmed">S3 facts</Table.Td>
             <Table.Td>
               <Text size="sm">
-                сегментов {wal.s3SegmentCount}, историй {wal.s3HistoryCount}, размер {formatBytes(wal.s3SizeBytes)}
-                {wal.s3LastModifiedUnix === 0 ? '' : `, обновлён ${formatUnix(wal.s3LastModifiedUnix)}`}
+                segments {wal.s3SegmentCount}, histories {wal.s3HistoryCount}, size {formatBytes(wal.s3SizeBytes)}
+                {wal.s3LastModifiedUnix === 0 ? '' : `, updated ${formatUnix(wal.s3LastModifiedUnix)}`}
               </Text>
               {wal.s3LastObject === null ? null : (
                 <Text size="sm" ff="monospace" c="dimmed">{wal.s3LastObject}</Text>
@@ -279,14 +279,14 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
       }),
     onSuccess: () => {
       notifications.show({
-        message: 'Интервал дрилов применён — следующий проход воркера без рестарта',
+        message: 'Drill interval applied — the next worker pass, no restart',
         color: 'teal',
       });
       void queryClient.invalidateQueries({ queryKey: backupsQueryKeys.storage });
     },
     onError: (e) => {
       notifications.show({
-        message: e instanceof ApiError ? e.message : 'Не удалось применить интервал',
+        message: e instanceof ApiError ? e.message : 'Failed to apply the interval',
         color: 'red',
       });
     },
@@ -294,18 +294,18 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
 
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Дрилл восстановимости</Text>
+      <Text fw={600} mb="xs">Recovery drill</Text>
       {drill === null ? (
-        <Text c="dimmed" size="sm">Дрилов не было (ключа /drill нет)</Text>
+        <Text c="dimmed" size="sm">No drills yet (no /drill key)</Text>
       ) : (
         <Group gap="xs" mb="xs" wrap="wrap">
           <Badge color={drillColor(drill.state)} variant="light">
-            Дрилл: {drill.state}
+            Drill: {drill.state}
             {drill.phase ? ` ${drill.phase}` : ''}
           </Badge>
           <Text size="sm">
-            старт {formatUnix(drill.startedUnix)}
-            {drill.finishedUnix === null ? '' : `, финиш ${formatUnix(drill.finishedUnix)}`}
+            started {formatUnix(drill.startedUnix)}
+            {drill.finishedUnix === null ? '' : `, finished ${formatUnix(drill.finishedUnix)}`}
           </Text>
           {drill.restoredToLsn ? (
             <Text size="sm" ff="monospace">restored_to_lsn: {drill.restoredToLsn}</Text>
@@ -315,8 +315,8 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
       {drill?.error ? <Text size="sm" c="red" mb="xs">{drill.error}</Text> : null}
       <Group gap="xs" align="end">
         <NumberInput
-          label="Дрилл каждые N суток"
-          description="0 — выключено; применяется следующим проходом воркера"
+          label="Drill every N days"
+          description="0 — disabled; applied on the next worker pass"
           value={drillDays}
           onChange={(v) => setDrillDays(typeof v === 'number' ? v : '')}
           min={0}
@@ -328,7 +328,7 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
           loading={save.isPending}
           onClick={() => save.mutate()}
         >
-          Сохранить
+          Save
         </Button>
       </Group>
     </Card>
@@ -353,7 +353,7 @@ function ObjectsBlock({ cluster, shard }: { cluster: string; shard: string }) {
       const page = await fetchBackupObjectsPage(prefix, OBJECTS_PAGE_MAX_KEYS, token);
       setPages((prev) => [...prev, page]);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Не удалось загрузить объекты');
+      setError(e instanceof ApiError ? e.message : 'Failed to load objects');
     } finally {
       setLoading(false);
     }
@@ -373,7 +373,7 @@ function ObjectsBlock({ cluster, shard }: { cluster: string; shard: string }) {
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Объекты ({items.length} загружено)</Text>
+        <Text fw={600}>Objects ({items.length} loaded)</Text>
         <Group gap="xs">
           {loading ? <Loader size="xs" /> : null}
           {nextToken !== null ? (
@@ -383,7 +383,7 @@ function ObjectsBlock({ cluster, shard }: { cluster: string; shard: string }) {
               loading={loading}
               onClick={() => void loadMore()}
             >
-              Загрузить ещё
+              Load more
             </Button>
           ) : null}
         </Group>
@@ -392,20 +392,20 @@ function ObjectsBlock({ cluster, shard }: { cluster: string; shard: string }) {
         <Alert color="red" variant="light" mb="xs">
           {error}
           <Button size="xs" variant="subtle" ml="sm" onClick={() => void loadMore()}>
-            Повторить
+            Retry
           </Button>
         </Alert>
       ) : null}
       {items.length === 0 && !loading && error === null ? (
-        <Text c="dimmed" size="sm">Объектов под префиксом {prefix} нет</Text>
+        <Text c="dimmed" size="sm">No objects under the prefix {prefix}</Text>
       ) : (
         <Table.ScrollContainer minWidth={700} maxHeight={420}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Ключ</Table.Th>
-                <Table.Th>Размер</Table.Th>
-                <Table.Th>Изменён</Table.Th>
+                <Table.Th>Key</Table.Th>
+                <Table.Th>Size</Table.Th>
+                <Table.Th>Modified</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>

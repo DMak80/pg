@@ -25,20 +25,21 @@ export function DeleteValkeyClusterButton({ cluster }: { cluster: string }) {
 
   return (
     <>
-      <Button color="red" variant="light" onClick={() => setOpened(true)}>Удалить кластер</Button>
+      <Button color="red" variant="light" onClick={() => setOpened(true)}>Delete cluster</Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Удалить valkey-кластер ${cluster}`} centered>
+        title={`Delete Valkey cluster ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Кластер <b>{cluster}</b> уйдёт в демонтаж (обратного перехода нет).
-            ВОРКЕР снимет контейнер ноды, очистит весь префикс
-            /valkey/clusters/{cluster}/ и ключи координации (включая заявку ротации).
+            Cluster <b>{cluster}</b> will go into teardown (no way back).
+            THE WORKER will remove the node container, clean the entire
+            /valkey/clusters/{cluster}/ prefix and coordination keys (including
+            the rotation ticket).
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Удалить
+              Delete
             </Button>
           </Group>
         </Stack>

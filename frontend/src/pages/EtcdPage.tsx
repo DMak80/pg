@@ -40,14 +40,14 @@ export function EtcdPage() {
     <Stack gap="md">
       <Title order={2}>etcd</Title>
       {data.quorumSuspected ? (
-        <Alert color="red" title="Подозрение на отсутствие кворума">
-          Признаки отсутствия raft-лидера — проверьте статус членов кластера
+        <Alert color="red" title="Quorum loss suspected">
+          Signs of a missing raft leader — check the cluster members status
         </Alert>
       ) : null}
       <EndpointsCard data={data} />
       <MembersCard data={data} />
       <AlarmsCard data={data} />
-      <Text c="dimmed" size="sm">Обновлено: {formatIso(data.lastRefreshUtc)}</Text>
+      <Text c="dimmed" size="sm">Updated: {formatIso(data.lastRefreshUtc)}</Text>
     </Stack>
   );
 }
@@ -62,13 +62,13 @@ function EndpointsCard({ data }: { data: EtcdStatusDto }) {
           <Table.Thead>
             <Table.Tr>
               <Table.Th>URL</Table.Th>
-              <Table.Th>Статус</Table.Th>
-              <Table.Th>Задержка</Table.Th>
-              <Table.Th>Версия</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Latency</Table.Th>
+              <Table.Th>Version</Table.Th>
               <Table.Th>raft term</Table.Th>
-              <Table.Th>Размер БД</Table.Th>
-              <Table.Th>Ошибки</Table.Th>
-              <Table.Th>Роль</Table.Th>
+              <Table.Th>DB size</Table.Th>
+              <Table.Th>Errors</Table.Th>
+              <Table.Th>Role</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -86,10 +86,10 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
       <Table.Td ff="monospace">{endpoint.url}</Table.Td>
       <Table.Td>
         <Badge color={endpoint.reachable ? 'teal' : 'red'} variant="light">
-          {endpoint.reachable ? 'ok' : 'недоступен'}
+          {endpoint.reachable ? 'ok' : 'unreachable'}
         </Badge>
       </Table.Td>
-      <Table.Td>{endpoint.latencyMs === null ? '—' : `${endpoint.latencyMs.toFixed(1)} мс`}</Table.Td>
+      <Table.Td>{endpoint.latencyMs === null ? '—' : `${endpoint.latencyMs.toFixed(1)} ms`}</Table.Td>
       <Table.Td>{endpoint.version ?? '—'}</Table.Td>
       <Table.Td>{endpoint.raftTerm === null ? '—' : endpoint.raftTerm}</Table.Td>
       <Table.Td>{formatBytes(endpoint.dbSizeBytes)}</Table.Td>
@@ -101,7 +101,7 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
         )}
       </Table.Td>
       <Table.Td>
-        {endpoint.active ? <Badge color="blue" variant="light">активный</Badge> : null}
+        {endpoint.active ? <Badge color="blue" variant="light">active</Badge> : null}
       </Table.Td>
     </Table.Tr>
   );
@@ -111,19 +111,19 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
 function MembersCard({ data }: { data: EtcdStatusDto }) {
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Члены кластера</Text>
+      <Text fw={600} mb="xs">Cluster members</Text>
       {data.members.length === 0 ? (
-        <Text c="dimmed" size="sm">Нет данных о членах</Text>
+        <Text c="dimmed" size="sm">No member data</Text>
       ) : (
         <Table.ScrollContainer minWidth={800}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>ID</Table.Th>
-                <Table.Th>Имя</Table.Th>
+                <Table.Th>Name</Table.Th>
                 <Table.Th>Peer URLs</Table.Th>
                 <Table.Th>Client URLs</Table.Th>
-                <Table.Th>Роль</Table.Th>
+                <Table.Th>Role</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -134,7 +134,7 @@ function MembersCard({ data }: { data: EtcdStatusDto }) {
                   <Table.Td ff="monospace">{m.peerUrls.length === 0 ? '—' : m.peerUrls.join(', ')}</Table.Td>
                   <Table.Td ff="monospace">{m.clientUrls.length === 0 ? '—' : m.clientUrls.join(', ')}</Table.Td>
                   <Table.Td>
-                    {m.isLeader ? <Badge color="violet" variant="light">лидер</Badge> : null}
+                    {m.isLeader ? <Badge color="violet" variant="light">leader</Badge> : null}
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -152,13 +152,13 @@ function AlarmsCard({ data }: { data: EtcdStatusDto }) {
     <Card withBorder padding="md" radius="md">
       <Text fw={600} mb="xs">Alarms</Text>
       {data.alarms.length === 0 ? (
-        <Text c="teal" size="sm">Активных alarm'ов нет</Text>
+        <Text c="teal" size="sm">No active alarms</Text>
       ) : (
         <Table highlightOnHover w="50%">
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Member ID</Table.Th>
-              <Table.Th>Тип</Table.Th>
+              <Table.Th>Type</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>

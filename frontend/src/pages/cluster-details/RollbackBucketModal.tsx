@@ -35,34 +35,35 @@ export function RollbackBucketModal({ cluster, bucketId, shards, opened, onClose
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Откатить bucket_${bucketId}`} centered>
+    <Modal opened={opened} onClose={onClose} title={`Roll back bucket_${bucketId}`} centered>
       <Stack gap="sm">
         <Text>
-          Откатить <b>{`bucket_${bucketId}`}</b> на прежний шард — направление определяет
-          воркер по живой обратной подписке <b>{rbSub}</b>.
+          Roll back <b>{`bucket_${bucketId}`}</b> to its previous shard — the direction
+          is determined by the worker from the live reverse subscription <b>{rbSub}</b>.
         </Text>
         <Text size="sm" c="dimmed">
           {hintShard !== undefined
-            ? `Вернётся на ${hintShard.name} (живая подписка видна SQL-пробой).`
-            : 'Куда — определит воркер по обратной подписке (проба выключена или не видит её).'}
+            ? `It will return to ${hintShard.name} (the live subscription is visible to the SQL probe).`
+            : 'The target will be determined by the worker from the reverse subscription (the probe is off or does not see it).'}
         </Text>
-        <Alert color="yellow" variant="light" title="Внимание">
-          Откат — зеркальный cutover с секундной заморозкой записи. Если обратной
-          подписки нет — воркер отвергнет заявку (откат только полным re-copy).
+        <Alert color="yellow" variant="light" title="Warning">
+          Rollback is a mirrored cutover with a seconds-long write freeze. If the
+          reverse subscription is absent — the worker will reject the ticket (rollback
+          is only a full re-copy).
         </Alert>
         {serverError !== null ? (
           <Alert color={serverError.status === 409 ? 'yellow' : 'red'} variant="light">
             {serverError.status === 409
-              ? (serverError.detail ?? 'Откат отклонён')
+              ? (serverError.detail ?? 'Rollback rejected')
               : serverError.status === 400
-                ? (serverError.detail ?? 'Проверьте параметры')
-                : 'etcd недоступен — повторите позже'}
+                ? (serverError.detail ?? 'Check the parameters')
+                : 'etcd is unavailable — retry later'}
           </Alert>
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button variant="light" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-            Поставить в очередь
+            Queue
           </Button>
         </Group>
       </Stack>

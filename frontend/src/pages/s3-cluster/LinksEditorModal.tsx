@@ -30,8 +30,8 @@ export function LinksEditorModal({
       onClose();
       notifications.show({
         color: 'green',
-        title: 'Граф заявлен',
-        message: 'Доводка воркера применит связи — значение links обновится следующим тиком.',
+        title: 'Graph submitted',
+        message: 'Worker convergence will apply the links — the links value will update on the next tick.',
         autoClose: 6000,
       });
       await queryClient.invalidateQueries({ queryKey: s3QueryKeys.cluster(cluster.name) });
@@ -44,15 +44,15 @@ export function LinksEditorModal({
     // Валидация-зеркало 02 §12.3: имена существуют, a≠b, пары уникальны.
     for (const [i, p] of pairs.entries()) {
       if (!names.includes(p.a) || !names.includes(p.b))
-        return void setError(`строка ${i + 1}: имена должны существовать у кластера`);
+        return void setError(`row ${i + 1}: the names must exist in the cluster`);
       if (p.a === p.b)
-        return void setError(`строка ${i + 1}: a ≠ b`);
+        return void setError(`row ${i + 1}: a ≠ b`);
     }
     const seen = new Set<string>();
     for (const p of pairs) {
       const key = [p.a, p.b].sort().join('|');
       if (seen.has(key))
-        return void setError('пары должны быть уникальны');
+        return void setError('pairs must be unique');
       seen.add(key);
     }
     setError(null);
@@ -61,15 +61,15 @@ export function LinksEditorModal({
 
   return (
     <Modal opened={opened} onClose={onClose}
-      title={`Граф репликации — ${cluster.name} (таблица пар)`} centered size="lg">
+      title={`Replication graph — ${cluster.name} (pair table)`} centered size="lg">
       <Stack gap="sm">
         {pairs.length === 0 ? (
-          <Text c="dimmed">линков не настроено</Text>
+          <Text c="dimmed">no links configured</Text>
         ) : (
           pairs.map((p, i) => (
             <Group key={i} align="flex-end" gap="xs">
               <Select
-                label={`Пара ${i + 1}: a`}
+                label={`Pair ${i + 1}: a`}
                 data={names}
                 value={p.a}
                 onChange={(v) => setPairs(pairs.map((x, j) => (j === i ? { ...x, a: v ?? '' } : x)))}
@@ -89,7 +89,7 @@ export function LinksEditorModal({
                 mb={4}
                 onClick={() => setPairs(pairs.filter((_, j) => j !== i))}
               >
-                − строка
+                − row
               </Button>
             </Group>
           ))
@@ -101,18 +101,19 @@ export function LinksEditorModal({
             disabled={names.length < 2}
             onClick={() => setPairs([...pairs, { a: names[0] ?? '', b: names[1] ?? '' }])}
           >
-            + строка
+            + row
           </Button>
         </Group>
         <Text size="sm" c="dimmed">
-          Полный меш не обязателен; ноды одного кластера — на разных хостах/площадках
-          (гео-раснос — обязанность оператора). Замена целиком: 202 — применит доводка воркера.
+          A full mesh is not required; nodes of one cluster live on different hosts/sites
+          (geo separation is the operator's responsibility). Full replacement: 202 —
+          worker convergence will apply it.
         </Text>
         {error !== null ? <Alert color="red" variant="light">{error}</Alert> : null}
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button loading={mutation.isPending} onClick={submit}>Применить граф</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={mutation.isPending} onClick={submit}>Apply graph</Button>
         </Group>
       </Stack>
     </Modal>

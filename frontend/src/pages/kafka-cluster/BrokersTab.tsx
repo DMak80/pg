@@ -28,8 +28,8 @@ export function BrokersTab({
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="sm">
-        <Title order={4}>Брокеры</Title>
-        {canScale ? <Button size="xs" onClick={() => setAddOpened(true)}>Добавить брокера</Button> : null}
+        <Title order={4}>Brokers</Title>
+        {canScale ? <Button size="xs" onClick={() => setAddOpened(true)}>Add broker</Button> : null}
       </Group>
       <AddBrokerModal cluster={cluster} opened={addOpened} onClose={() => setAddOpened(false)} />
       {resourcesBroker !== null ? (
@@ -41,18 +41,18 @@ export function BrokersTab({
         />
       ) : null}
       {brokers.length === 0 ? (
-        <Text c="dimmed">Брокеры не заявлены</Text>
+        <Text c="dimmed">No brokers declared</Text>
       ) : (
         <Table.ScrollContainer minWidth={800}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Брокер</Table.Th>
-                <Table.Th>Состояние</Table.Th>
-                <Table.Th>Роль</Table.Th>
+                <Table.Th>Broker</Table.Th>
+                <Table.Th>State</Table.Th>
+                <Table.Th>Role</Table.Th>
                 <Table.Th>CPU</Table.Th>
-                <Table.Th>Память</Table.Th>
-                <Table.Th>Диск</Table.Th>
+                <Table.Th>Memory</Table.Th>
+                <Table.Th>Disk</Table.Th>
                 <Table.Th>Live</Table.Th>
                 <Table.Th />
               </Table.Tr>
@@ -95,11 +95,11 @@ function BrokerRow({
     && reassignment.mode === 'drain'
     && reassignment.drainBroker === broker.name;
   const reason = isController
-    ? 'controller-нода: роль фиксируется при создании навсегда, демонтаж запрещён'
+    ? 'controller node: the role is fixed at creation forever, teardown is forbidden'
     : lastBroker
-      ? 'нельзя снять последний брокер кластера'
+      ? 'cannot remove the last broker of the cluster'
       : broker.state === 'TO_REMOVE' || broker.state === 'REMOVING'
-        ? 'демонтаж уже заявлен'
+        ? 'teardown already requested'
         : null;
   // Ресурсы не менять у демонтажа/нестабильных нод (t06, 02 §10.2-15).
   const resourcesBlocked = !canScale
@@ -107,11 +107,11 @@ function BrokerRow({
     || broker.state === 'REMOVING'
     || broker.state === 'NOT_INITIALIZED';
   const resourcesReason = !canScale
-    ? 'кластер не Active — мутации недоступны'
+    ? 'cluster is not Active — mutations unavailable'
     : broker.state === 'TO_REMOVE' || broker.state === 'REMOVING'
-      ? 'демонтаж уже заявлен'
+      ? 'teardown already requested'
       : broker.state === 'NOT_INITIALIZED'
-        ? 'брокер ещё не инициализирован'
+        ? 'broker is not initialized yet'
         : null;
 
   return (
@@ -120,19 +120,19 @@ function BrokerRow({
         {broker.name}
         {draining ? (
           <Text size="xs" c="violet" display="block">
-            drain: осталось {reassignment!.partitionsRemaining} партиций
+            drain: {reassignment!.partitionsRemaining} partitions remaining
           </Text>
         ) : null}
         {regen !== null && regen.currentBroker === broker.name ? (
           <Text size="xs" c="indigo" display="block">
-            регенерация (осталось {regen!.brokersRemaining})
+            regeneration ({regen!.brokersRemaining} remaining)
           </Text>
         ) : null}
       </Table.Td>
       <Table.Td><BrokerStateBadge state={broker.state} /></Table.Td>
       <Table.Td>
         {isController ? (
-          <Tooltip label="участник KRaft-кворума (combined broker,controller)">
+          <Tooltip label="KRaft quorum member (combined broker,controller)">
             <Badge color="grape" variant="light">controller</Badge>
           </Tooltip>
         ) : broker.role === 'broker' ? (
@@ -159,19 +159,19 @@ function BrokerRow({
         <Group gap="xs" wrap="nowrap" justify="flex-end">
           {resourcesBlocked ? (
             <Tooltip label={resourcesReason}>
-              <Button size="compact-xs" variant="light" disabled>Ресурсы</Button>
+              <Button size="compact-xs" variant="light" disabled>Resources</Button>
             </Tooltip>
           ) : (
             <Button size="compact-xs" variant="light" onClick={() => onEditResources(broker)}>
-              Ресурсы
+              Resources
             </Button>
           )}
           {!canScale ? (
             // Не-Active кластер: мутации недоступны (симметрия с pg-шапкой деталей).
-            <Button size="compact-xs" variant="light" color="red" disabled>Убрать</Button>
+            <Button size="compact-xs" variant="light" color="red" disabled>Remove</Button>
           ) : reason !== null ? (
             <Tooltip label={reason}>
-              <Button size="compact-xs" variant="light" color="red" disabled>Убрать</Button>
+              <Button size="compact-xs" variant="light" color="red" disabled>Remove</Button>
             </Tooltip>
           ) : (
             <RemoveBrokerButton cluster={cluster} broker={broker.name} />

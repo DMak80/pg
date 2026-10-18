@@ -41,16 +41,16 @@ export function S3ClusterDetailsPage() {
         <Group gap="sm">
           <Title order={2}>S3: {c.name}</Title>
           {c.state === 'TO_REMOVE' ? (
-            <Tooltip label="воркер демонтирует инстансы и ключи etcd">
-              <Badge color="red" variant="light">к удалению</Badge>
+            <Tooltip label="the worker tears down instances and etcd keys">
+              <Badge color="red" variant="light">to remove</Badge>
             </Tooltip>
           ) : c.state === 'NOT_INITIALIZED' ? (
-            <Badge color="gray" variant="light">не инициализирован</Badge>
+            <Badge color="gray" variant="light">not initialized</Badge>
           ) : null}
           {c.rotation !== null ? (
-            <Tooltip label="заявка ротации секретов жива: воркер переиздаёт профиль rolling-пересозданием">
+            <Tooltip label="secrets rotation ticket is live: the worker re-issues the profile via rolling recreation">
               <Badge color="blue" variant="light">
-                ротация секретов · {c.rotation.requestedBy ?? '—'}
+                secrets rotation · {c.rotation.requestedBy ?? '—'}
               </Badge>
             </Tooltip>
           ) : null}
@@ -66,12 +66,12 @@ export function S3ClusterDetailsPage() {
 
       <Card withBorder padding="md" radius="md">
         <SimpleGrid cols={{ base: 2, md: 4 }}>
-          <Field label="Платформа">{c.platform}</Field>
-          <Field label="Профиль секретов">{c.secretProfile || '—'}</Field>
+          <Field label="Platform">{c.platform}</Field>
+          <Field label="Secret profile">{c.secretProfile || '—'}</Field>
           <Field label="Endpoints">
             <Text size="sm" ff="monospace">{c.endpoints ?? '—'}</Text>
           </Field>
-          <Field label="Создан">
+          <Field label="Created">
             {c.createdUnix !== null ? new Date(c.createdUnix * 1000).toLocaleString() : '—'}
           </Field>
         </SimpleGrid>
@@ -79,15 +79,15 @@ export function S3ClusterDetailsPage() {
 
       <Tabs defaultValue="nodes" keepMounted={false}>
         <Tabs.List>
-          <Tabs.Tab value="nodes">Ноды</Tabs.Tab>
-          <Tabs.Tab value="replication">Репликация</Tabs.Tab>
-          <Tabs.Tab value="probes">Связность и синхронность</Tabs.Tab>
+          <Tabs.Tab value="nodes">Nodes</Tabs.Tab>
+          <Tabs.Tab value="replication">Replication</Tabs.Tab>
+          <Tabs.Tab value="probes">Connectivity and sync</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="nodes" pt="md">
           {c.nodesList.length === 0 && c.state === 'NOT_INITIALIZED' ? (
             <Card withBorder padding="md" radius="md">
-              <Text c="dimmed">Ноды не заявлены — кластер в декларации без развёртывания</Text>
+              <Text c="dimmed">No nodes declared — the cluster is a declaration without deployment</Text>
             </Card>
           ) : (
             <Card withBorder padding="md" radius="md">

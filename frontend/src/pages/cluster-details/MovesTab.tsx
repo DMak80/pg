@@ -54,21 +54,21 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
   return (
     <>
       {moves.length === 0 ? (
-        <Text c="dimmed">Активных переездов нет</Text>
+        <Text c="dimmed">No active moves</Text>
       ) : (
         <Table.ScrollContainer minWidth={900}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Id</Table.Th>
-                <Table.Th>Состояние</Table.Th>
-                <Table.Th>Маршрут</Table.Th>
-                <Table.Th>Фаза</Table.Th>
-                <Table.Th>Начат</Table.Th>
-                <Table.Th>Обновлён</Table.Th>
-                <Table.Th>Возраст</Table.Th>
-                <Table.Th>Ошибка</Table.Th>
-                {canScale ? <Table.Th>Действия</Table.Th> : null}
+                <Table.Th>State</Table.Th>
+                <Table.Th>Route</Table.Th>
+                <Table.Th>Phase</Table.Th>
+                <Table.Th>Started</Table.Th>
+                <Table.Th>Updated</Table.Th>
+                <Table.Th>Age</Table.Th>
+                <Table.Th>Error</Table.Th>
+                {canScale ? <Table.Th>Actions</Table.Th> : null}
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -99,7 +99,7 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
                   {canScale ? (
                     <Table.Td>
                       <Button color="red" variant="light" size="xs" onClick={() => setAbortId(b.id)}>
-                        Отменить переезд
+                        Abort move
                       </Button>
                     </Table.Td>
                   ) : null}
@@ -114,22 +114,22 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
           opened={abortId !== null} onClose={() => setAbortId(null)} />
       ) : null}
       <Group justify="space-between" mt="md">
-        <Text fw={500}>Очередь заявок</Text>
+        <Text fw={500}>Ticket queue</Text>
       </Group>
       {pendingMoves.length === 0 ? (
-        <Text c="dimmed">Очередь заявок пуста</Text>
+        <Text c="dimmed">Ticket queue is empty</Text>
       ) : (
         <>
           <Table.ScrollContainer minWidth={700}>
             <Table highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Бакет</Table.Th>
-                  <Table.Th>Операция</Table.Th>
-                  <Table.Th>Куда</Table.Th>
-                  <Table.Th>Возраст заявки</Table.Th>
-                  <Table.Th>Кем</Table.Th>
-                  {canScale ? <Table.Th>Снять заявку</Table.Th> : null}
+                  <Table.Th>Bucket</Table.Th>
+                  <Table.Th>Operation</Table.Th>
+                  <Table.Th>To</Table.Th>
+                  <Table.Th>Ticket age</Table.Th>
+                  <Table.Th>By</Table.Th>
+                  {canScale ? <Table.Th>Withdraw</Table.Th> : null}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -146,7 +146,7 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
                       <Table.Td>
                         <Button color="red" variant="light" size="xs"
                           onClick={() => setConfirmTicket(t)}>
-                          Снять
+                          Withdraw
                         </Button>
                       </Table.Td>
                     ) : null}
@@ -156,26 +156,26 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
             </Table>
           </Table.ScrollContainer>
           <Text size="sm" c="dimmed">
-            Переезды выполняются по одному бакету за раз — старейшая заявка берётся первой.
+            Moves run one bucket at a time — the oldest ticket is taken first.
           </Text>
         </>
       )}
       <Modal opened={confirmTicket !== null} onClose={() => setConfirmTicket(null)}
-        title="Снять заявку" centered>
+        title="Withdraw ticket" centered>
         <Stack gap="sm">
           <Text>
-            Заявка <b>{`${confirmTicket?.op ?? ''} ${confirmTicket?.bucket ?? ''}`}</b> будет
-            удалена из очереди. Если переезд уже начат — он доедет до конца; остановка
-            начатого переезда — только «Отменить переезд» (abort).
+            Ticket <b>{`${confirmTicket?.op ?? ''} ${confirmTicket?.bucket ?? ''}`}</b> will
+            be removed from the queue. If the move has already started, it will run to
+            completion; a started move can only be stopped via "Abort move" (abort).
           </Text>
           {cancelError !== null ? (
             <Text size="sm" c="red">{cancelError.detail ?? cancelError.message}</Text>
           ) : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setConfirmTicket(null)}>Отмена</Button>
+            <Button variant="default" onClick={() => setConfirmTicket(null)}>Cancel</Button>
             <Button color="red" loading={cancel.isPending}
               onClick={() => confirmTicket !== null && cancel.mutate(confirmTicket.bucket)}>
-              Снять заявку
+              Withdraw ticket
             </Button>
           </Group>
         </Stack>
@@ -183,12 +183,12 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
       {work != null ? (
         <>
           <Group justify="space-between" mt="md">
-            <Text fw={500}>Журнал воркера</Text>
+            <Text fw={500}>Worker journal</Text>
           </Group>
           <Group gap="sm">
             <Badge color="blue" variant="light">{work.op}</Badge>
             <Text size="sm">{work.phase}</Text>
-            <Text size="sm" c="dimmed">обновлён {formatUnixAge(work.updatedUnix)}</Text>
+            <Text size="sm" c="dimmed">updated {formatUnixAge(work.updatedUnix)}</Text>
             {work.lastError !== null ? (
               <Tooltip label={work.lastError}>
                 <Text size="sm" c="red">{truncateText(work.lastError, 40)}</Text>
@@ -196,7 +196,7 @@ export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
             ) : null}
           </Group>
           <Text size="sm" c="dimmed">
-            Последний процесс воркера кластера; отвергнутые заявки — с причиной.
+            Last process of the cluster worker; rejected tickets include a reason.
           </Text>
         </>
       ) : null}

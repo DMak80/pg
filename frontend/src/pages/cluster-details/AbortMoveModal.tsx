@@ -31,30 +31,30 @@ export function AbortMoveModal({ cluster, bucket, opened, onClose }: Props) {
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Отменить переезд bucket_${bucket.id}`} centered>
+    <Modal opened={opened} onClose={onClose} title={`Abort move of bucket_${bucket.id}`} centered>
       <Stack gap="sm">
         <Text>
-          Маршрут: <b>{bucket.move?.owner ?? '—'} → {bucket.move?.target ?? '—'}</b>,
-          фаза <b>{bucket.move?.phase ?? '—'}</b>, статус обновлён{' '}
+          Route: <b>{bucket.move?.owner ?? '—'} → {bucket.move?.target ?? '—'}</b>,
+          phase <b>{bucket.move?.phase ?? '—'}</b>, status updated{' '}
           <b>{bucket.move?.updatedUnix != null ? formatUnixAge(bucket.move.updatedUnix) : '—'}</b>.
         </Text>
-        <Alert color="yellow" variant="light" title="Внимание">
-          Артефакты переезда убираются, бакет возвращается владельцу.
+        <Alert color="yellow" variant="light" title="Warning">
+          Move artifacts are cleaned up, the bucket returns to its owner.
         </Alert>
         <Checkbox
           checked={force}
           onChange={(e) => setForce(e.currentTarget.checked)}
-          label="force — ломает защиту свежести (переезд, возможно, ещё жив) и разрешает
-            доведение перевода, когда flip уже прошёл (уборка старого шарда, как
-            finalize); включайте только если mover точно мёртв"
+          label="force — breaks the freshness guard (the move may still be alive) and allows
+            finishing the handover when the flip has already passed (old shard cleanup,
+            same as finalize); enable only if the mover is definitely dead"
         />
         {serverError !== null ? (
           <Alert color="yellow" variant="light">{serverError.detail ?? serverError.message}</Alert>
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-            Отменить переезд
+            Abort move
           </Button>
         </Group>
       </Stack>

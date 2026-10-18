@@ -22,14 +22,14 @@ export function ErrorSection({ error, onRetry, notFound }: {
   if (error instanceof ApiError && error.status === 404 && notFound !== undefined)
     return <>{notFound}</>;
   const message = error instanceof ApiError && error.status === 503
-    ? 'Данные ещё не собраны (etcd-снапшот пуст)'
+    ? 'Data is not collected yet (etcd snapshot is empty)'
     : error instanceof Error
       ? error.message
-      : 'Неизвестная ошибка';
+      : 'Unknown error';
   return (
     <Stack gap="sm" align="flex-start">
       <Alert color="red">{message}</Alert>
-      <Button variant="light" size="xs" onClick={onRetry}>Повторить</Button>
+      <Button variant="light" size="xs" onClick={onRetry}>Retry</Button>
     </Stack>
   );
 }

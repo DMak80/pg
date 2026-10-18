@@ -28,8 +28,8 @@ export function RebalanceButton({
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: 'Ребалансировку выполнит воркер (перенос реплик батчами, без даунтайма).',
+        title: 'Ticket submitted',
+        message: 'The rebalance will be performed by the worker (replica moves in batches, no downtime).',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
@@ -42,8 +42,8 @@ export function RebalanceButton({
       setOpened(false);
       notifications.show({
         color: 'blue',
-        title: 'Заявка отменена',
-        message: 'Новые батчи не подаются; уже поданные Kafka доиграет сама.',
+        title: 'Ticket cancelled',
+        message: 'No new batches are submitted; Kafka will finish the submitted ones itself.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
@@ -61,23 +61,23 @@ export function RebalanceButton({
           disabled={disabled}
           onClick={() => setOpened(true)}
         >
-          Отменить ребалансировку
+          Cancel rebalance
         </Button>
         <Modal opened={opened} onClose={() => setOpened(false)}
-          title={`Отменить ребалансировку — ${cluster}`} centered>
+          title={`Cancel rebalance — ${cluster}`} centered>
           <Stack gap="sm">
             <Text>
-              Заявка ребалансировки (от {new Date(rebalance.requestedUnix * 1000).toLocaleString()}
-              {rebalance.requestedBy !== null ? `, ${rebalance.requestedBy}` : ''}) будет снята.
+              The rebalance ticket (from {new Date(rebalance.requestedUnix * 1000).toLocaleString()}
+              {rebalance.requestedBy !== null ? `, ${rebalance.requestedBy}` : ''}) will be withdrawn.
             </Text>
-            <Alert color="yellow" variant="light" title="Внимание">
-              Поданные батчи Kafka доиграет сама — уже идущие переносы реплик завершатся.
+            <Alert color="yellow" variant="light" title="Warning">
+              Kafka will finish the submitted batches itself — in-flight replica moves will complete.
             </Alert>
             {cancelError ? <Alert color="red" variant="light">{cancelError.message}</Alert> : null}
             <Group justify="flex-end">
-              <Button variant="default" onClick={() => setOpened(false)}>Закрыть</Button>
+              <Button variant="default" onClick={() => setOpened(false)}>Close</Button>
               <Button color="orange" loading={cancel.isPending} onClick={() => cancel.mutate()}>
-                Отменить заявку
+                Withdraw ticket
               </Button>
             </Group>
           </Stack>
@@ -95,25 +95,25 @@ export function RebalanceButton({
         disabled={disabled}
         onClick={() => setOpened(true)}
       >
-        Перебалансировать
+        Rebalance
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Перебалансировать — ${cluster}`} centered>
+        title={`Rebalance — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер пересчитает целевое размещение реплик по всем партициям
-            (RF = min(config, брокеров), равномерный добор) и сойдётся к нему
-            батчами через kafka-reassign-partitions.
+            The worker will recompute the target replica placement across all partitions
+            (RF = min(config, brokers), even fill) and converge to it in batches via
+            kafka-reassign-partitions.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            Перенос данных между брокерами: длительность зависит от объёма;
-            доступность сохраняется (reassignment без даунтайма).
+          <Alert color="yellow" variant="light" title="Warning">
+            Data moves between brokers: duration depends on volume; availability is
+            preserved (reassignment with no downtime).
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={request.isPending} onClick={() => request.mutate()}>
-              Отправить
+              Submit
             </Button>
           </Group>
         </Stack>

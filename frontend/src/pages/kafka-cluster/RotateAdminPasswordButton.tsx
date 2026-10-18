@@ -23,9 +23,9 @@ export function RotateAdminPasswordButton({
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: 'Ротацию admin-пароля выполнит воркер (фазы A/B/C, rolling-рестарт брокеров). '
-          + 'Приложения с ролью app не затрагиваются.',
+        title: 'Ticket submitted',
+        message: 'The admin-password rotation will be performed by the worker (phases A/B/C, '
+          + 'rolling broker restart). Applications with the app role are not affected.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
@@ -42,28 +42,28 @@ export function RotateAdminPasswordButton({
         disabled={disabled}
         onClick={() => setOpened(true)}
       >
-        Сменить admin-пароль
+        Rotate admin password
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Сменить admin-пароль — ${cluster}`} centered>
+        title={`Rotate admin password — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер выполнит ротацию admin-креда фазами: A) rolling-рестарт брокеров
-            с ДВУМЯ admin-кредами (старым и новым), B) атомарная замена
-            <b> admin_password</b> в etcd, C) rolling-снятие старого креда.
+            The worker will rotate the admin credential in phases: A) rolling broker
+            restart with TWO admin credentials (old and new), B) atomic replacement of
+            <b> admin_password</b> in etcd, C) rolling removal of the old credential.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            Rolling-рестарт брокеров — выполняйте в тихое окно.
+          <Alert color="yellow" variant="light" title="Warning">
+            Rolling broker restart — perform this in a quiet window.
             <List size="sm" mt={4}>
-              <List.Item>приложения с ролью app работают непрерывно на всём окне</List.Item>
-              <List.Item>после фазы C подключения с ролью admin по старому паролю отвергаются</List.Item>
+              <List.Item>applications with the app role run continuously throughout the window</List.Item>
+              <List.Item>after phase C, admin-role connections with the old password are rejected</List.Item>
             </List>
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Сменить пароль
+              Rotate password
             </Button>
           </Group>
         </Stack>

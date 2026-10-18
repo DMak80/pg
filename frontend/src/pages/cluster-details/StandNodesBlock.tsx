@@ -6,19 +6,19 @@ export function StandNodesBlock({ standNodes }: { standNodes: StandNodeDto[] }) 
   if (standNodes.length === 0) return null;
   return (
     <Card withBorder padding="md" radius="md">
-      <Text fw={600} mb="xs">Стендовая топология</Text>
+      <Text fw={600} mb="xs">Stand topology</Text>
       <Table w="50%" highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Нода</Table.Th>
-            <Table.Th>Адрес</Table.Th>
+            <Table.Th>Node</Table.Th>
+            <Table.Th>Address</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
           {standNodes.map((n) => (
             <Table.Tr key={n.name}>
               <Table.Td>{n.name}</Table.Td>
-              <Table.Td>{n.address ?? 'есть ключ, адрес пуст'}</Table.Td>
+              <Table.Td>{n.address ?? 'key exists, address is empty'}</Table.Td>
             </Table.Tr>
           ))}
         </Table.Tbody>

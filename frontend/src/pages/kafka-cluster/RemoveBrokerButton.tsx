@@ -22,22 +22,22 @@ export function RemoveBrokerButton({ cluster, broker }: { cluster: string; broke
   return (
     <>
       <Button size="compact-xs" variant="light" color="red" onClick={() => setOpened(true)}>
-        Убрать
+        Remove
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Убрать брокера ${broker}`} centered>
+        title={`Remove broker ${broker}`} centered>
         <Stack gap="sm">
           <Text>
-            Брокер <b>{broker}</b> кластера <b>{cluster}</b> получит маркер{' '}
-            <b>TO_REMOVE</b> (обратного перехода нет). ВОРКЕР перепроверит guards
-            авторитетно: на брокере не должно быть реплик партиций — иначе демонтаж
-            подождёт reassignment (roadmap).
+            Broker <b>{broker}</b> of cluster <b>{cluster}</b> will get the{' '}
+            <b>TO_REMOVE</b> marker (no way back). THE WORKER will re-check the guards
+            authoritatively: the broker must have no partition replicas — otherwise
+            the teardown will wait for reassignment (roadmap).
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Убрать брокера
+              Remove broker
             </Button>
           </Group>
         </Stack>

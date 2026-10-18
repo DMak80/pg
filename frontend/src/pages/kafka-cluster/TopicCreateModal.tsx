@@ -50,22 +50,22 @@ export function TopicCreateModal({
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened onClose={onClose} title="Создать топик" centered>
+    <Modal opened onClose={onClose} title="Create topic" centered>
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
-          Заявку исполняет воркер (≤ 2 тиков): CreateTopics с указанными параметрами;
-          пустые retention/min ISR — брокерные дефолты кластера.
+          The ticket is executed by the worker (≤ 2 ticks): CreateTopics with the given
+          parameters; empty retention/min ISR fall back to the cluster broker defaults.
         </Text>
         <TextInput
-          label="Имя"
+          label="Name"
           placeholder="orders"
           value={name}
-          error={name.trim().length > 0 && nameInvalid ? 'a-zA-Z0-9._- до 249 симв, без __' : null}
+          error={name.trim().length > 0 && nameInvalid ? 'a-zA-Z0-9._- up to 249 chars, no __' : null}
           onChange={(e) => setName(e.currentTarget.value)}
         />
         <Group grow>
           <NumberInput
-            label="Партиции"
+            label="Partitions"
             value={partitions}
             min={1}
             max={1000}
@@ -73,24 +73,24 @@ export function TopicCreateModal({
             onChange={(v) => setPartitions(v === '' ? '' : Number(v))}
           />
           <NumberInput
-            label={`RF (≤ ${defaults.brokers} брокеров)`}
+            label={`RF (≤ ${defaults.brokers} brokers)`}
             value={rf}
             min={1}
             max={Math.min(9, defaults.brokers)}
-            error={rfInvalid ? `1..9 и ≤ ${defaults.brokers}` : null}
+            error={rfInvalid ? `1..9 and ≤ ${defaults.brokers}` : null}
             onChange={(v) => setRf(v === '' ? '' : Number(v))}
           />
         </Group>
         <Group grow>
           <NumberInput
-            label="Retention, дней (опц.)"
+            label="Retention, days (optional)"
             value={retentionDays}
             min={1}
-            error={retentionInvalid ? '1..2147483647 мс' : null}
+            error={retentionInvalid ? '1..2147483647 ms' : null}
             onChange={(v) => setRetentionDays(v === '' ? '' : Number(v))}
           />
           <NumberInput
-            label="Min ISR (опц.)"
+            label="Min ISR (optional)"
             value={minIsr}
             min={1}
             error={minIsrInvalid ? `1..RF (${rf === '' ? '?' : rf})` : null}
@@ -99,14 +99,14 @@ export function TopicCreateModal({
         </Group>
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button
             loading={mutation.isPending}
             disabled={name.trim().length === 0 || nameInvalid || rfInvalid
               || partitionsInvalid || retentionInvalid || minIsrInvalid}
             onClick={() => mutation.mutate()}
           >
-            Создать топик
+            Create topic
           </Button>
         </Group>
       </Stack>

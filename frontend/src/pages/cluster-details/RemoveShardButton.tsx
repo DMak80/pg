@@ -27,25 +27,25 @@ export function RemoveShardButton({ cluster, shard, bucketCount }: {
 
   return (
     <>
-      <Button color="red" variant="light" size="xs" onClick={() => setOpened(true)}>Убрать шард</Button>
-      <Modal opened={opened} onClose={() => setOpened(false)} title="Убрать шард" centered>
+      <Button color="red" variant="light" size="xs" onClick={() => setOpened(true)}>Remove shard</Button>
+      <Modal opened={opened} onClose={() => setOpened(false)} title="Remove shard" centered>
         <Stack gap="sm">
           <Text>
-            Шард <b>{shard}</b> будет помечен к удалению (<b>TO_REMOVE</b>). Демонтаж выполнит
-            PgWorker — после того, как все бакеты уедут со шарда.
+            Shard <b>{shard}</b> will be marked for deletion (<b>TO_REMOVE</b>). Teardown
+            will be performed by PgWorker — after all buckets have moved off the shard.
           </Text>
           {bucketCount > 0 ? (
             <Alert color="yellow" variant="light">
-              На шарде {bucketCount} бакет(ов) — сначала явно перевезите их (UI переездов — t07)
+              The shard has {bucketCount} bucket(s) — move them explicitly first (moves UI — t07)
             </Alert>
           ) : null}
           {serverError !== null ? (
             <Alert color="red" variant="light">{serverError.message}</Alert>
           ) : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" disabled={bucketCount > 0} loading={mutation.isPending}
-              onClick={() => mutation.mutate()}>Убрать шард</Button>
+              onClick={() => mutation.mutate()}>Remove shard</Button>
           </Group>
         </Stack>
       </Modal>

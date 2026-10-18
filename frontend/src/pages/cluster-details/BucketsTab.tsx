@@ -13,8 +13,8 @@ import { RollbackBucketModal } from './RollbackBucketModal';
 
 // Значения фильтра состояния: «все», «не-ACTIVE» и канонические состояния.
 const STATE_FILTERS = [
-  { value: 'all', label: 'все' },
-  { value: 'non-active', label: 'не-ACTIVE' },
+  { value: 'all', label: 'all' },
+  { value: 'non-active', label: 'non-ACTIVE' },
   { value: 'ACTIVE', label: 'ACTIVE' },
   { value: 'SYNCING', label: 'SYNCING' },
   { value: 'FROZEN', label: 'FROZEN' },
@@ -63,10 +63,10 @@ export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }:
   return (
     <Stack gap="xs">
       <Group justify="space-between">
-        <Text fw={500}>Бакеты</Text>
+        <Text fw={500}>Buckets</Text>
         {canScale ? (
           <Group gap="xs">
-            <Button size="xs" variant="light" onClick={() => setMoveOpened(true)}>Перенести бакеты</Button>
+            <Button size="xs" variant="light" onClick={() => setMoveOpened(true)}>Move buckets</Button>
             <MoveBucketsModal cluster={cluster} shards={shards} buckets={buckets}
               pendingMoves={pendingMoves} opened={moveOpened} onClose={() => setMoveOpened(false)} />
           </Group>
@@ -74,21 +74,21 @@ export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }:
       </Group>
       <Group gap="sm">
         <Select
-          label="Состояние"
+          label="State"
           value={stateFilter}
           onChange={(value) => setStateFilter(value ?? 'all')}
           data={STATE_FILTERS}
           w={180}
         />
         <Select
-          label="Владелец"
+          label="Owner"
           value={ownerFilter}
           onChange={(value) => setOwnerFilter(value ?? 'all')}
-          data={[{ value: 'all', label: 'все' }, ...owners.map((o) => ({ value: o, label: o }))]}
+          data={[{ value: 'all', label: 'all' }, ...owners.map((o) => ({ value: o, label: o }))]}
           w={180}
         />
         <Text size="sm" c="dimmed" style={{ alignSelf: 'flex-end' }}>
-          Показано {rows.length} из {buckets.length}
+          Showing {rows.length} of {buckets.length}
         </Text>
       </Group>
       <Table.ScrollContainer minWidth={800} maxHeight={480}>
@@ -97,11 +97,11 @@ export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }:
             <Table.Tr>
               <Table.Th>Id</Table.Th>
               <Table.Th>Owner</Table.Th>
-              <Table.Th>Состояние</Table.Th>
-              <Table.Th>Переезд</Table.Th>
-              <Table.Th>Фаза</Table.Th>
-              <Table.Th>Возраст</Table.Th>
-              {canScale ? <Table.Th>Действия</Table.Th> : null}
+              <Table.Th>State</Table.Th>
+              <Table.Th>Move</Table.Th>
+              <Table.Th>Phase</Table.Th>
+              <Table.Th>Age</Table.Th>
+              {canScale ? <Table.Th>Actions</Table.Th> : null}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -167,11 +167,11 @@ function BucketRow({ bucket, canScale, ticketOp, onRollback, onFinalize }: {
       {canScale ? (
         <Table.Td>
           {ticketOp !== null ? (
-            <Badge color="grape" variant="light">{`в очереди: ${ticketOp}`}</Badge>
+            <Badge color="grape" variant="light">{`queued: ${ticketOp}`}</Badge>
           ) : bucket.state === 'ACTIVE' ? (
             <Group gap={4} wrap="nowrap">
-              <Button size="xs" variant="light" onClick={onRollback}>Откатить</Button>
-              <Button size="xs" color="red" variant="light" onClick={onFinalize}>Финализировать</Button>
+              <Button size="xs" variant="light" onClick={onRollback}>Roll back</Button>
+              <Button size="xs" color="red" variant="light" onClick={onFinalize}>Finalize</Button>
             </Group>
           ) : null}
         </Table.Td>

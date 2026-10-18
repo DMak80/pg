@@ -54,23 +54,23 @@ export function TopicDesiredModal({
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened onClose={onClose} title={`Заявка конфигов — ${topic.name}`} centered>
+    <Modal opened onClose={onClose} title={`Config ticket — ${topic.name}`} centered>
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
-          Заявку применяет автосинк воркера: сначала конфиги, затем увеличение
-          партиций. Фактический RF не меняется (reassignment — roadmap).
+          The ticket is applied by the worker autosync: configs first, then the
+          partition increase. The effective RF is not changed (reassignment — roadmap).
         </Text>
         <Group grow>
           <NumberInput
-            label={`Партиций (факт ${topic.partitions}, только ↑)`}
+            label={`Partitions (current ${topic.partitions}, increase only)`}
             value={partitions}
             min={topic.partitions + 1}
             max={1000}
-            error={partitionsInvalid ? 'только увеличение' : null}
+            error={partitionsInvalid ? 'increase only' : null}
             onChange={(v) => setPartitions(v === '' ? '' : Number(v))}
           />
           <NumberInput
-            label="Retention, дней"
+            label="Retention, days"
             value={retentionDays}
             min={1}
             onChange={(v) => setRetentionDays(v === '' ? '' : Number(v))}
@@ -84,13 +84,13 @@ export function TopicDesiredModal({
         />
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button
             loading={mutation.isPending}
             disabled={empty || partitionsInvalid}
             onClick={() => mutation.mutate()}
           >
-            Поставить заявку
+            Submit ticket
           </Button>
         </Group>
       </Stack>

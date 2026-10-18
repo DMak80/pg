@@ -28,7 +28,7 @@ export function DeleteOrphanModal({
     onSuccess: async (accepted) => {
       notifications.show({
         color: 'green',
-        message: `Заявка на удаление ${accepted.prefix} принята — исполнит sweeper ближайшим проходом`,
+        message: `The delete ticket for ${accepted.prefix} was accepted — the sweeper will execute it on the next pass`,
       });
       onDone();
     },
@@ -37,15 +37,15 @@ export function DeleteOrphanModal({
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened onClose={onClose} title={`Удалить сироту ${prefix}`} centered>
+    <Modal opened onClose={onClose} title={`Delete orphan ${prefix}`} centered>
       <Stack gap="sm">
         <Text size="sm" c="red">
-          Данные сироты {prefix} (включая потенциальный DR-источник) будут
-          удалены из S3 НЕОБРАТИМО: заявка минует hold и автозащиту полным.
-          Исполнение — ближайший проход sweeper'а воркера.
+          The orphan data {prefix} (including a potential DR source) will be deleted
+          from S3 IRREVERSIBLY: the ticket bypasses the hold and the full-backup
+          auto-protection. Execution — the next pass of the worker sweeper.
         </Text>
         <TextInput
-          label="Введите префикс <C>/<X> для подтверждения"
+          label="Type the <C>/<X> prefix to confirm"
           placeholder={prefix}
           value={confirmText}
           onChange={(e) => setConfirmText(e.currentTarget.value)}
@@ -54,7 +54,7 @@ export function DeleteOrphanModal({
           <Alert color="red" variant="light">{serverError.detail ?? serverError.message}</Alert>
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button
             color="red"
             loading={mutation.isPending}

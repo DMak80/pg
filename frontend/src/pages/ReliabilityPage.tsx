@@ -16,11 +16,11 @@ export function ReliabilityPage() {
     queryFn: fetchReliability,
     refetchInterval: intervalMs,
   });
-  if (query.isPending) return <Text>Загрузка…</Text>;
-  if (query.isError) return <Text c="red">Ошибка: {(query.error as Error).message}</Text>;
+  if (query.isPending) return <Text>Loading…</Text>;
+  if (query.isError) return <Text c="red">Error: {(query.error as Error).message}</Text>;
   return (
     <Stack gap="md">
-      <Title order={2}>Надёжность</Title>
+      <Title order={2}>Reliability</Title>
       {query.data.clusters.map((c) => (
         <ClusterCard key={c.cluster} cluster={c} />
       ))}
@@ -32,16 +32,16 @@ function ClusterCard({ cluster }: { cluster: ReliabilityClusterDto }) {
   return (
     <Card withBorder padding="md" radius="md" mb="md">
       <Group justify="space-between" mb="xs">
-        <Text fw={600}>Кластер {cluster.cluster}</Text>
+        <Text fw={600}>Cluster {cluster.cluster}</Text>
       </Group>
       <Table striped highlightOnHover>
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Шард</Table.Th>
-            <Table.Th>Полный (возраст)</Table.Th>
-            <Table.Th>WAL лаг</Table.Th>
-            <Table.Th>WAL возраст</Table.Th>
-            <Table.Th>Потеряем ≈</Table.Th>
+            <Table.Th>Shard</Table.Th>
+            <Table.Th>Full (age)</Table.Th>
+            <Table.Th>WAL lag</Table.Th>
+            <Table.Th>WAL age</Table.Th>
+            <Table.Th>Would lose ≈</Table.Th>
             <Table.Th>Failover</Table.Th>
             <Table.Th>Rebuild</Table.Th>
             <Table.Th>Drill</Table.Th>
@@ -68,11 +68,11 @@ function ClusterCard({ cluster }: { cluster: ReliabilityClusterDto }) {
 // Секунды → человекочитаемо («75 с», «3 мин 5 с»); null → «—».
 function formatSec(sec: number | null | undefined): string {
   if (sec === null || sec === undefined) return '—';
-  if (sec < 60) return `${sec} с`;
+  if (sec < 60) return `${sec} s`;
   const minutes = Math.floor(sec / 60);
   const rest = sec % 60;
-  if (minutes < 60) return rest === 0 ? `${minutes} мин` : `${minutes} мин ${rest} с`;
-  return `${minutes} мин`;
+  if (minutes < 60) return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+  return `${minutes} min`;
 }
 
 // RPO-ячейки: возраст валидного полного с индикацией по порогу + клик к деталям
@@ -105,7 +105,7 @@ function RpoCells({ cluster, shard, rpo }: { cluster: string; shard: string; rpo
       )}
       {(rpo.fullAgeSec === null || rpo.fullAgeSec === undefined) && (
         <Text component="span" c="dimmed" ml={6} size="sm">
-          никогда
+          never
         </Text>
       )}
     </>
@@ -135,7 +135,7 @@ function FactCell({ fact }: { fact?: HaFactRtoDto | null }) {
   if (fact.ongoing)
     return (
       <Table.Td>
-        <Badge color="red">идёт {formatSec(fact.ongoingSec)}</Badge>
+        <Badge color="red">ongoing {formatSec(fact.ongoingSec)}</Badge>
       </Table.Td>
     );
   return (
@@ -143,7 +143,7 @@ function FactCell({ fact }: { fact?: HaFactRtoDto | null }) {
       <Text size="sm">
         {formatSec(fact.durationSec)} <Text component="span" c="dimmed" size="xs">({fact.cause}/{fact.node})</Text>
       </Text>
-      <Text c="dimmed" size="xs">{fact.resolvedUnix !== null && fact.resolvedUnix !== undefined ? `${formatUnixAge(fact.resolvedUnix)} назад` : '—'}</Text>
+      <Text c="dimmed" size="xs">{fact.resolvedUnix !== null && fact.resolvedUnix !== undefined ? `${formatUnixAge(fact.resolvedUnix)} ago` : '—'}</Text>
     </Table.Td>
   );
 }
@@ -155,7 +155,7 @@ function OpCell({ op }: { op?: OpRtoDto | null }) {
   if (op.ongoingSec !== null && op.ongoingSec !== undefined)
     return (
       <Table.Td>
-        <Badge color="red">идёт {formatSec(op.ongoingSec)}</Badge>
+        <Badge color="red">ongoing {formatSec(op.ongoingSec)}</Badge>
       </Table.Td>
     );
   return (

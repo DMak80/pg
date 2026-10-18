@@ -16,8 +16,8 @@ export function SyncProbeButton({ cluster }: { cluster: string }) {
       setError(null);
       notifications.show({
         color: 'green',
-        title: 'Зонд заявлен',
-        message: 'S3Worker прогонит связность/синхронность — checked_unix обновится следующим тиком.',
+        title: 'Probe submitted',
+        message: 'S3Worker will run the connectivity/sync probe — checked_unix will update on the next tick.',
         autoClose: 6000,
       });
       await queryClient.invalidateQueries({ queryKey: s3QueryKeys.cluster(cluster) });
@@ -28,14 +28,14 @@ export function SyncProbeButton({ cluster }: { cluster: string }) {
   return (
     <>
       <Button variant="light" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-        Проверить сейчас
+        Check now
       </Button>
-      <Modal opened={error !== null} onClose={() => setError(null)} title="Зонд не заявлен" centered>
+      <Modal opened={error !== null} onClose={() => setError(null)} title="Probe not submitted" centered>
         <Stack gap="sm">
           {/* 409 «кластер не Active» и прочие отказы — текстом ProblemDetails. */}
           <Text size="sm">{error}</Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setError(null)}>Понятно</Button>
+            <Button variant="default" onClick={() => setError(null)}>Got it</Button>
           </Group>
         </Stack>
       </Modal>

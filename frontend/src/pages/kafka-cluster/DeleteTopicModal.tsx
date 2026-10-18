@@ -29,28 +29,28 @@ export function DeleteTopicModal({
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened onClose={onClose} title={`Удалить топик — ${topic}`} centered>
+    <Modal opened onClose={onClose} title={`Delete topic — ${topic}`} centered>
       <Stack gap="sm">
         <Text size="sm" c="red">
-          Топик «{topic}» и все его данные будут удалены из Kafka безвозвратно.
-          Заявка исполнится в течение ~15 с — до этого её можно отменить во вкладке.
+          The topic "{topic}" and all its data will be deleted from Kafka irreversibly.
+          The ticket will be executed within ~15 s — until then it can be cancelled in the tab.
         </Text>
         <TextInput
-          label="Введите имя топика для подтверждения"
+          label="Type the topic name to confirm"
           placeholder={topic}
           value={confirmName}
           onChange={(e) => setConfirmName(e.currentTarget.value)}
         />
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button
             color="red"
             loading={mutation.isPending}
             disabled={confirmName !== topic}
             onClick={() => mutation.mutate()}
           >
-            Удалить
+            Delete
           </Button>
         </Group>
       </Stack>

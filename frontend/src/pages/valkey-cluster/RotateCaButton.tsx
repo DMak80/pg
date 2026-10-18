@@ -24,9 +24,9 @@ export function RotateCaButton({
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: 'Ротацию CA/сертов выполнит воркер (фазы P/D/R/C: staging, '
-          + 'окно двойного доверия, пересоздание ноды, коммит).',
+        title: 'Ticket submitted',
+        message: 'The CA/cert rotation will be performed by the worker (phases P/D/R/C: staging, '
+          + 'dual-trust window, node recreation, commit).',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: ['valkey-clusters'] });
@@ -43,30 +43,30 @@ export function RotateCaButton({
         disabled={disabled}
         onClick={() => setOpened(true)}
       >
-        Ротация CA
+        CA rotation
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Ротация CA — ${cluster}`} centered>
+        title={`CA rotation — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер выполнит ротацию per-cluster CA и серверного серта ноды
-            без остановки обслуживания: (P) staging новой CA, (D) окно двойного
-            доверия — <b>ca_pem</b> = bundle OLD+NEW, (R) пересоздание ноды с
-            сертом от новой CA, (C) атомарный коммит.
+            The worker will rotate the per-cluster CA and the node server cert without
+            stopping service: (P) staging of the new CA, (D) dual-trust window —
+            <b> ca_pem</b> = OLD+NEW bundle, (R) node recreation with a cert from the
+            new CA, (C) atomic commit.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            Нода будет пересоздана — кеш начнётся с холодного старта
-            (persistence off), окно — секунды.
+          <Alert color="yellow" variant="light" title="Warning">
+            The node will be recreated — the cache starts cold
+            (persistence off), the window is seconds.
             <List size="sm" mt={4}>
-              <List.Item>приложения, читающие ca_pem из etcd, работают непрерывно</List.Item>
-              <List.Item>после коммита клиенты с закешированным старым CA перечитывают ca_pem</List.Item>
+              <List.Item>applications reading ca_pem from etcd run continuously</List.Item>
+              <List.Item>after the commit, clients with the cached old CA re-read ca_pem</List.Item>
             </List>
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Отправить заявку
+              Submit ticket
             </Button>
           </Group>
         </Stack>

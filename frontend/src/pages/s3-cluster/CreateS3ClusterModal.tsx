@@ -134,37 +134,37 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
 
   // Валидация-зеркало 02 §12.3 (сервер — источник истины, это UX).
   function validate(): string | null {
-    if (!NAME_RE.test(form.name)) return 'имя кластера: [a-z][a-z0-9_]{0,62} (строчные, без дефиса)';
+    if (!NAME_RE.test(form.name)) return 'cluster name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)';
     if (form.secretProfile.trim() === '')
-      return 'профиль секретов: непустое имя per-install env-профиля S3Worker';
-    if (form.instances.length > 9) return 'инстансов не больше 9';
+      return 'secret profile: non-empty name of a per-install S3Worker env profile';
+    if (form.instances.length > 9) return 'at most 9 instances';
     for (const [i, inst] of form.instances.entries()) {
       if (!NAME_RE.test(inst.name))
-        return `инстанс ${i + 1}: имя [a-z][a-z0-9_]{0,62}`;
+        return `instance ${i + 1}: name [a-z][a-z0-9_]{0,62}`;
       if (inst.name === RESERVED_NAME)
-        return `инстанс ${i + 1}: имя orchestrator зарезервировано`;
+        return `instance ${i + 1}: the orchestrator name is reserved`;
       // placement — обязательный валидный селектор (минимум один атрибут).
       if (inst.mode === 'dockerHost' && inst.dockerHost.trim() === '')
-        return `инстанс ${i + 1}: укажите docker_host`;
+        return `instance ${i + 1}: specify docker_host`;
       if (inst.mode === 'swarmNode' && inst.swarmNode.trim() === '')
-        return `инстанс ${i + 1}: укажите swarm_node`;
+        return `instance ${i + 1}: specify swarm_node`;
       if (inst.mode === 'swarmLabels' && !inst.labels.some((l) => l.key.trim() !== ''))
-        return `инстанс ${i + 1}: добавьте минимум одну метку swarm_labels`;
+        return `instance ${i + 1}: add at least one swarm_labels label`;
       // resources — cpu 0.01..64, mem/disk 1..65536 GiB (пусто = fallback).
       if (inst.cpu !== '' && (Number(inst.cpu) < 0.01 || Number(inst.cpu) > 64))
-        return `инстанс ${i + 1}: cpu 0.01..64`;
+        return `instance ${i + 1}: cpu 0.01..64`;
       if (inst.memGi !== '' && (!Number.isInteger(Number(inst.memGi)) || Number(inst.memGi) < 1 || Number(inst.memGi) > 65536))
-        return `инстанс ${i + 1}: memGi — целое 1..65536`;
+        return `instance ${i + 1}: memGi — integer 1..65536`;
       if (inst.diskGi !== '' && (!Number.isInteger(Number(inst.diskGi)) || Number(inst.diskGi) < 1 || Number(inst.diskGi) > 65536))
-        return `инстанс ${i + 1}: diskGi — целое 1..65536`;
+        return `instance ${i + 1}: diskGi — integer 1..65536`;
     }
 
     if (form.commonCpu !== '' && (Number(form.commonCpu) < 0.01 || Number(form.commonCpu) > 64))
-      return 'общие ресурсы: cpu 0.01..64';
+      return 'common resources: cpu 0.01..64';
     if (form.commonMemGi !== '' && (!Number.isInteger(Number(form.commonMemGi)) || Number(form.commonMemGi) < 1 || Number(form.commonMemGi) > 65536))
-      return 'общие ресурсы: memGi — целое 1..65536';
+      return 'common resources: memGi — integer 1..65536';
     if (form.commonDiskGi !== '' && (!Number.isInteger(Number(form.commonDiskGi)) || Number(form.commonDiskGi) < 1 || Number(form.commonDiskGi) > 65536))
-      return 'общие ресурсы: diskGi — целое 1..65536';
+      return 'common resources: diskGi — integer 1..65536';
     return null;
   }
 
@@ -187,27 +187,27 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Создать s3-кластер" centered size="lg">
+    <Modal opened={opened} onClose={onClose} title="Create S3 cluster" centered size="lg">
       <Stack gap="sm">
         <TextInput
-          label="Имя кластера"
+          label="Cluster name"
           placeholder="backups"
           value={form.name}
           onChange={(e) => set('name', e.currentTarget.value)}
-          error={formError !== null && formError.startsWith('имя') ? formError : undefined}
+          error={formError !== null && formError.startsWith('cluster name') ? formError : undefined}
         />
         <TextInput
-          label="Профиль секретов"
-          description="имя per-install env-профиля S3Worker; 422 воркера покажет перечень доступных"
+          label="Secret profile"
+          description="the name of a per-install S3Worker env profile; a 422 from the worker will list the available ones"
           placeholder="backups-main"
           value={form.secretProfile}
           onChange={(e) => set('secretProfile', e.currentTarget.value)}
         />
-        <Text size="sm" c="dimmed">Платформа: owns3 (единственное значение канона)</Text>
+        <Text size="sm" c="dimmed">Platform: owns3 (the only canonical value)</Text>
 
         <Card withBorder padding="sm" radius="md">
           <Group justify="space-between" mb="xs">
-            <Text size="sm" fw={500}>Инстансы ({form.instances.length})</Text>
+            <Text size="sm" fw={500}>Instances ({form.instances.length})</Text>
             <Group gap="xs">
               <Button
                 size="xs"
@@ -215,7 +215,7 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                 disabled={form.instances.length >= 9}
                 onClick={() => set('instances', [...form.instances, { ...EMPTY_INSTANCE }])}
               >
-                + инстанс
+                + instance
               </Button>
               <Button
                 size="xs"
@@ -223,24 +223,24 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                 disabled={form.instances.length === 0}
                 onClick={() => set('instances', form.instances.slice(0, -1))}
               >
-                − инстанс
+                − instance
               </Button>
             </Group>
           </Group>
           <Text size="xs" c="dimmed" mb="sm">
-            допустимо 0 инстансов — декларация без развёртывания
+            0 instances is allowed — a declaration without deployment
           </Text>
           {form.instances.map((inst, index) => (
             <Card key={index} withBorder padding="sm" radius="md" mb="xs">
               <TextInput
-                label="Имя инстанса"
+                label="Instance name"
                 placeholder="node1"
                 value={inst.name}
                 onChange={(e) => setInstance(index, { name: e.currentTarget.value })}
                 mb="sm"
               />
               <Radio.Group
-                label="Размещение (placement)"
+                label="Placement"
                 value={inst.mode}
                 onChange={(v) => setInstance(index, { mode: v as PlacementMode })}
                 mb="xs"
@@ -272,14 +272,14 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                   {inst.labels.map((label, j) => (
                     <Group key={j} align="flex-end" gap="xs">
                       <TextInput
-                        label={j === 0 ? 'Метка: ключ' : undefined}
+                        label={j === 0 ? 'Label: key' : undefined}
                         placeholder="geo"
                         value={label.key}
                         onChange={(e) => setLabel(index, j, { key: e.currentTarget.value })}
                         maw={160}
                       />
                       <TextInput
-                        label={j === 0 ? 'значение' : undefined}
+                        label={j === 0 ? 'value' : undefined}
                         placeholder="dc1"
                         value={label.value}
                         onChange={(e) => setLabel(index, j, { value: e.currentTarget.value })}
@@ -305,39 +305,39 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
                       labels: [...inst.labels, { key: '', value: '' }],
                     })}
                   >
-                    + метка
+                    + label
                   </Button>
                 </Stack>
               )}
               <Group grow>
                 <NumberInput label="CPU" placeholder="0.5" value={inst.cpu || ''} step={0.1}
                   min={0.01} max={64} onChange={(v) => setInstance(index, { cpu: v === undefined ? '' : String(v) })} />
-                <NumberInput label="Память, GiB" placeholder="4" value={inst.memGi || ''}
+                <NumberInput label="Memory, GiB" placeholder="4" value={inst.memGi || ''}
                   min={1} onChange={(v) => setInstance(index, { memGi: v === undefined ? '' : String(v) })} />
-                <NumberInput label="Диск, GiB" placeholder="200" value={inst.diskGi || ''}
+                <NumberInput label="Disk, GiB" placeholder="200" value={inst.diskGi || ''}
                   min={1} onChange={(v) => setInstance(index, { diskGi: v === undefined ? '' : String(v) })} />
               </Group>
             </Card>
           ))}
         </Card>
 
-        <Text size="sm" c="dimmed">Общие ресурсы (fallback для инстансов без своих):</Text>
+        <Text size="sm" c="dimmed">Common resources (fallback for instances without their own):</Text>
         <Group grow>
           <NumberInput label="CPU" value={form.commonCpu || ''} step={0.1}
             min={0.01} max={64} onChange={(v) => set('commonCpu', v === undefined ? '' : String(v))} />
-          <NumberInput label="Память, GiB" value={form.commonMemGi || ''}
+          <NumberInput label="Memory, GiB" value={form.commonMemGi || ''}
             min={1} onChange={(v) => set('commonMemGi', v === undefined ? '' : String(v))} />
-          <NumberInput label="Диск, GiB" value={form.commonDiskGi || ''}
+          <NumberInput label="Disk, GiB" value={form.commonDiskGi || ''}
             min={1} onChange={(v) => set('commonDiskGi', v === undefined ? '' : String(v))} />
         </Group>
 
-        {formError !== null && !formError.startsWith('имя') ? (
+        {formError !== null && !formError.startsWith('cluster name') ? (
           <Alert color="red" variant="light">{formError}</Alert>
         ) : null}
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button loading={mutation.isPending} onClick={submit}>Создать</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={mutation.isPending} onClick={submit}>Create</Button>
         </Group>
       </Stack>
     </Modal>

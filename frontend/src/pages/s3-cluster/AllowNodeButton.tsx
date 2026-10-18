@@ -22,21 +22,21 @@ export function AllowNodeButton({ cluster, node }: { cluster: string; node: stri
   return (
     <>
       <Button color="green" variant="light" size="xs" onClick={() => setOpened(true)}>
-        Снять отзыв
+        Allow
       </Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Снять отзыв ${node} — ${cluster}`} centered>
+        title={`Allow ${node} — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Отзыв ключа инстанса <b>{node}</b> будет снят: имя уйдёт из denylist,
-            будущие join инстанса снова разрешены. Связи репликации восстанавливает
-            доводка воркера.
+            The key revocation of instance <b>{node}</b> will be lifted: the name
+            leaves the denylist, future joins of the instance are allowed again.
+            Replication links are restored by worker convergence.
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="green" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Снять отзыв
+              Allow
             </Button>
           </Group>
         </Stack>

@@ -37,43 +37,43 @@ export function FinalizeBucketModal({ cluster, bucketId, owner, shards, opened, 
     .map((s) => {
       const labels: string[] = [];
       if ((s.runtime?.subscriptions ?? []).some((n) => n === sub || n === subRb))
-        labels.push('живая подписка');
-      if (s.state === 'TO_REMOVE') labels.push('к удалению');
+        labels.push('live subscription');
+      if (s.state === 'TO_REMOVE') labels.push('to remove');
       return { value: s.name, label: labels.length > 0 ? `${s.name} (${labels.join(', ')})` : s.name };
     });
 
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Финализировать bucket_${bucketId}`} centered>
+    <Modal opened={opened} onClose={onClose} title={`Finalize bucket_${bucketId}`} centered>
       <Stack gap="sm">
         <Select
-          label="Убрать артефакты на шарде"
-          placeholder="Выберите шард"
+          label="Clean up artifacts on shard"
+          placeholder="Select a shard"
           data={shardData}
           value={oldShard}
           onChange={setOldShard}
-          nothingFoundMessage="Нет других шардов"
+          nothingFoundMessage="No other shards"
         />
-        <Alert color="red" variant="light" title="Необратимо">
-          На выбранном шарде будет DROP SCHEMA <b>{`bucket_${bucketId}`}</b> СО ДАННЫМИ
-          (необратимо); подписки/публикации/слоты срезаются; владелец <b>{owner}</b> не трогается.
+        <Alert color="red" variant="light" title="Irreversible">
+          The selected shard will get DROP SCHEMA <b>{`bucket_${bucketId}`}</b> INCLUDING DATA
+          (irreversible); subscriptions/publications/slots are dropped; the owner <b>{owner}</b> is untouched.
         </Alert>
         {serverError !== null ? (
           <Alert color={serverError.status === 409 ? 'yellow' : 'red'} variant="light">
             {serverError.status === 409
-              ? (serverError.detail ?? 'Финализация отклонена')
+              ? (serverError.detail ?? 'Finalization rejected')
               : serverError.status === 400
-                ? (serverError.detail ?? 'Проверьте параметры')
-                : 'etcd недоступен — повторите позже'}
+                ? (serverError.detail ?? 'Check the parameters')
+                : 'etcd is unavailable — retry later'}
           </Alert>
         ) : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button color="red" variant="light" disabled={oldShard === null}
             loading={mutation.isPending}
             onClick={() => oldShard !== null && mutation.mutate(oldShard)}>
-            Убрать артефакты
+            Clean up artifacts
           </Button>
         </Group>
       </Stack>

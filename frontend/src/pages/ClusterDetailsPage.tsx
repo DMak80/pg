@@ -35,8 +35,8 @@ export function ClusterDetailsPage() {
         onRetry={() => void query.refetch()}
         notFound={
           <Stack gap="xs">
-            <Text>Кластер не найден</Text>
-            <Anchor component={Link} to="/clusters" size="sm">← Кластеры</Anchor>
+            <Text>Cluster not found</Text>
+            <Anchor component={Link} to="/clusters" size="sm">← Clusters</Anchor>
           </Stack>
         }
       />
@@ -56,12 +56,12 @@ export function ClusterDetailsPage() {
   return (
     <Stack gap="md">
       <div>
-        <Anchor component={Link} to="/clusters" size="sm">← Кластеры</Anchor>
+        <Anchor component={Link} to="/clusters" size="sm">← Clusters</Anchor>
         <Group gap="sm" mt={4} justify="space-between">
           <Group gap="sm">
             <Title order={2}>{data.name}</Title>
             {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
-            {toRemove ? <Badge color="red" variant="light">к удалению</Badge> : null}
+            {toRemove ? <Badge color="red" variant="light">to remove</Badge> : null}
             {/* t06: бейдж режима в шапке (arch/03 §3) */}
             {data.synchronousModeStrict
               ? <Badge color="red" variant="light">strict</Badge>
@@ -82,14 +82,14 @@ export function ClusterDetailsPage() {
         <Text c="dimmed" size="sm">
           {/* Бакеты — только у шардированных (arch/03 §2): нешардированная = 1
               вырожденный бакет, счётчик не информативен — прочерк. */}
-          БД: {data.dbName ?? '—'} · Бакеты: {data.sharded ? data.bucketsCount : '—'} · Создан: {formatUnix(data.createdUnix)}
+          DB: {data.dbName ?? '—'} · Buckets: {data.sharded ? data.bucketsCount : '—'} · Created: {formatUnix(data.createdUnix)}
         </Text>
       </div>
       <Tabs defaultValue="shards">
         <Tabs.List>
-          <Tabs.Tab value="shards">Шарды</Tabs.Tab>
-          {data.sharded ? <Tabs.Tab value="buckets">Бакеты</Tabs.Tab> : null}
-          <Tabs.Tab value="moves">Переезды</Tabs.Tab>
+          <Tabs.Tab value="shards">Shards</Tabs.Tab>
+          {data.sharded ? <Tabs.Tab value="buckets">Buckets</Tabs.Tab> : null}
+          <Tabs.Tab value="moves">Moves</Tabs.Tab>
           <Tabs.Tab value="heals">Heals</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="shards" pt="sm">

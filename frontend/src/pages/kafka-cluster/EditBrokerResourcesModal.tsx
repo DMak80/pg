@@ -31,9 +31,9 @@ export function EditBrokerResourcesModal({
       onClose();
       notifications.show({
         color: 'green',
-        title: 'Декларация ресурсов обновлена',
-        message: 'Воркер применит её автоматически: rolling-пересоздание брокеров, '
-          + 'по одному за тик (данные сохраняются).',
+        title: 'Resource declaration updated',
+        message: 'The worker will apply it automatically: rolling broker recreation, '
+          + 'one per tick (data is preserved).',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: kafkaQueryKeys.cluster(cluster) });
@@ -51,30 +51,30 @@ export function EditBrokerResourcesModal({
 
   return (
     <Modal opened={opened} onClose={onClose}
-      title={`Ресурсы ${broker.name} — ${cluster}`} centered>
+      title={`Resources of ${broker.name} — ${cluster}`} centered>
       <Stack gap="sm">
         <Group grow>
           <NumberInput label="CPU" value={cpu} step={0.5} min={0.01} max={64}
             onChange={(v) => setCpu(Number(v ?? 0))} />
-          <NumberInput label="Память, GiB" value={memGi} min={1} max={65536}
+          <NumberInput label="Memory, GiB" value={memGi} min={1} max={65536}
             onChange={(v) => setMemGi(Number(v ?? 0))} />
-          <NumberInput label="Диск, GiB" value={diskGi} min={1} max={65536}
+          <NumberInput label="Disk, GiB" value={diskGi} min={1} max={65536}
             onChange={(v) => setDiskGi(Number(v ?? 0))} />
         </Group>
         {decreasing ? (
           <Alert color="yellow" variant="light">
-            Уменьшение CPU/памяти может привести к OOM или деградации брокера
-            (риск — на операторе).
+            Decreasing CPU/memory may cause OOM or broker degradation
+            (the risk is on the operator).
           </Alert>
         ) : null}
         <Text size="sm" c="dimmed">
-          Применяется автоматически: rolling-пересоздание брокеров, по одному за
-          тик; данные сохраняются. Диск — справочное поле (квот нет).
+          Applied automatically: rolling broker recreation, one per tick; data is
+          preserved. Disk is an advisory field (no quotas).
         </Text>
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button disabled={unchanged} loading={mutation.isPending}>Применить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button disabled={unchanged} loading={mutation.isPending}>Apply</Button>
         </Group>
       </Stack>
     </Modal>

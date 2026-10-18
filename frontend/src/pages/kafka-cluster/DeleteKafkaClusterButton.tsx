@@ -21,20 +21,21 @@ export function DeleteKafkaClusterButton({ cluster }: { cluster: string }) {
 
   return (
     <>
-      <Button color="red" variant="light" onClick={() => setOpened(true)}>Удалить кластер</Button>
+      <Button color="red" variant="light" onClick={() => setOpened(true)}>Delete cluster</Button>
       <Modal opened={opened} onClose={() => setOpened(false)}
-        title={`Удалить kafka-кластер ${cluster}`} centered>
+        title={`Delete Kafka cluster ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Кластер <b>{cluster}</b> перейдёт в <b>TO_REMOVE</b> (обратного перехода нет).
-            ВОРКЕР снимет контейнеры и тома брокеров, очистит весь префикс
-            /kafka/clusters/{cluster}/ и координационные ключи (включая заявку ротации).
+            Cluster <b>{cluster}</b> will move to <b>TO_REMOVE</b> (no way back).
+            THE WORKER will tear down the broker containers and volumes, clean the
+            entire /kafka/clusters/{cluster}/ prefix and coordination keys (including
+            the rotation ticket).
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button color="red" loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Удалить
+              Delete
             </Button>
           </Group>
         </Stack>

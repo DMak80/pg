@@ -26,9 +26,9 @@ export function RotatePasswordButton({
       setOpened(false);
       notifications.show({
         color: 'green',
-        title: 'Заявка отправлена',
-        message: `Ротацию ${role}-пароля выполнит воркер: окно двух паролей без рестарта ноды. `
-          + 'После применения подключения со старым паролем отвергаются — клиенты должны перечитать креды.',
+        title: 'Ticket submitted',
+        message: `The ${role}-password rotation will be performed by the worker: a two-password window without a node restart. `
+          + 'After it is applied, connections with the old password are rejected — clients must re-read the credentials.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: valkeyQueryKeys.clusters });
@@ -37,7 +37,7 @@ export function RotatePasswordButton({
   });
 
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
-  const label = role === 'app' ? 'Сменить app-пароль' : 'Сменить admin-пароль';
+  const label = role === 'app' ? 'Rotate app password' : 'Rotate admin password';
 
   return (
     <>
@@ -52,18 +52,20 @@ export function RotatePasswordButton({
         title={`${label} — ${cluster}`} centered>
         <Stack gap="sm">
           <Text>
-            Воркер поставит ноде ДВА пароля (старый и новый), затем атомарно заменит
-            <b> {role}_password</b> в etcd и снимет старый кред. Рестарта ноды нет.
+            The worker will give the node TWO passwords (old and new), then atomically
+            replace <b> {role}_password</b> in etcd and remove the old credential.
+            No node restart.
           </Text>
-          <Alert color="yellow" variant="light" title="Внимание">
-            После применения подключения со старым паролем отвергаются до
-            перечитывания кредов — окно двух паролей живёт до конца ротации.
+          <Alert color="yellow" variant="light" title="Warning">
+            After it is applied, connections with the old password are rejected until
+            the credentials are re-read — the two-password window lives until the
+            rotation ends.
           </Alert>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setOpened(false)}>Отмена</Button>
+            <Button variant="default" onClick={() => setOpened(false)}>Cancel</Button>
             <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>
-              Сменить пароль
+              Rotate password
             </Button>
           </Group>
         </Stack>

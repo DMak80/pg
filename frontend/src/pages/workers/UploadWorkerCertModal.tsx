@@ -34,8 +34,8 @@ export function UploadWorkerCertModal({ worker, opened, onClose }: {
 
   // Зеркало §4.3 (клиентская часть): непустые поля с корректными PEM-заголовками.
   function validate(): string | null {
-    if (!certPem.includes('-----BEGIN CERTIFICATE-----')) return 'сертификат: ожидается PEM -----BEGIN CERTIFICATE-----';
-    if (!keyPem.includes('-----BEGIN PRIVATE KEY-----')) return 'ключ: ожидается PEM PKCS#8 -----BEGIN PRIVATE KEY-----';
+    if (!certPem.includes('-----BEGIN CERTIFICATE-----')) return 'certificate: PEM -----BEGIN CERTIFICATE----- expected';
+    if (!keyPem.includes('-----BEGIN PRIVATE KEY-----')) return 'key: PKCS#8 PEM -----BEGIN PRIVATE KEY----- expected';
     return null;
   }
 
@@ -51,7 +51,7 @@ export function UploadWorkerCertModal({ worker, opened, onClose }: {
   }
 
   return (
-    <Modal opened={opened} onClose={onClose} title={`Серт API ${worker}: загрузить PEM-пару`} size="lg">
+    <Modal opened={opened} onClose={onClose} title={`API cert of ${worker}: upload a PEM pair`} size="lg">
       <Stack gap="sm">
         {serverError !== null && (
           <Alert color="red" title={serverError.title ?? `HTTP ${serverError.status}`}>
@@ -59,9 +59,9 @@ export function UploadWorkerCertModal({ worker, opened, onClose }: {
           </Alert>
         )}
         <Group justify="space-between">
-          <span>Сертификат (PEM)</span>
+          <span>Certificate (PEM)</span>
           <FileButton onChange={(f) => void pickFile(setCertPem, f)} accept=".pem,.crt,.cer,text/plain">
-            {(props) => <Button variant="light" size="xs" {...props}>Из файла…</Button>}
+            {(props) => <Button variant="light" size="xs" {...props}>From file…</Button>}
           </FileButton>
         </Group>
         <Textarea
@@ -73,9 +73,9 @@ export function UploadWorkerCertModal({ worker, opened, onClose }: {
           data-autofocus
         />
         <Group justify="space-between">
-          <span>Приватный ключ (PKCS#8 PEM)</span>
+          <span>Private key (PKCS#8 PEM)</span>
           <FileButton onChange={(f) => void pickFile(setKeyPem, f)} accept=".pem,.key,text/plain">
-            {(props) => <Button variant="light" size="xs" {...props}>Из файла…</Button>}
+            {(props) => <Button variant="light" size="xs" {...props}>From file…</Button>}
           </FileButton>
         </Group>
         <Textarea
@@ -87,8 +87,8 @@ export function UploadWorkerCertModal({ worker, opened, onClose }: {
         />
         {fieldError !== null && <Alert color="yellow">{fieldError}</Alert>}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button onClick={submit} loading={mutation.isPending}>Загрузить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} loading={mutation.isPending}>Upload</Button>
         </Group>
       </Stack>
     </Modal>

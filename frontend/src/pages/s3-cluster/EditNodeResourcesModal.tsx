@@ -31,8 +31,8 @@ export function EditNodeResourcesModal({
       onClose();
       notifications.show({
         color: 'green',
-        title: 'Декларация ресурсов обновлена',
-        message: 'Воркер применит её автоконверге надзора — пересозданием контейнера инстанса.',
+        title: 'Resource declaration updated',
+        message: 'The worker will apply it with the supervision auto-converge — by recreating the instance container.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: s3QueryKeys.cluster(cluster) });
@@ -43,24 +43,24 @@ export function EditNodeResourcesModal({
 
   return (
     <Modal opened={opened} onClose={onClose}
-      title={`Ресурсы ${node.name} — ${cluster}`} centered>
+      title={`Resources of ${node.name} — ${cluster}`} centered>
       <Stack gap="sm">
         <Group grow>
           <NumberInput label="CPU" value={cpu ?? ''} step={0.1} min={0.01} max={64}
             onChange={(v) => setCpu(v === undefined || v === '' ? null : Number(v))} />
-          <NumberInput label="Память, GiB" value={memGi ?? ''} min={1} max={65536}
+          <NumberInput label="Memory, GiB" value={memGi ?? ''} min={1} max={65536}
             onChange={(v) => setMemGi(v === undefined || v === '' ? null : Number(v))} />
-          <NumberInput label="Диск, GiB" value={diskGi ?? ''} min={1} max={65536}
+          <NumberInput label="Disk, GiB" value={diskGi ?? ''} min={1} max={65536}
             onChange={(v) => setDiskGi(v === undefined || v === '' ? null : Number(v))} />
         </Group>
         <Text size="sm" c="dimmed">
-          Пустое поле = не менять (сервер merge'ит с текущей декларацией).
-          Применяется пересозданием контейнера инстанса — данные на volume нетронуты.
+          An empty field = keep unchanged (the server merges with the current declaration).
+          Applied by recreating the instance container — the volume data is untouched.
         </Text>
         {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}
         <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
-          <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>Применить</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button loading={mutation.isPending} onClick={() => mutation.mutate()}>Apply</Button>
         </Group>
       </Stack>
     </Modal>

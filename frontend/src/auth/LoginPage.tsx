@@ -30,10 +30,10 @@ export function LoginPage() {
       queryClient.setQueryData(queryKeys.session, { username });
       navigate(from ?? '/', { replace: true });
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) setError('Неверный логин или пароль');
+      if (e instanceof ApiError && e.status === 401) setError('Invalid username or password');
       else if (e instanceof ApiError && e.status === 429)
-        setError(`Слишком много попыток, подождите ${e.retryAfterSeconds ?? 60} с`);
-      else setError('Панель недоступна');
+        setError(`Too many attempts, wait ${e.retryAfterSeconds ?? 60} s`);
+      else setError('Panel is unavailable');
     } finally {
       setSubmitting(false);
     }
@@ -43,25 +43,25 @@ export function LoginPage() {
     <Container size="xs" pt="xl">
       <Center>
         <Card withBorder shadow="sm" padding="lg" radius="md" w="100%">
-          <Title order={2} mb="md">Вход в AdminPanel</Title>
+          <Title order={2} mb="md">Sign in to AdminPanel</Title>
           <form onSubmit={(event) => void handleSubmit(event)}>
             <Stack>
               <TextInput
-                label="Логин"
+                label="Username"
                 value={username}
                 onChange={(e) => setUsername(e.currentTarget.value)}
                 autoComplete="username"
                 required
               />
               <PasswordInput
-                label="Пароль"
+                label="Password"
                 value={password}
                 onChange={(e) => setPassword(e.currentTarget.value)}
                 autoComplete="current-password"
                 required
               />
               {error !== null && <Alert color="red" variant="light">{error}</Alert>}
-              <Button type="submit" loading={submitting}>Войти</Button>
+              <Button type="submit" loading={submitting}>Sign in</Button>
             </Stack>
           </form>
         </Card>

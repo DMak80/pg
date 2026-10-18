@@ -27,9 +27,9 @@ export function StrictModeSwitch({ cluster, state, strict }: {
       setPending(null);
       notifications.show({
         color: 'green',
-        title: 'Config обновлён',
-        message: 'Значение записано в etcd; к живому Patroni его применит конвергенция DCS воркера '
-          + '(тики надзора, без рестартов). Наблюдение — HA-страница /service/<scope>/config.',
+        title: 'Config updated',
+        message: 'The value is written to etcd; the worker DCS convergence will apply it to the live '
+          + 'Patroni (supervision ticks, no restarts). Monitoring — the HA page /service/<scope>/config.',
         autoClose: 8000,
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.cluster(cluster) });
@@ -42,7 +42,7 @@ export function StrictModeSwitch({ cluster, state, strict }: {
   return (
     <>
       <Group gap={6}>
-        <Text size="sm" span c="dimmed">режим:</Text>
+        <Text size="sm" span c="dimmed">mode:</Text>
         {/* Бейдж режима (arch/03 §3): strict — красный, availability — teal */}
         {strict
           ? <Badge color="red" variant="light">strict</Badge>
@@ -56,38 +56,38 @@ export function StrictModeSwitch({ cluster, state, strict }: {
           onChange={(e) => setPending(e.currentTarget.checked)}
         />
         {!active ? (
-          <Text size="sm" c="dimmed">доступно после инициализации</Text>
+          <Text size="sm" c="dimmed">available after initialization</Text>
         ) : null}
       </Group>
       <Modal opened={pending !== null} onClose={() => setPending(null)}
-        title="Переключить strict-режим?" centered>
+        title="Switch strict mode?" centered>
         <Stack gap="sm">
           {pending === true ? (
-            <Alert color="yellow" variant="light" title="Включение strict (durability)">
-              Запись будет блокироваться при потере sync-реплики: Patroni держит
-              синхронный standby — ни один коммит не подтверждается без реплики.
-              Требуются реплики ≥ 2 на каждом шарде.
+            <Alert color="yellow" variant="light" title="Enabling strict (durability)">
+              Writes will be blocked if the sync replica is lost: Patroni keeps a
+              synchronous standby — no commit is acknowledged without the replica.
+              Requires at least 2 replicas on every shard.
             </Alert>
           ) : (
-            <Alert color="yellow" variant="light" title="Выключение strict (availability)">
-              При failover возможна потеря неподтверждённых транзакций («хвост»):
-              мастер продолжит принимать запись асинхронно без sync-реплики.
+            <Alert color="yellow" variant="light" title="Disabling strict (availability)">
+              On failover, unacknowledged transactions (the "tail") may be lost:
+              the master will keep accepting writes asynchronously without the sync replica.
             </Alert>
           )}
           {serverError ? (
             <Alert color="red" variant="light">
               {serverError.status === 400
-                ? (serverError.detail ?? 'Валидация не прошла')
+                ? (serverError.detail ?? 'Validation failed')
                 : serverError.status === 409
-                  ? (serverError.detail ?? 'Кластер не Active')
-                  : (serverError.detail ?? 'Повторите позже')}
+                  ? (serverError.detail ?? 'Cluster is not Active')
+                  : (serverError.detail ?? 'Retry later')}
             </Alert>
           ) : null}
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setPending(null)}>Отмена</Button>
+            <Button variant="default" onClick={() => setPending(null)}>Cancel</Button>
             <Button loading={mutation.isPending}
               onClick={() => pending !== null && mutation.mutate(pending)}>
-              Переключить
+              Switch
             </Button>
           </Group>
         </Stack>

@@ -39,7 +39,7 @@ export function PollingProvider({ children }: { children: ReactNode }) {
 // Доступ к переключателю; использование вне провайдера — ошибка программирования.
 export function usePollingInterval(): PollingState {
   const ctx = useContext(PollingContext);
-  if (ctx === null) throw new Error('usePollingInterval: нет PollingProvider выше по дереву');
+  if (ctx === null) throw new Error('usePollingInterval: no PollingProvider above in the tree');
   return ctx;
 }
 

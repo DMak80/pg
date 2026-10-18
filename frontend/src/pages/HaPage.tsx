@@ -28,17 +28,17 @@ export function HaPage() {
     <Stack gap="md">
       <Title order={2}>HA</Title>
       {scopes.data.length === 0 ? (
-        <Text c="dimmed">HA-scope'ы не найдены</Text>
+        <Text c="dimmed">No HA scopes found</Text>
       ) : (
         <Table.ScrollContainer minWidth={700}>
           <Table highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Scope</Table.Th>
-                <Table.Th>Кластер/шард</Table.Th>
-                <Table.Th>Лидер</Table.Th>
-                <Table.Th>Члены</Table.Th>
-                <Table.Th>Макс. лаг</Table.Th>
+                <Table.Th>Cluster/shard</Table.Th>
+                <Table.Th>Leader</Table.Th>
+                <Table.Th>Members</Table.Th>
+                <Table.Th>Max lag</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -67,7 +67,7 @@ function ScopeRow({ scope }: { scope: HaScopeSummaryDto }) {
         {scope.matched ? (
           <Text size="sm" ff="monospace">{scope.cluster ?? '—'}/{scope.shard ?? '—'}</Text>
         ) : (
-          <Tooltip label="scope не сопоставлен кластеру (arch/02 §7)">
+          <Tooltip label="scope is not mapped to a cluster (arch/02 §7)">
             <span>
               <Text size="sm" c="dimmed" span>— </Text>
               <Badge color="yellow" variant="light">unmatched</Badge>
@@ -78,9 +78,9 @@ function ScopeRow({ scope }: { scope: HaScopeSummaryDto }) {
       <Table.Td>
         {scope.leaderName === null ? (
           scope.matched ? (
-            <Badge color="red" variant="light">нет лидера</Badge>
+            <Badge color="red" variant="light">no leader</Badge>
           ) : (
-            <Text size="sm" c="dimmed">нет лидера</Text>
+            <Text size="sm" c="dimmed">no leader</Text>
           )
         ) : (
           <Text ff="monospace" size="sm">{scope.leaderName}</Text>

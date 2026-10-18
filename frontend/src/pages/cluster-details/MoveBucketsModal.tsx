@@ -31,7 +31,7 @@ export function MoveBucketsModal({ cluster, shards, buckets, pendingMoves, opene
   );
   const fromData = shards.map((s) => ({
     value: s.name,
-    label: `${s.name} (${bucketCounts[s.name] ?? 0} бакетов)${s.state === 'TO_REMOVE' ? ' · к удалению' : ''}`,
+    label: `${s.name} (${bucketCounts[s.name] ?? 0} buckets)${s.state === 'TO_REMOVE' ? ' · to remove' : ''}`,
   }));
   // Приёмники: кроме источника и не TO_REMOVE (Д9).
   const toData = shards
@@ -79,15 +79,15 @@ export function MoveBucketsModal({ cluster, shards, buckets, pendingMoves, opene
   // Успех: сводка результата вместо тоста (решение при планировании — РП-4).
   if (result !== null) {
     return (
-      <Modal opened={opened} onClose={() => { setResult(null); onClose(); }} title="Перенести бакеты" centered>
+      <Modal opened={opened} onClose={() => { setResult(null); onClose(); }} title="Move buckets" centered>
         <Stack gap="sm">
           <Alert color="teal" variant="light">
-            Поставлено в очередь: {result.queued.length}
-            {result.skipped.length > 0 ? ` (уже стояли: ${result.skipped.length})` : ''}.
-            Переезды начнёт PgWorker — смотрите вкладку «Переезды».
+            Queued: {result.queued.length}
+            {result.skipped.length > 0 ? ` (already queued: ${result.skipped.length})` : ''}.
+            Moves will be started by PgWorker — see the "Moves" tab.
           </Alert>
           <Group justify="flex-end">
-            <Button onClick={() => { setResult(null); onClose(); }}>Готово</Button>
+            <Button onClick={() => { setResult(null); onClose(); }}>Done</Button>
           </Group>
         </Stack>
       </Modal>
@@ -99,18 +99,18 @@ export function MoveBucketsModal({ cluster, shards, buckets, pendingMoves, opene
   const serverError = mutation.error instanceof ApiError ? mutation.error : null;
 
   return (
-    <Modal opened={opened} onClose={onClose} title="Перенести бакеты" centered size="lg">
+    <Modal opened={opened} onClose={onClose} title="Move buckets" centered size="lg">
       <Stack gap="sm">
         <Group grow gap="sm">
-          <Select label="Шард-источник" data={fromData} value={from}
+          <Select label="Source shard" data={fromData} value={from}
             onChange={(v) => { setFrom(v); setTo(null); setSelected(new Set()); }}
-            nothingFoundMessage="Нет шардов" />
-          <Select label="Шард-приёмник" data={toData} value={to} onChange={setTo}
-            nothingFoundMessage="Выберите другой источник" />
+            nothingFoundMessage="No shards" />
+          <Select label="Target shard" data={toData} value={to} onChange={setTo}
+            nothingFoundMessage="Choose another source" />
         </Group>
         {from !== null ? (
           sourceBuckets.length === 0 ? (
-            <Text size="sm" c="dimmed">На источнике нет бакетов</Text>
+            <Text size="sm" c="dimmed">The source has no buckets</Text>
           ) : (
             <ScrollArea.Autosize mah={260}>
               <Stack gap={4}>
@@ -122,7 +122,7 @@ export function MoveBucketsModal({ cluster, shards, buckets, pendingMoves, opene
                       label={<Group gap={6}><span>{`bucket_${b.id}`}</span>
                         {ticket !== undefined ? (
                           ticket.op === 'move' ? (
-                            <Badge color="grape" variant="light">в очереди</Badge>
+                            <Badge color="grape" variant="light">queued</Badge>
                           ) : (
                             <Badge color="orange" variant="light">{ticket.op}</Badge>
                           )
@@ -143,29 +143,29 @@ export function MoveBucketsModal({ cluster, shards, buckets, pendingMoves, opene
             <Button size="xs" variant="subtle"
               onClick={() => setSelected(new Set(sourceBuckets
                 .filter((b) => b.state === 'ACTIVE' && !claimed.has(b.id)).map((b) => b.id)))}>
-              выбрать все
+              select all
             </Button>
-            <Button size="xs" variant="subtle" onClick={() => setSelected(new Set())}>снять</Button>
+            <Button size="xs" variant="subtle" onClick={() => setSelected(new Set())}>clear</Button>
           </Group>
         ) : null}
         <Text size="sm" c="dimmed">
-          Переезды выполняются последовательно, по одному бакету за раз (обрабатывает
-          PgWorker); порядок — по возрастанию id.
+          Moves run sequentially, one bucket at a time (handled by PgWorker);
+          order is by ascending id.
         </Text>
         {serverError !== null ? (
           <Alert color={serverError.status === 409 ? 'yellow' : 'red'} variant="light">
             {serverError.status === 409
-              ? (serverError.detail ?? 'Переезд отклонён')
+              ? (serverError.detail ?? 'Move rejected')
               : serverError.status === 400
-                ? (serverError.detail ?? 'Проверьте параметры')
-                : 'etcd недоступен — повторите позже'}
+                ? (serverError.detail ?? 'Check the parameters')
+                : 'etcd is unavailable — retry later'}
           </Alert>
         ) : null}
         <Group justify="flex-end" mt="xs">
-          <Button variant="default" onClick={onClose}>Отмена</Button>
+          <Button variant="default" onClick={onClose}>Cancel</Button>
           <Button loading={mutation.isPending} disabled={from === null || to === null || selected.size === 0}
             onClick={submit}>
-            Поставить в очередь
+            Queue
           </Button>
         </Group>
       </Stack>
