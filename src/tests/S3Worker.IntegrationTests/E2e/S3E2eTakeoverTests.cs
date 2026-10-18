@@ -22,7 +22,7 @@ public class S3E2eTakeoverTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -68,16 +68,16 @@ public class S3E2eTakeoverTests
 
             // A4: резолв ДЕРЖАТЕЛЯ по etcd-фактам и kill (docker rm -f).
             var claimJson = await GetOrNullAsync(fx, $"/s3worker/claims/{cluster}", ct);
-            claimJson.Should().NotBeNull("клэйм существует непосредственно перед kill");
+            claimJson.Should().NotBeNull("claim exists right before the kill");
             var holderInstance = JsonStringField(claimJson, "instance");
-            holderInstance.Should().NotBeNullOrEmpty("claims.instance обязан быть непустым");
+            holderInstance.Should().NotBeNullOrEmpty("claims.instance must be non-empty");
 
             var holderUrl = await GetOrNullAsync(fx, $"/s3worker/api/{holderInstance}", ct);
-            holderUrl.Should().NotBeNull($"api-ключ держателя {holderInstance} обязан существовать");
+            holderUrl.Should().NotBeNull($"api key of holder {holderInstance} must exist");
             var holderPort = new Uri(JsonStringField(holderUrl, "url")!).Port;
             var matched = new[] { fx.Api1Port, fx.Api2Port }.Count(p => p == holderPort);
             matched.Should().Be(1,
-                $"порт держателя {holderPort} обязан совпасть ровно с одним api-портом ({fx.Api1Port}/{fx.Api2Port})");
+                $"holder port {holderPort} must match exactly one api port ({fx.Api1Port}/{fx.Api2Port})");
 
             var holderName = holderPort == fx.Api1Port ? fx.Worker1Name : fx.Worker2Name;
             var survivorName = holderPort == fx.Api1Port ? fx.Worker2Name : fx.Worker1Name;
@@ -94,7 +94,7 @@ public class S3E2eTakeoverTests
                     survivorId = kv.Key.Split('/')[^1];
             }
             survivorId.Should().NotBeNullOrEmpty(
-                $"api-ключ survivor'а (порт {survivorPort}) обязан существовать");
+                $"api key of the survivor (port {survivorPort}) must exist");
 
             // A5: takeover — мертвец гаснет с lease (≤ 15 с + запас), выживший
             // пере-захватывает клэйм и доигрывает provisioning до Active
@@ -111,9 +111,9 @@ public class S3E2eTakeoverTests
 
             // I: двойной контроллер невозможен — клэйм один, instance = survivor.
             var claimAfter = await GetOrNullAsync(fx, $"/s3worker/claims/{cluster}", ct);
-            claimAfter.Should().NotBeNull("клэйм после takeover существует");
+            claimAfter.Should().NotBeNull("claim exists after takeover");
             JsonStringField(claimAfter, "instance").Should().Be(survivorId,
-                "клэйм пере-захвачен выжившим (двойной контроллер невозможен)");
+                "claim re-acquired by the survivor (double controller impossible)");
 
             // Финал: DELETE кластера → survivor доигрывает демонтаж (канон
             // самоочистки: ноды/тома снимает воркер, teardown ассертит чистоту).
@@ -142,7 +142,7 @@ public class S3E2eTakeoverTests
                 && !await fx.VolumeExistsAsync($"s3w-{cluster}-east2-data"),
                 TimeSpan.FromSeconds(60), ct);
 
-            Console.WriteLine($"[PHASE] takeover-done: holder={holderName} убит, survivor={survivorName} доиграл provisioning и демонтаж");
+            Console.WriteLine($"[PHASE] takeover-done: holder={holderName} killed, survivor={survivorName} finished provisioning and deprovisioning");
         }
         catch
         {

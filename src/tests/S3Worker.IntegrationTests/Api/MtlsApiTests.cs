@@ -72,7 +72,7 @@ public class MtlsApiTests
     }
 
     [Fact]
-    public async Task Mtls_БезКлиентСертаОтказ_ССертомОк()
+    public async Task Mtls_NoClientCertRefused_WithCertOk()
     {
         // Arrange: TLS-хост на свободном порту (динамический).
         var port = FreePort();

@@ -20,7 +20,7 @@ public class S3E2eSupervisionTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -57,9 +57,9 @@ public class S3E2eSupervisionTests
 
             (await S3E2eScaleTests.GetOrNullAsync(fx,
                     $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct))
-                .Should().Be(placedOn, "пересоздание — на том же placed_on (том ноды живёт на хосте)");
+                .Should().Be(placedOn, "re-creation — on the same placed_on (node volume lives on the host)");
             (await ListTestObjectsAsync(probePort, ct)).Should().Contain("s3w-e2e-supervise",
-                "тест-объект пережил пересоздание ноды (volume сохранён)");
+                "test object survived node re-creation (volume preserved)");
 
             // Act 2: pause → health молчит → UNREACHABLE по NodeDeadSec=15
             // (ждать ≤ 40 c); деструктива нет: контейнер существует, volume есть.
@@ -69,9 +69,9 @@ public class S3E2eSupervisionTests
                     $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "UNREACHABLE",
                 TimeSpan.FromSeconds(40), ct);
             (await fx.ContainerAliveAsync($"s3w-{cluster}-east1")).Should().BeTrue(
-                "UNREACHABLE — без деструктива: контейнер жив (paused)");
+                "UNREACHABLE — no destructive action: container alive (paused)");
             (await fx.VolumeExistsAsync($"s3w-{cluster}-east1-data")).Should().BeTrue(
-                "UNREACHABLE — без деструктива: volume на месте");
+                "UNREACHABLE — no destructive action: volume in place");
 
             // Act 3: unpause → health отвечает → RUNNING возвращается.
             await fx.RunDockerAsync(["unpause", $"s3w-{cluster}-east1"], ct);

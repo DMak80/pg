@@ -29,7 +29,7 @@ public class SyncProbeApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task SyncProbe_КластераНет_404()
+    public async Task SyncProbe_NoCluster_404()
     {
         // Arrange: имя без config в etcd.
         var cluster = Cluster("absent");
@@ -45,7 +45,7 @@ public class SyncProbeApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task SyncProbe_НеАктивен_409()
+    public async Task SyncProbe_NotActive_409()
     {
         // Arrange: config с state (NOT_INITIALIZED — зона A).
         var cluster = Cluster("init");
@@ -65,7 +65,7 @@ public class SyncProbeApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task SyncProbe_202ИPutIfAbsent()
+    public async Task SyncProbe_202AndPutIfAbsent()
     {
         // Arrange: Active-config (без state).
         var cluster = Cluster("probe");
@@ -90,7 +90,7 @@ public class SyncProbeApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task SyncProbe_ПовторПриЖивой_202БезПерезаписи()
+    public async Task SyncProbe_RepeatWhileAlive_202NoOverwrite()
     {
         // Arrange: Active-config; первый заявитель e2e-1.
         var cluster = Cluster("again");

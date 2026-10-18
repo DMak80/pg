@@ -192,7 +192,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         {
             var objects = await Driver.ListNodeObjectsAsync(cluster, ct);
             objects.IsSuccess.Should().BeTrue();
-            objects.Value.Should().BeEmpty($"после teardown не осталось объектов {cluster}");
+            objects.Value.Should().BeEmpty($"no {cluster} objects left after teardown");
         }
     }
 
@@ -261,14 +261,14 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         var range = await Gateway.RangeAsync(Endpoint, "/s3/", TestContext.Current.CancellationToken);
         if (!range.IsSuccess)
             throw new InvalidOperationException(
-                $"range /s3/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
+                $"range /s3/ failed (fixture etcd unreachable?): {range.Error?.Message}");
 
         return S3SnapshotParser.Parse(range.Value).Value.Clusters.FirstOrDefault(c => c.Cluster == cluster);
     }
 
     public async Task<S3ClusterSnapshot> RequireSnapshotAsync(string cluster)
         => await SnapshotAsync(cluster)
-           ?? throw new InvalidOperationException($"кластер {cluster} не найден в etcd");
+           ?? throw new InvalidOperationException($"cluster {cluster} not found in etcd");
 
     public async Task<string?> GetAsync(string key)
     {
@@ -293,7 +293,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
             await Task.Delay(500, TestContext.Current.CancellationToken);
         }
 
-        throw new TimeoutException($"бюджет {budget.TotalSeconds:F0} c исчерпан: {what}");
+        throw new TimeoutException($"budget of {budget.TotalSeconds:F0} s exhausted: {what}");
     }
 
     private static string EnsureArtifactsDir()

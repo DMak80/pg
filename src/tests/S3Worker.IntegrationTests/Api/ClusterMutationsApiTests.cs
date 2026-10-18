@@ -46,7 +46,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     // §8.2.1: создание с 0 инстансов → config nodes=0, state=NOT_INITIALIZED,
     // ключей nodes/* нет (снятие state воркером — вне API-теста, E2E §8.3.5).
     [Fact]
-    public async Task Create_НольИнстансов_ConfigNodes0()
+    public async Task Create_ZeroInstances_ConfigNodes0()
     {
         // Arrange
         var cluster = Cluster("empty");
@@ -69,7 +69,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task Create_201_КлючиКанона()
+    public async Task Create_201_CanonicalKeys()
     {
         // Arrange: уникальное имя (etcd фикстуры общий для класса).
         var cluster = Cluster("mk");
@@ -97,7 +97,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task Create_Повтор_409()
+    public async Task Create_Duplicate_409()
     {
         // Arrange
         var cluster = Cluster("dup");
@@ -116,7 +116,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     // §8.2.2 (часть): коллизия имени инстанса с существующим — 409
     // (предсуществование ключа инстанса в новом кластере).
     [Fact]
-    public async Task Create_КоллизияИмениИнстанса_409()
+    public async Task Create_InstanceNameCollision_409()
     {
         // Arrange: в новом кластере предзаписан ключ инстанса ghost (имя занято).
         var cluster = Cluster("coll");
@@ -132,11 +132,11 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
         // Assert: 409 (коллизия имени); config не создан.
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var config = await gateway.GetAsync(fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", TestContext.Current.CancellationToken);
-        config.Value.Should().BeNull("заявка отклонена до клэйм-txn");
+        config.Value.Should().BeNull("request rejected before claim-txn");
     }
 
     [Fact]
-    public async Task Create_Невалидная_400СПолем()
+    public async Task Create_Invalid_400WithField()
     {
         // Arrange: platform=minio + паттерн-нарушение имени (оба в errors).
         var cluster = Cluster("bad");
@@ -159,7 +159,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task Create_НеизвестныйПрофиль_422СПеречнем()
+    public async Task Create_UnknownProfile_422WithList()
     {
         // Arrange: профиль absent-profile отсутствует в env воркера.
         var cluster = Cluster("prof");
@@ -206,7 +206,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     // §8.2.2: add-node с именем из тела — 201; паттерн/резерв — 400; коллизия
     // имени — 409; предел 9 — 409.
     [Fact]
-    public async Task AddNode_201_Коллизия409_Резерв400_Предел409()
+    public async Task AddNode_201_Collision409_Reserved400_Limit409()
     {
         // Arrange: кластер 2 инстанса, воркер дошёл до Active (эмуляция).
         var cluster = Cluster("add");
@@ -254,7 +254,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task DeleteNode_202_204_Последний_409()
+    public async Task DeleteNode_202_204_Last_409()
     {
         // Arrange: 2 инстанса (вывод east2) + 1 инстанс (гвард последнего).
         var cluster = Cluster("rmn");
@@ -280,7 +280,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     // §8.2.3: PUT links — валидный → 202 + значение ключа; несуществующее имя /
     // a==b / дубль (в т.ч. зеркальный) → 400; чужой кластер → 404.
     [Fact]
-    public async Task PutLinks_202_ЗначениеВEtcd_400_Валидации_404()
+    public async Task PutLinks_202_ValueInEtcd_400Validation_404()
     {
         // Arrange
         var cluster = Cluster("lnk");
@@ -325,7 +325,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     // §8.2.4: deny → 202, повтор → 204, имя в etcd; 404 чужого инстанса;
     // allow → 202, повтор → 204, имя убрано.
     [Fact]
-    public async Task DenyAllow_202_204_ЗначениеВEtcd_404()
+    public async Task DenyAllow_202_204_ValueInEtcd_404()
     {
         // Arrange
         var cluster = Cluster("dny");
@@ -365,7 +365,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task Rotations_201_Повтор_200_Чужое_404()
+    public async Task Rotations_201_Duplicate_200_Missing_404()
     {
         // Arrange
         var cluster = Cluster("rot");
@@ -404,7 +404,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task СерияВызовов_МетрикаОперацийВMetrics()
+    public async Task CallSeries_OperationsMetricInMetrics()
     {
         // Arrange: фабрика БЕЗ RemoveAll<IHostedService> — OTel-MeterProvider
         // hosted-сервис, без него /metrics не экспортирует доменные инструменты.
@@ -444,7 +444,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     }
 
     [Fact]
-    public async Task SeedDemo_Идемпотентен_ФлагOff_404()
+    public async Task SeedDemo_Idempotent_FlagOff_404()
     {
         // Arrange: demo уникализуем невозможностью — флаг off проверяем
         // отдельной фабрикой ниже; здесь — идемпотентность on-фабрикой.
@@ -460,7 +460,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
 
     // Флаг off: отдельная фабрика (не коллекция — свой etcd).
     [Fact]
-    public async Task SeedDemo_ФлагOff_404()
+    public async Task SeedDemo_FlagOff_404()
     {
         // Arrange: свой etcd + фабрика с EnableSeedEndpoint=false.
         var etcd = new S3EtcdFixture();

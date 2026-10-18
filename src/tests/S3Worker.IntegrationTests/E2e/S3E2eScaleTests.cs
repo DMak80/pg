@@ -24,7 +24,7 @@ public class S3E2eScaleTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -66,19 +66,19 @@ public class S3E2eScaleTests
 
             // Assert 1: endpoints = 1 адрес — прежний east1 (advertised).
             var endpoints = await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct);
-            endpoints.Should().NotBeNull("endpoints после E-финала актуальны");
+            endpoints.Should().NotBeNull("endpoints up to date after the E-final");
             endpoints!.Split(',')[0].Should().StartWith("host.docker.internal:");
 
             // Assert 2: гварды — delete последней ноды → 409 (arch/23 §2: 1..9).
             using var lastNode = await api.DeleteAsync(
                 $"/api/s3/clusters/{cluster}/nodes/east1", ct);
             lastNode.StatusCode.Should().Be(HttpStatusCode.Conflict,
-                "последняя нода кластера невыводима");
+                "last node of the cluster cannot be removed");
 
             // Assert 3: докомплект — повтор delete уже снесённой east2 → 404.
             using var again = await api.DeleteAsync(
                 $"/api/s3/clusters/{cluster}/nodes/east2", ct);
-            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "ноды east2 больше нет");
+            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "node east2 no longer exists");
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
             await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
@@ -102,7 +102,7 @@ public class S3E2eScaleTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -143,7 +143,7 @@ public class S3E2eScaleTests
 
             // Assert: повтор DELETE → 404 (кластера нет).
             using var again = await api.DeleteAsync($"/api/s3/clusters/{cluster}", ct);
-            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "кластер демонтирован");
+            again.StatusCode.Should().Be(HttpStatusCode.NotFound, "cluster torn down");
 
             // Ассерт чистоты фикстуры покрывает docker-остатки (DisposeAsync).
         }

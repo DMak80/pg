@@ -58,7 +58,7 @@ internal static class FreePortWindow
             }
         }
 
-        throw new InvalidOperationException("FreePortWindow: свободного окна не нашлось");
+        throw new InvalidOperationException("FreePortWindow: no free window found");
     }
 
     private static bool IsWindowFree(int start)

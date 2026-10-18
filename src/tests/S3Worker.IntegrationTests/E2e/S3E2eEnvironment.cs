@@ -114,12 +114,12 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     public string Api2BaseUrl
         => _api2Port is { } port
             ? $"https://localhost:{port}"
-            : throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+            : throw new InvalidOperationException("no second API: environment was started with StartAsync (single-instance contour)");
 
     /// <summary>Хост-порт API второго воркера — только StartTwoAsync.</summary>
     public int Api2Port
         => _api2Port
-           ?? throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+           ?? throw new InvalidOperationException("no second API: environment was started with StartAsync (single-instance contour)");
 
     /// <summary>Docker-имя первого воркера (s3w-ew1-{runId}; одиночный — s3w-ew).</summary>
     public string Worker1Name => _workerNames[0];
@@ -127,7 +127,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     /// <summary>Docker-имя второго воркера (s3w-ew2-{runId}) — только StartTwoAsync.</summary>
     public string Worker2Name
         => _worker2 is null
-            ? throw new InvalidOperationException("второго воркера нет: окружение поднято StartAsync (одиночный контур)")
+                ? throw new InvalidOperationException("no second worker: environment was started with StartAsync (single-instance contour)")
             : _workerNames[1];
 
     public string ClusterTag => _runId[..8];
@@ -154,7 +154,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         var name = _workerNames[workerIndex];
         var apiPort = workerIndex == 0
             ? _api1Port
-            : _api2Port ?? throw new InvalidOperationException("второго воркера нет (одиночный контур)");
+            : _api2Port ?? throw new InvalidOperationException("no second worker (single-instance contour)");
 
         await SafeStopAsync(_workers[workerIndex], remove: true);
 
@@ -179,7 +179,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     public static async Task<S3E2eEnvironment> StartAsync(string slug)
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
-            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+            throw new InvalidOperationException("E2E requires PGW_TEST_DOCKER=1 (otherwise Skip in the test)");
 
         var runId = Guid.NewGuid().ToString("N");
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
@@ -238,7 +238,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                 environment._etcdPortValue = etcdPort;
                 environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
-                    "# Зачистка окружения прогона (own-only):\n"
+                    "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f s3w-ew-{runId} s3w-ee-{runId}\n"
                     + $"docker ps -aq --filter name={environment.ClusterTag} | xargs -r docker rm -f\n"
                     + $"docker volume ls -q --filter name={environment.ClusterTag} | xargs -r docker volume rm -f\n"
@@ -273,7 +273,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     public static async Task<S3E2eEnvironment> StartTwoAsync(string slug)
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
-            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+            throw new InvalidOperationException("E2E requires PGW_TEST_DOCKER=1 (otherwise Skip in the test)");
 
         var runId = Guid.NewGuid().ToString("N");
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
@@ -344,7 +344,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                 environment._etcdPortValue = etcdPort;
                 environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
-                    "# Зачистка окружения прогона (own-only):\n"
+                    "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f s3w-ew1-{runId} s3w-ew2-{runId} s3w-ee-{runId}\n"
                     + $"docker ps -aq --filter name={environment.ClusterTag} | xargs -r docker rm -f\n"
                     + $"docker volume ls -q --filter name={environment.ClusterTag} | xargs -r docker volume rm -f\n"
@@ -429,7 +429,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             ["publish", "src/S3Worker.App/S3Worker.App.csproj", "-c", "Release", "-o", S3WPublishDir, "--nologo"], ct);
         await RunHostAsync(root, "docker",
             ["build", "-q", "-f", "docker/S3Worker.Dockerfile", "-t", workerImage, S3WPublishDir], ct);
-        Console.WriteLine($">>> [PHASE] e2e {workerImage} готов ({Elapsed(s3wT0)})");
+        Console.WriteLine($">>> [PHASE] e2e {workerImage} ready ({Elapsed(s3wT0)})");
         return workerImage;
     }
 
@@ -445,7 +445,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         using var process = Process.Start(inspect)!;
         await process.WaitForExitAsync();
         if (process.ExitCode != 0)
-            throw new InvalidOperationException($"образ {image} отсутствует — собери: {buildCommand}");
+            throw new InvalidOperationException($"image {image} is missing — build it: {buildCommand}");
     }
 
     private static async Task RunHostAsync(
@@ -460,7 +460,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             CreateNoWindow = true,
         };
         using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"не удалось запустить {file}");
+            ?? throw new ApplicationException($"failed to start {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromMinutes(5));
         var outTask = process.StandardOutput.ReadToEndAsync();
@@ -475,7 +475,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             try { process.Kill(entireProcessTree: true); } catch { /* уже вышел */ }
-            throw new ApplicationException($"{file} {string.Join(' ', args)} не завершился за 5 мин — убит");
+            throw new ApplicationException($"{file} {string.Join(' ', args)} did not finish within 5 min — killed");
         }
     }
 
@@ -485,7 +485,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docker", "S3Worker.Dockerfile")))
             dir = dir.Parent;
         return dir?.FullName
-            ?? throw new InvalidOperationException("корень репо (docker/S3Worker.Dockerfile) не найден");
+            ?? throw new InvalidOperationException("repo root (docker/S3Worker.Dockerfile) not found");
     }
 
     // ── Хелперы docker-CLI (канон KafkaE2eEnvironment.RunProcessAsync:
@@ -507,7 +507,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             CreateNoWindow = true,
         };
         using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"не удалось запустить {file}");
+            ?? throw new ApplicationException($"failed to start {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -546,7 +546,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             }
 
             throw new ApplicationException(
-                $"{file} {string.Join(' ', args)} не завершился за {timeout.TotalSeconds:0} c — убит; хвост:\n{drained}");
+                $"{file} {string.Join(' ', args)} did not finish within {timeout.TotalSeconds:0} s — killed; tail:\n{drained}");
         }
     }
 
@@ -722,7 +722,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         }
 
         await CollectDiagnosticsAsync($"timeout-{phase}");
-        throw new TimeoutException($"[PHASE] {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан");
+        throw new TimeoutException($"[PHASE] {phase}: budget of {budget.TotalSeconds:F0} s exhausted");
     }
 
     public async ValueTask DisposeAsync()
@@ -755,8 +755,8 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         await Gateway.DeleteAsync(EtcdEndpoint, "/s3worker/", prefix: true, ct);
         var s3Left = await Gateway.RangeAsync(EtcdEndpoint, "/s3/", ct);
         var workerLeft = await Gateway.RangeAsync(EtcdEndpoint, "/s3worker/", ct);
-        s3Left.Value.Should().BeEmpty("ключи /s3/ удалены teardown'ом окружения");
-        workerLeft.Value.Should().BeEmpty("ключи /s3worker/ удалены teardown'ом окружения");
+        s3Left.Value.Should().BeEmpty("/s3/ keys removed by environment teardown");
+        workerLeft.Value.Should().BeEmpty("/s3worker/ keys removed by environment teardown");
 
         foreach (var worker in _workers)
             await SafeStopAsync(worker, remove: true);
@@ -774,17 +774,17 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             { RedirectStandardOutput = true, RedirectStandardError = true };
             using var process = Process.Start(inspect)!;
             await process.WaitForExitAsync();
-            process.ExitCode.Should().NotBe(0, $"контейнер {name} удалён teardown'ом");
+            process.ExitCode.Should().NotBe(0, $"container {name} removed by teardown");
         }
 
-        await AssertNoObjectsAsync($"name={ClusterTag}", "контейнеров/томов тега сценария");
-        await AssertNoObjectsAsync($"name=s3w-{_runId}", $"контейнеров/томов прогона {ClusterTag}");
+        await AssertNoObjectsAsync($"name={ClusterTag}", "containers/volumes of the scenario tag");
+        await AssertNoObjectsAsync($"name=s3w-{_runId}", $"containers/volumes of run {ClusterTag}");
 
         var networkInspect = new ProcessStartInfo("docker", $"network inspect {NetName}")
         { RedirectStandardOutput = true, RedirectStandardError = true };
         using var networkProcess = Process.Start(networkInspect)!;
         await networkProcess.WaitForExitAsync();
-        networkProcess.ExitCode.Should().NotBe(0, $"сеть {NetName} удалена teardown'ом");
+        networkProcess.ExitCode.Should().NotBe(0, $"network {NetName} removed by teardown");
     }
 
     // Нет ни контейнеров, ни томов по filter — иначе ассерт чистоты падает.
@@ -796,7 +796,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         using var containers = Process.Start(ps)!;
         var containerOutput = (await containers.StandardOutput.ReadToEndAsync()).Trim();
         await containers.WaitForExitAsync();
-        containerOutput.Should().BeEmpty($"после teardown не осталось {what}");
+        containerOutput.Should().BeEmpty($"no {what} left after teardown");
 
         var volumePs = new ProcessStartInfo("docker",
             $"volume ls -q --filter {filter}")
@@ -804,7 +804,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         using var volumes = Process.Start(volumePs)!;
         var volumeOutput = (await volumes.StandardOutput.ReadToEndAsync()).Trim();
         await volumes.WaitForExitAsync();
-        volumeOutput.Should().BeEmpty($"после teardown не осталось {what}");
+        volumeOutput.Should().BeEmpty($"no {what} left after teardown");
     }
 
     private static async Task SafeStopAsync(IContainer container, bool remove)

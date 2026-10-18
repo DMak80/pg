@@ -18,12 +18,12 @@ namespace S3Worker.IntegrationTests.E2e;
 public class S3E2eMeshTests
 {
     [Fact]
-    public async Task PkiПровижининг_РепликацияПоЛинкам()
+    public async Task PkiProvisioning_ReplicationOverLinks()
     {
         // Arrange: окружение + кластер 2 инстанса с графом east1↔east2.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -45,7 +45,7 @@ public class S3E2eMeshTests
 
             // Assert 1: docker inspect env — репликационный материал задан.
             var env1 = EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"));
-            env1["OWNS3_REPLICATION_CERT"].Should().Contain("publicKeyPem", "сертификат инстанса значениями");
+            env1["OWNS3_REPLICATION_CERT"].Should().Contain("publicKeyPem", "instance certificate with values");
             env1["OWNS3_REPLICATION_PRIVATE_KEY"].Should().Contain("BEGIN PRIVATE KEY");
             env1["OWNS3_REPLICATION_TRUST_CA"].Should().Contain("publicKeyPem");
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
@@ -90,7 +90,7 @@ public class S3E2eMeshTests
                     return false; // ещё не доставлено
                 }
             }, TimeSpan.FromSeconds(150), ct);
-            delivered.Should().BeGreaterThan(TimeSpan.Zero, "объект доставлен в бюджет");
+            delivered.Should().BeGreaterThan(TimeSpan.Zero, "object delivered within the budget");
 
             await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2");
         }
@@ -102,12 +102,12 @@ public class S3E2eMeshTests
     }
 
     [Fact]
-    public async Task Переезд_СертификатТотЖе_СвязьЖива_ДанныеЖивы()
+    public async Task Move_SameCert_LinkAlive_DataAlive()
     {
         // Arrange: кластер с линком и объектом.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -147,7 +147,7 @@ public class S3E2eMeshTests
                 && (await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east1/state", ct)) == "RUNNING",
                 TimeSpan.FromSeconds(115), ct);
             var certAfter = EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_REPLICATION_CERT"];
-            certAfter.Should().Be(certBefore, "контейнер пересоздан с тем же сертификатом из etcd");
+            certAfter.Should().Be(certBefore, "container re-created with the same certificate from etcd");
 
             // Связь жива (доводка G / курсоры сохранены), объект не потерян.
             var restored = await fx.WaitPhaseAsync("link-restored", async () =>
@@ -155,7 +155,7 @@ public class S3E2eMeshTests
                 var status = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
                 return status is not null && NeighborsOf(status.Value).Contains("east2");
             }, TimeSpan.FromSeconds(60), ct);
-            restored.Should().BeGreaterThan(TimeSpan.Zero, "связь восстановлена доводкой");
+            restored.Should().BeGreaterThan(TimeSpan.Zero, "link restored by convergence");
 
             using var s3Again = S3Client(PortOf(ports, "east1"));
             var fetched = await s3Again.GetObjectAsync(new GetObjectRequest
@@ -164,7 +164,7 @@ public class S3E2eMeshTests
                 Key = objectKey,
             }, ct);
             using var reader = new StreamReader(fetched.ResponseStream);
-            (await reader.ReadToEndAsync(ct)).Should().Be("persist-me", "volume пережил переезд");
+            (await reader.ReadToEndAsync(ct)).Should().Be("persist-me", "volume survived the move");
 
             await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2");
         }
@@ -176,12 +176,12 @@ public class S3E2eMeshTests
     }
 
     [Fact]
-    public async Task DenyAllow_Изоляция_ВосстановлениеДоводкой()
+    public async Task DenyAllow_Isolation_RestoreByConvergence()
     {
         // Arrange: кластер с линком.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -231,7 +231,7 @@ public class S3E2eMeshTests
 
             var manualJoin = await AdminJoinAsync(fx, PortOf(ports, "east2"), PortOf(ports, "east1"), ct);
             manualJoin.Should().NotBe(HttpStatusCode.OK,
-                "отозванный инстанс не может join (deny-list)");
+                "revoked instance cannot join (deny-list)");
 
             // Act 2: allow — снятие отзыва; связь восстанавливается доводкой G.
             (await api.PostAsync($"/api/s3/clusters/{cluster}/nodes/east2/allow", null, ct))
@@ -254,12 +254,12 @@ public class S3E2eMeshTests
     }
 
     [Fact]
-    public async Task ЧастичныйГраф_СоставПоДекларации()
+    public async Task PartialGraph_MembershipByDeclaration()
     {
         // Arrange: 3 инстанса, links только {east1,east2} и {east1,west1}.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -307,12 +307,12 @@ public class S3E2eMeshTests
     }
 
     [Fact]
-    public async Task НольИнстансов_ДобавлениеИЛинки()
+    public async Task ZeroInstances_AddAndLinks()
     {
         // Arrange: кластер-декларация без инстансов.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -345,7 +345,7 @@ public class S3E2eMeshTests
                     && config.Contains("\"nodes\":0");
             }, TimeSpan.FromSeconds(30), ct);
             (await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct))
-                .Should().BeNull("endpoints существует ⟺ ≥1 инстанс (arch/23 §2)");
+                .Should().BeNull("endpoints exists ⟺ ≥1 instance (arch/23 §2)");
 
             // Act: добавление двух инстансов в живой кластер + links.
             foreach (var name in new[] { "east1", "east2" })

@@ -17,12 +17,12 @@ namespace S3Worker.IntegrationTests.E2e;
 public class S3E2eSyncProbeTests
 {
     [Fact]
-    public async Task ШтатнаяСинхронность_MatrizaOk_Synced()
+    public async Task SteadyState_MatrixOk_Synced()
     {
         // Arrange: кластер 2 инстанса + links {east1,east2}; объект в bucket.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -104,9 +104,9 @@ public class S3E2eSyncProbeTests
             pairs[0].GetProperty("to").GetString().Should().Be("east2");
             pairs[0].GetProperty("missing").GetInt64().Should().Be(0);
             pairs[0].GetProperty("extra").GetInt64().Should().Be(0);
-            pairs[0].TryGetProperty("lag_bytes", out _).Should().BeFalse("штатная синхронность без лагов");
+            pairs[0].TryGetProperty("lag_bytes", out _).Should().BeFalse("steady-state sync without lag");
             (await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/probes/{cluster}", ct))
-                .Should().BeNull("заявка снесена прогоном");
+                .Should().BeNull("request removed by the run");
 
             await S3E2eScaleTests.DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2");
         }
@@ -118,12 +118,12 @@ public class S3E2eSyncProbeTests
     }
 
     [Fact]
-    public async Task ПоКоманде_ЗаявкаПрогонDel_ИдемпотентныйПовтор()
+    public async Task OnCommand_RequestRunDelete_IdempotentRepeat()
     {
         // Arrange: кластер с линком; первый прогон уже был (ключи с T1).
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -176,12 +176,12 @@ public class S3E2eSyncProbeTests
     }
 
     [Fact]
-    public async Task НедоступнаяНода_СтрокиНет_ПараНеСверена()
+    public async Task UnreachableNode_NoRow_PairNotVerified()
     {
         // Arrange: живой кластер с линком и доставленным объектом.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -286,12 +286,12 @@ public class S3E2eSyncProbeTests
     }
 
     [Fact]
-    public async Task ОтставаниеДогон_LaggingСОчередью_SyncedПослеДоставки()
+    public async Task LagCatchUp_LaggingWithQueue_SyncedAfterDelivery()
     {
         // Arrange: кластер с линком; объект в east1 при остановленном east2.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -403,12 +403,12 @@ public class S3E2eSyncProbeTests
     }
 
     [Fact]
-    public async Task DenyИнстанс_ПустаяМатрицаOk_SyncedБезПар()
+    public async Task DenyInstance_EmptyMatrixOk_SyncedNoPairs()
     {
         // Arrange: кластер с линком и доставленным объектом; deny east2.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 

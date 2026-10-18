@@ -29,7 +29,7 @@ public class S3E2eRotationTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -49,7 +49,7 @@ public class S3E2eRotationTests
             var id1Before = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
             var id2Before = await fx.ContainerIdAsync($"s3w-{cluster}-east2");
             EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
-                .Should().Be(S3E2eEnvironment.RootUser, "ноды созданы с env профиля воркера");
+                .Should().Be(S3E2eEnvironment.RootUser, "nodes created with the worker's profile env");
 
             // Act 1: заявка ротации с НЕИЗМЕНЁННЫМИ секретами (env нод уже
             // правильный) → matches-сверка: заявка гасится БЕЗ пересозданий
@@ -71,9 +71,9 @@ public class S3E2eRotationTests
             // Assert 1: ноды НЕ пересозданы (env уже правильный), env нод ==
             // env воркера, ноды живы.
             (await fx.ContainerIdAsync($"s3w-{cluster}-east1")).Should().Be(id1Before,
-                "env нод уже на профиле — matches no-op без пересозданий");
+                "node env already on the profile — matches no-op without re-creations");
             (await fx.ContainerIdAsync($"s3w-{cluster}-east2")).Should().Be(id2Before,
-                "env нод уже на профиле — matches no-op без пересозданий");
+                "node env already on the profile — matches no-op without re-creations");
             EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
                 .Should().Be(S3E2eEnvironment.RootUser);
 
@@ -125,10 +125,10 @@ public class S3E2eRotationTests
             {
                 var port = int.Parse(address.Split(':')[1]);
                 (await RootCallCodeAsync(port, RotatedUser, RotatedPassword, ct))
-                    .Should().Be(HttpStatusCode.OK, $"новая пара допущена к :{port}");
+                    .Should().Be(HttpStatusCode.OK, $"new pair admitted to :{port}");
                 (await RootCallCodeAsync(port, S3E2eEnvironment.RootUser,
                         S3E2eEnvironment.RootPassword, ct))
-                    .Should().Be(HttpStatusCode.Forbidden, $"старая пара отклонена на :{port}");
+                    .Should().Be(HttpStatusCode.Forbidden, $"old pair rejected on :{port}");
             }
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).
@@ -147,12 +147,12 @@ public class S3E2eRotationTests
     // /s3worker/probes/&lt;C&gt;; тик зонда исполняет её (для кластера без линков —
     // пустая матрица OK / SYNCED без пар) и сносит заявку.
     [Fact]
-    public async Task SyncProbe_ЗаявкаИсполнена_КлючиПустогоМеша()
+    public async Task SyncProbe_RequestExecuted_EmptyMeshKeys()
     {
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 

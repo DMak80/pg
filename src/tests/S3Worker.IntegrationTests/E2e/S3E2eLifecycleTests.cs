@@ -29,7 +29,7 @@ public class S3E2eLifecycleTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -66,7 +66,7 @@ public class S3E2eLifecycleTests
             // Assert 1: config — канонический JSON Active (state снят, nodes=2).
             var config = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/config", ct)).Value!.Value;
-            config.Should().NotContain("\"state\"", "Active — state снят воркером");
+            config.Should().NotContain("\"state\"", "Active — state removed by the worker");
             using (var doc = JsonDocument.Parse(config))
             {
                 doc.RootElement.GetProperty("platform").GetString().Should().Be("owns3");
@@ -80,7 +80,7 @@ public class S3E2eLifecycleTests
             {
                 (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                     $"/s3/clusters/{cluster}/nodes/{node}/placed_on", ct)).Value!.Value
-                    .Should().Be("local", $"{node} размещена на селекторе docker_host=local");
+                    .Should().Be("local", $"{node} placed on the docker_host=local selector");
             }
 
             // Assert 3: endpoints — advertised-пары host.docker.internal:P для обеих нод
@@ -99,7 +99,7 @@ public class S3E2eLifecycleTests
                     var port = int.Parse(address.Split(':')[1]);
                     allocDoc.RootElement.EnumerateObject()
                         .Any(n => n.Value.GetProperty("s3").GetInt32() == port)
-                        .Should().BeTrue($"порт {address} из portalloc");
+                        .Should().BeTrue($"port {address} comes from portalloc");
                 }
             }
 
@@ -107,9 +107,9 @@ public class S3E2eLifecycleTests
             foreach (var node in new[] { "east1", "east2" })
             {
                 (await fx.ContainerAliveAsync($"s3w-{cluster}-{node}"))
-                    .Should().BeTrue($"контейнер s3w-{cluster}-{node} поднят воркером");
+                    .Should().BeTrue($"container s3w-{cluster}-{node} brought up by the worker");
                 (await fx.VolumeExistsAsync($"s3w-{cluster}-{node}-data"))
-                    .Should().BeTrue($"том данных s3w-{cluster}-{node}-data создан воркером");
+                    .Should().BeTrue($"data volume s3w-{cluster}-{node}-data created by the worker");
             }
 
             // Assert 5: bucket per-install на каждой ноде (S3-проба root-кредом
@@ -119,10 +119,10 @@ public class S3E2eLifecycleTests
                 var port = int.Parse(address.Split(':')[1]);
                 (await ListBucketsWithRootAsync(port, ct)).Should()
                     .Contain(S3E2eEnvironment.BucketName,
-                        $"bucket {S3E2eEnvironment.BucketName} создан оркестратором на :{port}");
+                        $"bucket {S3E2eEnvironment.BucketName} created by the orchestrator on :{port}");
                 using var health = await new HttpClient().GetAsync(
                     $"http://{address}/healthz", ct);
-                health.StatusCode.Should().Be(HttpStatusCode.OK, $"/healthz ноды {address}");
+                health.StatusCode.Should().Be(HttpStatusCode.OK, $"/healthz of node {address}");
             }
 
             // Act 6: DELETE → 202 → демонтаж воркером (канон самоочистки:
@@ -147,7 +147,7 @@ public class S3E2eLifecycleTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -193,11 +193,11 @@ public class S3E2eLifecycleTests
                 $"/s3/clusters/{cluster}/endpoints", ct)).Value!.Value.Should().Be(endpointsBefore);
             var configAfter = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/config", ct)).Value!;
-            configAfter.Value.Should().Be(configBefore.Value, "config каноничен — перезаписи нет");
+            configAfter.Value.Should().Be(configBefore.Value, "config is canonical — no rewrite");
             configAfter.ModRevision.Should().Be(configBefore.ModRevision,
-                "после снятия state новых записей config нет (идемпотентность)");
+                "after state removal there are no new config writes (idempotency)");
             (await fx.ContainerIdAsync($"s3w-{cluster}-east1")).Should().Be(containerIdBefore,
-                "тики Active не пересоздают контейнер");
+                "Active ticks do not re-create the container");
 
             // Act: DELETE → 202 → демонтаж воркером (канон самоочистки).
             await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1");
@@ -219,7 +219,7 @@ public class S3E2eLifecycleTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -295,7 +295,7 @@ public class S3E2eLifecycleTests
             // Assert 3: volume west1 существует; bucket создан и на west1
             // (порт west1 — из portalloc: {"west1":{"host":…,"s3":p}}).
             (await fx.VolumeExistsAsync($"s3w-{cluster}-west1-data"))
-                .Should().BeTrue("том данных west1 создан воркером");
+                .Should().BeTrue("data volume of west1 created by the worker");
             var alloc = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3worker/portalloc/{cluster}", ct)).Value!.Value;
             int node3Port;
@@ -306,7 +306,7 @@ public class S3E2eLifecycleTests
             }
 
             (await ListBucketsWithRootAsync(node3Port, ct))
-                .Should().Contain(S3E2eEnvironment.BucketName, "bucket на west1 создан");
+                .Should().Contain(S3E2eEnvironment.BucketName, "bucket on west1 created");
 
             // Act 4: DELETE → 202 → демонтаж воркером (канон самоочистки).
             await DeleteClusterAndWaitCleanAsync(fx, api, cluster, ct, "east1", "east2", "west1");

@@ -22,7 +22,7 @@ public class S3E2eApiTests
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
         {
-            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            Assert.Skip("PGW_TEST_DOCKER=1 not set — docker E2E skipped");
             return;
         }
 
@@ -37,27 +37,27 @@ public class S3E2eApiTests
 
             // Assert 1: 400 — по кейсу на каждый бракованный аргумент.
             (await CreateCodeAsync(api, name: "Bad-Name", ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "name: верхний регистр/дефис вне канона");
+                .Should().Be(HttpStatusCode.BadRequest, "name: uppercase/hyphen outside the canon");
             (await CreateCodeAsync(api, platform: "pg", ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "platform — только owns3");
+                .Should().Be(HttpStatusCode.BadRequest, "platform — owns3 only");
             (await CreateCodeAsync(api, instances: Enumerable.Range(0, 10)
                     .Select(i => (object)new { name = $"n{i}", placement = new { dockerHost = "local" } })
                     .ToArray(), ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "instances вне 0..9 (макс)");
+                .Should().Be(HttpStatusCode.BadRequest, "instances outside 0..9 (max)");
             (await CreateCodeAsync(api, instances: new object[] { new { name = "east1" } }, ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "placement отсутствует — размещать некуда");
+                .Should().Be(HttpStatusCode.BadRequest, "placement missing — nowhere to place");
             (await CreateCodeAsync(api, instances: new object[] { new { name = "orchestrator", placement = new { dockerHost = "local" } } }, ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "резерв orchestrator (PKI оркестратора)");
+                .Should().Be(HttpStatusCode.BadRequest, "orchestrator reserved (orchestrator PKI)");
             (await CreateCodeAsync(api, cpu: 99m, ct: ct))
-                .Should().Be(HttpStatusCode.BadRequest, "cpu вне 0.01..64 (макс)");
+                .Should().Be(HttpStatusCode.BadRequest, "cpu outside 0.01..64 (max)");
 
             // Assert 2: 404 — чужой кластер (delete) и чужая нода (add-node).
             using var alien = await api.DeleteAsync("/api/s3/clusters/no-such-cluster", ct);
-            alien.StatusCode.Should().Be(HttpStatusCode.NotFound, "кластера нет");
+            alien.StatusCode.Should().Be(HttpStatusCode.NotFound, "cluster does not exist");
             using var alienNode = await api.PostAsJsonAsync(
                 "/api/s3/clusters/no-such-cluster/nodes",
                 new { name = "east1", placement = new { dockerHost = "local" } }, ct);
-            alienNode.StatusCode.Should().Be(HttpStatusCode.NotFound, "add-node на чужое имя");
+            alienNode.StatusCode.Should().Be(HttpStatusCode.NotFound, "add-node on a foreign name");
 
             // Arrange: живой кластер N=1 до Active (для 409/200-веток).
             await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1");
@@ -65,11 +65,11 @@ public class S3E2eApiTests
 
             // Assert 3: 409 — create-повтор на живом имени и delete последней ноды.
             (await CreateCodeAsync(api, name: cluster, ct: ct))
-                .Should().Be(HttpStatusCode.Conflict, "дубль живого имени");
+                .Should().Be(HttpStatusCode.Conflict, "duplicate of a live name");
             using var lastNode = await api.DeleteAsync(
                 $"/api/s3/clusters/{cluster}/nodes/east1", ct);
             lastNode.StatusCode.Should().Be(HttpStatusCode.Conflict,
-                "последняя нода кластера N=1 невыводима");
+                "last node of an N=1 cluster cannot be removed");
 
             // Assert 4: rotation-повтор → 200 (первая заявка жива — no-op).
             using var first = await api.PostAsync(
@@ -77,7 +77,7 @@ public class S3E2eApiTests
             first.StatusCode.Should().Be(HttpStatusCode.Created);
             using var second = await api.PostAsync(
                 $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
-            second.StatusCode.Should().Be(HttpStatusCode.OK, "повтор при живой заявке — no-op");
+            second.StatusCode.Should().Be(HttpStatusCode.OK, "repeat with a live request — no-op");
 
             // Assert 5: 422 — несуществующий secretProfile: перечень имён в
             // detail, ЗНАЧЕНИЯ секретов в теле ответа отсутствуют.
@@ -93,11 +93,11 @@ public class S3E2eApiTests
                 }, ct);
             noProfile.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
             var body = await noProfile.Content.ReadAsStringAsync(ct);
-            body.Should().Contain("BACKUPS-MAIN", "detail несёт перечень доступных профилей");
+            body.Should().Contain("BACKUPS-MAIN", "detail carries the list of available profiles");
             body.Should().NotContain(S3E2eEnvironment.RootPassword,
-                "значения секретов в ответ не попадают");
+                "secret values do not leak into the response");
             body.Should().NotContain(S3E2eEnvironment.WriterSecretKey,
-                "значения секретов в ответ не попадают");
+                "secret values do not leak into the response");
 
             // Финал: заявка ротации жива — кластер сносится delete'ом
             // (ротация-заявка умирает вместе с координацией X2/X3).

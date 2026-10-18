@@ -16,7 +16,7 @@ namespace S3Worker.IntegrationTests.S3;
 public class SupervisionTests(S3ClusterFixture fx)
 {
     [Fact]
-    public async Task СносКонтейнера_ПересозданиеНаТомЖеХосте_VolumeЖив()
+    public async Task ContainerRemoval_RecreateOnSameHost_VolumeAlive()
     {
         // Arrange: поднятый кластер N=1 + объект-метка в bucket.
         DockerTrait.SkipIfUnavailable();
@@ -41,11 +41,11 @@ public class SupervisionTests(S3ClusterFixture fx)
             S3ClusterFixture.AdvertisedHost, address.S3Port, fx.Secrets, "pgworker-backups",
             TestContext.Current.CancellationToken);
         bucketExists.Value.Should().BeTrue(
-            $"bucket после provisioning: exists={bucketExists.Value} err={bucketExists.Error?.Message}");
+            $"bucket after provisioning: exists={bucketExists.Value} err={bucketExists.Error?.Message}");
         // Бакет создан provisioning'ом — ждём оживления ноды перед PUT.
         await S3ClusterFixture.WaitAsync(async () =>
             (await fx.NodeClient.HealthAsync(probeHost, address.S3Port, TestContext.Current.CancellationToken)).Value,
-            TimeSpan.FromSeconds(fx.Options.NodeBootSec), "нода ожила перед PUT метки");
+            TimeSpan.FromSeconds(fx.Options.NodeBootSec), "node came alive before PUT of marker");
         (await s3.PutObjectAsync(new Amazon.S3.Model.PutObjectRequest
         {
             BucketName = "pgworker-backups",
@@ -73,7 +73,7 @@ public class SupervisionTests(S3ClusterFixture fx)
         // Volume сохранён: объект-метка читается (после оживления ноды).
         await S3ClusterFixture.WaitAsync(async () =>
             (await fx.NodeClient.HealthAsync("localhost", address.S3Port, TestContext.Current.CancellationToken)).Value,
-            TimeSpan.FromSeconds(fx.Options.NodeBootSec), "нода ожила после пересоздания");
+            TimeSpan.FromSeconds(fx.Options.NodeBootSec), "node came alive after re-creation");
         var marker = await s3.GetObjectAsync("pgworker-backups",
             $"supervision/{cluster}/marker.txt", TestContext.Current.CancellationToken);
         new StreamReader(marker.ResponseStream).ReadToEnd().Should().Be("volume-preserved");
@@ -96,7 +96,7 @@ public class SupervisionTests(S3ClusterFixture fx)
         // в supervision-записи work/<C> — выводим для диагностики).
         var usage = await fx.GetAsync($"/s3/clusters/{cluster}/nodes/node1/usage");
         var supervision = await fx.GetAsync($"/s3worker/work/{cluster}");
-        usage.Should().NotBeNull($"usage не записан; supervision={supervision}").And.Contain("\"updated_unix\":");
+        usage.Should().NotBeNull($"usage not written; supervision={supervision}").And.Contain("\"updated_unix\":");
     }
 
     private static AmazonS3Client NewS3Client(int port)

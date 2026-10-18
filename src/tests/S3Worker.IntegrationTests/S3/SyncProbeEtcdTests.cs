@@ -63,7 +63,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     // §8.2.1: заявка через API (WAF) → один тик SyncProbeProcess → оба ключа
     // записаны канонически, заявка снесена.
     [Fact]
-    public async Task ЗаявкаApi_Тик_КлючиЗаписаны_ЗаявкаСнесена()
+    public async Task ApiRequest_Tick_KeysWritten_RequestRemoved()
     {
         // Arrange: WAF на etcd фикстуры; стаб нод с взаимными probe-ответами
         // и равными sync-report страницами (конец сразу).
@@ -108,7 +108,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     // §8.2.2: периодический гейт — первый тик (ключей нет) прогон, второй
     // немедленно тихий, сдвиг часов ≥ SyncIntervalSec — прогон.
     [Fact]
-    public async Task ПериодическийГейт_Прогон_ТихийТик_Прогон()
+    public async Task PeriodicGate_Run_QuietTick_Run()
     {
         // Arrange
         var stub = new StubNodeClient();
@@ -239,19 +239,19 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
             string host, int port, OwnS3NodeSecrets creds, CancellationToken ct)
             => Task.FromResult(ProbeByPort.TryGetValue(port, out var report)
                 ? Result<OwnS3ProbeReport>.Success(report)
-                : Result<OwnS3ProbeReport>.Failed(new ApplicationException("probe не запрограммирован")));
+                : Result<OwnS3ProbeReport>.Failed(new ApplicationException("probe not programmed")));
 
         public Task<Result<OwnS3SyncReportPage>> GetSyncReportPageAsync(
             string host, int port, OwnS3NodeSecrets creds, string bucket, string? marker, CancellationToken ct)
             => Task.FromResult(
                 SyncReportPages.TryGetValue(port, out var pages) && pages.TryGetValue(marker ?? "", out var page)
                     ? Result<OwnS3SyncReportPage>.Success(page)
-                    : Result<OwnS3SyncReportPage>.Failed(new ApplicationException("страница не запрограммирована")));
+                    : Result<OwnS3SyncReportPage>.Failed(new ApplicationException("page not programmed")));
 
         public Task<Result<OwnS3ListPage>> ListObjectEntriesAsync(
             string host, int port, OwnS3NodeSecrets creds, string bucket, string? continuationToken, CancellationToken ct)
             => Task.FromResult(Listings.TryGetValue(port, out var entries)
                 ? Result<OwnS3ListPage>.Success(new OwnS3ListPage(entries, null))
-                : Result<OwnS3ListPage>.Failed(new ApplicationException("листинг не запрограммирован")));
+                : Result<OwnS3ListPage>.Failed(new ApplicationException("listing not programmed")));
     }
 }

@@ -14,7 +14,7 @@ namespace S3Worker.IntegrationTests.S3;
 public class ProvisioningTests(S3ClusterFixture fx)
 {
     [Fact]
-    public async Task Сид_ТикProvisioning_НодаИДискавери()
+    public async Task Seed_ProvisioningTick_NodeAndDiscovery()
     {
         // Arrange: сид NOT_INITIALIZED + клэйм.
         DockerTrait.SkipIfUnavailable();
@@ -45,12 +45,12 @@ public class ProvisioningTests(S3ClusterFixture fx)
         var health = await fx.NodeClient.HealthAsync(
             S3ClusterFixture.AdvertisedHost, address.S3Port, TestContext.Current.CancellationToken);
         health.IsSuccess.Should().BeTrue();
-        health.Value.Should().BeTrue("ownS3 /healthz после provisioning");
+        health.Value.Should().BeTrue("ownS3 /healthz after provisioning");
         var secrets = fx.Secrets;
         var bucket = await fx.NodeClient.BucketExistsAsync(
             S3ClusterFixture.AdvertisedHost, address.S3Port, secrets, "pgworker-backups", TestContext.Current.CancellationToken);
         bucket.IsSuccess.Should().BeTrue(bucket.Error?.Message);
-        bucket.Value.Should().BeTrue("bucket per-install создан root-кредом");
+        bucket.Value.Should().BeTrue("per-install bucket created by root credentials");
 
         // Дискавери: endpoints = localhost:<фактический порт>; state=RUNNING;
         // config без state; journal done.
@@ -80,7 +80,7 @@ public class ProvisioningTests(S3ClusterFixture fx)
     }
 
     [Fact]
-    public async Task ПовторныйТик_Идемпотентен()
+    public async Task RepeatTick_Idempotent()
     {
         // Arrange: поднятый кластер (первый тест серии — reuse запрещён;
         // поднимаем свой).
@@ -125,7 +125,7 @@ public class ProvisioningTests(S3ClusterFixture fx)
         }
 
         throw new TimeoutException(
-            $"provisioning {cluster} не дошёл до done за {fx.Options.NodeBootSec} c: {last.Error?.Message}");
+            $"provisioning of {cluster} did not reach done within {fx.Options.NodeBootSec} s: {last.Error?.Message}");
     }
 }
 

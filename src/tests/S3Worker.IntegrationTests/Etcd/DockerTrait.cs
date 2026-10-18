@@ -11,6 +11,6 @@ public static class DockerTrait
     public static void SkipIfUnavailable()
     {
         if (Environment.GetEnvironmentVariable(EnvVar) != "1")
-            Assert.Skip($"docker-тесты выключены (установите {EnvVar}=1 для включения)");
+            Assert.Skip($"docker tests are disabled (set {EnvVar}=1 to enable)");
     }
 }

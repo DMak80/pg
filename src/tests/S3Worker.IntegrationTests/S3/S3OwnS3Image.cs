@@ -33,8 +33,8 @@ internal static class S3OwnS3Image
             await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(
-                    $"образ {Tag} отсутствует — собери в ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
-            Phase(artifactsDir, $"внешний образ {Tag} найден (репозиторий ../OwnS3)");
+                    $"image {Tag} is missing — build it in ../OwnS3: bash ../OwnS3/deploy/build-image.sh");
+            Phase(artifactsDir, $"external image {Tag} found (repository ../OwnS3)");
             _ready = true;
         }
         finally
