@@ -41,13 +41,13 @@ public sealed class PortAllocHealer(
             return Result<int>.Failed(inspection.Error!); // слепота — не лечим
         if (inspection.Value is not { } found)
             return Result<int>.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}/{node}: контейнера нет — порт не выдумываем (S7)"));
+                $"healing-portalloc {cluster}/{node}: container missing — not inventing a port (S7)"));
 
         // Реконструированный порт обязан лежать в portalloc-диапазоне конфигурации:
         // вне его — мусорный inspect, запись сломала бы аллокатор.
         if (found.ClientHostPort < options.PortRangeFrom || found.ClientHostPort >= options.PortRangeTo)
             return Result<int>.Failed(new ApplicationException(
-                $"healing-portalloc {cluster}/{node}: published-порт {found.ClientHostPort} вне диапазона {options.PortRangeFrom}–{options.PortRangeTo}"));
+                $"healing-portalloc {cluster}/{node}: published port {found.ClientHostPort} outside range {options.PortRangeFrom}–{options.PortRangeTo}"));
 
         // journal-before-manipulations: фаза ДО первого txn.
         var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
@@ -78,7 +78,7 @@ public sealed class PortAllocHealer(
                     return Result<int>.Failed(reread.Error!);
                 if (!reread.Value.TryGetValue(node, out var foreign))
                     return Result<int>.Failed(new ApplicationException(
-                        $"healing-portalloc {cluster}/{node}: проигранный txn без записи соседа"));
+                        $"healing-portalloc {cluster}/{node}: lost txn with no neighbor entry"));
                 return Result<int>.Success(foreign.ClientPort);
             }
         }
@@ -97,7 +97,7 @@ public sealed class PortAllocHealer(
         if (foreignBusy.IsSuccess && foreignBusy.Value.Contains(found.ClientHostPort))
         {
             await journal.WritePhaseAsync(cluster, Op, "reconstructed-warning", claims.InstanceId,
-                $"порт {found.ClientHostPort} уже в portalloc чужого кластера", ct);
+                $"port {found.ClientHostPort} already in portalloc of another cluster", ct);
         }
 
         return Result<int>.Success(found.ClientHostPort);
@@ -122,7 +122,7 @@ public sealed class PortAllocHealer(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(ParsePortAlloc(kv.Value));
         }
 
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Формат arch/20 §3: {"node<k>":{"host":"h","client":17001}}.
@@ -169,6 +169,6 @@ public sealed class PortAllocHealer(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

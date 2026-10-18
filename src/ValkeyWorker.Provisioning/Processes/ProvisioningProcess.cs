@@ -268,7 +268,7 @@ public sealed class ProvisioningProcess(
         foreach (var node in NodeNames(snap))
         {
             if (!addresses.TryGetValue(node, out var address))
-                return Result.Failed(new ApplicationException($"provision {cluster}: нет адреса ноды {node}"));
+                return Result.Failed(new ApplicationException($"provision {cluster}: no address for node {node}"));
 
             var nodeSnap = snap.Nodes.GetValueOrDefault(node);
             var limits = ProcessCommon.ParseResources(nodeSnap?.Resources);
@@ -463,7 +463,7 @@ public sealed class ProvisioningProcess(
         return txn.Value.Succeeded
             ? Result.Success()
             : Result.Failed(new ApplicationException(
-                $"{ProcessCommon.ConfigKey(snap.Cluster)} изменился под нами — ретрай тиком"));
+                $"{ProcessCommon.ConfigKey(snap.Cluster)} changed under us — tick retry"));
     }
 
     // state сменился на TO_REMOVE (гонка с панелью).
@@ -515,7 +515,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -533,7 +533,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(

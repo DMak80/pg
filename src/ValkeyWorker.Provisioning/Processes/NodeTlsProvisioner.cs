@@ -102,5 +102,5 @@ public static class NodeTlsProvisioner
     private static X509Certificate2 ParseCa(string caPem)
         => ValkeyPki.TryParseCertificate(caPem, out var ca) && ca is not null
             ? ca
-            : throw new ArgumentException("ca_pem: невалидный PEM");
+            : throw new ArgumentException("ca_pem: invalid PEM");
 }

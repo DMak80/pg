@@ -87,7 +87,7 @@ public static class ProcessCommon
             return Result<string?>.Success(string.IsNullOrWhiteSpace(value) ? null : value.Trim());
         }
 
-        return Result<string?>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<string?>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Запись state ноды (failover по endpoints).
@@ -103,7 +103,7 @@ public static class ProcessCommon
             last = put;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     // Claimed-check: мутации — только держателем живого клэйма (arch/21 §6).
@@ -111,7 +111,7 @@ public static class ProcessCommon
         => claims.IsMine(cluster)
             ? Result.Success()
             : Result.Failed(new ApplicationException(
-                $"{op} {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"{op} {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
     /// <summary>
     /// Ресурсы декларации → лимиты контейнера (cpu/mem; disk — инфо, не парсится).

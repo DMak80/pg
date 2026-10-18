@@ -67,7 +67,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             return Result<ValkeyCredentials>.Success(ToCredentials(final.Value!));
 
         return Result<ValkeyCredentials>.Failed(new ApplicationException(
-            $"ensure секретов кластера {cluster}: после txn ключи неполны " +
+            $"ensure cluster secrets {cluster}: keys incomplete after txn " +
             $"(app_user: {final.Value?.AppUser is not null}, app_password: {final.Value?.AppPassword is not null}, " +
             $"admin_user: {final.Value?.AdminUser is not null}, admin_password: {final.Value?.AdminPassword is not null}, " +
             $"ca_pem: {final.Value?.CaPem is not null}, ca_key: {final.Value?.CaKey is not null})"));
@@ -130,7 +130,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 TrimOrNull(v[3]), TrimOrNull(v[4]), TrimOrNull(v[5])));
         }
 
-        return Result<RawSecrets?>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
+        return Result<RawSecrets?>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     // Чтение шести ключей одного endpoint'а: null-значения — ключ отсутствует.
@@ -168,7 +168,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private static string? TrimOrNull(string? raw)

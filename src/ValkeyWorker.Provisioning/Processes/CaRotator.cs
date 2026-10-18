@@ -68,7 +68,7 @@ public sealed class CaRotator(
         var cluster = snap.Cluster;
         if (!claims.IsMine(cluster))
             return Result<RotationOutcome>.Failed(new ApplicationException(
-                $"rotate-ca {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"rotate-ca {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // K0.1: заявка + journal.
         var ticket = await GetAsync(TicketKey(cluster), ct);
@@ -94,7 +94,7 @@ public sealed class CaRotator(
             // Failed = ретрай тиком (самокоррекции нет).
             if (snap.CaPem is null || snap.CaKey is null)
                 return Result<RotationOutcome>.Failed(new ApplicationException(
-                    $"rotate-ca {cluster}: окно открыто, но ca_pem/ca_key отсутствуют — внешняя порча, ретрай тиком"));
+                    $"rotate-ca {cluster}: window is open but ca_pem/ca_key are missing — external corruption, tick retry"));
             return await PhasesAsync(snap, ct);
         }
         if (!windowOpen.IsSuccess)
@@ -175,7 +175,7 @@ public sealed class CaRotator(
             return Result<RotationOutcome>.Failed(addresses.Error!);
         if (!addresses.Value.TryGetValue("node1", out var address))
             return Result<RotationOutcome>.Failed(new ApplicationException(
-                $"rotate-ca {cluster}: node1 не закреплён в portalloc"));
+                $"rotate-ca {cluster}: node1 is not allocated in portalloc"));
         var envResult = await driver.NodeEnvAsync(cluster, "node1", ct);
         if (!envResult.IsSuccess)
             return await FailAsync(cluster, envResult.Error!, "phase-r", ct);
@@ -279,7 +279,7 @@ public sealed class CaRotator(
                 return Result.Success();
             if (_clock.GetUtcNow() - startedAt > budget)
                 return Result.Failed(new TimeoutException(
-                    $"rotate-ca нода не отвечает по TLS (якорь NEW) {budget.TotalSeconds:F0} c " +
+                    $"rotate-ca node is not responding over TLS (NEW anchor) {budget.TotalSeconds:F0} s " +
                     $"({ping.Error!.Message})"));
             await Task.Delay(100, ct);
         }
@@ -391,11 +391,11 @@ public sealed class CaRotator(
         var finalKey = await GetAsync(NextKeyKey(cluster), ct);
         if (!finalKey.IsSuccess || finalKey.Value is null)
             return await FailStagingAsync(cluster, finalKey.Error
-                ?? new ApplicationException($"rotate-ca {cluster}: ca_next_key не читается после txn"));
+                ?? new ApplicationException($"rotate-ca {cluster}: ca_next_key is unreadable after txn"));
         var finalPem = await GetAsync(NextPemKey(cluster), ct);
         if (!finalPem.IsSuccess || finalPem.Value is null)
             return await FailStagingAsync(cluster, finalPem.Error
-                ?? new ApplicationException($"rotate-ca {cluster}: ca_next_pem не читается после txn"));
+                ?? new ApplicationException($"rotate-ca {cluster}: ca_next_pem is unreadable after txn"));
         return Result<(string, string)>.Success((finalKey.Value!.Value, finalPem.Value!.Value));
     }
 
@@ -528,7 +528,7 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -542,6 +542,6 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -122,7 +122,7 @@ public sealed class NodeSupervisor(
                 {
                     if (!recreated)
                     {
-                        warnings.Add($"лимиты контейнера {node} расходятся с декларацией — пересоздание");
+                        warnings.Add($"container limits of {node} diverge from declaration — recreating");
                         var rebuilt = await RecreateAsync(snap, node, address.Value, "limits drift", ct);
                         if (!rebuilt.IsSuccess)
                             return rebuilt.Error!;
@@ -131,7 +131,7 @@ public sealed class NodeSupervisor(
                         continue;
                     }
 
-                    warnings.Add($"лимиты {node} расходятся — отложено до следующего тика");
+                    warnings.Add($"limits of {node} diverge — deferred to next tick");
                     continue;
                 }
             }
@@ -151,7 +151,7 @@ public sealed class NodeSupervisor(
                 {
                     if (!recreated)
                     {
-                        warnings.Add($"env серта ноды {node} отсутствует/невалиден — пересоздание с env");
+                        warnings.Add($"node {node} TLS cert env missing/invalid — recreating with env");
                         var rebuilt = await RecreateAsync(snap, node, address.Value, "tls-env invalid", ct);
                         if (!rebuilt.IsSuccess)
                             return rebuilt.Error!;
@@ -161,7 +161,7 @@ public sealed class NodeSupervisor(
                     }
 
                     allEnvModel = false;
-                    warnings.Add($"env серта {node} невалиден — отложено до следующего тика");
+                    warnings.Add($"TLS cert env of {node} invalid — deferred to next tick");
                     continue;
                 }
             }
@@ -201,7 +201,7 @@ public sealed class NodeSupervisor(
             // грузится — бюджет молчания надзора не стартует, трек заморожен).
             if (!supervisable)
             {
-                warnings.Add($"PROVISIONING {node} молчит — трек надзора заморожен");
+                warnings.Add($"PROVISIONING {node} is silent — supervision track frozen");
                 continue;
             }
 
@@ -304,7 +304,7 @@ public sealed class NodeSupervisor(
             return Result<NodeAddress>.Failed(reread.Error!);
         if (reread.Value is not { } fresh)
             return Result<NodeAddress>.Failed(new ApplicationException(
-                $"supervise {cluster}/{node}: порт реконструирован, записи portalloc нет"));
+                $"supervise {cluster}/{node}: port reconstructed, no portalloc entry"));
 
         using var doc2 = JsonDocument.Parse(fresh.Value);
         var nodeEntry = doc2.RootElement.GetProperty(node);
@@ -377,7 +377,7 @@ public sealed class NodeSupervisor(
         return txn.Value.Succeeded
             ? Result.Success()
             : Result.Failed(new ApplicationException(
-                $"{key} изменился под нами — ретрай тиком"));
+                $"{key} changed under us — tick retry"));
     }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
@@ -407,6 +407,6 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

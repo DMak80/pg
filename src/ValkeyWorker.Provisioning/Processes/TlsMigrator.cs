@@ -64,7 +64,7 @@ public sealed class TlsMigrator(
         // Мутации — только держателем живого клэйма (arch/21 §6).
         if (!claims.IsMine(cluster))
             return Result<MigrationOutcome>.Failed(new ApplicationException(
-                $"migrate-tls {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
+                $"migrate-tls {cluster}: claim is not ours (or lost) — mutations forbidden"));
 
         // Детект: etcd-ключи + args живого контейнера (nodes=1 — node1; best-effort
         // инспект: контейнера нет → args нет — детект по etcd-ключам остаётся).
@@ -167,7 +167,7 @@ public sealed class TlsMigrator(
             return addresses.Error!;
         if (!addresses.Value.TryGetValue("node1", out var address))
             return Result.Failed(new ApplicationException(
-                $"migrate-tls {cluster}: node1 не закреплён в portalloc"));
+                $"migrate-tls {cluster}: node1 is not allocated in portalloc"));
 
         var nodeSnap = snap.Nodes.GetValueOrDefault("node1");
         var limits = ProcessCommon.ParseResources(nodeSnap?.Resources);
@@ -207,7 +207,7 @@ public sealed class TlsMigrator(
             return addresses.Error!;
         if (!addresses.Value.TryGetValue("node1", out var address))
             return Result.Failed(new ApplicationException(
-                $"migrate-tls {snap.Cluster}: node1 не закреплён в portalloc"));
+                $"migrate-tls {snap.Cluster}: node1 is not allocated in portalloc"));
 
         var endpoint = new ValkeyEndpoint(
             options.AdvertisedClientHost ?? address.Host, address.ClientPort,
@@ -222,7 +222,7 @@ public sealed class TlsMigrator(
                 return Result.Success();
             if (_clock.GetUtcNow() - startedAt > budget)
                 return Result.Failed(new TimeoutException(
-                    $"migrate-tls {snap.Cluster}/node1: нода не отвечает по TLS {budget.TotalSeconds:F0} c " +
+                    $"migrate-tls {snap.Cluster}/node1: node is not responding over TLS {budget.TotalSeconds:F0} s " +
                     $"({ping.Error!.Message})"));
             await Task.Delay(100, ct);
         }
@@ -306,6 +306,6 @@ public sealed class TlsMigrator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

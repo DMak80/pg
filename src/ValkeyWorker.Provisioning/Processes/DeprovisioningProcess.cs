@@ -99,7 +99,7 @@ public sealed class DeprovisioningProcess(
             return Fail(cluster, config.Error!, "verifying");
         if (config.Value is not null)
             return Fail(cluster,
-                new ApplicationException("config-ключ пережил очистку — повтор тиком"),
+                new ApplicationException("config key survived cleanup — retrying on next tick"),
                 "delete-domain");
 
         await claims.ReleaseClusterAsync(cluster, ct);
@@ -120,7 +120,7 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteKeyAsync(string key, CancellationToken ct)
@@ -134,6 +134,6 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

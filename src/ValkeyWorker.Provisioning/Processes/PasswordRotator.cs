@@ -149,7 +149,7 @@ public sealed class PasswordRotator(
         if (!oldRead.IsSuccess)
             return Result<RotationState>.Failed(oldRead.Error!);
         var old = oldRead.Value?.Value
-                  ?? throw new ApplicationException($"rotate {cluster}: {role}_password отсутствует");
+                  ?? throw new ApplicationException($"rotate {cluster}: {role}_password is missing");
         var newP = (generator ?? ValkeyPasswordGenerator.Generate)();
 
         // Стейт ДО E1: краш/отказ после SETUSER >NEW оставляет e1-pending
@@ -190,7 +190,7 @@ public sealed class PasswordRotator(
         // снапшотом), не NRE (arch/21 §5 E).
         if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
             return Result.Failed(new ApplicationException(
-                $"rotate {cluster}: нет endpoints/admin-креда — доигрывание ротации невозможно"));
+                $"rotate {cluster}: no endpoints/admin credentials — rotation cannot be resumed"));
 
         if (state.Phase == PhaseE1Pending)
         {
@@ -231,7 +231,7 @@ public sealed class PasswordRotator(
                 if (recheck.Value?.Value != state.New)
                 {
                     return Result.Failed(new ApplicationException(
-                        $"rotate {cluster}: {oldPasswordKey} изменился под нами — ретрай тиком"));
+                        $"rotate {cluster}: {oldPasswordKey} changed under us — tick retry"));
                 }
             }
 
@@ -313,7 +313,7 @@ public sealed class PasswordRotator(
         catch (JsonException e)
         {
             return Result<RotationState?>.Failed(new ApplicationException(
-                $"битый стейт ротации {ProcessCommon.RotationStateKey(cluster)}: {e.Message}", e));
+                $"corrupted rotation state {ProcessCommon.RotationStateKey(cluster)}: {e.Message}", e));
         }
     }
 
@@ -370,7 +370,7 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result> DeleteWithFailoverAsync(string key, CancellationToken ct)
@@ -384,7 +384,7 @@ public sealed class PasswordRotator(
             last = del;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 
     private async Task<Result<TxnResult>> TxnWithFailoverAsync(TxnRequest req, CancellationToken ct)
@@ -398,6 +398,6 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
     }
 }

@@ -27,7 +27,7 @@ public sealed class ConfigConverger(
         // Active-ветка: endpoints + admin-кред + ca_pem (TLS-транспорт t06) обязательны.
         if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result.Failed(new ApplicationException(
-                $"converge {cluster}: нет endpoints/admin-креда/ca_pem — converge невозможен"));
+                $"converge {cluster}: no endpoints/admin credentials/ca_pem — converge impossible"));
 
         var endpoint = ProcessCommon.ParseEndpoint(snap.Endpoints);
         var admin = new ValkeyEndpoint(endpoint.Host, endpoint.Port, snap.AdminUser, snap.AdminPassword, snap.CaPem);
@@ -110,7 +110,7 @@ public sealed class ConfigConverger(
         {
             await journal.WritePhaseAsync(
                 cluster, "converge", "warning-maxmemory-mem", "",
-                $"maxmemory_bytes ({declaredBytes}) >= mem-лимит ({memBytes}) — риск OOM-килла (R3)", ct);
+                $"maxmemory_bytes ({declaredBytes}) >= mem limit ({memBytes}) — OOM-kill risk (R3)", ct);
         }
 
         return Result.Success();
