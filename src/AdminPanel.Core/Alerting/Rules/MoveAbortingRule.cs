@@ -34,12 +34,12 @@ public sealed class MoveAbortingRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"бакет bucket_{bucket.Id} кластера {cluster.Name} в ABORTING — незавершённая уборка",
+                $"bucket bucket_{bucket.Id} of cluster {cluster.Name} is in ABORTING — incomplete cleanup",
                 details,
                 null,
-                "статус ABORTING висит: aborted-переезд обязан завершаться откатом/очисткой статуса перевозчиком; висящий статус держит бакет в лимбо переездов",
+                "ABORTING status is stuck: an aborted move must finish with rollback/status cleanup by the carrier; a stuck status keeps the bucket in move limbo",
                 AlertRemedy.WorkerAuto,
-                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
+                "PgWorker move reparator (feat-pgworker-adopt-repair) will close it; stuck — worker defect");
         }
     }
 }

@@ -30,8 +30,8 @@ public sealed class BackupFullStaleRule(IOptions<AlertsOptions> options) : IAler
                     continue; // свежий полный — ок
 
                 var description = lastCompleted is { } stale
-                    ? $"последний полный бэкап шарда {shard} кластера {cluster.Cluster} старше {nowUnix - stale} c — порог {maxAge} c"
-                    : $"полный бэкап шарда {shard} кластера {cluster.Cluster} никогда не завершался (нет COMPLETED)";
+                    ? $"last full backup of shard {shard} in cluster {cluster.Cluster} is {nowUnix - stale} s old — threshold {maxAge} s"
+                    : $"full backup of shard {shard} in cluster {cluster.Cluster} never completed (no COMPLETED)";
                 yield return new Alert(
                     $"{KindName}:{cluster.Cluster}/{shard}",
                     AlertSeverity.Critical,
@@ -44,9 +44,9 @@ public sealed class BackupFullStaleRule(IOptions<AlertsOptions> options) : IAler
                         ["lastCompletedUnix"] = lastCompleted?.ToString() ?? string.Empty,
                     },
                     null,
-                    "суточное окно без валидного полного бэкапа: восстановимость кластера под угрозой — проверь статусы /pgworker/backups/<C>/ (FAILED-ошибки джобов) и S3-хранилище",
+                    "daily window without a valid full backup: cluster recoverability at risk — check /pgworker/backups/<C>/ statuses (FAILED job errors) and S3 storage",
                     AlertRemedy.OperatorRunbook,
-                    "воркер сам переснимает с бэкоффом; висит — S3/сеть/роль backup_exec");
+                    "worker retries automatically with backoff; if stuck — S3/network/backup_exec role");
             }
         }
     }

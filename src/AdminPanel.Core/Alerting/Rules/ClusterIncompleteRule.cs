@@ -19,11 +19,11 @@ public sealed class ClusterIncompleteRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 cluster.Name,
-                $"кластер {cluster.Name} без config-ключа (incomplete)",
+                $"cluster {cluster.Name} without config key (incomplete)",
                 new Dictionary<string, string> { ["dbname"] = cluster.DbName ?? "missing" },
                 null,
-                "префикс /clusters/<C> есть, но config-ключа нет: config — входная точка декларации (buckets/dbname), без неё кластер невидим для процессов панели и воркера; префикс обязан начинаться с config",
+                "prefix /clusters/<C> exists, but the config key is missing: config is the entry point of the declaration (buckets/dbname), without it the cluster is invisible to the panel and worker processes; the prefix must start with config",
                 AlertRemedy.WorkerAuto,
-                "воркер ждёт доустойчивости ключей (journal /pgworker/work); при вечном висе — дефект воркера");
+                "worker waits for the keys to become consistent (journal /pgworker/work); a permanent hang indicates a worker defect");
     }
 }

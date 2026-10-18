@@ -33,16 +33,16 @@ public sealed class ReplicaLagHighRule(IOptions<AlertsOptions> options) : IAlert
                 AlertSeverity.Warning,
                 KindName,
                 $"{scope.Scope}/{member.Name}",
-                $"лаг члена {member.Name} scope {scope.Scope} — {lag} байт, порог {ThresholdBytes} байт",
+                $"lag of member {member.Name} of scope {scope.Scope} — {lag} bytes, threshold {ThresholdBytes} bytes",
                 new Dictionary<string, string>
                 {
                     ["lagBytes"] = lag.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
                 null,
-                "лаг члена Patroni-скопа выше порога: отставшая реплика копит WAL на мастере и теряет гарантию failover; каждый член обязан догонять",
+                "member lag of a Patroni scope above the threshold: a lagging replica accumulates WAL on the primary and loses the failover guarantee; every member must catch up",
                 AlertRemedy.WorkerAuto,
-                "надзор воркера следит за репликацией (rebuild зависшей); висит — проверьте нагрузку/сеть или запустите recreate ноды");
+                "worker supervision watches replication (rebuild of the stuck member); if it hangs — check load/network or run node recreate");
         }
     }
 }

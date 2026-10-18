@@ -34,7 +34,7 @@ public sealed class MoveFrozenLongRule(IOptions<AlertsOptions> options) : IAlert
                 AlertSeverity.Critical,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"бакет bucket_{bucket.Id} кластера {cluster.Name} в FROZEN {age} c — cutover обязан быть секундами",
+                $"bucket bucket_{bucket.Id} of cluster {cluster.Name} in FROZEN for {age} s — cutover must take seconds",
                 new Dictionary<string, string>
                 {
                     ["ageSeconds"] = age.ToString(),
@@ -42,9 +42,9 @@ public sealed class MoveFrozenLongRule(IOptions<AlertsOptions> options) : IAlert
                     ["updatedUnix"] = stamp.Value.ToString(),
                 },
                 null,
-                "бакет в FROZEN дольше окна: cutover обязан быть секундами (запись остановлена только на переключение), длительный FROZEN — зависание переезда на ровном месте",
+                "bucket in FROZEN beyond the window: cutover must take seconds (writes are paused only for the switch), a prolonged FROZEN means the move is stuck in place",
                 AlertRemedy.WorkerAuto,
-                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
+                "PgWorker move repair (feat-pgworker-adopt-repair) will resolve it; if it stays stuck, it is a worker defect");
         }
     }
 }

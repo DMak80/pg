@@ -57,12 +57,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Critical,
                     "kafka-security-missing",
                     cluster.Name,
-                    $"Active-кластер {cluster.Name} без admin-кредов/CA в etcd — пробы и дискавери TLS-клиентов не работают",
+                    $"Active cluster {cluster.Name} has no admin credentials/CA in etcd — TLS client probes and discovery do not work",
                     null,
                     null,
-                    "Active-кластер без admin_user/admin_password/ca_pem: ensure воркера обязан дописать секреты (или кластер премиграционный — SecurityMigrator выполнит миграцию)",
+                    "Active cluster without admin_user/admin_password/ca_pem: worker ensure must write the secrets (or the cluster is pre-migration — SecurityMigrator will perform the migration)",
                     AlertRemedy.WorkerAuto,
-                    "ensure/миграция воркера дополнят секреты (t03); висит — проверьте journal воркера");
+                    "worker ensure/migration will add the secrets (t03); if it hangs — check the worker journal");
         }
 
         // worker-api-unreachable (critical, task etcd-via-worker-api): нет живых
@@ -74,12 +74,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Critical,
                 "worker-api-unreachable",
                 "kafkaworker",
-                "API KafkaWorker недоступен: живых ключей /kafkaworker/api/ нет — kafka-мутации из панели 503; чтение данных не страдает",
+                "KafkaWorker API unreachable: no live /kafkaworker/api/ keys — kafka mutations from the panel return 503; data reads are not affected",
                 null,
                 null,
-                Hint: "воркер ставит lease-ключ при старте; ключа нет = воркер не поднялся или умер ≤15 c назад",
+                Hint: "the worker sets the lease key at startup; no key means the worker did not start or died ≤15 s ago",
                 Remedy: AlertRemedy.OperatorRunbook,
-                RemedyText: "запустите контейнер воркера (профиль kafka стендовой compose), проверьте /healthz и KafkaWorker:Api:AdvertiseUrl");
+                RemedyText: "start the worker container (kafka profile of the stand compose), check /healthz and KafkaWorker:Api:AdvertiseUrl");
 
         // worker-unhealthy (warning, t09; arch/03 §4, arch/adminpanel/02 §2.3.2): живой
         // ключ /kafkaworker/api/<id>, но опрос /healthz ≠ 200 — процесс нездоров ДО
@@ -88,23 +88,23 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
         foreach (var w in next.WorkerHealth.Where(w => w.Status != WorkerHealthStatus.Healthy))
         {
             var what = w.Status == WorkerHealthStatus.Degraded
-                ? $"/healthz отвечает не-200 ({w.Detail ?? "degraded"})"
-                : $"недостижим по URL lease-ключа ({w.Detail ?? "network error"})";
+                ? $"/healthz responds non-200 ({w.Detail ?? "degraded"})"
+                : $"unreachable at the lease key URL ({w.Detail ?? "network error"})";
             yield return new Alert(
                 $"worker-unhealthy:kafkaworker/{w.InstanceId}",
                 AlertSeverity.Warning,
                 "worker-unhealthy",
                 $"kafkaworker/{w.InstanceId}",
-                $"инстанс KafkaWorker {w.InstanceId} нездоров: {what}",
+                $"KafkaWorker instance {w.InstanceId} is unhealthy: {what}",
                 new Dictionary<string, string>
                 {
                     ["url"] = w.Url,
                     ["checked_unix"] = w.CheckedAtUtc.ToUnixTimeSeconds().ToString(),
                 },
                 null,
-                "lease-ключ жив, но health-проба процесса плохая: секции /healthz (etcd/docker-хосты/циклы/снапшот) деградированы; docker-healthcheck гасит контейнер — за этим последует исчезновение lease и critical worker-api-unreachable",
+                "the lease key is alive but the process health probe is bad: /healthz sections (etcd/docker hosts/loops/snapshot) are degraded; docker-healthcheck kills the container — the lease will disappear next, followed by critical worker-api-unreachable",
                 AlertRemedy.OperatorRunbook,
-                "смотрите docker logs kafkaworker и /healthz напрямую (секции etcd-reachable/docker-hosts/loops-alive/snapshot); поднимите зависимость (etcd/docker) или перезапустите контейнер воркера");
+                "check docker logs kafkaworker and /healthz directly (sections etcd-reachable/docker-hosts/loops-alive/snapshot); restore the dependency (etcd/docker) or restart the worker container");
         }
 
         foreach (var cluster in next.Clusters)
@@ -117,12 +117,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         AlertSeverity.Info,
                         "kafka-cluster-not-initialized",
                         cluster.Name,
-                        $"кластер {cluster.Name} заявлен (NOT_INITIALIZED): брокеры не подняты",
+                        $"cluster {cluster.Name} declared (NOT_INITIALIZED): brokers are not up",
                         null,
                 null,
-                "кластер заявлен (config.state=NOT_INITIALIZED), брокеры не подняты: это нормальный жизненный цикл — provisioning воркера поднимет брокеров и переведёт state в ACTIVE",
+                "cluster declared (config.state=NOT_INITIALIZED), brokers are not up: this is a normal lifecycle — worker provisioning will bring the brokers up and move the state to ACTIVE",
                 AlertRemedy.WorkerAuto,
-                "дождитесь provisioning брокеров — воркер снимет NOT_INITIALIZED; висит дольше обычного — смотрите journal воркера");
+                "wait for broker provisioning — the worker will clear NOT_INITIALIZED; hanging longer than usual — check the worker journal");
                     break;
                 case KafkaClusterState.ToRemove:
                     yield return new Alert(
@@ -130,12 +130,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         AlertSeverity.Info,
                         "kafka-cluster-to-remove",
                         cluster.Name,
-                        $"кластер {cluster.Name} в удалении (TO_REMOVE): воркер демонтирует",
+                        $"cluster {cluster.Name} pending removal (TO_REMOVE): the worker is dismantling it",
                         null,
                 null,
-                "кластер в удалении (config.state=TO_REMOVE): воркер демонтирует брокеров и уберёт префикс /kafka/clusters/<C>; заметка живёт до завершения демонтажа",
+                "cluster being removed (config.state=TO_REMOVE): the worker dismantles the brokers and removes the /kafka/clusters/<C> prefix; the note lives until the dismantling completes",
                 AlertRemedy.WorkerAuto,
-                "воркер демонтирует кластер сам; висит — проверьте journal воркера (брокеры/контейнеры могли не удалиться)");
+                "the worker dismantles the cluster itself; if it hangs — check the worker journal (brokers/containers may have failed to be removed)");
                     break;
                 case KafkaClusterState.Active:
                     foreach (var alert in BrokerAlerts(cluster, previous, next))
@@ -159,16 +159,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Info,
                 "kafka-rotation-pending",
                 rotation.Cluster,
-                $"ротация app-пароля кластера {rotation.Cluster} заявлена, исполняется воркером (фазы A/B/C)",
+                $"app password rotation of cluster {rotation.Cluster} requested, executed by the worker (phases A/B/C)",
                 new Dictionary<string, string>
                 {
                     ["requestedBy"] = rotation.RequestedBy ?? "unknown",
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "ротация app-пароля заявлена (ключ /kafkaworker/rotations/<C>): воркер исполняет фазы A/B/C и снимет ключ; каждая заявка обязана сниматься исполнителем",
+                "app password rotation requested (key /kafkaworker/rotations/<C>): the worker executes phases A/B/C and will remove the key; every request must be cleared by its executor",
                 AlertRemedy.WorkerAuto,
-                "ротацию исполняет воркер (фазы A/B/C), ключ исчезнет; висит — воркер буксует, проверьте journal");
+                "the worker executes the rotation (phases A/B/C), the key will disappear; if it hangs — the worker is stuck, check the journal");
 
         // Ротации admin-пароля (t03, arch/15 §4): порт kafka-rotation-pending —
         // только заявки живых кластеров.
@@ -178,16 +178,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Warning,
                 "kafka-admin-rotation-pending",
                 rotation.Cluster,
-                $"ротация admin-пароля кластера {rotation.Cluster} заявлена, исполняется воркером (фазы A/B/C с rolling-рестартами брокеров)",
+                $"admin password rotation of cluster {rotation.Cluster} requested, executed by the worker (phases A/B/C with rolling broker restarts)",
                 new Dictionary<string, string>
                 {
                     ["requestedBy"] = rotation.RequestedBy ?? "unknown",
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "ротация admin-пароля заявлена (ключ /kafkaworker/admin_rotations/<C>): воркер исполняет фазы A/B/C и снимет ключ; приложения (роль app) не затрагиваются",
+                "admin password rotation requested (key /kafkaworker/admin_rotations/<C>): the worker executes phases A/B/C and will remove the key; applications (the app role) are not affected",
                 AlertRemedy.WorkerAuto,
-                "ротацию исполняет воркер (фазы A/B/C), ключ исчезнет; висит — воркер буксует, проверьте journal");
+                "the worker executes the rotation (phases A/B/C), the key will disappear; if it hangs — the worker is stuck, check the journal");
 
         // Заявки ребалансировки (t02, arch/03 §7.4) — только живых кластеров.
         foreach (var rebalance in next.Rebalances.Where(r => alive.Contains(r.Cluster)))
@@ -196,16 +196,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Info,
                 "kafka-rebalance-pending",
                 rebalance.Cluster,
-                $"ребалансировка партиций кластера {rebalance.Cluster} заявлена, исполняется воркером",
+                $"partition rebalance of cluster {rebalance.Cluster} requested, executed by the worker",
                 new Dictionary<string, string>
                 {
                     ["requestedBy"] = rebalance.RequestedBy ?? "unknown",
                     ["requestedUnix"] = rebalance.RequestedUnix.ToString(),
                 },
                 null,
-                "ребалансировка партиций заявлена (/kafkaworker/rebalances/<C>): воркер подаёт батчи и снимет заявку по сходимости; каждая заявка обязана завершаться",
+                "partition rebalance requested (/kafkaworker/rebalances/<C>): the worker submits batches and will clear the request once it converges; every request must complete",
                 AlertRemedy.WorkerAuto,
-                "батчи подаёт воркер, заявку снимет по сходимости; висит — проверьте живые брокеры (fallback-exec)");
+                "the worker submits the batches and clears the request on convergence; if it hangs — check the live brokers (fallback-exec)");
 
         // ===== t10 (arch/03 §7.4): видимость зависших ротационных заявок =====
 
@@ -219,16 +219,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Info,
                 "kafka-ca-rotation-pending",
                 ca.Cluster,
-                $"ротация CA/сертов кластера {ca.Cluster} заявлена, исполняется воркером (окно двойного доверия P/D/R/C)",
+                $"CA/cert rotation of cluster {ca.Cluster} requested, executed by the worker (dual-trust window P/D/R/C)",
                 new Dictionary<string, string>
                 {
                     ["requestedBy"] = ca.RequestedBy ?? "unknown",
                     ["requestedUnix"] = ca.RequestedUnix.ToString(),
                 },
                 null,
-                "заявка CA-ротации жива (ключ /kafkaworker/ca_rotations/<C>): воркер играет окно двойного доверия (брокеры перезапускаются по одному) и снимет ключ",
+                "CA rotation request is alive (key /kafkaworker/ca_rotations/<C>): the worker plays the dual-trust window (brokers restart one at a time) and will remove the key",
                 AlertRemedy.WorkerAuto,
-                "ротацию исполняет воркер, ключ исчезнет; висит — проверьте journal (waiting-фаза)");
+                "the worker executes the rotation, the key will disappear; if it hangs — check the journal (waiting phase)");
 
         // Stale-алерты ротационных заявок (t10, warning): живая заявка старше
         // RotationStaleSeconds — видимость ДО возрастного снятия воркером.
@@ -241,19 +241,19 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
         {
             var age = rotationNowUnix - group.MinBy(r => r.RequestedUnix)!.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
-                yield return RotationStaleAlert("kafka-rotation-stale", group.Key, age, "ротация пароля");
+                yield return RotationStaleAlert("kafka-rotation-stale", group.Key, age, "password rotation");
         }
         foreach (var ca in (next.CaRotations ?? []).Where(r => alive.Contains(r.Cluster)))
         {
             var age = rotationNowUnix - ca.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
-                yield return RotationStaleAlert("kafka-ca-rotation-stale", ca.Cluster, age, "ротация CA/сертов");
+                yield return RotationStaleAlert("kafka-ca-rotation-stale", ca.Cluster, age, "CA/cert rotation");
         }
         foreach (var rebalance in next.Rebalances.Where(r => alive.Contains(r.Cluster)))
         {
             var age = rotationNowUnix - rebalance.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
-                yield return RotationStaleAlert("kafka-rebalance-stale", rebalance.Cluster, age, "ребалансировка партиций");
+                yield return RotationStaleAlert("kafka-rebalance-stale", rebalance.Cluster, age, "partition rebalance");
         }
 
         // kafka-ticket-expired (warning, t10): заявка снята возрастным таймаутом
@@ -265,7 +265,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Warning,
                 "kafka-ticket-expired",
                 outcome.Cluster,
-                $"заявка кластера {outcome.Cluster} снята возрастным таймаутом воркера (kind={outcome.Kind}, причина: {outcome.Reason ?? "не указана"})",
+                $"request of cluster {outcome.Cluster} cleared by the worker age timeout (kind={outcome.Kind}, reason: {outcome.Reason ?? "not specified"})",
                 new Dictionary<string, string>
                 {
                     ["kind"] = outcome.Kind,
@@ -273,9 +273,9 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     ["finishedUnix"] = outcome.FinishedUnix.ToString(),
                 },
                 null,
-                $"устранить причину ({outcome.Reason ?? "см. reason в исходе"}) и повторить заявку",
+                $"fix the cause ({outcome.Reason ?? "see reason in the outcome"}) and re-submit the request",
                 AlertRemedy.OperatorRunbook,
-                "устраните причину waiting-фазы (waiting-cluster — поднимите кластер; waiting-reassignment — дождитесь исполнения) и повторите заявку; успешная ротация перезапишет исход done и алерт погаснет");
+                "fix the cause of the waiting phase (waiting-cluster — bring the cluster up; waiting-reassignment — wait for the execution) and re-submit the request; a successful rotation will overwrite the outcome with done and the alert will clear");
 
         // Стагнация reassignment (t02): прогресс жив, но partitions_remaining не
         // двигается дольше ReassignStaleSec. Пара (prev, next): остаток тот же
@@ -293,8 +293,8 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-reassignment-stale",
                     progress.Cluster,
-                    $"reassignment кластера {progress.Cluster} буксует: partitions_remaining={progress.PartitionsRemaining} "
-                    + $"не меняется дольше {_options.ReassignStaleSec} c",
+                    $"reassignment of cluster {progress.Cluster} is stuck: partitions_remaining={progress.PartitionsRemaining} "
+                    + $"unchanged for more than {_options.ReassignStaleSec} s",
                     new Dictionary<string, string>
                     {
                         ["mode"] = progress.Mode,
@@ -302,9 +302,9 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         ["updatedUnix"] = progress.UpdatedUnix.ToString(),
                     },
                 null,
-                "прогресс reassignment не двигается дольше порога: partitions_remaining обязан убывать (воркер подаёт батчи); стагнация означает недоступность исполнителя",
+                "reassignment progress has not moved for longer than the threshold: partitions_remaining must decrease (the worker submits batches); stagnation means the executor is unavailable",
                 AlertRemedy.WorkerAuto,
-                "воркер двигает reassignment; висит — проверьте живые брокеры и исполнение (fallback exec через RUNNING-узел)");
+                "the worker drives the reassignment; if it hangs — check the live brokers and execution (fallback exec via a RUNNING node)");
         }
 
         foreach (var error in next.ParseErrors)
@@ -313,12 +313,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Warning,
                 "kafka-key-malformed",
                 error.Key,
-                $"kafka-ключ не разобран: {error.Key}",
+                $"kafka key not parsed: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "kafka-ключ не разобран парсером панели: битое значение не попадает в модель — UI слеп к ключу; формат значений kafka-домена — канон arch/15",
+                "kafka key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the kafka domain value format is canon arch/15",
                 AlertRemedy.OperatorRunbook,
-                "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/15; повторный тик распарсит ключ");
+                "fix the source of the malformed record (external writer) and bring the value to the arch/15 canon; the next tick will parse the key");
     }
 
     // Топиковые алерты волны C (arch/03 §7.4): missing-desired и stale по etcd-
@@ -333,12 +333,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-topic-missing-desired",
                     $"{cluster.Name}/{topic.Name}",
-                    $"топик {topic.Name} кластера {cluster.Name} отсутствует в Kafka при живой заявке desired (заявка не исполнима; отмена уберёт ключ)",
+                    $"topic {topic.Name} of cluster {cluster.Name} is missing in Kafka while the desired request is alive (the request cannot be executed; cancellation will remove the key)",
                     null,
                 null,
-                "топик отсутствует в Kafka при живой заявке desired: converge не исполним (топика нет — конфигуировать нечего); desired без топика обязан сниматься или превращаться в create",
+                "topic missing in Kafka while the desired request is alive: converge cannot be executed (no topic — nothing to configure); a desired without a topic must be cleared or turned into create",
                 AlertRemedy.OperatorApi,
-                "отмените заявку (DELETE /api/kafka/clusters/{c}/topics/{t}/desired) либо создайте топик (POST .../topics); живой desired на missing-топике — зависание");
+                "cancel the request (DELETE /api/kafka/clusters/{c}/topics/{t}/desired) or create the topic (POST .../topics); a live desired on a missing topic means a hang");
 
             if (topic.Desired?.RequestedUnix is { } requested && nowUnix - requested > _options.StaleDesiredSeconds)
                 yield return new Alert(
@@ -346,16 +346,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-desired-stale",
                     $"{cluster.Name}/{topic.Name}",
-                    $"заявка desired топика {topic.Name} кластера {cluster.Name} не снята дольше {_options.StaleDesiredSeconds} c — converge буксует",
+                    $"desired request of topic {topic.Name} of cluster {cluster.Name} not cleared for more than {_options.StaleDesiredSeconds} s — converge is stuck",
                     new Dictionary<string, string>
                     {
                         ["requestedUnix"] = requested.ToString(),
                         ["requestedBy"] = topic.Desired.RequestedBy ?? "unknown",
                     },
                 null,
-                "заявка desired не снята дольше порога: converge воркера обязан применить desired и удалить его из ключа топика; висящая заявка блокирует новые конфиг-изменения",
+                "desired request not cleared for longer than the threshold: worker converge must apply the desired and remove it from the topic key; a hanging request blocks new config changes",
                 AlertRemedy.WorkerAuto,
-                "converge воркера применит и снимет заявку; висит — воркер буксует или кластер недоступен, проверьте journal");
+                "worker converge will apply and clear the request; if it hangs — the worker is stuck or the cluster is unreachable, check the journal");
 
             if (topic.UnderReplicatedPartitions is > 0)
                 yield return new Alert(
@@ -363,15 +363,15 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-topic-under-replicated",
                     $"{cluster.Name}/{topic.Name}",
-                    $"партиции топика {topic.Name} кластера {cluster.Name} недореплицированы (ISR < RF): {topic.UnderReplicatedPartitions}",
+                    $"partitions of topic {topic.Name} of cluster {cluster.Name} are under-replicated (ISR < RF): {topic.UnderReplicatedPartitions}",
                     new Dictionary<string, string>
                     {
                         ["underReplicatedPartitions"] = topic.UnderReplicatedPartitions.Value.ToString(),
                     },
                 null,
-                "у партиций ISR < RF (недорепликация): реплики отстали/умерли — устойчивость к отказам ниже заявленной; каждая партиция обязана держать RF живых реплик",
+                "partitions have ISR < RF (under-replication): replicas lag or are dead — fault tolerance is below the declared level; every partition must keep RF live replicas",
                 AlertRemedy.WorkerAuto,
-                "воркер восстановит реплики (restart брокера/ребалансировка); висит — проверьте живые брокеры, возможно нужен recreate");
+                "the worker will restore the replicas (broker restart/rebalance); if it hangs — check the live brokers, a recreate may be needed");
         }
     }
 
@@ -388,7 +388,7 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-lifecycle-stale",
                     $"{cluster.Name}/{ticket.Topic}",
-                    $"заявка {ticket.Op} топика {ticket.Topic} кластера {cluster.Name} не исполнена дольше {_options.StaleDesiredSeconds} c — воркер буксует или кластер недоступен",
+                    $"request {ticket.Op} of topic {ticket.Topic} of cluster {cluster.Name} not executed for more than {_options.StaleDesiredSeconds} s — the worker is stuck or the cluster is unreachable",
                     new Dictionary<string, string>
                     {
                         ["op"] = ticket.Op,
@@ -396,9 +396,9 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         ["requestedBy"] = ticket.RequestedBy ?? "unknown",
                     },
                 null,
-                "lifecycle-заявка (create/delete топика) не исполнена дольше порога: тик воркера обязан исполнять заявки (desired.create/desired.delete); висящая заявка блокирует операции с топиком",
+                "lifecycle request (topic create/delete) not executed for longer than the threshold: the worker tick must execute requests (desired.create/desired.delete); a hanging request blocks topic operations",
                 AlertRemedy.WorkerAuto,
-                "тик воркера исполнит заявку; висит — воркер буксует или кластер недоступен (проверьте journal и брокеров)");
+                "the worker tick will execute the request; if it hangs — the worker is stuck or the cluster is unreachable (check the journal and the brokers)");
                 continue;
             }
 
@@ -408,17 +408,17 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 ticket.Op == "delete" ? "kafka-topic-delete-pending" : "kafka-topic-create-pending",
                 $"{cluster.Name}/{ticket.Topic}",
                 ticket.Op == "delete"
-                    ? $"заявка удаления топика {ticket.Topic} кластера {cluster.Name} жива — топик и данные будут удалены (до тика можно отменить)"
-                    : $"заявка создания топика {ticket.Topic} кластера {cluster.Name} жива — ждёт тика воркера",
+                    ? $"topic deletion request for {ticket.Topic} of cluster {cluster.Name} is alive — the topic and its data will be deleted (can be cancelled before the tick)"
+                    : $"topic creation request for {ticket.Topic} of cluster {cluster.Name} is alive — waiting for the worker tick",
                 new Dictionary<string, string>
                 {
                     ["requestedUnix"] = ticket.RequestedUnix.ToString(),
                     ["requestedBy"] = ticket.RequestedBy ?? "unknown",
                 },
                 null,
-                "жива заявка удаления топика (desired.delete): топик и данные будут удалены тиком воркера; окно отмены — до тика",
+                "a topic deletion request is alive (desired.delete): the topic and its data will be deleted by the worker tick; the cancellation window is until the tick",
                 AlertRemedy.WorkerAuto,
-                "заявку исполнит тик воркера (desired.delete); отменить до тика — DELETE .../topics/{t}/desired.delete");
+                "the worker tick will execute the request (desired.delete); to cancel before the tick — DELETE .../topics/{t}/desired.delete");
         }
     }
 
@@ -432,16 +432,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                     AlertSeverity.Warning,
                     "kafka-group-lag-high",
                     $"{cluster.Name}/{group.Group}",
-                    $"лаг группы {group.Group} кластера {cluster.Name}: {group.TotalLag} сообщений (порог {_options.GroupLagMessages})",
+                    $"lag of group {group.Group} of cluster {cluster.Name}: {group.TotalLag} messages (threshold {_options.GroupLagMessages})",
                     new Dictionary<string, string>
                     {
                         ["totalLag"] = group.TotalLag.ToString(),
                         ["members"] = group.Members.ToString(),
                     },
                 null,
-                "лаг группы потребителей выше порога: потребление отстаёт от продакшена — растёт латентность данных и риск потери при сбое; группа обязана успевать за retention",
+                "consumer group lag above the threshold: consumption lags behind production — data latency grows as does the risk of loss on failure; the group must keep up with retention",
                 AlertRemedy.OperatorRunbook,
-                "разберите потребителей группы (скорость/партиционирование/живость инстансов) — панель и воркер консьюмерами не управляют");
+                "analyze the group consumers (speed/partitioning/instance liveness) — the panel and the worker do not manage consumers");
     }
 
     // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
@@ -452,16 +452,16 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
             AlertSeverity.Warning,
             kind,
             cluster,
-            $"{what} кластера {cluster} не начата дольше {age} c (порог {_options.RotationStaleSeconds} c) — исполнитель не стартует",
+            $"{what} of cluster {cluster} not started for more than {age} s (threshold {_options.RotationStaleSeconds} s) — the executor has not started",
             new Dictionary<string, string>
             {
                 ["ageSec"] = age.ToString(),
                 ["staleSec"] = _options.RotationStaleSeconds.ToString(),
             },
             null,
-            $"заявка не начата дольше {_options.RotationStaleSeconds} c — до возрастного снятия воркером осталось {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} c; проверьте journal (waiting-фаза)",
+            $"request not started for more than {_options.RotationStaleSeconds} s — {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} s left until the worker age-based removal; check the journal (waiting phase)",
             AlertRemedy.WorkerAuto,
-            "воркер снимет заявку возрастным таймаутом (t10); висит — проверьте journal воркера и доступность кластера");
+            "the worker will clear the request by the age timeout (t10); if it hangs — check the worker journal and cluster availability");
 
     // kafka-broker-not-running + kafka-endpoints-missing (только Active-кластер).
     private IEnumerable<Alert> BrokerAlerts(
@@ -475,12 +475,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Critical,
                 "kafka-endpoints-missing",
                 cluster.Name,
-                $"Active-кластер {cluster.Name} без endpoints — дискавери клиентов невозможно",
+                $"Active cluster {cluster.Name} has no endpoints — client discovery is impossible",
                 null,
                 null,
-                "Active-кластер без endpoints: endpoints дописывает воркер по факту DescribeCluster — без них клиенты не найдут брокеров; каждый Active-кластер обязан иметь endpoints",
+                "Active cluster without endpoints: the worker writes endpoints after DescribeCluster — without them clients cannot find the brokers; every Active cluster must have endpoints",
                 AlertRemedy.WorkerAuto,
-                "воркер допишет endpoints по факту DescribeCluster; висит — кластер недоступен воркеру, проверьте живость брокеров");
+                "the worker will write the endpoints after DescribeCluster; if it hangs — the cluster is unreachable for the worker, check broker liveness");
 
         var prevCluster = previous?.Clusters.FirstOrDefault(c => c.Name == cluster.Name);
         foreach (var broker in cluster.BrokersList)
@@ -500,12 +500,12 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertSeverity.Critical,
                 "kafka-broker-not-running",
                 $"{cluster.Name}/{broker.Name}",
-                $"брокер {broker.Name} кластера {cluster.Name} не RUNNING: {broker.State}",
+                $"broker {broker.Name} of cluster {cluster.Name} is not RUNNING: {broker.State}",
                 new Dictionary<string, string> { ["state"] = broker.State },
                 null,
-                "брокер не в RUNNING: provisioning/надзор воркера обязан привести брокер в RUNNING; каждый заявленный брокер обязан быть жив в Active-кластере",
+                "broker is not RUNNING: worker provisioning/supervision must bring the broker to RUNNING; every declared broker must be alive in an Active cluster",
                 AlertRemedy.WorkerAuto,
-                "воркер supervises брокеры (restart/пересоздание контейнера); висит — проверьте контейнер брокера на стенде");
+                "the worker supervises the brokers (restart/container re-creation); if it hangs — check the broker container on the stand");
         }
     }
 

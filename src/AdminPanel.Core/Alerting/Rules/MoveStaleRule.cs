@@ -41,7 +41,7 @@ public sealed class MoveStaleRule(IOptions<AlertsOptions> options) : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"переезд bucket_{bucket.Id} кластера {cluster.Name} ({StateName(bucket.State)}) без прогресса {age} c — порог {ThresholdSeconds} c",
+                $"move of bucket_{bucket.Id} of cluster {cluster.Name} ({StateName(bucket.State)}) without progress for {age} s — threshold {ThresholdSeconds} s",
                 new Dictionary<string, string>
                 {
                     ["state"] = StateName(bucket.State),
@@ -50,9 +50,9 @@ public sealed class MoveStaleRule(IOptions<AlertsOptions> options) : IAlertRule
                     ["updatedUnix"] = stamp.Value.ToString(),
                 },
                 null,
-                "статус переезда не-ACTIVE без прогресса дольше порога: каждый статус SYNCING/FROZEN/ABORTING обязан двигаться (updated) или сниматься; зависший статус блокирует переезды и демонтаж шарда",
+                "move status is not-ACTIVE with no progress beyond the threshold: every SYNCING/FROZEN/ABORTING status must either advance (updated) or be cleared; a stuck status blocks moves and shard decommissioning",
                 AlertRemedy.WorkerAuto,
-                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
+                "PgWorker move reparator (feat-pgworker-adopt-repair) will close it; if it hangs, it is a worker defect");
         }
     }
 

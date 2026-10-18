@@ -23,11 +23,11 @@ public sealed class WorkerApiUnreachableRule : IAlertRule
             AlertSeverity.Critical,
             KindName,
             "pgworker",
-            "API PgWorker недоступен: живых ключей /pgworker/api/ нет — мутации из панели 503; чтение данных не страдает",
+            "PgWorker API unreachable: no live /pgworker/api/ keys — panel mutations return 503; data reads are unaffected",
             null,
             null,
-            Hint: "воркер ставит lease-ключ при старте; ключа нет = воркер не поднялся или умер ≤15 c назад",
+            Hint: "worker writes the lease key at startup; no key = worker did not start or died ≤15 s ago",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "запустите контейнер воркера (deploy/docker-compose.yml), проверьте /healthz и PgWorker:Api:AdvertiseUrl");
+            RemedyText: "start the worker container (deploy/docker-compose.yml), check /healthz and PgWorker:Api:AdvertiseUrl");
     }
 }

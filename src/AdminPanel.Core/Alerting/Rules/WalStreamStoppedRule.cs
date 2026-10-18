@@ -33,16 +33,16 @@ public sealed class WalStreamStoppedRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"WAL-поток шарда {shard} кластера {backups.Cluster} остановлен (STOPPED)",
+                $"WAL stream of shard {shard} of cluster {backups.Cluster} is stopped (STOPPED)",
                 new Dictionary<string, string>
                 {
                     ["state"] = "STOPPED",
                     ["slot"] = wal.Slot,
                 },
                 null,
-                "если остановка не операционная (Enabled=false/QUARANTINED) — перезапусти подсистему/разбери журналы /pgworker/work/<C>",
+                "if the stop is not operational (Enabled=false/QUARANTINED) — restart the subsystem / inspect logs at /pgworker/work/<C>",
                 AlertRemedy.WorkerAuto,
-                "последнее касание ключа — стоп-семантика воркера; демонтаж кластера/шарда удаляет ключ (arch/19 §4)");
+                "last key touch — worker stop semantics; cluster/shard teardown removes the key (arch/19 §4)");
         }
     }
 }

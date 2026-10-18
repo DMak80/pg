@@ -32,8 +32,8 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
             yield break; // свежо
 
         var message = export.LastUploadedUnix is { } last
-            ? $"успешная выгрузка снапшотов etcd молчит {nowUnix - last} c — порог 2×{intervalMin} мин"
-            : "успешной выгрузки снапшотов etcd нет при включённой опции";
+            ? $"etcd snapshot export silent for {nowUnix - last} s — threshold 2×{intervalMin} min"
+            : "no successful etcd snapshot export while the option is enabled";
         yield return new Alert(
             KindName,
             AlertSeverity.Warning,
@@ -46,8 +46,8 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
                 ["lastUploadedUnix"] = export.LastUploadedUnix?.ToString() ?? string.Empty,
             },
             null,
-            "выгрузка молчит — контроль-плейн копится только в локальном томе лидера (обе инстанции воркера лежат / вечный transient / лидерство снапшотов не исполняется)",
+            "export is silent — control-plane changes accumulate only in the leader's local volume (both worker instances down / eternal transient / snapshot leadership not executing)",
             AlertRemedy.OperatorRunbook,
-            "проверь healthz обеих инстанций PgWorker и статус-ключ /pgworker/etcd-snapshots; доступ к S3 — runbook t08");
+            "check healthz of both PgWorker instances and the status key /pgworker/etcd-snapshots; S3 access — runbook t08");
     }
 }

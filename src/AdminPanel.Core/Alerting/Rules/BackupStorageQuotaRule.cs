@@ -25,14 +25,14 @@ public sealed class BackupStorageQuotaRule : IAlertRule
         var severity = storage.State == BackupStorageState.Crit
             ? AlertSeverity.Critical
             : AlertSeverity.Warning;
-        var percent = storage.UsedPercent is { } p ? $"{p:0.##}%" : "н/д";
-        var quota = storage.QuotaBytes is { } q ? $"{q} б" : "не задана";
+        var percent = storage.UsedPercent is { } p ? $"{p:0.##}%" : "n/a";
+        var quota = storage.QuotaBytes is { } q ? $"{q} B" : "not set";
         yield return new Alert(
             $"{KindName}:storage",
             severity,
             KindName,
             "backups-storage",
-            $"хранилище бэкапов: занято {storage.UsedBytes} б из квоты {quota} ({percent}) — состояние {storage.State}",
+            $"backup storage: {storage.UsedBytes} B used of quota {quota} ({percent}) — state {storage.State}",
             new Dictionary<string, string>
             {
                 ["usedBytes"] = storage.UsedBytes.ToString(),
@@ -41,8 +41,8 @@ public sealed class BackupStorageQuotaRule : IAlertRule
                 ["state"] = storage.State.ToString(),
             },
             null, // SinceUnix — проставляет AlertEngine
-            "ключ пишет ретенционный проход PgWorker по расписанию Retention:IntervalSec (list всего bucket); занятость — факт, реакции автоматикой нет",
+            "key is written by the PgWorker retention pass on the Retention:IntervalSec schedule (list of the whole bucket); usage is a fact, no automated reaction",
             AlertRemedy.OperatorRunbook,
-            "расширь квоту (PgWorker:Backups:Quota:Bytes) или ужать политику ретенции кластера (POST /api/clusters/<C>/backups/policy)");
+            "increase the quota (PgWorker:Backups:Quota:Bytes) or tighten the cluster retention policy (POST /api/clusters/<C>/backups/policy)");
     }
 }

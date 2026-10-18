@@ -36,7 +36,7 @@ public sealed class BackupChainBrokenRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"разрыв WAL-цепочки шарда {shard} кластера {backups.Cluster}: {wal.Error ?? "без причины"} — воркер переснимает полный бэкап",
+                $"WAL chain broken for shard {shard} of cluster {backups.Cluster}: {wal.Error ?? "no reason"} — worker re-runs the full backup",
                 new Dictionary<string, string>
                 {
                     ["state"] = "BROKEN",
@@ -44,9 +44,9 @@ public sealed class BackupChainBrokenRule : IAlertRule
                     ["error"] = wal.Error ?? "",
                 },
                 null,
-                "цепочка full+WAL невосстановима наращиванием: новая точка — только новый полный",
+                "the full+WAL chain cannot be restored incrementally: a new point requires a new full backup",
                 AlertRemedy.WorkerAuto,
-                "воркер переснимает полный бэкап и поднимет агента (t07); затяжное лечение видно по backup-full-stale/серии FAILED — разбор по runbook arch/19");
+                "worker re-runs the full backup and brings the agent up (t07); prolonged remediation is visible via backup-full-stale/FAILED series — investigate per the arch/19 runbook");
         }
     }
 }

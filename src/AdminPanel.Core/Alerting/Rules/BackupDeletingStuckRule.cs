@@ -39,7 +39,7 @@ public sealed class BackupDeletingStuckRule(IOptions<AlertsOptions> options) : I
                 AlertSeverity.Warning,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"полный бэкап {stuck.Full.Id} шарда {shard} кластера {backups.Cluster} висит в DELETING {stuck.Age} c (порог {staleSec} c) — ретенция не может довести удаление",
+                $"full backup {stuck.Full.Id} of shard {shard} in cluster {backups.Cluster} has been stuck in DELETING for {stuck.Age} s (threshold {staleSec} s) — retention cannot complete the delete",
                 new Dictionary<string, string>
                 {
                     ["id"] = stuck.Full.Id,
@@ -47,9 +47,9 @@ public sealed class BackupDeletingStuckRule(IOptions<AlertsOptions> options) : I
                     ["staleSeconds"] = staleSec.ToString(),
                 },
                 null, // SinceUnix — проставляет AlertEngine
-                "удаление идемпотентно: каждый ретенционный проход повторяет list+delete префикса full/<id>/ — затор означает transient-отказ S3",
+                "delete is idempotent: each retention pass repeats list+delete of the full/<id>/ prefix — a stall indicates a transient S3 failure",
                 AlertRemedy.WorkerAuto,
-                "проверь доступность S3 (endpoint/креды/сеть) и журналы /pgworker/work/<C> (phase=backups-retention) — повторные проходы доведут удаление сами");
+                "check S3 availability (endpoint/credentials/network) and /pgworker/work/<C> logs (phase=backups-retention) — repeated passes will complete the delete on their own");
         }
     }
 }

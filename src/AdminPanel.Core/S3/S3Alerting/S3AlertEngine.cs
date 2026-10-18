@@ -43,34 +43,34 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Critical,
                 "worker-api-unreachable",
                 "s3worker",
-                "API S3Worker недоступен: живых ключей /s3worker/api/ нет — s3-мутации из панели 503; чтение данных не страдает",
+                "S3Worker API unavailable: no live /s3worker/api/ keys — s3 mutations from the panel return 503; data reads are unaffected",
                 null,
                 null,
-                Hint: "воркер ставит lease-ключ при старте; ключа нет = воркер не поднялся или умер ≤15 c назад",
+                Hint: "the worker sets the lease key at startup; no key means the worker never came up or died ≤15 s ago",
                 Remedy: AlertRemedy.OperatorRunbook,
-                RemedyText: "запустите контейнер s3worker (профиль s3 deploy-контура), проверьте /healthz и S3Worker:Api:AdvertiseUrl");
+                RemedyText: "start the s3worker container (s3 profile of the deploy setup), check /healthz and S3Worker:Api:AdvertiseUrl");
 
         // 2. worker-unhealthy (warning): живой ключ, /healthz ≠ 200.
         foreach (var w in next.WorkerHealth.Where(w => w.Status != WorkerHealthStatus.Healthy))
         {
             var what = w.Status == WorkerHealthStatus.Degraded
-                ? $"/healthz отвечает не-200 ({w.Detail ?? "degraded"})"
-                : $"недостижим по URL lease-ключа ({w.Detail ?? "network error"})";
+                ? $"/healthz responds with non-200 ({w.Detail ?? "degraded"})"
+                : $"unreachable at the lease key URL ({w.Detail ?? "network error"})";
             yield return new Alert(
                 $"worker-unhealthy:s3worker/{w.InstanceId}",
                 AlertSeverity.Warning,
                 "worker-unhealthy",
                 $"s3worker/{w.InstanceId}",
-                $"инстанс S3Worker {w.InstanceId} нездоров: {what}",
+                $"S3Worker instance {w.InstanceId} unhealthy: {what}",
                 new Dictionary<string, string>
                 {
                     ["url"] = w.Url,
                     ["checked_unix"] = w.CheckedAtUtc.ToUnixTimeSeconds().ToString(),
                 },
                 null,
-                "lease-ключ жив, но health-проба процесса плохая; docker-healthcheck гасит контейнер — за этим последует исчезновение lease и critical worker-api-unreachable",
+                "the lease key is alive but the process health probe is bad; docker-healthcheck will stop the container — the lease will disappear and critical worker-api-unreachable will follow",
                 AlertRemedy.OperatorRunbook,
-                "смотрите docker logs s3worker и /healthz напрямую; поднимите зависимость (etcd/docker) или перезапустите контейнер воркера");
+                "check docker logs s3worker and /healthz directly; fix the dependency (etcd/docker) or restart the worker container");
         }
 
         foreach (var cluster in next.Clusters)
@@ -84,11 +84,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                         AlertSeverity.Info,
                         "s3-cluster-not-initialized",
                         cluster.Name,
-                        $"кластер {cluster.Name} заявлен (NOT_INITIALIZED): инстансы не подняты",
+                        $"cluster {cluster.Name} declared (NOT_INITIALIZED): instances are not up",
                         null, null,
-                        "кластер заявлен (config.state=NOT_INITIALIZED): provisioning воркера поднимет инстансы и переведёт state в Active",
+                        "cluster declared (config.state=NOT_INITIALIZED): worker provisioning will bring the instances up and move state to Active",
                         AlertRemedy.WorkerAuto,
-                        "дождитесь provisioning — воркер снимет NOT_INITIALIZED; висит — смотрите /s3worker/work/<C>");
+                        "wait for provisioning — the worker will clear NOT_INITIALIZED; if it stalls, check /s3worker/work/<C>");
                     break;
 
                 // 4. s3-cluster-to-remove (info).
@@ -98,11 +98,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                         AlertSeverity.Info,
                         "s3-cluster-to-remove",
                         cluster.Name,
-                        $"кластер {cluster.Name} в удалении (TO_REMOVE): воркер демонтирует",
+                        $"cluster {cluster.Name} is being removed (TO_REMOVE): the worker is dismantling it",
                         null, null,
-                        "кластер в удалении (config.state=TO_REMOVE): воркер демонтирует инстансы и уберёт префикс /s3/clusters/<C>",
+                        "cluster is being removed (config.state=TO_REMOVE): the worker will dismantle the instances and remove the /s3/clusters/<C> prefix",
                         AlertRemedy.WorkerAuto,
-                        "воркер демонтирует кластер сам; висит — проверьте /s3worker/work/<C>");
+                        "the worker dismantles the cluster itself; if it stalls, check /s3worker/work/<C>");
                     break;
 
                 case S3ClusterState.Active:
@@ -121,16 +121,16 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Info,
                 "s3-rotation-pending",
                 rotation.Cluster,
-                $"ротация секретов профиля кластера {rotation.Cluster} заявлена, исполняется воркером (rolling-пересоздание инстансов)",
+                $"secret rotation of the cluster {rotation.Cluster} profile requested, executed by the worker (rolling re-creation of instances)",
                 new Dictionary<string, string>
                 {
                     ["requestedBy"] = rotation.RequestedBy ?? "unknown",
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "заявка ротации жива (ключ /s3worker/rotations/<C>): воркер переиздаст env-профиль rolling-пересозданием инстансов и снимет ключ; отмены из панели нет (arch/23 §8)",
+                "rotation request is alive (key /s3worker/rotations/<C>): the worker will reissue the env profile by rolling re-creation of instances and remove the key; no cancellation from the panel (arch/23 §8)",
                 AlertRemedy.WorkerAuto,
-                "ротацию исполняет воркер, ключ исчезнет; висит — воркер буксует, проверьте /s3worker/work/<C>");
+                "rotation is executed by the worker, the key will disappear; if it stalls, the worker is lagging — check /s3worker/work/<C>");
 
             var age = next.BuiltAtUtc.ToUnixTimeSeconds() - rotation.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
@@ -139,16 +139,16 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                     AlertSeverity.Warning,
                     "s3-rotation-stale",
                     rotation.Cluster,
-                    $"заявка ротации секретов кластера {rotation.Cluster} жива дольше {age} c (порог {_options.RotationStaleSeconds} c) — исполнитель не стартует",
+                    $"secret rotation request of cluster {rotation.Cluster} alive for more than {age} s (threshold {_options.RotationStaleSeconds} s) — the executor does not start",
                     new Dictionary<string, string>
                     {
                         ["ageSec"] = age.ToString(),
                         ["staleSec"] = _options.RotationStaleSeconds.ToString(),
                     },
                     null,
-                    $"заявка не исполнена дольше {_options.RotationStaleSeconds} c — воркер буксует или не видит заявку; снятие — только воркером",
+                    $"request not executed for more than {_options.RotationStaleSeconds} s — the worker is lagging or does not see the request; only the worker removes it",
                     AlertRemedy.WorkerAuto,
-                    "проверьте /s3worker/work/<C> и доступность S3-нод; заявка снимется исполнением или возрастным таймаутом воркера");
+                    "check /s3worker/work/<C> and S3 node availability; the request will be cleared by execution or by the worker age timeout");
         }
 
         // 17. s3-key-malformed (warning): parseError-записи (arch/23 §2).
@@ -158,12 +158,12 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-key-malformed",
                 error.Key,
-                $"s3-ключ не разобран: {error.Key}",
+                $"s3 key not parsed: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "s3-ключ не разобран парсером панели: битое значение не попадает в модель — UI слеп к ключу; формат значений s3-домена — канон arch/23",
+                "s3 key not parsed by the panel parser: the malformed value does not reach the model — the UI is blind to the key; the s3 domain value format canon is arch/23",
                 AlertRemedy.OperatorRunbook,
-                "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/23; повторный тик распарсит ключ");
+                "eliminate the source of the malformed record (external writer) and bring the value to the arch/23 canon; the next tick will parse the key");
     }
 
     // 5–14. Алерты Active-кластера.
@@ -177,11 +177,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Critical,
                 "s3-endpoints-missing",
                 cluster.Name,
-                $"Active-кластер {cluster.Name} с нодами без endpoints — дискавери клиентов невозможно",
+                $"Active cluster {cluster.Name} has nodes without endpoints — client discovery is impossible",
                 null, null,
-                "Active-кластер с поднятой нодой без endpoints: воркер дописывает endpoints по факту подъёма — без них клиенты не найдут хранилище",
+                "Active cluster with a node up but without endpoints: the worker writes endpoints once nodes come up — without them clients cannot find the storage",
                 AlertRemedy.WorkerAuto,
-                "воркер допишет endpoints по факту provisioning; висит — проверьте /s3worker/work/<C> и контейнер s3w-<C>-<I>");
+                "the worker will write endpoints after provisioning; if it stalls, check /s3worker/work/<C> and the s3w-<C>-<I> container");
 
         var nowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
 
@@ -192,11 +192,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-connectivity-degraded",
                 cluster.Name,
-                $"связность кластера {cluster.Name} DEGRADED — часть настроенных линков не проходит",
+                $"connectivity of cluster {cluster.Name} DEGRADED — some configured links fail",
                 null, null,
-                "зонд связности увидел offline-линки при живых нодах: репликация по этим парам не идёт (arch/23 §3)",
+                "the connectivity probe saw offline links while nodes are alive: replication over these pairs is not happening (arch/23 §3)",
                 AlertRemedy.WorkerAuto,
-                "зонд воркера перекачает матрицу; устойчиво DEGRADED — проверьте ноды линков и сеть docker-хостов");
+                "the worker probe will re-transfer the matrix; persistently DEGRADED — check the link nodes and the docker host network");
 
         if (cluster.Connectivity?.State == "DOWN")
             yield return new Alert(
@@ -204,11 +204,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Critical,
                 "s3-connectivity-down",
                 cluster.Name,
-                $"связность кластера {cluster.Name} DOWN — ноды не слышат друг друга",
+                $"connectivity of cluster {cluster.Name} DOWN — nodes cannot hear each other",
                 null, null,
-                "зонд связности не прошёл ни по одному линку: репликация графов не идёт, данные бэкапов расходятся (arch/23 §3)",
+                "the connectivity probe failed on every link: graph replication is not happening, backup data diverges (arch/23 §3)",
                 AlertRemedy.OperatorRunbook,
-                "проверьте контейнеры нод s3w-<C>-<I> и сеть docker-хостов; зонд перекачает матрицу после восстановления");
+                "check the s3w-<C>-<I> node containers and the docker host network; the probe will re-transfer the matrix after recovery");
 
         // 9/10. s3-sync-lagging (warning) / s3-sync-diverged (critical).
         if (cluster.Sync?.State == "LAGGING")
@@ -217,11 +217,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-sync-lagging",
                 cluster.Name,
-                $"синхронность кластера {cluster.Name} LAGGING — пары сверяются с расхождениями",
+                $"cluster {cluster.Name} sync LAGGING — pairs are compared with discrepancies",
                 null, null,
-                "зонд сверил листинга приёмника/источника: есть missing/extra — репликация не догнала (arch/23 §3)",
+                "the probe compared destination/source listings: missing/extra found — replication has not caught up (arch/23 §3)",
                 AlertRemedy.WorkerAuto,
-                "зонд воркера перекачает; устойчивый лаг — проверьте очередь репликации нод");
+                "the worker probe will re-transfer; persistent lag — check the node replication queues");
 
         if (cluster.Sync?.State == "DIVERGED")
             yield return new Alert(
@@ -229,11 +229,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Critical,
                 "s3-sync-diverged",
                 cluster.Name,
-                $"синхронность кластера {cluster.Name} DIVERGED — данные пар расходятся",
+                $"cluster {cluster.Name} sync DIVERGED — pair data diverges",
                 null, null,
-                "зонд увидел missing/extra после догоняющих прогонов: часть бэкапов не реплицируется на пары (arch/23 §3)",
+                "the probe saw missing/extra after catch-up runs: some backups are not replicated across pairs (arch/23 §3)",
                 AlertRemedy.OperatorRunbook,
-                "проверьте линк пар и логи нод s3w-<C>-<I>; после починки зонд перекачает и вердикт поднимется");
+                "check the pair link and the s3w-<C>-<I> node logs; after the fix the probe will re-transfer and the verdict will improve");
 
         // 11. s3-sync-stale (warning, один на кластер): Active с RUNNING-нодами,
         // зонд молчит (ключей нет) или checked_unix протух.
@@ -247,11 +247,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-sync-stale",
                 cluster.Name,
-                $"зонд связности/синхронности кластера {cluster.Name} молчит (ключей нет или checked_unix старше {_options.SyncStaleSec} c)",
+                $"connectivity/sync probe of cluster {cluster.Name} is silent (no keys or checked_unix older than {_options.SyncStaleSec} s)",
                 null, null,
-                "у Active-кластера с RUNNING-нодами нет свежих connectivity/sync: зонд воркера не пишет — наблюдение слепо",
+                "an Active cluster with RUNNING nodes has no fresh connectivity/sync: the worker probe is not writing — observability is blind",
                 AlertRemedy.OperatorRunbook,
-                "проверьте зонд воркера: /s3worker/work/<C> op=sync-probe; ворот-periodic/внеплановый зонд обновит checked_unix");
+                "check the worker probe: /s3worker/work/<C> op=sync-probe; a periodic or on-demand probe will refresh checked_unix");
 
         var prevCluster = previous?.Clusters.FirstOrDefault(c => c.Name == cluster.Name);
         foreach (var node in cluster.NodesList)
@@ -268,12 +268,12 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Critical,
                 "s3-node-not-running",
                 $"{cluster.Name}/{node.Name}",
-                $"инстанс {node.Name} кластера {cluster.Name} не RUNNING: {node.State}",
+                $"instance {node.Name} of cluster {cluster.Name} is not RUNNING: {node.State}",
                 new Dictionary<string, string> { ["state"] = node.State! },
                 null,
-                "инстанс не в RUNNING: надзор воркера обязан привести его в RUNNING (рестарт/пересоздание контейнера); каждая заявленная нода обязана быть жива в Active-кластере",
+                "the instance is not RUNNING: worker supervision must bring it back to RUNNING (container restart/re-creation); every declared node must be alive in an Active cluster",
                 AlertRemedy.WorkerAuto,
-                "надзор C пересоздаст контейнер; висит — проверьте контейнер s3w-<C>-<I>");
+                "supervision will re-create the container; if it stalls, check the s3w-<C>-<I> container");
         }
 
         // 12. s3-node-disk-usage-high (warning): процент или превышение декларации.
@@ -291,16 +291,16 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                         AlertSeverity.Warning,
                         "s3-node-disk-usage-high",
                         $"{cluster.Name}/{node.Name}",
-                        $"диск инстанса {node.Name} кластера {cluster.Name} занят на {usage.UsedBytes * 100 / Math.Max(1, usage.TotalBytes)}% (порог {_options.DiskUsagePercent}%)",
+                        $"disk of instance {node.Name} of cluster {cluster.Name} is {usage.UsedBytes * 100 / Math.Max(1, usage.TotalBytes)}% full (threshold {_options.DiskUsagePercent}%)",
                         new Dictionary<string, string>
                         {
                             ["usedBytes"] = usage.UsedBytes.ToString(),
                             ["totalBytes"] = usage.TotalBytes.ToString(),
                         },
                         null,
-                        "занятость диска инстанса превысила порог/декларацию: переполнение остановит приём бэкапов",
+                        "instance disk usage exceeded the threshold/declaration: a full disk will stop backup intake",
                         AlertRemedy.OperatorApi,
-                        $"увеличьте диск: PUT /api/s3/clusters/{cluster.Name}/nodes/{node.Name}/resources");
+                        $"increase the disk: PUT /api/s3/clusters/{cluster.Name}/nodes/{node.Name}/resources");
             }
         }
 
@@ -316,16 +316,16 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-nodes-same-host",
                 cluster.Name,
-                $"ноды кластера {cluster.Name} на одном хосте {host.Key}: {names}",
+                $"nodes of cluster {cluster.Name} on the same host {host.Key}: {names}",
                 new Dictionary<string, string>
                 {
                     ["host"] = host.Key!,
                     ["nodes"] = names,
                 },
                 null,
-                "несколько нод кластера размещены на одном docker-хосте: гибель хоста теряет долю данных; гео-раснос — обязанность оператора (arch/23 §4)",
+                "several cluster nodes are placed on the same docker host: losing the host loses a share of the data; geo-spread is the operator's duty (arch/23 §4)",
                 AlertRemedy.OperatorRunbook,
-                "гео-раснос — обязанность оператора, arch/23 §4; вывод/перевоз инстанса");
+                "geo-spread is the operator's duty, arch/23 §4; drain or move the instance");
         }
 
         // 14. s3-node-not-in-mesh (warning): нода без единой связи в links.
@@ -340,11 +340,11 @@ public sealed class S3AlertEngine(IOptions<S3AlertsOptions> options) : IS3AlertE
                 AlertSeverity.Warning,
                 "s3-node-not-in-mesh",
                 $"{cluster.Name}/{node.Name}",
-                $"инстанс {node.Name} кластера {cluster.Name} вне графа репликации — ни одной связи в links",
+                $"instance {node.Name} of cluster {cluster.Name} is outside the replication graph — no links at all",
                 null, null,
-                "нода Active-кластера не встречается ни в одной паре links: её объекты не реплицируются — риск безрепликационной доли",
+                "an Active cluster node appears in no links pair: its objects are not replicated — risk of an unreplicated share",
                 AlertRemedy.OperatorApi,
-                $"добавьте связь: PUT /api/s3/clusters/{cluster.Name}/links");
+                $"add a link: PUT /api/s3/clusters/{cluster.Name}/links");
     }
 
     private bool StaleChecked(long? checkedUnix, long nowUnix)

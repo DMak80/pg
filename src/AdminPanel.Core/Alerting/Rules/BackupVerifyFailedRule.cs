@@ -21,15 +21,15 @@ public sealed class BackupVerifyFailedRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{cluster.Cluster}/{shard}",
-                $"полный бэкап {failure.Id} шарда {shard} кластера {cluster.Cluster} невалиден: {failure.Error}",
+                $"full backup {failure.Id} of shard {shard} of cluster {cluster.Cluster} is invalid: {failure.Error}",
                 new Dictionary<string, string>
                 {
                     ["backupId"] = failure.Id,
                     ["checkedUnix"] = failure.CheckedUnix?.ToString() ?? string.Empty,
                 },
                 null,
-                "проверка полного бэкапа провалена (pg_verifybackup/WAL-цепочка) — восстановимость под угрозой",
+                "full backup verification failed (pg_verifybackup/WAL chain): recoverability at risk",
                 AlertRemedy.OperatorRunbook,
-                "воркер переснимает полный автоматически (verify FAILED не считается свежестью); для разбора — runbook t05; удаление битого — t06");
+                "worker re-takes the full backup automatically (verify FAILED is not counted as freshness); for analysis see runbook t05; deletion of the broken backup is t06");
     }
 }

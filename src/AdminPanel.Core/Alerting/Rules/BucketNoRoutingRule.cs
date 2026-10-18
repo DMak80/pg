@@ -25,16 +25,16 @@ public sealed class BucketNoRoutingRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"бакет {bucket.Id} кластера {cluster.Name} из диапазона 0..{cluster.BucketsCount - 1} без routing-ключа (дыра карты)",
+                $"bucket {bucket.Id} of cluster {cluster.Name} from range 0..{cluster.BucketsCount - 1} without a routing key (map hole)",
                 new Dictionary<string, string>
                 {
                     ["bucketId"] = bucket.Id.ToString(),
                     ["bucketsCount"] = cluster.BucketsCount.ToString(),
                 },
                 null,
-                "у бакета из диапазона 0..N-1 нет routing-ключа: routing — единственный авторитет «где бакет», дыра ломает SQL-сверку и переезды; ключ обязан быть у каждого бакета",
+                "a bucket in the 0..N-1 range has no routing key: routing is the only authority for \"where the bucket is\"; a hole breaks SQL cross-checks and moves; every bucket must have this key",
                 AlertRemedy.OperatorRunbook,
-                "routing-ключи пишет только PgWorker (инициализация/переезды): дыра — следствие внешнего вмешательства или сбоя; проверьте journal воркера (/pgworker/work) и журнал переездов, при необходимости пересоздайте кластер");
+                "routing keys are written only by PgWorker (initialization/moves): a hole is a consequence of external interference or a failure; check the worker journal (/pgworker/work) and the moves journal, recreate the cluster if necessary");
         }
     }
 }

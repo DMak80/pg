@@ -37,12 +37,12 @@ public sealed class BackupPoolUnreachableRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 cluster.Cluster,
-                $"кластер {cluster.Cluster}: запись в пул S3 не доставлена ни на одну ноду списков ({string.Join("; ", hits.Take(3))})",
+                $"cluster {cluster.Cluster}: S3 pool write was not delivered to any list node ({string.Join("; ", hits.Take(3))})",
                 new Dictionary<string, string>(),
                 null,
-                "проверь ноды пула (/s3/): воркер не доставил запись ни на одну ноду списков",
+                "check pool nodes (/s3/): the worker did not deliver the write to any list node",
                 AlertRemedy.OperatorRunbook,
-                "пул поднимается/провижинится — алерт погаснет сам (ретраи тиком); иначе разбор /s3/ нод по healthz/portalloc");
+                "pool is starting/provisioning — the alert will clear itself (retries on tick); otherwise inspect /s3/ nodes via healthz/portalloc");
         }
     }
 }

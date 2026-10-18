@@ -37,7 +37,7 @@ public sealed class BackupDrillFailedRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"дрилл восстановления шарда {shard} кластера {backups.Cluster} провалился: {drill.Error ?? "без причины"}",
+                $"restore drill for shard {shard} of cluster {backups.Cluster} failed: {drill.Error ?? "no reason"}",
                 new Dictionary<string, string>
                 {
                     ["drillId"] = drill.Id,
@@ -45,9 +45,9 @@ public sealed class BackupDrillFailedRule : IAlertRule
                     ["startedUnix"] = drill.StartedUnix.ToString(),
                 },
                 null,
-                "дрилл восстановления провалился — восстановимость из бэкапа не доказана",
+                "restore drill failed — recoverability from backup is not proven",
                 AlertRemedy.OperatorRunbook,
-                "разбор по docs/backup-restore.md §Дрилл; восстановимость доказывается повторным дриллом после лечения");
+                "investigate per docs/backup-restore.md §Дрилл; recoverability is proven by a repeat drill after remediation");
         }
     }
 }

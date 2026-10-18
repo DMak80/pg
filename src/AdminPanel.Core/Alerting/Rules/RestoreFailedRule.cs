@@ -33,16 +33,16 @@ public sealed class RestoreFailedRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"восстановление шарда {shard} кластера {backups.Cluster} не удалось: {restore.Error ?? "без причины"}",
+                $"restore of shard {shard} in cluster {backups.Cluster} failed: {restore.Error ?? "no reason"}",
                 new Dictionary<string, string>
                 {
                     ["restoreId"] = restore.Id,
                     ["error"] = restore.Error ?? string.Empty,
                 },
                 null,
-                "разбор по docs/backup-restore.md (диагностика FAILED) и повтор заявки restore",
+                "troubleshoot per docs/backup-restore.md (FAILED diagnostics) and re-submit the restore job",
                 AlertRemedy.OperatorRunbook,
-                "активный restore (PLANNED/RUNNING/REJOINING) без алерта — фазы видны в статусе");
+                "active restore (PLANNED/RUNNING/REJOINING) raises no alert — phases are visible in the status");
         }
     }
 }

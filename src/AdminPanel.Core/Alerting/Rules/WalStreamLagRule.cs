@@ -41,8 +41,8 @@ public sealed class WalStreamLagRule(IOptions<AlertsOptions> options) : IAlertRu
                 KindName,
                 $"{backups.Cluster}/{shard}",
                 lagHit
-                    ? $"WAL-поток шарда {shard} кластера {backups.Cluster} отстаёт на {wal.LagSegments} сегментов (порог {options.Value.WalLagMaxSegments})"
-                    : $"WAL-поток шарда {shard} кластера {backups.Cluster} молчит {nowUnix - wal.LastUploadedUnix} c (порог {options.Value.WalStaleSec})",
+                    ? $"WAL stream of shard {shard} of cluster {backups.Cluster} lags by {wal.LagSegments} segments (threshold {options.Value.WalLagMaxSegments})"
+                    : $"WAL stream of shard {shard} of cluster {backups.Cluster} has been silent for {nowUnix - wal.LastUploadedUnix} s (threshold {options.Value.WalStaleSec})",
                 new Dictionary<string, string>
                 {
                     ["lagSegments"] = wal.LagSegments?.ToString() ?? "",
@@ -51,9 +51,9 @@ public sealed class WalStreamLagRule(IOptions<AlertsOptions> options) : IAlertRu
                     ["staleSec"] = options.Value.WalStaleSec.ToString(),
                 },
                 null,
-                "проверь контейнер pgw-backup-wal-<C>-<X> и S3-доступность; воркер ретраит тиками (transient — самооздоровление, arch/19 §3)",
+                "check the pgw-backup-wal-<C>-<X> container and S3 availability; the worker retries on ticks (transient — self-healing, arch/19 §3)",
                 AlertRemedy.WorkerAuto,
-                "transient-деградация: exited-агент пересоздаётся супервизом воркера; висит — проверь креды backup_exec/доступность S3-хранилища");
+                "transient degradation: an exited agent is recreated by the worker supervisor; if it persists — check backup_exec credentials / S3 storage availability");
         }
     }
 }

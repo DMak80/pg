@@ -24,7 +24,7 @@ public sealed class ShardNoMasterRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{cluster.Name}/{shard.Name}",
-                $"шард {cluster.Name}/{shard.Name} без master-ключа (lease протух или писателя нет)",
+                $"shard {cluster.Name}/{shard.Name} has no master key (lease expired or no writer)",
                 new Dictionary<string, string>
                 {
                     ["cluster"] = cluster.Name,
@@ -32,9 +32,9 @@ public sealed class ShardNoMasterRule : IAlertRule
                     ["dsn"] = shard.Dsn,
                 },
                 null,
-                "у шарда есть dsn, но нет master-ключа: master (leases) — текущая нода записи SQL-операций; каждый шард обязан иметь живой master-ключ, синхронный с /service/<scope>/leader",
+                "shard has a dsn but no master key: master (leases) is the current node executing SQL writes; every shard must have a live master key, in sync with /service/<scope>/leader",
                 AlertRemedy.WorkerAuto,
-                "сверка мастера PgWorker (feat-pgworker-adopt-repair) восстановит ключ; висит — дефект воркера");
+                "PgWorker master reconciliation (feat-pgworker-adopt-repair) will restore the key; if it stalls, it is a worker defect");
         }
     }
 }

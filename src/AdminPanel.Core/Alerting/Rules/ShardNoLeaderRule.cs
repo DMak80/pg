@@ -33,7 +33,7 @@ public sealed class ShardNoLeaderRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 scope.Scope,
-                $"HA-scope {scope.Scope} без leader-ключа (шард {scope.Cluster}/{scope.Shard} без лидера)",
+                $"HA-scope {scope.Scope} has no leader key (shard {scope.Cluster}/{scope.Shard} has no leader)",
                 new Dictionary<string, string>
                 {
                     ["scope"] = scope.Scope,
@@ -41,9 +41,9 @@ public sealed class ShardNoLeaderRule : IAlertRule
                     ["shard"] = scope.Shard!,
                 },
                 null,
-                "у matched HA-скопа нет leader-ключа: leader — точка маршрутизации записи и предусловие переездов; Patroni обязан писать /service/<scope>/leader при живом большинстве",
+                "matched HA-scope has no leader key: leader is the write routing point and a prerequisite for relocations; Patroni must write /service/<scope>/leader while a majority is alive",
                 AlertRemedy.OperatorRunbook,
-                "проверьте патрони-скоп (REST :8008/overview, members) — выборы лидера обязаны сходиться; рестартуйте patroni-эмулятор/ноды скопа");
+                "check the patroni scope (REST :8008/overview, members) — leader election must converge; restart the patroni emulator or scope nodes");
         }
     }
 }

@@ -56,8 +56,8 @@ public sealed class BackupDrillStaleRule : IAlertRule
                     continue; // свежий успех (или в пределах 2×интервала) — ок
 
                 var description = lastSuccess == 0
-                    ? $"у шарда {shard} кластера {backups.Cluster} нет успешного дрилла при включённом интервале {intervalDays} сут"
-                    : $"успешный дрилл шарда {shard} кластера {backups.Cluster} старше {nowUnix - lastSuccess} c — порог 2×{intervalDays} сут";
+                    ? $"shard {shard} of cluster {backups.Cluster} has no successful drill while the drill interval is enabled ({intervalDays} d)"
+                    : $"successful drill of shard {shard} of cluster {backups.Cluster} is older than {nowUnix - lastSuccess} s — threshold 2×{intervalDays} d";
                 yield return new Alert(
                     $"{KindName}:{backups.Cluster}/{shard}",
                     AlertSeverity.Warning,
@@ -70,9 +70,9 @@ public sealed class BackupDrillStaleRule : IAlertRule
                         ["lastSuccessUnix"] = lastSuccess == 0 ? string.Empty : lastSuccess.ToString(),
                     },
                     null,
-                    "восстановимость не доказывается — дриллы молча не исполняются (вечный transient/выключение)",
+                    "restorability is not proven — drills silently do not run (permanent transient/shutdown)",
                     AlertRemedy.OperatorRunbook,
-                    "проверь ключ /pgworker/backups/<C>/<X>/drill и журнал backup-drill; последний FAILED не «освежает» — молчание только при свежем SUCCEEDED");
+                    "check the /pgworker/backups/<C>/<X>/drill key and the backup-drill log; the latest FAILED does not refresh — silence only with a recent SUCCEEDED");
             }
         }
     }

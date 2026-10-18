@@ -50,35 +50,35 @@ public sealed class BackupOrphanRule(IOptions<AlertsOptions> options) : IAlertRu
             var protectedByHoldOrFull = false;
             if (entry.State == "DELETING")
             {
-                fate = "идёт удаление";
+                fate = "deletion in progress";
             }
             else if (held is not null)
             {
-                fate = $"защищён hold-флагом ({held.SetBy}) — удаление только явной командой";
+                fate = $"protected by hold flag ({held.SetBy}) — deletion only via explicit command";
                 remedy = AlertRemedy.OperatorRunbook;
                 protectedByHoldOrFull = true;
             }
             else if (entry.HasValidFull)
             {
-                fate = "защищён автоправилом (есть валидный полный) — удаление только явной командой";
+                fate = "protected by auto-rule (valid full backup exists) — deletion only via explicit command";
                 remedy = AlertRemedy.OperatorRunbook;
                 protectedByHoldOrFull = true;
             }
             else if (deleteRequested is not null)
             {
-                fate = "к удалению заявкой оператора — ближайший проход воркера";
+                fate = "queued for deletion by operator request — next worker pass";
             }
             else if (ttl <= 0 || options.Value.Backups.OrphanTtlSec <= 0)
             {
-                fate = "авто-удаление выключено (OrphanTtlSec=0) — удаление вручную";
+                fate = "auto-deletion disabled (OrphanTtlSec=0) — manual deletion";
                 remedy = AlertRemedy.OperatorRunbook;
             }
             else
             {
                 var left = entry.FirstSeenUnix + ttl - nowUnix;
                 fate = left > 0
-                    ? $"удаление по TTL через {Days(left)}"
-                    : "удаление по TTL — следующий проход воркера";
+                    ? $"TTL deletion in {Days(left)}"
+                    : "TTL deletion — next worker pass";
             }
 
             var details = new Dictionary<string, string>
@@ -100,29 +100,29 @@ public sealed class BackupOrphanRule(IOptions<AlertsOptions> options) : IAlertRu
                 AlertSeverity.Warning,
                 KindName,
                 entry.Prefix,
-                $"сирота S3 {entry.Prefix} ({FormatBytes(entry.SizeBytes)}, {entry.Kind}, наблюдается с {entry.FirstSeenUnix}) — {fate}",
+                $"S3 orphan {entry.Prefix} ({FormatBytes(entry.SizeBytes)}, {entry.Kind}, observed since {entry.FirstSeenUnix}) — {fate}",
                 details,
                 null,
-                "префикс <C>/<X> без владельца: кластер deprovisioned или шард удалён; защищённый префикс — потенциальный DR-источник (runbook backup-restore.md)",
+                "ownerless prefix <C>/<X>: cluster deprovisioned or shard removed; protected prefix is a potential DR source (runbook backup-restore.md)",
                 remedy,
                 remedy == AlertRemedy.OperatorRunbook
                     ? protectedByHoldOrFull
-                        ? $"удали заявкой delete (POST /api/backups/orphans/{entry.Prefix}/delete с confirm), если данные не нужны"
-                        : "удали префикс из S3 вручную (mc rm --recursive --force s3/<bucket>/<prefix>) либо выставь PgWorker:Backups:Supervisor:OrphanTtlSec>0 для авто-удаления"
-                    : "действий не требуется: воркер удаляет префикс по TTL (Supervisor:OrphanTtlSec) и ведёт реестр /pgworker/backups/orphans");
+                        ? $"delete via operator request (POST /api/backups/orphans/{entry.Prefix}/delete with confirm) if the data is not needed"
+                        : "remove the prefix from S3 manually (mc rm --recursive --force s3/<bucket>/<prefix>) or set PgWorker:Backups:Supervisor:OrphanTtlSec>0 for auto-deletion"
+                    : "no action required: the worker deletes the prefix by TTL (Supervisor:OrphanTtlSec) and maintains the /pgworker/backups/orphans registry");
         }
     }
 
     // Остаток TTL человекочитаемо: сутки/часы (остаток всегда > 0 на вызове).
     private static string Days(long seconds)
         => seconds >= 86400
-            ? $"{seconds / 86400} сут"
-            : $"{seconds / 3600} ч";
+            ? $"{seconds / 86400} d"
+            : $"{seconds / 3600} h";
 
     private static string FormatBytes(long bytes)
         => bytes >= 1024L * 1024 * 1024
-            ? $"{bytes / (1024L * 1024 * 1024)} ГиБ"
+            ? $"{bytes / (1024L * 1024 * 1024)} GiB"
             : bytes >= 1024 * 1024
-                ? $"{bytes / (1024 * 1024)} МиБ"
-                : $"{bytes} Б";
+                ? $"{bytes / (1024 * 1024)} MiB"
+                : $"{bytes} B";
 }

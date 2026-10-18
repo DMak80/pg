@@ -32,16 +32,16 @@ public sealed class SlotInvalidationRiskRule(IOptions<AlertsOptions> options) : 
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/{shard.Name}/{slot.SlotName}",
-                $"слоту {slot.SlotName} шарда {cluster.Name}/{shard.Name} осталось {safe} байт WAL до среза (порог {ThresholdBytes} байт, P4)",
+                $"slot {slot.SlotName} on shard {cluster.Name}/{shard.Name} has {safe} bytes of WAL left before invalidation (threshold {ThresholdBytes} bytes, P4)",
                 new Dictionary<string, string>
                 {
                     ["safeWalSizeBytes"] = safe.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
                 null,
-                "слоту до среза (max_slot_wal_keep_size) осталось меньше порога: срез сделает слот lost и реплику недогоняемой; слот обязан догонять с запасом",
+                "less than the threshold remains before slot invalidation (max_slot_wal_keep_size): invalidation will make the slot lost and the replica unable to catch up; the slot must catch up with headroom",
                 AlertRemedy.WorkerAuto,
-                "надзор воркера rebuild’ит отстающую реплику; риск растёт — запустите recreate ноды через API панели");
+                "worker supervision rebuilds the lagging replica; as the risk grows, run node recreate via the panel API");
         }
     }
 }

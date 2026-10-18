@@ -34,14 +34,14 @@ public sealed class SyncStandbyMissingRule : IAlertRule
                 strict ? AlertSeverity.Critical : AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/{shard.Name}",
-                $"у мастера шарда {cluster.Name}/{shard.Name} нет sync-standby (sync_state sync/quorum) — предусловие переездов не выполнено (P8)",
+                $"master of shard {cluster.Name}/{shard.Name} has no sync-standby (sync_state sync/quorum) — moves precondition not met (P8)",
                 new Dictionary<string, string> { ["standbiesTotal"] = runtime.Standbies.Count.ToString() },
                 null,
-                "у мастера нет синхронного standby (sync/quorum): синхронная репликация — предусловие бесшовных переездов (cutover требует sync-подтверждения); мастер обязан держать sync-standby",
+                "master has no synchronous standby (sync/quorum): synchronous replication is a precondition for seamless moves (cutover requires sync confirmation); the master must keep a sync-standby",
                 AlertRemedy.WorkerAuto,
                 strict
-                    ? "запись блокирована (strict) — восстановите реплику (rebuild воркера) или выключите strict (PUT config)"
-                    : "надзор воркера восстановит реплику (rebuild); висит — проверьте /service/<scope>/members и recreate отстающей ноды");
+                    ? "writes are blocked (strict) — restore the replica (worker rebuild) or disable strict (PUT config)"
+                    : "worker supervision will restore the replica (rebuild); if it lingers — check /service/<scope>/members and recreate the lagging node");
         }
     }
 }

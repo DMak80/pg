@@ -25,16 +25,16 @@ public sealed class BucketOutOfRangeRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"routing-ключ bucket_{bucket.Id} кластера {cluster.Name} вне диапазона 0..{cluster.BucketsCount - 1}",
+                $"routing key bucket_{bucket.Id} of cluster {cluster.Name} out of range 0..{cluster.BucketsCount - 1}",
                 new Dictionary<string, string>
                 {
                     ["bucketId"] = bucket.Id.ToString(),
                     ["bucketsCount"] = cluster.BucketsCount.ToString(),
                 },
                 null,
-                "routing-ключ с id за пределами 0..N-1 (config.buckets): парсер резервирует диапазон декларации, висячий id мусорит карту; каждый routing обязан попадать в диапазон config.buckets",
+                "routing key with id out of range 0..N-1 (config.buckets): the parser reserves the declared range, a dangling id pollutes the map; every routing key must fall within the config.buckets range",
                 AlertRemedy.OperatorRunbook,
-                "удалите висячий routing-ключ (etcdctl) — воркер диапазон не расширяет; расширение бакетов возможно только пересозданием кластера (config пишет PgWorker через POST /api/clusters)");
+                "delete the dangling routing key (etcdctl) — the worker does not extend the range; buckets can only be expanded by recreating the cluster (config is written by PgWorker via POST /api/clusters)");
         }
     }
 }

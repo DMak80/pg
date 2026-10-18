@@ -25,11 +25,11 @@ public sealed class EtcdUnreachableRule : IAlertRule
             AlertSeverity.Critical,
             KindName,
             "etcd",
-            $"etcd недоступен: {failures} подряд неудачных тика",
+            $"etcd unreachable: {failures} consecutive failed ticks",
             new Dictionary<string, string> { ["consecutiveFailures"] = failures.ToString() },
             SinceUnix: null, // проставляет AlertEngine (spec §3.4)
-            Hint: "все endpoints etcd недоступны: панель держит прежние данные (BuiltAtUtc не растёт) и не видит изменений контракта; etcd — единственный источник правды и обязан быть достижим",
+            Hint: "all etcd endpoints are unreachable: the panel keeps serving stale data (BuiltAtUtc does not advance) and cannot see contract changes; etcd is the single source of truth and must be reachable",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "проверьте сеть/контейнеры etcd-контура (as-etcd стенда) по arch/09; после восстановления тик подхватит данные сам");
+            RemedyText: "check the network/containers of the etcd stand contour (as-etcd) per arch/09; after recovery the tick will pick up the data on its own");
     }
 }

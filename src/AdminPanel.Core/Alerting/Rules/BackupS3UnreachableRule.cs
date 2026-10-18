@@ -32,15 +32,15 @@ public sealed class BackupS3UnreachableRule : IAlertRule
             AlertSeverity.Warning,
             KindName,
             target,
-            $"панель не может листить bucket бэкапов {s3.Bucket}: {s3.ConsecutiveFailures} подряд неудачных инвентарь-тиков ({s3.LastError})",
+            $"panel cannot list backup bucket {s3.Bucket}: {s3.ConsecutiveFailures} consecutive failed inventory ticks ({s3.LastError})",
             new Dictionary<string, string>
             {
                 ["consecutiveFailures"] = s3.ConsecutiveFailures.ToString(),
                 ["bucket"] = s3.Bucket,
             },
             SinceUnix: null, // проставляет AlertEngine по стабильному id
-            Hint: "панель не может листить bucket бэкапов: endpoints/креды/сеть — бэкапы воркера под угрозой, смотрите логи PgWorker и S3-хранилища; live-инвентарь грани устаревает, etcd-статусы бэкапов продолжают обновляться",
+            Hint: "panel cannot list backup bucket: endpoints/credentials/network — worker backups are at risk, check PgWorker and S3 storage logs; the facet's live inventory goes stale, etcd backup statuses keep updating",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "проверьте доступность нод пула (AdminPanel:Backups:S3:Endpoints, креды, docker-сеть) и логи PgWorker; после восстановления алерт гаснет первым успешным тиком");
+            RemedyText: "check availability of the pool nodes (AdminPanel:Backups:S3:Endpoints, credentials, docker network) and PgWorker logs; after recovery the alert clears on the first successful tick");
     }
 }

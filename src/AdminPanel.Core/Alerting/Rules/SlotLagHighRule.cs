@@ -31,16 +31,16 @@ public sealed class SlotLagHighRule(IOptions<AlertsOptions> options) : IAlertRul
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/{shard.Name}/{slot.SlotName}",
-                $"лаг слота {slot.SlotName} шарда {cluster.Name}/{shard.Name} — {lag} байт, порог {ThresholdBytes} байт",
+                $"slot {slot.SlotName} lag on shard {cluster.Name}/{shard.Name} — {lag} bytes, threshold {ThresholdBytes} bytes",
                 new Dictionary<string, string>
                 {
                     ["lagBytes"] = lag.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
                 null,
-                "лаг слота выше порога: слот копит WAL на мастере (риск среза и потери слота); каждый слот шарда обязан догонять",
+                "slot lag above threshold: the slot is accumulating WAL on the master (risk of WAL removal and slot loss); every shard slot must catch up",
                 AlertRemedy.WorkerAuto,
-                "надзор воркера следит за слотами (rebuild зависшей реплики); висит — проверьте нагрузку или запустите recreate ноды");
+                "worker supervision monitors slots (rebuild of a stuck replica); if stuck — check the load or run a node recreate");
         }
     }
 

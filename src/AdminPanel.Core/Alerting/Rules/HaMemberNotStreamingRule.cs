@@ -35,7 +35,7 @@ public sealed class HaMemberNotStreamingRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{scope.Scope}/{member.Name}",
-                $"член {member.Name} scope {scope.Scope} в состоянии {member.State} (роль {member.Role}, ожидалось {expected})",
+                $"member {member.Name} in scope {scope.Scope} is in state {member.State} (role {member.Role}, expected {expected})",
                 new Dictionary<string, string>
                 {
                     ["scope"] = scope.Scope,
@@ -45,9 +45,9 @@ public sealed class HaMemberNotStreamingRule : IAlertRule
                     ["expected"] = expected,
                 },
                 null,
-                "реплика Patroni не в streaming: потоковая репликация — основа HA, отставшая реплика не примет failover; каждая реплика скопа обязана стримить",
+                "Patroni replica is not streaming: streaming replication is the foundation of HA, a lagging replica cannot take over in a failover; every replica of the scope must stream",
                 AlertRemedy.WorkerAuto,
-                "надзор воркера закроет rebuild (TO_RECREATE); висит — проверьте /service/<scope>/members и запустите recreate ноды через API панели");
+                "worker supervision will handle the rebuild (TO_RECREATE); if it stays stuck, check /service/<scope>/members and trigger the node recreate via the panel API");
         }
     }
 }

@@ -24,12 +24,12 @@ public sealed class BucketLostRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"routing бакета bucket_{bucket.Id} кластера {cluster.Name} указывает на несуществующий шард {owner}",
+                $"routing of bucket bucket_{bucket.Id} of cluster {cluster.Name} points to a non-existent shard {owner}",
                 new Dictionary<string, string> { ["owner"] = owner },
                 null,
-                "routing указывает на шард, отсутствующий в декларации; routing — единственный авторитет «где бакет», висячие ссылки ломают переезды и SQL-сверку; каждый routing должен указывать на шард с ключом shards/<X>/replicas",
+                "routing points to a shard missing from the declaration; routing is the single authority for bucket placement; dangling references break moves and SQL reconciliation; every routing must point to a shard with the shards/<X>/replicas key",
                 AlertRemedy.OperatorApi,
-                "POST /api/clusters/{c}/moves — перевезти бакеты на живой шард или восстановить декларацию шарда");
+                "POST /api/clusters/{c}/moves — move buckets to a live shard or restore the shard declaration");
         }
     }
 }

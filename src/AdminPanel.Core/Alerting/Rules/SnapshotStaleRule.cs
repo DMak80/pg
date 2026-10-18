@@ -27,7 +27,7 @@ public sealed class SnapshotStaleRule : IAlertRule
             AlertSeverity.Warning,
             KindName,
             "snapshot",
-            $"снапшот устарел: возраст {(long)age.TotalSeconds} c при пороге {(long)threshold.TotalSeconds} c",
+            $"snapshot is stale: age {(long)age.TotalSeconds} s exceeds threshold {(long)threshold.TotalSeconds} s",
             new Dictionary<string, string>
             {
                 ["ageSeconds"] = ((long)age.TotalSeconds).ToString(),
@@ -35,8 +35,8 @@ public sealed class SnapshotStaleRule : IAlertRule
                 ["builtAtUnix"] = snapshot.BuiltAtUtc.ToUnixTimeSeconds().ToString(),
             },
             null,
-            "снапшот панели не обновляется дольше 3 тиков: панель работает на устаревших данных (BuiltAtUtc не растёт), UI и алерты могут врать; тик обязан сходить каждый RefreshIntervalSeconds",
+            "panel snapshot has not been refreshed for more than 3 ticks: the panel is running on stale data (BuiltAtUtc is not advancing), UI and alerts may be inaccurate; a tick must complete every RefreshIntervalSeconds",
             AlertRemedy.OperatorRunbook,
-            "проверьте etcd-контур по arch/09 (endpoints/кворум/alarms) — refresher оживёт сам после восстановления");
+            "check the etcd environment per arch/09 (endpoints/quorum/alarms) — the refresher will recover on its own after the etcd cluster is restored");
     }
 }

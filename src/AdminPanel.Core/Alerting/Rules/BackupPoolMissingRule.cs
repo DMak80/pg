@@ -32,12 +32,12 @@ public sealed class BackupPoolMissingRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 cluster.Cluster,
-                $"кластер {cluster.Cluster}: пул S3 не выбран (policy без секции s3) — бэкапы кластера не пишутся и не читаются",
+                $"cluster {cluster.Cluster}: S3 pool not selected (policy without s3 section) — cluster backups are neither written nor read",
                 new Dictionary<string, string>(),
                 null,
-                "выбери пул на странице «Хранилище бэкапов» — без выбора бэкапы кластера не пишутся (t36, arch/19 §4)",
+                "select a pool on the Backup Storage page — without selecting a pool, cluster backups are not written (t36, arch/19 §4)",
                 AlertRemedy.OperatorApi,
-                "открой «Хранилище бэкапов» → «Пул бэкапов», выбери пул и списки мастера/реплики");
+                "open Backup Storage → Backup Pool, select the pool and the master/replica lists");
         }
     }
 }

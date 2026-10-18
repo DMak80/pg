@@ -47,34 +47,34 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Critical,
                 "worker-api-unreachable",
                 "valkeyworker",
-                "API ValkeyWorker недоступен: живых ключей /valkeyworker/api/ нет — valkey-мутации из панели 503; чтение данных не страдает",
+                "ValkeyWorker API unreachable: no live /valkeyworker/api/ keys — valkey mutations from the panel return 503; data reads are unaffected",
                 null,
                 null,
-                Hint: "воркер ставит lease-ключ при старте; ключа нет = воркер не поднялся или умер ≤15 c назад",
+                Hint: "the worker writes the lease key at startup; missing key means the worker failed to start or died ≤15 s ago",
                 Remedy: AlertRemedy.OperatorRunbook,
-                RemedyText: "запустите контейнер воркера (профиль valkey стендовой compose), проверьте /healthz и ValkeyWorker:Api:AdvertiseUrl");
+                RemedyText: "start the worker container (valkey profile of the stand compose), check /healthz and ValkeyWorker:Api:AdvertiseUrl");
 
         // worker-unhealthy (warning): живой ключ, /healthz ≠ 200.
         foreach (var w in next.WorkerHealth.Where(w => w.Status != WorkerHealthStatus.Healthy))
         {
             var what = w.Status == WorkerHealthStatus.Degraded
-                ? $"/healthz отвечает не-200 ({w.Detail ?? "degraded"})"
-                : $"недостижим по URL lease-ключа ({w.Detail ?? "network error"})";
+                ? $"/healthz returns non-200 ({w.Detail ?? "degraded"})"
+                : $"unreachable at the lease-key URL ({w.Detail ?? "network error"})";
             yield return new Alert(
                 $"worker-unhealthy:valkeyworker/{w.InstanceId}",
                 AlertSeverity.Warning,
                 "worker-unhealthy",
                 $"valkeyworker/{w.InstanceId}",
-                $"инстанс ValkeyWorker {w.InstanceId} нездоров: {what}",
+                $"ValkeyWorker instance {w.InstanceId} is unhealthy: {what}",
                 new Dictionary<string, string>
                 {
                     ["url"] = w.Url,
                     ["checked_unix"] = w.CheckedAtUtc.ToUnixTimeSeconds().ToString(),
                 },
                 null,
-                "lease-ключ жив, но health-проба процесса плохая; docker-healthcheck гасит контейнер — за этим последует исчезновение lease и critical worker-api-unreachable",
+                "the lease key is alive but the process health probe is failing; docker-healthcheck will kill the container — the lease will disappear, followed by critical worker-api-unreachable",
                 AlertRemedy.OperatorRunbook,
-                "смотрите docker logs valkeyworker и /healthz напрямую; поднимите зависимость (etcd/docker) или перезапустите контейнер воркера");
+                "check docker logs valkeyworker and /healthz directly; restore the dependency (etcd/docker) or restart the worker container");
         }
 
         foreach (var cluster in next.Clusters)
@@ -87,11 +87,11 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                         AlertSeverity.Info,
                         "valkey-cluster-not-initialized",
                         cluster.Name,
-                        $"кластер {cluster.Name} заявлен (NOT_INITIALIZED): нода не поднята",
+                        $"cluster {cluster.Name} declared (NOT_INITIALIZED): node not provisioned",
                         null, null,
-                        "кластер заявлен (config.state=NOT_INITIALIZED): provisioning воркера поднимет ноду и переведёт state в ACTIVE",
+                        "cluster declared (config.state=NOT_INITIALIZED): worker provisioning will bring up the node and move state to ACTIVE",
                         AlertRemedy.WorkerAuto,
-                        "дождитесь provisioning ноды — воркер снимет NOT_INITIALIZED; висит дольше обычного — смотрите journal воркера");
+                        "wait for node provisioning — the worker will clear NOT_INITIALIZED; if it takes longer than usual, check the worker journal");
                     break;
                 case ValkeyClusterState.ToRemove:
                     yield return new Alert(
@@ -99,11 +99,11 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                         AlertSeverity.Info,
                         "valkey-cluster-to-remove",
                         cluster.Name,
-                        $"кластер {cluster.Name} в удалении (TO_REMOVE): воркер демонтирует",
+                        $"cluster {cluster.Name} is being removed (TO_REMOVE): the worker is dismantling it",
                         null, null,
-                        "кластер в удалении (config.state=TO_REMOVE): воркер демонтирует ноду и уберёт префикс /valkey/clusters/<C>",
+                        "cluster being removed (config.state=TO_REMOVE): the worker will dismantle the node and remove the /valkey/clusters/<C> prefix",
                         AlertRemedy.WorkerAuto,
-                        "воркер демонтирует кластер сам; висит — проверьте journal воркера (контейнер мог не удалиться)");
+                        "the worker dismantles the cluster on its own; if it hangs, check the worker journal (the container may have failed to be removed)");
                     break;
                 case ValkeyClusterState.Active:
                     foreach (var alert in ActiveClusterAlerts(cluster, previous, next))
@@ -120,7 +120,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Info,
                 "valkey-rotation-pending",
                 rotation.Cluster,
-                $"ротация {rotation.Role}-пароля кластера {rotation.Cluster} заявлена, исполняется воркером (окно двух паролей, без рестартов)",
+                $"rotation of the {rotation.Role} password for cluster {rotation.Cluster} is declared and executed by the worker (two-password window, no restarts)",
                 new Dictionary<string, string>
                 {
                     ["role"] = rotation.Role,
@@ -128,9 +128,9 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                     ["requestedUnix"] = rotation.RequestedUnix.ToString(),
                 },
                 null,
-                "заявка ротации жива (ключ /valkeyworker/rotations/<C>): воркер исполняет окно двух паролей E1–E3 и снимет ключ; отмены из панели нет (arch/20 §3)",
+                "the rotation request is alive (key /valkeyworker/rotations/<C>): the worker is executing the two-password window E1–E3 and will remove the key; there is no cancel from the panel (arch/20 §3)",
                 AlertRemedy.WorkerAuto,
-                "ротацию исполняет воркер, ключ исчезнет; висит — воркер буксует, проверьте journal");
+                "the rotation is executed by the worker, the key will disappear; if it hangs, the worker is stuck — check the journal");
 
         // ===== t10 (arch/03 §8.4): видимость зависших ротационных заявок =====
 
@@ -142,13 +142,13 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
         {
             var age = rotationNowUnix - rotation.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
-                yield return RotationStaleAlert("valkey-rotation-stale", rotation.Cluster, age, "ротация пароля");
+                yield return RotationStaleAlert("valkey-rotation-stale", rotation.Cluster, age, "password rotation");
         }
         foreach (var ca in (next.CaRotations ?? []).Where(r => alive.Contains(r.Cluster)))
         {
             var age = rotationNowUnix - ca.RequestedUnix;
             if (age > _options.RotationStaleSeconds)
-                yield return RotationStaleAlert("valkey-ca-rotation-stale", ca.Cluster, age, "ротация CA/сертов");
+                yield return RotationStaleAlert("valkey-ca-rotation-stale", ca.Cluster, age, "CA/cert rotation");
         }
 
         // valkey-ticket-expired (warning, t10): заявка снята возрастным таймаутом
@@ -160,7 +160,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Warning,
                 "valkey-ticket-expired",
                 outcome.Cluster,
-                $"заявка кластера {outcome.Cluster} снята возрастным таймаутом воркера (kind={outcome.Kind}, причина: {outcome.Reason ?? "не указана"})",
+                $"the request for cluster {outcome.Cluster} was dropped by the worker age timeout (kind={outcome.Kind}, reason: {outcome.Reason ?? "not specified"})",
                 new Dictionary<string, string>
                 {
                     ["kind"] = outcome.Kind,
@@ -168,9 +168,9 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                     ["finishedUnix"] = outcome.FinishedUnix.ToString(),
                 },
                 null,
-                $"устранить причину ({outcome.Reason ?? "см. reason в исходе"}) и повторить заявку",
+                $"fix the cause ({outcome.Reason ?? "see the outcome reason"}) and re-submit the request",
                 AlertRemedy.OperatorRunbook,
-                "устраните причину waiting-фазы (waiting-cluster — поднимите кластер, миграция T доведёт) и повторите заявку; успешная ротация перезапишет исход done и алерт погаснет");
+                "fix the cause of the waiting phase (waiting-cluster — bring the cluster up, migration T will complete it) and re-submit the request; a successful rotation will overwrite the outcome with done and the alert will clear");
 
         // valkey-key-malformed (warning): parseError-записи (arch/20 §5).
         foreach (var error in next.ParseErrors)
@@ -179,12 +179,12 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Warning,
                 "valkey-key-malformed",
                 error.Key,
-                $"valkey-ключ не разобран: {error.Key}",
+                $"valkey key failed to parse: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "valkey-ключ не разобран парсером панели: битое значение не попадает в модель — UI слеп к ключу; формат значений valkey-домена — канон arch/20",
+                "the panel parser failed to parse the valkey key: a malformed value does not reach the model — the UI is blind to the key; the value format of the valkey domain is canonical per arch/20",
                 AlertRemedy.OperatorRunbook,
-                "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/20; повторный тик распарсит ключ");
+                "fix the source of the malformed entry (external writer) and bring the value to the arch/20 canon; the next tick will parse the key");
     }
 
     // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
@@ -195,16 +195,16 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
             AlertSeverity.Warning,
             kind,
             cluster,
-            $"{what} кластера {cluster} не начата дольше {age} c (порог {_options.RotationStaleSeconds} c) — исполнитель не стартует",
+            $"{what} for cluster {cluster} not started for more than {age} s (threshold {_options.RotationStaleSeconds} s) — the executor has not started",
             new Dictionary<string, string>
             {
                 ["ageSec"] = age.ToString(),
                 ["staleSec"] = _options.RotationStaleSeconds.ToString(),
             },
             null,
-            $"заявка не начата дольше {_options.RotationStaleSeconds} c — до возрастного снятия воркером осталось {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} c; проверьте journal (waiting-фаза)",
+            $"the request has not been started for more than {_options.RotationStaleSeconds} s — {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} s left until the worker age-drop; check the journal (waiting phase)",
             AlertRemedy.WorkerAuto,
-            "воркер снимет заявку возрастным таймаутом (t10); висит — проверьте journal воркера и доступность кластера");
+            "the worker will drop the request by the age timeout (t10); if it hangs, check the worker journal and cluster availability");
 
     // valkey-endpoints-missing + valkey-security-missing + valkey-node-not-running
     // (только Active-кластер).
@@ -217,11 +217,11 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Critical,
                 "valkey-endpoints-missing",
                 cluster.Name,
-                $"Active-кластер {cluster.Name} без endpoints — дискавери клиентов невозможно",
+                $"Active cluster {cluster.Name} has no endpoints — client discovery is impossible",
                 null, null,
-                "Active-кластер без endpoints: endpoints дописывает воркер по факту подъёма ноды — без них клиенты не найдут инстанс; каждый Active-кластер обязан иметь endpoints",
+                "Active cluster without endpoints: the worker appends endpoints once the node is up — without them clients cannot find the instance; every Active cluster must have endpoints",
                 AlertRemedy.WorkerAuto,
-                "воркер допишет endpoints по факту provisioning; висит — нода недоступна воркеру, проверьте контейнер vwk-<C>-node1");
+                "the worker will append endpoints after provisioning; if it hangs, the node is unreachable for the worker — check the vwk-<C>-node1 container");
 
         // valkey-security-missing (critical, t06): Active-кластер без ca_pem —
         // миграция TLS не доиграна либо ключ потерян (arch/20 §5).
@@ -231,11 +231,11 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Critical,
                 "valkey-security-missing",
                 cluster.Name,
-                $"кластер {cluster.Name}: Active без ca_pem — TLS-канон не соблюдён",
+                $"cluster {cluster.Name}: Active without ca_pem — TLS canon is violated",
                 null, null,
-                "Active-кластер без ca_pem: миграция TLS (migrate-tls воркера) не доиграна или ключ потерян; клиентские подключения без TLS-канона — риск R5 arch/21",
+                "Active cluster without ca_pem: the TLS migration (worker migrate-tls) has not completed or the key is lost; client connections without the TLS canon — risk R5 arch/21",
                 AlertRemedy.OperatorRunbook,
-                "дождитесь доигрывания миграции воркером (journal work/<C>, op=migrate-tls); висит — проверьте воркера и ключ /valkey/clusters/<C>/ca_pem в etcd");
+                "wait for the worker to complete the migration (journal work/<C>, op=migrate-tls); if it hangs, check the worker and the /valkey/clusters/<C>/ca_pem key in etcd");
 
         var prevCluster = previous?.Clusters.FirstOrDefault(c => c.Name == cluster.Name);
         foreach (var node in cluster.NodesList)
@@ -255,12 +255,12 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertSeverity.Critical,
                 "valkey-node-not-running",
                 $"{cluster.Name}/{node.Name}",
-                $"нода {node.Name} кластера {cluster.Name} не RUNNING: {node.State}",
+                $"node {node.Name} of cluster {cluster.Name} is not RUNNING: {node.State}",
                 new Dictionary<string, string> { ["state"] = node.State },
                 null,
-                "нода не в RUNNING: надзор воркера обязан привести ноду в RUNNING (рестарт/пересоздание контейнера); каждая заявленная нода обязана быть жива в Active-кластере",
+                "node is not RUNNING: worker supervision must bring the node back to RUNNING (container restart/recreation); every declared node must be alive in an Active cluster",
                 AlertRemedy.WorkerAuto,
-                "воркер supervises ноду (restart/пересоздание контейнера); висит — проверьте контейнер vwk-<C>-node1 на стенде");
+                "the worker supervises the node (restart/container recreation); if it hangs, check the vwk-<C>-node1 container on the stand");
         }
     }
 

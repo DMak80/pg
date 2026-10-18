@@ -26,15 +26,15 @@ public sealed class EtcdSnapshotExportFailedRule : IAlertRule
             AlertSeverity.Critical,
             KindName,
             "etcd",
-            $"выгрузка снапшотов etcd в S3 провалилась: {export.Error ?? "без причины"}",
+            $"etcd snapshot export to S3 failed: {export.Error ?? "no reason"}",
             new Dictionary<string, string>
             {
                 ["state"] = "FAILED",
                 ["lastUploadedUnix"] = export.LastUploadedUnix?.ToString() ?? string.Empty,
             },
             null,
-            "контроль-плейн не защищён от потери хоста — выгрузка снапшотов etcd в S3 провалилась",
+            "control plane is not protected against host loss — etcd snapshot export to S3 failed",
             AlertRemedy.OperatorRunbook,
-            "docs/runbook.md §«Восстановление etcd из S3-выгрузки (t08)»: проверь доступность S3 (PGW_BACKUP_S3_*) и статус-ключ /pgworker/etcd-snapshots; воркер доводит выгрузку тиком RetryIntervalSec");
+            "docs/runbook.md §«Восстановление etcd из S3-выгрузки (t08)»: check S3 availability (PGW_BACKUP_S3_*) and the status key /pgworker/etcd-snapshots; the worker completes the export on a RetryIntervalSec tick");
     }
 }

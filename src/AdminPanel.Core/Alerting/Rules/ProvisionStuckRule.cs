@@ -28,7 +28,7 @@ public sealed class ProvisionStuckRule(IOptions<AlertsOptions> options) : IAlert
                 AlertSeverity.Warning,
                 KindName,
                 w.Cluster,
-                $"provision кластера {w.Cluster} фейлится: {w.LastError}",
+                $"provision of cluster {w.Cluster} is failing: {w.LastError}",
                 new Dictionary<string, string>
                 {
                     ["op"] = w.Op,
@@ -38,9 +38,9 @@ public sealed class ProvisionStuckRule(IOptions<AlertsOptions> options) : IAlert
                     ["retry_not_before_unix"] = w.RetryNotBeforeUnix?.ToString() ?? "",
                 },
                 null,
-                "воркер сообщает причину фейла provision в /pgworker/work/<C>: серия живёт с первого фейла (fail_first_unix) до успеха; вечная серия = дефект воркера или окружения (порты/образ/etcd)",
+                "worker reports the provision failure reason in /pgworker/work/<C>: the series lives from the first failure (fail_first_unix) until success; an endless series = worker or environment defect (ports/image/etcd)",
                 AlertRemedy.WorkerAuto,
-                "смотрите журнал /pgworker/work/<C> и логи воркера; воркер сам ретраит с бэкоффом — если причина внешняя (занятые порты, битый образ), действуйте по runbook arch/09");
+                "see the /pgworker/work/<C> journal and worker logs; the worker retries on its own with backoff — if the cause is external (busy ports, broken image), follow runbook arch/09");
         }
     }
 }

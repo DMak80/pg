@@ -32,16 +32,16 @@ public sealed class EtcdAlarmRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{alarm.MemberId}:{type}",
-                $"тревога etcd {type.ToUpperInvariant()} на member {alarm.MemberId}",
+                $"etcd alarm {type.ToUpperInvariant()} on member {alarm.MemberId}",
                 new Dictionary<string, string>
                 {
                     ["memberId"] = alarm.MemberId.ToString(),
                     ["alarmType"] = type,
                 },
                 null,
-                "активная тревога etcd (NOSPACE/CORRUPT и т.п.): etcd — единственное хранилище деклараций (панель читает, воркеры пишут), тревога означает нездоровье кластера хранилища; alarm обязан быть снят после устранения причины",
+                "active etcd alarm (NOSPACE/CORRUPT etc.): etcd is the single store of declarations (the panel reads it, workers write), an alarm means the storage cluster is unhealthy; the alarm must be disarmed after the cause is resolved",
                 AlertRemedy.OperatorRunbook,
-                "проверьте members/диск etcd-контура по arch/09 (etcdctl alarm list; alarm disarm — только после устранения причины)");
+                "check members/disk of the etcd circuit per arch/09 (etcdctl alarm list; alarm disarm — only after the cause is resolved)");
         }
     }
 }

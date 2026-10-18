@@ -19,11 +19,11 @@ public sealed class KeyMalformedRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 error.Key,
-                $"ключ не разобран: {error.Key}",
+                $"key not parsed: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null,
-                "ключ etcd не разобран парсером панели: битое значение не попадает в модель — UI слеп к этому ключу; формат значения каждого ключа — канон arch/02 §2",
+                "etcd key not parsed by the panel parser: malformed value never reaches the model — the UI is blind to this key; the value format of every key follows the arch/02 §2 canon",
                 AlertRemedy.OperatorRunbook,
-                "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/02; повторный тик распарсит ключ");
+                "eliminate the source of the malformed record (external writer) and align the value with the arch/02 canon; a subsequent tick will parse the key");
     }
 }

@@ -36,7 +36,7 @@ public sealed class WalChainBrokenRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{backups.Cluster}/{shard}",
-                $"WAL-цепочка шарда {shard} кластера {backups.Cluster} в DEGRADED: {wal.Error ?? "без причины"}",
+                $"WAL chain of shard {shard} in cluster {backups.Cluster} is DEGRADED: {wal.Error ?? "no reason"}",
                 new Dictionary<string, string>
                 {
                     ["state"] = "DEGRADED",
@@ -44,9 +44,9 @@ public sealed class WalChainBrokenRule : IAlertRule
                     ["error"] = wal.Error ?? "",
                 },
                 null,
-                "разбери error статуса: дыра цепочки/слот — переснять полный бэкап (PgWorker, runbook arch/19 §3: нужен полный с wal_start_segment выше дыры); отставание/тишина — проверь контейнер pgw-backup-wal-<C>-<X> и S3-доступность (transient, воркер ретраит)",
+                "investigate the status error: chain gap/slot — take a new full backup (PgWorker, runbook arch/19 §3: a full backup with wal_start_segment above the gap is required); lag/silence — check the pgw-backup-wal-<C>-<X> container and S3 availability (transient, the worker retries)",
                 AlertRemedy.WorkerAuto,
-                "дыра/слот: WAL-агент остановлен воркером, восстановление — новый полный (t02)/reconcile (t07); lag/тишина: self-healing тиками");
+                "gap/slot: WAL agent stopped by the worker, recovery is a new full backup (t02)/reconcile (t07); lag/silence: self-healing by ticks");
         }
     }
 }

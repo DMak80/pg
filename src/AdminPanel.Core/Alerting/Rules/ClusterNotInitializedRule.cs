@@ -32,15 +32,15 @@ public sealed class ClusterNotInitializedRule(IOptions<AlertsOptions> options) :
                 KindName,
                 cluster.Name,
                 stuckFor
-                    ? $"кластер {cluster.Name} висит в NOT_INITIALIZED дольше {threshold} c — provisioning не завершается (причину см. provision-stuck/journal воркера)"
-                    : $"кластер {cluster.Name} заявлен (NOT_INITIALIZED): ноды не подняты, схемы не созданы",
+                    ? $"cluster {cluster.Name} has been in NOT_INITIALIZED for more than {threshold} s — provisioning does not complete (see provision-stuck/worker journal for the cause)"
+                    : $"cluster {cluster.Name} declared (NOT_INITIALIZED): nodes not up, schemas not created",
                 new Dictionary<string, string> { ["dbname"] = cluster.DbName ?? "missing" },
                 null,
-                "кластер заявлен (config.state=NOT_INITIALIZED), ноды не подняты: это нормальный жизненный цикл — provisioning воркера поднимает ноды и переведёт state в ACTIVE; зависание дольше бюджета Patroni (600 c) — уже не нормальный цикл",
+                "cluster declared (config.state=NOT_INITIALIZED), nodes not up: this is a normal lifecycle — worker provisioning brings nodes up and switches state to ACTIVE; being stuck longer than the Patroni budget (600 s) is no longer a normal cycle",
                 AlertRemedy.WorkerAuto,
                 stuckFor
-                    ? "смотрите /pgworker/work/<C> (last_error/fail_count) и логи воркера: вечный provisioning = дефект воркера или окружения"
-                    : "дождитесь provisioning (воркер пишет nodes state и снимет NOT_INITIALIZED); висит дольше обычного — смотрите journal воркера");
+                    ? "see /pgworker/work/<C> (last_error/fail_count) and worker logs: provisioning stuck forever = worker or environment defect"
+                    : "wait for provisioning (worker writes nodes state and clears NOT_INITIALIZED); if stuck longer than usual — see the worker journal");
         }
     }
 }

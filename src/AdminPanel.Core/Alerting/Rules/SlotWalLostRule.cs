@@ -25,12 +25,12 @@ public sealed class SlotWalLostRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"{cluster.Name}/{shard.Name}/{slot.SlotName}",
-                $"слот {slot.SlotName} шарда {cluster.Name}/{shard.Name}: wal_status=lost — WAL срезан, источник догонит только пересозданием (P4)",
+                $"slot {slot.SlotName} of shard {cluster.Name}/{shard.Name}: wal_status=lost — WAL removed, the source can catch up only by slot recreation (P4)",
                 new Dictionary<string, string> { ["walStatus"] = "lost" },
                 null,
-                "wal_status=lost: WAL срезан — воркер пересоздаёт слот сам (recreate + возврат агента от хвоста S3); алерт гаснет после лечения",
+                "wal_status=lost: WAL removed — the worker recreates the slot itself (recreate + agent resume from the S3 tail); the alert clears after remediation",
                 AlertRemedy.WorkerAuto,
-                "воркер пересоздаёт lost-слот автоматически; алерт висит — воркер не лечит: журнал backup-wal / healthz");
+                "the worker recreates the lost slot automatically; the alert persists — the worker is not remediating: backup-wal journal / healthz");
         }
     }
 }

@@ -28,7 +28,7 @@ public sealed class MoveFlippedStatusStuckRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/bucket_{bucket.Id}",
-                $"routing бакета bucket_{bucket.Id} кластера {cluster.Name} уже = target {target}, но статус {state} не снят",
+                $"routing of bucket bucket_{bucket.Id} of cluster {cluster.Name} already = target {target}, but status {state} is not removed",
                 new Dictionary<string, string>
                 {
                     ["owner"] = bucket.Owner!,
@@ -36,9 +36,9 @@ public sealed class MoveFlippedStatusStuckRule : IAlertRule
                     ["state"] = state,
                 },
                 null,
-                "routing уже указывает на приёмник, но статус переезда не снят: flip routing — последний шаг, после него статус-ключ обязан исчезнуть тем же тиком; висящий статус держит шард в блокировках демонтажа",
+                "routing already points to the target, but the move status is not removed: flip routing is the last step, after it the status key must disappear in the same tick; a dangling status keeps the shard in teardown locks",
                 AlertRemedy.WorkerAuto,
-                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) снимет зависший статус; висит — дефект воркера");
+                "PgWorker move repairer (feat-pgworker-adopt-repair) will remove the stuck status; still stuck — worker defect");
         }
     }
 }

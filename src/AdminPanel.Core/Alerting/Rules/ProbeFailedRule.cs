@@ -38,7 +38,7 @@ public sealed class ProbeFailedRule : IAlertRule
                 AlertSeverity.Critical,
                 KindName,
                 $"sql:{cluster.Name}/{shard.Name}",
-                $"SQL-проба шарда {cluster.Name}/{shard.Name} не удалась: {failed.Error}",
+                $"SQL probe for shard {cluster.Name}/{shard.Name} failed: {failed.Error}",
                 new Dictionary<string, string>
                 {
                     ["kind"] = "sql",
@@ -47,9 +47,9 @@ public sealed class ProbeFailedRule : IAlertRule
                     ["dsnHosts"] = string.Join(",", shard.DsnHosts),
                 },
                 null,
-                "панель не смогла подключиться ни к одному хосту DSN шарда либо writable-мастер не найден: шард недоступен целиком — либо кластер лежит, либо недостижим из сети панели; SQL-живость — предусловие live-данных (слоты/лаги/инвентарь)",
+                "the panel could not connect to any DSN host of the shard or no writable master was found: the shard is entirely unavailable — either the cluster is down or unreachable from the panel network; SQL liveness is a prerequisite for live data (slots/lags/inventory)",
                 AlertRemedy.OperatorRunbook,
-                "проверьте контейнеры нод шарда и Patroni-скоп, достижимость хостов DSN из сети панели; панель ретраит пробу каждым тиком");
+                "check the shard node containers and the Patroni scope, and DSN host reachability from the panel network; the panel retries the probe on every tick");
         }
 
         // Patroni: matched-скоп Active-кластера и Active-шарда (scope.Shard —
@@ -81,7 +81,7 @@ public sealed class ProbeFailedRule : IAlertRule
                     AlertSeverity.Critical,
                     KindName,
                     $"patroni-scope:{scope.Scope}",
-                    $"Patroni-скоп {scope.Scope} недоступен целиком: {results.Count(r => r is { Ok: false })}/{scope.Members.Count} проб упали ({first.Error})",
+                    $"Patroni scope {scope.Scope} is entirely unavailable: {results.Count(r => r is { Ok: false })}/{scope.Members.Count} probes failed ({first.Error})",
                     new Dictionary<string, string>
                     {
                         ["scope"] = scope.Scope,
@@ -92,9 +92,9 @@ public sealed class ProbeFailedRule : IAlertRule
                         ["error"] = first.Error ?? string.Empty,
                     },
                     null,
-                    "ни один член скопа не ответил на Patroni REST :8008 — HA-кластер Patroni невидим для панели: недоступен целиком либо изолирован от сети панели; REST-живость — предусловие live-данных HA",
+                    "no scope member responded on Patroni REST :8008 — the Patroni HA cluster is invisible to the panel: entirely unavailable or isolated from the panel network; REST liveness is a prerequisite for live HA data",
                     AlertRemedy.OperatorRunbook,
-                    "проверьте patroni-эмуляторы/ноды скопа (контейнеры, сеть, HostMap стенда) и живость Patroni; панель ретраит пробы каждым тиком");
+                    "check the patroni emulators/scope nodes (containers, network, stand HostMap) and Patroni liveness; the panel retries the probes on every tick");
                 continue;
             }
 
@@ -109,7 +109,7 @@ public sealed class ProbeFailedRule : IAlertRule
                     AlertSeverity.Warning,
                     KindName,
                     $"patroni:{scope.Scope}/{member.Name}",
-                    $"проба patroni по {scope.Scope}/{member.Name} не удалась: {failed.Error}",
+                    $"patroni probe for {scope.Scope}/{member.Name} failed: {failed.Error}",
                     new Dictionary<string, string>
                     {
                         ["kind"] = "patroni",
@@ -117,9 +117,9 @@ public sealed class ProbeFailedRule : IAlertRule
                         ["error"] = failed.Error ?? string.Empty,
                     },
                     null,
-                    "проба панели не дошла до цели: пробы (Patroni REST/SQL) идут из контейнера панели, неудача означает сетевую недостижимость или нездоровье цели; успешная проба — предусловие live-данных",
+                    "the panel probe did not reach the target: probes (Patroni REST/SQL) run from the panel container, a failure means network unreachability or unhealthiness of the target; a successful probe is a prerequisite for live data",
                     AlertRemedy.OperatorRunbook,
-                    "проверьте достижимость цели из сети панели (сервисы стенда) и живость самой цели; панель ретраит пробу следующим тиком");
+                    "check target reachability from the panel network (stand services) and the target's own liveness; the panel retries the probe on the next tick");
             }
         }
     }

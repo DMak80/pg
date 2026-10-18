@@ -21,14 +21,14 @@ public sealed class EtcdNoQuorumRule : IAlertRule
             AlertSeverity.Critical,
             KindName,
             "etcd",
-            "подозрение на отсутствие кворума etcd (raft без лидера)",
+            "suspected loss of etcd quorum (raft without a leader)",
             new Dictionary<string, string>
             {
                 ["errors"] = string.Join("; ", snapshot.Etcd.Endpoints.SelectMany(e => e.Errors)),
             },
             null,
-            "raft-признаки отсутствия лидера: запись невозможна у всех участников — декларации воркеров и тики панели встанут; кластер etcd обязан держать большинство",
+            "raft signs of a missing leader: writes fail on all members — worker declarations and panel heartbeats will stall; the etcd cluster must keep a majority",
             AlertRemedy.OperatorRunbook,
-            "восстановите кворум по arch/09 (перезапуск упавших членов, при потере большинства — восстановление из снапшота)");
+            "restore quorum per arch/09 (restart failed members; if the majority is lost — restore from a snapshot)");
     }
 }

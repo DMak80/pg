@@ -57,16 +57,16 @@ public sealed class InventoryMismatchRule : IAlertRule
                 AlertSeverity.Warning,
                 KindName,
                 $"{cluster.Name}/{shard.Name}",
-                $"инвентарь схем шарда {cluster.Name}/{shard.Name} не совпадает с routing: отсутствуют [{string.Join(", ", missing)}], лишние [{string.Join(", ", extra)}]",
+                $"schema inventory of shard {cluster.Name}/{shard.Name} does not match routing: missing [{string.Join(", ", missing)}], extra [{string.Join(", ", extra)}]",
                 new Dictionary<string, string>
                 {
                     ["missing"] = string.Join(", ", missing),
                     ["extra"] = string.Join(", ", extra),
                 },
                 null,
-                "фактические схемы bucket_% на шарде не совпадают с routing: SQL-сверка ловит «тихие» расхождения декларации и факта — расхождение ломает переезды (бакет есть в routing, схемы нет — и наоборот)",
+                "actual bucket_% schemas on the shard do not match routing: SQL comparison catches silent divergence between declared and actual state — a mismatch breaks moves (bucket present in routing but schema missing, and vice versa)",
                 AlertRemedy.WorkerAuto,
-                "SQL-автосинк воркера сводит фактические схемы с routing (feat автосинка); висит — дефект воркера или ручная схема на ноде");
+                "worker SQL auto-sync reconciles actual schemas with routing (auto-sync feature); if it persists — worker defect or a manual schema on the node");
         }
     }
 }

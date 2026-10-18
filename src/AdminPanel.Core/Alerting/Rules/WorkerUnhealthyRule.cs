@@ -17,23 +17,23 @@ public sealed class WorkerUnhealthyRule : IAlertRule
         foreach (var w in snapshot.WorkerHealth.Where(w => w.Status != WorkerHealthStatus.Healthy))
         {
             var what = w.Status == WorkerHealthStatus.Degraded
-                ? $"/healthz отвечает не-200 ({w.Detail ?? "degraded"})"
-                : $"недостижим по URL lease-ключа ({w.Detail ?? "network error"})";
+                ? $"/healthz returned non-200 ({w.Detail ?? "degraded"})"
+                : $"unreachable at the lease-key URL ({w.Detail ?? "network error"})";
             yield return new Alert(
                 $"{KindName}:pgworker/{w.InstanceId}",
                 AlertSeverity.Warning,
                 KindName,
                 $"pgworker/{w.InstanceId}",
-                $"инстанс PgWorker {w.InstanceId} нездоров: {what}",
+                $"PgWorker instance {w.InstanceId} is unhealthy: {what}",
                 new Dictionary<string, string>
                 {
                     ["url"] = w.Url,
                     ["checked_unix"] = w.CheckedAtUtc.ToUnixTimeSeconds().ToString(),
                 },
                 null,
-                "lease-ключ жив, но health-проба процесса плохая: секции /healthz (etcd/docker-хосты/циклы/снапшот) деградированы; docker-healthcheck гасит контейнер — за этим последует исчезновение lease и critical worker-api-unreachable",
+                "lease key is alive but the process health probe is failing: /healthz sections (etcd/docker hosts/loops/snapshot) are degraded; docker-healthcheck will stop the container — the lease will disappear next, followed by critical worker-api-unreachable",
                 AlertRemedy.OperatorRunbook,
-                "смотрите docker logs pgworker и /healthz напрямую (секции etcd-reachable/docker-hosts/loops-alive/snapshot); поднимите зависимость (etcd/docker) или перезапустите контейнер воркера (deploy/docker-compose.yml)");
+                "see docker logs pgworker and /healthz directly (sections etcd-reachable/docker-hosts/loops-alive/snapshot); restore the dependency (etcd/docker) or restart the worker container (deploy/docker-compose.yml)");
         }
     }
 }
