@@ -26,6 +26,14 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
     private CancellationTokenSource? _loopCts;
     private Task? _loop;
 
+    // Сериализация постановки instance-ключей: guard → grant → put → put →
+    // присваивание разорваны сетевыми await, и без неё два конкурирующих тика
+    // (старт фонового цикла + внешний тик App) делали по собственному grant —
+    // ключи перезаписывались lease проигравшего, а продлевался только победитель:
+    // ключи гасли по TTL при живом воркере. Один grant на постановку.
+    private readonly SemaphoreSlim _instanceGate = new(1, 1);
+    private bool _instanceDisposed; // под _sync: Dispose прошёл, новых постановок нет
+
     public string InstanceId { get; } = Guid.NewGuid().ToString("N")[..12];
 
     // Пер-кластерный клэйм (spec §4.3): txn compare version==0 → put lease TTL 15с.
@@ -212,17 +220,29 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
         _loopCts?.Dispose();
 
+        // Сбор lease под сериализацией постановки: висящая постановка ключей
+        // завершится ДО сбора — её lease отзывается здесь, а не утекает до TTL;
+        // стартовавшая после — выйдет по _instanceDisposed.
+        await _instanceGate.WaitAsync();
         List<long> leases;
-        lock (_sync)
+        try
         {
-            leases = [.. _clusterLeases.Values];
-            if (_leaderLease is { } leader)
-                leases.Add(leader);
-            if (_instanceLease is { } instance)
-                leases.Add(instance);
-            _clusterLeases.Clear();
-            _leaderLease = null;
-            _instanceLease = null;
+            lock (_sync)
+            {
+                _instanceDisposed = true;
+                leases = [.. _clusterLeases.Values];
+                if (_leaderLease is { } leader)
+                    leases.Add(leader);
+                if (_instanceLease is { } instance)
+                    leases.Add(instance);
+                _clusterLeases.Clear();
+                _leaderLease = null;
+                _instanceLease = null;
+            }
+        }
+        finally
+        {
+            _instanceGate.Release();
         }
 
         foreach (var lease in leases)
@@ -237,36 +257,52 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
                 return;
         }
 
-        var grant = await GrantAsync(ct);
-        if (!grant.IsSuccess)
-            return; // диагностика — не блокируем работу клэймов
-
-        var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
-            endpoint, $"{keyPrefix}/instances/{InstanceId}", InstanceId, grant.Value, ct));
-        if (!put.IsSuccess)
+        await _instanceGate.WaitAsync(ct);
+        try
         {
-            await RevokeSilentlyAsync(grant.Value);
-            return;
-        }
+            // Повторная проверка под сериализацией: конкурент мог поставить
+            // ключи, пока мы ждали семафор; после Dispose постановок нет.
+            lock (_sync)
+            {
+                if (_instanceLease is not null || _instanceDisposed)
+                    return;
+            }
 
-        // Ключ доступа API (arch/14 §1.1): тем же lease, что instances/<id>, —
-        // гаснут вместе; панель резолвит URL воркера только по этому ключу.
-        if (_advertiseApiUrl is { Length: > 0 } url)
-        {
-            var payload = JsonSerializer.Serialize(
-                new ApiDiscoveryPayload(url, InstanceId, Now(), _certThumbprint), PayloadJson.Json);
-            var apiPut = await WithFailoverAsync(endpoint => gateway.PutAsync(
-                endpoint, $"{keyPrefix}/api/{InstanceId}", payload, grant.Value, ct));
-            if (!apiPut.IsSuccess)
+            var grant = await GrantAsync(ct);
+            if (!grant.IsSuccess)
+                return; // диагностика — не блокируем работу клэймов
+
+            var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
+                endpoint, $"{keyPrefix}/instances/{InstanceId}", InstanceId, grant.Value, ct));
+            if (!put.IsSuccess)
             {
                 await RevokeSilentlyAsync(grant.Value);
                 return; // оба ключа ставятся на одном lease: отказ = ни одного
             }
-        }
 
-        lock (_sync)
+            // Ключ доступа API (arch/14 §1.1): тем же lease, что instances/<id>, —
+            // гаснут вместе; панель резолвит URL воркера только по этому ключу.
+            if (_advertiseApiUrl is { Length: > 0 } url)
+            {
+                var payload = JsonSerializer.Serialize(
+                    new ApiDiscoveryPayload(url, InstanceId, Now(), _certThumbprint), PayloadJson.Json);
+                var apiPut = await WithFailoverAsync(endpoint => gateway.PutAsync(
+                    endpoint, $"{keyPrefix}/api/{InstanceId}", payload, grant.Value, ct));
+                if (!apiPut.IsSuccess)
+                {
+                    await RevokeSilentlyAsync(grant.Value);
+                    return; // оба ключа ставятся на одном lease: отказ = ни одного
+                }
+            }
+
+            lock (_sync)
+            {
+                _instanceLease = grant.Value;
+            }
+        }
+        finally
         {
-            _instanceLease = grant.Value;
+            _instanceGate.Release();
         }
     }
 

@@ -222,4 +222,78 @@ public class CoordinationTests
         gateway.Store.Should().NotContainKey($"{Prefix}/claims/shop");
         gateway.Store.Should().NotContainKey($"{Prefix}/leader");
     }
+
+    // Гонка двойного grant'а instance-ключей: постановка (guard → grant → put →
+    // put → присваивание) разорвана сетевыми await, и два конкурирующих тика
+    // (старт фонового цикла + внешний тик App) без сериализации делали по
+    // собственному grant — ключи перезаписывались lease проигравшего, а
+    // продлевался только lease победителя: ключи гасли по TTL при живом воркере
+    // (панель теряла API-резолв). Сериализация = один grant на постановку.
+    [Fact]
+    public async Task ClaimStore_ConcurrentKeepaliveTicks_SingleInstanceGrant()
+    {
+        // Arrange — put instances/<id> висит на гейте: _instanceLease ещё не присвоен
+        var ct = TestContext.Current.CancellationToken;
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
+        var putArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var putRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.PutGate = key =>
+        {
+            if (!key.Contains("/instances/", StringComparison.Ordinal))
+                return Task.CompletedTask;
+            putArrived.TrySetResult();
+            return putRelease.Task;
+        };
+
+        // Act — первый тик входит в постановку и висит на гейте; второй стартует
+        // в том же окне (guard ещё видит _instanceLease == null)
+        var first = store.KeepaliveTickAsync(ct);
+        await putArrived.Task;
+        var second = store.KeepaliveTickAsync(ct);
+        await Task.Delay(100, ct); // второй тик дошёл до сериализации/guard
+        putRelease.TrySetResult();
+        await Task.WhenAll(first, second);
+
+        // Assert — ровно один grant, оба ключа живут на нём
+        gateway.GrantedLeases.Should().ContainSingle("постановка instance-ключей сериализована — двойной grant исключён");
+        var lease = gateway.KeyLeases[$"{Prefix}/instances/{store.InstanceId}"];
+        gateway.KeyLeases[$"{Prefix}/api/{store.InstanceId}"].Should().Be(lease, "оба ключа на одном lease");
+        await store.DisposeAsync();
+    }
+
+    // Dispose против висящей постановки instance-ключей: сбор lease на остановке
+    // ждёт её завершения — lease постановки отзывается, а не утекает до TTL
+    // (форма «ключи живут ≤15 с после смерти воркера»).
+    [Fact]
+    public async Task ClaimStore_Dispose_WaitsForInflightInstanceEnsure_AndRevokesItsLease()
+    {
+        // Arrange — тик ставит instance/api-ключи, put instances висит на гейте
+        var ct = TestContext.Current.CancellationToken;
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
+        var putArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var putRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        gateway.PutGate = key =>
+        {
+            if (!key.Contains("/instances/", StringComparison.Ordinal))
+                return Task.CompletedTask;
+            putArrived.TrySetResult();
+            return putRelease.Task;
+        };
+        var tick = store.KeepaliveTickAsync(ct);
+        await putArrived.Task;
+
+        // Act — остановка стартует, пока постановка висит; затем отпускаем гейт
+        var disposeTask = store.DisposeAsync().AsTask();
+        await Task.Delay(100, ct); // Dispose дошёл до ожидания постановки
+        putRelease.TrySetResult();
+        var finished = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(5), ct));
+
+        // Assert — lease постановки собран и отозван (бюджет 5 с — не висит вечно)
+        finished.Should().Be(disposeTask, "Dispose дождался постановки ключей");
+        await tick;
+        gateway.LiveLeases.Should().BeEmpty("lease висящей постановки отозван, а не утёк до TTL");
+        gateway.Store.Should().NotContainKey($"{Prefix}/instances/{store.InstanceId}");
+    }
 }

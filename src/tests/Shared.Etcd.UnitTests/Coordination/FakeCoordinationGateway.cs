@@ -13,8 +13,15 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
     public readonly HashSet<long> LiveLeases = [];
     public readonly List<TxnRequest> Txns = [];
     public readonly List<long> KeepaliveCalls = [];
+
+    // Успешно выданные lease — детект двойного grant'а instance-ключей.
+    public readonly List<long> GrantedLeases = [];
+
     public Func<long, Result>? KeepaliveOverride;
     public Func<Result<long>>? GrantOverride;
+
+    // Асинхронный гейт put (детерминированная гонка): если задан — await до записи.
+    public Func<string, Task>? PutGate;
 
     // Инъекция сбоя txn (Race/сбой etcd): если задан — возвращает её результат.
     public Func<TxnRequest, Result<TxnResult>>? TxnFault;
@@ -46,14 +53,16 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
         => Task.FromResult(Result<Kv?>.Success(
             Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
 
-    public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
+    public async Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
     {
+        if (PutGate is { } gate)
+            await gate(key);
         if (PutFault is { } fault)
-            return Task.FromResult(fault(key));
+            return fault(key);
         Store[key] = value;
         if (lease is { } l)
             KeyLeases[key] = l;
-        return Task.FromResult(Result.Success());
+        return Result.Success();
     }
 
     public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
@@ -117,6 +126,7 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
             return Task.FromResult(over());
         var id = ++_nextLease;
         LiveLeases.Add(id);
+        GrantedLeases.Add(id);
         return Task.FromResult(Result<long>.Success(id));
     }
 
