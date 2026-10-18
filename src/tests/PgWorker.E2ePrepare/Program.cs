@@ -11,7 +11,7 @@ using PgWorker.IntegrationTests.E2e;
 // Затем:  DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test … (серии,
 //         можно параллельно — ститика уже готова и не пересобирается).
 
-Console.WriteLine("[PHASE] e2e-prepare: сборка статических ассетов (publish + docker-образы)…");
+Console.WriteLine("[PHASE] e2e-prepare: building static assets (publish + docker images)…");
 var sw = Stopwatch.StartNew();
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -22,4 +22,4 @@ Console.CancelKeyPress += (_, e) =>
 
 await E2eEnvironment.PrepareStaticAssetsAsync(cts.Token);
 Console.WriteLine(
-    $"[PHASE] e2e-prepare: готово за {sw.Elapsed.TotalSeconds:F0} с — тесты можно запускать (в т.ч. параллельно)");
+    $"[PHASE] e2e-prepare: done in {sw.Elapsed.TotalSeconds:F0} s — tests can be run (including in parallel)");
