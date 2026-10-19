@@ -34,7 +34,8 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 | Ключ | Формат значения | Пишет | Примечание |
 |---|---|---|---|
-| `config` | JSON `{"platform":"owns3","nodes":N,"secret_profile":"<имя>","created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, актуализирует `nodes` при изменении состава (D/E), txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` — единственное значение `"owns3"` (фиксируется при создании навсегда; точка расширения контракта); `nodes` — число инстансов заявки при создании (0..9 — кластер без инстансов валиден), после D/E — поддерживается воркером равным фактическому составу (структурный предел 0..9; вывод последнего инстанса запрещён — arch/24 §5 E, 0 достигается только созданием; операционная рекомендация 2–3 — гео-минимум и бюджет R1); `secret_profile` — имя per-install env-профиля кредов нод (§6; секреты клиентской грани — вне etcd) |
+| `config` | JSON `{"platform":"owns3","nodes":N,"etcd_backup"?:true,"created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель через API воркера (создание, TO_REMOVE), воркер (снимает `state` после инициализации, актуализирует `nodes` при изменении состава (D/E), txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg/kafka/valkey); `platform` — единственное значение `"owns3"` (фиксируется при создании навсегда; точка расширения контракта); `nodes` — число инстансов заявки при создании (0..9 — кластер без инстансов валиден), после D/E — поддерживается воркером равным фактическому составу (структурный предел 0..9; вывод последнего инстанса запрещён — arch/24 §5 E, 0 достигается только созданием; операционная рекомендация 2–3 — гео-минимум и бюджет R1); `etcd_backup` — признак «бэкапный кластер etcd» (bool, default false, пишется только при `true`; фиксируется при создании навсегда — меняется пересозданием кластера, как `platform`; единственный в `/s3/clusters/` — валидация API создания, 409 при коллизии; требует полной спец-ключевой env-пары воркера — §6, arch/24 §1.1) |
+| `secrets` | JSON `{"root_user","root_password","access_keys":[{"name","access_key","secret_key","policy"}…]}` — формат §2.1 | воркер (лениво при provisioning, txn put-if-absent; ротация — замена целиком, txn по `mod_revision`) | клиентские креды кластера (§6): root-пара админ-грани + статические access keys (`backups` read-write, `panel` read-only; etcd-backup кластер — `backups` из спец-ключа env); читатели — воркер (env инстансов, root админ-граней), PgWorker (ключ `backups`, §7), панель (ключ `panel`), etcdworker t32 (ключ `backups`); удаляется deprovisioning'ом (X3, префикс кластера); значения — только env контейнеров и S3-клиенты процессов, никогда журнал/логи/API/UI |
 | `nodes/<I>/placement` | JSON-селектор атрибутов хоста: `{"docker_host":"h1"}` (plain) \| `{"swarm_node":"n1"}` \| `{"swarm_labels":{"geo":"dc1",...}}` \| комбинация атрибутов | панель через API воркера | явная привязка инстанса; модель «хост = набор атрибутов» (§4); привязка = предикат равенства по всем указанным атрибутам; изменение привязки живого инстанса — только выводом/перевозом инстанса (перепривязка на месте не допускается: данные тома привязаны к хосту) |
 | `nodes/<I>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"200Gi"}` | панель через API воркера (мутация ресурсов) | форматы — канон pg ([adminpanel/02-etcd-contract.md](adminpanel/02-etcd-contract.md) §9.3; kafka — §10.3): cpu — десятичные ядра 0.01..64, mem/disk — целые GiB, в etcd `"<n>Gi"`; cpu/mem — лимиты контейнера; `disk` — целевой объём volume данных инстанса (декларация: создание volume и операционная квота-наблюдение; жёсткого enforcement-примитива у docker-volume нет — занятость наблюдается `usage` и алертами панели) |
 | `nodes/<I>/state` | строка `NOT_INITIALIZED`\|`PROVISIONING`\|`RUNNING`\|`UNREACHABLE`\|`REMOVING`\|`TO_REMOVE` | `NOT_INITIALIZED`/`TO_REMOVE` — **только панель** (заявка / one-way маркер демонтажа инстанса); остальные — воркер | жизненный цикл инстанса — семантика kafka/valkey; `UNREACHABLE` ставит надзор по health-пробам (платформенные health-грани — §5) |
@@ -56,7 +57,6 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 ```json
 {"platform":"owns3","nodes":3,
- "secret_profile":"backups-main",
  "created_unix":1760156800,"state":"NOT_INITIALIZED"}
 ```
 
@@ -64,7 +64,6 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 ```json
 {"platform":"owns3","nodes":3,
- "secret_profile":"backups-main",
  "created_unix":1760156800}
 ```
 
@@ -75,8 +74,26 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 ```json
 {"platform":"owns3","nodes":0,
- "secret_profile":"backups-main",
  "created_unix":1760156800}
+```
+
+`config` etcd-backup кластера (признак пишется только при `true`;
+единственный в установке — 409 при коллизии):
+
+```json
+{"platform":"owns3","nodes":3,"etcd_backup":true,
+ "created_unix":1760156800,"state":"NOT_INITIALIZED"}
+```
+
+`secrets` (клиентские креды кластера, §6; генерирует воркер; вместо
+«<32 симв [A-Za-z0-9]>» — криптостойкие сгенерированные значения):
+
+```json
+{"root_user":"s3w-backups-root",
+ "root_password":"<32 симв [A-Za-z0-9]>",
+ "access_keys":[
+   {"name":"backups","access_key":"<32 симв>","secret_key":"<32 симв>","policy":"read-write"},
+   {"name":"panel","access_key":"<32 симв>","secret_key":"<32 симв>","policy":"read-only"}]}
 ```
 
 `placement` — plain: `{"docker_host":"h1"}`; swarm: `{"swarm_node":"n1"}` и
@@ -210,33 +227,51 @@ probe по собственным targets; линки симметричны):
 
 ## 6. Секреты (контрактная часть)
 
-Два независимых контура секретов кластера: **клиентская S3-грань** —
-per-install env-профили (ниже); **PKI репликации** — per-cluster в etcd
-(подраздел «PKI репликации»): PKI репликации клиентские креды НЕ заменяет.
+Два независимых контура секретов кластера, оба — **per-cluster в etcd**
+(переживают пересоздание контейнеров и смерть воркера): **креды клиентской
+S3-грани** (ключ `secrets`, подраздел ниже) и **PKI репликации** (подраздел
+«PKI репликации»): PKI репликации клиентские креды НЕ заменяет.
 
-- Креды нод (клиентская S3-грань) — per-install env-профили воркера, вне
-  etcd и git (направление [14-pgworker.md](14-pgworker.md) §4 /
-  [19-backups.md](19-backups.md) §7): профиль = имя + root-пара +
-  опциональные статические access keys (read-write для записи бэкапов,
-  read-only для панели — симметрия действующего стенда,
-  [owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §6).
-- Кластер ссылается на профиль полем `config.secret_profile`; профиль един
-  на все инстансы кластера (клиент пишет в любой инстанс одним ключом).
-- Формат env — по прецеденту `OWNS3_ACCESS_KEYS__<i>__*` (owns3/05 §2);
-  имена переменных профиля:
-  - `S3W_NODE_SECRETS__<PROFILE>__ROOT_USER`,
-    `S3W_NODE_SECRETS__<PROFILE>__ROOT_PASSWORD`;
-  - `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__ACCESSKEY`,
-    `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__SECRETKEY`,
-    `S3W_NODE_SECRETS__<PROFILE>__ACCESS_KEYS__<i>__POLICY`
-    (`read-write`\|`read-only`).
-- В инстансы передаётся env контейнера:
-  `OWNS3_ROOT_USER`/`OWNS3_ROOT_PASSWORD` + `OWNS3_ACCESS_KEYS__<i>__*`.
-- Отсутствие/неполнота профиля — отказ фазы provisioning с диагностикой
-  (валидация API — 422 по факту env воркера).
-- Ротация — заявка `/s3worker/rotations/<C>` (§8): rolling-пересоздание
-  инстансов с новым env профиля; поддержка рестарт-семантики платформ:
-  ownS3 — переконфигурация env + рестарт
+### Креды клиентской грани (per-cluster, etcd)
+
+- Креды клиентской S3-грани (root-пара админ-грани + статические access
+  keys) генерирует S3Worker при provisioning кластера и хранит в ключе
+  `/s3/clusters/<C>/secrets` (формат — §2.1): пишет только воркер, ленивый
+  txn put-if-absent (проигрыш гонки → re-read, первый записавший — истина);
+  ротация — замена целиком, txn по `mod_revision` (§8).
+- Состав: root-пара (`root_user` — детерминированное имя `s3w-<C>-root`,
+  не секрет; `root_password` — генерируется) + access keys `backups`
+  (read-write — джобы/агенты бэкапов PgWorker) и `panel` (read-only — грань
+  «Хранилище бэкапов» панели). Генерация значений — криптостойкие 32 симв
+  [A-Za-z0-9] (алфавит без спецсимволов — безопасно для env контейнера,
+  JSON-значений и SigV4).
+- **etcd-backup кластер** (`config.etcd_backup=true`, §2): состав тот же,
+  формат един для всех кластеров, но ключ `backups` НЕ генерируется —
+  подставляется из спец-ключа бэкапа etcd: env-пары воркера
+  `S3W_ETCD_BACKUP_ACCESSKEY` / `S3W_ETCD_BACKUP_SECRETKEY` (полупара —
+  fail-fast старта воркера, arch/24 §8; создание кластера с признаком без
+  полной пары — 422, arch/24 §1.1). Root-пара и ключ `panel` генерируются
+  как у всех. Потребитель спец-ключа — etcdworker (t32): читает значение из
+  secrets-ключа однотипно с остальными клиентами.
+- В инстансы передаётся env контейнера (значения из secrets-ключа):
+  `OWNS3_ROOT_USER`/`OWNS3_ROOT_PASSWORD` +
+  `OWNS3_ACCESS_KEYS__<i>__*` (формат — прецедент
+  [owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §2);
+  env — транспорт доставки значений, не хранилище (источник правды — etcd).
+- Экспозиция: парсеры панели разбирают secrets для внутреннего S3-клиента
+  грани «Хранилище бэкапов» (ключ `panel`); в UI/API значения не отдаются —
+  только имена/политики (adminpanel/02 §12). PgWorker читает ключ `backups`
+  (§7).
+- Отсутствие/битость/неполнота secrets-ключа существующего кластера —
+  отказ фазы/диагностика процессов воркера (ретраи тиком), НЕ тихая
+  перегенерация: живые инстансы с прежним env разошлись бы с ключом.
+- Ротация — заявка `/s3worker/rotations/<C>` (§8): генерация новых
+  root+ключей (etcd-backup — спец-ключ пере-подставляется из env) → замена
+  secrets целиком (txn по `mod_revision`) → rolling-пересоздание инстансов
+  по одному за тик с новым env; env-сверка контейнера — по `root_user` +
+  составу `OWNS3_ACCESS_KEYS__<i>` (имена/состав неизменны, значения
+  новые); поддержка рестарт-семантики платформ: ownS3 — переконфигурация
+  env + рестарт
   ([owns3/05-access-config.md](../OwnS3/arch/owns3/05-access-config.md) §2).
 
 ### PKI репликации (per-cluster, etcd)
@@ -282,9 +317,10 @@ per-install env-профили (ниже); **PKI репликации** — per-
 реализация — PgWorker, правки контракта — arch/19/arch/14.
 
 Реализация (фиксируется): PgWorker — читатель
-`/s3/clusters/<C>/{config,nodes/<I>/state,endpoints}` плюс
-`/s3worker/portalloc/<C>` для резолва имён инстансов в адреса; PgWorker в
-`/s3/` НЕ пишет. Списки приоритетов записи per-PG-кластер живут в policy
+`/s3/clusters/<C>/{config,nodes/<I>/state,endpoints,secrets}` (ключ
+`secrets` — креды `backups`, read-write, [19-backups.md](19-backups.md) §7)
+плюс `/s3worker/portalloc/<C>` для резолва имён инстансов в адреса;
+PgWorker в `/s3/` НЕ пишет. Списки приоритетов записи per-PG-кластер живут в policy
 бэкапов ([19-backups.md](19-backups.md) §4) ссылками на имена инстансов
 (`write_master`/`write_replica` — по роли источника, не по роли ноды);
 чтение — все ноды пула без приоритетов (порядок `endpoints`-ключа).
@@ -304,7 +340,7 @@ per-install env-профили (ниже); **PKI репликации** — per-
 | `/s3worker/locks/portalloc` | lease TTL 15 с | глобальный portalloc-клэйм (t90-паттерн: взаимоисключение секции довыделения портов; txn `version==0` + put-with-lease) |
 | `/s3worker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/s3worker/api/<id>` | lease TTL 15 с | дискавери API воркера: `{"url","instance","since_unix","cert_thumbprint"?}` — ставит сам инстанс; читает панель |
-| `/s3worker/rotations/<C>` | обычный | заявка ротации секретов профиля кластера `{"requested_unix","requested_by"}` (панель через API воркера — клэйм-txn; del воркером по завершении) |
+| `/s3worker/rotations/<C>` | обычный | заявка ротации клиентских кредов кластера `{"requested_unix","requested_by"}` (панель через API воркера — клэйм-txn; del воркером по завершении): генерация новых root+ключей → замена `secrets` целиком (txn по `mod_revision`) → rolling-пересоздание инстансов по одному за тик с новым env (§6) |
 | `/s3worker/probes/<C>` | обычный | заявка внепланового зонда синхронности/связности `{"requested_unix","requested_by"}` (панель через API воркера — клэйм-txn put-if-absent; del зонда F по исполнении, [24-s3worker.md](24-s3worker.md) §5 F) |
 
 Панель читает из `/s3worker/` только `api/` и `rotations/`;

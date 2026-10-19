@@ -885,12 +885,12 @@ s3://<bucket>/<C>/<X>/
   per-install** — env `PGW_BACKUP_S3_BUCKET` (конфиг-биндинг
   `PgWorker:Backups:S3:Bucket`, группа транспортных секретов
   [14-pgworker.md](14-pgworker.md) §4 п.3; единый на всех нодах всех пулов
-  установки, §5); (б) **креды пулов — env-профили**:
-  `PGW_BACKUP_S3_PROFILES__<PROFILE>__ACCESS_KEY` /
-  `PGW_BACKUP_S3_PROFILES__<PROFILE>__SECRET_KEY` (read-write ключи
-  профилей; пул ссылается профилем `config.secret_profile` —
-  [23-s3-clusters.md](23-s3-clusters.md) §6; воркер резолвит креды
-  per-профиль по образцу `S3W_NODE_SECRETS__*` S3Worker); единого
+  установки, §5); (б) **креды пулов — per-cluster secrets в etcd**:
+  `/s3/clusters/<C>/secrets` ([23-s3-clusters.md](23-s3-clusters.md) §6;
+  ключ `name=backups`, read-write) — воркер читает их резолвером пула
+  живым резолвом на каждом тике (отсутствие/битость secrets —
+  transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
+  ретраи тиком, НЕ краш тика — §4); единого
   `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
   больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
   ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
@@ -899,7 +899,8 @@ s3://<bucket>/<C>/<X>/
   [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
   переиспользуется: источник правды о DR-слепках не живёт в
   восстанавливаемом etcd. Передача агенту/джобу — env контейнера (t02/t03:
-  bucket + списки endpoints по роли + креды профиля). Стенд/контур-режим:
+  bucket + списки endpoints по роли + креды read-write из secrets пула).
+  Стенд/контур-режим:
   адресация S3 всех потребителей контура — по имени сети (`http://owns3:9000`
   на стенде); хост-публикация хранилища — только для внешних потребителей
   (чеки с хоста, mc-миграция, оператор). Прод — endpoints нод пула
@@ -950,11 +951,10 @@ s3://<bucket>/<C>/<X>/
 
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
   `S3 { Bucket, CaBundlePath="" (путь ca.pem per-install CA — доверие
-  https-endpoint, §7; на все цели), Profiles (env-only:
-  `PGW_BACKUP_S3_PROFILES__*`, §7 — в конфиге не дублируются) }`
+  https-endpoint, §7; на все цели) }`
   (Endpoint/Region/AccessKey/SecretKey/PathStyle/AdvertisedEndpoint
   УШЛИ — единого endpoint записи больше нет, цели даёт пул per-cluster,
-  §4/§5),
+  §4/§5; креды пулов — per-cluster secrets в etcd, §7 — в конфиге их нет),
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
@@ -984,9 +984,10 @@ s3://<bucket>/<C>/<X>/
   drill-джоба — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
   OrphanTtlSec=604800 }` (t07: период сверок per-cluster и глобального
   лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
-  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`) И
-  хотя бы один env-профиль кредов `PGW_BACKUP_S3_PROFILES__*` (без
-  полупар) — fail-fast; `Snapshots:Export:Enabled=true` → полная
+  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`)
+  — fail-fast (проверок наличия кредов пулов в etcd на старте НЕ вводится:
+  креды появляются/исчезают динамически, резолв — живой, §7);
+  `Snapshots:Export:Enabled=true` → полная
   слепочная пара `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*`)
   — fail-fast; отрицательные
   таймауты/TTL супервизора — fail-fast; отрицательные

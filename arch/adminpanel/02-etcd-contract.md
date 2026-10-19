@@ -1177,14 +1177,15 @@ S3Worker ([24-s3worker.md](../24-s3worker.md)); панель никогда не
 
 | Префикс/ключ | В модель | Примечание |
 |---|---|---|
-| `/s3/clusters/<C>/config` | `S3ClusterInfo` (config + state-маппинг: отсутствие = Active) | `platform` (`owns3`), `nodes`, `secret_profile`, `created_unix` |
+| `/s3/clusters/<C>/config` | `S3ClusterInfo` (config + state-маппинг: отсутствие = Active) | `platform` (`owns3`), `nodes`, `etcd_backup`, `created_unix` |
 | `/s3/clusters/<C>/nodes/<I>/{placement,resources,state,placed_on,usage}` | `S3NodeInfo` | `state` — raw-строка (толерантно к новым); `usage` — занятость диска |
 | `/s3/clusters/<C>/links` | список пар `S3ReplicationLink` | граф репликации |
 | `/s3/clusters/<C>/denylist` | список имён | отозванные инстансы |
+| `/s3/clusters/<C>/secrets` | `S3ClusterInfo.Secrets` (`root_user` + состав `access_keys`: имя/политика/значения) | клиентские креды кластера (arch/23 §6): значения — ТОЛЬКО внутреннему S3-клиенту панели (ключ `panel`, грань «Хранилище бэкапов», §12.4); в API/UI отдаются исключительно `root_user` и имена/политики ключей — никогда значения |
 | `/s3/clusters/<C>/endpoints` | `S3ClusterInfo.Endpoints` | точка дискавери клиентов; отсутствие у Active с нодами — critical-алерт |
 | `/s3/clusters/<C>/connectivity` | `S3ConnectivityInfo` (state, checked_unix, links-матрица, probe_error?) | зонд |
 | `/s3/clusters/<C>/sync` | `S3SyncInfo` (state, checked_unix, pairs, last_error?) | зонд |
-| `/s3worker/rotations/<C>` | `S3RotationTicket` | живая заявка ротации секретов |
+| `/s3worker/rotations/<C>` | `S3RotationTicket` | живая заявка ротации клиентских кредов |
 | `pki/*`, `nodes/<I>/pki` | — (парсер пропускает молча, без unknownKeys) | PKI репликации — только воркеру |
 
 Неизвестные ключи внутри `/s3/` — лог + `unknownKeys`; битый JSON —
@@ -1203,7 +1204,7 @@ already→204/202); панель — прокси, тело команды пе�
 
 | # | Мутация | Эндпоинт панели → эндпоинт воркера | Отказы |
 |---|---|---|---|
-| 1 | Создание кластера | `POST /api/s3/clusters` → `POST /api/s3/clusters` | 400, 409, 422 (профиль секретов), 503 |
+| 1 | Создание кластера | `POST /api/s3/clusters` → `POST /api/s3/clusters` | 400, 409 (второй etcd-backup кластер установки), 422 (спец-ключ env воркера неполон или отсутствует — только для etcd-backup кластера), 503 |
 | 2 | Удаление кластера (TO_REMOVE) | `DELETE /api/s3/clusters/{c}` → тот же | 404, 503 |
 | 3 | Добавление инстанса | `POST /api/s3/clusters/{c}/nodes` → тот же | 400, 404, 409, 503 |
 | 4 | Маркер демонтажа инстанса | `DELETE /api/s3/clusters/{c}/nodes/{n}` → тот же | 404, 409 (последняя нода), 503 |
@@ -1211,7 +1212,7 @@ already→204/202); панель — прокси, тело команды пе�
 | 6 | Граф репликации (замена целиком) | `PUT /api/s3/clusters/{c}/links` → тот же | 400 (links), 404, 503 |
 | 7 | Отзыв ключа инстанса (deny) | `POST /api/s3/clusters/{c}/nodes/{n}/deny` → тот же | 404, 503 |
 | 8 | Снятие отзыва (allow) | `POST /api/s3/clusters/{c}/nodes/{n}/allow` → тот же | 404, 503 |
-| 9 | Заявка ротации секретов профиля | `POST /api/s3/clusters/{c}/rotations` → тот же | 404, 503 |
+| 9 | Заявка ротации клиентских кредов | `POST /api/s3/clusters/{c}/rotations` → тот же | 404, 503 |
 | 10 | Внеплановый зонд | `POST /api/s3/clusters/{c}/sync-probe` → тот же | 404, 409 (не Active), 503 |
 
 ### 12.3. Валидация
@@ -1220,8 +1221,10 @@ already→204/202); панель — прокси, тело команды пе�
 кластера/инстанса `^[a-z][a-z0-9_]{0,62}$`; имя `orchestrator`
 зарезервировано; инстансы 0..9; placement — обязательный валидный селектор
 (минимум один атрибут `dockerHost`|`swarmNode`|`swarmLabels`); resources —
-cpu 0.01..64, mem/disk 1..65536 GiB; `secretProfile` — непустое имя (422 с
-перечнем доступных); links — имена существуют, `a≠b`, пары уникальны.
+cpu 0.01..64, mem/disk 1..65536 GiB; `etcdBackup` — опциональный
+переключатель «бэкапный кластер etcd» (единственный в установке; требует
+спец-ключа env воркера — гварды сервера 409/422, arch/24 §1.1); links —
+имена существуют, `a≠b`, пары уникальны.
 `platform` — единственное значение `owns3` (панель подставляет всегда).
 
 ### 12.4. Потребление страницей «Хранилище бэкапов»
@@ -1231,10 +1234,21 @@ cpu 0.01..64, mem/disk 1..65536 GiB; `secretProfile` — непустое имя
 прокси в policy-API воркера, §9.12) и колонки «Пул» таблицы
 «Кластеры → шарды» панель получает ИЗ ЭТОГО домена — тот же снапшот
 `S3Snapshot` и тот же тик §4 (второго домена/парсера/тика нет):
-имя кластера (`/s3/clusters/`), `config.secret_profile`, Active-статус
+имя кластера (`/s3/clusters/`), признак `etcd_backup`, Active-статус
 (отсутствие `state` — §2 arch/23), состав нод (имена из ключей
 `nodes/<I>/state|placement`, состояние `state`) и адреса
 (`endpoints`-строка). Выбор пула для бэкапов кластера — policy кластера
 через policy-API воркера (§9.12): от этой грани мутаций домена НЕТ —
 чтение read-only, unknownKeys-толерантность и parseError — общие
 (12.1).
+
+Креды и endpoint самой грани «Хранилище бэкапов» — тоже из снапшота
+S3-домена: первый по Ordinal Active-кластер с непустыми `endpoints` и
+валидным `secrets` (ключ `panel`, read-only — 12.1) становится целью
+инвентаря (`Cluster`, `Endpoints`, креды — только внутреннему S3-клиенту
+панели); такого кластера нет — грань не настроена (configured=false,
+503-семантика запросов прежняя). env
+`AdminPanel__Backups__S3__{AccessKey,SecretKey,Endpoint,Endpoints}`
+упраздняются; в конфиге остаётся `AdminPanel__Backups__S3__Bucket` (имя
+bucket per-install; перенос в etcd — отдельная roadmap-задача). Ротация
+кредов пула подхватывается следующим тиком снапшота.

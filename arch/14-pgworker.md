@@ -716,7 +716,13 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    нод, §5 I). Экспозиция — класс `app_password`/`mover_password` (etcd без
    per-key ACL; парсеры панели его не разбирают, в UI не попадает); вынос
    секретов из etcd — `t02-external-secret-manager` (pgworker-трек), класс
-   экспозиции не расширяется.
+   экспозиции не расширяется. По тому же прецеденту per-cluster в etcd —
+   клиентские креды S3-кластеров хранилища бэкапов
+   (`/s3/clusters/<C>/secrets`, [23-s3-clusters.md](23-s3-clusters.md) §6):
+   генерирует S3Worker (PgWorker — только читатель, ключ `backups`);
+   класс экспозиции тот же — парсеры панели разбирают значения только для
+   внутреннего S3-клиента грани «Хранилище бэкапов» (ключ `panel`), в
+   UI/API их не отдают.
 2. **per-install, из env PgWorker** (не в git, не в etcd — P12/P17):
    `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
    `PGW_BUCKET_ADMIN_PASSWORD`, `PGW_BUCKET_MOVER_PASSWORD` — с t02 это
