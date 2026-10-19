@@ -177,7 +177,7 @@ public static class BackupStorageMappers
             // AC1: грань не настроена — только configured + причина.
             return new BackupStorageDto(
                 Configured: false,
-                NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint is not set",
+                NotConfiguredReason: "S3 backups pool not found in /s3/clusters/ (no Active cluster with endpoints and secrets)",
                 Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
