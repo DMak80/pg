@@ -59,7 +59,7 @@ public class SyncProbeTests
         var nodeStates = nodes ?? [("east1", S3NodeStates.Running), ("east2", S3NodeStates.Running)];
         return new S3ClusterSnapshot(
             "demo",
-            new S3ClusterConfig("owns3", nodeStates.Length, secretProfile, 1760156800, null),
+            new S3ClusterConfig("owns3", nodeStates.Length, null, 1760156800, null),
             nodeStates.Select(n => new S3NodeSnapshot(n.Name, n.State, "h1",
                 new S3NodePlacement("h1", null, null), null, null, null)).ToList(),
             "h1:18001,h1:18002",

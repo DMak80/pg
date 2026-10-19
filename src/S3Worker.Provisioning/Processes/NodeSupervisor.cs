@@ -48,7 +48,7 @@ public sealed class NodeSupervisor(
 
         // Креды профиля: без них env пересозданной ноды не собрать —
         // пересоздания невозможны (diagnostic в supervision-треке).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
+        if (!secrets.TryGet("legacy", out var nodeSecrets, out var secretDiagnostic))
         {
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(

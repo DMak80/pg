@@ -76,7 +76,7 @@ public class SecretRotatorTests
 
         public S3ClusterSnapshot Snap(string node1State = S3NodeStates.Running, string node2State = S3NodeStates.Running) => new(
             "demo",
-            new S3ClusterConfig("owns3", 2, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 2, null, 1760156800, null),
             [
                 new S3NodeSnapshot("node1", node1State, "h1", null,
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),

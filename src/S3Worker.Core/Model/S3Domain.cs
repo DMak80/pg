@@ -5,11 +5,13 @@ namespace S3Worker.Core.Model;
 // (arch/23 §9), неизвестные ключи — unknownKeys (arch/23 §2).
 
 /// <summary>JSON-значение ключа config (arch/23 §2): State null = Active
-/// (семантика pg/kafka/valkey), NOT_INITIALIZED/TO_REMOVE — заявки.</summary>
+/// (семантика pg/kafka/valkey), NOT_INITIALIZED/TO_REMOVE — заявки;
+/// EtcdBackup — признак «бэкапный кластер etcd» (arch/23 §2: bool, default
+/// false, immutable, единственный в установке).</summary>
 public sealed record S3ClusterConfig(
     string? Platform,
     int? Nodes,
-    string? SecretProfile,
+    bool? EtcdBackup,
     long? CreatedUnix,
     string? State);
 

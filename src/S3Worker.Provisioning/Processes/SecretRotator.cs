@@ -49,7 +49,7 @@ public sealed class SecretRotator(
 
         // Профиль ТЕКУЩИЙ (свежий снапшот config): невалиден — journal-отказ,
         // заявка жива (оператор чинит env; пересозданий нет).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var diagnostic))
+        if (!secrets.TryGet("legacy", out var nodeSecrets, out var diagnostic))
         {
             var reject = await journal.WritePhaseAsync(
                 cluster, Op, "invalid-secret-profile", claims.InstanceId, diagnostic, ct);

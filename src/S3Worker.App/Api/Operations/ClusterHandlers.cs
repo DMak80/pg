@@ -35,12 +35,12 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
         return Result<bool>.Success(true); // 202
     }
 
-    // config → канонический JSON arch/23 §2.1 с "state"=state (поля канона).
+    // config → канонический JSON arch/23 §2.1 с "state"=state; `etcd_backup` — признак бэкапного кластера etcd.
     private static string ParseAndUpdate(string json, string cluster, string state)
     {
         string? platform = S3Limits.Platform;
         int nodes = 1;
-        string? secretProfile = null;
+        bool etcdBackup = false;
         long? created = null;
         try
         {
@@ -50,8 +50,8 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
                 platform = p.GetString();
             if (root.TryGetProperty("nodes", out var n))
                 nodes = n.GetInt32();
-            if (root.TryGetProperty("secret_profile", out var s))
-                secretProfile = s.GetString();
+            if (root.TryGetProperty("etcd_backup", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.True)
+                etcdBackup = true;
             if (root.TryGetProperty("created_unix", out var c))
                 created = c.GetInt64();
         }
@@ -60,7 +60,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
             throw new InvalidS3ConfigException(cluster);
         }
 
-        return S3ProcessCommon.SerializeCanonicalConfig(platform!, nodes, secretProfile, created, state);
+        return S3ProcessCommon.SerializeCanonicalConfig(platform!, nodes, etcdBackup, created, state);
     }
 }
 

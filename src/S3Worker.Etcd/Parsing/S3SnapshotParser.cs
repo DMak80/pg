@@ -89,6 +89,12 @@ public static class S3SnapshotParser
                 case "pki" when segments.Length == 6 && segments[5] is "ca" or "orchestrator":
                     break;
 
+                // Клиентские креды кластера (arch/23 §2/§6): ключ известный (не
+                // unknownKeys), значение в снапшот не разбирается — ClusterSecretsStore
+                // читает его отдельным GET по месту (как pki-материал).
+                case "secrets" when segments.Length == 5:
+                    break;
+
                 case "nodes" when segments.Length == 7
                     && segments[5].Length > 0
                     && segments[6] is "placement" or "resources" or "state" or "placed_on" or "usage" or "pki":
@@ -292,7 +298,8 @@ public static class S3SnapshotParser
         return ParseJson<S3ClusterConfig>(raw, (root, _) => new S3ClusterConfig(
             ReadString(root, "platform"),
             ReadInt(root, "nodes"),
-            ReadString(root, "secret_profile"),
+            root.TryGetProperty("etcd_backup", out var eb) && eb.ValueKind == JsonValueKind.True
+                ? true : null,
             ReadLong(root, "created_unix"),
             ReadString(root, "state"))); // отсутствие state = Active (arch/23 §2)
     }

@@ -42,7 +42,7 @@ public class RemoveNodeProcessTests
 
     private static S3ClusterSnapshot Snap(string node2State = S3NodeStates.ToRemove, string node1State = S3NodeStates.Running) => new(
         "demo",
-        new S3ClusterConfig("owns3", 2, "backups-main", 1760156800, null),
+        new S3ClusterConfig("owns3", 2, null, 1760156800, null),
         [
             new S3NodeSnapshot("node1", node1State, "h1", new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null),
@@ -91,7 +91,7 @@ public class RemoveNodeProcessTests
         driver.Nodes["demo/node1"] = new Fakes.FakeS3Driver.NodeFact("h1", 18000);
         await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         var single = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 1, null, 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.ToRemove, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
             null, null, null);
@@ -162,7 +162,7 @@ public class RemoveNodeProcessTests
         await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         var modRevisionBefore = etcd.Store["/s3/clusters/demo/config"].ModRevision;
         var snap = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 1, null, 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null), new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
             null, null, null);

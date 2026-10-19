@@ -65,7 +65,7 @@ public class AddNodeProcessTests
 
     private static S3ClusterSnapshot Snap(int declaredNodes = 2) => new(
         "demo",
-        new S3ClusterConfig("owns3", declaredNodes, "backups-main", 1760156800, null),
+        new S3ClusterConfig("owns3", declaredNodes, null, 1760156800, null),
         [
             new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null),
@@ -133,7 +133,7 @@ public class AddNodeProcessTests
         await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         nodeClient.Health = true;
         var snap = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 3, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 3, null, 1760156800, null),
             [
                 new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),

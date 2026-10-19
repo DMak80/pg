@@ -49,7 +49,7 @@ public sealed class MeshGovernanceProcess(
 
         // Креды профиля: без них админ-грань недостижима — диагностический skip
         // (по образцу надзора; оператор чинит env — тик повторит).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
+        if (!secrets.TryGet("legacy", out var nodeSecrets, out var secretDiagnostic))
             return await SkipAsync(cluster, $"secret profile unavailable: {secretDiagnostic}", ct);
 
         // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).

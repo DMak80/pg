@@ -70,7 +70,7 @@ public class NodeSupervisorTests
 
         public S3ClusterSnapshot Snap() => new(
             "demo",
-            new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 1, null, 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
@@ -136,7 +136,7 @@ public class NodeSupervisorTests
         rig.Driver.Nodes.Clear(); // обе ноды снесены
         await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         var snap = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 2, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 2, null, 1760156800, null),
             [
                 new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),

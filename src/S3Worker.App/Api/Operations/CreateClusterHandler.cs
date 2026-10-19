@@ -53,7 +53,7 @@ public sealed class CreateClusterHandler(
         // 4) Клэйм имени одной txn: NotExists config + put config + пакет инстансов.
         var created = time.GetUtcNow().ToUnixTimeSeconds();
         var configValue = S3ProcessCommon.SerializeCanonicalConfig(
-            S3Limits.Platform, instances.Count, profile, created, "NOT_INITIALIZED");
+            S3Limits.Platform, instances.Count, etcdBackup: false, created, "NOT_INITIALIZED");
         var configKey = S3ApiHelpers.ConfigKey(name);
         var ops = new List<TxnOp> { new TxnOp.Put(configKey, configValue, null) };
         foreach (var instance in instances)

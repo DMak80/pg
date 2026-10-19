@@ -16,7 +16,7 @@ public class S3SnapshotParserTests
     {
         // Arrange — канонический пример заявки arch/23 §2.1 (один в один)
         var kvs = new[] { Kv("/s3/clusters/backups/config",
-            """{"platform":"owns3","nodes":3,"secret_profile":"backups-main","created_unix":1760156800,"state":"NOT_INITIALIZED"}""") };
+            """{"platform":"owns3","nodes":3,"created_unix":1760156800,"state":"NOT_INITIALIZED"}""") };
 
         // Act
         var result = S3SnapshotParser.Parse(kvs);
@@ -25,7 +25,7 @@ public class S3SnapshotParserTests
         result.IsSuccess.Should().BeTrue();
         var cluster = result.Value.Clusters.Single();
         cluster.Config.Should().BeEquivalentTo(new S3ClusterConfig(
-            "owns3", 3, "backups-main", 1760156800, "NOT_INITIALIZED"));
+            "owns3", 3, null, 1760156800, "NOT_INITIALIZED"));
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public class S3SnapshotParserTests
     {
         // Arrange — Active-пример arch/23 §2.1: то же без state
         var kvs = new[] { Kv("/s3/clusters/backups/config",
-            """{"platform":"owns3","nodes":3,"secret_profile":"backups-main","created_unix":1760156800}""") };
+            """{"platform":"owns3","nodes":3,"created_unix":1760156800}""") };
 
         // Act
         var snap = S3SnapshotParser.Parse(kvs).Value;
@@ -47,13 +47,31 @@ public class S3SnapshotParserTests
     {
         // Arrange — заявка удаления: Active + "state":"TO_REMOVE"
         var kvs = new[] { Kv("/s3/clusters/backups/config",
-            """{"platform":"owns3","nodes":3,"secret_profile":"backups-main","created_unix":1760156800,"state":"TO_REMOVE"}""") };
+            """{"platform":"owns3","nodes":3,"created_unix":1760156800,"state":"TO_REMOVE"}""") };
 
         // Act
         var snap = S3SnapshotParser.Parse(kvs).Value;
 
         // Assert
         snap.Clusters.Single().Config!.State.Should().Be("TO_REMOVE");
+    }
+
+    [Fact]
+    public void Parse_EtcdBackupFlag_TrueAndAbsent()
+    {
+        // Arrange — заявки: одна с "etcd_backup":true, другая без поля
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c1/config", """{"platform":"owns3","nodes":1,"etcd_backup":true,"created_unix":1}"""),
+            Kv("/s3/clusters/c2/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),
+        };
+
+        // Act
+        var snap = S3SnapshotParser.Parse(kvs).Value;
+
+        // Assert — true → EtcdBackup true; отсутствие (и не-true) → null
+        snap.Clusters.Single(c => c.Cluster == "c1").Config!.EtcdBackup.Should().BeTrue();
+        snap.Clusters.Single(c => c.Cluster == "c2").Config!.EtcdBackup.Should().BeNull();
     }
 
     [Fact]
@@ -115,7 +133,7 @@ public class S3SnapshotParserTests
         // Arrange — ключи наблюдения зонда t33 (arch/23 §3) и вовсе неизвестный
         var kvs = new[]
         {
-            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"secret_profile":"p","created_unix":1}"""),
+            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),
             Kv("/s3/clusters/c/connectivity", """{"state":"OK","checked_unix":1}"""),
             Kv("/s3/clusters/c/sync", """{"state":"SYNCED","checked_unix":1}"""),
             Kv("/s3/whatever", "x"),
@@ -128,6 +146,26 @@ public class S3SnapshotParserTests
         // Assert — connectivity/sync — известные листы (НЕ unknownKeys, счётчик 0);
         // снапшот кластера строится; прочий неизвестный — по-прежнему unknownKeys
         snap.UnknownKeys.Should().BeEquivalentTo("/s3/whatever");
+        cluster.Config!.Platform.Should().Be("owns3");
+        cluster.ParseError.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_SecretsLeaf_NotUnknown_ClusterIntact()
+    {
+        // Arrange — ключ secrets — известный лист (ветка пропуска, разбор вне снапшота)
+        var kvs = new[]
+        {
+            Kv("/s3/clusters/c1/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),
+            Kv("/s3/clusters/c1/secrets", """{"root_user":"x"}"""),
+        };
+
+        // Act
+        var snap = S3SnapshotParser.Parse(kvs).Value;
+        var cluster = snap.Clusters.Single();
+
+        // Assert — secrets НЕ в unknownKeys, разбор config не сломан
+        snap.UnknownKeys.Should().BeEmpty();
         cluster.Config!.Platform.Should().Be("owns3");
         cluster.ParseError.Should().BeNull();
     }
@@ -154,7 +192,7 @@ public class S3SnapshotParserTests
         // Arrange — битый usage и placement у одной ноды, config цел
         var kvs = new[]
         {
-            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":2,"secret_profile":"p","created_unix":1}"""),
+            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":2,"created_unix":1}"""),
             Kv("/s3/clusters/c/nodes/node1/usage", "{bad"),
             Kv("/s3/clusters/c/nodes/node2/placement", "{bad"),
         };
@@ -232,7 +270,7 @@ public class S3SnapshotParserTests
         var kvs = new[]
         {
             Kv("/s3/clusters/backups/config",
-                """{"platform":"owns3","nodes":0,"secret_profile":"backups-main","created_unix":1760156800}"""),
+                """{"platform":"owns3","nodes":0,"created_unix":1760156800}"""),
             Kv("/s3/clusters/backups/links",
                 """[{"a":"east1","b":"east2"},{"a":"east1","b":"west1"}]"""),
             Kv("/s3/clusters/backups/denylist", """["west1"]"""),
@@ -284,7 +322,7 @@ public class S3SnapshotParserTests
         // Arrange — битые значения (ручная правка etcd, arch/23 §9)
         var kvs = new[]
         {
-            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"secret_profile":"p","created_unix":1}"""),
+            Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),
             Kv("/s3/clusters/c/links", "{not json"),
             Kv("/s3/clusters/c/denylist", """["ok", 42]"""),
         };

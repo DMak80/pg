@@ -83,7 +83,7 @@ public class ProvisioningProcessTests
         string cluster = "demo", string state = S3NodeStates.NotInitialized,
         string? nodeState = null) => new(
         cluster,
-        new S3ClusterConfig("owns3", 2, Profile, 1760156800, state),
+        new S3ClusterConfig("owns3", 2, null, 1760156800, state),
         [
             new S3NodeSnapshot("node1", nodeState, null,
                 new S3NodePlacement("h1", null, null),
@@ -155,7 +155,7 @@ public class ProvisioningProcessTests
             "{\"platform\":\"owns3\",\"nodes\":0,\"secret_profile\":\"" + Profile + "\",\"created_unix\":1760156800,\"state\":\"NOT_INITIALIZED\"}");
         await rig.Claims.TryClaimClusterAsync("empty", TestContext.Current.CancellationToken);
         var snap = new S3ClusterSnapshot("empty",
-            new S3ClusterConfig("owns3", 0, Profile, 1760156800, S3NodeStates.NotInitialized),
+            new S3ClusterConfig("owns3", 0, null, 1760156800, S3NodeStates.NotInitialized),
             [], null);
 
         // Act

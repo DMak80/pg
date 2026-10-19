@@ -75,9 +75,9 @@ public sealed class AddNodeProcess(
         }
 
         // Профиль: без кред нода не создаётся (permanent до починки env).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
+        if (!secrets.TryGet("legacy", out var nodeSecrets, out var secretDiagnostic))
             return Fail(cluster, node.Node, new ApplicationException(
-                $"secret profile {snap.Config?.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
+                $"secret profile legacy: {secretDiagnostic}"), "invalid-secret-profile");
 
         // Mini-A фаза 1: placement + portalloc довыделение под locks (P1).
         var planned = await PlanNodeAsync(snap, node, ct);
@@ -256,7 +256,7 @@ public sealed class AddNodeProcess(
 
         return await S3ProcessCommon.ConvergeTopologyAsync(
             gateway, endpoints, snap.Cluster, snap.Config?.Platform ?? "owns3",
-            snap.Config?.SecretProfile, snap.Config?.CreatedUnix, addresses, ct);
+            snap.Config?.EtcdBackup ?? false, snap.Config?.CreatedUnix, addresses, ct);
     }
 
     private Result Fail(string cluster, string node, Exception error, string phase)

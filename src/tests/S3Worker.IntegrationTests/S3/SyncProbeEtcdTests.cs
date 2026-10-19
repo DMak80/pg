@@ -164,7 +164,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     // Снапшот под сид (Active, обе ноды RUNNING).
     private S3ClusterSnapshot Snap() => new(
         _cluster,
-        new S3ClusterConfig("owns3", 2, "backups-main", 1760156800, null),
+        new S3ClusterConfig("owns3", 2, null, 1760156800, null),
         [
             new S3NodeSnapshot("east1", "RUNNING", "h1", new S3NodePlacement("h1", null, null), null, null, null),
             new S3NodeSnapshot("east2", "RUNNING", "h1", new S3NodePlacement("h1", null, null), null, null, null),

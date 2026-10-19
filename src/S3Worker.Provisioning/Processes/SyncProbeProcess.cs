@@ -59,7 +59,7 @@ public sealed class SyncProbeProcess(
 
         // Креды профиля: грани недостижимы без root-кредов — диагностический skip
         // (образец G); заявка живёт — исполнится после починки env.
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var creds, out var secretDiagnostic))
+        if (!secrets.TryGet("legacy", out var creds, out var secretDiagnostic))
             return await IdleAsync(
                 cluster, deleteRequest: false, warning: $"secret profile unavailable: {secretDiagnostic}", ct);
 
