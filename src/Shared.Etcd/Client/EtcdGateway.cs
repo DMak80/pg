@@ -169,11 +169,17 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         var body = new { peerURLs = peerUrls, isLearner };
         var result = await Result<MemberAddResponse>.FromAsync(
             async () => await PostAsync<MemberAddResponse>(endpoint, "/v3/cluster/member/add", body, ct));
-        return result.Bind(r => (r.Members ?? []).FirstOrDefault() is { } added
-            ? Result<EtcdMember>.Success(new EtcdMember(
-                added.Id, added.Name, added.PeerUrls ?? [], added.ClientUrls ?? [], added.IsLearner))
-            : Result<EtcdMember>.Failed(new EtcdHttpException(
-                endpoint, 500, "member/add response has no added member")));
+        // Добавленный член — поле "member" (порядок "members" в ответе
+        // недетерминирован: etcd может вернуть его и не первым).
+        return result.Bind(r =>
+        {
+            var added = r.Member ?? (r.Members ?? []).FirstOrDefault();
+            return added is { }
+                ? Result<EtcdMember>.Success(new EtcdMember(
+                    added.Id, added.Name, added.PeerUrls ?? [], added.ClientUrls ?? [], added.IsLearner))
+                : Result<EtcdMember>.Failed(new EtcdHttpException(
+                    endpoint, 500, "member/add response has no added member"));
+        });
     }
 
     public async Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct)
@@ -395,6 +401,10 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
 
     private sealed class MemberAddResponse
     {
+        // Добавленный член — авторитетное поле ответа member/add.
+        [JsonPropertyName("member")]
+        public MemberDto? Member { get; set; }
+
         [JsonPropertyName("members")]
         public List<MemberDto>? Members { get; set; }
     }

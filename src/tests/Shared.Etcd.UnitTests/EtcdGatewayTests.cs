@@ -546,16 +546,19 @@ public class EtcdGatewayTests
     [Fact]
     public async Task MemberAdd_BodyHasPeerUrlsAndIsLearner_ResponseMapped()
     {
-        // Arrange — peerURLs в member-запросах — plain URL-строки (base64 — только kv-операции)
+        // Arrange — peerURLs в member-запросах — plain URL-строки (base64 — только
+        // kv-операции); добавленный член — поле "member" (порядок "members"
+        // недетерминирован: etcd может вернуть добавленного и не первым)
         var handler = new FakeHandler(_ => Json(
-            """{"header":{},"members":[{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true}]}"""));
+            """{"header":{},"member":{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true},"members":[{"ID":"900","name":"seed","peerURLs":["http://127.0.0.1:2380"],"clientURLs":["http://127.0.0.1:2379"],"isLearner":false},{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true}]}"""));
         var gateway = NewGateway(handler);
 
         // Act
         var result = await gateway.MemberAddAsync(
             "http://etcd:2379", ["http://etcdw-node-1:2380"], true, CancellationToken.None);
 
-        // Assert: путь /v3/cluster/member/add, тело с peerURLs+isLearner, ответ смаплен в EtcdMember
+        // Assert: путь /v3/cluster/member/add, тело с peerURLs+isLearner; в
+        // EtcdMember смаплен ДОБАВЛЕННЫЙ (поле member), а не seed из members[0]
         result.IsSuccess.Should().BeTrue();
         result.Value.Id.Should().Be(123UL);
         result.Value.IsLearner.Should().BeTrue();
@@ -565,6 +568,24 @@ public class EtcdGatewayTests
         var body = JsonDocument.Parse(request.Body).RootElement;
         body.GetProperty("peerURLs")[0].GetString().Should().Be("http://etcdw-node-1:2380");
         body.GetProperty("isLearner").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task MemberAdd_NoMemberField_MapsFirstOfMembers()
+    {
+        // Arrange — устаревший/усечённый ответ без "member": берётся первый из members
+        var handler = new FakeHandler(_ => Json(
+            """{"header":{},"members":[{"ID":"123","name":"","peerURLs":["http://etcdw-node-1:2380"],"clientURLs":[],"isLearner":true}]}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberAddAsync(
+            "http://etcd:2379", ["http://etcdw-node-1:2380"], true, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Id.Should().Be(123UL);
+        result.Value.IsLearner.Should().BeTrue();
     }
 
     [Fact]
