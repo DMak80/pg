@@ -13,6 +13,7 @@ namespace EtcdWorker.App.HealthChecks;
 public sealed class EtcdWorkerHealth(
     HealthState health,
     ClaimStore claims,
+    EtcdWorker.Provisioning.SnapshotExporter exporter,
     IOptionsMonitor<EtcdWorkerOptions> options,
     TimeProvider clock) : IHealthCheck
 {
@@ -36,7 +37,7 @@ public sealed class EtcdWorkerHealth(
         }
     }
 
-    private Task<HealthCheckResult> CheckCoreAsync(CancellationToken ct)
+    private async Task<HealthCheckResult> CheckCoreAsync(CancellationToken ct)
     {
         var data = new Dictionary<string, object>();
         var degraded = new List<string>();
@@ -57,9 +58,25 @@ public sealed class EtcdWorkerHealth(
             degraded.Add(
                 $"loop keepalive has not ticked for {(clock.GetUtcNow() - snapshot.LastKeepaliveTick.Value).TotalSeconds:F0} s");
 
-        return Task.FromResult(degraded.Count == 0
+        // snapshot-export (arch/25 §5): факт последней выгрузки DR-слепка в S3 —
+        // FAILED деградирует health (алерт панели); «ключа ещё нет» — стартовое
+        // окно первого слепка, не деградация.
+        var export = await exporter.ReadStatusAsync(ct);
+        if (export.IsSuccess && export.Value is { } exportStatus)
+        {
+            data["snapshot-export"] =
+                $"{exportStatus.State}; last_uploaded_unix={exportStatus.LastUploadedUnix}; object={exportStatus.LastObject}";
+            if (exportStatus.State == "FAILED")
+                degraded.Add($"snapshot export FAILED: {exportStatus.Error}");
+        }
+        else
+        {
+            data["snapshot-export"] = "no status key yet";
+        }
+
+        return degraded.Count == 0
             ? HealthCheckResult.Healthy("EtcdWorker is alive", data)
-            : HealthCheckResult.Degraded(string.Join("; ", degraded), data: data));
+            : HealthCheckResult.Degraded(string.Join("; ", degraded), data: data);
     }
 
     private string LoopEntry(string name, DateTimeOffset? at)

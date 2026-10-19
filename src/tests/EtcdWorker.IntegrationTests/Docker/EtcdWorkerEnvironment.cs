@@ -1,4 +1,5 @@
 using System.Text;
+using Amazon.S3;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -24,6 +25,11 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
     private readonly INetwork _network;
 
     private readonly IContainer _etcd;
+
+    // ownS3-нода цели слепков (шаг 9): поднимается ЛЕНИВО (только тестам
+    // слепков нужна; member-API-тесты образ не грузят) — образ owns3:dev
+    // внешний (репозиторий ../OwnS3), порт 9000 динамический, та же сеть.
+    private IContainer? _ownS3;
 
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -68,14 +74,121 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Teardown при любом исходе: свои ключи → контейнер → сеть
+        // Teardown при любом исходе: свои ключи → контейнеры → сеть
         // (docs/e2e-isolation.md; порядок — лучшее усилие, падение dispose
         // сети/контейнера валит тест — это ассерт чистоты окружения).
         if (Endpoint.Length > 0)
             await Gateway.DeleteAsync(Endpoint, TestPrefix, prefix: true, CancellationToken.None);
         _http.Dispose();
         await _etcd.DisposeAsync();
+        if (_ownS3 is { } ownS3)
+            await ownS3.DisposeAsync();
         await _network.DeleteAsync();
+    }
+
+    // ownS3-нода (лениво): контейнер owns3:dev в сети контура, порт 9000 —
+    // динамический host-порт; root-креды тестовые.
+    public string OwnS3Endpoint { get; private set; } = "";
+
+    public async Task StartOwnS3Async()
+    {
+        if (_ownS3 is not null)
+            return;
+        var ct = TestContext.Current.CancellationToken;
+        _ownS3 = new ContainerBuilder("owns3:dev")
+            .WithNetwork(_network)
+            .WithNetworkAliases("owns3")
+            .WithEnvironment("OWNS3_ROOT_USER", "it-root")
+            .WithEnvironment("OWNS3_ROOT_PASSWORD", "it-root-password")
+            // Ключ backups — тот же, что сидится в /s3/clusters/eb/secrets
+            // (формат env ноды arch/23 §6): экспортёр ходит этим ключом.
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__ACCESSKEY", "eb-key")
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__SECRETKEY", "eb-secret")
+            .WithEnvironment("OWNS3_ACCESS_KEYS__0__POLICY", "read-write")
+            .WithPortBinding(9000, assignRandomHostPort: true)
+            .Build();
+        await _ownS3.StartAsync(ct);
+        OwnS3Endpoint = $"http://localhost:{_ownS3.GetMappedPublicPort(9000)}";
+        await WaitOwnS3ReadyAsync(ct);
+    }
+
+    // Сид etcd-backup контура в etcd окружения (arch/23 §5/§6): config с
+    // признаком etcd_backup, endpoints хост:порт, secrets с ключом backups;
+    // фиксированный слепковый bucket создаётся root-кредами (в проде его
+    // создаёт S3Worker P3 — здесь нода «сырая»).
+    public async Task SeedEtcdBackupClusterAsync()
+    {
+        await StartOwnS3Async();
+        var ct = TestContext.Current.CancellationToken;
+        await EnsureSnapshotBucketAsync();
+        var port = _ownS3!.GetMappedPublicPort(9000);
+        await Gateway.PutAsync(Endpoint, "/s3/clusters/eb/config",
+            $$"""{"platform":"owns3","nodes":1,"created_unix":1756500000,"etcd_backup":true}""",
+            lease: null, ct);
+        await Gateway.PutAsync(Endpoint, "/s3/clusters/eb/endpoints",
+            $"localhost:{port}", lease: null, ct);
+        await Gateway.PutAsync(Endpoint, "/s3/clusters/eb/secrets",
+            """{"root_user":"it-root","root_password":"it-root-password","access_keys":[{"name":"backups","access_key":"eb-key","secret_key":"eb-secret","policy":"read-write"}]}""",
+            lease: null, ct);
+    }
+
+    // Сид с битыми endpoints (кейс транзиента цели): цель резолвится, но
+    // недостижима — FAILED-статус с маркером цели.
+    public async Task SeedEtcdBackupClusterBrokenEndpointsAsync()
+    {
+        await StartOwnS3Async();
+        var ct = TestContext.Current.CancellationToken;
+        await Gateway.PutAsync(Endpoint, "/s3/clusters/eb/endpoints",
+            "localhost:1", lease: null, ct);
+    }
+
+    // Фиксированный слепковый bucket на ноде (root-креды, идемпотентно).
+    private async Task EnsureSnapshotBucketAsync()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var config = new AmazonS3Config
+        {
+            ServiceURL = OwnS3Endpoint,
+            ForcePathStyle = true,
+            Timeout = TimeSpan.FromSeconds(7.5),
+            MaxErrorRetry = 0,
+        };
+        using var s3 = new AmazonS3Client(
+            new Amazon.Runtime.BasicAWSCredentials("it-root", "it-root-password"), config);
+        try
+        {
+            await s3.PutBucketAsync(new Amazon.S3.Model.PutBucketRequest
+            {
+                BucketName = Shared.Core.EtcdSnapshotBucket.Name,
+                UseClientRegion = false,
+            }, ct);
+        }
+        catch (Amazon.S3.AmazonS3Exception ex) when (ex.Message.Contains("already", StringComparison.OrdinalIgnoreCase))
+        {
+            // bucket уже существует — идемпотентно
+        }
+    }
+
+    private async Task WaitOwnS3ReadyAsync(CancellationToken ct)
+    {
+        using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        for (var i = 0; i < 30; i++)
+        {
+            try
+            {
+                using var probe = await probeClient.GetAsync(OwnS3Endpoint + "/healthz", ct);
+                if (probe.IsSuccessStatusCode)
+                    return;
+            }
+            catch (HttpRequestException)
+            {
+                // нода ещё поднимается — ждём следующую попытку
+            }
+
+            await Task.Delay(1000, ct);
+        }
+
+        throw new InvalidOperationException($"ownS3 at {OwnS3Endpoint} did not come up within 30 s");
     }
 
     // Put-хелпер интеграций: ключ → значение (свой префикс сценария).

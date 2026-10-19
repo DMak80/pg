@@ -25,6 +25,7 @@
         <ProjectReference Include="..\..\Shared.Etcd\Shared.Etcd.csproj"/>
         <ProjectReference Include="..\..\EtcdWorker.Core\EtcdWorker.Core.csproj"/>
         <ProjectReference Include="..\..\EtcdWorker.Etcd\EtcdWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Provisioning\EtcdWorker.Provisioning.csproj"/>
         <ProjectReference Include="..\..\EtcdWorker.App\EtcdWorker.App.csproj"/>
     </ItemGroup>
 

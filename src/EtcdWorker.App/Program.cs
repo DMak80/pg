@@ -130,10 +130,34 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<IHostApplicationLifetime>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
-// Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/24 §6);
-// остальные циклы — фаза 4.
+// Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/24 §6)
+// и слепки (arch/25 §4, шаг 9): SnapshotJob без sink — цикл сам экспортирует;
+// цель — живой резолвер etcd-backup кластера, S3-клиент per-попытка (первый
+// endpoint списка), CA-bundle/таймаут из Snapshots-опций.
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
+builder.Services.AddSingleton(sp => new Shared.Etcd.Maintenance.SnapshotJob(
+    sp.GetRequiredService<IEtcdGateway>(),
+    etcdEndpoints,
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.Dir,
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.RetentionFiles,
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Snapshots.MaintenanceIntervalMin));
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdBackupTargetResolver(
+    sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints));
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value;
+    return new EtcdWorker.Provisioning.SnapshotExporter(
+        sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
+        sp.GetRequiredService<EtcdWorker.Provisioning.EtcdBackupTargetResolver>(),
+        t => new EtcdWorker.Core.EtcdSnapshotS3(
+            t.Endpoints[0], t.Bucket, t.AccessKey, t.SecretKey,
+            opts.Snapshots.S3.CaBundlePath, TimeSpan.FromSeconds(opts.Snapshots.TimeoutSec)),
+        opts.Snapshots.RetentionObjects, opts.Snapshots.TimeoutSec,
+        sp.GetRequiredService<ClaimStore>().InstanceId, opts.Snapshots.IntervalMin);
+});
+builder.Services.AddSingleton<SnapshotLoop>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 
 // Наблюдаемость (arch/25 §7): агрегированный health + per-loop обёртка.
 // DockerEngineFactory — docker-пробы ServiceProbes (полный docker-стек — фаза 5).
@@ -142,9 +166,12 @@ builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<EtcdWorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
     sp => new(sp.GetRequiredService<KeepaliveLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<SnapshotLoop>>(
+    sp => new(sp.GetRequiredService<SnapshotLoop>()));
 builder.Services.AddHealthChecks()
     .AddCheck<EtcdWorkerHealth>("etcdworker", tags: ["ready"])
-    .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop");
+    .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
+    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 // Watchdog зависших циклов (arch/25 §6): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал + метрика + graceful self-stop;
