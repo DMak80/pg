@@ -40,6 +40,17 @@ public interface IEtcdGateway
     // POST /v3/cluster/member/list.
     Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct);
 
+    // POST /v3/cluster/member/add — член по peer-URL (isLearner=true: безголосый
+    // learner до promote); имя члена etcd выводит из hostname peer-URL.
+    Task<Result<EtcdMember>> MemberAddAsync(string endpoint, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct);
+
+    // POST /v3/cluster/member/remove — вывод члена (ID — decimal-строка protojson).
+    Task<Result> MemberRemoveAsync(string endpoint, ulong memberId, CancellationToken ct);
+
+    // POST /v3/cluster/member/promote — перевод learner в voting-члена (отказ
+    // not-in-sync — обычная ошибка HTTP → Result.Failed, ретраи вызывающим).
+    Task<Result> MemberPromoteAsync(string endpoint, ulong memberId, CancellationToken ct);
+
     // POST /v3/maintenance/alarm.
     Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct);
 

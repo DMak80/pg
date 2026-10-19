@@ -37,6 +37,12 @@ public class SnapshotJobSinkTests
             => Task.FromResult(Shared.Core.Result.Success());
         public Task<Shared.Core.Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>>> MemberListAsync(string e, CancellationToken ct)
             => Task.FromResult(Shared.Core.Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>>.Success([]));
+        public Task<Shared.Core.Result<Shared.Etcd.Client.EtcdMember>> MemberAddAsync(string e, IReadOnlyList<string> peerUrls, bool isLearner, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+        public Task<Shared.Core.Result> MemberRemoveAsync(string e, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
+        public Task<Shared.Core.Result> MemberPromoteAsync(string e, ulong memberId, CancellationToken ct)
+            => throw new NotSupportedException("member-API не поддерживается этим фейком");
         public Task<Shared.Core.Result<IReadOnlyList<Shared.Etcd.Client.EtcdAlarm>>> AlarmAsync(string e, CancellationToken ct)
             => Task.FromResult(Shared.Core.Result<IReadOnlyList<Shared.Etcd.Client.EtcdAlarm>>.Success([]));
         public Task<Shared.Core.Result> CompactAsync(string e, long r, CancellationToken ct)
