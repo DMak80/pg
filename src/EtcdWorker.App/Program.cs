@@ -1,6 +1,167 @@
-// Заглушка точки входа до шага 4 t32 (Program-каркас) — шаг 4.8 заменяет файл
-// целиком; нужна только чтобы exe-проект собирался зелёно после шага 3.
-public partial class Program
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using EtcdWorker.App;
+using Shared.Metrics;
+using EtcdWorker.App.Api;
+using EtcdWorker.App.HealthChecks;
+using EtcdWorker.App.Loops;
+using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
+using Shared.Etcd.Client;
+
+// Точка входа EtcdWorker (arch/25 §8): host-builder с mTLS-гранью HTTP API
+// (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
+// env-секреты — TLS API (ETCDW_API_TLS_*), docker-транспорт (ETCDW_DOCKER_*).
+// Каркас t32 фаза 4: координация (клэймы/журнал) и keepalive-цикл — эта фаза;
+// порт-механика/процессы/API-эндпоинты — фаза 5 (каждая задача правит свой
+// блок DI; инкрементальный рост Program).
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Конфигурация: appsettings.json + env-оверрайды EtcdWorker__*.
+builder.Services.Configure<EtcdWorkerOptions>(builder.Configuration.GetSection("EtcdWorker"));
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<HealthState>();
+// Прогресс-отметки долгих фаз в глубину процессов (provisioning — фаза 5).
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
+
+// Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
+// scrape ходит клиентским сертом per-install пакета. Meter "EtcdWorker" —
+// etcdworker_*-метрики домена (arch/25 §7).
+builder.Services.AddAppMetrics("EtcdWorker", builder.Configuration.GetSection("EtcdWorker:Metrics"));
+builder.Services.AddSingleton(sp =>
 {
-    public static void Main() => throw new System.NotImplementedException("EtcdWorker Program — шаг 4 (t32)");
-}
+    var m = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+        sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+        sp.GetRequiredService<TimeProvider>());
+    // Единый seam фаз/операций (S2, зеркало PgWorker/Kafka/Valkey): терминальные
+    // фазы/first-seen/подавление supervise — внутри OnJournalPhase. Журнал фаз
+    // состава один (домен /etcdworker) — кластер-параметр константа "etcd".
+    var etcdJournal = sp.GetRequiredService<EtcdWorker.Provisioning.EtcdWorkJournal>();
+    etcdJournal.PhaseWritten += e => m.OnJournalPhase("etcd", e.Op, e.Phase);
+    return m;
+});
+
+// etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
+// embedded DNS (t09): PooledConnectionLifetime + IPv4-first резолв.
+// Поллинг-инвариант (arch/25 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах).
+builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
+    .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
+
+// env-секреты docker-транспорта → конфиг-дерево (до валидаций).
+DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
+DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
+
+// Fail-fast при старте (arch/25 §8): чистые предикаты EtcdStartupChecks —
+// endpoints etcd, advertise, docker-топология, пороги, порт-диапазон, слепки.
+builder.Services.AddOptions<EtcdWorkerOptions>()
+    .Validate(o => EtcdStartupChecks.EtcdEndpoints(o),
+        "EtcdWorker:Etcd:Endpoints are not configured (env ETCDW_ETCD_ENDPOINT_*)")
+    .Validate(o => EtcdStartupChecks.AdvertiseUrl(o),
+        "EtcdWorker:Api:AdvertiseUrl is not set or not https:// (env ETCDW_API_ADVERTISE_URL; mTLS-only API — arch/25 §1.1)")
+    .Validate(o => EtcdStartupChecks.DockerTopology(o),
+        "EtcdWorker:Docker: invalid topology (Swarm → SwarmManager required; Plain → exactly one host in the table and non-empty Network) (env ETCDW_DOCKER_*)")
+    .Validate(o => EtcdStartupChecks.Thresholds(o),
+        "EtcdWorker:Thresholds: thresholds must be positive, NodeBootSec ≤ 100")
+    .Validate(o => EtcdStartupChecks.PortRange(o),
+        "EtcdWorker:Docker:PortRange: 0 < From < To ≤ 65535")
+    .Validate(o => EtcdStartupChecks.Snapshots(o),
+        "EtcdWorker:Snapshots: intervals must be positive, retentions ≥ 1")
+    .ValidateOnStart();
+
+// Управляемый серт API (arch/25 §1.1): чтение ключа /workers/api_tls/etcdworker
+// ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
+var etcdEndpoints = builder.Configuration.GetSection("EtcdWorker:Etcd:Endpoints").Get<string[]>() ?? [];
+var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "etcdworker", CancellationToken.None);
+
+// mTLS HTTP API (arch/25 §1.1): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом и требованием клиентского серта per-install API-CA.
+TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
+var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
+
+// Thumbprint применённого серта → дискавери-ключ (arch/25 §1.1): панель
+// сверяет с целевым → applied/pending restart.
+var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
+    ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
+    : null;
+
+// etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
+// Единое место литерала префикса etcd-ключей: Shared-координация параметризована
+// (arch/25 §8: /etcdworker/{leader,claims,work,portalloc,locks/portalloc,instances,api}).
+const string KeyPrefix = "/etcdworker";
+builder.Services.AddSingleton<IEtcdGateway>(sp =>
+    new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
+
+// Журнал фаз состава (arch/25 §5): /etcdworker/work — БЕЗ суффикса (домен один).
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdWorkJournal(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Etcd.Endpoints));
+
+builder.Services.AddSingleton(sp => new ClaimStore(
+    KeyPrefix,
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
+// Глобальный portalloc-клэйм (arch/25 §8) — DI-синглтон, InstanceId единый с
+// ClaimStore (сквозная диагностика держателя). Порт-механика подключается
+// фазой 5 — клэйм уже регистрируется.
+builder.Services.AddSingleton(sp => new PortAllocLock(
+    KeyPrefix,
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ClaimStore>().InstanceId));
+
+// Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/24 §6);
+// остальные циклы — фаза 4.
+builder.Services.AddSingleton<KeepaliveLoop>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
+
+// Наблюдаемость (arch/25 §7): агрегированный health + per-loop обёртка.
+builder.Services.AddSingleton<ServiceProbes>();
+builder.Services.AddSingleton<EtcdWorkerHealth>();
+builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
+    sp => new(sp.GetRequiredService<KeepaliveLoop>()));
+builder.Services.AddHealthChecks()
+    .AddCheck<EtcdWorkerHealth>("etcdworker", tags: ["ready"])
+    .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop");
+
+// Watchdog зависших циклов (arch/25 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал + метрика + graceful self-stop;
+// Enabled=false (секция EtcdWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<EtcdWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<EtcdWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("EtcdWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
+// fail-fast инварианта живости (arch/25 §8): тики быстрых циклов чаще порога
+// сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
+var loopsCfg = builder.Configuration.GetSection("EtcdWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
+if (loopsWatchdog.Enabled)
+    Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+        loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
+
+var app = builder.Build();
+if (app.Services.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
+    app.Logger.LogWarning(
+        "EtcdWorker:Api:Tls:AllowInsecureHttp=true — HTTP without TLS (WAF tests ONLY, arch/25 §1.1)");
+if (apiTls.Source is { } certSource)
+    app.Logger.LogInformation("EtcdWorker:Api:Tls: API server certificate — source {Source}", certSource);
+if (apiTls.Warning is { } certWarning)
+    app.Logger.LogWarning("EtcdWorker:Api:Tls: {Warning}", certWarning);
+app.MapAppMetrics();
+app.MapHealthChecks("/healthz");
+// MapWorkerApi — шаг 5 (API): mTLS-эндпоинты состава добавляются фазой 5.
+
+await app.RunAsync();
+
+// WAF-тесты: точка входа как public partial.
+public partial class Program;
