@@ -30,7 +30,6 @@ public class S3PoolMappingTests
         // Assert
         var pool = pools.Should().ContainSingle().Subject;
         pool.Name.Should().Be("backups");
-        pool.SecretProfile.Should().Be("backups-main");
         pool.Active.Should().BeTrue();
         pool.Nodes.Should().HaveCount(2);
         pool.Nodes[0].Name.Should().Be("east1");
@@ -106,7 +105,7 @@ public class S3PoolMappingTests
             State: state,
             Platform: "owns3",
             NodesDeclared: nodes.Length,
-            SecretProfile: "backups-main",
+            EtcdBackup: false,
             CreatedUnix: 1,
             Endpoints: endpoints,
             NodesList: nodes,

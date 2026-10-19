@@ -42,6 +42,7 @@ public static class S3Parser
         public string? DenyListRaw;
         public string? ConnectivityRaw;
         public string? SyncRaw;
+        public string? SecretsRaw;
         public readonly Dictionary<string, NodeAcc> Nodes = [];
     }
 
@@ -91,6 +92,10 @@ public static class S3Parser
 
                 case "sync" when segments.Length == 5:
                     acc.SyncRaw = kv.Value;
+                    break;
+
+                case "secrets" when segments.Length == 5:
+                    acc.SecretsRaw = kv.Value;
                     break;
 
                 case "nodes" when segments.Length == 7
@@ -182,13 +187,13 @@ public static class S3Parser
     // поле пустое, кластер-скелет строится).
     private static S3ClusterInfo BuildCluster(ClusterAcc acc, List<KeyParseError> errors)
     {
-        var (platform, nodes, profile, created, state) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
+        var (platform, nodes, etcdBackup, created, state) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
         return new S3ClusterInfo(
             acc.Name,
             state,
             platform,
             nodes,
-            profile,
+            etcdBackup,
             created,
             acc.Endpoints,
             [.. acc.Nodes.OrderBy(p => p.Key, StringComparer.Ordinal)
@@ -196,15 +201,16 @@ public static class S3Parser
             ParseLinks(acc.Name, acc.LinksRaw, errors),
             ParseDenyList(acc.Name, acc.DenyListRaw, errors),
             ParseConnectivity(acc.Name, acc.ConnectivityRaw, errors),
-            ParseSync(acc.Name, acc.SyncRaw, errors));
+            ParseSync(acc.Name, acc.SyncRaw, errors),
+            Secrets: ParseSecrets(acc.Name, acc.SecretsRaw, errors));
     }
 
-    // config: {"platform","nodes","secret_profile","created_unix","state"?}.
-    private static (string Platform, int Nodes, string SecretProfile, long? CreatedUnix,
+    // config: {"platform","nodes","etcd_backup"?,"created_unix","state"?}.
+    private static (string Platform, int Nodes, bool EtcdBackup, long? CreatedUnix,
         S3ClusterState State) ParseConfig(string cluster, string? raw, List<KeyParseError> errors)
     {
         if (raw is null)
-            return ("", 0, "", null, S3ClusterState.Active);
+            return ("", 0, false, null, S3ClusterState.Active);
 
         try
         {
@@ -213,14 +219,14 @@ public static class S3Parser
             return (
                 JsonValues.ReadString(root, "platform") ?? "",
                 AsInt(JsonValues.ReadLong(root, "nodes")),
-                JsonValues.ReadString(root, "secret_profile") ?? "",
+                root.TryGetProperty("etcd_backup", out var eb) && eb.ValueKind == JsonValueKind.True,
                 JsonValues.ReadLong(root, "created_unix"),
                 S3ClusterStates.Parse(JsonValues.ReadString(root, "state")));
         }
         catch (JsonException)
         {
             errors.Add(new KeyParseError($"/s3/clusters/{cluster}/config", "broken config JSON"));
-            return ("", 0, "", null, S3ClusterState.Active);
+            return ("", 0, false, null, S3ClusterState.Active);
         }
     }
 
@@ -457,6 +463,46 @@ public static class S3Parser
         catch (JsonException)
         {
             errors.Add(new KeyParseError($"/s3/clusters/{cluster}/sync", "broken sync JSON"));
+            return null;
+        }
+    }
+
+    // secrets: {"root_user","root_password","access_keys":[{name,access_key,
+    // secret_key,policy}…]} — значения только внутреннему S3-клиенту панели;
+    // битый JSON → null + parseError (12.1), поля толерантно расширяются.
+    private static S3ClusterSecretsInfo? ParseSecrets(
+        string cluster, string? raw, List<KeyParseError> errors)
+    {
+        if (raw is null)
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            var rootUser = JsonValues.ReadString(root, "root_user");
+            if (root.ValueKind != JsonValueKind.Object || string.IsNullOrEmpty(rootUser))
+            {
+                errors.Add(new KeyParseError($"/s3/clusters/{cluster}/secrets", "broken secrets JSON"));
+                return null;
+            }
+
+            var accessKeys = new List<S3AccessKeyInfo>();
+            if (root.TryGetProperty("access_keys", out var keysEl)
+                && keysEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in keysEl.EnumerateArray())
+                    accessKeys.Add(new S3AccessKeyInfo(
+                        JsonValues.ReadString(el, "name") ?? "",
+                        JsonValues.ReadString(el, "access_key") ?? "",
+                        JsonValues.ReadString(el, "secret_key") ?? "",
+                        JsonValues.ReadString(el, "policy") ?? ""));
+            }
+
+            return new S3ClusterSecretsInfo(rootUser, accessKeys);
+        }
+        catch (JsonException)
+        {
+            errors.Add(new KeyParseError($"/s3/clusters/{cluster}/secrets", "broken secrets JSON"));
             return null;
         }
     }

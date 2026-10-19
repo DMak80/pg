@@ -19,12 +19,14 @@ public sealed record S3Snapshot(
     WorkerApiCert? WorkerApiCert = null);            // целевой серт /workers/api_tls/s3worker (arch/02 §9.9)
 
 // Кластер /s3/clusters/<C>/ (arch/23 §2): config + ноды + граф + факты.
+// SecretProfile упразднён: креды кластера — per-cluster в etcd
+// (/s3/clusters/<C>/secrets, arch/23 §6).
 public sealed record S3ClusterInfo(
     string Name,
     S3ClusterState State,                    // config.state; отсутствие = Active
     string Platform,                         // "owns3" (единственное значение)
     int NodesDeclared,                       // config.nodes (0..9)
-    string SecretProfile,                    // имя per-install env-профиля (значение скрыто)
+    bool EtcdBackup,                         // флаг etcd-бэкапа
     long? CreatedUnix,
     string? Endpoints,                       // точка дискавери клиентов; null/пусто — критично у Active с нодами
     IReadOnlyList<S3NodeInfo> NodesList,
@@ -32,7 +34,18 @@ public sealed record S3ClusterInfo(
     IReadOnlyList<string> DenyList,          // отозванные инстансы
     S3ConnectivityInfo? Connectivity = null, // зонд (arch/23 §3)
     S3SyncInfo? Sync = null,                 // зонд
-    S3RotationTicket? Rotation = null);      // живая заявка ротации (джойн по кластеру)
+    S3RotationTicket? Rotation = null,       // живая заявка ротации (джойн по кластеру)
+    S3ClusterSecretsInfo? Secrets = null);   // креды /secrets — только S3-клиенту панели (arch/23 §6)
+
+// Креды кластера /s3/clusters/<C>/secrets (arch/23 §6): значения — ТОЛЬКО
+// внутреннему S3-клиенту панели (грань «Хранилище бэкапов»); в API/UI
+// отдаются исключительно root_user и имена/политики ключей (AC8).
+public sealed record S3ClusterSecretsInfo(
+    string RootUser,
+    IReadOnlyList<S3AccessKeyInfo> AccessKeys);
+
+public sealed record S3AccessKeyInfo(
+    string Name, string AccessKey, string SecretKey, string Policy);
 
 // Инстанс <I>: state — raw-строка (NOT_INITIALIZED|PROVISIONING|RUNNING|
 // UNREACHABLE|REMOVING|TO_REMOVE; толерантно к новым).

@@ -5,10 +5,10 @@ namespace AdminPanel.Api.Operations.S3;
 // подставляет всегда (единственное значение канона arch/23 §2; UI поле не показывает).
 public sealed record CreateS3ClusterPanelRequest(
     string? Name,
-    string? SecretProfile,
     IReadOnlyList<S3InstancePanelRequest>? Instances,
     S3ResourcesPanelRequest? Resources,
-    string? Platform = "owns3");
+    string? Platform = "owns3",
+    bool? EtcdBackup = false);
 
 public sealed record S3InstancePanelRequest(
     string? Name,

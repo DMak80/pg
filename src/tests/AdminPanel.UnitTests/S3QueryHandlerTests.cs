@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AdminPanel.Core.S3;
 using AdminPanel.Api.Inspection;
 using AdminPanel.Etcd;
@@ -21,7 +22,7 @@ public sealed class S3QueryHandlerTests
         clusters, [], [], [], [], [], 0);
 
     private static S3ClusterInfo DemoCluster() => new(
-        "demo", S3ClusterState.Active, "owns3", 2, "backups-main", 1760156800,
+        "demo", S3ClusterState.Active, "owns3", 2, false, 1760156800,
         "h1:18001",
         [
             new S3NodeInfo("east1", "RUNNING", "h1",
@@ -35,7 +36,13 @@ public sealed class S3QueryHandlerTests
         new S3ConnectivityInfo("OK", 1760156900, new Dictionary<string, IReadOnlyDictionary<string, string>>(), null),
         new S3SyncInfo("SYNCED", 1760156900,
             [new S3SyncPair("east1", "east2", 0, 0, null, null)], null),
-        new S3RotationTicket("demo", 1760157000, "admin"));
+        new S3RotationTicket("demo", 1760157000, "admin"),
+        Secrets: new S3ClusterSecretsInfo(
+            "s3w-backupsmain-root",
+            [
+                new S3AccessKeyInfo("backups", "ak1", "sk1", "read-write"),
+                new S3AccessKeyInfo("panel", "ak2", "sk2", "read-only"),
+            ]));
 
     // Arrange: стор с одним Active-кластером (nodes/endpoints/connectivity/sync/
     // rotation из TestSnapshots-подобного хелпера). Act: S3ClustersQueryHandler.
@@ -76,7 +83,24 @@ public sealed class S3QueryHandlerTests
         found.Value.Connectivity!.State.Should().Be("OK");
         found.Value.Sync!.State.Should().Be("SYNCED");
         found.Value.Rotation!.RequestedBy.Should().Be("admin");
-        found.Value.SecretProfile.Should().Be("backups-main");
+
+        // Секреты: в DTO имена/политики, значений кредов нет.
+        found.Value.RootUser.Should().Be("s3w-backupsmain-root");
+        var accessKeys = found.Value.AccessKeys!;
+        accessKeys.Should().HaveCount(2);
+        accessKeys[0].Name.Should().Be("backups");
+        accessKeys[0].Policy.Should().Be("read-write");
+        accessKeys[1].Name.Should().Be("panel");
+        accessKeys[1].Policy.Should().Be("read-only");
+        var json = JsonSerializer.Serialize(found.Value);
+        json.Should().NotContain("access_key");
+        json.Should().NotContain("secret_key");
+        json.Should().NotContain("root_password");
+        json.Should().NotContain("ak1");
+        json.Should().NotContain("sk1");
+        json.Should().NotContain("ak2");
+        json.Should().NotContain("sk2");
+        json.Should().NotContain("rootpwd");
 
         // Act: несуществующий кластер.
         var missing = await new S3ClusterDetailsQueryHandler(store)

@@ -20,7 +20,6 @@ public sealed class S3ParserTests
         Assert.Equal(S3ClusterState.Active, main.State);
         Assert.Equal("owns3", main.Platform);
         Assert.Equal(3, main.NodesDeclared);
-        Assert.Equal("backups-main", main.SecretProfile);
         Assert.Equal(1760156800L, main.CreatedUnix);
         Assert.Equal("h1:18001,h2:18002,h3:18003", main.Endpoints);
         Assert.Equal(2, main.Links.Count);
@@ -31,6 +30,14 @@ public sealed class S3ParserTests
         Assert.Equal("ok", main.Connectivity.Links["node1"]["node2"]);
         Assert.Equal("SYNCED", main.Sync!.State);
         Assert.Equal(0, main.Sync.Pairs[0].Missing);
+
+        // secrets-ключ: root_user + access_keys (имена/политики).
+        Assert.Equal("s3w-backupsmain-root", main.Secrets!.RootUser);
+        Assert.Equal(2, main.Secrets.AccessKeys.Count);
+        Assert.Equal(("backups", "read-write"),
+            (main.Secrets.AccessKeys[0].Name, main.Secrets.AccessKeys[0].Policy));
+        Assert.Equal(("panel", "read-only"),
+            (main.Secrets.AccessKeys[1].Name, main.Secrets.AccessKeys[1].Policy));
 
         var east1 = Assert.Single(main.NodesList, n => n.Name == "east1");
         Assert.Equal("RUNNING", east1.State);
@@ -53,6 +60,7 @@ public sealed class S3ParserTests
         var claim = Assert.Single(result.Clusters, c => c.Name == "newclaim");
         Assert.Equal(S3ClusterState.NotInitialized, claim.State);
         Assert.Equal(0, claim.NodesDeclared);
+        Assert.True(claim.EtcdBackup);                    // config etcd_backup:true → EtcdBackup
         Assert.Empty(claim.NodesList);
         Assert.Equal(S3ClusterState.ToRemove, Assert.Single(result.Clusters, c => c.Name == "dying").State);
 
