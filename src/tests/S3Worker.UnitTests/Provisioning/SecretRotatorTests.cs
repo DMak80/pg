@@ -102,21 +102,28 @@ public class SecretRotatorTests
             ],
             null, null);
 
-        // env ноды «на secrets кластера»: root-пользователь + ОБА key-индекса
-        // (сверка ротатора — по root user и составу индексов, значения не
-        // сверяются).
+        // env ноды «на secrets кластера»: полный комплект кредов — root-пара
+        // и все OWNS3_ACCESS_KEYS__<i>__{ACCESSKEY,SECRETKEY,POLICY} — из
+        // ФАКТИЧЕСКОГО secrets-ключа etcd (перевыпуск меняет значения: сверка
+        // ротатора — по значениям, не по одному составу индексов).
         public void MarkNodeEnvConverged(string node)
-            => Driver.Envs[$"demo/{node}"] = new Dictionary<string, string>
+        {
+            var parsed = ClusterSecretsStore.TryParse(Etcd.Store["/s3/clusters/demo/secrets"].Value!)!;
+            var env = new Dictionary<string, string>
             {
-                ["OWNS3_ROOT_USER"] = _rootUser,
+                ["OWNS3_ROOT_USER"] = parsed.RootUser,
+                ["OWNS3_ROOT_PASSWORD"] = parsed.RootPassword,
                 ["OWNS3_DATA_DIR"] = "/data",
-                ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "key0",
-                ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "secret0",
-                ["OWNS3_ACCESS_KEYS__0__POLICY"] = "read-write",
-                ["OWNS3_ACCESS_KEYS__1__ACCESSKEY"] = "key1",
-                ["OWNS3_ACCESS_KEYS__1__SECRETKEY"] = "secret1",
-                ["OWNS3_ACCESS_KEYS__1__POLICY"] = "read-only",
             };
+            for (var i = 0; i < parsed.AccessKeys.Count; i++)
+            {
+                env[$"OWNS3_ACCESS_KEYS__{i}__ACCESSKEY"] = parsed.AccessKeys[i].AccessKey;
+                env[$"OWNS3_ACCESS_KEYS__{i}__SECRETKEY"] = parsed.AccessKeys[i].SecretKey;
+                env[$"OWNS3_ACCESS_KEYS__{i}__POLICY"] = parsed.AccessKeys[i].Policy;
+            }
+
+            Driver.Envs[$"demo/{node}"] = env;
+        }
     }
 
     // AAA: заявки нет → no-op (ветка не активна).
@@ -270,21 +277,26 @@ public class SecretRotatorTests
         journal.Value!.Phase.Should().Be("waiting-node");
     }
 
-    // AAA: все ноды приведены → del заявки + journal done.
+    // AAA: все ноды приведены → del заявки + journal done. Перевыпуск уже
+    // состоялся (journal-маркер reissued) — тик доводит/гасит без нового
+    // перевыпуска (повторный обнулял бы rolling).
     [Fact]
     public async Task AllConverged_TicketCleared()
     {
-        // Arrange: env обеих нод — на secrets кластера (root user + оба
-        // key-индекса), обе RUNNING.
+        // Arrange: перевыпуск промаркован; env обеих нод — фактические
+        // значения secrets-ключа; обе RUNNING.
         var rig = Rig.New();
         await rig.SeedAsync();
+        await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .WritePhaseAsync("demo", "rotate-secrets", "reissued", "tests", null,
+                TestContext.Current.CancellationToken);
         rig.MarkNodeEnvConverged("node1");
         rig.MarkNodeEnvConverged("node2");
 
         // Act
         var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
 
-        // Assert: заявка удалена; journal done; docker не тронут.
+        // Assert: заявка удалена; journal done; docker не тронуты.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store.Should().NotContainKey($"{Prefix}/rotations/demo");
         rig.Driver.Ensured.Should().BeEmpty();
@@ -293,15 +305,17 @@ public class SecretRotatorTests
         journal.Value!.Phase.Should().Be("done");
     }
 
-    // AAA: env-сверка ротатора по индексам OWNS3_ACCESS_KEYS__<i>__* (второй
-    // сегмент): нода на произвольных ЗНАЧЕНИЯХ обоих индексов — matches, без
-    // пересозданий (регрессия: Split("__")[2] давал имя поля вместо индекса —
-    // сверка всегда false, пересоздание каждый тик).
+    // AAA: перевыпуск меняет ЗНАЧЕНИЯ при том же составе — env нод с чужими
+    // (устаревшими) значениями НЕ matches: node1 пересоздаётся (rolling,
+    // одна за тик), заявка жива. Артефакт мира env-профилей (сверка по одним
+    // индексам) гасила заявку без пересозданий — E2E-ротация зависала в
+    // ожидании пересоздания. Индекс — ВТОРОЙ сегмент имени: защита
+    // Split-семантики сохранена (лишний/недостающий индекс — расхождение).
     [Fact]
-    public async Task AccessKeyIndexes_IndexBasedMatch_NoRecreations()
+    public async Task StaleValues_SameIndexes_FirstNodeRecreated()
     {
-        // Arrange: env обеих нод — root user кластера + оба key-индекса;
-        // значения не совпадают с secrets — сверка по составу индексов.
+        // Arrange: env обеих нод — root user кластера + оба key-индекса, но
+        // ЗНАЧЕНИЯ устарели (не равны secrets-ключу).
         var rig = Rig.New();
         await rig.SeedAsync();
         foreach (var node in new[] { "node1", "node2" })
@@ -309,6 +323,7 @@ public class SecretRotatorTests
             rig.Driver.Envs[$"demo/{node}"] = new Dictionary<string, string>
             {
                 ["OWNS3_ROOT_USER"] = NewUser,
+                ["OWNS3_ROOT_PASSWORD"] = "stale-root-password",
                 ["OWNS3_DATA_DIR"] = "/data",
                 ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "stale-ak-0",
                 ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "stale-sk-0",
@@ -322,13 +337,16 @@ public class SecretRotatorTests
         // Act
         var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
 
-        // Assert: env совпадает — пересозданий нет, заявка погашена, done.
+        // Assert: расхождение значений — node1 пересоздана (одна за тик),
+        // заявка жива (погаснет, когда обе ноды понесут новые креды).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        rig.Driver.Ensured.Should().BeEmpty();
-        rig.Etcd.Store.Should().NotContainKey($"{Prefix}/rotations/demo");
+        rig.Driver.Removed.Should().BeEquivalentTo(["demo/node1"]);
+        rig.Driver.Ensured.Should().ContainSingle()
+            .Which.NodeName.Should().Be("node1");
+        rig.Etcd.Store.Should().ContainKey($"{Prefix}/rotations/demo");
         var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
-        journal.Value!.Phase.Should().Be("done");
+        journal.Value!.Phase.Should().Be("rotated-node1");
     }
 
     // AAA: значения секретов не появляются в journal-фазах.

@@ -7,18 +7,21 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Rolling-ротация клиентских кредов кластера (arch/23 §6, arch/24 §4):
+/// Rolling-ротация клиентских кредов кластера (arch/23 §6/§8, arch/24 §4):
 /// заявка /s3worker/rotations/&lt;C&gt; — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E этим
-/// тиком не идут — дисциплина «одно пересоздание за тик»). До пересозданий —
-/// генерация новых root+ключей и атомарная замена secrets-ключа etcd целиком
-/// (txn по mod_revision; etcd-backup — спец-ключ пере-подставляется из env);
-/// проигрыш RMW — journal-фаза waiting-secrets, заявка жива (следующий тик).
+/// тиком не идут — дисциплина «одно пересоздание за тик»). Перевыпуск
+/// root+ключей — ОДНОКРАТНО на заявку: journal-маркер «reissued» (далее
+/// «rotated-*») — повторный перевыпуск каждым тиком обнулял бы rolling;
+/// атомарная замена secrets-ключа целиком (txn по mod_revision; etcd-backup —
+/// спец-ключ пере-подставляется из env); проигрыш RMW — journal-фаза
+/// waiting-secrets, заявка жива (следующий тик).
 /// Пересоздание — по одной ноде за тик с env из НОВОГО secrets-ключа; volume
-/// не трогается (данные объектов живы); env-сверка — по root_user + составу
-/// OWNS3_ACCESS_KEYS__&lt;i&gt; (root_user постоянен). Wait-семантика: пересозданная
-/// нода обязана ожить (RUNNING) до перехода к следующей; отсутствие/битость
-/// secrets — journal-отказ invalid-secrets (заявка жива; оператор чинит
-/// кластер). Значения секретов не попадают в журнал.
+/// не трогается (данные объектов живы); env-сверка — по ПОЛНЫМ значениям
+/// (root-пара + все ключи: перевыпуск меняет значения при том же составе).
+/// Wait-семантика: пересозданная нода обязана ожить (RUNNING) до перехода к
+/// следующей; отсутствие/битость secrets — journal-отказ invalid-secrets
+/// (заявка жива; оператор чинит кластер). Значения секретов не попадают
+/// в журнал.
 /// </summary>
 public sealed class SecretRotator(
     IEtcdGateway gateway,
@@ -63,20 +66,41 @@ public sealed class SecretRotator(
             return reject.IsSuccess ? Result.Success() : reject;
         }
 
-        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
-        if (!started.IsSuccess)
-            return started;
+        // Однократность перевыпуска — по journal-маркеру заявки: фаза
+        // «reissued»/«rotated-*» означает, перевыпуск уже состоялся —
+        // дальнейшие тики доводят ноды к ТЕКУЩИМ значениям (повторный
+        // перевыпуск каждым тиком обнулял бы rolling). Схожесть нод
+        // маркером НЕ является: provisioning тоже сводит ноды к секретам.
+        // Фазы ДО решения не пишутся — иначе затёрли бы маркер.
+        var journalState = await journal.ReadAsync(cluster, ct);
+        if (!journalState.IsSuccess)
+            return journalState.Error!;
+        var phase = journalState.Value?.Phase ?? "";
+        var reissued = phase == "reissued"
+            || phase.StartsWith("rotated-", StringComparison.Ordinal);
 
         // Генерация новых root+ключей и атомарная замена secrets-ключа целиком
         // (txn по mod_revision; etcd-backup: спец-ключ пере-подставляется из
         // env). Проигрыш RMW — отложенный тик (диагностика, заявка жива).
-        var rotated = await secrets.RotateAsync(
-            cluster, snap.Config?.EtcdBackup ?? false, ct);
-        if (!rotated.IsSuccess)
-            return await journal.WritePhaseAsync(
-                cluster, Op, "waiting-secrets", claims.InstanceId,
-                rotated.Error!.Message, ct);
-        var nodeSecrets = rotated.Value.ToNodeSecrets();
+        OwnS3NodeSecrets nodeSecrets;
+        if (reissued)
+        {
+            nodeSecrets = secretsRead.Value!.ToNodeSecrets();
+        }
+        else
+        {
+            var rotated = await secrets.RotateAsync(
+                cluster, snap.Config?.EtcdBackup ?? false, ct);
+            if (!rotated.IsSuccess)
+                return await journal.WritePhaseAsync(
+                    cluster, Op, "waiting-secrets", claims.InstanceId,
+                    rotated.Error!.Message, ct);
+            nodeSecrets = rotated.Value.ToNodeSecrets();
+            var marked = await journal.WritePhaseAsync(
+                cluster, Op, "reissued", claims.InstanceId, null, ct);
+            if (!marked.IsSuccess)
+                return marked;
+        }
 
         foreach (var node in snap.Nodes.OrderBy(n => n.Node, StringComparer.Ordinal))
         {
@@ -157,8 +181,12 @@ public sealed class SecretRotator(
         return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
     }
 
-    // Env-сверка БЕЗ значений секретов: OWNS3_ROOT_USER равен профилю (имя —
-    // не секрет) и состав ключей совпадает (число OWNS3_ACCESS_KEYS__<i>__*).
+    // Env-сверка БЕЗ журнала значений: полный комплект кредов равен НОВОМУ
+    // secrets-ключу — root-пара и каждый OWNS3_ACCESS_KEYS__<i>__{ACCESSKEY,
+    // SECRETKEY,POLICY}; лишние key-индексы сверх состава — расхождение
+    // (индекс — ВТОРОЙ сегмент имени: [OWNS3_ACCESS_KEYS, <i>, <FIELD>]]).
+    // Сверки по одному составу индексов недостаточно: перевыпуск меняет
+    // ЗНАЧЕНИЯ при неизменном составе — нода обязана пересоздаваться.
     private async Task<Result<bool>> NodeEnvMatchesAsync(
         string cluster, S3NodeSnapshot node, OwnS3NodeSecrets expected, CancellationToken ct)
     {
@@ -168,12 +196,19 @@ public sealed class SecretRotator(
         if (env.Value is null)
             return Result<bool>.Success(false); // объекта нет — ротация (пере)создаст
 
-        if (!env.Value.TryGetValue("OWNS3_ROOT_USER", out var actualUser)
-            || !string.Equals(actualUser, expected.RootUser, StringComparison.Ordinal))
+        if (!Matches("OWNS3_ROOT_USER", expected.RootUser)
+            || !Matches("OWNS3_ROOT_PASSWORD", expected.RootPassword))
             return Result<bool>.Success(false);
 
-        // Индекс — ВТОРОЙ сегмент: OWNS3_ACCESS_KEYS__<i>__<FIELD>.Split("__")
-        // = [OWNS3_ACCESS_KEYS, <i>, <FIELD>]; [2] — имя поля, не индекс.
+        for (var i = 0; i < expected.AccessKeys.Count; i++)
+        {
+            var key = expected.AccessKeys[i];
+            if (!Matches($"OWNS3_ACCESS_KEYS__{i}__ACCESSKEY", key.AccessKey)
+                || !Matches($"OWNS3_ACCESS_KEYS__{i}__SECRETKEY", key.SecretKey)
+                || !Matches($"OWNS3_ACCESS_KEYS__{i}__POLICY", key.Policy))
+                return Result<bool>.Success(false);
+        }
+
         var actualKeyIndexes = env.Value.Keys
             .Where(k => k.StartsWith("OWNS3_ACCESS_KEYS__", StringComparison.Ordinal))
             .Select(k => k.Split("__")[1])
@@ -182,6 +217,10 @@ public sealed class SecretRotator(
             .Select((_, i) => i.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .ToHashSet(StringComparer.Ordinal);
         return Result<bool>.Success(actualKeyIndexes.SetEquals(expectedKeyIndexes));
+
+        bool Matches(string name, string value) =>
+            env.Value.TryGetValue(name, out var actual)
+            && string.Equals(actual, value, StringComparison.Ordinal);
     }
 
     // Адрес ноды: portalloc (ротация не меняет закрепления).
