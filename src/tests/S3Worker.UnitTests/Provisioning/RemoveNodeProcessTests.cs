@@ -30,7 +30,7 @@ public class RemoveNodeProcessTests
     private static async Task SeedAsync(Fakes.FakeEtcd etcd, ClaimStore claims, string node2State = S3NodeStates.ToRemove)
     {
         etcd.Seed("/s3/clusters/demo/config",
-            """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
+            """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
         etcd.Seed("/s3/clusters/demo/nodes/node1/state", S3NodeStates.Running);
         etcd.Seed("/s3/clusters/demo/nodes/node2/state", node2State);
         etcd.Seed("/s3/clusters/demo/nodes/node2/placed_on", "h2");
@@ -72,7 +72,7 @@ public class RemoveNodeProcessTests
         portalloc.Keys.Should().BeEquivalentTo(["node1"]);
         etcd.Store["/s3/clusters/demo/endpoints"].Value.Should().Be("h1:18000");
         etcd.Store["/s3/clusters/demo/config"].Value
-            .Should().Be("""{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760156800}""");
+            .Should().Be("""{"platform":"owns3","nodes":1,"created_unix":1760156800}""");
         var journal = await new WorkJournal(Prefix, etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
         journal.Value!.Phase.Should().Be("done");
@@ -85,7 +85,7 @@ public class RemoveNodeProcessTests
         // Arrange: кластер из одной ноды с маркером TO_REMOVE.
         var (process, etcd, driver, claims) = NewRig();
         etcd.Seed("/s3/clusters/demo/config",
-            """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760156800}""");
+            """{"platform":"owns3","nodes":1,"created_unix":1760156800}""");
         etcd.Seed("/s3/clusters/demo/nodes/node1/state", S3NodeStates.ToRemove);
         etcd.Seed($"{Prefix}/portalloc/demo", """{"node1":{"host":"h1","s3":18000}}""");
         driver.Nodes["demo/node1"] = new Fakes.FakeS3Driver.NodeFact("h1", 18000);
@@ -156,7 +156,7 @@ public class RemoveNodeProcessTests
         // заявки нет.
         var (process, etcd, driver, claims) = NewRig();
         etcd.Seed("/s3/clusters/demo/config",
-            """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760156800}""");
+            """{"platform":"owns3","nodes":1,"created_unix":1760156800}""");
         etcd.Seed("/s3/clusters/demo/nodes/node1/state", S3NodeStates.Running);
         etcd.Seed($"{Prefix}/portalloc/demo", """{"node1":{"host":"h1","s3":18000}}""");
         await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);

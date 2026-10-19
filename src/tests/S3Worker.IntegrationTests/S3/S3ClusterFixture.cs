@@ -81,22 +81,13 @@ public sealed class S3ClusterFixture : IAsyncLifetime
     public OwnS3NodeSecrets Secrets { get; } =
         new("it-root", "it-root-password", [new OwnS3AccessKey("it-rw-key", "it-rw-secret", "read-write")]);
 
-    public SecretProfileStore SecretStore { get; }
-
     public S3ClusterFixture()
     {
-        var values = new Dictionary<string, string?>
-        {
-            ["S3W_NODE_SECRETS__backups-main__ROOT_USER"] = Secrets.RootUser,
-            ["S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"] = Secrets.RootPassword,
-            ["S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__ACCESSKEY"] = "it-rw-key",
-            ["S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__SECRETKEY"] = "it-rw-secret",
-            ["S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__POLICY"] = "read-write",
-        };
-        SecretStore = new SecretProfileStore(
-            name => name is not null && values.TryGetValue(name, out var v) ? v : null,
-            values.Keys);
     }
+
+    // Креды процессов — per-cluster secrets в etcd (arch/23 §6); ленивая
+    // фабрика: Gateway/Endpoint готовы к моменту сборки процессов.
+    public ClusterSecretsStore NewSecrets() => new(Gateway, [Endpoint]);
 
     public HttpClient NodeHttp { get; } = new() { Timeout = TimeSpan.FromSeconds(7.5) };
 
@@ -216,13 +207,13 @@ public sealed class S3ClusterFixture : IAsyncLifetime
     public PkiStore NewPki() => new(Gateway, [Endpoint], TimeProvider.System);
 
     public MeshGovernanceProcess NewMesh(ClaimStore claims, WorkJournal journal) =>
-        new(Gateway, [Endpoint], claims, journal, SecretStore, NewPki(), NodeClient, Options,
+        new(Gateway, [Endpoint], claims, journal, NewSecrets(), NewPki(), NodeClient, Options,
             new System.Diagnostics.Metrics.Meter("S3Worker-tests"));
 
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex,
-            SecretStore, NewPki(), new InstanceEnvComposer(),
+            NewSecrets(), NewPki(), new InstanceEnvComposer(),
             NewMesh(claims, journal), NodeClient, Options, new BootWaitBudget(TimeProvider.System));
 
     public DeprovisioningProcess NewDeprovisioning(ClaimStore claims, WorkJournal journal) =>
@@ -230,7 +221,7 @@ public sealed class S3ClusterFixture : IAsyncLifetime
 
     public NodeSupervisor NewSupervisor(ClaimStore claims, WorkJournal journal,
         PortAllocHealer healer, int nodeDeadSec = 90) =>
-        new(Gateway, [Endpoint], Driver, claims, journal, NodeClient, SecretStore,
+        new(Gateway, [Endpoint], Driver, claims, journal, NodeClient, NewSecrets(),
             NewPki(), new InstanceEnvComposer(),
             Options with { NodeDeadSec = nodeDeadSec }, healer);
 

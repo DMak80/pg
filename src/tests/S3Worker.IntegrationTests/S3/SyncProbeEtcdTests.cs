@@ -147,9 +147,7 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     private SyncProbeProcess NewProbe(IOwnS3NodeClient client)
     {
         var endpoints = new[] { etcd.Endpoint };
-        var secrets = new SecretProfileStore(
-            name => name is not null && Secrets.TryGetValue(name, out var v) ? v : null,
-            Secrets.Keys);
+        var secrets = new ClusterSecretsStore(etcd.Gateway, endpoints);
         var claims = new ClaimStore(Prefix, endpoints, etcd.Gateway, _clock);
         claims.TryClaimClusterAsync(_cluster, TestContext.Current.CancellationToken)
             .GetAwaiter().GetResult();

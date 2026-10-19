@@ -24,7 +24,7 @@ public sealed class AddNodeProcess(
     WorkJournal journal,
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     InstanceEnvComposer envComposer,
     IOwnS3NodeClient nodeClient,
@@ -74,10 +74,16 @@ public sealed class AddNodeProcess(
                 return Fail(cluster, node.Node, before.Error!, "snapshot-before");
         }
 
-        // Профиль: без кред нода не создаётся (permanent до починки env).
-        if (!secrets.TryGet("legacy", out var nodeSecrets, out var secretDiagnostic))
+        // Креды — per-cluster secrets из etcd (arch/23 §6): без них нода не
+        // создаётся; отсутствие/битость — диагностический отказ (ретраи
+        // тиком; значения секретов в диагностики не попадают).
+        var secretsRead = await secrets.TryReadAsync(cluster, ct);
+        var diagnostic = secretsRead.Error?.Message
+            ?? $"secrets /s3/clusters/{cluster}/secrets not found";
+        if (!secretsRead.IsSuccess || secretsRead.Value is null)
             return Fail(cluster, node.Node, new ApplicationException(
-                $"secret profile legacy: {secretDiagnostic}"), "invalid-secret-profile");
+                $"secrets: {diagnostic}"), "invalid-secrets");
+        var nodeSecrets = secretsRead.Value.ToNodeSecrets();
 
         // Mini-A фаза 1: placement + portalloc довыделение под locks (P1).
         var planned = await PlanNodeAsync(snap, node, ct);

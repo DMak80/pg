@@ -28,7 +28,7 @@ public class DeprovisioningProcessTests
     private static async Task SeedActiveAsync(Fakes.FakeEtcd etcd, Fakes.FakeS3Driver driver, ClaimStore claims, string cluster = "demo")
     {
         etcd.Seed($"/s3/clusters/{cluster}/config",
-            $$"""{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800,"state":"TO_REMOVE"}""");
+            $$"""{"platform":"owns3","nodes":2,"created_unix":1760156800,"state":"TO_REMOVE"}""");
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node1/state", S3NodeStates.Running);
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node2/state", S3NodeStates.Running);
         etcd.Seed($"/s3/clusters/{cluster}/endpoints", "h1:18000,h2:18001");

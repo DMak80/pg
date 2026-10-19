@@ -7,14 +7,18 @@ using Shared.Etcd.Client;
 namespace S3Worker.Provisioning.Processes;
 
 /// <summary>
-/// Rolling-ротация секретов нод (arch/23 §6, arch/24 §4): заявка
-/// /s3worker/rotations/&lt;C&gt; — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E этим тиком
-/// не идут — дисциплина «одно пересоздание за тик»). Пересоздание — по одной
-/// ноде за тик с env ТЕКУЩЕГО профиля кластера (config.secret_profile читается
-/// свежим снапшотом — последовательные ротации работают); volume не трогается
-/// (данные объектов живы). Wait-семантика: пересозданная нода обязана ожить
-/// (RUNNING) до перехода к следующей; невалидный профиль — journal-отказ
-/// (постоянный; оператор чинит env). Значения секретов не попадают в журнал.
+/// Rolling-ротация клиентских кредов кластера (arch/23 §6, arch/24 §4):
+/// заявка /s3worker/rotations/&lt;C&gt; — ЭКСКЛЮЗИВНАЯ ветка тика (надзор/D/E этим
+/// тиком не идут — дисциплина «одно пересоздание за тик»). До пересозданий —
+/// генерация новых root+ключей и атомарная замена secrets-ключа etcd целиком
+/// (txn по mod_revision; etcd-backup — спец-ключ пере-подставляется из env);
+/// проигрыш RMW — journal-фаза waiting-secrets, заявка жива (следующий тик).
+/// Пересоздание — по одной ноде за тик с env из НОВОГО secrets-ключа; volume
+/// не трогается (данные объектов живы); env-сверка — по root_user + составу
+/// OWNS3_ACCESS_KEYS__&lt;i&gt; (root_user постоянен). Wait-семантика: пересозданная
+/// нода обязана ожить (RUNNING) до перехода к следующей; отсутствие/битость
+/// secrets — journal-отказ invalid-secrets (заявка жива; оператор чинит
+/// кластер). Значения секретов не попадают в журнал.
 /// </summary>
 public sealed class SecretRotator(
     IEtcdGateway gateway,
@@ -22,7 +26,7 @@ public sealed class SecretRotator(
     IS3ClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     InstanceEnvComposer envComposer,
     IOwnS3NodeClient nodeClient,
@@ -47,12 +51,15 @@ public sealed class SecretRotator(
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Профиль ТЕКУЩИЙ (свежий снапшот config): невалиден — journal-отказ,
-        // заявка жива (оператор чинит env; пересозданий нет).
-        if (!secrets.TryGet("legacy", out var nodeSecrets, out var diagnostic))
+        // Secrets кластера (arch/23 §6): отсутствие/битость — journal-отказ,
+        // заявка жива (ретраи тиком; значения в диагностики не попадают).
+        var secretsRead = await secrets.TryReadAsync(cluster, ct);
+        if (!secretsRead.IsSuccess || secretsRead.Value is null)
         {
             var reject = await journal.WritePhaseAsync(
-                cluster, Op, "invalid-secret-profile", claims.InstanceId, diagnostic, ct);
+                cluster, Op, "invalid-secrets", claims.InstanceId,
+                secretsRead.Error?.Message
+                    ?? $"secrets /s3/clusters/{cluster}/secrets not found", ct);
             return reject.IsSuccess ? Result.Success() : reject;
         }
 
@@ -60,9 +67,20 @@ public sealed class SecretRotator(
         if (!started.IsSuccess)
             return started;
 
+        // Генерация новых root+ключей и атомарная замена secrets-ключа целиком
+        // (txn по mod_revision; etcd-backup: спец-ключ пере-подставляется из
+        // env). Проигрыш RMW — отложенный тик (диагностика, заявка жива).
+        var rotated = await secrets.RotateAsync(
+            cluster, snap.Config?.EtcdBackup ?? false, ct);
+        if (!rotated.IsSuccess)
+            return await journal.WritePhaseAsync(
+                cluster, Op, "waiting-secrets", claims.InstanceId,
+                rotated.Error!.Message, ct);
+        var nodeSecrets = rotated.Value.ToNodeSecrets();
+
         foreach (var node in snap.Nodes.OrderBy(n => n.Node, StringComparer.Ordinal))
         {
-            var matches = await NodeEnvMatchesAsync(cluster, node, nodeSecrets!, ct);
+            var matches = await NodeEnvMatchesAsync(cluster, node, nodeSecrets, ct);
             if (!matches.IsSuccess)
                 return matches.Error!;
 
@@ -112,7 +130,7 @@ public sealed class SecretRotator(
                     cluster, Op, "waiting-pki", claims.InstanceId, nodePki.Error!.Message, ct);
 
             var env = envComposer.Compose(
-                nodeSecrets!, nodePki.Value, clusterPki.Value.Ca.Ca,
+                nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
                 $"http://{options.AdvertisedHost ?? address.Value.Host}:{address.Value.S3Port}");
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(

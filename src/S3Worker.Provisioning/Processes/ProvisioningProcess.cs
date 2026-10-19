@@ -26,7 +26,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     InstanceEnvComposer envComposer,
     MeshGovernanceProcess mesh,
@@ -78,11 +78,15 @@ public sealed class ProvisioningProcess(
             return Fail(cluster, planned.Error!, "planning");
         }
 
-        // Профиль секретов: неполный/отсутствующий — permanent-отказ P1
-        // (диагностика без значений; оператор чинит env — тик повторит).
-        if (!secrets.TryGet("legacy", out var nodeSecrets, out var secretDiagnostic))
-            return Fail(cluster, new ApplicationException(
-                $"secret profile {"legacy"}: {secretDiagnostic}"), "invalid-secret-profile");
+        // P2-вход: выпуск per-cluster secrets (arch/23 §6): txn put-if-absent,
+        // спец-ключ etcd-backup из env; выполняется и для 0-инстансовых
+        // кластеров (etcd-операция, docker-мутаций нет). Битость/неполнота
+        // существующего ключа — permanent-отказ с диагностикой без значений.
+        var ensuredSecrets = await secrets.EnsureAsync(
+            cluster, snap.Config?.EtcdBackup ?? false, ct);
+        if (!ensuredSecrets.IsSuccess)
+            return Fail(cluster, ensuredSecrets.Error!, "ensure-secrets");
+        var nodeSecrets = ensuredSecrets.Value.ToNodeSecrets();
 
         // P2: создать контейнеры нод (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, planned.Value, nodeSecrets!, ct);

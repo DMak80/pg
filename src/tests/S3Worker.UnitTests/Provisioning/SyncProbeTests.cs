@@ -16,6 +16,20 @@ public class SyncProbeTests
 {
     private const string Prefix = "/s3worker";
 
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
+    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // backups(read-write) и panel(read-only); значения — фиксированные
+    // несекретные литералы.
+    private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
+        $"s3w-{cluster}-root",
+        "root-password-fixed",
+        [
+            new ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+            new ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+        ]));
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -25,17 +39,16 @@ public class SyncProbeTests
         public ClaimStore Claims = null!;
         public SyncProbeProcess Probe = null!;
 
-        public static Rig New(int syncIntervalSec = 60, int syncMaxPages = 20)
+        public static Rig New(int syncIntervalSec = 60, int syncMaxPages = 20, bool withSecrets = true)
         {
             var rig = new Rig();
             var endpoints = new[] { "http://etcd:2379" };
             rig.Journal = new WorkJournal(Prefix, rig.Etcd, endpoints);
             rig.Claims = new ClaimStore(Prefix, endpoints, rig.Etcd, rig.Clock);
             rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken).GetAwaiter().GetResult();
-            var secrets = new SecretProfileStore(
-                name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? "root"
-                    : name == "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? "pw" : null,
-                ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
+            if (withSecrets)
+                rig.Etcd.Seed("/s3/clusters/demo/secrets", SecretsJson("demo"));
+            var secrets = new ClusterSecretsStore(rig.Etcd, endpoints, env => env is null ? null : Env.GetValueOrDefault(env));
             var meter = new Meter("S3Worker");
             rig.Probe = new SyncProbeProcess(
                 rig.Etcd, endpoints, rig.Claims, rig.Journal, secrets, rig.NodeClient,
@@ -52,9 +65,7 @@ public class SyncProbeTests
     }
 
     // Active-кластер: portalloc east1/east2, state-набор из аргумента.
-    private static S3ClusterSnapshot Snap(
-        (string Name, string State)[]? nodes = null,
-        string secretProfile = "backups-main")
+    private static S3ClusterSnapshot Snap((string Name, string State)[]? nodes = null)
     {
         var nodeStates = nodes ?? [("east1", S3NodeStates.Running), ("east2", S3NodeStates.Running)];
         return new S3ClusterSnapshot(
@@ -639,26 +650,29 @@ public class SyncProbeTests
         journal.Value.Phase.Should().Be("idle");
     }
 
-    // ==================== 9. Профиль недоступен ====================
+    // ==================== 9. Secrets недоступны ====================
 
+    // AAA: secrets-ключа нет → диагностический отказ (invalid-secrets),
+    // заявка жива (исполнится после записи ключа).
     [Fact]
-    public async Task ProfileUnavailable_Idle_RequestStays()
+    public async Task MissingSecrets_Rejected_RequestStays()
     {
-        // Arrange: профиль секретов не задан в env — грани недостижимы.
-        var rig = Rig.New();
+        // Arrange: ключа /s3/clusters/demo/secrets нет — грани недостижимы.
+        var rig = Rig.New(withSecrets: false);
         SeedPortAlloc(rig.Etcd, "east1", "east2");
         rig.Etcd.Seed("/s3worker/probes/demo", """{"requested_unix":1,"requested_by":"e2e-op"}""");
 
         // Act
-        var result = await rig.Probe.TickAsync(Snap(secretProfile: "missing"), TestContext.Current.CancellationToken);
+        var result = await rig.Probe.TickAsync(Snap(), TestContext.Current.CancellationToken);
 
-        // Assert: idle + warning, заявка жива (исполнится после починки env).
+        // Assert: invalid-secrets + диагностика по имени ключа, заявка жива,
+        // probe-вызовов нет.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store.ContainsKey("/s3worker/probes/demo").Should().BeTrue();
         rig.NodeClient.ProbeCalls.Should().BeEmpty();
         var journal = await rig.Journal.ReadAsync("demo", TestContext.Current.CancellationToken);
-        journal.Value!.Phase.Should().Be("idle");
-        journal.Value.LastError.Should().Contain("secret profile unavailable");
+        journal.Value!.Phase.Should().Be("invalid-secrets");
+        journal.Value.LastError.Should().Contain("secrets /s3/clusters/demo/secrets not found");
     }
 
     // Расходящаяся пара: зеркальные probe-ответы (пара east1/east2), sync-report

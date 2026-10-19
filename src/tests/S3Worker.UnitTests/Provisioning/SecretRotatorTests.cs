@@ -1,5 +1,6 @@
 using FluentAssertions;
 using S3Worker.Core.Model;
+using S3Worker.Core.OwnS3;
 using S3Worker.Docker.Drivers;
 using S3Worker.Provisioning;
 using S3Worker.Provisioning.Processes;
@@ -7,29 +8,37 @@ using Xunit;
 
 namespace S3Worker.UnitTests.Provisioning;
 
-// Rolling-ротация (arch/23 §6, arch/24 §4): заявка нет → no-op; невалидный
-// профиль → journal-отказ, заявка жива; по одной ноде за тик (wait: неоживлённая
-// держит следующую); все приведены → del заявки + done; секреты не в журнале.
+// Rolling-ротация (arch/23 §6, arch/24 §4): заявка нет → no-op; secrets
+// отсутствуют/битые → journal-отказ (invalid-secrets), заявка жива; проигрыш
+// RMW-замены secrets → waiting-secrets (заявка жива, повтор следующим тиком);
+// по одной ноде за тик (wait: неоживлённая держит следующую); все приведены →
+// del заявки + done; секреты не в журнале.
 public class SecretRotatorTests
 {
     private const string Prefix = "/s3worker";
     private const string OldUser = "old-root";
     private const string NewUser = "new-root";
 
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
         public Fakes.FakeS3Driver Driver = new();
-        public SecretProfileStore Secrets;
+        public ClusterSecretsStore Secrets = null!;
         public ClaimStore Claims = null!;
         public SecretRotator Rotator = null!;
 
+        // root_user secrets кластера: ротация его СОХРАНЯЕТ — ноды после
+        // ротации сходятся на этом пользователе.
+        private readonly string _rootUser;
+
         public Rig(string rootUser)
         {
-            Secrets = new SecretProfileStore(
-                name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? rootUser
-                    : name == "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? "pw" : null,
-                ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
+            _rootUser = rootUser;
+            Secrets = new ClusterSecretsStore(
+                Etcd, ["http://etcd:2379"], env => env is null ? null : Env.GetValueOrDefault(env));
         }
 
         public static Rig New(string rootUser = NewUser)
@@ -50,10 +59,18 @@ public class SecretRotatorTests
         // Active-кластер N=2 + живая заявка ротации.
         public async Task SeedAsync(
             string node1State = S3NodeStates.Running, string node2State = S3NodeStates.Running,
-            bool withTicket = true, string envUser = OldUser)
+            bool withTicket = true, string envUser = OldUser,
+            bool withSecrets = true, string rootPassword = "root-password-fixed")
         {
             Etcd.Seed("/s3/clusters/demo/config",
-                """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
+                """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
+            if (withSecrets)
+                Etcd.Seed("/s3/clusters/demo/secrets", ClusterSecretsStore.Serialize(new ClusterSecrets(
+                    _rootUser, rootPassword,
+                    [
+                        new ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+                        new ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+                    ])));
             Etcd.Seed("/s3/clusters/demo/nodes/node1/state", node1State);
             Etcd.Seed("/s3/clusters/demo/nodes/node2/state", node2State);
             Etcd.Seed($"{Prefix}/portalloc/demo", """{"node1":{"host":"h1","s3":18000},"node2":{"host":"h1","s3":18001}}""");
@@ -84,6 +101,22 @@ public class SecretRotatorTests
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),
             ],
             null, null);
+
+        // env ноды «на secrets кластера»: root-пользователь + ОБА key-индекса
+        // (сверка ротатора — по root user и составу индексов, значения не
+        // сверяются).
+        public void MarkNodeEnvConverged(string node)
+            => Driver.Envs[$"demo/{node}"] = new Dictionary<string, string>
+            {
+                ["OWNS3_ROOT_USER"] = _rootUser,
+                ["OWNS3_DATA_DIR"] = "/data",
+                ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "key0",
+                ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "secret0",
+                ["OWNS3_ACCESS_KEYS__0__POLICY"] = "read-write",
+                ["OWNS3_ACCESS_KEYS__1__ACCESSKEY"] = "key1",
+                ["OWNS3_ACCESS_KEYS__1__SECRETKEY"] = "secret1",
+                ["OWNS3_ACCESS_KEYS__1__POLICY"] = "read-only",
+            };
     }
 
     // AAA: заявки нет → no-op (ветка не активна).
@@ -102,23 +135,14 @@ public class SecretRotatorTests
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
-    // AAA: невалидный профиль → journal-отказ (постоянный), заявка жива,
+    // AAA: secrets-ключа нет → journal-отказ (постоянный), заявка жива,
     // пересозданий нет.
     [Fact]
-    public async Task InvalidProfile_JournalFailure_TicketStays()
+    public async Task MissingSecrets_JournalFailure_TicketStays()
     {
-        // Arrange: профиль не задан в env вовсе.
+        // Arrange: ключ /s3/clusters/demo/secrets не записан.
         var rig = Rig.New();
-        rig.Secrets = new SecretProfileStore(_ => null, []);
-        rig.Rotator = new SecretRotator(
-            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
-            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
-            rig.Secrets,
-            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
-            new InstanceEnvComposer(),
-            new Fakes.FakeNodeClient(),
-            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
-        await rig.SeedAsync();
+        await rig.SeedAsync(withSecrets: false);
 
         // Act
         var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
@@ -130,7 +154,33 @@ public class SecretRotatorTests
         rig.Driver.Ensured.Should().BeEmpty();
         var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
-        journal.Value!.Phase.Should().Be("invalid-secret-profile");
+        journal.Value!.Phase.Should().Be("invalid-secrets");
+        journal.Value.LastError.Should().Contain("secrets /s3/clusters/demo/secrets not found");
+    }
+
+    // AAA: RMW-проигрыш — secrets изменены под нами (хук txn перезаписывает
+    // ключ до compare) → journal waiting-secrets, заявка жива: следующий тик
+    // повторит ротацию.
+    [Fact]
+    public async Task KeyChangedUnderneath_WaitingSecrets_TicketStays()
+    {
+        // Arrange: secrets выпущены; хук перезаписывает secrets-ключ ДО
+        // compare — ModRevisionEqual ломается (гонка RMW).
+        var rig = Rig.New();
+        await rig.SeedAsync();
+        rig.Etcd.OnTxnBeforeCompare = _ => rig.Etcd.Seed("/s3/clusters/demo/secrets", "clobbered");
+
+        // Act
+        var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: waiting-secrets; заявка НЕ погашена; docker не тронут.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().ContainKey($"{Prefix}/rotations/demo");
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Driver.Removed.Should().BeEmpty();
+        var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("waiting-secrets");
     }
 
     // AAA: тик 1 — node1 (Ordinal-первая с чужим env) пересоздана; одна за тик.
@@ -169,11 +219,7 @@ public class SecretRotatorTests
         var rig = Rig.New();
         await rig.SeedAsync();
         await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
-        rig.Driver.Envs["demo/node1"] = new Dictionary<string, string>
-        {
-            ["OWNS3_ROOT_USER"] = NewUser,
-            ["OWNS3_DATA_DIR"] = "/data",
-        };
+        rig.MarkNodeEnvConverged("node1");
 
         // Act
         var result = await rig.Rotator.TickAsync(
@@ -209,11 +255,7 @@ public class SecretRotatorTests
             new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
         await rig.SeedAsync();
         await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
-        rig.Driver.Envs["demo/node1"] = new Dictionary<string, string>
-        {
-            ["OWNS3_ROOT_USER"] = NewUser,
-            ["OWNS3_DATA_DIR"] = "/data",
-        };
+        rig.MarkNodeEnvConverged("node1");
 
         // Act
         var result = await rig.Rotator.TickAsync(
@@ -232,9 +274,12 @@ public class SecretRotatorTests
     [Fact]
     public async Task AllConverged_TicketCleared()
     {
-        // Arrange: env обеих нод — новый профиль, обе RUNNING.
+        // Arrange: env обеих нод — на secrets кластера (root user + оба
+        // key-индекса), обе RUNNING.
         var rig = Rig.New();
-        await rig.SeedAsync(envUser: NewUser);
+        await rig.SeedAsync();
+        rig.MarkNodeEnvConverged("node1");
+        rig.MarkNodeEnvConverged("node2");
 
         // Act
         var result = await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
@@ -248,51 +293,30 @@ public class SecretRotatorTests
         journal.Value!.Phase.Should().Be("done");
     }
 
-    // AAA: профиль С access key — env-сверка по индексу ВТОРОГО сегмента
-    // (OWNS3_ACCESS_KEYS__<i>__<FIELD>): нода на env профиля — matches, без
+    // AAA: env-сверка ротатора по индексам OWNS3_ACCESS_KEYS__<i>__* (второй
+    // сегмент): нода на произвольных ЗНАЧЕНИЯХ обоих индексов — matches, без
     // пересозданий (регрессия: Split("__")[2] давал имя поля вместо индекса —
     // сверка всегда false, пересоздание каждый тик).
     [Fact]
-    public async Task ProfileWithAccessKey_IndexBasedMatch_NoRecreations()
+    public async Task AccessKeyIndexes_IndexBasedMatch_NoRecreations()
     {
-        // Arrange: профиль с access key #0; env обеих нод несёт тот же ключ,
-        // root-пара — новая; обе RUNNING.
+        // Arrange: env обеих нод — root user кластера + оба key-индекса;
+        // значения не совпадают с secrets — сверка по составу индексов.
         var rig = Rig.New();
-        rig.Secrets = new SecretProfileStore(
-            name => name switch
-            {
-                "S3W_NODE_SECRETS__backups-main__ROOT_USER" => NewUser,
-                "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" => "pw",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__ACCESSKEY" => "key0",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__SECRETKEY" => "secret0",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__POLICY" => "read-write",
-                _ => null,
-            },
-            [
-                "S3W_NODE_SECRETS__backups-main__ROOT_USER",
-                "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__ACCESSKEY",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__SECRETKEY",
-                "S3W_NODE_SECRETS__backups-main__ACCESS_KEYS__0__POLICY",
-            ]);
-        rig.Rotator = new SecretRotator(
-            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
-            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
-            rig.Secrets,
-            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
-            new InstanceEnvComposer(),
-            new Fakes.FakeNodeClient(),
-            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
-        await rig.SeedAsync(envUser: NewUser);
+        await rig.SeedAsync();
         foreach (var node in new[] { "node1", "node2" })
         {
-            var env = new Dictionary<string, string>(rig.Driver.Envs[$"demo/{node}"])
+            rig.Driver.Envs[$"demo/{node}"] = new Dictionary<string, string>
             {
-                ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "key0",
-                ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "secret0",
+                ["OWNS3_ROOT_USER"] = NewUser,
+                ["OWNS3_DATA_DIR"] = "/data",
+                ["OWNS3_ACCESS_KEYS__0__ACCESSKEY"] = "stale-ak-0",
+                ["OWNS3_ACCESS_KEYS__0__SECRETKEY"] = "stale-sk-0",
                 ["OWNS3_ACCESS_KEYS__0__POLICY"] = "read-write",
+                ["OWNS3_ACCESS_KEYS__1__ACCESSKEY"] = "stale-ak-1",
+                ["OWNS3_ACCESS_KEYS__1__SECRETKEY"] = "stale-sk-1",
+                ["OWNS3_ACCESS_KEYS__1__POLICY"] = "read-only",
             };
-            rig.Driver.Envs[$"demo/{node}"] = env;
         }
 
         // Act
@@ -311,22 +335,10 @@ public class SecretRotatorTests
     [Fact]
     public async Task SecretsNotInJournal()
     {
-        // Arrange: пароль «суперсекрет» в env воркера; ноды с чужим env.
+        // Arrange: пароль «суперсекрет» в secrets кластера; ноды с чужим env.
         const string password = "supersecret-value";
         var rig = Rig.New();
-        rig.Secrets = new SecretProfileStore(
-            name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? NewUser
-                : name == "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? password : null,
-            ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
-        rig.Rotator = new SecretRotator(
-            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
-            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
-            rig.Secrets,
-            new PkiStore(rig.Etcd, ["http://etcd:2379"], TimeProvider.System),
-            new InstanceEnvComposer(),
-            new Fakes.FakeNodeClient(),
-            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups"));
-        await rig.SeedAsync();
+        await rig.SeedAsync(rootPassword: password);
 
         // Act
         await rig.Rotator.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
