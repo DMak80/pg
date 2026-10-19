@@ -11,15 +11,17 @@ cd "$(dirname "$0")/.."
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
-# Гвард: пул бэкапов жив (сид 00-up.sh) — без пула грань не проверить;
-# root-креды ноды пула — профиль BACKUPS-MAIN из deploy/.env.
+# Гвард: пул бэкапов жив (создаётся вручную через панель) — без пула грань
+# не проверить; root-креды ноды пула — per-cluster secrets-ключ etcd
+# /s3/clusters/backups/secrets (значения ТОЛЬКО в переменные, НИКОГДА в stdout).
 ROOT="$(cd ../.. && pwd)"
-ENV_FILE="$ROOT/deploy/.env"
 STAND_NET="${PGW_CONTOUR_NETWORK:-adminpanel-stand-net}"
-S3W_ROOT_USER="$(grep -E '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
-S3W_ROOT_PASSWORD="$(grep -E '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d= -f2)"
+SECRETS="$(docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 \
+  get /s3/clusters/backups/secrets --print-value-only </dev/null 2>/dev/null || true)"
+S3W_ROOT_USER="$(echo "$SECRETS" | jq -r '.root_user // empty')"
+S3W_ROOT_PASSWORD="$(echo "$SECRETS" | jq -r '.root_password // empty')"
 [ -n "$S3W_ROOT_USER" ] && [ -n "$S3W_ROOT_PASSWORD" ] \
-  || { echo "❌ deploy/.env: no S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_*"; exit 1; }
+  || { echo "❌ etcd: /s3/clusters/backups/secrets not readable (pool not provisioned?)"; exit 1; }
 pool_state="$(docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 \
   get /s3/clusters/backups/nodes/node1/state --print-value-only </dev/null 2>/dev/null || true)"
 [ "$pool_state" = "RUNNING" ] \
@@ -37,8 +39,8 @@ api() { curl -fsS -b "$JAR" "$BASE$1"; }
 echo "  adminpanel alive ($BASE), login ok"
 
 # Налив тестовых объектов mc-контейнером в стендовой СЕТИ (нода пула
-# достаётся по имени контейнера: s3w-backups-node1:9000; root-креды профиля;
-# идемпотентно — перепись тех же ключей).
+# достаётся по имени контейнера: s3w-backups-node1:9000; root-креды кластера
+# из secrets-ключа etcd; идемпотентно — перепись тех же ключей).
 docker run --rm --network "$STAND_NET" \
   --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
   -c "mc alias set a http://s3w-backups-node1:9000 '$S3W_ROOT_USER' '$S3W_ROOT_PASSWORD' >/dev/null \
@@ -87,8 +89,9 @@ echo "  no AccessKey/SecretKey secrets in the DTO"
 # несёт его с нодами, DTO без ключей.
 api /api/backups/s3-pools | jq -e 'any(.[]; .name == "backups" and (.nodes | length) >= 1)' >/dev/null \
   || { echo "❌ /api/backups/s3-pools: no backups pool (00-up.sh seed?)"; exit 1; }
-# secretProfile (ИМЯ env-профиля, arch/19 §7) в DTO легален; секреты —
-# только ключи доступа: AccessKey/SecretKey/ACCESS_KEY/SECRET_KEY.
+# Состав кредов пула (rootUser + accessKeys name/policy, arch/23 §2) в DTO
+# легален — это имена; секреты — только значения ключей:
+# AccessKey/SecretKey/ACCESS_KEY/SECRET_KEY.
 api /api/backups/s3-pools | jq -e '((tostring) | test("AccessKey|SecretKey|ACCESS_KEY|SECRET_KEY")) | not' >/dev/null \
   || { echo "❌ /api/backups/s3-pools: secrets leaked"; exit 1; }
 echo "  s3-pools: backups pool with nodes, no secrets in the DTO"

@@ -5,7 +5,14 @@
 [AGENTS.md](../AGENTS.md).
 
 - **Полный dev-стенд** (панель :5050, PG-шарды, оба воркера, метрики):
-  `dev-stand/adminpanel/checks/00-up.sh` (профили/секреты — `dev-stand/adminpanel/`).
+  `dev-stand/adminpanel/checks/00-up.sh`.
+- **Секреты S3-кластеров** — per-cluster в etcd (`/s3/clusters/<C>/secrets`,
+  генерирует S3Worker); per-install env-профилей кредов нет. Единственный
+  секрет S3Worker в env — спец-ключ бэкапа etcd
+  `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (`deploy/.env`): полупара —
+  fail-fast старта s3worker; обязателен только при создании etcd-backup
+  кластера (без пары воркер ответит 422); подставляется в
+  `/s3/clusters/<C>/secrets` ключом «backups».
 - **etcd-контур стенда** отдельно: `dev-stand/compose.yaml`.
 - **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — `PGW_TEST_DOCKER=1`
   (обязателен в мерж-гейте задач воркеров — см. AGENTS.md).

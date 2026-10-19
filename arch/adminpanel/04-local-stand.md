@@ -57,14 +57,14 @@ external через override `docker-compose.contour.yml`.
 | `s3w-<C>-<I>` (движок S3Worker; ноды кластеров `/s3/`) | 9000 | portalloc `:18xxx` (ряд S3W) |
 | `vwk-<C>-node<k>` (движок ValkeyWorker) | 6379 | portalloc `:17xxx` |
 
-Панель получает env грани «Хранилище бэкапов»:
-`AdminPanel__Backups__S3__Endpoint=http://s3w-backups-node1:9000` (имя
-стендовой сети; контейнер пула `backups`, провижинит S3Worker по заявке
-через панель — §2.2; до создания пула грань configured с health-отказом),
-`...__Bucket=pgworker-backups`,
-`...__AccessKey/SecretKey=panel-reader/panel-reader-pwd` (read-only ключ
-ownS3, ../OwnS3/arch/owns3/05 §2; стендовые примеры, прод — per-install env);
-path-style — дефолт appsettings.
+Панель получает env грани «Хранилище бэкапов»: только
+`AdminPanel__Backups__S3__Bucket=pgworker-backups` (path-style — дефолт
+appsettings). Endpoint и креды грань берёт из снапшота S3-домена
+per-cluster ([02](02-etcd-contract.md) §12): endpoints Active-кластеров
+`/s3/` + read-only ключ `panel` их secrets-ключей
+`/s3/clusters/<C>/secrets` (контейнер пула `backups` провижинит S3Worker
+по заявке через панель — §2.2; до создания пула грань configured с
+health-отказом).
 
 `as-etcd-1/2/3` — **единственный etcd полной системы** — 3 узла ОДНИМ
 кластером (кворум 2/3; рецепт — arch/04 §8, зеркало прода): advertise

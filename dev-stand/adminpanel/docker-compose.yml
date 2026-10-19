@@ -167,17 +167,13 @@ services:
       WORKERS_PANEL_TLS_CERT_PATH: /tls-workers/panel.crt
       WORKERS_PANEL_TLS_KEY_PATH: /tls-workers/panel.key
       WORKERS_PANEL_TLS_SERVER_CA_PATH: /tls-workers/ca.pem
-      # t41/t36: грань «Хранилище бэкапов» — live-инвентарь ПУЛА бэкапов
-      # (нода s3w-backups-node1 в стендовой сети — сид 00-up.sh через S3Worker;
-      # имя контейнера детерминировано: s3w-<кластер>-<инстанс>). Одиночный
-      # Endpoint — валидный частный случай списка Endpoints (02 §2.5). Креды —
-      # read-only ключ panel-reader профиля BACKUPS-MAIN
-      # (S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__* в deploy/.env;
-      # прод — per-install env, arch/19 §7).
-      AdminPanel__Backups__S3__Endpoint: http://s3w-backups-node1:9000
+      # Грань «Хранилище бэкапов» — live-инвентарь ПУЛА бэкапов (ноды
+      # s3w-<C>-<I> в стендовой сети). Endpoint и креды панель берёт из
+      # снапшота S3-домена per-cluster (/s3/clusters/<C>: endpoints + ключ
+      # «panel» secrets-ключа, arch/adminpanel/02 §12) — env не задаётся;
+      # до создания пула грань configured с health-отказом. Bucket —
+      # per-install env.
       AdminPanel__Backups__S3__Bucket: pgworker-backups
-      AdminPanel__Backups__S3__AccessKey: panel-reader
-      AdminPanel__Backups__S3__SecretKey: panel-reader-pwd
     volumes:
       # Стендовый overrides-конфиг панели (env не собирает некоторые ключи;
       # t41: HostMap усыновлённой модели демонтирован)

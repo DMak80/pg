@@ -40,9 +40,9 @@ x-pgworker-env: &pgworker-env
   PGW_REST_TLS_CA_PATH: /tls/ca.pem
   PGW_REST_TLS_CA_KEY_PATH: /tls/ca.key
   PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
-  # Подсистема бэкапов (arch/19, t36): пул S3 per-cluster — policy кластера
-  # ссылается пул /s3/clusters/ (выбор — панель, «Пул бэкапов»); endpoint/креды
-  # единого S3 ушли, env-профили кредов едут env_file (x-pgworker-base).
+  # Подсистема бэкапов (arch/19): пул S3 per-cluster — policy кластера
+  # ссылается пул /s3/clusters/ (выбор — панель, «Пул бэкапов»); креды пула
+  # воркер читает из per-cluster secrets-ключа etcd (/s3/clusters/<C>/secrets).
   # Пустой Bucket валиден при Enabled=false (валидация старта воркера).
   PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
   PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
@@ -93,13 +93,6 @@ x-pgworker-base: &pgworker-base
     dockerfile: docker/PgWorker.Dockerfile
   image: pgworker:dev
   restart: unless-stopped
-  # t36 (arch/19 §7): env-профили кредов пулов — env_file БЕЗ интерполяции
-  # (дефис в имени профиля compose-${…} не ест; прецедент s3w-node-secrets.env).
-  # Файл per-install (в git НЕ попадает; стенд — собирает 00-up.sh из .env
-  # по префиксу PGW_BACKUP_S3_PROFILES__, прод — оператор сам). Пустой файл
-  # валиден: грань выключена (Enabled=false).
-  env_file:
-    - ./pgw-s3-profiles.env
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - pgw-snapshots:/snapshots
@@ -221,6 +214,10 @@ x-s3worker-env: &s3worker-env
   S3W_API_TLS_KEY_PATH: /tls/server.key
   S3W_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
   S3Worker__Api__EnableSeedEndpoint: ${S3W_API_ENABLE_SEED:-false}
+  # Спец-ключ бэкапа etcd (arch/23 §6): per-install env-пара, обязательна
+  # только при создании etcd-backup кластера (пусто — пара не задана).
+  S3W_ETCD_BACKUP_ACCESSKEY: ${S3W_ETCD_BACKUP_ACCESSKEY:-}
+  S3W_ETCD_BACKUP_SECRETKEY: ${S3W_ETCD_BACKUP_SECRETKEY:-}
 
 x-s3worker-base: &s3worker-base
   build:
@@ -230,13 +227,6 @@ x-s3worker-base: &s3worker-base
       S3W_PUBLISH_DIR: artifacts/s3worker/publish
   image: s3worker:dev
   restart: unless-stopped
-  # Профили секретов нод (arch/23 §6) — env_file БЕЗ интерполяции: имена
-  # S3W_NODE_SECRETS__<PROFILE>__* допускают дефис в <PROFILE>, который
-  # compose-парсер ${...} читает как оператор дефолта (секрет не доезжает).
-  # Файл per-install (в git НЕ попадает); формат — те же строки KEY=VAL,
-  # что в .env; отсутствие файла = падение up (fail-fast).
-  env_file:
-    - ./s3w-node-secrets.env
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
     - s3w-snapshots:/snapshots

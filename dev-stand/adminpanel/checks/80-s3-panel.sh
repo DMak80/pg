@@ -35,7 +35,7 @@ code() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$@"; }
 
 # 1) Создание через панель: 201 (instances[] — новый формат arch/24 §1.1;
 #    platform панель подставляет сама).
-body="{\"name\":\"$TAG\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
+body="{\"name\":\"$TAG\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$(code -X POST "$BASE/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
 [ "$c" = 201 ] || { echo "❌ create = $c, expected 201"; exit 1; }
 echo "  create $TAG -> 201 (request accepted by the panel)"
@@ -53,14 +53,20 @@ api /api/s3/clusters | jq -e "any(.[]; .name == \"$TAG\" and (.endpoints | lengt
   || { echo "❌ endpoints empty in the summary"; exit 1; }
 echo "  $TAG: ACTIVE, node1 RUNNING, endpoints in the summary"
 
-# 3) Инспекция деталей: secretProfile, placedOn=local, граф и denylist пусты.
-api "/api/s3/clusters/$TAG" | jq -e '
-  .secretProfile == "BACKUPS-MAIN"
-  and .nodesList[0].placedOn == "local"
+# 3) Инспекция деталей: состав кредов (root_user + 2 ключа name/policy —
+#    значений в API нет), placedOn=local, граф и denylist пусты.
+api "/api/s3/clusters/$TAG" | jq -e "
+  .rootUser == \"s3w-$TAG-root\"
+  and (.accessKeys | length == 2)
+  and (all(.accessKeys[]; has(\"name\") and has(\"policy\")))
+  and .nodesList[0].placedOn == \"local\"
   and (.links | length == 0)
-  and (.denylist | length == 0)' >/dev/null \
-  || { echo "❌ details did not converge (secretProfile/placedOn/links/denylist)"; exit 1; }
-echo "  inspection: secretProfile/placedOn/links/denylist — as declared"
+  and (.denylist | length == 0)" >/dev/null \
+  || { echo "❌ details did not converge (rootUser/accessKeys/placedOn/links/denylist)"; exit 1; }
+# secrets-ключ появился в etcd (только факт ключа — значения чек не читает).
+[ -n "$(ect get "/s3/clusters/$TAG/secrets" --keys-only 2>/dev/null)" ] \
+  || { echo "❌ /s3/clusters/$TAG/secrets missing in etcd"; exit 1; }
+echo "  inspection: rootUser/accessKeys(2)/placedOn/links/denylist — as declared; secrets key in etcd"
 
 # 4) Граф: с 1 нодой links пуст ([] → 202); добавляем node2 → пары [node1,node2].
 c="$(code -X PUT "$BASE/api/s3/clusters/$TAG/links" -H 'Content-Type: application/json' -d '{"links":[]}')"

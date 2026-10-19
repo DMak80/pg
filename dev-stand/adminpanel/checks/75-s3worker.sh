@@ -40,7 +40,7 @@ done
 echo "  s3worker alive: /healthz via mTLS"
 
 # 1) Демо-кластер через API: 201 → воркер провижинит (RUNNING) ≤ NodeBootSec+запас.
-body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
+body="{\"name\":\"$TAG\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":0.5,\"memGi\":1,\"diskGi\":5}}]}"
 c="$("${MTLS[@]}" -o "$TMP/create.json" -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' -d "$body")"
 [ "$c" = 201 ] || { echo "❌ create = $c, expected 201"; cat "$TMP/create.json"; exit 1; }
 echo "  create $TAG -> 201 (request accepted)"
@@ -62,18 +62,20 @@ echo "  $TAG: config without state, node1 RUNNING, endpoints=$endpoints, placed_
 docker ps -a --format '{{.Names}}' | grep -qx "s3w-$TAG-node1" || { echo "❌ container s3w-$TAG-node1 not found"; exit 1; }
 docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "❌ volume s3w-$TAG-node1-data not found"; exit 1; }
 
-# 3) Валидации: невалидный name → 400; неизвестный профиль → 422.
+# 3) Валидации: невалидный name → 400; etcdBackup без env-пары спец-ключа → 422
+#    (стенд: S3W_ETCD_BACKUP_* не заданы — отсутствие пары = неполная, гвард
+#    полноты arch/24 §1.1).
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"secretProfile\":\"BACKUPS-MAIN\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
+  -d "{\"name\":\"Bad-Name\",\"platform\":\"owns3\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
 [ "$c" = 400 ] || { echo "❌ invalid name → $c, expected 400"; exit 1; }
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"secretProfile\":\"no-such-profile\",\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
-[ "$c" = 422 ] || { echo "❌ unknown profile → $c, expected 422"; exit 1; }
+  -d "{\"name\":\"${TAG}x\",\"platform\":\"owns3\",\"etcdBackup\":true,\"instances\":[{\"name\":\"node1\",\"placement\":{\"dockerHost\":\"local\"},\"resources\":{\"cpu\":1,\"memGi\":1,\"diskGi\":5}}]}")"
+[ "$c" = 422 ] || { echo "❌ etcdBackup without env key → $c, expected 422"; exit 1; }
 # /metrics домен-счётчики (spec §9): .NET-экспортер выдаёт серию после первого
 # наблюдения — проверка ПОСЛЕ операций API выше (create/400/422).
 "${MTLS[@]}" "$API/metrics" 2>/dev/null | grep -q '^s3worker_' \
   || { echo "❌ /metrics contains no s3worker_ metrics"; exit 1; }
-echo "  validations: name → 400, profile → 422; /metrics contains s3worker_"
+echo "  validations: name → 400, etcdBackup without env key → 422; /metrics contains s3worker_"
 
 # 4) sync-probe: 202 always; ключи connectivity/sync НЕ появляются (заглушка t33).
 c="$("${MTLS[@]}" -o /dev/null -w '%{http_code}' -X POST "$API/api/s3/clusters/$TAG/sync-probe")"
