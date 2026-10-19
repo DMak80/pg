@@ -45,12 +45,18 @@ PgWorker и панель — читатели. Значения секретов
 
 1. **Env спец-ключа бэкапа etcd**: `S3W_ETCD_BACKUP_ACCESSKEY` /
    `S3W_ETCD_BACKUP_SECRETKEY`; читает `ClusterSecretsStore` (инъекция getenv
-   для тестов); полупара — fail-fast старта воркера (замена прежнего
-   `ValidateEnvPairs` SecretProfileStore). Гвард полноты пары —
-   **статический** метод `ClusterSecretsStore.ValidateEtcdBackupEnvPairs`:
-   конструктор стора остаётся строгим `(IEtcdGateway, string[], getenv?)` по
-   прецеденту `PkiStore` (транспорт обязателен; nullable-транспорт в
-   конструкторе — запах), а fail-fast-пробе старта и гварду API экземпляр с
+   для тестов). ДВА гварда с разными ролями: (а) **fail-fast старта** —
+   полупара (задана ровно одна из двух): статический
+   `ClusterSecretsStore.ValidateEtcdBackupEnvPairs` (замена прежнего
+   `ValidateEnvPairs` SecretProfileStore; полное отсутствие пары — ЛЕГАЛЬНО,
+   спец-ключ per-install опционален); (б) **гвард API создания** — полнота
+   пары: статический `ClusterSecretsStore.IsEtcdBackupEnvPairComplete` (true
+   ⟺ ОБЕ непустые); кластер с `etcdBackup=true` при отсутствии ИЛИ неполноте
+   пары → 422 (полная пара требуется в момент создания; без гварда 201
+   уводил бы provisioning P2 в permanent-fail `ensure-secrets`). Конструктор
+   стора остаётся строгим `(IEtcdGateway, string[], getenv?)` по прецеденту
+   `PkiStore` (транспорт обязателен; nullable-транспорт в конструкторе —
+   запах), оба гварда — статические: fail-fast старта и API им экземпляр с
    транспортом не нужен.
 2. **Модель secrets (S3Worker)**: `ClusterAccessKey(Name, AccessKey, SecretKey,
    Policy)` + `ClusterSecrets(RootUser, RootPassword, AccessKeys)` с проекцией
@@ -63,10 +69,12 @@ PgWorker и панель — читатели. Значения секретов
 4. **`etcd_backup` в каноническом config**: поле пишется ТОЛЬКО при `true`
    (как `state` — опциональное); `secret_profile` из канона исчезает.
 5. **Стор secrets — два режима**: `EnsureAsync` (provisioning: put-if-absent +
-   подстановка спец-ключа) и `TryReadAsync` (надзор/G/F/AddNode/ротатор:
-   null = ключа нет, битость/неполнота = Failed с диагностикой без значений);
-   `RotateAsync` — генерация новых + txn по `mod_revision` (§3.4 spec: RMW;
-   Active-кластер не пересекается с provisioning по состояниям).
+   подстановка спец-ключа; отсутствие/неполнота env-пары при etcd_backup →
+   Failed) и `TryReadAsync` (надзор/G/F/AddNode/ротатор: null = ключа нет,
+   битость/неполнота = Failed с диагностикой без значений); `RotateAsync` —
+   генерация новых + txn по `mod_revision` (§3.4 spec: RMW; проигрыш —
+   Failed, следующий тик повторяет; Active-кластер не пересекается с
+   provisioning по состояниям).
 6. **Пул грани «Хранилище бэкапов» панели**: первый по Ordinal Active-кластер
    `/s3/`-домена с непустым `endpoints` и валидным secrets-ключом (ключ
    `name=panel`); configured ⟺ такой кластер есть. Bucket остаётся env
@@ -83,17 +91,22 @@ PgWorker и панель — читатели. Значения секретов
 - Проигрыш txn put-if-absent (два воркера одновременно): победивший — истина;
   проигравший обязан re-read и вернуть ЧУЖОЙ материал. Тест: юнит
   ClusterSecretsStore с предзаписанным ключом.
-- Полупара спец-ключа etcd-backup: fail-fast старта и 422 при создании
-  кластера с признаком. Тесты: юнит ValidateEtcdBackupEnvPairs, API-тест
-  создания (422 без env, 409 второй etcd-backup).
+- Спец-ключ etcd-backup: (а) полупара — fail-fast старта воркера;
+  (б) ОТСУТСТВИЕ или неполнота пары при создании кластера с признаком — 422
+  (не 201 с последующим permanent-fail provisioning'а). Тесты: юниты
+  `ValidateEtcdBackupEnvPairs` (полупара) и `IsEtcdBackupEnvPairComplete`
+  (обе пустые → false, одна пустая → false, обе непустые → true), API-тест
+  создания (422 без env/полупара, 409 второй etcd-backup).
 - Битый/неполный secrets-ключ у Active-кластера: процессы — Failed-диагностика
   (ретраи тиком), НЕ генерация новых кред молча (иначе живые инстансы с
   прежним env расходятся с ключом). Тест: юниты TryRead (битый JSON, нет
   ключа panel/backups, пустые значения).
 - Ротация: env-сверка контейнера по `root_user`+составу
-  `OWNS3_ACCESS_KEYS__<i>` не должна рассинхронизироваться с заменой secrets
-  (проигрыш RMW → заявка не гасится, следующий тик повторяет). Тест:
-  SecretRotatorTests (проигрыш txn, etcd-backup пере-подстановка).
+  `OWNS3_ACCESS_KEYS__<i>` не должна рассинхронизироваться с заменой secrets;
+  проигрыш RMW (ключ переписан между read и txn) → Failed "changed
+  underneath us", заявка НЕ гасится, следующий тик повторяет. Тест: юнит
+  RotateAsync через `FakeEtcd.OnTxnBeforeCompare` + SecretRotatorTests
+  (journal `waiting-secrets`, заявка жива).
 
 ---
 
@@ -121,11 +134,12 @@ PgWorker и панель — читатели. Значения секретов
    - §6 «Секреты»: подраздел «Креды клиентской грани» переписать: per-cluster
      в etcd, генерация воркером (root+rw+ro, 32 симв [A-Za-z0-9],
      `root_user=s3w-<C>-root`), спец-ключ etcd-backup из env
-     `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (полупара — fail-fast; 422 при
-     создании с признаком без полного спец-ключа), экспозиция — «парсеры
-     панели разбирают для внутреннего S3-клиента, в UI/API не отдают»;
-     env-профили `S3W_NODE_SECRETS__*` — упразднить (передача в инстансы
-     остаётся env контейнера из secrets-ключа).
+     `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (полупара — fail-fast старта;
+     создание кластера с признаком требует ПОЛНУЮ пару — 422 при
+     отсутствии/неполноте), экспозиция — «парсеры панели разбирают для
+     внутреннего S3-клиента, в UI/API не отдают»; env-профили
+     `S3W_NODE_SECRETS__*` — упразднить (передача в инстансы остаётся env
+     контейнера из secrets-ключа).
    - §7: PgWorker-читатель добавляет `secrets` (ключ `backups`, read-write).
    - §8: строка `rotations` — семантика «генерация новых root+ключей → замена
      secrets целиком (txn по mod_revision) → rolling-пересоздание по одной за
@@ -133,7 +147,8 @@ PgWorker и панель — читатели. Значения секретов
 2. `arch/24-s3worker.md`:
    - §1.1 валидация: `secret_profile`/422-перечень убрать; добавить
      `etcdBackup` (bool, опционально; гварды: единственность — 409, полнота
-     спец-ключа env — 422 только для etcd-backup кластера).
+     спец-ключа env (обе переменные непустые) — 422 только для etcd-backup
+     кластера; отсутствие пары = неполнота).
    - §4 «Секреты»: перезаписать на per-cluster в etcd (источник —
      ClusterSecretsStore; Ensure/TryRead/Rotate); передача env инстансов — из
      secrets; спец-ключ; удаление прежнего абзаца env-профилей.
@@ -142,7 +157,9 @@ PgWorker и панель — читатели. Значения секретов
      put-if-absent) рядом с PKI; 0 инстансов — secrets генерируются (etcd,
      без docker-мутаций)»; §5 G — root-креды админ-грани из secrets.
    - §8: env-строка — `S3W_NODE_SECRETS__*` убрать, добавить
-     `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (полупары — fail-fast).
+     `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (полупары — fail-fast; пара
+     целиком опциональна, обязательна к моменту создания etcd-backup
+     кластера).
    - §9: новая риск-строка R7 — DR-окно ротации спец-ключа (слепок etcd,
      снятый до ротации, несёт старое значение; восстановление даёт
      устаревший ключ до первой свежей записи; оперативное лечение — заявка
@@ -157,10 +174,11 @@ PgWorker и панель — читатели. Значения секретов
 5. `arch/adminpanel/02-etcd-contract.md` §12: 12.1 — `secrets` в модель
    (значения только внутреннему S3-клиенту панели, в API/UI не отдаются);
    12.2 мутация 1 — отказы: 422 «профиль секретов» уходит, добавляются 409
-   (единственность etcd-backup) и 422 (спец-ключ env неполон — только для
-   etcd-backup); 12.3 — валидация без `secretProfile`, с опцией etcdBackup;
-   12.4 — креды/endpoint грани «Хранилище бэкапов» из снапшота S3-домена по
-   правилу решения 6; env-креды панели упраздняются, Bucket остаётся (env).
+   (единственность etcd-backup) и 422 (спец-ключ env неполон ИЛИ отсутствует
+   — только для etcd-backup); 12.3 — валидация без `secretProfile`, с опцией
+   etcdBackup; 12.4 — креды/endpoint грани «Хранилище бэкапов» из снапшота
+   S3-домена по правилу решения 6; env-креды панели упраздняются, Bucket
+   остаётся (env).
 
 **Выход:** arch-каноны описывают новый контракт; `grep -rn "secret_profile\|S3W_NODE_SECRETS" arch/` пуст (кроме git-истории).
 
@@ -188,17 +206,19 @@ access_key, secret_key, policy}]` (ключи в порядке backups, panel).
 значений в исключениях/диагностиках.
 
 **Выход:** `ClusterSecretsStore` c `EnsureAsync` / `TryReadAsync` /
-`RotateAsync` / статическим `ValidateEtcdBackupEnvPairs`; юниты зелёные.
+`RotateAsync` / статическими `ValidateEtcdBackupEnvPairs` (полупара) и
+`IsEtcdBackupEnvPairComplete` (полнота); юниты зелёные.
 
 **Проверка:**
 ```
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t31-s3-cluster-creds
 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --filter "FullyQualifiedName~ClusterSecretsStore|FullyQualifiedName~ClusterSecretGenerator"
 ```
-Ожидание: PASS (AAA; кейсы — фокус ревью: put-if-absent проигрыш → re-read чужого, битый/неполный ключ, спец-ключ неполон, ротация: root_user сохранён/значения новые/RMW-проигрыш, диагностики без значений).
+Ожидание: PASS (AAA; кейсы — фокус ревью: put-if-absent проигрыш → re-read чужого, битый/неполный ключ, спец-ключ неполон/отсутствует, ротация: root_user сохранён/значения новые/RMW-проигрыш через OnTxnBeforeCompare, гварды env-пары, диагностики без значений).
 
-**Связь со spec:** §3.1 (ключ/формат/генерация/txn), §3.3 (ClusterSecretsStore
-по образцу PkiStore, спец-ключ), §3.4 (RMW ротации), фаза 1.
+**Связь со spec:** §3.1 (ключ/формат/генерация/txn; 422 при неполном
+спец-ключе), §3.3 (ClusterSecretsStore по образцу PkiStore, спец-ключ), §3.4
+(RMW ротации), фаза 1.
 
 Подпункты:
 
@@ -292,13 +312,19 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
     4) txn `TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, Serialize(generated), null)])` с failover по endpoints (метод-образец `PkiStore.TxnWithFailoverAsync` — скопируй приватный хелпер); txn.IsSuccess false → Failed; `Succeeded==false` (проигрыш гонки) → повторить шаг 1 один раз: прочитанное валидно → Success(прочитанное), иначе Failed с диагностикой `"lost txn put-if-absent race, material is missing/broken"`.
   - `public async Task<Result<ClusterSecrets?>> TryReadAsync(string cluster, CancellationToken ct)`: failover-чтение; ключа нет → `Success(null)`; есть → TryParse: модель → Success(модель), null → `Failed(new ApplicationException($"secrets {key}: corrupt/incomplete material"))`. Значений в сообщениях НЕТ.
   - `public async Task<Result<ClusterSecrets>> RotateAsync(string cluster, bool etcdBackup, CancellationToken ct)`: 1) failover-чтение kv; ключа нет → `Failed(new ApplicationException($"secrets {key}: not found"))`; 2) TryParse → null → Failed(битость); 3) новые значения: `RootUser` — прежний; `RootPassword`, все `access_key`/`secret_key` — `ClusterSecretGenerator.Generate()`; при `etcdBackup==true` элемент с `name=="backups"` получает `AccessKey=_getenv("S3W_ETCD_BACKUP_ACCESSKEY")`, `SecretKey=_getenv("S3W_ETCD_BACKUP_SECRETKEY")` — если любая из них null/пустая → `Failed(new ApplicationException("etcd-backup cluster: S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY env pair is incomplete"))`; порядок ключей — `backups`, затем `panel` (лишние прежние имена НЕ переносятся — замена каноническим составом); 4) txn `TxnRequest.Of([TxnCompare.ModRevisionEqual(key, (long)kv.ModRevision)], [new TxnOp.Put(key, Serialize(fresh), null)])` failover; проигрыш compare → `Failed(new ApplicationException($"secrets {key}: changed underneath us — retried next tick"))`; успех → Success(fresh).
-  - `private Result<ClusterSecrets> Generate(string cluster, bool etcdBackup)`: `rootUser = $"s3w-{cluster}-root"`; `rootPassword` и обе пары ключей — `ClusterSecretGenerator.Generate()`; `backups` policy `"read-write"`, `panel` policy `"read-only"`; при `etcdBackup==true` — пара `backups` из env `S3W_ETCD_BACKUP_ACCESSKEY`/`S3W_ETCD_BACKUP_SECRETKEY`, неполная пара → Failed с диагностикой как выше.
+  - `private Result<ClusterSecrets> Generate(string cluster, bool etcdBackup)`: `rootUser = $"s3w-{cluster}-root"`; `rootPassword` и обе пары ключей — `ClusterSecretGenerator.Generate()`; `backups` policy `"read-write"`, `panel` policy `"read-only"`; при `etcdBackup==true` — пара `backups` из env `S3W_ETCD_BACKUP_ACCESSKEY`/`S3W_ETCD_BACKUP_SECRETKEY` (любая null/пустая — пара неполна/отсутствует → Failed с диагностикой как выше).
   - `public static IReadOnlyList<string> ValidateEtcdBackupEnvPairs(Func<string?, string?>? getenv = null)` —
-    СТАТИЧЕСКИЙ (без экземпляра и транспорта: гвард нужен fail-fast старта и
-    API-хендлеру ДО создания рабочего стора; getenv по умолчанию —
-    `Environment.GetEnvironmentVariable`): вернуть `["S3W_ETCD_BACKUP"]`,
-    если задана ровно одна из пары (null/пустая считается незаданной); иначе
-    пустой список.
+    СТАТИЧЕСКИЙ; роль — fail-fast СТАРТА (полупара = мусорный деплой;
+    полное отсутствие пары — легально, спец-ключ per-install опционален):
+    getenv по умолчанию `Environment.GetEnvironmentVariable`; вернуть
+    `["S3W_ETCD_BACKUP"]`, если задана ровно одна из пары (null/пустая
+    считается незаданной); обе заданы или обе не заданы → пустой список.
+  - `public static bool IsEtcdBackupEnvPairComplete(Func<string?, string?>? getenv = null)` —
+    СТАТИЧЕСКИЙ; роль — гвард API СОЗДАНИЯ etcd-backup кластера: true ⟺ ОБЕ
+    переменные `S3W_ETCD_BACKUP_ACCESSKEY` и `S3W_ETCD_BACKUP_SECRETKEY`
+    непустые (getenv по умолчанию — `Environment.GetEnvironmentVariable`).
+    Отсутствие пары = неполная (false) — создание без пары обязано
+    отказывать 422, а не уводить provisioning P2 в permanent-fail.
   - Диагностические строки — только имена переменных/ключей, никогда значения.
 - **2.4. В файл `src/S3Worker.Provisioning/Processes/S3ProcessCommon.cs`**
   после метода `NodePkiKey` добавь метод:
@@ -321,12 +347,14 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
   4) `EnsureAsync` при предзаписанном валидном ключе → возвращает предзаписанные значения (не перегенерирует).
   5) `EnsureAsync(etcdBackup: true)` без env-пары (конструктор с getenv-лямбдой, возвращающей null) → Failed, сообщение содержит "S3W_ETCD_BACKUP" и НЕ содержит значений; с полной парой (getenv-словарь) → ключ `backups` равен env-значениям, `panel`/root сгенерированы.
   6) `TryReadAsync`: ключа нет → Success(null); битый → Failed; валидный → Success(модель).
-  7) `RotateAsync`: по записанному ключу → Success; RootUser прежний, RootPassword и значения ключей НОВЫЕ (не равны старым); в etcd новое значение; txn-подмена между чтением и записью не эмулируется — вместо неё проверь, что ModRevision-сравнение используется (FakeEtcd обновляет ModRevision при Put — вторая RotateAsync после внешней перезаписи значения в FakeEtcd отрабатывает по свежему kv).
-  8) `RotateAsync` с `etcdBackup: true` и env-парой: `backups` == env-пара (пере-подстановка), остальные значения новые.
-  9) `ClusterSecretsStore.ValidateEtcdBackupEnvPairs(getenv)` (СТАТИЧЕСКИЙ
+  7) `RotateAsync` — ТРИ факта: (а) по записанному ключу → Success; RootUser прежний, RootPassword и значения ключей НОВЫЕ (не равны старым); в etcd новое значение; (б) проигрыш RMW через хук `FakeEtcd.OnTxnBeforeCompare` (свойство фейка — `Action<TxnRequest>?`, вызывается ДО compare: «тест успевает переписать ключ и сломать ModRevisionEqual»): в колбэке перезапиши в том же FakeEtcd secrets-ключ (Put нового значения) → `RotateAsync` → Failed, сообщение содержит `"changed underneath us"`; (в) `RotateAsync` с `etcdBackup: true` и env-парой: `backups` == env-пара (пере-подстановка), остальные значения новые.
+  8) `ClusterSecretsStore.ValidateEtcdBackupEnvPairs(getenv)` (СТАТИЧЕСКИЙ
      вызов; getenv — лямбда `name => dict.GetValueOrDefault(name)`, dict —
      `Dictionary<string?, string?>`): обе переменные отсутствуют → пустой
      список; обе заданы → пустой; задана одна → `["S3W_ETCD_BACKUP"]`.
+  9) `ClusterSecretsStore.IsEtcdBackupEnvPairComplete(getenv)` (СТАТИЧЕСКИЙ,
+     тот же getenv-паттерн): обе отсутствуют → false; задана только одна →
+     false; обе непустые → true.
 
 ---
 
@@ -342,16 +370,28 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
 — известный лист парсера (значение в снапшот тика не разбирается — читает
 ClusterSecretsStore отдельным GET; прецедент `pki`).
 
+Потребители старой сигнатуры `SerializeCanonicalConfig` (полный перечень по
+факту — три вызова): `S3ProcessCommon.ConvergeTopologyAsync` (один вызов,
+строка ~219 — правится 3.3), `CreateClusterHandler.cs:55` (правится Шагом
+4.2), `ClusterHandlers.cs:63` (хендлер перевода config — правится 3.5);
+мёртвое чтение `"secret_profile"` в `ClusterHandlers.ParseAndUpdate`
+(строки ~53–54) заменяется чтением `etcd_backup` там же.
+
 **Выход:** `S3ClusterConfig` без `SecretProfile`, с `EtcdBackup`;
 `S3SnapshotParser` понимает `etcd_backup` и молча пропускает `secrets`;
-`ConvergeTopologyAsync`/`CanonicalConfig` на новой сигнатуре; юниты зелёные.
+`ConvergeTopologyAsync`/`ClusterHandlers`/`CanonicalConfig` на новой
+сигнатуре; юниты зелёные.
 
 **Проверка:**
 ```
 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --filter "FullyQualifiedName~S3SnapshotParser|FullyQualifiedName~S3ProcessCommon"
 DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug
 ```
-Ожидание: PASS + сборка без ошибок (потребители сигнатуры чинятся в этом шаге по списку компилятора — ProvisioningProcess/MeshGovernance/AddNode/RemoveNode/Docker-драйверы: `snap.Config!.SecretProfile` заменяется на `snap.Config!.EtcdBackup ?? false` в местах, где значение реально используется; до Шага 5 это только компилируемость).
+Ожидание: PASS + сборка без ошибок (потребители сигнатуры чинятся в этом шаге
+по списку компилятора — ProvisioningProcess/MeshGovernance/AddNode/RemoveNode/
+Docker-драйверы: `snap.Config!.SecretProfile` заменяется на
+`snap.Config!.EtcdBackup ?? false` в местах, где значение реально
+используется; до Шага 5 это только компилируемость).
 
 **Связь со spec:** §3.2 (признак), §3.3 (snapshot-парсер: etcd_backup — в
 модель, secret_profile — игнор).
@@ -391,7 +431,8 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug
   ```
   Строку `writer.WriteString("secret_profile", secretProfile)` удали. В
   методе `ConvergeTopologyAsync` замени параметр `string? secretProfile` на
-  `bool etcdBackup` и передавай его в `SerializeCanonicalConfig` (два вызова).
+  `bool etcdBackup` и передай его в единственный вызов
+  `SerializeCanonicalConfig` (строка ~219).
 - **3.4. В файле
   `src/S3Worker.Provisioning/Processes/ProvisioningProcess.cs`** замени
   приватную запись `CanonicalConfig` (в конце файла) на
@@ -407,7 +448,25 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug
   ?? false ? true : null, snap.Config.CreatedUnix)` (null-поле не пишется —
   `CanonicalJson` уже `WhenWritingNull`). Тело ветки P1 с валидацией профиля
   (`if (!secrets.TryGet(...)`) пока НЕ трогай — Шаг 5.
-- **3.5. Обнови юниты** `src/tests/S3Worker.UnitTests/Etcd/S3SnapshotParserTests.cs`
+- **3.5. В файле `src/S3Worker.App/Api/Operations/ClusterHandlers.cs`**
+  (хендлер перевода config: `ParseAndUpdate`, строки ~39–64) замени разбор
+  и передачу: переменную `string? secretProfile = null;` (строка ~43) — на
+  `bool etcdBackup = false;`; блок чтения
+  ```csharp
+  if (root.TryGetProperty("secret_profile", out var s))
+      secretProfile = s.GetString();
+  ```
+  (строки ~53–54) — на
+  ```csharp
+  if (root.TryGetProperty("etcd_backup", out var e) && e.ValueKind == JsonValueKind.True)
+      etcdBackup = true;
+  ```
+  вызов в конце метода (строка ~63) — на
+  `S3ProcessCommon.SerializeCanonicalConfig(platform!, nodes, etcdBackup,
+  created, state)`. Комментарий метода (строка ~38) обнови: «config →
+  канонический JSON arch/23 §2.1 с "state"=state; `etcd_backup` — признак
+  бэкапного кластера etcd».
+- **3.6. Обнови юниты** `src/tests/S3Worker.UnitTests/Etcd/S3SnapshotParserTests.cs`
   и `src/tests/S3Worker.UnitTests/Provisioning/S3ProcessCommonTests.cs`
   (существующие): все вхождения `"secret_profile":"backups-main"` в тестовых
   JSON config удали; добавь по одному AAA-факту: config с
@@ -430,13 +489,14 @@ range по префиксу; txn закрывает только коллизи�
 между проверкой единственности и txn остаётся — spec §3.2 гонку принимает:
 мутации установки идут через одну панель/оператора; рассинхрон признака
 виден пост-фактум в config'ах) → 409; полнота спец-ключа env для etcd-backup
-→ 422 (статический гвард, без экземпляра store). Исключение 422-профиля
-`S3SecretProfileUnavailableException` удаляется вместе с маппингами в
-`ApiModule.cs` (2 места). Интеграционные тесты ClusterMutationsApiTests —
-в Шаге 12.
+(`IsEtcdBackupEnvPairComplete`: обе переменные непустые; отсутствие пары =
+неполная) → 422 (статические гварды, без экземпляра store). Исключение
+422-профиля `S3SecretProfileUnavailableException` удаляется вместе с
+маппингами в `ApiModule.cs` (2 места). Интеграционные тесты
+ClusterMutationsApiTests — в Шаге 12.
 
-**Выход:** создание кластера без профиля; 409/422-семантика по §3.2/§3.3;
-сборка зелёная.
+**Выход:** создание кластера без профиля; 409/422-семантика по §3.2/§3.3
+(422 — в т.ч. при полном отсутствии пары `S3W_ETCD_BACKUP_*`); сборка зелёная.
 
 **Проверка:**
 ```
@@ -445,7 +505,8 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
 ```
 Ожидание: сборка PASS; валидатор без secretProfile-кейса, с etcdBackup-кейсами.
 
-**Связь со spec:** §3.2 (API создания: etcdBackup, 409/422), §3.3 (CreateClusterHandler: secretProfile уходит).
+**Связь со spec:** §3.1 (422 при неполном спец-ключе), §3.2 (API создания:
+etcdBackup, 409/422), §3.3 (CreateClusterHandler: secretProfile уходит).
 
 Подпункты:
 
@@ -460,27 +521,29 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
   public sealed class S3EtcdBackupConflictException(string existing)
       : Exception($"etcd_backup cluster already exists: {existing} (at most one per installation)");
 
-  // Спец-ключ бэкапа etcd неполон в env воркера — 422 (только для etcd-backup).
+  // Спец-ключ бэкапа etcd неполон или отсутствует в env воркера — 422
+  // (только для etcd-backup; полнота проверяется в момент создания — без
+  // пары provisioning ушёл бы в permanent-fail).
   public sealed class S3EtcdBackupKeyIncompleteException()
       : Exception("etcdBackup cluster requires a complete S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY env pair of the worker");
   ```
 - **4.2. В файле `src/S3Worker.App/Api/Operations/CreateClusterHandler.cs`**:
-  1) УДАЛИ параметр `SecretProfileStore secrets` из конструктора (гвард
-     полноты спец-ключа — СТАТИЧЕСКИЙ метод
-     `ClusterSecretsStore.ValidateEtcdBackupEnvPairs()`, экземпляр стора
-     хендлеру не нужен; DI-регистрацию поправит Шаг 5);
+  1) УДАЛИ параметр `SecretProfileStore secrets` из конструктора (гварды —
+     СТАТИЧЕСКИЕ методы `ClusterSecretsStore` (полнота пары) и чтение
+     существующих config'ов через `S3ApiHelpers`, экземпляр стора хендлеру
+     не нужен; DI-регистрацию поправит Шаг 5);
   2) удали блок «2) Профиль секретов…» (`if (!secrets.ProfileNames.Contains(
      profile…S3SecretProfileUnavailableException)`), вместо него после
      валидации вставь:
   ```csharp
-  // 2) Гварды etcdBackup (arch/24 §1.1): спец-ключ env полон (422) и
-  //    единственность etcd-backup кластера установки (409). Единственность —
-  //    чтение существующих config'ов перед клэйм-txn: txn закрывает только
-  //    коллизию имени кластера; TOCTOU между чтением и txn принимается
-  //    (мутации установки — одна панель/оператор, рассинхрон признака виден
-  //    пост-фактум в config'ах).
+  // 2) Гварды etcdBackup (arch/24 §1.1): полнота спец-ключа env (422 при
+  //    отсутствии ИЛИ неполноте пары) и единственность etcd-backup кластера
+  //    установки (409). Единственность — чтение существующих config'ов
+  //    перед клэйм-txn: txn закрывает только коллизию имени кластера;
+  //    TOCTOU между чтением и txn принимается (мутации установки — одна
+  //    панель/оператор, рассинхрон признака виден пост-фактум в config'ах).
   var etcdBackup = request.EtcdBackup ?? false;
-  if (etcdBackup && ClusterSecretsStore.ValidateEtcdBackupEnvPairs().Count > 0)
+  if (etcdBackup && !ClusterSecretsStore.IsEtcdBackupEnvPairComplete())
       return Result<S3ClusterCreatedDto>.Failed(new S3EtcdBackupKeyIncompleteException());
   if (etcdBackup)
   {
@@ -549,14 +612,16 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/S3Worker.UnitTests -c Debug --fi
 `ClusterSecretsStore` во всех процессах и DI; ProvisioningProcess: P1-блок
 валидации профиля удаляется, в RunAsync после `PlanAsync` и до
 `EnsureNodesAsync` — `EnsureSecrets` (в том числе для 0-инстансовых
-кластеров; отказ → Fail "ensure-secrets"); EnsureNodes/EnsureBuckets берут
-`OwnS3NodeSecrets` из secrets (`ToNodeSecrets()`); надзор/G/F/AddNode —
-`TryReadAsync` (отсутствие/битость → journal-отказ с диагностикой без
-значений, ретраи тиком); ротатор — `TryReadAsync` + `RotateAsync` (генерация
-и RMW в store; спец-ключ пере-подставляется store'ом из env). Program.cs:
-регистрация `ClusterSecretsStore` (gateway+endpoints+getenv) вместо
-`SecretProfileStore` во всех точках процессов; fail-fast полупар
-`S3W_ETCD_BACKUP_*` — СТАТИЧЕСКИЙ гвард (без probe-экземпляра; конструктор
+кластеров; отказ, включая неполноту спец-ключа env у etcd-backup кластера
+(гвард API должен был отсечь её раньше), → Fail "ensure-secrets");
+EnsureNodes/EnsureBuckets берут `OwnS3NodeSecrets` из secrets
+(`ToNodeSecrets()`); надзор/G/F/AddNode — `TryReadAsync`
+(отсутствие/битость → journal-отказ с диагностикой без значений, ретраи
+тиком); ротатор — `TryReadAsync` + `RotateAsync` (генерация и RMW в store;
+спец-ключ пере-подставляется store'ом из env). Program.cs: регистрация
+`ClusterSecretsStore` (gateway+endpoints+getenv) вместо `SecretProfileStore`
+во всех точках процессов; fail-fast полупар `S3W_ETCD_BACKUP_*` —
+СТАТИЧЕСКИЙ `ValidateEtcdBackupEnvPairs` (без probe-экземпляра; конструктор
 стора требует транспорт — решение 1). Модель диагностики: прежние фазы
 `invalid-secret-profile` переименовываются в `invalid-secrets` (ротатор) /
 Fail-фазу `"ensure-secrets"` (provisioning) — проверить OnJournalPhase-обработки
@@ -678,7 +743,8 @@ AddNode/RemoveNode, админ-грани из secrets), §3.4 (конкурен
      // ClusterSecretsStore. Fail-fast полупары спец-ключа бэкапа etcd
      // (arch/24 §8) — СТАТИЧЕСКИЙ гвард (транспорт стору не нужен; задана
      // одна из S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} — воркер с обрезанным
-     // env не стартует).
+     // env не стартует; полное отсутствие пары — легально, спец-ключ
+     // обязателен только к моменту создания etcd-backup кластера).
      foreach (var broken in S3Worker.Provisioning.ClusterSecretsStore.ValidateEtcdBackupEnvPairs())
          throw new ApplicationException(
              $"{broken}: incomplete etcd-backup key pair (S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY must be set together)");
@@ -710,21 +776,27 @@ AddNode/RemoveNode, админ-грани из secrets), §3.4 (конкурен
   `invalid-secret-profile` переименуй в `invalid-secrets`; добавь по одному
   AAA-факту на кластер БЕЗ ключа secrets → фаза `invalid-secrets`/Failed
   (для ProvisioningProcessTests — два факта: успех Ensure на пустом etcd и
-  `ensure-secrets` при битом предзаписанном ключе).
+  `ensure-secrets` при битом предзаписанном ключе). В `SecretRotatorTests`
+  добавь AAA-факт проигрыша RMW: хук `FakeEtcd.OnTxnBeforeCompare` в
+  колбэке перезаписывает secrets-ключ кластера → `TickAsync` → journal-фаза
+  `waiting-secrets`, заявка ротации (`/s3worker/rotations/<C>`) НЕ погашена
+  (ключ жив в FakeEtcd) — следующий тик повторит.
 
 ---
 
 ## Шаг 6. S3Worker: удаление SecretProfileStore и env-биндингов
 
 **Вход:** Шаг 5 принят; `SecretProfileStore` больше никем не используется
-(`grep -rn "SecretProfileStore" src/ | grep -v tests` пуст).
+(`grep -rn "SecretProfileStore" src/ | grep -v tests` пуст, кроме
+комментария-шапки `Processes/Seed.cs` — правится подпунктом 6.1).
 
 **Действие (сильная модель):** удалить `SecretProfileStore.cs`,
-`SecretProfileStoreTests.cs`; вычистить остаточные упоминания в тестах
-(в основном уже вычищены Шагом 5); в deploy-файлах этого шага НЕТ
-compose-правки (Шаг 11) — только код.
+`SecretProfileStoreTests.cs`; обновить комментарий-шапку
+`Processes/Seed.cs` (упоминает SecretProfileStore); вычистить остаточные
+упоминания в тестах (в основном уже вычищены Шагом 5); в deploy-файлах
+этого шага НЕТ compose-правки (Шаг 11) — только код.
 
-**Выход:** `S3W_NODE_SECRETS` отсутствует в `src/`.
+**Выход:** `S3W_NODE_SECRETS`/`SecretProfileStore` отсутствуют в `src/`.
 
 **Проверка:**
 ```
@@ -737,9 +809,17 @@ grep -rn "SecretProfileStore\|S3W_NODE_SECRETS" src/ | wc -l   # → 0
 
 Подпункты:
 
-- **6.1. Удали файл `src/S3Worker.Provisioning/SecretProfileStore.cs`.**
-- **6.2. Удали файл `src/tests/S3Worker.UnitTests/Provisioning/SecretProfileStoreTests.cs`.**
-- **6.3. Скомпилируй решение и добейся нуля ошибок:**
+- **6.1. В файле `src/S3Worker.Provisioning/Processes/Seed.cs`** (файл —
+  только комментарий-шапка) замени третью строку
+  `// состояний над клэймами/journal/portalloc (arch/17), placement/portalloc,
+  // SecretProfileStore. Файл-сеялина: …`
+  на
+  `// состояний над клэймами/journal/portalloc (arch/17), placement/portalloc,
+  // ClusterSecretsStore (креды per-cluster в etcd). Файл-сеялина: …`
+  (остальные строки шапки без изменений).
+- **6.2. Удали файл `src/S3Worker.Provisioning/SecretProfileStore.cs`.**
+- **6.3. Удали файл `src/tests/S3Worker.UnitTests/Provisioning/SecretProfileStoreTests.cs`.**
+- **6.4. Скомпилируй решение и добейся нуля ошибок:**
   `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Debug`
   (ожидание: Build succeeded; 0 Error(s)). Все ссылки на удалённый тип
   (если остались в тестах) устраните точечно по списку компилятора: в
@@ -1234,9 +1314,11 @@ grep -rn "secretProfile" frontend/src | wc -l   # → 0
 - `dev-stand/adminpanel/checks/75-s3worker.sh`: из всех трёх тел создания
   кластера (строки 43, 67, 70) убрать `"secretProfile":"…",`; кейс
   «unknown profile → 422» (строки 69–71) заменить на 422-кейс t31 — создание
-  с `"etcdBackup":true` без env спец-ключа у стендового воркера (по
-  умолчанию .env пары не несёт — блок в .env.example закомментирован) →
-  422; сообщение строки 76 обновить («etcdBackup without env key → 422»).
+  с `"etcdBackup":true` при ОТСУТСТВУЮЩЕЙ env-паре у стендового воркера (на
+  стенде обе переменные пустые: блок в .env.example закомментирован,
+  compose передаёт `${…:-}` пустым дефолтом) → 422 (гвард полноты пары:
+  отсутствие = неполная); сообщение строки 76 обновить («etcdBackup without
+  env key → 422»).
 - `dev-stand/adminpanel/checks/80-s3-panel.sh`: тело создания без
   `secretProfile` (добавить `"etcdBackup":false` не нужно — поле
   опционально); инспекция деталей: вместо `secretProfile == "BACKUPS-MAIN"`
@@ -1310,10 +1392,11 @@ bash dev-stand/adminpanel/checks/80-s3-panel.sh && bash dev-stand/adminpanel/che
      (строка 70) — тела остаются без поля профиля;
   2) кейс 422 (строки 69–71) замени: тело
      `{"name":"${TAG}x","platform":"owns3","etcdBackup":true,"instances":[…]}` —
-     создание etcd-backup кластера без env спец-ключа у стендового воркера
-     (по умолчанию .env пары не несёт — блок в .env.example закомментирован)
-     → ожидание 422 остаётся: `[ "$c" = 422 ] || { echo "❌ etcdBackup
-     without env key → $c, expected 422"; exit 1; }`;
+     создание etcd-backup кластера при ОТСУТСТВУЮЩЕЙ env-паре у стендового
+     воркера (обе переменные пустые: блок в .env.example закомментирован,
+     compose передаёт `${…:-}` пустым дефолтом) → ожидание 422 остаётся
+     (гвард полноты пары: отсутствие = неполная): `[ "$c" = 422 ] || {
+     echo "❌ etcdBackup without env key → $c, expected 422"; exit 1; }`;
   3) строку 76 приведи к новому составу:
      `echo "  validations: name → 400, etcdBackup without env key → 422; /metrics contains s3worker_"`;
   4) комментарий секции 3 (строка 65) обнови: «невалидный name → 400;
@@ -1328,11 +1411,11 @@ bash dev-stand/adminpanel/checks/80-s3-panel.sh && bash dev-stand/adminpanel/che
 **Действие (сильная модель — аудит покрытий и граничные кейсы; механические
 замены — подпункты):** привести зелёными ВСЕ существующие серии:
 - S3Worker.IntegrationTests: `ClusterMutationsApiTests` (создание без
-  профиля; etcdBackup: 422 без env / 409 второй / успешное создание с
-  env-парой; ответ DTO без secretProfile), `SyncProbeApiTests`,
-  `S3ClusterFixture` и `SyncProbeEtcdTests` (env-словари профилей →
-  удалить), `S3ApiFactory/TestSecrets` (ModuleInitializer-профили → спец-
-  ключ), юниты App (`TestSupport`, Program-валидации при наличии).
+  профиля; etcdBackup: 422 при отсутствии/неполноте env-пары / 409 второй /
+  успешное создание с полной парой; ответ DTO без secretProfile),
+  `SyncProbeApiTests`, `S3ClusterFixture` и `SyncProbeEtcdTests` (env-словари
+  профилей → удалить), `S3ApiFactory/TestSecrets` (ModuleInitializer-профили
+  → спец-ключ), юниты App (`TestSupport`, Program-валидации при наличии).
 - S3Worker E2E-окружение (`S3E2eEnvironment` и др.): env `S3W_NODE_SECRETS__*`
   воркеров E2E убрать; фикстуры кластеров — без secret_profile.
 - PgWorker.IntegrationTests: `FakeBackupDeps` (профили → secrets в etcd),
@@ -1364,12 +1447,13 @@ grep -rn "secret_profile\|SecretProfile\|S3W_NODE_SECRETS\|PGW_BACKUP_S3_PROFILE
   во всех телах создания кластера удали свойство `"secretProfile":
   "…"`; добавь AAA-факты (механика env процесса — см. ниже):
   (1) создание с телом `{"name":"c-etcd-noenv","platform":"owns3","etcdBackup":true,"instances":[…]}`
-  при СНЯТОЙ env-паре → 422 (тело проблемы упоминает S3W_ETCD_BACKUP);
-  (2) при ЗАДАННОЙ env-паре → 201, ответ `etcdBackup:true`;
+  при СНЯТОЙ env-паре (обе переменные null — гвард полноты: отсутствие =
+  неполная) → 422 (тело проблемы упоминает S3W_ETCD_BACKUP);
+  (2) при ПОЛНОЙ env-паре (обе непустые) → 201, ответ `etcdBackup:true`;
   (3) повторное создание второго etcd-backup кластера при живом первом → 409.
   Утверждения DTO-ответа: поле `secretProfile` отсутствует.
   Механика env (точная): гвард читает переменные ЖИВО на каждом запросе
-  (`ClusterSecretsStore.ValidateEtcdBackupEnvPairs()` →
+  (`ClusterSecretsStore.IsEtcdBackupEnvPairComplete()` →
   `Environment.GetEnvironmentVariable`), поэтому тест управляет ими вокруг
   HTTP-вызова: в `// Arrange` кейса (1) —
   `Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_ACCESSKEY", null);`
@@ -1423,9 +1507,9 @@ grep -rn "secret_profile\|SecretProfile\|S3W_NODE_SECRETS\|PGW_BACKUP_S3_PROFILE
    - ротация (`S3E2eRotationTests`): заявка → новые root+ключи в etcd →
      rolling по одной за тик → заявка погашена; PgWorker-агенты (если в
      контуре) пересоздаются со свежими env;
-   - etcd-backup кластер: спец-ключ из env воркера → `name=backups` равен
-     env-паре; root/panel сгенерированы; признак в config; 422 без env; 409
-     второй.
+   - etcd-backup кластер: спец-ключ из env воркера (полная пара) →
+     `name=backups` равен env-паре; root/panel сгенерированы; признак в
+     config; создание без пары/с полупарой → 422; второй etcd-backup → 409.
    - изоляция по `docs/e2e-isolation.md`: guid, own-only чистка, ассерт
      чистоты, динамические порты, BrokerBootSec ≤ 100 с, `[PHASE]`-метки
      фаз > 60 с, телеметрия по `docs/e2e-launch.md` (артефакты
@@ -1465,8 +1549,9 @@ grep -c 'pgw-\|s3w-'` → 0 после зачистки; ассерты чист
 ## Чек-лист самопроверки перед завершением задачи
 
 - [ ] `grep -rn "S3W_NODE_SECRETS\|PGW_BACKUP_S3_PROFILES\|secret_profile" src/ deploy/ dev-stand/ docs/runbook.md` → пусто (критерий 10: объём AC10 — src/, deploy/, dev-stand/; docs — только правимый runbook; история задач `docs/superpowers/` не входит и не трогается).
-- [ ] `grep -rn "SecretProfileStore\|BackupSecretProfileStore\|S3SecretProfileUnavailableException" src/` → пусто.
+- [ ] `grep -rn "SecretProfileStore\|BackupSecretProfileStore\|S3SecretProfileUnavailableException" src/` → пусто (включая комментарий-шапку `Processes/Seed.cs` — Шаг 6.1).
 - [ ] Полный Debug-прогон `src/PgWorker.slnx` зелёный; Release-E2E мерж-гейт зелёный.
+- [ ] Гварды спец-ключа: полупара — fail-fast старта (`ValidateEtcdBackupEnvPairs`); отсутствие/неполнота при создании etcd-backup кластера — 422 (`IsEtcdBackupEnvPairComplete`), юниты 2.5 пп. 8–9 зелёные.
 - [ ] Значения секретов отсутствуют в журналах/логах/API/UI/stdout чеков (E2E-ассерты Шага 13, чеки 75/80/45).
 - [ ] Roadmap: записи t31/t32 остаются до мержа (удаляются мерж-коммитом — вне плана).
 - [ ] Коммиты атомарны по шагам; история читаема.
