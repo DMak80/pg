@@ -12,7 +12,7 @@ namespace S3Worker.IntegrationTests.E2e;
 // 409 — create-повтор на живом имени и delete последней ноды N=1
 // (гварды nodes<9 при add-node закрыты юнитами и интеграционными —
 // подъём N=9 в E2E неоправданно долог); rotation-повтор → 200;
-// 422 — несуществующий secretProfile с перечнем имён в detail, значения
+// 422 — etcdBackup без env-пары спец-ключа (гвард полноты), значения
 // секретов в теле ответа отсутствуют. Гейт: PGW_TEST_DOCKER=1.
 public class S3E2eApiTests
 {
@@ -79,25 +79,23 @@ public class S3E2eApiTests
                 $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
             second.StatusCode.Should().Be(HttpStatusCode.OK, "repeat with a live request — no-op");
 
-            // Assert 5: 422 — несуществующий secretProfile: перечень имён в
-            // detail, ЗНАЧЕНИЯ секретов в теле ответа отсутствуют.
-            using var noProfile = await api.PostAsJsonAsync("/api/s3/clusters",
+            // Assert 5: 422 — etcdBackup без env-пары спец-ключа у воркера E2E
+            // (env пары не несёт — отсутствие = неполная, гвард полноты):
+            // упоминание S3W_ETCD_BACKUP в detail, значений секретов в теле нет.
+            using var noEnvPair = await api.PostAsJsonAsync("/api/s3/clusters",
                 new
                 {
                     name = $"{cluster}x",
                     platform = "owns3",
-                    nodes = 1,
-                    secretProfile = "no-such-profile",
-                    placements = new object[] { new { dockerHost = "local" } },
+                    etcdBackup = true,
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct);
-            noProfile.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
-            var body = await noProfile.Content.ReadAsStringAsync(ct);
-            body.Should().Contain("BACKUPS-MAIN", "detail carries the list of available profiles");
-            body.Should().NotContain(S3E2eEnvironment.RootPassword,
-                "secret values do not leak into the response");
-            body.Should().NotContain(S3E2eEnvironment.WriterSecretKey,
-                "secret values do not leak into the response");
+            noEnvPair.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+            var body = await noEnvPair.Content.ReadAsStringAsync(ct);
+            body.Should().Contain("S3W_ETCD_BACKUP",
+                "detail names the env pair the worker expects");
+            body.Should().NotContain("root_password", "secret values do not leak into the response");
 
             // Финал: заявка ротации жива — кластер сносится delete'ом
             // (ротация-заявка умирает вместе с координацией X2/X3).
@@ -126,7 +124,6 @@ public class S3E2eApiTests
             {
                 name = name ?? $"val{Guid.NewGuid().ToString("N")[..8]}",
                 platform = platform ?? "owns3",
-                secretProfile = S3E2eEnvironment.ProfileName,
                 instances = instances ?? new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
                 resources = new { cpu = cpu ?? 0.5m, memGi = 1, diskGi = 5 },
             }, ct);

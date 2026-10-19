@@ -2,9 +2,9 @@ namespace S3Worker.App;
 
 // Конфигурация S3Worker (arch/24 §8): секция "S3Worker" в appsettings.json +
 // env-оверрайды (S3Worker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
-// TLS HTTP API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*) и профили
-// секретов нод (S3W_NODE_SECRETS__*, arch/23 §6); per-cluster значимое
-// состояние — в etcd.
+// TLS HTTP API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*) и спец-ключ
+// бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6); per-cluster
+// значимое состояние и клиентские креды — в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
 public sealed class S3WorkerOptions

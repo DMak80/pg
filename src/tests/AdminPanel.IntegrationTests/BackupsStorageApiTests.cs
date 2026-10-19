@@ -33,7 +33,8 @@ internal static class BackupsLogin
     }
 }
 
-// AC1 (t08 spec §7.1): без AdminPanel:Backups:S3:Endpoint панель стартует,
+// AC1 (t08 spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
+// с endpoints и secrets) панель стартует,
 // GET /api/backups/storage → 200 {configured:false}, инвентарь-тик — no-op
 // (стоп пуст), алерт backup-s3-unreachable не горит.
 [Collection("backups")]
@@ -106,10 +107,16 @@ public class BackupsStorageInventoryApiTests(
     public async Task Storage_Summary_Tree_Health_And_Quota()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
-        // Arrange: бэкап-ключи в etcd + сеяные объекты в своей ownS3-ноде; тики
-        // двигает тест: инвентарь (loop) → снапшот с S3Storage (refresher).
+        // Arrange: бэкап-ключи + S3-пул в etcd (цели грани — per-cluster secrets
+        // + endpoints пула) + сеяные объекты в своей ownS3-ноде; тики двигает
+        // тест: снапшот с пулом (цели резолвит луп) → инвентарь (loop) →
+        // снапшот с инвентарём (S3Storage вносит refresher из стора).
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
+        await EtcdSeed.SeedS3PoolAsync(
+            etcd.Endpoint, s3.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey,
+            TestContext.Current.CancellationToken);
         await s3.SeedObjectsAsync(
         [
             ("demo/s1/full/b1/base.tar", new string('a', 100)),
@@ -121,6 +128,11 @@ public class BackupsStorageInventoryApiTests(
         ], TestContext.Current.CancellationToken);
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
+        // S3-домен — отдельный стор: его тик S3SnapshotRefresher (цели резолвит
+        // луп), pg-снапшот — после инвентаря (S3Storage вносит refresher).
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
@@ -231,14 +243,22 @@ public class BackupsStorageDownApiTests(
     public async Task Storage_StorageDown_ApiDown_Alert_AfterTwoTicks()
     {
         _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
-        // Arrange: как AC2 — успешный первый тик (инвентарь + снапшот).
+        // Arrange: как AC2 (пул в etcd, снапшот → инвентарь → снапшот) — успешный
+        // первый тик.
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);
+        await EtcdSeed.SeedS3PoolAsync(
+            etcd.Endpoint, s3.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey,
+            TestContext.Current.CancellationToken);
         await s3.SeedObjectsAsync(
             [("demo/s1/full/b1/base.tar", new string('a', 100))],
             TestContext.Current.CancellationToken);
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
@@ -315,12 +335,10 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
         // Act
         var options = _factory.Services.GetRequiredService<IOptions<BackupsS3Options>>().Value;
 
-        // Assert: все листья доехали до [Config]-POCO, грань помечена настроенной.
-        options.IsConfigured.Should().BeTrue();
-        options.S3.Endpoint.Should().Be("http://localhost:59998");
+        // Assert: конфиг-листья доехали до [Config]-POCO. Креды/endpoint в
+        // конфиге больше нет — грань резолвит их из снапшота S3-домена
+        // (per-cluster secrets, arch/adminpanel/02 §12.4).
         options.S3.Bucket.Should().Be("apm-bind-bucket");
-        options.S3.AccessKey.Should().Be(S3NodeContainerFixture.AccessKey);
-        options.S3.SecretKey.Should().Be(S3NodeContainerFixture.SecretKey);
         options.S3.PathStyle.Should().BeTrue();
         options.IntervalSec.Should().Be(60);
         options.TimeoutSec.Should().Be(5);
@@ -350,7 +368,8 @@ public class BackupsStorageOrphanProtectApiTests(
     {
         _factory.EnsureBuilt();
         // Arrange: реестр сирот (g/s1 с валидным полным + заявка; g/s2 под hold)
-        // + hold/заявка per-префиксными ключами канона; тики инвентаря/снапшота.
+        // + hold/заявка per-префиксными ключами канона + S3-пул (цели грани);
+        // тики: снапшот с пулом → инвентарь → снапшот с инвентарём.
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphans",
             $$"""{"orphans":[{"prefix":"g/s1","kind":"cluster","size_bytes":10,"first_seen_unix":{{now - 100}},"state":"OBSERVED","has_valid_full":true},{"prefix":"g/s2","kind":"cluster","size_bytes":20,"first_seen_unix":{{now - 100}},"state":"OBSERVED"}],"updated_unix":{{now}}}""",
@@ -359,8 +378,15 @@ public class BackupsStorageOrphanProtectApiTests(
             """{"set_unix":1757760000,"set_by":"panel"}""", TestContext.Current.CancellationToken);
         await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphan-deletes/g/s1",
             """{"requested_unix":1757760000,"requested_by":"operator"}""", TestContext.Current.CancellationToken);
+        await EtcdSeed.SeedS3PoolAsync(
+            etcd.Endpoint, s3.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey,
+            TestContext.Current.CancellationToken);
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();

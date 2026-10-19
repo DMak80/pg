@@ -5,7 +5,8 @@ namespace S3Worker.Provisioning;
 
 /// <summary>
 /// Единая точка сборки env инстанса ownS3 (arch/24 §4, spec §3.6): клиентская
-/// грань профиля (OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*) + репликационный материал
+/// грань кластера — per-cluster secrets (OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*)
+/// + репликационный материал
 /// PKI (значения, не пути — прецедент owns3/07 §11). Чистый класс без etcd —
 /// потребители (P2/D/надзор/ротатор) приносят готовый материал из PkiStore.
 /// Состав mesh env'ом НЕ передаётся (env-seed ownS3 — legacy-only, owns3/07 §2).

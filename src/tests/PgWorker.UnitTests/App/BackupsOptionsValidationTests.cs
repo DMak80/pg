@@ -2,13 +2,14 @@ using PgWorker.App;
 
 namespace PgWorker.UnitTests.App;
 
-// Валидация старта S3-конфигурации бэкапов (t36, arch/19 §7/§9):
-// Enabled=true → непустой Bucket (env PGW_BACKUP_S3_BUCKET) + хотя бы один
-// env-профиль кредов (PGW_BACKUP_S3_PROFILES__*); слепки — собственная полная
-// пара PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*).
+// Валидация старта S3-конфигурации бэкапов (arch/19 §7/§9):
+// Enabled=true → непустой Bucket (env PGW_BACKUP_S3_BUCKET); креды пулов —
+// per-cluster в etcd (/s3/clusters/<C>/secrets), на старте НЕ проверяются
+// (появляются/исчезают динамически, резолв — живой); слепки — собственная
+// полная пара PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*).
 public class BackupsOptionsValidationTests
 {
-    // AAA: Enabled=true без Bucket — невалидно (независимо от профилей).
+    // AAA: Enabled=true без Bucket — невалидно.
     [Fact]
     public void Backups_EnabledWithoutBucket_Invalid()
     {
@@ -16,24 +17,23 @@ public class BackupsOptionsValidationTests
         var options = new BackupsOptions { Enabled = true };
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse();
-        options.IsValid(0).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
-    // AAA: Enabled=true без env-профилей — невалидно (bucket задан, профилей 0).
+    // AAA: Enabled=true с Bucket — валидно (креды пулов — не стартовая
+    // проверка: резолвер читает их из etcd живым резолвом).
     [Fact]
-    public void Backups_EnabledWithoutProfiles_Invalid()
+    public void Backups_EnabledWithBucket_Valid()
     {
-        // Arrange — bucket задан, профилей нет.
+        // Arrange — bucket задан.
         var options = new BackupsOptions
         {
             Enabled = true,
             S3 = new BackupsS3Options { Bucket = "pgworker-backups" },
         };
 
-        // Act / Assert — 0 профилей = мусорный конфиг; ≥1 — валидно.
-        options.IsValid(0).Should().BeFalse();
-        options.IsValid(1).Should().BeTrue();
+        // Act / Assert
+        options.IsValid().Should().BeTrue();
     }
 
     // AAA: слепки Enabled=true без пары — невалидно; полная пара — валидно.

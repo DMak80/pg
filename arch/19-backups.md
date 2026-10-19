@@ -116,7 +116,8 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   (START WAL LOCATION). После фиксации итога воркер удаляет контейнер и
   staging-volume джоба. Конфигурация джоба — только env контейнера от
   воркера: подключение к источнику, S3-комплект (§7: bucket + списки
-  endpoints пула по роли источника + креды профиля), префикс `<C>/<X>`,
+  endpoints пула по роли источника + read-write креды из secrets-ключа
+  пула), префикс `<C>/<X>`,
   путь staging `PGW_BK_STAGING_DIR` (опция `Staging.Dir`, дефолт
   `/backup-staging` — точка монтирования staging-volume в джобе).
 - **WAL набора `-X stream` (t02)**: файлы бэкапа грузятся строго 1:1 в
@@ -601,7 +602,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 - **Секция `s3` policy**: `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` — выбор пула S3 кластера (архитектура пула — [23-s3-clusters.md](23-s3-clusters.md)); `pool` — имя кластера `/s3/clusters/`; `write_master`/`write_replica` — упорядоченные (по приоритету записи) имена инстансов пула — ССЫЛКИ, не адреса: резолв `имя → host:port` воркер выполняет чтением `endpoints`-ключа пула и `/s3worker/portalloc/<C>` (arch/23 §7); поля названы по роли ИСТОЧНИКА записи (мастер-потоки/репличные), не по роли ноды. Пересечение списков и неполный охват нод пула допустимы. Отсутствие секции — пул не выбран: подсистема бэкапов кластера НЕ пишет и НЕ читает (алерт `backup-pool-missing` панели); никаких env-дефолтов. Приём секции — замещение целиком (как drill); сброс — отправкой policy без `s3`.
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками (t02/t03);
-  **Failed-резолв пула** — пул удалён/`TO_REMOVE`, имя списка не заявлено в пуле (`nodes/<I>/placement` нет), профиль без кредов, нода без portalloc-адреса — transient для процессов: ретраи тиком + journal-фаза `waiting-backup-pool`, НЕ краш тика; в `Error` wal/full-статусов при этом ставится тот же маркер `s3-pool-exhausted` — алерт `backup-pool-unreachable` закрывает и случай «policy записана, но резолв не удался» (единая алертная грань записи в пул);
+  **Failed-резолв пула** — пул удалён/`TO_REMOVE`, имя списка не заявлено в пуле (`nodes/<I>/placement` нет), пул без читаемых secrets, нода без portalloc-адреса — transient для процессов: ретраи тиком + journal-фаза `waiting-backup-pool`, НЕ краш тика; в `Error` wal/full-статусов при этом ставится тот же маркер `s3-pool-exhausted` — алерт `backup-pool-unreachable` закрывает и случай «policy записана, но резолв не удался» (единая алертная грань записи в пул);
   permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
   ретенции (t06; запрет удалять последний валидный полный — guard t06).
   `BROKEN` — разрыв цепочки (дыра WalChain / исчезновение слотов всех
@@ -885,12 +886,12 @@ s3://<bucket>/<C>/<X>/
   per-install** — env `PGW_BACKUP_S3_BUCKET` (конфиг-биндинг
   `PgWorker:Backups:S3:Bucket`, группа транспортных секретов
   [14-pgworker.md](14-pgworker.md) §4 п.3; единый на всех нодах всех пулов
-  установки, §5); (б) **креды пулов — env-профили**:
-  `PGW_BACKUP_S3_PROFILES__<PROFILE>__ACCESS_KEY` /
-  `PGW_BACKUP_S3_PROFILES__<PROFILE>__SECRET_KEY` (read-write ключи
-  профилей; пул ссылается профилем `config.secret_profile` —
-  [23-s3-clusters.md](23-s3-clusters.md) §6; воркер резолвит креды
-  per-профиль по образцу `S3W_NODE_SECRETS__*` S3Worker); единого
+  установки, §5); (б) **креды пулов — per-cluster secrets в etcd**:
+  `/s3/clusters/<C>/secrets` ([23-s3-clusters.md](23-s3-clusters.md) §6;
+  ключ `name=backups`, read-write) — воркер читает их резолвером пула
+  живым резолвом на каждом тике (отсутствие/битость secrets —
+  transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
+  ретраи тиком, НЕ краш тика — §4); единого
   `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
   больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
   ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
@@ -899,7 +900,8 @@ s3://<bucket>/<C>/<X>/
   [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
   переиспользуется: источник правды о DR-слепках не живёт в
   восстанавливаемом etcd. Передача агенту/джобу — env контейнера (t02/t03:
-  bucket + списки endpoints по роли + креды профиля). Стенд/контур-режим:
+  bucket + списки endpoints по роли + креды read-write из secrets пула).
+  Стенд/контур-режим:
   адресация S3 всех потребителей контура — по имени сети (`http://owns3:9000`
   на стенде); хост-публикация хранилища — только для внешних потребителей
   (чеки с хоста, mc-миграция, оператор). Прод — endpoints нод пула
@@ -950,11 +952,10 @@ s3://<bucket>/<C>/<X>/
 
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
   `S3 { Bucket, CaBundlePath="" (путь ca.pem per-install CA — доверие
-  https-endpoint, §7; на все цели), Profiles (env-only:
-  `PGW_BACKUP_S3_PROFILES__*`, §7 — в конфиге не дублируются) }`
+  https-endpoint, §7; на все цели) }`
   (Endpoint/Region/AccessKey/SecretKey/PathStyle/AdvertisedEndpoint
   УШЛИ — единого endpoint записи больше нет, цели даёт пул per-cluster,
-  §4/§5),
+  §4/§5; креды пулов — per-cluster secrets в etcd, §7 — в конфиге их нет),
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
@@ -984,9 +985,10 @@ s3://<bucket>/<C>/<X>/
   drill-джоба — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
   OrphanTtlSec=604800 }` (t07: период сверок per-cluster и глобального
   лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
-  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`) И
-  хотя бы один env-профиль кредов `PGW_BACKUP_S3_PROFILES__*` (без
-  полупар) — fail-fast; `Snapshots:Export:Enabled=true` → полная
+  `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`)
+  — fail-fast (проверок наличия кредов пулов в etcd на старте НЕ вводится:
+  креды появляются/исчезают динамически, резолв — живой, §7);
+  `Snapshots:Export:Enabled=true` → полная
   слепочная пара `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*`)
   — fail-fast; отрицательные
   таймауты/TTL супервизора — fail-fast; отрицательные

@@ -26,7 +26,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     InstanceEnvComposer envComposer,
     MeshGovernanceProcess mesh,
@@ -78,11 +78,15 @@ public sealed class ProvisioningProcess(
             return Fail(cluster, planned.Error!, "planning");
         }
 
-        // Профиль секретов: неполный/отсутствующий — permanent-отказ P1
-        // (диагностика без значений; оператор чинит env — тик повторит).
-        if (!secrets.TryGet(snap.Config!.SecretProfile!, out var nodeSecrets, out var secretDiagnostic))
-            return Fail(cluster, new ApplicationException(
-                $"secret profile {snap.Config.SecretProfile}: {secretDiagnostic}"), "invalid-secret-profile");
+        // P2-вход: выпуск per-cluster secrets (arch/23 §6): txn put-if-absent,
+        // спец-ключ etcd-backup из env; выполняется и для 0-инстансовых
+        // кластеров (etcd-операция, docker-мутаций нет). Битость/неполнота
+        // существующего ключа — permanent-отказ с диагностикой без значений.
+        var ensuredSecrets = await secrets.EnsureAsync(
+            cluster, snap.Config?.EtcdBackup ?? false, ct);
+        if (!ensuredSecrets.IsSuccess)
+            return Fail(cluster, ensuredSecrets.Error!, "ensure-secrets");
+        var nodeSecrets = ensuredSecrets.Value.ToNodeSecrets();
 
         // P2: создать контейнеры нод (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, planned.Value, nodeSecrets!, ct);
@@ -391,7 +395,7 @@ public sealed class ProvisioningProcess(
             }));
 
     // P5-конец: txn compare config.mod_revision → put канонического JSON без state
-    // (Active-пример arch/23 §2.1: platform/nodes/secret_profile/created_unix).
+    // (Active-пример arch/23 §2.1: platform/nodes/etcd_backup?/created_unix).
     private async Task<Result> CommitConfigAsync(S3ClusterSnapshot snap, CancellationToken ct)
     {
         var key = S3ProcessCommon.ConfigKey(snap.Cluster);
@@ -405,7 +409,7 @@ public sealed class ProvisioningProcess(
             new CanonicalConfig(
                 snap.Config!.Platform!,
                 snap.Config.Nodes!.Value,
-                snap.Config.SecretProfile!,
+                snap.Config.EtcdBackup ?? false ? true : null,
                 snap.Config.CreatedUnix),
             CanonicalJson);
         if (current.Value.Value == canonical)
@@ -506,6 +510,6 @@ public sealed class ProvisioningProcess(
     private sealed record CanonicalConfig(
         [property: JsonPropertyName("platform")] string Platform,
         [property: JsonPropertyName("nodes")] int Nodes,
-        [property: JsonPropertyName("secret_profile")] string SecretProfile,
+        [property: JsonPropertyName("etcd_backup")] bool? EtcdBackup,
         [property: JsonPropertyName("created_unix")] long? CreatedUnix);
 }

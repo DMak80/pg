@@ -27,7 +27,7 @@ public class S3ClusterClassifierTests
     public void Classify_StateNull_Active()
     {
         // Arrange — Active: state отсутствует (arch/23 §2)
-        var snap = Snap(new S3ClusterConfig("owns3", 3, "p", 1, null));
+        var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, null));
 
         // Act
         var kind = S3ClusterClassifier.Classify(snap);
@@ -40,7 +40,7 @@ public class S3ClusterClassifierTests
     public void Classify_NotInitialized_Provision()
     {
         // Arrange — заявка панели
-        var snap = Snap(new S3ClusterConfig("owns3", 3, "p", 1, S3NodeStates.NotInitialized));
+        var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, S3NodeStates.NotInitialized));
 
         // Act
         var kind = S3ClusterClassifier.Classify(snap);
@@ -53,7 +53,7 @@ public class S3ClusterClassifierTests
     public void Classify_ToRemove_Deprovision()
     {
         // Arrange — заявка удаления (one-way)
-        var snap = Snap(new S3ClusterConfig("owns3", 3, "p", 1, S3NodeStates.ToRemove));
+        var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, S3NodeStates.ToRemove));
 
         // Act
         var kind = S3ClusterClassifier.Classify(snap);
@@ -66,7 +66,7 @@ public class S3ClusterClassifierTests
     public void Classify_UnknownState_Active()
     {
         // Arrange — незнакомое state (толерантность arch/23 §2 — система развивается)
-        var snap = Snap(new S3ClusterConfig("owns3", 3, "p", 1, "SOMETHING"));
+        var snap = Snap(new S3ClusterConfig("owns3", 3, null, 1, "SOMETHING"));
 
         // Act
         var kind = S3ClusterClassifier.Classify(snap);

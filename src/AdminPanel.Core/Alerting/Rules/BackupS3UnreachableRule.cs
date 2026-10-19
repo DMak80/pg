@@ -41,6 +41,6 @@ public sealed class BackupS3UnreachableRule : IAlertRule
             SinceUnix: null, // проставляет AlertEngine по стабильному id
             Hint: "panel cannot list backup bucket: endpoints/credentials/network — worker backups are at risk, check PgWorker and S3 storage logs; the facet's live inventory goes stale, etcd backup statuses keep updating",
             Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "check availability of the pool nodes (AdminPanel:Backups:S3:Endpoints, credentials, docker network) and PgWorker logs; after recovery the alert clears on the first successful tick");
+            RemedyText: "check availability of the pool nodes (/s3/clusters/ endpoints, docker network) and PgWorker logs; after recovery the alert clears on the first successful tick");
     }
 }

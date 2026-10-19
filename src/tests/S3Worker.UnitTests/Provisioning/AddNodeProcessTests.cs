@@ -1,5 +1,6 @@
 using FluentAssertions;
 using S3Worker.Core.Model;
+using S3Worker.Core.OwnS3;
 using S3Worker.Docker.Drivers;
 using S3Worker.Provisioning;
 using S3Worker.Provisioning.Processes;
@@ -14,9 +15,25 @@ public class AddNodeProcessTests
 {
     private const string Prefix = "/s3worker";
 
-    private static (AddNodeProcess Process, Fakes.FakeEtcd Etcd, Fakes.FakeS3Driver Driver, Fakes.FakeNodeClient Nodes, ClaimStore Claims) NewRig()
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
+    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // backups(read-write) и panel(read-only); значения — фиксированные
+    // несекретные литералы.
+    private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
+        $"s3w-{cluster}-root",
+        "root-password-fixed",
+        [
+            new ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+            new ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+        ]));
+
+    private static (AddNodeProcess Process, Fakes.FakeEtcd Etcd, Fakes.FakeS3Driver Driver, Fakes.FakeNodeClient Nodes, ClaimStore Claims) NewRig(bool withSecrets = true)
     {
         var etcd = new Fakes.FakeEtcd();
+        if (withSecrets)
+            etcd.Seed("/s3/clusters/demo/secrets", SecretsJson("demo"));
         var driver = new Fakes.FakeS3Driver
         {
             Hosts =
@@ -30,10 +47,8 @@ public class AddNodeProcessTests
         // Занятость docker-публикаций: ноды кластера уже сидят на 18000/18001.
         driver.BusyPorts.Add(("h1", 18000));
         driver.BusyPorts.Add(("h2", 18001));
-        var secrets = new SecretProfileStore(
-            name => name == $"S3W_NODE_SECRETS__backups-main__ROOT_USER" ? "root"
-                : name == $"S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? "pw" : null,
-            ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
+        var secrets = new ClusterSecretsStore(
+            etcd, ["http://etcd:2379"], env => env is null ? null : Env.GetValueOrDefault(env));
         var process = new AddNodeProcess(
             etcd, ["http://etcd:2379"], driver, claims,
             new WorkJournal(Prefix, etcd, ["http://etcd:2379"]),
@@ -51,7 +66,7 @@ public class AddNodeProcessTests
         Fakes.FakeEtcd etcd, ClaimStore claims, int configNodes = 2, bool withNode3 = true)
     {
         etcd.Seed("/s3/clusters/demo/config",
-            $$"""{"platform":"owns3","nodes":{{configNodes}},"secret_profile":"backups-main","created_unix":1760156800}""");
+            $$"""{"platform":"owns3","nodes":{{configNodes}},"created_unix":1760156800}""");
         etcd.Seed("/s3/clusters/demo/nodes/node1/state", S3NodeStates.Running);
         etcd.Seed("/s3/clusters/demo/nodes/node2/state", S3NodeStates.Running);
         etcd.Seed("/s3/clusters/demo/nodes/node1/placed_on", "h1");
@@ -65,7 +80,7 @@ public class AddNodeProcessTests
 
     private static S3ClusterSnapshot Snap(int declaredNodes = 2) => new(
         "demo",
-        new S3ClusterConfig("owns3", declaredNodes, "backups-main", 1760156800, null),
+        new S3ClusterConfig("owns3", declaredNodes, null, 1760156800, null),
         [
             new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null),
@@ -95,7 +110,7 @@ public class AddNodeProcessTests
         etcd.Store[$"{Prefix}/portalloc/demo"].Value.Should().Contain("node3");
         etcd.Store["/s3/clusters/demo/endpoints"].Value.Should().Be("h1:18000,h2:18001,h2:18002");
         etcd.Store["/s3/clusters/demo/config"].Value
-            .Should().Be("""{"platform":"owns3","nodes":3,"secret_profile":"backups-main","created_unix":1760156800}""");
+            .Should().Be("""{"platform":"owns3","nodes":3,"created_unix":1760156800}""");
         driver.Ensured.Should().ContainSingle().Which.NodeName.Should().Be("node3");
         nodeClient.Buckets.Should().ContainSingle()
             .Which.Bucket.Should().Be("pgworker-backups");
@@ -133,7 +148,7 @@ public class AddNodeProcessTests
         await claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         nodeClient.Health = true;
         var snap = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 3, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 3, null, 1760156800, null),
             [
                 new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),
@@ -170,5 +185,27 @@ public class AddNodeProcessTests
         result.IsSuccess.Should().BeFalse();
         driver.Ensured.Should().BeEmpty();
         etcd.Store.Keys.Should().NotContain("/s3/clusters/demo/nodes/node3/placed_on");
+    }
+
+    // AAA: secrets-ключа нет — permanent-отказ до docker-мутаций (journal
+    // invalid-secrets; заявка ноды жива — ретраи тиком).
+    [Fact]
+    public async Task MissingSecrets_Failed_NoMutations()
+    {
+        // Arrange: ключ /s3/clusters/demo/secrets не записан; заявка node3 стоит.
+        var (process, etcd, driver, _, claims) = NewRig(withSecrets: false);
+        await SeedAsync(etcd, claims);
+
+        // Act
+        var result = await process.TickAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: Failed, фаза invalid-secrets; docker/размещения нет.
+        result.IsSuccess.Should().BeFalse();
+        driver.Ensured.Should().BeEmpty();
+        etcd.Store.Keys.Should().NotContain("/s3/clusters/demo/nodes/node3/placed_on");
+        var journal = await new WorkJournal(Prefix, etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("invalid-secrets");
+        journal.Value.LastError.Should().Contain("secrets /s3/clusters/demo/secrets not found");
     }
 }

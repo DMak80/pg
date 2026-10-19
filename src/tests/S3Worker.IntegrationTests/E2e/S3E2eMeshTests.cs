@@ -57,15 +57,15 @@ public class S3E2eMeshTests
             // после RUNNING — поллинг с бюджетом, не мгновенный факт).
             await fx.WaitPhaseAsync("joined", async () =>
             {
-                var s1 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
-                var s2 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east2"), ct);
+                var s1 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
+                var s2 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east2"), ct);
                 return s1 is not null && NeighborsOf(s1.Value).Contains("east2")
                     && s2 is not null && NeighborsOf(s2.Value).Contains("east1");
             }, TimeSpan.FromSeconds(60), ct);
 
             // Assert 3: репликация доставлена — объект в east1 появляется на east2.
             var objectKey = $"mesh/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -76,7 +76,7 @@ public class S3E2eMeshTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     var found = await s3.GetObjectAsync(new GetObjectRequest
                     {
                         BucketName = S3E2eEnvironment.BucketName,
@@ -127,7 +127,7 @@ public class S3E2eMeshTests
 
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             var objectKey = $"move/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -152,12 +152,12 @@ public class S3E2eMeshTests
             // Связь жива (доводка G / курсоры сохранены), объект не потерян.
             var restored = await fx.WaitPhaseAsync("link-restored", async () =>
             {
-                var status = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
+                var status = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
                 return status is not null && NeighborsOf(status.Value).Contains("east2");
             }, TimeSpan.FromSeconds(60), ct);
             restored.Should().BeGreaterThan(TimeSpan.Zero, "link restored by convergence");
 
-            using var s3Again = S3Client(PortOf(ports, "east1"));
+            using var s3Again = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct);
             var fetched = await s3Again.GetObjectAsync(new GetObjectRequest
             {
                 BucketName = S3E2eEnvironment.BucketName,
@@ -208,8 +208,8 @@ public class S3E2eMeshTests
             // denylist доведён (сертификат east2 отозван: join 403/502).
             await fx.WaitPhaseAsync("deny-applied", async () =>
             {
-                var s1 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
-                var s2 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east2"), ct);
+                var s1 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
+                var s2 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east2"), ct);
                 return s1 is not null && !NeighborsOf(s1.Value).Any()
                     && s2 is not null && !NeighborsOf(s2.Value).Any();
             }, TimeSpan.FromSeconds(60), ct);
@@ -225,11 +225,11 @@ public class S3E2eMeshTests
             // факт отзыва на приёмнике доказывает ручной join ниже (403).
             await fx.WaitPhaseAsync("denylist-pushed", async () =>
             {
-                var d1 = await ReplicationDenyListOrNullAsync(fx, PortOf(ports, "east1"), ct);
+                var d1 = await ReplicationDenyListOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
                 return d1 is not null && NamesOf(d1.Value).Contains("east2");
             }, TimeSpan.FromSeconds(30), ct);
 
-            var manualJoin = await AdminJoinAsync(fx, PortOf(ports, "east2"), PortOf(ports, "east1"), ct);
+            var manualJoin = await AdminJoinAsync(fx, cluster, PortOf(ports, "east2"), PortOf(ports, "east1"), ct);
             manualJoin.Should().NotBe(HttpStatusCode.OK,
                 "revoked instance cannot join (deny-list)");
 
@@ -238,8 +238,8 @@ public class S3E2eMeshTests
                 .StatusCode.Should().Be(HttpStatusCode.Accepted);
             await fx.WaitPhaseAsync("allow-restored", async () =>
             {
-                var s1 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
-                var s2 = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east2"), ct);
+                var s1 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
+                var s2 = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east2"), ct);
                 return s1 is not null && NeighborsOf(s1.Value).Contains("east2")
                     && s2 is not null && NeighborsOf(s2.Value).Contains("east1");
             }, TimeSpan.FromSeconds(60), ct);
@@ -286,9 +286,9 @@ public class S3E2eMeshTests
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             await fx.WaitPhaseAsync("partial-graph", async () =>
             {
-                var a = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east1"), ct);
-                var b = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "east2"), ct);
-                var c = await ReplicationStatusOrNullAsync(fx, PortOf(ports, "west1"), ct);
+                var a = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
+                var b = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east2"), ct);
+                var c = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "west1"), ct);
                 return a is not null && NeighborsOf(a.Value).SetEquals(["east2", "west1"])
                     && b is not null && NeighborsOf(b.Value).SetEquals(["east1"])
                     && c is not null && NeighborsOf(c.Value).SetEquals(["east1"]);
@@ -329,7 +329,6 @@ public class S3E2eMeshTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    secretProfile = S3E2eEnvironment.ProfileName,
                     instances = Array.Empty<object>(),
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct))
@@ -363,7 +362,7 @@ public class S3E2eMeshTests
             // join работает: объект реплицируется.
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             var objectKey = $"empty/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -374,7 +373,7 @@ public class S3E2eMeshTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     await s3.GetObjectAsync(new GetObjectRequest
                     {
                         BucketName = S3E2eEnvironment.BucketName,
@@ -399,15 +398,21 @@ public class S3E2eMeshTests
 
     // ── Хелперы сценария ──
 
-    private static IAmazonS3 S3Client(int port) => new AmazonS3Client(
-        new Amazon.Runtime.BasicAWSCredentials(S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword),
-        new AmazonS3Config
-        {
-            ServiceURL = $"http://localhost:{port}",
-            ForcePathStyle = true,
-            Timeout = TimeSpan.FromSeconds(10),
-            MaxErrorRetry = 1,
-        });
+    private static async Task<IAmazonS3> S3ClientAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
+    {
+        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
+        return new AmazonS3Client(
+            new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),
+            new AmazonS3Config
+            {
+                ServiceURL = $"http://localhost:{port}",
+                ForcePathStyle = true,
+                Timeout = TimeSpan.FromSeconds(10),
+                MaxErrorRetry = 1,
+            });
+    }
 
     private static int PortOf(JsonElement alloc, string instance)
         => alloc.GetProperty(instance).GetProperty("s3").GetInt32();
@@ -424,14 +429,16 @@ public class S3E2eMeshTests
     // advertised-хост host.docker.internal с хоста теста = localhost; null при
     // любом отказе (транзиент — поллинг продолжит).
     private static async Task<JsonElement?> ReplicationStatusOrNullAsync(
-        S3E2eEnvironment fx, int port, CancellationToken ct)
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
         try
         {
+            // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+            var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{port}/admin/replication/status");
             var signed = SigV4GetSigner.Sign(
                 "/admin/replication/status", $"localhost:{port}",
-                S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword);
+                rootUser, rootPassword);
             request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
             request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
             request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);
@@ -451,14 +458,16 @@ public class S3E2eMeshTests
     // Админ-грань: GET /admin/replication/denylist (SigV4 root) — имена отзывов;
     // null при любом отказе (транзиент — поллинг продолжит, не исключение).
     private static async Task<JsonElement?> ReplicationDenyListOrNullAsync(
-        S3E2eEnvironment fx, int port, CancellationToken ct)
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
         try
         {
+            // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+            var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{port}/admin/replication/denylist");
             var signed = SigV4GetSigner.Sign(
                 "/admin/replication/denylist", $"localhost:{port}",
-                S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword);
+                rootUser, rootPassword);
             request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
             request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
             request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);
@@ -484,8 +493,10 @@ public class S3E2eMeshTests
 
     // Ручной admin-join (SigV4 root): «initiator» — east1, endpoint соседа.
     private static async Task<HttpStatusCode> AdminJoinAsync(
-        S3E2eEnvironment fx, int initiatorPort, int neighborPort, CancellationToken ct)
+        S3E2eEnvironment fx, string cluster, int initiatorPort, int neighborPort, CancellationToken ct)
     {
+        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
         var body = JsonSerializer.SerializeToUtf8Bytes(new
         {
             endpoint = $"http://host.docker.internal:{neighborPort}",
@@ -495,7 +506,7 @@ public class S3E2eMeshTests
             Content = new ByteArrayContent(body),
         };
         var signed = SigV4GetSigner.SignRequest("POST", "/admin/replication/join", $"localhost:{initiatorPort}",
-            S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword);
+            rootUser, rootPassword);
         request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
         request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
         request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);

@@ -25,7 +25,7 @@ public sealed class SyncProbeProcess(
     string[] endpoints,
     ClaimStore claims,
     WorkJournal journal,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
     TimeProvider clock,
@@ -57,11 +57,21 @@ public sealed class SyncProbeProcess(
         if (running.Count == 0)
             return await IdleAsync(cluster, deleteRequest: true, warning: null, ct);
 
-        // Креды профиля: грани недостижимы без root-кредов — диагностический skip
-        // (образец G); заявка живёт — исполнится после починки env.
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var creds, out var secretDiagnostic))
-            return await IdleAsync(
-                cluster, deleteRequest: false, warning: $"secret profile unavailable: {secretDiagnostic}", ct);
+        // Креды — per-cluster secrets из etcd (arch/23 §6): грани недостижимы
+        // без них — диагностический skip (ретраи тиком; значения секретов
+        // в диагностики не попадают); заявка живёт — исполнится после починки.
+        var secretsRead = await secrets.TryReadAsync(cluster, ct);
+        var diagnostic = secretsRead.Error?.Message
+            ?? $"secrets /s3/clusters/{cluster}/secrets not found";
+        if (!secretsRead.IsSuccess || secretsRead.Value is null)
+        {
+            // Фаза называет причину (не «idle»); заявка зонда НЕ сносится —
+            // исполнится после починки кластера (ретраи тиком).
+            var rejected = await journal.WritePhaseAsync(
+                cluster, Op, "invalid-secrets", claims.InstanceId, diagnostic, ct);
+            return rejected.IsSuccess ? Result.Success() : rejected;
+        }
+        var creds = secretsRead.Value.ToNodeSecrets();
 
         // Заявка + прошлый connectivity (гейт). Отказ чтения etcd → Failed
         // (ретрай тиком, заявка жива).

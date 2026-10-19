@@ -68,9 +68,8 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
 
     // WAF-оверрайд: подсистема бэкапов включена (гвард 503 снят для основных
     // кейсов; выключенное состояние проверяет DisabledBackupsApiFactory).
-    // S3-комплект — новый контракт t36 (bucket + env-профили): валидация старта
-    // требует непустой Bucket и ≥1 профиль; профиль подменяется инъекцией store
-    // (env-only читатель — как InstallSecrets выше; API-грани сирот S3 не
+    // S3-комплект — bucket + креды per-cluster из etcd (/s3/clusters/<C>/secrets;
+    // валидация старта требует только непустой Bucket; API-грани сирот S3 не
     // касается — это только валидатор).
     private sealed class OrphansApiFactory(OwnedEtcdFixture etcd) : WebApplicationFactory<Program>
     {
@@ -84,19 +83,6 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
                     ["PgWorker:Backups:S3:Bucket"] = "bkt",
                     ["PgWorker:Backups:Job:Image"] = "pgworker-backup:test",
                 }));
-            builder.ConfigureServices(services =>
-            {
-                services.RemoveAll<BackupSecretProfileStore>();
-                // envNames — ПОЛНЫЕ имена переменных (store фильтрует их префиксом
-                // PGW_BACKUP_S3_PROFILES__ и берёт профиль вторым сегментом).
-                services.AddSingleton(new BackupSecretProfileStore(
-                    getenv: _ => "test",
-                    envNames:
-                    [
-                        "PGW_BACKUP_S3_PROFILES__test__ACCESS_KEY",
-                        "PGW_BACKUP_S3_PROFILES__test__SECRET_KEY",
-                    ]));
-            });
         }
     }
 

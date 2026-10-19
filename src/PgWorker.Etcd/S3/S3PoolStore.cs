@@ -47,6 +47,10 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
         if (!portAlloc.IsSuccess)
             return Result<S3Pool?>.Failed(portAlloc.Error!);
 
+        var secretsKv = await RangeSingleAsync($"{ClustersPrefix}{pool}/secrets", ct);
+        if (!secretsKv.IsSuccess)
+            return Result<S3Pool?>.Failed(secretsKv.Error!);
+
         // Битый config — parseError-путь: пул не читается (null) с диагностикой.
         var cfg = config.Value is null
             ? null
@@ -83,7 +87,8 @@ public sealed class S3PoolStore(IEtcdGateway gateway, string[] endpoints, ILogge
             ? []
             : S3PoolModel.ParseEndpoints(endpointsKv.Value.Value);
         return Result<S3Pool?>.Success(
-            new S3Pool(pool, cfg.SecretProfile, cfg.ToRemove, poolNodes, endpointList));
+            new S3Pool(pool, cfg.ToRemove, poolNodes, endpointList,
+                secretsKv.Value is null ? null : S3PoolModel.ParseSecrets(secretsKv.Value.Value)));
     }
 
     /// <summary>Имена всех пулов — уникальные &lt;C&gt; из config-ключей

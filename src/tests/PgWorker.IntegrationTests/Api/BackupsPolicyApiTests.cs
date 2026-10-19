@@ -270,7 +270,7 @@ private async Task SeedS3PoolAsync(string ctTag = "")
     var ct = TestContext.Current.CancellationToken;
     var g = Etcd.Gateway; var ep = Etcd.Endpoint;
     await g.PutAsync(ep, "/s3/clusters/backups/config",
-        """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""", null, ct);
+        """{"platform":"owns3","nodes":2,"created_unix":1760156800}""", null, ct);
     await g.PutAsync(ep, "/s3/clusters/backups/nodes/node1/placement",
         """{"docker_host":"h1"}""", null, ct);
     await g.PutAsync(ep, "/s3/clusters/backups/nodes/node1/state", "\"RUNNING\"", null, ct);
@@ -400,7 +400,7 @@ public async Task PoolToRemove400()
     await SeedS3PoolAsync();
     var ct = TestContext.Current.CancellationToken;
     await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/s3/clusters/backups/config",
-        """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1,"state":"TO_REMOVE"}""", null, ct);
+        """{"platform":"owns3","nodes":2,"created_unix":1,"state":"TO_REMOVE"}""", null, ct);
 
     // Act
     var resp = await Client.PostAsJsonAsync("/api/clusters/bps3t/backups/policy", new

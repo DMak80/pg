@@ -9,22 +9,18 @@ using Xunit;
 namespace S3Worker.IntegrationTests.E2e;
 
 // Ротация и sync-probe E2E S3Worker (spec §11 сценарии 8–9):
-// 8 — rolling-пересоздание нод с env ТЕКУЩЕГО профиля кластера (оператор
-// обновляет env и перезапускает воркер, затем подаёт заявку): первая пара
-// совпадает с env воркера (docker-env инспекция, сравнение в коде БЕЗ печати),
-// после смены env воркера и повторной заявки ноды пересозданы с НОВЫМИ
-// root-кредами (новая пара — 200, старая — 403);
+// 8 — ротация = перевыпуск per-cluster кредов в secrets-ключе etcd
+// (arch/23 §8): root_user сохраняется, root_password/ключи перевыпускаются,
+// ноды rolling-пересоздаются с новым env; НОВАЯ root-пара допущена нодами
+// (200), СТАРАЯ — отклонена (403); docker-env нод несёт нового root_user
+// (сравнение в коде БЕЗ печати);
 // 9 — sync-probe (t33): POST → 202 + заявка /s3worker/probes/<C>, тик зонда
 // исполняет её (пустой меш — links {} OK / SYNCED без пар) и сносит заявку.
 // Гейт: PGW_TEST_DOCKER=1.
 public class S3E2eRotationTests
 {
-    // Вторая root-пара профиля (сменяемая env-грань воркера).
-    private const string RotatedUser = "e2e-root2";
-    private const string RotatedPassword = "e2e-root2-pwd";
-
     [Fact]
-    public async Task Rotation_RecreatesNodesWithCurrentProfileSecrets()
+    public async Task Rotation_ReissuesSecretsAndRecreatesNodes()
     {
         // Arrange: гейт запуска — без docker-режима E2E скипается.
         if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
@@ -44,91 +40,56 @@ public class S3E2eRotationTests
             await S3E2eScaleTests.CreateClusterAsync(fx, api, cluster, ct, "east1", "east2");
             await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
-            // Baseline: env нод несёт root-пару воркера (сравнение В КОДЕ —
-            // значения в лог не печатаются).
+            // Baseline: root-пара из secrets-ключа (значения — только в память,
+            // БЕЗ печати); docker-env нод несёт этого root_user.
+            var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
+            rootUser.Should().Be($"s3w-{cluster}-root", "canonical root_user of the cluster");
             var id1Before = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
             var id2Before = await fx.ContainerIdAsync($"s3w-{cluster}-east2");
             EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
-                .Should().Be(S3E2eEnvironment.RootUser, "nodes created with the worker's profile env");
+                .Should().Be(rootUser, "nodes carry the per-cluster secrets env");
 
-            // Act 1: заявка ротации с НЕИЗМЕНЁННЫМИ секретами (env нод уже
-            // правильный) → matches-сверка: заявка гасится БЕЗ пересозданий
-            // (spec §14.4 «повторный запрос — no-op по факту»; arch/24 §4:
-            // rolling трогает только ноды с чужим env).
+            // Act: заявка ротации → 201 → воркер перевыпускает креды в
+            // secrets-ключе и rolling-пересоздаёт ноды (arch/23 §8).
             using var rotated = await api.PostAsync(
                 $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
             var rotatedBody = await rotated.Content.ReadAsStringAsync(ct);
             rotated.StatusCode.Should().Be(HttpStatusCode.Created, rotatedBody);
 
-            await fx.WaitPhaseAsync("wait-rotation-noop", async () =>
-            {
-                if (await GetOrNullAsync(fx, $"/s3worker/rotations/{cluster}", ct) is not null)
-                    return false;
-                var work = await GetOrNullAsync(fx, $"/s3worker/work/{cluster}", ct);
-                return work is null || work.Contains("\"phase\":\"done\"");
-            }, TimeSpan.FromSeconds(60), ct);
-
-            // Assert 1: ноды НЕ пересозданы (env уже правильный), env нод ==
-            // env воркера, ноды живы.
-            (await fx.ContainerIdAsync($"s3w-{cluster}-east1")).Should().Be(id1Before,
-                "node env already on the profile — matches no-op without re-creations");
-            (await fx.ContainerIdAsync($"s3w-{cluster}-east2")).Should().Be(id2Before,
-                "node env already on the profile — matches no-op without re-creations");
-            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
-                .Should().Be(S3E2eEnvironment.RootUser);
-
-            // Act 2: смена значений — оператор обновляет env и перезапускает
-            // воркер (та же пара env, вторая root-пара), затем новая заявка.
-            await fx.RecreateWorkerAsync(0, new Dictionary<string, string>
-            {
-                ["S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER"] = RotatedUser,
-                ["S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD"] = RotatedPassword,
-            }, ct);
-            await fx.WaitPhaseAsync("wait-worker-recreated", async () =>
-            {
-                try
-                {
-                    using var health = await api.GetAsync("/healthz", ct);
-                    return health.StatusCode == HttpStatusCode.OK;
-                }
-                catch (HttpRequestException)
-                {
-                    return false;
-                }
-            }, TimeSpan.FromSeconds(30), ct);
-
-            using var rotated2 = await api.PostAsync(
-                $"/api/s3/clusters/{cluster}/rotations", content: null, ct);
-            rotated2.StatusCode.Should().Be(HttpStatusCode.Created);
-            var id1Mid = await fx.ContainerIdAsync($"s3w-{cluster}-east1");
-            var id2Mid = await fx.ContainerIdAsync($"s3w-{cluster}-east2");
-            await fx.WaitPhaseAsync("wait-rotation2", async () =>
+            await fx.WaitPhaseAsync("wait-rotation", async () =>
             {
                 if (await GetOrNullAsync(fx, $"/s3worker/rotations/{cluster}", ct) is not null)
                     return false;
                 var work = await GetOrNullAsync(fx, $"/s3worker/work/{cluster}", ct);
                 if (work is not null && !work.Contains("\"phase\":\"done\""))
                     return false;
-                return await fx.ContainerIdAsync($"s3w-{cluster}-east1") != id1Mid
-                    && await fx.ContainerIdAsync($"s3w-{cluster}-east2") != id2Mid
-                    && await S3E2eScaleTests.GetOrNullAsync(fx,
-                            $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING"
-                    && await S3E2eScaleTests.GetOrNullAsync(fx,
-                            $"/s3/clusters/{cluster}/nodes/east2/state", ct) == "RUNNING";
+                return await fx.ContainerIdAsync($"s3w-{cluster}-east1") != id1Before
+                    && await fx.ContainerIdAsync($"s3w-{cluster}-east2") != id2Before
+                    && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING"
+                    && await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/nodes/east2/state", ct) == "RUNNING";
             }, TimeSpan.FromSeconds(90), ct);
 
-            // Assert 2: ноды с НОВЫМИ root-кредами — GetBucketLocation НОВОЙ
-            // парой → 200, СТАРОЙ → 403 (порт из endpoints — актуален).
+            // Assert 1: secrets-ключ перевыпущен — root_user сохранён,
+            // root_password изменился (сравнение в коде, БЕЗ печати: провал
+            // ассерта не выведет значение в лог/trx).
+            var (rootUserAfter, rootPasswordAfter) = await fx.RootPairOfAsync(cluster, ct);
+            rootUserAfter.Should().Be(rootUser, "rotation keeps the canonical root_user");
+            (!string.Equals(rootPasswordAfter, rootPassword, StringComparison.Ordinal))
+                .Should().BeTrue("rotation re-issues the root password");
+            EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
+                .Should().Be(rootUserAfter, "re-created nodes carry the re-issued env");
+
+            // Assert 2: ноды допускают НОВУЮ пару и отклоняют СТАРУЮ —
+            // GetBucketLocation (порт из endpoints — актуален).
             var endpoints = S3E2eScaleTests.EndpointsOf(
                 await GetOrNullAsync(fx, $"/s3/clusters/{cluster}/endpoints", ct));
             foreach (var address in endpoints)
             {
                 var port = int.Parse(address.Split(':')[1]);
-                (await RootCallCodeAsync(port, RotatedUser, RotatedPassword, ct))
-                    .Should().Be(HttpStatusCode.OK, $"new pair admitted to :{port}");
-                (await RootCallCodeAsync(port, S3E2eEnvironment.RootUser,
-                        S3E2eEnvironment.RootPassword, ct))
-                    .Should().Be(HttpStatusCode.Forbidden, $"old pair rejected on :{port}");
+                (await RootCallCodeAsync(port, rootUserAfter, rootPasswordAfter, ct))
+                    .Should().Be(HttpStatusCode.OK, $"re-issued pair admitted to :{port}");
+                (await RootCallCodeAsync(port, rootUser, rootPassword, ct))
+                    .Should().Be(HttpStatusCode.Forbidden, $"pre-rotation pair rejected on :{port}");
             }
 
             // Финал: DELETE кластера → демонтаж (канон самоочистки).

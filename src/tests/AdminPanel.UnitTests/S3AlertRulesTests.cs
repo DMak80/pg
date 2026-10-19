@@ -44,7 +44,7 @@ public sealed class S3AlertRulesTests
         IReadOnlyList<S3ReplicationLink>? links = null,
         S3ConnectivityInfo? connectivity = null,
         S3SyncInfo? sync = null)
-        => new(name, state, "owns3", nodes?.Count ?? 0, "backups-main", 1760156800L,
+        => new(name, state, "owns3", nodes?.Count ?? 0, false, 1760156800L,
             endpoints, nodes ?? [], links ?? [], [], connectivity, sync);
 
     private static S3NodeInfo Node(

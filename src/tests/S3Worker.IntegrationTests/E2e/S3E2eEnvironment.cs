@@ -34,14 +34,9 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private const string S3WPublishDir = "artifacts/e2e/s3worker";
     private const string WorkerImageFallback = "s3worker:e2e"; // NOBUILD-бисект
 
-    // Демо-профиль секретов нод (arch/23 §6): root-пара + writer access key;
-    // значения знает фикстура — сценарии сверяют ноды с ними БЕЗ печати.
-    // Имя профиля — второй сегмент env-ключа (BACKUPS-MAIN, как в deploy/.env).
-    public const string ProfileName = "BACKUPS-MAIN";
-    public const string RootUser = "e2e-root";
-    public const string RootPassword = "e2e-root-pwd";
-    public const string WriterAccessKey = "e2e-writer";
-    public const string WriterSecretKey = "e2e-writer-pwd";
+    // Креды кластеров — per-cluster secrets-ключ etcd /s3/clusters/<C>/secrets
+    // (генерирует воркер; arch/23 §2/§6): сценарии читают root-пару хелпером
+    // RootPairOfAsync — значения ТОЛЬКО в память теста, БЕЗ печати.
     public const string BucketName = "pgworker-backups";
 
     private readonly IContainer _etcd;
@@ -51,12 +46,6 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private readonly string[] _workerNames; // docker-имена воркеров (ассерт чистоты)
     private readonly INetwork _net;
     private readonly HttpClient _gatewayHttp = new();
-
-    // Параметры старта воркеров — пересоздание с env-оверрайдами (ротация).
-    private string? _workerImageName;
-    private string? _tlsDirPath;
-    private int _etcdPortValue;
-    private (int From, int To) _portRangeValue;
 
     private bool _failed;
 
@@ -142,37 +131,16 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 
     public void MarkFailed() => _failed = true;
 
-    /// <summary>Пересоздание воркера окружения с env-оверрайдами (сценарий
-    /// ротации spec §5.8: оператор обновляет env и перезапускает воркер, затем
-    /// подаёт заявку). Тот же образ/сеть/порты/байнды; env = WorkerEnv +
-    /// overrides; teardown/телеметрия следят за заменой.</summary>
-    public async Task RecreateWorkerAsync(
-        int workerIndex, IReadOnlyDictionary<string, string> envOverrides, CancellationToken ct)
+    /// <summary>Root-пара кластера из per-cluster secrets-ключа etcd
+    /// (arch/23 §2); значения — только в память теста, БЕЗ печати.</summary>
+    public async Task<(string RootUser, string RootPassword)> RootPairOfAsync(
+        string cluster, CancellationToken ct)
     {
-        if (workerIndex < 0 || workerIndex >= _workers.Length)
-            throw new ArgumentOutOfRangeException(nameof(workerIndex));
-        var name = _workerNames[workerIndex];
-        var apiPort = workerIndex == 0
-            ? _api1Port
-            : _api2Port ?? throw new InvalidOperationException("no second worker (single-instance contour)");
-
-        await SafeStopAsync(_workers[workerIndex], remove: true);
-
-        var env = new Dictionary<string, string>(WorkerEnv(_etcdPortValue, apiPort, _portRangeValue));
-        foreach (var (key, value) in envOverrides)
-            env[key] = value;
-        var replacement = new ContainerBuilder(_workerImageName!)
-            .WithName(name)
-            .WithNetwork(_net)
-            .WithPortBinding(apiPort, 8080)
-            .WithBindMount("/var/run/docker.sock", "/var/run/docker.sock")
-            .WithBindMount(_tlsDirPath!, "/tls")
-            .WithEnvironment(env)
-            .WithExtraHost("host.docker.internal", "host-gateway")
-            .WithExtraHost("local", "host-gateway")
-            .Build();
-        await replacement.StartAsync(ct);
-        _workers[workerIndex] = replacement;
+        var secrets = (await Gateway.GetAsync(EtcdEndpoint,
+            $"/s3/clusters/{cluster}/secrets", ct)).Value!.Value;
+        using var doc = System.Text.Json.JsonDocument.Parse(secrets);
+        return (doc.RootElement.GetProperty("root_user").GetString()!,
+            doc.RootElement.GetProperty("root_password").GetString()!);
     }
 
     /// <summary>Подъём окружения (3 попытки — против гонок глобального prune).</summary>
@@ -233,10 +201,6 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                 var environment = new S3E2eEnvironment(slug, runId, netName, net, etcd, worker,
                     $"http://localhost:{etcdPort}", artifactsDir,
                     $"https://localhost:{apiPort}", clientCert, clientKey);
-                environment._workerImageName = workerImage;
-                environment._tlsDirPath = tlsDir;
-                environment._etcdPortValue = etcdPort;
-                environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
                     "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f s3w-ew-{runId} s3w-ee-{runId}\n"
@@ -339,10 +303,6 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                     $"http://localhost:{etcdPort}", artifactsDir,
                     $"https://localhost:{api1Port}", clientCert, clientKey,
                     worker2, api2Port);
-                environment._workerImageName = workerImage;
-                environment._tlsDirPath = tlsDir;
-                environment._etcdPortValue = etcdPort;
-                environment._portRangeValue = portRange;
                 await environment.WriteAsync("README-cleanup.txt",
                     "# Run environment cleanup (own-only):\n"
                     + $"docker rm -f s3w-ew1-{runId} s3w-ew2-{runId} s3w-ee-{runId}\n"
@@ -372,10 +332,11 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // Env воркера окружения (arch/24 §8, plan Шаг 18.1): etcd/advertise/порты
-    // из динамических значений; bucket per-install; демо-профиль секретов;
-    // ускоренные циклы/пороги (ScanIntervalSec=1, NodeBootSec=100, NodeDeadSec=15,
-    // HealthIntervalSec=3); mTLS-серты из bind /tls.
+    // Env воркера окружения (arch/24 §8): etcd/advertise/порты из динамических
+    // значений; bucket per-install (креды кластеров — per-cluster в etcd, env
+    // секретов не несёт); ускоренные циклы/пороги (ScanIntervalSec=1,
+    // NodeBootSec=100, NodeDeadSec=15, HealthIntervalSec=3); mTLS-серты из
+    // bind /tls.
     private static Dictionary<string, string> WorkerEnv(int etcdPort, int apiPort, (int From, int To) portRange)
         => new()
         {
@@ -386,11 +347,6 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             ["S3Worker__Docker__PortRange__To"] = portRange.To.ToString(),
             ["S3Worker__Docker__Images__OwnS3"] = OwnS3Image,
             ["S3Worker__Bucket"] = BucketName,
-            ["S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER"] = RootUser,
-            ["S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD"] = RootPassword,
-            ["S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__ACCESSKEY"] = WriterAccessKey,
-            ["S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__SECRETKEY"] = WriterSecretKey,
-            ["S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__POLICY"] = "read-write",
             ["S3Worker__Loops__ScanIntervalSec"] = "1",
             ["S3Worker__Thresholds__NodeBootSec"] = "100",
             ["S3Worker__Thresholds__NodeDeadSec"] = "15",
@@ -630,6 +586,22 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
+    }
+
+    // Docker-логи контейнера (stdout+stderr) — проверка ОТСУТСТВИЯ значений
+    // секретов; снимок живёт только в памяти теста, без печати.
+    public async Task<string> ContainerLogsAsync(string name)
+    {
+        var info = new ProcessStartInfo("docker", $"logs {name}")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(info)!;
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var errors = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return output + errors;
     }
 
     // Факт существования named volume (точное имя/префикс filter).

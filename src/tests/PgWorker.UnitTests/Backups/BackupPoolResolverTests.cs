@@ -5,42 +5,26 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.Backups;
 
-// BackupPoolResolver (t36, arch/19 §4): policy.s3 + пул + env-профили →
+// BackupPoolResolver (t36, arch/19 §4): policy.s3 + пул (Secrets) →
 // контекст списков; null — «пул не выбран», Failed — transient-диагностика.
 public class BackupPoolResolverTests
 {
-    // Пул из двух нод с адресами (east1/east2) — base Arrange-набор.
-    private static S3Pool TwoNodePool(bool toRemove = false) => new(
-        "backups", "backups-main", toRemove,
+    // Пул из двух нод с адресами (east1/east2) — base Arrange-набор
+    // (withSecrets=false — негативный кейс «пул без кредов»).
+    private static S3Pool TwoNodePool(bool toRemove = false, bool withSecrets = true) => new(
+        "backups", toRemove,
         [
             new S3PoolNode("east1", "RUNNING", "h1", "h1", 18001),
             new S3PoolNode("east2", "RUNNING", "h2", "h2", 18002),
         ],
-        ["h1:18001", "h2:18002"]);
+        ["h1:18001", "h2:18002"],
+        Secrets: withSecrets ? new("ak", "sk") : null);
 
     private static BackupPoolResolver Resolver(
-        S3Pool? pool, BackupPolicy? policy,
-        IReadOnlyList<string>? halfPairs = null)
-    {
-        var envNames = new List<string>();
-        if (halfPairs is null)
-        {
-            envNames.Add("PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY");
-            envNames.Add("PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY");
-        }
-        else
-        {
-            envNames.AddRange(halfPairs);
-        }
-
-        return new BackupPoolResolver(
+        S3Pool? pool, BackupPolicy? policy)
+        => new(
             new FakePoolStore(pool),
-            new BackupSecretProfileStore(
-                getenv: name => name == "PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY" ? "ak"
-                    : name == "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY" ? "sk" : null,
-                envNames: envNames),
             policyReader: (_, _) => Task.FromResult(policy));
-    }
 
     private static BackupPolicy Policy(BackupPolicyS3? s3) => new(
         1, 1, 1, 86400, true, S3: s3);
@@ -56,7 +40,7 @@ public class BackupPoolResolverTests
         // Act
         var result = await resolver.ResolveAsync("demo", CancellationToken.None);
 
-        // Assert — креды профиля, адреса резолвлены, ReadAll обе ноды.
+        // Assert — креды пула, адреса резолвлены, ReadAll обе ноды.
         result.IsSuccess.Should().BeTrue();
         var ctx = result.Value!;
         ctx.Pool.Should().Be("backups");
@@ -113,23 +97,21 @@ public class BackupPoolResolverTests
         result.Error!.Message.Should().Contain("TO_REMOVE");
     }
 
-    // AAA: профиль без кредов → Failed (диагностика — имя профиля, без значений).
+    // AAA: пул без Secrets → Failed с «no readable secrets» (transient —
+    // диагностика без значений кредов).
     [Fact]
-    public async Task Resolve_ProfileWithoutCreds_Failed()
+    public async Task Resolve_PoolWithoutSecrets_Failed()
     {
-        // Arrange — env-профиль отсутствует (envNames пуст, только полупары нет).
-        var resolver = new BackupPoolResolver(
-            new FakePoolStore(TwoNodePool()),
-            new BackupSecretProfileStore(getenv: _ => null, envNames: []),
-            policyReader: (_, _) => Task.FromResult<BackupPolicy?>(Policy(
-                new BackupPolicyS3("backups", ["east1"], ["east1"]))));
+        // Arrange — пул есть, кредов пула нет.
+        var resolver = Resolver(TwoNodePool(withSecrets: false), Policy(
+            new BackupPolicyS3("backups", ["east1"], ["east1"])));
 
         // Act
         var result = await resolver.ResolveAsync("demo", CancellationToken.None);
 
         // Assert — значения не утекают.
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Message.Should().Contain("backups-main");
+        result.Error!.Message.Should().Contain("no readable secrets");
         result.Error!.Message.Should().NotContain("ak").And.NotContain("sk");
     }
 
@@ -173,11 +155,11 @@ public class BackupPoolResolverTests
     public async Task Resolve_NodeWithoutAddress_TransientFailed()
     {
         // Arrange — east2 заявлена, адреса нет.
-        var pool = new S3Pool("backups", "backups-main", false,
+        var pool = new S3Pool("backups", false,
         [
             new S3PoolNode("east1", "RUNNING", "h1", "h1", 18001),
             new S3PoolNode("east2", "PROVISIONING", "h2", null, null),
-        ], ["h1:18001"]);
+        ], ["h1:18001"], Secrets: new("ak", "sk"));
         var resolver = Resolver(pool, Policy(
             new BackupPolicyS3("backups", ["east2"], ["east1"])));
 

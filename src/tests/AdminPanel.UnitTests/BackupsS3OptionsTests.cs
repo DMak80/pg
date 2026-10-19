@@ -4,126 +4,50 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// BackupsS3Options.Endpoints (t36, 02 §2.5): запятая-список целей; пусто →
-// [Endpoint]; оба пусты — грань выключена. Поведенческий перебор целей —
-// S3StorageClientFailoverTests.
+// BackupsS3Options — конфиг-POCO без кредов и целей (t31): цели инвентаря
+// резолвятся из снапшота S3 (S3TargetsResolver → S3StorageClient.UpdateTargets);
+// в options остались только bucket/region/path-style и периодика тика.
 public class BackupsS3OptionsTests
 {
-    private static BackupsS3Options.S3Options S3(string endpoint = "", string endpoints = "")
-        => new() { Endpoint = endpoint, Endpoints = endpoints, Bucket = "b", AccessKey = "k", SecretKey = "s" };
-
-    // AAA: Endpoints="a,b" → 2 цели в порядке списка.
+    // AAA: значения по умолчанию — bucket пуст, path-style включён (ownS3),
+    // тик 60 с, таймаут 5 с.
     [Fact]
-    public void Endpoints_TwoTargets()
+    public void Defaults_EmptyBucket_PathStyleOn_Tick60_Timeout5()
     {
-        // Arrange
-        var s3 = S3("http://a:9000", "http://a:9000/,http://b:9000");
-
-        // Act
-        var targets = s3.TargetList();
-
-        // Assert: порядок сохранён, хвостовой слэш отсечён.
-        targets.Should().Equal("http://a:9000", "http://b:9000");
-    }
-
-    // AAA: задан только Endpoint → валидный частный случай (один элемент).
-    [Fact]
-    public void EndpointOnly_SingleTarget()
-    {
-        // Arrange
-        var s3 = S3("http://a:9000");
-
-        // Act
-        var targets = s3.TargetList();
+        // Arrange + Act — POCO-биндинг по умолчанию.
+        var options = new BackupsS3Options();
 
         // Assert
-        targets.Should().Equal("http://a:9000");
+        options.S3.Bucket.Should().BeEmpty();
+        options.S3.Region.Should().BeNull();
+        options.S3.PathStyle.Should().BeTrue();
+        options.IntervalSec.Should().Be(60);
+        options.TimeoutSec.Should().Be(5);
     }
 
-    // AAA: оба пусты → грань выключена, список целей пуст.
+    // AAA: биндинг читает bucket/region/path-style и периодику; полей кредов и
+    // endpoints у S3Options нет — креды per-cluster в etcd (arch/23 §6).
     [Fact]
-    public void BothEmpty_NoTargets_GrainDisabled()
+    public void Binding_BucketRegionPathStyle_Timings()
     {
-        // Arrange
-        var options = new BackupsS3Options { S3 = S3() };
-
-        // Act
-        var targets = options.S3.TargetList();
-
-        // Assert
-        targets.Should().BeEmpty();
-        options.IsConfigured.Should().BeFalse();
-    }
-
-    // AAA: EnsureValid не бросает при заданных Endpoints (валидация грани).
-    [Fact]
-    public void Endpoints_EnsureValid_Passes()
-    {
-        // Arrange
-        var options = new BackupsS3Options
-        {
-            S3 = S3("http://a:9000", "http://a:9000,http://b:9000"),
-        };
-
-        // Act
-        var act = () => options.EnsureValid();
-
-        // Assert
-        act.Should().NotThrow();
-    }
-
-    // AAA: дубли в Endpoints схлопываются (перебор не крутит одну цель дважды).
-    [Fact]
-    public void Endpoints_Duplicates_Collapsed()
-    {
-        // Arrange
-        var s3 = S3("http://a:9000", "http://a:9000,http://a:9000,http://b:9000");
-
-        // Act
-        var targets = s3.TargetList();
-
-        // Assert
-        targets.Should().Equal("http://a:9000", "http://b:9000");
-    }
-
-    // AAA: пустой Endpoint при непустых Endpoints — грань ВКЛЮЧЕНА (t36, 02 §2.5),
-    // EnsureValid при полном комплекте не бросает.
-    [Fact]
-    public void EmptyEndpoint_NonEmptyEndpoints_GrainEnabled()
-    {
-        // Arrange
-        var options = new BackupsS3Options { S3 = S3("", "http://a:9000,http://b:9000") };
-
-        // Act
-        var configured = options.IsConfigured;
-        var act = () => options.EnsureValid();
-
-        // Assert
-        configured.Should().BeTrue(
-            "non-empty Endpoints with empty Endpoint — facet enabled (02 §2.5)");
-        act.Should().NotThrow();
-    }
-
-    // AAA: грань через Endpoints валидируется так же — пустой Bucket при заданных
-    // целях → fail-fast с именем поля.
-    [Fact]
-    public void EndpointsOnly_EmptyBucket_EnsureValid_Throws()
-    {
-        // Arrange
+        // Arrange + Act — явные значения конфигурации.
         var options = new BackupsS3Options
         {
             S3 = new BackupsS3Options.S3Options
             {
-                Endpoint = "", Endpoints = "http://a:9000",
-                Bucket = "", AccessKey = "k", SecretKey = "s",
+                Bucket = "pgworker-backups",
+                Region = "us-east-1",
+                PathStyle = false,
             },
+            IntervalSec = 30,
+            TimeoutSec = 10,
         };
 
-        // Act
-        var act = () => options.EnsureValid();
-
         // Assert
-        act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*AdminPanel:Backups:S3:Bucket*");
+        options.S3.Bucket.Should().Be("pgworker-backups");
+        options.S3.Region.Should().Be("us-east-1");
+        options.S3.PathStyle.Should().BeFalse();
+        options.IntervalSec.Should().Be(30);
+        options.TimeoutSec.Should().Be(10);
     }
 }

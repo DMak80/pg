@@ -107,10 +107,10 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
 
         if (StorageEndpoint is not null)
         {
-            builder.UseSetting("AdminPanel:Backups:S3:Endpoint", StorageEndpoint);
+            // Креды/endpoint грани — из снапшота S3-домена (per-cluster
+            // secrets, arch/adminpanel/02 §12.4); в конфиге — только
+            // bucket/интервалы (S3-пул в etcd сидирует тест-класс).
             builder.UseSetting("AdminPanel:Backups:S3:Bucket", StorageBucket);
-            builder.UseSetting("AdminPanel:Backups:S3:AccessKey", S3NodeContainerFixture.AccessKey);
-            builder.UseSetting("AdminPanel:Backups:S3:SecretKey", S3NodeContainerFixture.SecretKey);
             builder.UseSetting("AdminPanel:Backups:S3:PathStyle", "true");
             builder.UseSetting("AdminPanel:Backups:IntervalSec", "60");
             builder.UseSetting("AdminPanel:Backups:TimeoutSec", "5");

@@ -27,7 +27,9 @@ public sealed record S3ClusterDto(
     string State,
     string Platform,
     int NodesDeclared,
-    string SecretProfile,
+    bool EtcdBackup,
+    string? RootUser,                          // s3w-<C>-root (имя — не секрет)
+    IReadOnlyList<S3AccessKeyDto>? AccessKeys, // [{name, policy}] БЕЗ значений
     long? CreatedUnix,
     string? Endpoints,
     IReadOnlyList<S3NodeDto> NodesList,
@@ -36,6 +38,9 @@ public sealed record S3ClusterDto(
     S3ConnectivityDto? Connectivity,
     S3SyncDto? Sync,
     S3RotationDto? Rotation);
+
+// Ключ доступа кластера в инспекции: имя + policy; значения AccessKey/SecretKey не попадают.
+public sealed record S3AccessKeyDto(string Name, string Policy);
 
 // Нода: raw state + размещение + ресурсы + занятость + denied (denylist).
 public sealed record S3NodeDto(
@@ -65,7 +70,9 @@ public sealed record S3RotationDto(long RequestedUnix, string? RequestedBy);
 // ТОГО ЖЕ домена S3Snapshot — без ключей/секретов (GET /api/backups/s3-pools).
 public sealed record S3PoolDto(
     string Name,
-    string? SecretProfile,
+    bool EtcdBackup,
+    string? RootUser,                          // s3w-<C>-root (имя — не секрет)
+    IReadOnlyList<S3AccessKeyDto>? AccessKeys, // [{name, policy}] БЕЗ значений
     bool Active,
     IReadOnlyList<S3PoolNodeDto> Nodes,
     IReadOnlyList<string> Endpoints);
@@ -80,7 +87,9 @@ public static class S3Mappers
     public static IReadOnlyList<S3PoolDto> MapPools(IReadOnlyList<S3ClusterInfo> clusters)
         => [.. clusters.Select(c => new S3PoolDto(
             c.Name,
-            c.SecretProfile,
+            c.EtcdBackup,
+            c.Secrets?.RootUser,
+            c.Secrets is null ? null : [.. c.Secrets.AccessKeys.Select(k => new S3AccessKeyDto(k.Name, k.Policy))],
             c.State == S3ClusterState.Active,
             [.. c.NodesList.Select(n => new S3PoolNodeDto(n.Name, n.State))],
             SplitEndpoints(c.Endpoints)))];
@@ -112,7 +121,9 @@ public static class S3Mappers
         StateName(cluster.State),
         cluster.Platform,
         cluster.NodesDeclared,
-        cluster.SecretProfile,
+        cluster.EtcdBackup,
+        cluster.Secrets?.RootUser,
+        cluster.Secrets is null ? null : [.. cluster.Secrets.AccessKeys.Select(k => new S3AccessKeyDto(k.Name, k.Policy))],
         cluster.CreatedUnix,
         cluster.Endpoints,
         [.. cluster.NodesList.Select(n => new S3NodeDto(

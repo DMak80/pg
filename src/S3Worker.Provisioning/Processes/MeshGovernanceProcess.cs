@@ -26,7 +26,7 @@ public sealed class MeshGovernanceProcess(
     string[] endpoints,
     ClaimStore claims,
     WorkJournal journal,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     IOwnS3NodeClient nodeClient,
     S3ProvisioningOptions options,
@@ -47,10 +47,21 @@ public sealed class MeshGovernanceProcess(
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Креды профиля: без них админ-грань недостижима — диагностический skip
-        // (по образцу надзора; оператор чинит env — тик повторит).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
-            return await SkipAsync(cluster, $"secret profile unavailable: {secretDiagnostic}", ct);
+        // Креды — per-cluster secrets из etcd (arch/23 §6): без них админ-грань
+        // недостижима — диагностический skip (ретраи тиком; значения секретов
+        // в диагностики не попадают).
+        var secretsRead = await secrets.TryReadAsync(cluster, ct);
+        var diagnostic = secretsRead.Error?.Message
+            ?? $"secrets /s3/clusters/{cluster}/secrets not found";
+        if (!secretsRead.IsSuccess || secretsRead.Value is null)
+        {
+            // Фаза называет причину (не «idle»): диагностический Success,
+            // ретраи тиком; значения секретов в диагностику не попадают.
+            var rejected = await journal.WritePhaseAsync(
+                cluster, Op, "invalid-secrets", claims.InstanceId, diagnostic, ct);
+            return rejected.IsSuccess ? Result.Success() : rejected;
+        }
+        var nodeSecrets = secretsRead.Value.ToNodeSecrets();
 
         // Адреса инстансов (portalloc, формат arch/23 §8 — словарь по именам).
         var addresses = await ReadPortAllocAsync(cluster, ct);

@@ -76,17 +76,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public const string SdImage = "sdgenerator:e2e";
 
     // Креды ownS3-ноды E2E: root-пара (mc/сид/чтение теста) и read-write ключ
-    // ноды — ему соответствуют env-профили кредов воркера (arch/19 §7).
+    // ноды — им соответствует ключ «backups» per-cluster secrets-ключа пула
+    // (arch/19 §7: PgWorker читает /s3/clusters/<C>/secrets, env-профилей нет).
     public const string S3RootUser = "owns3-e2e-root";
     public const string S3RootPassword = "owns3-e2e-root-pwd";
     public const string S3WriterKey = "pgw-e2e-writer";
     public const string S3WriterSecret = "pgw-e2e-writer-pwd";
     private const string BucketName = "pgworker-backups";
 
-    // t36: пул S3 E2E — имя env-профиля кредов (= config.secret_profile пула,
-    // сид SeedS3PoolAsync) и bucket per-install (единый на всех нодах пула,
-    // arch/19 §5; ownS3-ноды окружения поднимается с ним в StartAsync).
-    public const string PoolProfile = "backups-main";
+    // Пул S3 E2E — bucket per-install (единый на всех нодах пула, arch/19 §5;
+    // ownS3-ноды окружения поднимаются с ним в StartAsync); креды пула сеет
+    // SeedS3PoolAsync в secrets-ключ (канон arch/23 §2).
     public const string PoolBucket = BucketName;
 
     /// <summary>Inner-режим: тело факта исполняется в раннер-контейнере
@@ -1072,12 +1072,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     // ===== t36: пул S3 (инстансы пула — ownS3-ноды окружения) =====
 
-    /// <summary>Сид S3-пула (t36, AC10): /s3/clusters/&lt;pool&gt;/{config,
-    /// nodes/&lt;I&gt;/{state,placement}}, /s3worker/portalloc/&lt;pool&gt;,
-    /// endpoints — прямо в etcd окружения (PgWorker — только читатель /s3/).
-    /// Инстанс пула — ownS3-контейнер; имена нод node1..N; secret_profile —
-    /// PoolProfile. endpoints: null → одна нода (ownS3-ноды окружения); иначе —
-    /// список "host:port" (внутрисетевые адреса: вторые ownS3 сценариев AC2/AC4/AC6).</summary>
+    /// <summary>Сид S3-пула: /s3/clusters/&lt;pool&gt;/{config,
+    /// nodes/&lt;I&gt;/{state,placement}, secrets, endpoints},
+    /// /s3worker/portalloc/&lt;pool&gt; — прямо в etcd окружения (PgWorker —
+    /// только читатель /s3/). Инстанс пула — ownS3-контейнер; имена нод
+    /// node1..N; secrets-ключ — канон arch/23 §2 (root-пара окружения + ключ
+    /// «backups» = writer-комплект ноды). endpoints: null → одна нода
+    /// (ownS3-ноды окружения); иначе — список "host:port" (внутрисетевые
+    /// адреса: вторые ownS3 сценариев AC2/AC4/AC6).</summary>
     public async Task SeedS3PoolAsync(string pool, CancellationToken ct, IReadOnlyList<string>? endpoints = null)
     {
         S3Endpoint.Should().NotBeEmpty("the pool is seeded only in an environment with ownS3 (withS3Node: true)");
@@ -1086,7 +1088,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             .ToArray();
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/config",
-            $"{{\"platform\":\"owns3\",\"nodes\":{list.Length},\"secret_profile\":\"{PoolProfile}\",\"created_unix\":{now}}}",
+            $"{{\"platform\":\"owns3\",\"nodes\":{list.Length},\"created_unix\":{now}}}",
+            null, ct);
+        await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/secrets",
+            $"{{\"root_user\":\"{S3RootUser}\",\"root_password\":\"{S3RootPassword}\",\"access_keys\":"
+            + $"[{{\"name\":\"backups\",\"access_key\":\"{S3WriterKey}\",\"secret_key\":\"{S3WriterSecret}\",\"policy\":\"read-write\"}},"
+            + $"{{\"name\":\"panel\",\"access_key\":\"pgw-e2e-panel\",\"secret_key\":\"pgw-e2e-panel-pwd\",\"policy\":\"read-only\"}}]}}",
             null, ct);
         var alloc = new List<string>(list.Length);
         for (var i = 0; i < list.Length; i++)
@@ -1105,16 +1112,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
         await Gateway.PutAsync(EtcdEndpoint, $"/s3/clusters/{pool}/endpoints",
             string.Join(",", list), null, ct);
     }
-
-    /// <summary>env-комплект пула для воркера сценария: env-профиль кредов ownS3
-    /// окружения (t36, arch/19 §7 — store читает сырой env, не конфиг). Bucket
-    /// per-install сценарий задаёт ключом PgWorker__Backups__S3__Bucket.</summary>
-    public IReadOnlyDictionary<string, string> BackupPoolEnv()
-        => new Dictionary<string, string>
-        {
-            [$"PGW_BACKUP_S3_PROFILES__{PoolProfile}__ACCESS_KEY"] = S3WriterKey,
-            [$"PGW_BACKUP_S3_PROFILES__{PoolProfile}__SECRET_KEY"] = S3WriterSecret,
-        };
 
     /// <summary>Секция s3 policy однонодового пула (node1 в обоих списках записи;
     /// формат spec §5 / arch/19 §4). Многонодовые списки сценарии пишут сами.</summary>

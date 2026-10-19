@@ -15,8 +15,8 @@ public class S3ValidationTests
     private static CreateS3ClusterRequest Valid(
         string? name = "demo", string? platform = "owns3",
         IReadOnlyList<S3InstanceDto>? instances = null, decimal? cpu = 1m, int? memGi = 1, int? diskGi = 10,
-        string? secretProfile = "backups-main") => new(
-        name, platform, secretProfile, instances, new S3ResourcesDto(cpu, memGi, diskGi));
+        bool? etcdBackup = true) => new(
+        name, platform, etcdBackup, instances, new S3ResourcesDto(cpu, memGi, diskGi));
 
     [Fact]
     public void ValidRequest_NoErrors()
@@ -131,13 +131,29 @@ public class S3ValidationTests
     }
 
     [Fact]
-    public void ProfileNotSet_Error()
+    public void EtcdBackup_True_NoErrors()
     {
-        // Arrange + Act
-        var errors = S3ClusterValidator.Validate(Valid(secretProfile: " "));
+        // Arrange: EtcdBackup=true, остальные поля валидны.
+        var request = Valid(etcdBackup: true);
 
-        // Assert: 400 здесь; отсутствующий профиль — 422 в хендлере.
-        errors.Should().Contain(e => e.Field == "secretProfile");
+        // Act
+        var errors = S3ClusterValidator.Validate(request);
+
+        // Assert: 0 ошибок.
+        errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void EtcdBackup_Null_NoErrors()
+    {
+        // Arrange: EtcdBackup null — поле опционально.
+        var request = Valid(etcdBackup: null);
+
+        // Act
+        var errors = S3ClusterValidator.Validate(request);
+
+        // Assert: 0 ошибок.
+        errors.Should().BeEmpty();
     }
 
     // ============ links (чистый валидатор, §8.1.2) ============

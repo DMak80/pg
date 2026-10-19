@@ -21,8 +21,8 @@ public class SyncProbeApiTests(S3ApiFixture fx)
     private async Task SeedConfigAsync(string cluster, bool active)
     {
         var value = active
-            ? """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}"""
-            : """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800,"state":"NOT_INITIALIZED"}""";
+            ? """{"platform":"owns3","nodes":2,"created_unix":1760156800}"""
+            : """{"platform":"owns3","nodes":2,"created_unix":1760156800,"state":"NOT_INITIALIZED"}""";
         var put = await fx.Etcd.Gateway.PutAsync(
             fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", value, null, TestContext.Current.CancellationToken);
         put.IsSuccess.Should().BeTrue(put.Error?.Message);

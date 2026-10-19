@@ -33,14 +33,14 @@ public static class ApiModule
                         {
                             ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
                         }),
-                    S3SecretProfileUnavailableException profile => Results.Problem(
+                    S3EtcdBackupConflictException => Results.Problem(
+                        statusCode: StatusCodes.Status409Conflict,
+                        title: "Etcd backup conflict",
+                        detail: result.Error.Message),
+                    S3EtcdBackupKeyIncompleteException => Results.Problem(
                         statusCode: StatusCodes.Status422UnprocessableEntity,
-                        title: "Secret profile unavailable",
-                        detail: result.Error.Message,
-                        extensions: new Dictionary<string, object?>
-                        {
-                            ["profiles"] = profile.Names,
-                        }),
+                        title: "Etcd backup key incomplete",
+                        detail: result.Error.Message),
                     S3ClusterAlreadyExistsException or S3NodeAlreadyExistsException => Results.Problem(
                         statusCode: StatusCodes.Status409Conflict,
                         title: "Cluster already exists",
@@ -327,10 +327,6 @@ public static class ApiModule
                         {
                             ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
                         }),
-                    S3SecretProfileUnavailableException => Results.Problem(
-                        statusCode: StatusCodes.Status422UnprocessableEntity,
-                        title: "Secret profile unavailable",
-                        detail: result.Error.Message),
                     _ => Results.Problem(
                         statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
                         detail: result.Error!.Message),

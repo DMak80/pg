@@ -964,7 +964,7 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 | Метод+путь | Назначение |
 |---|---|
 | `GET /api/s3/clusters` | сводный список S3-кластеров |
-| `POST /api/s3/clusters` | создание кластера (02 §12.2-1): тело `CreateS3ClusterPanelRequest` → 201 \| 400 \| 409 \| 422 (профиль секретов) \| 503 |
+| `POST /api/s3/clusters` | создание кластера (02 §12.2-1): тело `CreateS3ClusterPanelRequest` → 201 \| 400 \| 409 \| 422 (etcdBackup без env-пары спец-ключа) \| 503 |
 | `GET /api/s3/clusters/{cluster}` | детали: config, ноды, links, denylist, endpoints, connectivity, sync, ротация |
 | `DELETE /api/s3/clusters/{cluster}` | перевод в TO_REMOVE (демонтаж асинхронный — воркер): 202 \| 204 \| 404 \| 503 |
 | `POST /api/s3/clusters/{cluster}/nodes` | добавление инстанса: тело `AddS3NodePanelRequest` → 201 \| 400 \| 404 \| 409 \| 503 |
@@ -973,7 +973,7 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 | `PUT /api/s3/clusters/{cluster}/links` | граф репликации — замена целиком: тело `PutS3LinksPanelRequest` → 202 \| 400 \| 404 \| 503 |
 | `POST /api/s3/clusters/{cluster}/nodes/{node}/deny` | отзыв ключа инстанса: 202 \| 204 \| 404 \| 503 |
 | `POST /api/s3/clusters/{cluster}/nodes/{node}/allow` | снятие отзыва: 202 \| 204 \| 404 \| 503 |
-| `POST /api/s3/clusters/{cluster}/rotations` | заявка ротации секретов профиля: 201 \| 200 \| 404 \| 503 |
+| `POST /api/s3/clusters/{cluster}/rotations` | заявка ротации секретов кластера: 201 \| 200 \| 404 \| 503 |
 | `POST /api/s3/clusters/{cluster}/sync-probe` | внеплановый зонд: 202 \| 404 \| 409 \| 503 |
 
 `GET /api/alerts` объединяет алерты всех движков (kind `s3-*`);
@@ -988,7 +988,8 @@ S3ClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
     nodesTotal, nodesRunning, endpoints, connectivityState
     (OK|DEGRADED|DOWN|null), syncState(SYNCED|LAGGING|DIVERGED|null),
     rotationPending(bool)
-S3ClusterDto: name, state, platform, nodesDeclared, secretProfile,
+S3ClusterDto: name, state, platform, nodesDeclared, etcdBackup(bool),
+    rootUser?(s3w-<C>-root — имя, не секрет), accessKeys?[{name, policy}],
     createdUnix, endpoints, nodesList[S3NodeDto], links[{a,b}],
     denylist[string], connectivity{state, checkedUnix,
     links<map<string,map<string,string>>>, probeError?},
@@ -998,7 +999,7 @@ S3NodeDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
     UNREACHABLE|REMOVING|TO_REMOVE), placedOn, placement{dockerHost?,
     swarmNode?, swarmLabels?}, resources{cpu, memGi, diskGi}(nullable),
     usage{usedBytes, totalBytes, updatedUnix}(nullable), denied(bool)
-CreateS3ClusterPanelRequest: name, secretProfile, instances[]
+CreateS3ClusterPanelRequest: name, etcdBackup?(bool), instances[]
     {name, placement{dockerHost?|swarmNode?|swarmLabels?},
     resources?{cpu?, memGi?, diskGi?}}, resources?{cpu?, memGi?,
     diskGi?} (общий fallback — зеркалит DTO воркера)
@@ -1007,14 +1008,16 @@ UpdateS3ResourcesPanelRequest: cpu?, memGi?, diskGi? (null = не менять)
 PutS3LinksPanelRequest: links[{a,b}]
 ```
 
-Секреты (значения профилей) в DTO/API/UI не отдаются никогда.
+Значения секретов (root-пароль, access/secret ключей) в DTO/API/UI не
+отдаются никогда — только имена/политики (состав кредов — per-cluster
+secrets-ключ etcd, 02 §12).
 
 ### 12.3. Панели UI
 
 | Панель | Что показывает |
 |---|---|
-| **S3Clusters** (`/s3`) | список: имя, state-бейдж (ACTIVE зелёный/NOT_INITIALIZED серый/TO_REMOVE красный), ноды running/всего, endpoints (сокращённо), бейджи связности (OK/DEGRADED/DOWN/—) и синхронности (SYNCED/LAGGING/DIVERGED/—), бейдж ротации («ротация…»); кнопка «Создать кластер» → модальная форма (динамический список инстансов 0..9: имя, placement — docker_host/swarm_node/swarm_labels key-value, ресурсы; подпись «допустимо 0 инстансов — декларация без развёртывания»; клиентская валидация — зеркало 02 §12.3; 422 — перечень профилей текстом) |
-| **S3ClusterDetails** (`/s3/:cluster`) | шапка: state-бейджи, endpoints (моно), secretProfile (только имя); кнопки «Проверить сейчас» (sync-probe; 409 «кластер не Active» — текстом), «Ротация секретов» (модал-предупреждение: rolling-пересоздание инстансов с новым env профиля, PKI переиспользуется), «Удалить кластер» (красная; confirm: снос уничтожает данные бэкапов на дисках всех инстансов — осознанное действие; демонтаж асинхронный; при TO_REMOVE скрыта); `canMutate` = Active; вкладки: **Ноды** (таблица name/state/placed_on/placement/resources/usage — used/total и процент от декларации disk; бейдж «отозван» + Deny (confirm: связи с инстансом сносятся, будущие join запрещены)/Allow; «Добавить ноду», «Изменить ресурсы», красная «Убрать ноду» (confirm: volume инстанса сносится — копия на остальных при настроенных связях; последняя нода — серверный 409 текстом)), **Репликация** (таблица пар + матрица смежности нода×нода; deny-ноды помечены; анти-аффинити: совпадения placed_on подсвечены «один хост»; редактор — модал «таблица пар» → PUT links целиком, 202 — применит доводка воркера; подсказка «полный меш не обязателен; ноды одного кластера — на разных хостах/площадках»), **Связность и синхронность** (connectivity-матрица ok/offline + state + checked_unix-штамп + probe_error; sync-таблица пар from/to/missing/extra/lag_bytes/lag_objects + state + last_error; пустые матрицы — «линков не настроено») |
+| **S3Clusters** (`/s3`) | список: имя, state-бейдж (ACTIVE зелёный/NOT_INITIALIZED серый/TO_REMOVE красный), ноды running/всего, endpoints (сокращённо), бейджи связности (OK/DEGRADED/DOWN/—) и синхронности (SYNCED/LAGGING/DIVERGED/—), бейдж ротации («ротация…»); кнопка «Создать кластер» → модальная форма (переключатель «бэкапный кластер etcd» — etcdBackup; динамический список инстансов 0..9: имя, placement — docker_host/swarm_node/swarm_labels key-value, ресурсы; подпись «допустимо 0 инстансов — декларация без развёртывания»; клиентская валидация — зеркало 02 §12.3; 422 — etcdBackup без env-пары спец-ключа воркера, текстом) |
+| **S3ClusterDetails** (`/s3/:cluster`) | шапка: state-бейджи, endpoints (моно), признак etcd-backup; карточка «Креды клиентской грани»: root_user + ключи name/policy (значений нет; у etcd-backup кластера пометка, что ключ backups внешний — спец-ключ бэкапа etcd); заглушка «не провижинены» до появления secrets-ключа; кнопки «Проверить сейчас» (sync-probe; 409 «кластер не Active» — текстом), «Ротация секретов» (модал-предупреждение: rolling-пересоздание инстансов с новыми кредами кластера, PKI переиспользуется), «Удалить кластер» (красная; confirm: снос уничтожает данные бэкапов на дисках всех инстансов — осознанное действие; демонтаж асинхронный; при TO_REMOVE скрыта); `canMutate` = Active; вкладки: **Ноды** (таблица name/state/placed_on/placement/resources/usage — used/total и процент от декларации disk; бейдж «отозван» + Deny (confirm: связи с инстансом сносятся, будущие join запрещены)/Allow; «Добавить ноду», «Изменить ресурсы», красная «Убрать ноду» (confirm: volume инстанса сносится — копия на остальных при настроенных связях; последняя нода — серверный 409 текстом)), **Репликация** (таблица пар + матрица смежности нода×нода; deny-ноды помечены; анти-аффинити: совпадения placed_on подсвечены «один хост»; редактор — модал «таблица пар» → PUT links целиком, 202 — применит доводка воркера; подсказка «полный меш не обязателен; ноды одного кластера — на разных хостах/площадках»), **Связность и синхронность** (connectivity-матрица ok/offline + state + checked_unix-штамп + probe_error; sync-таблица пар from/to/missing/extra/lag_bytes/lag_objects + state + last_error; пустые матрицы — «линков не настроено») |
 
 ### 12.4. Каталог s3-алертов (`S3AlertEngine`)
 

@@ -4,10 +4,10 @@ using Shared.Core;
 
 namespace PgWorker.Backups;
 
-/// <summary>Резолв per-cluster (t36, arch/19 §4/§2.6-2.7): policy.s3 + пул +
-/// env-профили → контекст списков. null = пул не выбран (policy без s3 —
-/// подсистема кластера молчит); Failed — диагностическая ошибка (пул не
-/// найден / TO_REMOVE / профиль без кредов / списки пусты / имя ноды не в
+/// <summary>Резолв per-cluster (arch/19 §4/§2.6-2.7): policy.s3 + пул +
+/// per-cluster secrets → контекст списков. null = пул не выбран (policy без
+/// s3 — подсистема кластера молчит); Failed — диагностическая ошибка (пул не
+/// найден / TO_REMOVE / нет читаемых secrets / списки пусты / имя ноды не в
 /// пуле / нода без адреса) — ВСЕ Failed-исходы transient для процессов:
 /// ретраи тиком + алертная проекция (маркер s3-pool-exhausted в статусах),
 /// НЕ краш тика и НЕ 400 на приёме policy (валидация приёма — по
@@ -18,15 +18,15 @@ public sealed record BackupPoolContext(
     IReadOnlyList<string> ReadAll);
 
 /// <summary>
-/// Единая точка «какой кластер куда пишет/читает» (t36): имена нод списков —
-/// ссылки (nodes/&lt;I&gt;/placement), адреса — portalloc/Endpoints пула;
-/// креды — env-профиль config.secret_profile (арх/19 §7). Схема URI
+/// Единая точка «какой кластер куда пишет/читает» (arch/19 §4): имена нод
+/// списков — ссылки (nodes/&lt;I&gt;/placement), адреса — portalloc/Endpoints
+/// пула; креды — per-cluster secrets из etcd
+/// (/s3/clusters/&lt;C&gt;/secrets, ключ backups — арх/19 §7). Схема URI
 /// фиксирована http — owns3-контур; https появится вместе с external-целями
 /// (точка расширения arch/19 §7).
 /// </summary>
 public sealed class BackupPoolResolver(
     IS3PoolStore pools,
-    BackupSecretProfileStore secrets,
     Func<string, CancellationToken, Task<BackupPolicy?>>? policyReader = null)
 {
     public async Task<Result<BackupPoolContext?>> ResolveAsync(string cluster, CancellationToken ct)
@@ -50,14 +50,12 @@ public sealed class BackupPoolResolver(
             return Result<BackupPoolContext?>.Failed(
                 new ApplicationException($"s3-pool: pool {s3.Pool} is in TO_REMOVE state"));
 
-        // Креды — env-профиль пула; диагностика без значений (spec §8).
-        string? accessKey = null;
-        string? secretKey = null;
-        string? diag = null;
-        if (pool.SecretProfile is null
-            || !secrets.TryGet(pool.SecretProfile, out accessKey, out secretKey, out diag))
-            return Result<BackupPoolContext?>.Failed(
-                new ApplicationException($"s3-pool: {diag ?? $"pool {pool.Name} without secret_profile"}"));
+        // Креды — per-cluster secrets из etcd (ключ backups, read-write;
+        // arch/19 §7): отсутствие/битость — transient-диагностика (ретраи тиком,
+        // маркер s3-pool-exhausted у процессов — НЕ краш тика), без значений.
+        if (pool.Secrets is not { } poolSecrets)
+            return Result<BackupPoolContext?>.Failed(new ApplicationException(
+                $"s3-pool: pool {pool.Name} has no readable secrets in etcd (/s3/clusters/{pool.Name}/secrets, key backups)"));
 
         // Списки записи — по роли источника; имена обязаны быть инстансами пула.
         var writeMasterResult = ResolveWriteList(pool, s3.Pool, "write_master", s3.WriteMaster);
@@ -73,7 +71,7 @@ public sealed class BackupPoolResolver(
         // пул поднимается (arch/19 §5).
         var readAll = ReadAllUris(pool);
         return Result<BackupPoolContext?>.Success(new BackupPoolContext(
-            pool.Name, accessKey!, secretKey!,
+            pool.Name, poolSecrets.AccessKey, poolSecrets.SecretKey,
             writeMasterResult.Value, writeReplicaResult.Value, readAll));
     }
 

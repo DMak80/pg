@@ -119,50 +119,6 @@ for k in S3W_API_HOST_PORT S3W_API_HOST_PORT2; do
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
-# Демо-профиль секретов нод — в .env без блока дописывается
-# ЦЕЛИКОМ: compose-плейсхолдеры :?задайте секрет срывают up на интерполяции.
-# Свежий .env (копия .env.example) блок уже несёт — дописки нет.
-if ! grep -q '^S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER=' "$ROOT/deploy/.env"; then
-cat >> "$ROOT/deploy/.env" <<'EOF'
-
-# S3Worker: bucket per-install (fail-fast старта) + демо-профиль
-# секретов нод (arch/23 §6) — стендовые примеры (прод — per-install секрет).
-S3W_BUCKET=pgworker-backups
-S3W_ETCD_ENDPOINT_0=http://host.docker.internal:2379
-S3W_ETCD_ENDPOINT_1=http://host.docker.internal:2381
-S3W_ETCD_ENDPOINT_2=http://host.docker.internal:2383
-S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_USER=s3w-local-root
-S3W_NODE_SECRETS__BACKUPS-MAIN__ROOT_PASSWORD=s3w-local-root-pwd
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__ACCESSKEY=pgw-backups-writer
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__SECRETKEY=pgw-backups-writer-pwd
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__0__POLICY=read-write
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__ACCESSKEY=panel-reader
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__SECRETKEY=panel-reader-pwd
-S3W_NODE_SECRETS__BACKUPS-MAIN__ACCESS_KEYS__1__POLICY=read-only
-EOF
-fi
-# Производный файл секретов нод для env_file s3worker — строки KEY=VAL
-# едут в контейнер КАК ЕСТЬ (compose-интерполяция ${S3W_NODE_SECRETS__…-…}
-# невозможна: дефис в имени переменной парсер читает как оператор дефолта).
-grep -E '^S3W_NODE_SECRETS__' "$ROOT/deploy/.env" > "$ROOT/deploy/s3w-node-secrets.env"
-[ -s "$ROOT/deploy/s3w-node-secrets.env" ] \
-  || { echo "❌ deploy/s3w-node-secrets.env is empty — secrets profile not assembled from .env"; exit 1; }
-# t36: env-профили кредов пулов pgworker (arch/19 §7) — в .env без блока
-# дописываются ЦЕЛИКОМ (прежний .env от старого шаблона блока не несёт;
-# свежий .env — копия .env.example — уже несёт). Имя профиля = secretProfile
-# пула бэкапов (BACKUPS-MAIN).
-if ! grep -q '^PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=' "$ROOT/deploy/.env"; then
-cat >> "$ROOT/deploy/.env" <<'EOF'
-
-# Профиль кредов пула бэкапов (t36, arch/19 §7): имя = secretProfile пула
-# «backups»; ключ — writer-комплект OWNS3_ACCESS_KEYS__0.
-PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__ACCESS_KEY=pgw-backups-writer
-PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__SECRET_KEY=pgw-backups-writer-pwd
-EOF
-fi
-# t36: производный файл профилей для env_file pgworker — те же строки KEY=VAL
-# без интерполяции (дефис в имени профиля; прецедент s3w-node-secrets.env).
-grep -E '^PGW_BACKUP_S3_PROFILES__' "$ROOT/deploy/.env" > "$ROOT/deploy/pgw-s3-profiles.env"
 # t15/t41: единая сеть контура = стендовая сеть (adminpanel-stand-net);
 # отдельная pgw-metrics на стенде НЕ создаётся (весь стенд в одной сети).
 for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do

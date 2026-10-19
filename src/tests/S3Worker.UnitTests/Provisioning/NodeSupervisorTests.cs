@@ -1,5 +1,6 @@
 using FluentAssertions;
 using S3Worker.Core.Model;
+using S3Worker.Core.OwnS3;
 using S3Worker.Docker.Drivers;
 using S3Worker.Provisioning;
 using S3Worker.Provisioning.Processes;
@@ -15,6 +16,20 @@ public class NodeSupervisorTests
 {
     private const string Prefix = "/s3worker";
 
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
+    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // backups(read-write) и panel(read-only); значения — фиксированные
+    // несекретные литералы.
+    private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
+        $"s3w-{cluster}-root",
+        "root-password-fixed",
+        [
+            new ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+            new ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+        ]));
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -27,14 +42,14 @@ public class NodeSupervisorTests
         public ClaimStore Claims = null!;
         public NodeSupervisor Supervisor = null!;
 
-        public static Rig New(int nodeDeadSec = 90, int healthIntervalSec = 15)
+        public static Rig New(int nodeDeadSec = 90, int healthIntervalSec = 15, bool withSecrets = true)
         {
             var rig = new Rig();
             rig.Claims = new ClaimStore(Prefix, ["http://etcd:2379"], rig.Etcd, rig.Clock);
-            var secrets = new SecretProfileStore(
-                name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? "root"
-                    : name == "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? "pw" : null,
-                ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
+            if (withSecrets)
+                rig.Etcd.Seed("/s3/clusters/demo/secrets", SecretsJson("demo"));
+            var secrets = new ClusterSecretsStore(
+                rig.Etcd, ["http://etcd:2379"], env => env is null ? null : Env.GetValueOrDefault(env));
             rig.Supervisor = new NodeSupervisor(
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
@@ -58,7 +73,7 @@ public class NodeSupervisorTests
         public async Task SeedActiveAsync(string state = S3NodeStates.Running)
         {
             Etcd.Seed("/s3/clusters/demo/config",
-                """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760156800}""");
+                """{"platform":"owns3","nodes":1,"created_unix":1760156800}""");
             Etcd.Seed("/s3/clusters/demo/nodes/node1/state", state);
             Etcd.Seed("/s3/clusters/demo/nodes/node1/placed_on", "h1");
             Etcd.Seed("/s3/clusters/demo/nodes/node1/resources", """{"cpu":"1","mem":"1Gi","disk":"5Gi"}""");
@@ -70,7 +85,7 @@ public class NodeSupervisorTests
 
         public S3ClusterSnapshot Snap() => new(
             "demo",
-            new S3ClusterConfig("owns3", 1, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 1, null, 1760156800, null),
             [new S3NodeSnapshot("node1", S3NodeStates.Running, "h1",
                 new S3NodePlacement("h1", null, null),
                 new S3NodeResources("1", "1Gi", "5Gi"), null, null)],
@@ -127,7 +142,7 @@ public class NodeSupervisorTests
         // Arrange: две ноды, обе снесены.
         var rig = Rig.New();
         rig.Etcd.Seed("/s3/clusters/demo/config",
-            """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
+            """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
         rig.Etcd.Seed("/s3/clusters/demo/nodes/node1/state", S3NodeStates.Running);
         rig.Etcd.Seed("/s3/clusters/demo/nodes/node2/state", S3NodeStates.Running);
         rig.Etcd.Seed("/s3/clusters/demo/nodes/node1/placed_on", "h1");
@@ -136,7 +151,7 @@ public class NodeSupervisorTests
         rig.Driver.Nodes.Clear(); // обе ноды снесены
         await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
         var snap = new S3ClusterSnapshot("demo",
-            new S3ClusterConfig("owns3", 2, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", 2, null, 1760156800, null),
             [
                 new S3NodeSnapshot("node1", S3NodeStates.Running, "h1", new S3NodePlacement("h1", null, null),
                     new S3NodeResources("1", "1Gi", "5Gi"), null, null),
@@ -253,6 +268,30 @@ public class NodeSupervisorTests
         spec.CpuCores.Should().Be(1m);
         spec.MemoryBytes.Should().Be(1024L * 1024 * 1024);
         rig.Etcd.Store["/s3/clusters/demo/nodes/node1/state"].Value.Should().Be(S3NodeStates.Provisioning);
+    }
+
+    // AAA: secrets-ключа нет → пересоздание отложено (диагностика в
+    // work-журнале называет ключ), docker-мутаций нет.
+    [Fact]
+    public async Task MissingSecrets_RecreationDeferred()
+    {
+        // Arrange: Active-кластер БЕЗ ключа /s3/clusters/demo/secrets;
+        // контейнер снесён — пересоздание понадобилось бы.
+        var rig = Rig.New(withSecrets: false);
+        await rig.SeedActiveAsync();
+        rig.Driver.Nodes.Clear();
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(rig.Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: тик Success (ветка отказа), docker не тронут; диагностика
+        // называет отсутствующий ключ.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Driver.Removed.Should().BeEmpty();
+        var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.LastError.Should().Contain("secrets /s3/clusters/demo/secrets not found");
     }
 
     // AAA: ноды NOT_INITIALIZED надзор не трогает.

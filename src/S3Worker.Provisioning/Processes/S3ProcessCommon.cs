@@ -87,6 +87,12 @@ public static class S3ProcessCommon
     public static string NodePkiKey(string cluster, string node)
         => $"/s3/clusters/{cluster}/nodes/{node}/pki";
 
+    /// <summary>Клиентские креды кластера (arch/23 §2/§6): ленивая генерация
+    /// при provisioning (txn put-if-absent), ротация — замена целиком; читатели
+    /// — S3Worker/PgWorker/панель/etcdworker (t32).</summary>
+    public static string ClusterSecretsKey(string cluster)
+        => $"/s3/clusters/{cluster}/secrets";
+
     public static string PortAllocKey(string cluster)
         => $"/s3worker/portalloc/{cluster}";
 
@@ -180,7 +186,7 @@ public static class S3ProcessCommon
         string[] endpoints,
         string cluster,
         string platform,
-        string? secretProfile,
+        bool etcdBackup,
         long? createdUnix,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         CancellationToken ct)
@@ -216,7 +222,7 @@ public static class S3ProcessCommon
             return Result.Failed(new ApplicationException($"config {configKey}: invalid JSON"));
         }
 
-        var canonical = SerializeCanonicalConfig(platform, addresses.Count, secretProfile, createdUnix, state);
+        var canonical = SerializeCanonicalConfig(platform, addresses.Count, etcdBackup, createdUnix, state);
         if (kv.Value == canonical)
             return Result.Success(); // уже актуален (no-op)
 
@@ -226,7 +232,7 @@ public static class S3ProcessCommon
     /// <summary>Канонический JSON config (arch/23 §2.1, порядок полей канона;
     /// state — опционально для заявочных форм).</summary>
     public static string SerializeCanonicalConfig(
-        string platform, int nodes, string? secretProfile, long? createdUnix, string? state = null)
+        string platform, int nodes, bool etcdBackup, long? createdUnix, string? state = null)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -234,7 +240,9 @@ public static class S3ProcessCommon
             writer.WriteStartObject();
             writer.WriteString("platform", platform);
             writer.WriteNumber("nodes", nodes);
-            writer.WriteString("secret_profile", secretProfile);
+            // etcd_backup пишется только при true (опциональное поле канона arch/23 §2.1).
+            if (etcdBackup)
+                writer.WriteBoolean("etcd_backup", true);
             if (createdUnix is { } created)
                 writer.WriteNumber("created_unix", created);
             if (state is { Length: > 0 })

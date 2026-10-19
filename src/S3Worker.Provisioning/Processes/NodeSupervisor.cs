@@ -27,7 +27,7 @@ public sealed class NodeSupervisor(
     ClaimStore claims,
     WorkJournal journal,
     IOwnS3NodeClient nodeClient,
-    SecretProfileStore secrets,
+    ClusterSecretsStore secrets,
     PkiStore pki,
     InstanceEnvComposer envComposer,
     S3ProvisioningOptions options,
@@ -46,16 +46,22 @@ public sealed class NodeSupervisor(
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Креды профиля: без них env пересозданной ноды не собрать —
-        // пересоздания невозможны (diagnostic в supervision-треке).
-        if (!secrets.TryGet(snap.Config?.SecretProfile ?? "", out var nodeSecrets, out var secretDiagnostic))
+        // Креды — per-cluster secrets из etcd (arch/23 §6): без них env
+        // пересозданной ноды не собрать — пересоздания невозможны. Отсутствие
+        // или битость — диагностический отказ в supervision-треке (ретраи
+        // тиком; значения секретов в диагностики не попадают).
+        var secretsRead = await secrets.TryReadAsync(cluster, ct);
+        var diagnostic = secretsRead.Error?.Message
+            ?? $"secrets /s3/clusters/{cluster}/secrets not found";
+        if (!secretsRead.IsSuccess || secretsRead.Value is null)
         {
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId, existingTrack.Value ?? new Dictionary<string, long>(),
-                $"secret profile unavailable: {secretDiagnostic} — recreation deferred", ct);
+                $"secrets unavailable: {diagnostic} — recreation deferred", ct);
             return skip.IsSuccess ? Result.Success() : skip;
         }
+        var nodeSecrets = secretsRead.Value.ToNodeSecrets();
 
         var recreated = false;
         var warnings = new List<string>();

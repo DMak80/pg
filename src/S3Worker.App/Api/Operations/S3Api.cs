@@ -31,12 +31,15 @@ public class S3ValidationException(IReadOnlyList<ValidationError> errors)
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// Профиль секретов отсутствует в env воркера — 422 (перечень — ТОЛЬКО имена).
-public sealed class S3SecretProfileUnavailableException(IReadOnlyList<string> names)
-    : Exception($"secret profile not found in worker env; available: {string.Join(", ", names)}")
-{
-    public IReadOnlyList<string> Names { get; } = names;
-}
+// Второй etcd-backup кластер установки — 409 (arch/23 §2: единственность).
+public sealed class S3EtcdBackupConflictException(string existing)
+    : Exception($"etcd_backup cluster already exists: {existing} (at most one per installation)");
+
+// Спец-ключ бэкапа etcd неполон или отсутствует в env воркера — 422
+// (только для etcd-backup; полнота проверяется в момент создания — без
+// пары provisioning ушёл бы в permanent-fail).
+public sealed class S3EtcdBackupKeyIncompleteException()
+    : Exception("etcdBackup cluster requires a complete S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY env pair of the worker");
 
 // Кластер с таким именем уже существует — 409.
 public sealed class S3ClusterAlreadyExistsException(string name)
@@ -125,7 +128,7 @@ public sealed record S3InstanceDto(
 public sealed record CreateS3ClusterRequest(
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("platform")] string? Platform,
-    [property: JsonPropertyName("secretProfile")] string? SecretProfile,
+    [property: JsonPropertyName("etcdBackup")] bool? EtcdBackup,
     [property: JsonPropertyName("instances")] IReadOnlyList<S3InstanceDto>? Instances,
     [property: JsonPropertyName("resources")] S3ResourcesDto? Resources);
 
@@ -198,6 +201,9 @@ public static class S3ApiHelpers
     public const string ConfigKeyFormat = "/s3/clusters/{0}/config";
     public const string NodesPrefixFormat = "/s3/clusters/{0}/nodes/";
 
+    // Префикс всех ключей кластеров (failover-range по нему — arch/23 §2).
+    public const string ClustersPrefix = "/s3/clusters/";
+
     public static string ConfigKey(string cluster) => string.Format(ConfigKeyFormat, cluster);
 
     public static string NodeKey(string cluster, string node, string leaf)
@@ -251,5 +257,37 @@ public static class S3ApiHelpers
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
         return Result<IReadOnlyList<string>>.Success(names);
+    }
+
+    /// <summary>Имя существующего etcd_backup-кластера (arch/23 §2:
+    /// единственность); null — такого нет. Битые config'и пропускаются.</summary>
+    public static async Task<Result<string?>> ListEtcdBackupClustersAsync(
+        IEtcdGateway gateway, string[] endpoints, CancellationToken ct)
+    {
+        var range = await CallAsync(endpoints, endpoint =>
+            gateway.RangeAsync(endpoint, ClustersPrefix, ct));
+        if (!range.IsSuccess)
+            return Result<string?>.Failed(range.Error!);
+        foreach (var kv in range.Value)
+        {
+            // Ключ строго вида /s3/clusters/<C>/config (5 сегментов).
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 5 || segments[^1] != "config")
+                continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("etcd_backup", out var flag)
+                    && flag.ValueKind == JsonValueKind.True)
+                    return Result<string?>.Success(segments[3]);
+            }
+            catch (JsonException)
+            {
+                // Битый config — пропустить ключ.
+            }
+        }
+
+        return Result<string?>.Success(null);
     }
 }

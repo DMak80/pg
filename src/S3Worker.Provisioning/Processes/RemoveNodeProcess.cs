@@ -123,7 +123,7 @@ public sealed class RemoveNodeProcess(
 
         var converge = await S3ProcessCommon.ConvergeTopologyAsync(
             gateway, endpoints, cluster, snap.Config?.Platform ?? "owns3",
-            snap.Config?.SecretProfile, snap.Config?.CreatedUnix, addresses, ct);
+            snap.Config?.EtcdBackup ?? false, snap.Config?.CreatedUnix, addresses, ct);
         if (!converge.IsSuccess)
             return Fail(cluster, node.Node, converge.Error!, "converge-topology");
 

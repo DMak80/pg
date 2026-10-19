@@ -115,7 +115,7 @@ critical-алерт).
 | `PUT /api/s3/clusters/{c}/links` | замена графа репликации целиком (тело `{links:[{a,b}…]}`; валидация — ниже) → 202; применяет доводка G (§5) |
 | `POST /api/s3/clusters/{c}/nodes/{n}/deny` | отзыв ключа инстанса: имя в `denylist` кластера → 202 (доводка G: `PUT /replication/denylist` всем инстансам, связи с ним сносятся) |
 | `POST /api/s3/clusters/{c}/nodes/{n}/allow` | снятие отзыва (имя из `denylist`) → 202 |
-| `POST /api/s3/clusters/{c}/rotations` | заявка ротации секретов профиля кластера (`/s3worker/rotations/<C>`, клэйм-txn — §9.8-паттерн) |
+| `POST /api/s3/clusters/{c}/rotations` | заявка ротации клиентских кредов кластера (`/s3worker/rotations/<C>`, клэйм-txn — §9.8-паттерн) |
 | `POST /api/s3/clusters/{c}/sync-probe` | внеплановый зонд синхронности/связности (202 — заявка `/s3worker/probes/<C>` put-if-absent, already → 202 идемпотентно; исполняет зонд F, результат — ключи arch/23 §3) — реализация t33 |
 
 **Валидация** (сервер — источник истины): `name` кластера — паттерн
@@ -127,8 +127,11 @@ arch/23; `platform` — единственное значение `owns3`; ин�
 уникальны (400); `deny/allow` — имя существует (404); `placement` —
 обязательный валидный селектор для каждого инстанса (400); `resources` —
 cpu 0.01..64, mem/disk 1..65536 GiB (канон форматов — adminpanel/02
-§9.3); `secret_profile` — непустое имя, существующее в env воркера (422 с
-перечнем доступных имён, без значений секретов).
+§9.3); `etcdBackup` — опциональный bool (default false); для
+etcd-backup кластера гварды: единственность признака в `/s3/clusters/`
+(чтение существующих config'ов перед txn) — 409; полнота спец-ключа env
+`S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (обе переменные непустые;
+отсутствие пары = неполнота) — 422.
 
 ## 2. Модель размещения
 
@@ -191,26 +194,43 @@ cpu 0.01..64, mem/disk 1..65536 GiB (канон форматов — adminpanel/
 
 ## 4. Секреты
 
-- **Per-install env-профили** `S3W_NODE_SECRETS__<PROFILE>__*` (формат и
-  имена переменных — arch/23 §6): root-пара + опциональные статические
-  access keys (read-write бэкапам / read-only панели); профиль един на
-  кластер (поле `config.secret_profile`); креды клиентской S3-грани.
+- **Креды клиентской S3-грани — per-cluster в etcd** (ключ
+  `/s3/clusters/<C>/secrets`, arch/23 §6): root-пара + статические access
+  keys `backups` (read-write) / `panel` (read-only) генерирует воркер при
+  provisioning (txn put-if-absent); источник для процессов —
+  `ClusterSecretsStore`: Ensure — выпуск/идемпотентное чтение (provisioning),
+  TryRead — надзор/G/F/AddNode/ротатор (отсутствие/битость/неполнота —
+  journal-отказ с диагностикой без значений, ретраи тиком, НЕ тихая
+  перегенерация), Rotate — генерация новых + замена целиком (txn по
+  `mod_revision`; проигрыш — отложенный тик). etcd-backup кластер: ключ
+  `backups` подставляется из спец-ключа env воркера
+  `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (§8), root/`panel`
+  генерируются.
 - **PKI репликации per-cluster — etcd** (arch/23 §6 «PKI репликации»):
   CA кластера + сертификаты инстансов + сертификат оркестратора
   выпускает воркер (ECDSA P-256, механика owns3/07 §2), хранит в
   `/s3/clusters/<C>/pki/*` и `nodes/<I>/pki`; бессрочные; переживают
   provision/переезд контейнера.
-- **Передача в инстансы** — env контейнера при создании:
+- **Передача в инстансы** — env контейнера при создании (значения из
+  secrets-ключа):
   `OWNS3_ROOT_USER`/`OWNS3_ROOT_PASSWORD` + `OWNS3_ACCESS_KEYS__<i>__*` +
   репликационный материал `OWNS3_REPLICATION_{CERT,PRIVATE_KEY,TRUST_CA}`
   / `OWNS3_REPLICATION_ADVERTISED_ENDPOINT` (значения; arch/23 §6);
   значения секретов никогда не попадают в журнал.
-- **Ротация**: заявка `/s3worker/rotations/<C>` (§1.1) →
+- **Ротация**: заявка `/s3worker/rotations/<C>` (§1.1) → генерация новых
+  root+ключей и замена `secrets` целиком (txn по `mod_revision`;
+  etcd-backup — спец-ключ пере-подставляется из env; перевыпуск —
+  однократно на заявку, journal-маркер: повторный перевыпуск каждым тиком
+  обнулял бы rolling) →
   rolling-пересоздание инстансов (по одной за тик, данные volume не
-  трогаются; PKI-материал переиспользуется из etcd — ключи переживают
-  пересоздание; рестарт-семантика платформ: ownS3 — переконфигурация env +
-  рестарт, owns3/05 §2) → del заявки по завершении. Ротация ключей
-  репликации/CA — вне (roadmap, owns3/07 §12); отзыв — deny-list (§5 G).
+  трогаются; PKI-материал и `root_user` переиспользуются — env-сверка по
+  ПОЛНЫМ значениям: root-пара + каждый
+  `OWNS3_ACCESS_KEYS__<i>__{ACCESSKEY,SECRETKEY,POLICY}` — состав при
+  перевыпуске неизменен, значения новые, сверки по одному составу
+  недостаточно; рестарт-семантика
+  платформ: ownS3 — переконфигурация env + рестарт, owns3/05 §2) → del
+  заявки по завершении. Ротация ключей репликации/CA — вне (roadmap,
+  owns3/07 §12); отзыв — deny-list (§5 G).
 - **Транспортные секреты** API/docker — env `S3W_*` (§1.1/§2).
   Серверный серт API — ключ `/workers/api_tls/s3worker` (панель пишет;
   env-фоллбек `S3W_API_TLS_*`).
@@ -236,13 +256,19 @@ P0 claim + journal(op=provision); перечитка config
 P1 резолв placement всех инстансов (arch/23 §4: селектор → кандидаты →
    детерминированный выбор → placed_on) + portalloc — под глобальным
    клэймом /s3worker/locks/portalloc (§2); не взял клэйм → journal
-   waiting-portalloc-lock (следующий тик); валидация профиля секретов
-   (env воркера; неполный → permanent-отказ фазы с диагностикой, §4);
+   waiting-portalloc-lock (следующий тик); для etcd-backup кластера —
+   проверка полноты спец-ключа env (§4/§8; гвард API создания уже отсёк
+   неполную пару — защита вглубину, неполная → permanent-отказ фазы);
    0 инстансов — фазы P1–P4 пустые (нет docker-мутаций)
-P2 создание инстансов: PKI — ленивый выпуск (txn put-if-absent):
+P2 выпуск per-cluster secrets (EnsureSecrets, txn put-if-absent — arch/23
+   §6; etcd-backup — подстановка спец-ключа env) рядом с PKI; выполняется
+   и для 0-инстансовых кластеров (etcd-операция, docker-мутаций нет);
+   отказ, включая неполноту спец-ключа env у etcd-backup кластера, →
+   Fail фазы ensure-secrets;
+   создание инстансов: PKI — ленивый выпуск (txn put-if-absent):
    pki/ca + pki/orchestrator (нет), затем nodes/<I>/pki каждого (нет);
    volume данных + контейнер ownS3 (образ из Images{OwnS3}; env: креды
-   профиля — OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*, репликационный материал —
+   из secrets-ключа — OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*, репликационный материал —
    OWNS3_REPLICATION_{CERT,PRIVATE_KEY,TRUST_CA} +
    OWNS3_REPLICATION_ADVERTISED_ENDPOINT (arch/23 §6), OWNS3_DATA_DIR=/data;
    состав mesh НЕ env — доводится P4/G; лимиты resources; S3-порт из
@@ -250,7 +276,7 @@ P2 создание инстансов: PKI — ленивый выпуск (txn
    health-ожидание — бюджет NodeBootSec, transient-толерантный цикл
    (поллинг-инвариант t19 — без одиночных блокирующих вызовов)
 P3 bucket per-install на каждом инстансе — идемпотентно (exists → пропуск;
-   CreateBucket root-кредом профиля — права admin, owns3/05 §3)
+   CreateBucket root-кредом из secrets-ключа — права admin, owns3/05 §3)
 P4 доводка состава mesh по links (arch/23 §2) — та же механика, что G
    (§5 G): deny-доведение + join недостающих пар + снос лишних
    target-записей; links пуст/0 инстансов — no-op
@@ -338,7 +364,8 @@ X3 etcd: del --prefix /s3/clusters/<C>/ + del
    по `links` минус `denylist` минус несуществующие/не-RUNNING имена
    (связь с ещё PROVISIONING-инстансом доводится после его RUNNING).
    - недостающая связь {a,b} → `POST /admin/replication/join`
-     `{"endpoint": <b>}` на a (root-креды профиля; join двусторонний —
+     `{"endpoint": <b>}` на a (root-креды из secrets-ключа кластера —
+     arch/23 §6; join двусторонний —
      обе стороны получают записи, owns3/07 §2; курсор нового соседа −1 +
      reconcile-забор — механика ownS3). 409 (имя с другим ключом) →
      DELETE target-записи конфликтующей стороны, ретрай следующим тиком;
@@ -441,7 +468,9 @@ S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15,
 S3Worker:Parallelism { MaxClusters=4 }
 S3Worker:Api { AdvertiseUrl, EnableSeedEndpoint=false, Tls{...} }   # mTLS-грань, §1.1
 # env-секреты S3W_*: S3W_API_TLS_{CERT,KEY,CLIENT_CA}, S3W_DOCKER_TLS_{CA,CERT,KEY},
-#   S3W_DOCKER_SSH_KEY[_PATH], S3W_NODE_SECRETS__<PROFILE>__* (§4)
+#   S3W_DOCKER_SSH_KEY[_PATH], S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} (§4;
+#   полупара — fail-fast старта, пара целиком опциональна — обязательна
+#   к моменту создания etcd-backup кластера, arch/23 §6)
 ```
 
 Fail-fast валидации старта — по образцу pg (неполные секретные пары,
@@ -459,6 +488,7 @@ Fail-fast валидации старта — по образцу pg (непол
 | R4 | Отсутствие per-cluster сети — межнодовые линки зависят от advertised-адресов и открытых межхостовых портов | ограничение фиксируется явно (§2); раснос по площадкам — явные селекторы оператора |
 | R5 | Смена per-install advertised-адресов (AdvertisedHost) — target-записи соседей держат прежние endpoint'ы | join идемпотентно обновляет endpoint (owns3/07 §2); лечение — переприсвоение пары в `links` (снос + повторный join) или пересоздание связей; плановая смена адресов — вне штатных операций |
 | R6 | Ротация ключей репликации/CA не автоматизирована (сертификаты бессрочные) | отзыв компрометации — deny-list (§5 G, мгновенный); плановая ротация — roadmap (owns3/07 §12); enterprise-CRL — вне |
+| R7 | DR-окно ротации спец-ключа бэкапа etcd: спец-ключ живёт в env воркера и (копией) в secrets-ключе etcd; слепок etcd, снятый до ротации, несёт старое значение — восстановление из него даёт etcdworker'у (t32) устаревший ключ до первой свежей записи | фиксируется риск-строкой; оперативное лечение — пере-подстановка значения через заявку ротации (runbook t32); механик DR в t31 нет |
 
 ## 10. Дальше
 

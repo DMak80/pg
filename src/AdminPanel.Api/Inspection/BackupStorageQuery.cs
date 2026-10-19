@@ -157,9 +157,9 @@ public sealed class InvalidBackupPrefixException(string prefix)
 public sealed class InvalidBackupMaxKeysException(int? maxKeys)
     : Exception($"maxKeys out of range 1..{BackupObjectsQuery.MaxKeysLimit}: {maxKeys?.ToString() ?? "null"}");
 
-// objects при незаданном Endpoint — 503 (грань выключена).
+// objects при отсутствии резолвнутых целей (нет Active-пула S3 с секретами) — 503 (грань выключена).
 public sealed class BackupsStorageNotConfiguredException()
-    : Exception("AdminPanel:Backups:S3:Endpoint is not set — the backups storage scope is disabled");
+    : Exception("no Active S3 backups pool with secrets in /s3/clusters/ — the backups storage scope is disabled");
 
 // Транспортный сбой обращения к ownS3 — 502.
 public sealed class BackupsS3UnavailableException(string message)
@@ -177,7 +177,7 @@ public static class BackupStorageMappers
             // AC1: грань не настроена — только configured + причина.
             return new BackupStorageDto(
                 Configured: false,
-                NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint is not set",
+                NotConfiguredReason: "S3 backups pool not found in /s3/clusters/ (no Active cluster with endpoints and secrets)",
                 Endpoints: [], Bucket: null, Health: null, Buckets: [], Etcd: null,
                 EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
@@ -450,13 +450,14 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
 [InjectAsScoped]
 public sealed class BackupObjectsQueryHandler(
     IS3StorageClient client,
-    IOptions<BackupsS3Options> options,
+    IS3SnapshotReader s3Reader,
     ISnapshotReader reader) : IQueryHandler<BackupObjectsQuery, BackupObjectsPageDto>
 {
     public async ValueTask<Result<BackupObjectsPageDto>> Handle(
         BackupObjectsQuery query, CancellationToken ct)
     {
-        if (!options.Value.IsConfigured)
+        // Грань выключена: в /s3/clusters/ нет Active-пула с валидными секретами.
+        if (s3Reader.Current is null || S3TargetsResolver.Resolve(s3Reader.Current) is null)
             return Result<BackupObjectsPageDto>.Failed(new BackupsStorageNotConfiguredException());
 
         var snapshot = reader.Current;

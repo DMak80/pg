@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using S3Worker.Core.Model;
+using S3Worker.Core.OwnS3;
 using S3Worker.Docker.Drivers;
 using S3Worker.Provisioning;
 using S3Worker.Provisioning.Processes;
@@ -17,14 +18,19 @@ public class ProvisioningProcessTests
     private const string Profile = "backups-main";
     private const string Bucket = "pgworker-backups";
 
-    private static readonly IReadOnlyDictionary<string, string?> FullProfileEnv = new Dictionary<string, string?>
-    {
-        [$"S3W_NODE_SECRETS__{Profile}__ROOT_USER"] = "root",
-        [$"S3W_NODE_SECRETS__{Profile}__ROOT_PASSWORD"] = "pw",
-        [$"S3W_NODE_SECRETS__{Profile}__ACCESS_KEYS__0__ACCESSKEY"] = "ak",
-        [$"S3W_NODE_SECRETS__{Profile}__ACCESS_KEYS__0__SECRETKEY"] = "sk",
-        [$"S3W_NODE_SECRETS__{Profile}__ACCESS_KEYS__0__POLICY"] = "read-write",
-    };
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
+    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // backups(read-write) и panel(read-only); значения — фиксированные
+    // несекретные литералы.
+    private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(new ClusterSecrets(
+        $"s3w-{cluster}-root",
+        "root-password-fixed",
+        [
+            new ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+            new ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+        ]));
 
     private sealed class Rig
     {
@@ -32,9 +38,7 @@ public class ProvisioningProcessTests
         public Fakes.FakeS3Driver Driver = new();
         public Fakes.FakeNodeClient NodeClient = new();
         public FixedTimeProvider Clock = new();
-        public SecretProfileStore Secrets = new(
-            name => name is not null && FullProfileEnv.TryGetValue(name, out var v) ? v : null,
-            FullProfileEnv.Keys);
+        public ClusterSecretsStore Secrets = null!;
         public ClaimStore Claims = null!;
         public BootWaitBudget BootWait = null!;
         public ProvisioningProcess Process = null!;
@@ -42,6 +46,8 @@ public class ProvisioningProcessTests
         public static Rig New(int portFrom = 18000, string? advertised = null)
         {
             var rig = new Rig();
+            rig.Secrets = new ClusterSecretsStore(
+                rig.Etcd, ["http://etcd:2379"], env => env is null ? null : Env.GetValueOrDefault(env));
             rig.Claims = new ClaimStore(Prefix, ["http://etcd:2379"], rig.Etcd, TimeProvider.System);
             rig.Driver.Hosts =
             [
@@ -83,7 +89,7 @@ public class ProvisioningProcessTests
         string cluster = "demo", string state = S3NodeStates.NotInitialized,
         string? nodeState = null) => new(
         cluster,
-        new S3ClusterConfig("owns3", 2, Profile, 1760156800, state),
+        new S3ClusterConfig("owns3", 2, null, 1760156800, state),
         [
             new S3NodeSnapshot("node1", nodeState, null,
                 new S3NodePlacement("h1", null, null),
@@ -152,10 +158,11 @@ public class ProvisioningProcessTests
         // Arrange: заявка с nodes=0 и без инстансных ключей.
         var rig = Rig.New();
         rig.Etcd.Seed("/s3/clusters/empty/config",
-            "{\"platform\":\"owns3\",\"nodes\":0,\"secret_profile\":\"" + Profile + "\",\"created_unix\":1760156800,\"state\":\"NOT_INITIALIZED\"}");
+            "{\"platform\":\"owns3\",\"nodes\":0,\"created_unix\":1760156800,\"state\":\"NOT_INITIALIZED\"}");
+        rig.Etcd.Seed("/s3/clusters/empty/secrets", SecretsJson("empty"));
         await rig.Claims.TryClaimClusterAsync("empty", TestContext.Current.CancellationToken);
         var snap = new S3ClusterSnapshot("empty",
-            new S3ClusterConfig("owns3", 0, Profile, 1760156800, S3NodeStates.NotInitialized),
+            new S3ClusterConfig("owns3", 0, null, 1760156800, S3NodeStates.NotInitialized),
             [], null);
 
         // Act
@@ -169,10 +176,12 @@ public class ProvisioningProcessTests
         config.Should().Contain("\"nodes\":0").And.NotContain("state");
     }
 
-    private static async Task SeedDeclarationAsync(Fakes.FakeEtcd etcd, string cluster, string state)
+    private static async Task SeedDeclarationAsync(Fakes.FakeEtcd etcd, string cluster, string state, bool withSecrets = true)
     {
         etcd.Seed($"/s3/clusters/{cluster}/config",
-            $$"""{"platform":"owns3","nodes":2,"secret_profile":"{{Profile}}","created_unix":1760156800,"state":"{{state}}"}""");
+            $$"""{"platform":"owns3","nodes":2,"created_unix":1760156800,"state":"{{state}}"}""");
+        if (withSecrets)
+            etcd.Seed($"/s3/clusters/{cluster}/secrets", SecretsJson(cluster));
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node1/placement", """{"docker_host":"h1"}""");
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node2/placement", """{"docker_host":"h2"}""");
         etcd.Seed($"/s3/clusters/{cluster}/nodes/node1/resources", """{"cpu":"1","mem":"1Gi","disk":"5Gi"}""");
@@ -281,40 +290,50 @@ public class ProvisioningProcessTests
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
-    // AAA: P1 — неполный профиль → permanent Failed c диагностикой без значений.
+    // AAA: P2-вход — secrets-ключа нет в etcd → EnsureAsync генерирует и
+    // записывает (txn put-if-absent), provisioning доходит до done.
     [Fact]
-    public async Task P1_IncompleteProfile_FailedWithoutValues()
+    public async Task EnsureSecrets_EmptyEtcd_Generated()
     {
-        // Arrange: профиль без ROOT_PASSWORD.
-        var env = new Dictionary<string, string?>
-        {
-            [$"S3W_NODE_SECRETS__{Profile}__ROOT_USER"] = "root",
-        };
+        // Arrange: заявка без предзаписанного secrets-ключа.
         var rig = Rig.New();
-        rig.Secrets = new SecretProfileStore(
-            name => name is not null && env.TryGetValue(name, out var v) ? v : null, env.Keys);
-        rig.Process = new ProvisioningProcess(
-            rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
-            new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"]),
-            new PortAllocLock(Prefix, ["http://etcd:2379"], rig.Etcd, TimeProvider.System, "inst-1"),
-            new PortAllocIndex(rig.Etcd, ["http://etcd:2379"],
-                Microsoft.Extensions.Logging.Abstractions.NullLogger<PortAllocIndex>.Instance),
-            rig.Secrets, NewPki(rig), new InstanceEnvComposer(),
-            NewMesh(rig), rig.NodeClient,
-            new S3ProvisioningOptions(18000, 18999, 100, 90, 15, null, "owns3:dev", Bucket),
-            rig.BootWait);
+        await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized, withSecrets: false);
+        await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
+        rig.NodeClient.Health = true;
+
+        // Act
+        var result = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
+
+        // Assert: ключ /s3/clusters/demo/secrets записан (root_user канона),
+        // прогон успешен.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Keys.Should().Contain("/s3/clusters/demo/secrets");
+        var secrets = ClusterSecretsStore.TryParse(rig.Etcd.Store["/s3/clusters/demo/secrets"].Value);
+        secrets.Should().NotBeNull();
+        secrets!.RootUser.Should().Be("s3w-demo-root");
+    }
+
+    // AAA: P2-вход — битый предзаписанный secrets-ключ → permanent Failed
+    // c фазой ensure-secrets и диагностикой без значений; docker чист.
+    [Fact]
+    public async Task EnsureSecrets_BrokenKey_Failed()
+    {
+        // Arrange: заявка; под secrets-ключом невалидный JSON.
+        var rig = Rig.New();
         await SeedDeclarationAsync(rig.Etcd, "demo", S3NodeStates.NotInitialized);
+        rig.Etcd.Seed("/s3/clusters/demo/secrets", "not json");
         await rig.Claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken);
 
         // Act
         var result = await rig.Process.RunAsync(Snap(), TestContext.Current.CancellationToken);
 
-        // Assert: Failed, диагностика «неполон», значений нет; docker чист.
+        // Assert: Failed, фаза ensure-secrets, значений в диагностике нет;
+        // docker-мутаций нет.
         result.IsSuccess.Should().BeFalse();
         var journal = await new WorkJournal(Prefix, rig.Etcd, ["http://etcd:2379"])
             .ReadAsync("demo", TestContext.Current.CancellationToken);
-        journal.Value!.Phase.Should().Be("invalid-secret-profile");
-        journal.Value.LastError.Should().Contain("incomplete").And.NotContain("pw");
+        journal.Value!.Phase.Should().Be("ensure-secrets");
+        journal.Value.LastError.Should().Contain("corrupt/incomplete").And.NotContain("root-password-fixed");
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
@@ -339,7 +358,7 @@ public class ProvisioningProcessTests
         // placed_on, states RUNNING, 2 ноды с volume-спекой, бакеты созданы.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         var config = rig.Etcd.Store[$"/s3/clusters/demo/config"].Value;
-        config.Should().Be("""{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
+        config.Should().Be("""{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
         rig.Etcd.Store[$"/s3/clusters/demo/endpoints"].Value
             .Should().Be("host.docker.internal:18000,host.docker.internal:18001");
         var portalloc = S3ProcessCommon.ParsePortAlloc(rig.Etcd.Store[$"{Prefix}/portalloc/demo"].Value);
@@ -352,7 +371,7 @@ public class ProvisioningProcessTests
         var spec = rig.Driver.Ensured[0];
         spec.NodeName.Should().Be("node1");
         spec.Image.Should().Be("owns3:dev");
-        spec.Env!["OWNS3_ROOT_USER"].Should().Be("root");
+        spec.Env!["OWNS3_ROOT_USER"].Should().Be("s3w-demo-root");
         spec.Env["OWNS3_DATA_DIR"].Should().Be("/data");
         spec.CpuCores.Should().Be(1m);
         spec.MemoryBytes.Should().Be(1024L * 1024 * 1024);

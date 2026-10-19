@@ -59,13 +59,14 @@ HostMap не нужен.
 S3Worker по заявке оператора через панель (контейнеры `s3w-<C>-<I>`,
 bucket создаётся провижинингом пула; `00-up.sh` ничего не наливает).
 Грань панели «Хранилище бэкапов» до создания пула — configured с
-health-отказом (endpoint `http://s3w-backups-node1:9000` отвечает после
-провижининга пула) — ожидаемое состояние пустого контура. Панель читает
-bucket read-only: ключ `panel-reader`, env `AdminPanel__Backups__S3__*`
-сервиса `adminpanel`; проверка грани — `checks/45-backups-storage.sh`
-(после создания пула вручную через панель). Standalone-`owns3` deploy-проекта
-— ручной подъём при необходимости (проверка — чек `46-owns3.sh` после
-ручного подъёма).
+health-отказом — ожидаемое состояние пустого контура. Панель берёт endpoint
+и креды пула из снапшота S3-домена per-cluster (read-only ключ `panel`
+secrets-ключа `/s3/clusters/<C>/secrets`); из env остаётся только bucket
+(`AdminPanel__Backups__S3__Bucket` сервиса `adminpanel`). Проверка грани —
+`checks/45-backups-storage.sh` (после создания пула вручную через панель;
+root-креды налива mc берёт из secrets-ключа etcd). Standalone-`owns3`
+deploy-проекта — ручной подъём при необходимости (проверка — чек `46-owns3.sh`
+после ручного подъёма).
 
 Кластеры создаются вручную через панель (API воркеров); стенд задаёт
 `PGW_CONTOUR_NETWORK` = `adminpanel-stand-net` (режим сети контура движков

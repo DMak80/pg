@@ -116,4 +116,22 @@ public static class EtcdSeed
         foreach (var (key, value) in Backups(now))
             await PutAsync(endpoint, key, value, ct);
     }
+
+    // Сид S3-пула «backups» в /s3/clusters/ — источник целей грани «Хранилище
+    // бэкапов» (arch/adminpanel/02 §12.4): Active-config (без state — парсер
+    // даёт Active), endpoints и per-cluster secrets-ключ канона (arch/23 §2).
+    // Ключ «panel» (read-only) несёт root-пару ownS3-ноды фикстуры — нода
+    // других кредов не знает; «backups» — произвольные значения фикстуры
+    // (панелью не читаются). Значения — тестовые, не прод-секреты.
+    public static async Task SeedS3PoolAsync(
+        string endpoint, string s3Endpoint, string accessKey, string secretKey, CancellationToken ct)
+    {
+        var hostPort = s3Endpoint.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/');
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await PutAsync(endpoint, "/s3/clusters/backups/config",
+            $$"""{"platform":"owns3","nodes":1,"created_unix":{{now}}}""", ct);
+        await PutAsync(endpoint, "/s3/clusters/backups/endpoints", hostPort, ct);
+        await PutAsync(endpoint, "/s3/clusters/backups/secrets",
+            $$"""{"root_user":"apm-pool-root","root_password":"apm-pool-root-pwd","access_keys":[{"name":"backups","access_key":"apm-pool-writer","secret_key":"apm-pool-writer-pwd","policy":"read-write"},{"name":"panel","access_key":"{{accessKey}}","secret_key":"{{secretKey}}","policy":"read-only"}]}""", ct);
+    }
 }

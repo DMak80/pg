@@ -27,6 +27,21 @@ public class S3ProcessCommonTests
     }
 
     [Fact]
+    public void SerializeCanonicalConfig_EtcdBackupFlag()
+    {
+        // Arrange: канонические аргументы заявки, варианты etcdBackup true/false.
+
+        // Act
+        var withBackup = S3ProcessCommon.SerializeCanonicalConfig("owns3", 3, etcdBackup: true, 1760156800);
+        var withoutBackup = S3ProcessCommon.SerializeCanonicalConfig("owns3", 3, etcdBackup: false, 1760156800);
+
+        // Assert: "etcd_backup":true пишется только при true; "secret_profile" не пишется вовсе.
+        withBackup.Should().Contain("\"etcd_backup\":true");
+        withoutBackup.Should().NotContain("etcd_backup");
+        withoutBackup.Should().NotContain("secret_profile");
+    }
+
+    [Fact]
     public void ParseResources_CanonicalAndJunk()
     {
         // Arrange: каноническая декларация и мусорная строка.

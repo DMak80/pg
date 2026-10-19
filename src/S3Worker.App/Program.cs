@@ -13,7 +13,7 @@ using Shared.Etcd.Client;
 // Точка входа S3Worker (arch/24 §8): host-builder с mTLS-гранью HTTP API
 // (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
-// профили секретов нод (S3W_NODE_SECRETS__*, arch/23 §6).
+// спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
 // Каркас t32 Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
 // процессы — Tasks 10–13, API-эндпоинты — Task 14 (каждая задача правит свой
 // блок DI; инкрементальный рост Program).
@@ -70,12 +70,18 @@ builder.Services.AddOptions<S3WorkerOptions>()
         "S3Worker:Docker:PortRange: 0 < From < To ≤ 65535")
     .ValidateOnStart();
 
-// env-профили секретов нод (arch/23 §6): читатель + fail-fast полупар
-// (arch/24 §8 «неполные секретные пары») — воркер с обрезанным env не стартует.
-var secretStore = new S3Worker.Provisioning.SecretProfileStore();
-foreach (var broken in secretStore.ValidateEnvPairs())
-    throw new ApplicationException($"S3W_NODE_SECRETS__{broken}: incomplete secret pair");
-builder.Services.AddSingleton(secretStore);
+// Клиентские креды кластеров — per-cluster в etcd (arch/23 §6):
+// ClusterSecretsStore. Fail-fast полупары спец-ключа бэкапа etcd
+// (arch/24 §8) — СТАТИЧЕСКИЙ гвард (транспорт стору не нужен; задана
+// одна из S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY} — воркер с обрезанным
+// env не стартует; полное отсутствие пары — легально, спец-ключ
+// обязателен только к моменту создания etcd-backup кластера).
+foreach (var broken in S3Worker.Provisioning.ClusterSecretsStore.ValidateEtcdBackupEnvPairs())
+    throw new ApplicationException(
+        $"{broken}: incomplete etcd-backup key pair (S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY must be set together)");
+builder.Services.AddSingleton(sp => new S3Worker.Provisioning.ClusterSecretsStore(
+    sp.GetRequiredService<Shared.Etcd.Client.IEtcdGateway>(),
+    sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
 
 // HTTP API хендлеры (arch/24 §1.1; Task 14) + счётчик операций.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.S3ApiMetrics(
@@ -83,7 +89,6 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.S3ApiMetrics(
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.CreateClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
     sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.DeleteClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -231,7 +236,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.MeshGove
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
@@ -242,7 +247,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SyncProb
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<TimeProvider>(),
@@ -256,7 +261,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.Provisio
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.MeshGovernanceProcess>(),
@@ -280,7 +285,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.NodeSupe
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
@@ -301,7 +306,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.AddNodeP
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<S3Worker.Provisioning.Processes.PortAllocIndex>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
@@ -322,7 +327,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SecretRo
     sp.GetRequiredService<S3Worker.Docker.Drivers.IS3ClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
+    sp.GetRequiredService<S3Worker.Provisioning.ClusterSecretsStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.PkiStore>(),
     sp.GetRequiredService<S3Worker.Provisioning.InstanceEnvComposer>(),
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),

@@ -16,6 +16,21 @@ public class MeshGovernanceTests
 {
     private const string Prefix = "/s3worker";
 
+    // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
+    private static readonly Dictionary<string, string?> Env = [];
+
+    // Валидный secrets-ключ кластера (канон arch/23 §6): root-пара +
+    // backups(read-write) и panel(read-only); значения — фиксированные
+    // несекретные литералы.
+    private static string SecretsJson(string cluster) => ClusterSecretsStore.Serialize(
+        new S3Worker.Core.OwnS3.ClusterSecrets(
+            $"s3w-{cluster}-root",
+            "root-password-fixed",
+            [
+                new S3Worker.Core.OwnS3.ClusterAccessKey("backups", "backups-ak-fixed", "backups-sk-fixed", "read-write"),
+                new S3Worker.Core.OwnS3.ClusterAccessKey("panel", "panel-ak-fixed", "panel-sk-fixed", "read-only"),
+            ]));
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -25,7 +40,7 @@ public class MeshGovernanceTests
         public MeshGovernanceProcess Mesh = null!;
         public WorkJournal Journal = null!;
 
-        public static Rig New(string? advertisedHost = null)
+        public static Rig New(string? advertisedHost = null, bool withSecrets = true)
         {
             var rig = new Rig();
             var endpoints = new[] { "http://etcd:2379" };
@@ -33,10 +48,9 @@ public class MeshGovernanceTests
             rig.Journal = new WorkJournal(Prefix, rig.Etcd, endpoints);
             var claims = new ClaimStore(Prefix, endpoints, rig.Etcd, rig.Clock);
             claims.TryClaimClusterAsync("demo", TestContext.Current.CancellationToken).GetAwaiter().GetResult();
-            var secrets = new SecretProfileStore(
-                name => name == "S3W_NODE_SECRETS__backups-main__ROOT_USER" ? "root"
-                    : name == "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD" ? "pw" : null,
-                ["S3W_NODE_SECRETS__backups-main__ROOT_USER", "S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"]);
+            if (withSecrets)
+                rig.Etcd.Seed("/s3/clusters/demo/secrets", SecretsJson("demo"));
+            var secrets = new ClusterSecretsStore(rig.Etcd, endpoints, env => env is null ? null : Env.GetValueOrDefault(env));
             using var meter = new Meter("S3Worker");
             rig.Mesh = new MeshGovernanceProcess(
                 rig.Etcd, endpoints, claims, rig.Journal, secrets, rig.Pki, rig.NodeClient,
@@ -56,7 +70,7 @@ public class MeshGovernanceTests
         var nodeStates = nodes ?? [("east1", S3NodeStates.Running), ("east2", S3NodeStates.Running)];
         return new S3ClusterSnapshot(
             "demo",
-            new S3ClusterConfig("owns3", nodeStates.Length, "backups-main", 1760156800, null),
+            new S3ClusterConfig("owns3", nodeStates.Length, null, 1760156800, null),
             nodeStates.Select(n => new S3NodeSnapshot(n.Name, n.State, "h1",
                 new S3NodePlacement("h1", null, null), null, null, null)).ToList(),
             "h1:18001,h1:18002",
@@ -296,5 +310,28 @@ public class MeshGovernanceTests
         // Assert
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.NodeClient.MeshCalls.Should().BeEmpty();
+    }
+
+    // AAA: secrets-ключа нет → диагностический skip (invalid-secrets),
+    // mesh-операций нет.
+    [Fact]
+    public async Task MissingSecrets_Skip_NoMeshOps()
+    {
+        // Arrange: ключ /s3/clusters/demo/secrets не записан.
+        var rig = Rig.New(withSecrets: false);
+        SeedPortAlloc(rig.Etcd, "east1", "east2");
+        rig.NodeClient.Status = new S3Worker.Core.OwnS3.OwnS3ReplicationStatus(true, []);
+
+        // Act
+        var result = await rig.Mesh.TickAsync(
+            Snap(links: [new S3ReplicationLink("east1", "east2")]), TestContext.Current.CancellationToken);
+
+        // Assert: Success-грань тика (skip), mesh-вызовов нет, фаза
+        // invalid-secrets с диагностикой по имени ключа.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.NodeClient.MeshCalls.Should().BeEmpty();
+        var journal = await rig.Journal.ReadAsync("demo", TestContext.Current.CancellationToken);
+        journal.Value!.Phase.Should().Be("invalid-secrets");
+        journal.Value.LastError.Should().Contain("secrets /s3/clusters/demo/secrets not found");
     }
 }

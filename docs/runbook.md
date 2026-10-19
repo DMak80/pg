@@ -5,7 +5,14 @@
 [AGENTS.md](../AGENTS.md).
 
 - **Полный dev-стенд** (панель :5050, PG-шарды, оба воркера, метрики):
-  `dev-stand/adminpanel/checks/00-up.sh` (профили/секреты — `dev-stand/adminpanel/`).
+  `dev-stand/adminpanel/checks/00-up.sh`.
+- **Секреты S3-кластеров** — per-cluster в etcd (`/s3/clusters/<C>/secrets`,
+  генерирует S3Worker); per-install env-профилей кредов нет. Единственный
+  секрет S3Worker в env — спец-ключ бэкапа etcd
+  `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` (`deploy/.env`): полупара —
+  fail-fast старта s3worker; обязателен только при создании etcd-backup
+  кластера (без пары воркер ответит 422); подставляется в
+  `/s3/clusters/<C>/secrets` ключом «backups».
 - **etcd-контур стенда** отдельно: `dev-stand/compose.yaml`.
 - **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — `PGW_TEST_DOCKER=1`
   (обязателен в мерж-гейте задач воркеров — см. AGENTS.md).
@@ -451,9 +458,18 @@ POST `/switchover` и др.) — basic-auth per-cluster (`rest_password` из et
 
 Все E2E-серии (PgWorker, KafkaWorker, ValkeyWorker и docker-профиль драйверов)
 гейтятся одной переменной `PGW_TEST_DOCKER=1` — без неё тесты помечаются
-Skip (CI без docker остаётся зелёным). E2E-окружения собирают Release сами
-(инкрементальный no-op — секунды); `PGW_TEST_E2E_NOBUILD=1` — только для
-бисекта/отладки конкретного бинаря.
+Skip (CI без docker остаётся зелёным). Сборка Release и запуск тестов —
+ВСЕГДА двумя ОТДЕЛЬНЫМИ командами: сначала сборка решения, затем тесты с
+`--no-build` и env-префиксом при самой команде (`DOTNET_CLI_UI_LANGUAGE=en
+PGW_TEST_DOCKER=1 dotnet test …`); сборка внутри команды тестов не
+используется — свежесть бинаря видна выводом отдельной команды сборки.
+E2E-окружения собирают свои docker-образы сами (publish на хосте +
+docker build, `[PHASE]`-метки); `PGW_TEST_E2E_NOBUILD=1` — только для
+бисекта/отладки конкретного бинаря. Двухфазность PgWorker-E2E: внешний Fact в
+сводке vstest всегда `Skipped` с сообщением «the class is executed in the
+runner» — это ШТАТНЫЙ релей; реальный сценарий исполняется в docker-контейнере
+раннера, вердикт серии — строка `=== TEST EXECUTION SUMMARY ===` в
+`…/pgw-e2e-artifacts-<guid>/runner.log` (путь — в сообщении скипа).
 
 Полные серии (по одной, не поверх друг друга и не поверх поднятого dev-стенда;
 правила телеметрии и поведения при падении — [docs/e2e-launch.md](e2e-launch.md),
@@ -461,22 +477,26 @@ Skip (CI без docker остаётся зелёным). E2E-окружения 
 зеркалируются — `dev-stand/images/pull-images.sh`):
 
 ```bash
+# 0) Сборка Release решения — ОТДЕЛЬНОЙ командой ДО любой серии
+#    (обязательный шаг; все команды тестов ниже — строго с --no-build)
+DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo
+
 # PgWorker — полная E2E-серия (E2e*Scenarios; канон параллелизма N=5 контуров,
 # ~19–22 мин; время и потолок — src/tests/PgWorker.IntegrationTests/xunit.runner.json)
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
-    -c Release --filter FullyQualifiedName~PgWorker.IntegrationTests.E2e
+    -c Release --no-build --filter FullyQualifiedName~PgWorker.IntegrationTests.E2e
 
 # PgWorker — docker-профиль драйверов (ExecDriver/DockerDriver/RestTls/RestRotation/…)
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
-    -c Release --filter FullyQualifiedName~PgWorker.IntegrationTests.Docker
+    -c Release --no-build --filter FullyQualifiedName~PgWorker.IntegrationTests.Docker
 
 # KafkaWorker — E2E (lifecycle + host-kill takeover, окружение Kfw-E2E)
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/KafkaWorker.IntegrationTests \
-    -c Release --filter FullyQualifiedName~KafkaWorker.IntegrationTests.E2e
+    -c Release --no-build --filter FullyQualifiedName~KafkaWorker.IntegrationTests.E2e
 
 # ValkeyWorker — E2E (lifecycle + host-kill takeover)
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/ValkeyWorker.IntegrationTests \
-    -c Release --filter FullyQualifiedName~ValkeyWorker.IntegrationTests.E2e
+    -c Release --no-build --filter FullyQualifiedName~ValkeyWorker.IntegrationTests.E2e
 ```
 
 Кейс-маркер быстрой проверки (мерж-гейт задач воркеров, см. AGENTS.md):

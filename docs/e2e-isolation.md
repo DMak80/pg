@@ -223,6 +223,8 @@ CLI-инструменты (mc) — ОДИН контейнер на окруж�
 4. В Cmd контейнеров нет `sleep`; готовности — поллинг с бюджетом ≤ 100 с.
 5. Teardown и ассерт чистоты — в хелпере; сценарий не оставляет хвостов
    мимо окружения.
-6. Прогон на Release: `PGW_TEST_DOCKER=1 dotnet test … --filter
+6. Прогон на Release — двумя отдельными командами: сначала
+   `dotnet build … -c Release`, затем
+   `PGW_TEST_DOCKER=1 dotnet test … -c Release --no-build --filter
    FullyQualifiedName~<Class>`; после серии — проверка `docker ps -a` на
    остатки своего guid и `docker network prune -f`.

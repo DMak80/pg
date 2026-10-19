@@ -62,20 +62,18 @@ public sealed class S3ApiCollection : ICollectionFixture<S3ApiFixture>
     public const string Name = "s3-api";
 }
 
-// Демо-профиль секретов API-контура (422-перечень обязан его видеть; значения —
-// стендовые тестовые, не прод-секреты).
+// Спец-ключ бэкапа etcd API-контура (значения — стендовые тестовые, не
+// прод-секреты): полная env-пара для создания etcd-backup кластеров.
 internal static class TestSecrets
 {
-    public const string Profile = "backups-main";
-
     public static readonly string[] EnvNames =
     [
-        $"S3W_NODE_SECRETS__{Profile}__ROOT_USER",
-        $"S3W_NODE_SECRETS__{Profile}__ROOT_PASSWORD",
+        "S3W_ETCD_BACKUP_ACCESSKEY",
+        "S3W_ETCD_BACKUP_SECRETKEY",
     ];
 
     // Гарантированный env WAF-хостов сборки (fail-fast полупар в Program.Main
-    // исполняется раньше конфига WAF): пары полные, значения — тестовые.
+    // исполняется раньше конфига WAF): пара полная, значения — тестовые.
     [System.Runtime.CompilerServices.ModuleInitializer]
     internal static void Set()
     {

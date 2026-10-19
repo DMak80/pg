@@ -14,7 +14,7 @@ public sealed record CreateS3ClusterCommand(CreateS3ClusterPanelRequest Request)
 
 // Ответ 201 POST /api/s3/clusters (зеркало S3ClusterCreatedDto воркера).
 public sealed record S3ClusterCreatedPanelDto(
-    string Name, string State, int Nodes, string SecretProfile, IReadOnlyList<string> Instances);
+    string Name, string State, int Nodes, bool EtcdBackup, IReadOnlyList<string> Instances);
 
 [InjectAsScoped]
 public sealed class CreateS3ClusterCommandHandler(IWorkerApiGateway api)

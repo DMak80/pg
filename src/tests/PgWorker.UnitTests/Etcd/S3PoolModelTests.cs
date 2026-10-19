@@ -24,25 +24,75 @@ public class S3PoolModelTests
         parsed.Should().Equal("h1:18001");
     }
 
-    // AAA: config-JSON без state — Active-пул (state отсутствует = Active, arch/23 §2)
+    // AAA: config с secret_profile (поле игнорируется, не читается) —
+    // Active-пул, ToRemove=false (state отсутствует = Active, arch/23 §2)
     [Fact]
     public void ParseConfig_ActiveCluster_HasNoToRemove()
     {
         var cfg = S3PoolModel.ParseConfig(
             """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
         cfg.Should().NotBeNull();
-        cfg!.SecretProfile.Should().Be("backups-main");
-        cfg.ToRemove.Should().BeFalse();
+        cfg!.ToRemove.Should().BeFalse();
     }
 
-    // AAA: config с state=TO_REMOVE — ToRemove=true (валидация policy-API)
+    // AAA: config без secret_profile — ToRemove-семантика прежняя:
+    // state=TO_REMOVE → true (валидация policy-API)
     [Fact]
     public void ParseConfig_ToRemove()
     {
         var cfg = S3PoolModel.ParseConfig(
-            """{"platform":"owns3","nodes":0,"secret_profile":"p","created_unix":1,"state":"TO_REMOVE"}""");
+            """{"platform":"owns3","nodes":0,"created_unix":1,"state":"TO_REMOVE"}""");
         cfg.Should().NotBeNull();
         cfg!.ToRemove.Should().BeTrue();
+    }
+
+    // AAA: валидный secrets-JSON (arch/23 §2.1) — креды элемента
+    // access_keys с name=="backups"
+    [Fact]
+    public void ParseSecrets_BackupsKey_ReturnsCredentials()
+    {
+        var parsed = S3PoolModel.ParseSecrets(
+            """{"root_user":"s3w-c-root","root_password":"pw","access_keys":[{"name":"backups","access_key":"ak1","secret_key":"sk1","policy":"read-write"},{"name":"panel","access_key":"ak2","secret_key":"sk2","policy":"read-only"}]}""");
+        parsed.Should().NotBeNull();
+        parsed!.AccessKey.Should().Be("ak1");
+        parsed.SecretKey.Should().Be("sk1");
+    }
+
+    // AAA: access_keys без элемента backups → null
+    [Fact]
+    public void ParseSecrets_NoBackupsKey_ReturnsNull()
+    {
+        var parsed = S3PoolModel.ParseSecrets(
+            """{"root_user":"s3w-c-root","root_password":"pw","access_keys":[{"name":"panel","access_key":"ak2","secret_key":"sk2","policy":"read-only"}]}""");
+        parsed.Should().BeNull();
+    }
+
+    // AAA: битый JSON → null (не краш, толерантность parseError-пути)
+    [Fact]
+    public void ParseSecrets_BrokenJson_ReturnsNull()
+    {
+        var parsed = S3PoolModel.ParseSecrets("""{"access_keys":[{"name":"backups"}""");
+        parsed.Should().BeNull();
+    }
+
+    // AAA: пустые access_key/secret_key у элемента backups → null
+    [Fact]
+    public void ParseSecrets_EmptyValues_ReturnsNull()
+    {
+        var parsed = S3PoolModel.ParseSecrets(
+            """{"access_keys":[{"name":"backups","access_key":"","secret_key":"","policy":"read-write"}]}""");
+        parsed.Should().BeNull();
+    }
+
+    // AAA: лишние ключи (top-level и внутри элемента) не мешают разбору
+    [Fact]
+    public void ParseSecrets_ExtraKeys_Tolerated()
+    {
+        var parsed = S3PoolModel.ParseSecrets(
+            """{"extra_top":123,"root_user":"u","root_password":"p","access_keys":[{"name":"backups","access_key":"ak1","secret_key":"sk1","policy":"read-write","comment":"x"}],"after":true}""");
+        parsed.Should().NotBeNull();
+        parsed!.AccessKey.Should().Be("ak1");
+        parsed.SecretKey.Should().Be("sk1");
     }
 
     // AAA: portalloc — только адрес по имени; лишние/битые узлы молча пропускаются
