@@ -20,20 +20,14 @@ public sealed class EtcdWorkerLoopsVitality(
             Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
         var snap = health.Snapshot();
 
-        // Шаг 9 t32: добавлен snapshot (цикл слепков); reconcile добавит шаг 13
-        // вместе с циклом. Watchdog сносит и по null-активности (2×порог) —
-        // перечень строго существующих циклов.
-        // snapshot: тик ИЛИ пульс сна — позднейший факт активности (сны длиннее
-        // порога пульсируют MarkSnapshotActivity).
-        var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
-            ? (tick > pulse ? tick : pulse)
-            : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
+        // Шаги 9/13 t32: snapshot и reconcile живут; перечень = все циклы.
         return
         [
             // активность = тик или прогресс-отметка; keepalive — активность = тик
             // (долгих фаз нет)
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
-            new LoopHeartbeat("snapshot", snapshotActivity, staleAfter),
+            new LoopHeartbeat("snapshot", snap.LastSnapshotTick ?? snap.LastSnapshotActivity, staleAfter),
+            new LoopHeartbeat("reconcile", snap.LastReconcileActivity ?? snap.LastReconcileTick, staleAfter),
         ];
     }
 }

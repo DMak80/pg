@@ -54,9 +54,11 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
                 "--data-dir=/etcd-data",
                 "--listen-client-urls=http://0.0.0.0:2379",
                 "--advertise-client-urls=http://localhost:2379",
+                // Peer — по имени сети (alias seed): managed-узлы (шаг 13)
+                // резолвят seed контура внутри etcdw-<guid>-net.
                 "--listen-peer-urls=http://0.0.0.0:2380",
-                "--initial-advertise-peer-urls=http://127.0.0.1:2380",
-                "--initial-cluster=seed=http://127.0.0.1:2380",
+                "--initial-advertise-peer-urls=http://seed:2380",
+                "--initial-cluster=seed=http://seed:2380",
                 "--initial-cluster-state=new")
             .WithPortBinding(2379, assignRandomHostPort: true)
             .Build();

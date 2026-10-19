@@ -39,7 +39,7 @@ public sealed class MembershipProcess(
         var members = await MemberListFailoverAsync(ct);
         if (!members.IsSuccess)
             return Result.Failed(members.Error!);
-        var (managed, _) = EtcdContourMembers.Build(members.Value);
+        var (managed, external) = EtcdContourMembers.Build(members.Value);
 
         // Декларация: нет/битая — только наблюдение (надзор без структурных).
         var configKv = await GetFailoverAsync(EtcdDomainKeys.ConfigKey, ct);
@@ -68,25 +68,28 @@ public sealed class MembershipProcess(
         if (dead is { } replacing)
             return await RemoveAsync(replacing.K, replacing.Member.Id, "replacing", removeVolume: true, ct);
 
-        // Перебор: вывод старейшего не-лидера под кворум-гвардом.
+        // Перебор: вывод старейшего не-лидера под кворум-гвардом (итог =
+        // managed + внешние − выводимый ≥ 3, arch/25 §1.1).
         if (managed.Count > config.Nodes)
         {
             var candidate = MembershipDecisions.PickRemoveCandidate(managed, leaderId);
             if (candidate is { } over
-                && MembershipDecisions.QuorumRemoveGuard(managed.Count - 1))
+                && MembershipDecisions.QuorumRemoveGuard(managed.Count + external.Count - 1))
                 return await RemoveAsync(over.K, over.Member.Id, "removing", removeVolume: true, ct);
         }
 
         // Недобор: доводим состав до декларации (add-learner → provision →
         // promote; promote-in-sync — уже этим же вызовом).
         if (managed.Count < config.Nodes)
-            return await AddAsync(managed, nodes, ct);
+            return await AddAsync(members.Value, managed, nodes, ct);
 
         return Result.Success();
     }
 
     private async Task<Result> AddAsync(
-        IReadOnlyList<ManagedMember> managed, IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes, CancellationToken ct)
+        IReadOnlyList<Shared.Etcd.Client.EtcdMember> allMembers,
+        IReadOnlyList<ManagedMember> managed,
+        IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes, CancellationToken ct)
     {
         var k = MembershipDecisions.NextNumber(
             managed.Select(m => m.K).Concat(nodes.Select(n => n.K)).ToList());
@@ -135,8 +138,11 @@ public sealed class MembershipProcess(
 
         await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.Provisioning}\"", ct);
 
-        // Контейнер (сеть контура, флаги EtcdNodeSpecBuilder, client-порт).
-        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options.AdvertisedHost, port.Value.Client);
+        // Контейнер (сеть контура, флаги EtcdNodeSpecBuilder, client-порт);
+        // initial-cluster — полный состав для join (без него etcd не может
+        // fetch cluster info при state=existing).
+        var initialCluster = EtcdNodeSpecBuilder.InitialCluster(allMembers, k);
+        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options.AdvertisedHost, port.Value.Client, initialCluster);
         var spec = new EtcdNodeSpec(
             k, host, port.Value.Client, options.Image, cmd, env, options.Network);
         var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);

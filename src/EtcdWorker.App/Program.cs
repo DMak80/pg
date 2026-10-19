@@ -159,6 +159,54 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<SnapshotLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 
+// Состав контура (arch/25 §3, шаг 13): драйвер по Mode (Plain — единственный
+// хост; Swarm — manager), порт-механика + провижинер + процессы + цикл.
+builder.Services.AddSingleton<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value;
+    var factory = sp.GetRequiredService<DockerEngineFactory>();
+    return string.Equals(o.Docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase)
+        ? new EtcdWorker.Docker.Drivers.SwarmEtcdNodeDriver(
+            o.Docker.SwarmManager!, factory, null, o.Docker.Network)
+        : new EtcdWorker.Docker.Drivers.PlainEtcdNodeDriver(
+            o.Docker.Hosts.Select(h => new EtcdWorker.Docker.Drivers.HostEndpoint(h.Name, h.Endpoint)).ToList(),
+            factory, o.Docker.Network);
+});
+builder.Services.AddSingleton(sp =>
+{
+    var o = sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value;
+    return new EtcdWorker.Core.EtcdProvisioningOptions(
+        o.Docker.Mode, o.Docker.Network, o.Docker.Images.Etcd, o.Docker.AdvertisedHost,
+        o.Docker.PortRange.From, o.Docker.PortRange.To,
+        o.Docker.Hosts.Length > 0 ? o.Docker.Hosts[0].Name : "local",
+        o.Thresholds.NodeBootSec, o.Thresholds.NodeDeadSec, o.Thresholds.HealthIntervalSec);
+});
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdPortAllocStore(
+    sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints));
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdNodeProvisioner(
+    sp.GetRequiredService<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(),
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Thresholds.NodeBootSec));
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.MembershipProcess(
+    sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdWorkJournal>(),
+    sp.GetRequiredService<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(),
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdPortAllocStore>(),
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdNodeProvisioner>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<EtcdWorker.Core.EtcdProvisioningOptions>()));
+builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.NodeSupervisor(
+    sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdWorkJournal>(),
+    sp.GetRequiredService<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(),
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdNodeProvisioner>(),
+    sp.GetRequiredService<EtcdWorker.Provisioning.EtcdPortAllocStore>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<EtcdWorker.Core.EtcdProvisioningOptions>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<ReconcileLoop>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
+
 // Наблюдаемость (arch/25 §7): агрегированный health + per-loop обёртка.
 // DockerEngineFactory — docker-пробы ServiceProbes (полный docker-стек — фаза 5).
 builder.Services.AddSingleton<DockerEngineFactory>();
@@ -168,10 +216,13 @@ builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
     sp => new(sp.GetRequiredService<KeepaliveLoop>()));
 builder.Services.AddSingleton<HealthCheckAbstract<SnapshotLoop>>(
     sp => new(sp.GetRequiredService<SnapshotLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
+    sp => new(sp.GetRequiredService<ReconcileLoop>()));
 builder.Services.AddHealthChecks()
     .AddCheck<EtcdWorkerHealth>("etcdworker", tags: ["ready"])
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
-    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop")
+    .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop");
 
 // Watchdog зависших циклов (arch/25 §6): staleness активности (тик или
 // прогресс-отметка) всех циклов → журнал + метрика + graceful self-stop;
