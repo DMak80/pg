@@ -138,10 +138,17 @@ public sealed class AddNodeProcess(
             gateway, endpoints, cluster, node.Node, S3NodeStates.Running, ct);
         if (!running.IsSuccess)
             return Fail(cluster, node.Node, running.Error!, "running");
-        var bucket = await nodeClient.EnsureBucketAsync(
-            probeHost, address.S3Port, nodeSecrets!, options.Bucket, ct);
-        if (!bucket.IsSuccess)
-            return Fail(cluster, node.Node, bucket.Error!, "ensure-bucket");
+        // arch/23 §5: per-install + (etcd_backup кластер) фиксированный
+        // etcd-слепковый bucket — новый инстанс получает оба (идемпотентно).
+        var bucketNames = S3ProcessCommon.BucketsForInstance(
+            options.Bucket, snap.Config?.EtcdBackup ?? false);
+        foreach (var bucketName in bucketNames)
+        {
+            var bucket = await nodeClient.EnsureBucketAsync(
+                probeHost, address.S3Port, nodeSecrets!, bucketName, ct);
+            if (!bucket.IsSuccess)
+                return Fail(cluster, node.Node, bucket.Error!, "ensure-bucket");
+        }
 
         // Завершающее окно: RMW endpoints + актуализация config.nodes
         // до фактического состава (txn по mod_revision, spec §2.2; уже

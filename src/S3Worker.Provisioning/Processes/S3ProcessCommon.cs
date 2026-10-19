@@ -565,4 +565,15 @@ public static class S3ProcessCommon
         value = 0;
         return false;
     }
+
+    /// <summary>Отбор bucket'ов для инстанса (arch/23 §5): per-install — всегда;
+    /// фиксированный etcd-слепковый — только у etcd-backup кластера
+    /// (EtcdWorker выгружает в него DR-слепки etcd).</summary>
+    public static IReadOnlyList<string> BucketsForInstance(string perInstallBucket, bool etcdBackup)
+    {
+        var buckets = new List<string> { perInstallBucket };
+        if (etcdBackup)
+            buckets.Add(Shared.Core.EtcdSnapshotBucket.Name);
+        return buckets;
+    }
 }
