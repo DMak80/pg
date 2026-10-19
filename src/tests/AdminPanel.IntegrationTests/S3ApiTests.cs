@@ -158,17 +158,17 @@ public class S3ApiTests(S3ApiFixture fx)
 
     // Arrange: живой ключ /s3worker/api/ + стаб воркера 201. Act: POST /api/s3/clusters.
     // Assert: 201; стаб получил POST /api/s3/clusters с телом как есть (json-сравнение,
-    // вкл. platform:"owns3").
+    // вкл. platform:"owns3" и проброс etcdBackup).
     [Fact]
     public async Task Create_ProxiesToWorker_201()
     {
         using var client = await LoginAsync();
         fx.WorkerApi.Respond = _ => new WorkerApiResult(201,
-            """{"name":"made","state":"NOT_INITIALIZED","nodes":1,"secretProfile":"backups-main","instances":["node1"]}""");
+            """{"name":"made","state":"NOT_INITIALIZED","nodes":1,"etcdBackup":false,"instances":["node1"]}""");
         var body = new
         {
             name = "made",
-            secretProfile = "backups-main",
+            etcdBackup = true,
             instances = new[]
             {
                 new { name = "node1", placement = new { dockerHost = "h1" } },
@@ -178,7 +178,8 @@ public class S3ApiTests(S3ApiFixture fx)
         // Act
         var created = await client.PostAsJsonAsync("/api/s3/clusters", body, TestContext.Current.CancellationToken);
 
-        // Assert: 201 + Location; тело ушло воркеру как есть (platform подставлен).
+        // Assert: 201 + Location; тело ушло воркеру как есть (platform
+        // подставлен, etcdBackup проброшен — зеркало DTO воркера).
         created.StatusCode.Should().Be(HttpStatusCode.Created);
         created.Headers.Location.Should().Be("/api/s3/clusters/made");
         var call = fx.WorkerApi.Calls.Should().ContainSingle().Which;
@@ -189,6 +190,7 @@ public class S3ApiTests(S3ApiFixture fx)
             JsonSerializer.Serialize(call.Body, Json), Json);
         sent.GetProperty("platform").GetString().Should().Be("owns3");
         sent.GetProperty("name").GetString().Should().Be("made");
+        sent.GetProperty("etcdBackup").GetBoolean().Should().BeTrue("panel mirrors the etcdBackup flag to the worker");
         sent.GetProperty("instances").GetArrayLength().Should().Be(1);
         fx.WorkerApi.Reset();
     }
@@ -221,7 +223,7 @@ public class S3ApiTests(S3ApiFixture fx)
 
         // Act: POST кластера с битым телом.
         var bad = await client.PostAsJsonAsync("/api/s3/clusters",
-            new { name = "X", secretProfile = "p" }, TestContext.Current.CancellationToken);
+            new { name = "X", etcdBackup = false }, TestContext.Current.CancellationToken);
 
         // Assert: 400 и тело как есть.
         bad.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -234,25 +236,26 @@ public class S3ApiTests(S3ApiFixture fx)
 
         // Act: POST кластера с занятым именем.
         var conflict = await client.PostAsJsonAsync("/api/s3/clusters",
-            new { name = "made", secretProfile = "p" }, TestContext.Current.CancellationToken);
+            new { name = "made" }, TestContext.Current.CancellationToken);
 
         // Assert: 409 как есть.
         conflict.StatusCode.Should().Be(HttpStatusCode.Conflict);
         (await conflict.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
             .Should().Contain("cluster already exists");
 
-        // Arrange: стаб 422 (профиль секретов недоступен).
+        // Arrange: стаб 422 (env-пара спец-ключа etcd-backup неполная —
+        // актуальная семантика 422 воркера).
         fx.WorkerApi.Respond = _ => new WorkerApiResult(422,
-            """{"title":"Secret profile unavailable","status":422,"detail":"no profile","profiles":["backups-main"]}""");
+            """{"title":"Etcd backup env pair incomplete","status":422,"detail":"S3W_ETCD_BACKUP_ACCESSKEY/SECRETKEY env pair is incomplete"}""");
 
-        // Act: POST кластера с недоступным профилем.
+        // Act: POST etcd-backup кластера без env-пары у воркера.
         var profile = await client.PostAsJsonAsync("/api/s3/clusters",
-            new { name = "made", secretProfile = "no-such" }, TestContext.Current.CancellationToken);
+            new { name = "made", etcdBackup = true }, TestContext.Current.CancellationToken);
 
-        // Assert: 422 с перечнем профилей как есть.
+        // Assert: 422 с упоминанием env-пары как есть.
         profile.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
         (await profile.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
-            .Should().Contain("backups-main");
+            .Should().Contain("S3W_ETCD_BACKUP");
         fx.WorkerApi.Reset();
     }
 

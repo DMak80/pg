@@ -140,6 +140,34 @@ public class S3InventoryLoopTests
         store.Current.Should().BeNull();
     }
 
+    // AAA: пул появляется в /s3/clusters/ ПОСЛЕ старта панели (стенд: контур
+    // без сидов, пул создаётся вручную) — первый тик no-op, следующий тик
+    // подхватывает пул и заполняет инвентарь. Регрессия startup-выхода лупа
+    // (02 §12.4: гвард per-tick, не выход из ExecuteAsync).
+    [Fact]
+    public async Task RunOnce_PoolAppearsAfterStart_NextTickInventories()
+    {
+        // Arrange — на старте пула нет (снапшот пуст); затем появляется.
+        var client = new StubS3();
+        var store = new S3InventoryStore();
+        var reader = new StubReader(null);
+        var loop = new S3InventoryLoop(client, store,
+            Options.Create(new BackupsS3Options { S3 = { Bucket = "pgworker-backups" } }),
+            reader, new FixedTimeProvider(), NullLogger<S3InventoryLoop>.Instance);
+
+        // Act — тик без пула: no-op; пул появляется — следующий тик инвентарит.
+        await loop.RunOnceAsync(CancellationToken.None);
+        client.Calls.Should().Be(0);
+        store.Current.Should().BeNull();
+        reader.Current = Snapshot(BackupCluster());
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        // Assert — инвентарь собран вторым тиком (configured, клиент зван).
+        client.Calls.Should().BeGreaterThan(0);
+        store.Current!.Configured.Should().BeTrue();
+        store.Current.UpdatedAtUnix.Should().BeGreaterThan(0);
+    }
+
     // AAA: цели есть + клиент бросает → маркер Configured=true, UpdatedAtUnix=0,
     // failures=1 (Решение 4)
     [Fact]
@@ -161,7 +189,7 @@ public class S3InventoryLoopTests
     // Стаб читателя снапшота S3 (порт S3QueryHandlerTests.StubReader).
     private sealed class StubReader(S3Snapshot? snapshot) : IS3SnapshotReader
     {
-        public S3Snapshot? Current { get; } = snapshot;
+        public S3Snapshot? Current { get; set; } = snapshot;
     }
 
     // Стаб IS3StorageClient: счётчик list/health-вызовов, цели, поданные

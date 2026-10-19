@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Грань «Хранилище бэкапов» против пула бэкапов (t36: инвентарь — нода пула
-# s3w-backups-node1 в стендовой сети, сид 00-up.sh; t08, arch/04 §3):
+# Грань «Хранилище бэкапов» против пула бэкапов (инвентарь — ноды пула
+# s3w-<C>-<I> в стендовой сети; пул создаётся вручную через панель —
+# t08, arch/04 §3):
 # идемпотентный mc-налив тестовых объектов → /api/backups/storage
 # (configured/health/дерево demo/shard1), on-demand objects, отсутствие
 # секретов в DTO; дерево несут реальные бэкапы demo (налив — гарантия
@@ -52,8 +53,8 @@ echo "  uploaded demo/shard1/full/20260913a/base.tar and demo/shard1/wal/…01 (
 # Ждём инвентарь-тик панели (интервал 60 c — ретрай до 70 c). ВАЖНО: ждать
 # надо ИМЕННО налитое дерево — configured/health зелёные сразу от первого
 # тика, который мог пройти ещё до налива (по пустому bucket); налитые объекты
-# попадают в инвентарь только следующим тиком. env панель получила при
-# подъёме, reconfigure не нужна.
+# попадают в инвентарь только следующим тиком. Цели (endpoints/креды) панель
+# берёт из снапшота S3-домена per-tick — подхватываются без reconfigure.
 tree_ok() {
   api /api/backups/storage | jq -e \
     '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == true
@@ -84,11 +85,11 @@ api /api/backups/storage | jq -e '((tostring) | contains("SecretKey") or contain
   || { echo "❌ /api/backups/storage: AccessKey/SecretKey leaked into the DTO"; exit 1; }
 echo "  no AccessKey/SecretKey secrets in the DTO"
 
-# t36 (arch/adminpanel/03 §3): пулы S3 read-минимум — модал «Пул бэкапов».
-# Пул «backups» сидится чеком 00-up.sh (S3Worker API); список пулов панели
-# несёт его с нодами, DTO без ключей.
+# Пулы S3 read-минимум (arch/adminpanel/03 §3) — модал «Пул бэкапов»:
+# пул «backups» — созданный вручную; список пулов панели несёт его с нодами,
+# DTO без ключей.
 api /api/backups/s3-pools | jq -e 'any(.[]; .name == "backups" and (.nodes | length) >= 1)' >/dev/null \
-  || { echo "❌ /api/backups/s3-pools: no backups pool (00-up.sh seed?)"; exit 1; }
+  || { echo "❌ /api/backups/s3-pools: no backups pool (create it via the panel)"; exit 1; }
 # Состав кредов пула (rootUser + accessKeys name/policy, arch/23 §2) в DTO
 # легален — это имена; секреты — только значения ключей:
 # AccessKey/SecretKey/ACCESS_KEY/SECRET_KEY.

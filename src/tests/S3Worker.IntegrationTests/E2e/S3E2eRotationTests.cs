@@ -70,10 +70,12 @@ public class S3E2eRotationTests
             }, TimeSpan.FromSeconds(90), ct);
 
             // Assert 1: secrets-ключ перевыпущен — root_user сохранён,
-            // root_password изменился (сравнение в коде, без печати).
+            // root_password изменился (сравнение в коде, БЕЗ печати: провал
+            // ассерта не выведет значение в лог/trx).
             var (rootUserAfter, rootPasswordAfter) = await fx.RootPairOfAsync(cluster, ct);
             rootUserAfter.Should().Be(rootUser, "rotation keeps the canonical root_user");
-            rootPasswordAfter.Should().NotBe(rootPassword, "rotation re-issues the root password");
+            (!string.Equals(rootPasswordAfter, rootPassword, StringComparison.Ordinal))
+                .Should().BeTrue("rotation re-issues the root password");
             EnvOf(await fx.ContainerEnvJsonAsync($"s3w-{cluster}-east1"))["OWNS3_ROOT_USER"]
                 .Should().Be(rootUserAfter, "re-created nodes carry the re-issued env");
 

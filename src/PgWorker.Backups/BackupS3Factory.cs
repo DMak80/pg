@@ -73,7 +73,7 @@ public sealed class BackupS3Factory(
         // ключ backups), без секрет-профилей.
         if (s3pool.Secrets is not { } poolSecrets)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: pool {s3pool} has no readable secrets in etcd (/s3/clusters/{s3pool}/secrets, key backups)"));
+                $"s3-pool: pool {s3pool.Name} has no readable secrets in etcd (/s3/clusters/{s3pool.Name}/secrets, key backups)"));
 
         // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
         // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).

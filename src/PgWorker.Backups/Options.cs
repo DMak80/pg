@@ -2,14 +2,15 @@ namespace PgWorker.Backups;
 
 /// <summary>Runtime-опции подсистемы бэкапов (arch/19 §9, t02): склейка секции
 /// PgWorker:Backups (маппер BackupsOptions.ToRuntime() в App; образец
-/// MovesRuntimeOptions). S3-креды — per-install, env воркера, дальше — env
-/// джоба (в etcd/логи не попадают).</summary>
+/// MovesRuntimeOptions). S3-креды — per-cluster secrets пула
+/// (/s3/clusters/<C>/secrets, выбирается policy.s3), дальше — env джоба
+/// (в etcd/логи не попадают).</summary>
 public sealed record BackupsRuntimeOptions(
     bool Enabled = false,
     long FullMaxAgeSec = 86400,
     bool VerifyOnCreate = true,
-    // t36 (arch/19 §7): только bucket per-install + CA; endpoint/креды — пул
-    // per-cluster (policy.s3) и env-профили PGW_BACKUP_S3_PROFILES__*.
+    // arch/19 §7: только bucket per-install + CA; endpoint/креды — пул
+    // per-cluster (policy.s3 + secrets-ключ).
     string S3Bucket = "",
     // t42 (arch/19 §7): путь ca.pem per-install CA — доверие https S3-endpoint;
     // null — http-endpoint, поведение прежнее; при заданном пути BackupS3 ставит

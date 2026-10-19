@@ -81,6 +81,36 @@ public class S3E2eLifecycleTests
             secretsKey.Value.Should().Contain("\"policy\":\"read-write\"")
                 .And.Contain("\"policy\":\"read-only\"");
 
+            // Assert 1b: ЗНАЧЕНИЯ секретов не появляются в журнале воркера,
+            // его docker-логах и его env (инвариант arch/23 §6; сверка в
+            // коде — провал ассерта не печатает значения в артефакты).
+            using (var secretsDoc = JsonDocument.Parse(secretsKey.Value))
+            {
+                var secretValues = new List<string>
+                {
+                    secretsDoc.RootElement.GetProperty("root_password").GetString()!,
+                };
+                foreach (var key in secretsDoc.RootElement.GetProperty("access_keys").EnumerateArray())
+                {
+                    secretValues.Add(key.GetProperty("access_key").GetString()!);
+                    secretValues.Add(key.GetProperty("secret_key").GetString()!);
+                }
+
+                var work = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                    $"/s3worker/work/{cluster}", ct)).Value?.Value ?? "";
+                var workerLogs = await fx.ContainerLogsAsync(fx.Worker1Name);
+                var workerEnv = await fx.ContainerEnvJsonAsync(fx.Worker1Name);
+                foreach (var value in secretValues.Where(v => !string.IsNullOrEmpty(v)))
+                {
+                    work.Contains(value, StringComparison.Ordinal).Should()
+                        .BeFalse("secrets values must not leak into /s3worker/work/<C>");
+                    workerLogs.Contains(value, StringComparison.Ordinal).Should()
+                        .BeFalse("secrets values must not leak into worker docker logs");
+                    workerEnv.Contains(value, StringComparison.Ordinal).Should()
+                        .BeFalse("secrets values must not leak into worker env");
+                }
+            }
+
             // Assert 2: placed_on = local (placement-селектор резолвнут).
             foreach (var node in new[] { "east1", "east2" })
             {

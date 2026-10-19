@@ -11,7 +11,10 @@ namespace AdminPanel.Probes.S3;
 // S3Inventory.Build → атомарная замена в сторе (KV-тик refresher'а не
 // блокируется). Сбой любого шага: ConsecutiveFailures +1, прежний инвентарь
 // живёт (устаревающий, штамп UpdatedAtUnix); успех — счётчик 0.
-// Нет пула в /s3/clusters/ — грань выключена: ExecuteAsync завершается сразу.
+// Пул в /s3/clusters/ может появиться ПОСЛЕ старта панели (стенд: контур
+// поднимается без сидов, пул создаётся вручную через панель) — цикл тикает
+// всегда, гвард per-tick: нет пула — тик no-op (клиент не зовётся), появился —
+// следующий тик подхватывает (02 §12.4).
 public sealed class S3InventoryLoop(
     IS3StorageClient client,
     IS3InventoryStore store,
@@ -22,13 +25,6 @@ public sealed class S3InventoryLoop(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (s3Snapshot.Current is null || S3TargetsResolver.Resolve(s3Snapshot.Current) is null)
-        {
-            logger.LogInformation(
-                "AdminPanel:Backups: S3 backups pool not found in /s3/clusters/ — facet disabled, inventory tick not started");
-            return;
-        }
-
         // Fail-fast старта уже отсёк IntervalSec <= 0 при настроенной грани;
         // fallback — на случай программной сборки без валидации.
         var seconds = options.Value.IntervalSec;

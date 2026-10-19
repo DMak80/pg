@@ -58,7 +58,8 @@ echo "$endpoints" | grep -qE '^[^:]+:[0-9]+$' \
   || { echo "❌ placed_on ≠ local ($(etcd_key "/s3/clusters/$TAG/nodes/node1/placed_on"))"; exit 1; }
 echo "  $TAG: config without state, node1 RUNNING, endpoints=$endpoints, placed_on=local"
 
-# 2) Контейнер/том ноды существуют; bucket создан (листинг root-кредом — mc).
+# 2) Контейнер/том ноды существуют (bucket создаёт provisioning воркера
+#    root-кредом кластера из secrets-ключа; листинг — чек 80/45).
 docker ps -a --format '{{.Names}}' | grep -qx "s3w-$TAG-node1" || { echo "❌ container s3w-$TAG-node1 not found"; exit 1; }
 docker volume ls -q --filter name="s3w-$TAG-node1-data" | grep -q . || { echo "❌ volume s3w-$TAG-node1-data not found"; exit 1; }
 

@@ -18,9 +18,9 @@ public sealed record S3Snapshot(
     int UnknownKeyCount,
     WorkerApiCert? WorkerApiCert = null);            // целевой серт /workers/api_tls/s3worker (arch/02 §9.9)
 
-// Кластер /s3/clusters/<C>/ (arch/23 §2): config + ноды + граф + факты.
-// SecretProfile упразднён: креды кластера — per-cluster в etcd
-// (/s3/clusters/<C>/secrets, arch/23 §6).
+// Кластер /s3/clusters/<C>/ (arch/23 §2): config + ноды + граф + факты;
+// креды кластера — per-cluster secrets-ключ etcd (/s3/clusters/<C>/secrets,
+// arch/23 §6; поле Secrets — состав без значений наружу).
 public sealed record S3ClusterInfo(
     string Name,
     S3ClusterState State,                    // config.state; отсутствие = Active

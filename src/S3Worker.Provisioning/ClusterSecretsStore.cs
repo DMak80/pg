@@ -17,8 +17,10 @@ namespace S3Worker.Provisioning;
 /// </summary>
 public sealed class ClusterSecretsStore(IEtcdGateway gateway, string[] endpoints, Func<string?, string?>? getenv = null)
 {
-    private const string BackupsKeyName = "backups";
-    private const string PanelKeyName = "panel";
+    // Имена/политики канона — ClusterAccessKeyNames из Core (единственный
+    // источник, рассинхрон литералов исключён).
+    private const string BackupsKeyName = ClusterAccessKeyNames.Backups;
+    private const string PanelKeyName = ClusterAccessKeyNames.Panel;
     private const string ReadWritePolicy = "read-write";
     private const string ReadOnlyPolicy = "read-only";
 

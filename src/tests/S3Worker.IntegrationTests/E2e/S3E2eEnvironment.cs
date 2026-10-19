@@ -588,6 +588,22 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
     }
 
+    // Docker-логи контейнера (stdout+stderr) — проверка ОТСУТСТВИЯ значений
+    // секретов; снимок живёт только в памяти теста, без печати.
+    public async Task<string> ContainerLogsAsync(string name)
+    {
+        var info = new ProcessStartInfo("docker", $"logs {name}")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(info)!;
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var errors = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return output + errors;
+    }
+
     // Факт существования named volume (точное имя/префикс filter).
     public async Task<bool> VolumeExistsAsync(string name)
     {
