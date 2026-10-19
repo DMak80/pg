@@ -315,12 +315,10 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
         // Act
         var options = _factory.Services.GetRequiredService<IOptions<BackupsS3Options>>().Value;
 
-        // Assert: все листья доехали до [Config]-POCO, грань помечена настроенной.
-        options.IsConfigured.Should().BeTrue();
-        options.S3.Endpoint.Should().Be("http://localhost:59998");
+        // Assert: конфиг-листья доехали до [Config]-POCO. Креды/endpoint в
+        // конфиге больше нет — грань резолвит их из снапшота S3-домена
+        // (per-cluster secrets, arch/adminpanel/02 §12.4).
         options.S3.Bucket.Should().Be("apm-bind-bucket");
-        options.S3.AccessKey.Should().Be(S3NodeContainerFixture.AccessKey);
-        options.S3.SecretKey.Should().Be(S3NodeContainerFixture.SecretKey);
         options.S3.PathStyle.Should().BeTrue();
         options.IntervalSec.Should().Be(60);
         options.TimeoutSec.Should().Be(5);

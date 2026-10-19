@@ -46,21 +46,21 @@ public class S3StorageClientHealthTests
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
-    private static S3StorageClient Client(FakeS3Handler handler) => new(
-        new BackupsS3Options
-        {
-            S3 = new BackupsS3Options.S3Options
+    private static S3StorageClient Client(FakeS3Handler handler)
+    {
+        var client = new S3StorageClient(
+            new BackupsS3Options
             {
-                // Фиктивный endpoint: S3-API недостижим мгновенно
-                // (connection refused) — apiOk=false вне предмета кейсов.
-                Endpoint = "http://127.0.0.1:9",
-                Bucket = "pgworker-backups",
-                AccessKey = "k",
-                SecretKey = "s",
+                S3 = new BackupsS3Options.S3Options { Bucket = "pgworker-backups" },
+                TimeoutSec = 1,
             },
-            TimeoutSec = 1,
-        },
-        new FakeHttpClientFactory(handler));
+            new FakeHttpClientFactory(handler));
+
+        // Цели — из снапшота (t31): endpoint фиктивный, S3-API недостижим
+        // мгновенно (connection refused) — apiOk=false вне предмета кейсов.
+        client.UpdateTargets(new S3StorageTargets("demo", ["http://127.0.0.1:9"], "k", "s"));
+        return client;
+    }
 
     // AAA (a): ownS3-маршрут — анонимная проба /s3/health/live = 403
     // (AccessDenied, arch/owns3/03), канонический /healthz = 200 → live

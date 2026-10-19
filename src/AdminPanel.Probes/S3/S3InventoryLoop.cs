@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using AdminPanel.Etcd;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -10,20 +11,21 @@ namespace AdminPanel.Probes.S3;
 // S3Inventory.Build → атомарная замена в сторе (KV-тик refresher'а не
 // блокируется). Сбой любого шага: ConsecutiveFailures +1, прежний инвентарь
 // живёт (устаревающий, штамп UpdatedAtUnix); успех — счётчик 0.
-// Пустой Endpoint — грань выключена: ExecuteAsync завершается сразу (AC1).
+// Нет пула в /s3/clusters/ — грань выключена: ExecuteAsync завершается сразу.
 public sealed class S3InventoryLoop(
     IS3StorageClient client,
     IS3InventoryStore store,
     IOptions<BackupsS3Options> options,
+    IS3SnapshotReader s3Snapshot,
     TimeProvider time,
     ILogger<S3InventoryLoop> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!options.Value.IsConfigured)
+        if (s3Snapshot.Current is null || S3TargetsResolver.Resolve(s3Snapshot.Current) is null)
         {
             logger.LogInformation(
-                "AdminPanel:Backups:S3:Endpoint not set — S3 facet disabled, inventory tick not started");
+                "AdminPanel:Backups: S3 backups pool not found in /s3/clusters/ — facet disabled, inventory tick not started");
             return;
         }
 
@@ -53,15 +55,22 @@ public sealed class S3InventoryLoop(
     public async Task RunOnceAsync(CancellationToken ct)
     {
         var config = options.Value;
-        if (!config.IsConfigured)
-            return; // выключенная грань — no-op, клиент не зовётся (AC1)
+
+        // Цели грани — из снапшота S3-домена (arch/adminpanel/02 §12.4): клиент
+        // перенацеливается КАЖДЫМ тиком (ротация кредов — следующий тик); пула
+        // нет — грань не настроена, no-op, клиент не зовётся.
+        var current = s3Snapshot.Current;
+        var targets = current is null ? null : S3TargetsResolver.Resolve(current);
+        client.UpdateTargets(targets);
+        if (targets is null)
+            return;
 
         // Маркер configured до первого тика (Решение 4): API различает «не
         // настроено» (S3Storage null) и «настроено, инвентарь ещё собирается».
         if (store.Current is null)
         {
             store.Replace(new S3StorageInfo(
-                Configured: true, config.S3.TargetList(), config.S3.Bucket,
+                Configured: true, targets.Endpoints, config.S3.Bucket,
                 Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                 Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
                 ConsecutiveFailures: 0, LastError: null));
@@ -80,7 +89,7 @@ public sealed class S3InventoryLoop(
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            FailTick(e.Message, health: null);
+            FailTick(e.Message, health: null, targets);
             return;
         }
 
@@ -110,21 +119,21 @@ public sealed class S3InventoryLoop(
                 inventory.Clusters.Count, inventory.UsedBytes, inventory.ObjectCount);
 
             store.Replace(new S3StorageInfo(
-                Configured: true, config.S3.TargetList(), config.S3.Bucket,
+                Configured: true, targets.Endpoints, config.S3.Bucket,
                 health, buckets.Value, inventory.UsedBytes, inventory.ObjectCount,
                 inventory.Clusters, inventory.ForeignPrefixes, at,
                 ConsecutiveFailures: 0, LastError: null));
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            FailTick(e.Message, health);
+            FailTick(e.Message, health, targets);
         }
     }
 
     // Сбойный тик: счётчик +1, Health — факт текущей пробы (AC3; null — проба
     // сама бросила), данные/штамп прежние (аналог FailTick refresher'а); маркер
     // Решения 4 (стор был пуст) остаётся с UpdatedAtUnix=0.
-    private void FailTick(string message, S3Health? health)
+    private void FailTick(string message, S3Health? health, S3StorageTargets targets)
     {
         var previous = store.Current;
         logger.LogWarning(
@@ -133,7 +142,7 @@ public sealed class S3InventoryLoop(
         store.Replace(
             previous is null
                 ? new S3StorageInfo(
-                    Configured: true, options.Value.S3.TargetList(), options.Value.S3.Bucket,
+                    Configured: true, targets.Endpoints, options.Value.S3.Bucket,
                     Health: health, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                     Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
                     ConsecutiveFailures: 1, LastError: message)

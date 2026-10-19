@@ -73,11 +73,6 @@ var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
     app.Logger.LogWarning("AdminPanel:Auth: neither Password nor PasswordHash is set — login is disabled");
 
-// t08: fail-fast конфига S3-грани (пустой Endpoint — грань выключена, не ошибка).
-var s3 = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.BackupsS3Options>>().Value;
-if (s3.IsConfigured)
-    s3.EnsureValid();
-
 // OpenAPI-схема — только в dev-окружении.
 if (app.Environment.IsDevelopment())
 {

@@ -34,20 +34,23 @@ public interface IS3StorageClient
     /// (вкл. 404/403 — не ownS3-контур); drives-поля тела cluster парсятся
     /// толерантно (нет полей/битый JSON → Drives null).</summary>
     Task<S3Health> GetHealthAsync(CancellationToken ct);
+
+    /// <summary>Подмена целей инвентаря (кластер/endpoints/креды из etcd);
+    /// null — грань «Backup Storage» выключена. Смена объекта целей сбрасывает
+    /// кэш клиентов per-цель.</summary>
+    void UpdateTargets(S3StorageTargets? targets);
 }
 
 public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
 {
     public const string HealthHttpClientName = "s3-health";
 
-    private readonly bool _configured;
+    // Цели инвентаря (кластер/endpoints/креды) приходят снаружи — UpdateTargets
+    // (push из etcd-наблюдения), НЕ из BackupsS3Options; до первого push'а грань
+    // «Backup Storage» выключена (все вызовы гвардятся _targets is null).
+    private volatile S3StorageTargets? _targets;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _bucket;
-    // t36 (02 §2.5): цели инвентаря — TargetList() (Endpoints ?? [Endpoint]);
-    // клиенты per-цели — лениво (перебор с первого доступного).
-    private readonly string[] _endpoints;
-    private readonly string _accessKey;
-    private readonly string _secretKey;
     private readonly string? _region;
     private readonly bool _pathStyle;
     private readonly TimeSpan _timeout;
@@ -74,28 +77,35 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     }
 
     // httpClientFactory — именованный HttpClient "s3-health" (без SigV4).
+    // Из options — только грань-константы (Bucket/Region/PathStyle/TimeoutSec);
+    // креды/endpoints приходят позже через UpdateTargets — до него грань
+    // выключена (вызовы гвардятся _targets is null в loop/handler'е).
     public S3StorageClient(BackupsS3Options options, IHttpClientFactory httpClientFactory)
     {
         _bucket = options.S3.Bucket;
         _httpClientFactory = httpClientFactory;
-        _accessKey = options.S3.AccessKey;
-        _secretKey = options.S3.SecretKey;
         _region = options.S3.Region;
         _pathStyle = options.S3.PathStyle;
         _timeout = TimeSpan.FromSeconds(options.TimeoutSec > 0 ? options.TimeoutSec : 5);
-        _endpoints = options.S3.TargetList();
         _targetClientFactory = BuildClient;
+    }
 
-        // AC1: пустой Endpoint — грань выключена, панель обязана стартовать;
-        // AWSSDK-клиент без ServiceURL не конструируется — цели строятся ТОЛЬКО
-        // при конфигурации (все вызовы гвардятся IsConfigured в loop/handler'е).
-        _configured = !string.IsNullOrWhiteSpace(options.S3.Endpoint);
-        if (!_configured)
+    // Подмена целей инвентаря (кластер/endpoints/креды): null — грань выключена;
+    // смена объекта целей сбрасывает кэш клиентов per-цели (старые клиенты
+    // освобождаются — держат транспорт и креды; тот же объект — no-op).
+    // Креды дальше конструктора AmazonS3Client не идут (ни в исключения, ни в логи).
+    public void UpdateTargets(S3StorageTargets? targets)
+    {
+        if (ReferenceEquals(_targets, targets))
             return;
+        _targets = targets;
+        foreach (var client in _targetClients.Values)
+            client.Dispose();
+        _targetClients.Clear();
     }
 
     // Вызов при выключенной грани — ошибка вызова, не транспорта (callers guard
-    // IsConfigured; сюда можно попасть только в обход гварда).
+    // _targets is null; сюда можно попасть только в обход гварда).
     private static Result<T> NotConfigured<T>() => Result<T>.Failed(
         new InvalidOperationException("S3 endpoint not set — the «Backup Storage» facet is disabled"));
 
@@ -103,10 +113,10 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     // первая Success выигрывает; исчерпание — последняя ошибка (алерт
     // backup-s3-unreachable видит текст).
     private async Task<Result<T>> AnyTargetAsync<T>(
-        Func<string, AmazonS3Client, Task<Result<T>>> call, string what)
+        S3StorageTargets targets, Func<string, AmazonS3Client, Task<Result<T>>> call, string what)
     {
         Result<T> last = default;
-        foreach (var endpoint in _endpoints)
+        foreach (var endpoint in targets.Endpoints)
         {
             var client = _targetClients.GetOrAdd(endpoint, _targetClientFactory);
             var result = await call(endpoint, client);
@@ -119,10 +129,13 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
             $"{what}: all inventory targets are unreachable: {last.Error!.Message}"));
     }
 
-    // Клиент одной цели (креды общие per-install, ServiceURL — по цели).
+    // Клиент одной цели (креды — из текущих целей, ServiceURL — по цели).
     private AmazonS3Client BuildClient(string endpoint)
-        => new(
-            new BasicAWSCredentials(_accessKey, _secretKey),
+    {
+        var targets = _targets ?? throw new InvalidOperationException(
+            "S3 endpoint not set — the «Backup Storage» facet is disabled");
+        return new(
+            new BasicAWSCredentials(targets.AccessKey, targets.SecretKey),
             new AmazonS3Config
             {
                 ServiceURL = endpoint,
@@ -131,13 +144,14 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
                 MaxErrorRetry = 0,
                 Timeout = _timeout,
             });
+    }
 
     public async Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct)
     {
-        if (!_configured)
+        if (_targets is not { } targets)
             return NotConfigured<IReadOnlyList<string>>();
         // t36: первая доступная цель (перебор Endpoints, 02 §2.5).
-        return await AnyTargetAsync(async (_, client) =>
+        return await AnyTargetAsync(targets, async (_, client) =>
         {
             try
             {
@@ -156,11 +170,11 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     public async Task<Result<S3Page>> ListPageAsync(
         string? prefix, string? continuationToken, int maxKeys, CancellationToken ct)
     {
-        if (!_configured)
+        if (_targets is not { } targets)
             return NotConfigured<S3Page>();
         // t36: первая доступная цель; токен страницы валиден в рамках ОДНОЙ
         // цели — перебор идёт только до первого успеха (дальше цель фикс).
-        return await AnyTargetAsync(async (_, client) =>
+        return await AnyTargetAsync(targets, async (_, client) =>
         {
             try
             {
@@ -227,7 +241,10 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     private async Task<(int? StatusCode, S3Drives? Drives)> ProbeHealthAsync(
         string relativePath, bool withDrives, CancellationToken ct)
     {
-        foreach (var endpoint in _endpoints)
+        var targets = _targets;
+        if (targets is null)
+            return (null, null);
+        foreach (var endpoint in targets.Endpoints)
         {
             try
             {

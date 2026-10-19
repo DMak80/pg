@@ -8,35 +8,37 @@ namespace AdminPanel.UnitTests;
 
 // Перебор целей инвентаря (t36, adminpanel/02 §2.5): первая цель отказывает
 // соединением → list-вызовы успешны со второй; обе отказывают → Failed
-// (грань недоступна этим тиком). Клиенты per-цели подменяются internal-швом
+// (грань недоступна этим тиком). Цели подаются клиенту UpdateTargets'ом
+// из снапшота S3 (t31); клиенты per-цели подменяются internal-швом
 // (фейк-подкласс AmazonS3Client — методы виртуальные).
 public class S3StorageClientFailoverTests
 {
+    // Options без кредов и endpoints: цели — из снапшота, не из конфига.
     private static BackupsS3Options Options() => new()
     {
-        S3 = new BackupsS3Options.S3Options
-        {
-            Endpoint = "http://a:9000",
-            Endpoints = "http://a:9000,http://b:9000",
-            Bucket = "pgworker-backups", AccessKey = "k", SecretKey = "s",
-        },
+        S3 = new BackupsS3Options.S3Options { Bucket = "pgworker-backups" },
         TimeoutSec = 2,
     };
 
     private static S3StorageClient Client(BackupsS3Options options, FakeTargetClient first, FakeTargetClient second)
-        => new(options, new NeverHttpClientFactory(),
+    {
+        // Цели подаются после конструирования — резолв снапшота перед тиком.
+        var client = new S3StorageClient(options, new NeverHttpClientFactory(),
             ep => ep == "http://a:9000" ? first : second);
+        client.UpdateTargets(new S3StorageTargets(
+            "demo", ["http://a:9000", "http://b:9000"], "k", "s"));
+        return client;
+    }
 
     // AAA: первая цель отказывает соединением → ListBuckets успешен со второй;
-    // каждая цель опрошена ровно один раз; грань не выключается отказом цели.
+    // каждая цель опрошена ровно один раз (отказ цели грань не выключает).
     [Fact]
     public async Task ListBuckets_FirstTargetDown_SecondWins()
     {
         // Arrange — цель a мертва, цель b жива.
         var first = new FakeTargetClient(failure: new HttpRequestException("connection refused (a)"));
         var second = new FakeTargetClient(failure: null);
-        var options = Options();
-        var client = Client(options, first, second);
+        var client = Client(Options(), first, second);
 
         // Act
         var result = await client.ListBucketsAsync(CancellationToken.None);
@@ -46,7 +48,6 @@ public class S3StorageClientFailoverTests
         result.Value.Should().ContainSingle().Which.Should().Be("pgworker-backups");
         first.ListBucketsCalls.Should().Be(1);
         second.ListBucketsCalls.Should().Be(1);
-        options.IsConfigured.Should().BeTrue();
     }
 
     // AAA: первая цель отказывает → ListPage успешен со второй (клиент per-цели).
