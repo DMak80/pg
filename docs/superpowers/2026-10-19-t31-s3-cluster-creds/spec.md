@@ -30,7 +30,7 @@ access keys) из per-install env-профилей воркеров в **etcd �
 - Панель: создание кластера без профиля; просмотр состава per-cluster кредов
   (без значений) и ротация (существующая заявка).
 - Стенд: демо-блок `S3W_NODE_SECRETS__BACKUPS-MAIN__*` уходит из
-  `deploy/.env`; сид и чеки переводятся на per-cluster креды.
+  `deploy/.env`; стендовые чеки переводятся на per-cluster креды.
 
 ### 1.1. Не входит (граница)
 
@@ -76,7 +76,7 @@ access keys) из per-install env-профилей воркеров в **etcd �
 8. **Никакой миграции**: существующие кластеры (с `secret_profile` в config
    и контейнерами на старом env-профиле) пересоздаются; парсеры поле
    `secret_profile` игнорируют (unknownKeys-толерантность arch/23 §2).
-   Стенд пересеивается сидом.
+   Стенд пересоздаёт контур с нуля (00-up.sh всегда начинает с чистки).
 
 ## 3. Структура / компоненты
 
@@ -154,6 +154,11 @@ access keys) из per-install env-профилей воркеров в **etcd �
 - **`SecretProfileStore` удаляется** целиком (вместе с
   `S3W_NODE_SECRETS__*`-биндингами compose/env-примерами и
   fail-fast-валидацией полупар старого формата).
+- **SeedDemoHandler** (`S3Worker.App/Api/Operations/SeedDemoHandler.cs`,
+  эндпоинт `POST /api/seed/demo` за флагом `EnableSeedEndpoint`; файл
+  `Processes/Seed.cs` — сеялина-заглушка без кода): создание demo-кластера
+  БЕЗ профиля — параметр профиля уходит из `CreateS3ClusterRequest` вместе
+  с остальным упразднением.
 - **SecretRotator**: читает заявку `/s3worker/rotations/<C>` → генерирует
   новые root+access keys (etcd-backup: генерируемые компоненты новые,
   спец-ключ пере-подставляется из env — смена его значения = правка env
@@ -164,8 +169,6 @@ access keys) из per-install env-профилей воркеров в **etcd �
   §8, arch/24 §4).
 - **Snapshot-парсер** (`S3SnapshotParser`): `config.etcd_backup` — в
   модель; `secret_profile` — больше не читается (игнор).
-- **Seed** (`Seed.cs`, стендовый сид пулов): создание кластера без
-  профиля.
 
 ### 3.4. Конкурентность ротации и provisioning
 
@@ -227,20 +230,35 @@ access keys) из per-install env-профилей воркеров в **etcd �
 - `deploy/.env.example` + `deploy/.env`: блок `S3W_NODE_SECRETS__BACKUPS-MAIN__*`
   уходит; блок `PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__*` уходит; появляется
   (комментарием-опцией) пара `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` для
-  etcd-backup кластера. Комментарии про дефис в именах профилей
-  (docker-compose.yml) уходят.
+  etcd-backup кластера.
+- `deploy/docker-compose.yml`: env_file-секции `./s3w-node-secrets.env`
+  (x-s3worker-base) и `./pgw-s3-profiles.env` (pgworker) с их
+  комментариями (в т.ч. про дефис в `<PROFILE>` compose-интерполяции)
+  уходят — производных env-файлов больше нет.
+- `dev-stand/adminpanel/checks/00-up.sh`: блоки дописи демо-секретов в
+  `deploy/.env` (S3W_NODE_SECRETS__BACKUPS-MAIN__* и
+  PGW_BACKUP_S3_PROFILES__BACKUPS-MAIN__*) и сборка производных файлов
+  `deploy/s3w-node-secrets.env` / `deploy/pgw-s3-profiles.env` (с их
+  fail-fast-проверками) уходят. Сидов скрипт не наливает и раньше — пул
+  бэкапов, как и остальные ресурсы, создаёт оператор вручную через
+  панель; после t31 — без профиля в форме создания.
 - `dev-stand/adminpanel/docker-compose.yml`: env
   `AdminPanel__Backups__S3__{AccessKey,SecretKey}` уходят.
-- `dev-stand/adminpanel/checks/00-up.sh`: сид пулов — без профиля; fail-fast
-  grep'ы `S3W_NODE_SECRETS__BACKUPS-MAIN__*` уходят.
+- `checks/75-s3worker.sh`: `secretProfile` уходит из всех трёх тел
+  создания (демо-кластер, кейс 400, кейс 422); 422-кейс «unknown profile»
+  (после t31 возвращал бы 201) заменяется 422-кейсом t31 — создание с
+  `"etcdBackup":true` при неполном спец-ключе env воркера.
 - `checks/80-s3-panel.sh`: тело создания без `secretProfile`; проверка
   создания — по config + появлению secrets-ключа (без значений в выводе).
 - `checks/45-backups-storage.sh`: root-креды больше не из
   `deploy/.env` — чек читает secrets из etcd (JSON-gateway `/v3/kv/range`,
   как воркеры; или read-only ключ `panel` вместо root — листингу хватает);
   значения в stdout не печатаются.
-- Ранбук `docs/runbook.md` — раздел о зеркалировании/env-секрете профиля
-  обновить (S3W_NODE_SECRETS убрать; спец-ключ описать).
+- `docs/runbook.md`: упоминание «профили/секреты — `dev-stand/adminpanel/`»
+  в шапке обновить (env-профили упразднены, креды пула — per-cluster в
+  etcd); добавить описание спец-ключа
+  `S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}` — полупара fail-fast старта
+  воркера, обязателен только для etcd-backup кластера.
 
 ## 4. Фазы работ
 
@@ -284,8 +302,9 @@ access keys) из per-install env-профилей воркеров в **etcd �
 
 `ClusterSecretsStore` (+юниты: генерация/put-if-absent/битость/спец-ключ);
 `OwnS3NodeSecrets`-интеграция; ProvisioningProcess/надзор/ротатор/
-AddNode/RemoveNode/Seed на secrets; API (создание без профиля, etcdBackup,
-гварды); удаление `SecretProfileStore` + env-биндингов; snapshot-парсер.
+AddNode/RemoveNode/SeedDemoHandler на secrets; API (создание без профиля,
+etcdBackup, гварды); удаление `SecretProfileStore` + env-биндингов;
+snapshot-парсер.
 
 ### Фаза 2 — PgWorker
 
@@ -301,8 +320,8 @@ etcd-backup-опцией); просмотр состава кредов; гра�
 
 ### Фаза 4 — стенд/deploy/docs
 
-`.env.example`, сид `00-up.sh`, чеки `45`/`80`, runbook, комментарии
-compose.
+`.env.example`; `00-up.sh` (демо-блоки env-секретов и производные
+env_file-файлы); compose env_file-секции; чеки `45`/`75`/`80`; runbook.
 
 ### Фаза 5 — тесты (мерж-гейт)
 
@@ -331,7 +350,7 @@ compose.
   внутреннего S3-клиента» (без per-key ACL — как arch/14 §4).
 - Никакой backward-миграции: `config.secret_profile` игнорируется,
   кластеры пересоздаются; env-профили удаляются одним мержем (стенд
-  пересеивается).
+  поднимается на чистом контуре).
 - `.NET 10, Nullable=enable, TreatWarningsAsErrors=true`;
   централизованные версии пакетов; комментарии/документация — по-русски,
   идентификаторы — по-английски; тесты — AAA.
@@ -367,8 +386,9 @@ compose.
    отсутствием значений в API-ответах); грань «Хранилище бэкапов» работает
    на креды/endpoint из снапшота; env-креды панели удалены.
 8. **Стенд**: `00-up.sh` поднимает полный контур; `deploy/.env` не
-   содержит `S3W_NODE_SECRETS__*`/`PGW_BACKUP_S3_PROFILES__*`; чеки 45/80
-   зелёные (креды чека — из etcd, без печати значений).
+   содержит `S3W_NODE_SECRETS__*`/`PGW_BACKUP_S3_PROFILES__*`; чеки
+   45/75/80 зелёные (креды чека — из etcd, без печати значений; 422-кейс
+   75 — про спец-ключ etcd-backup).
 9. **Тесты**: юниты/интеграция/E2E фазы 5 зелёные; мерж-гейт E2E на
    свежем Release пройден; серии зачищены (контейнеры/сети/тома).
 10. **Чистота кода**: `grep -r "S3W_NODE_SECRETS\|PGW_BACKUP_S3_PROFILES\|secret_profile"`
