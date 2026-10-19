@@ -122,10 +122,14 @@ TLS per-install CA + basic-auth мутаций (пробы/скрейп по htt
 | `t13-alert-notifications` | внешняя нотификация алертов + история | P3 | N |
 | `t16-cert-expiry-monitoring` | мониторинг сроков сертификатов | P3 | N |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |
+| `t32-etcdworker` ← `t31-s3-cluster-creds` | выделенный etcdworker: состав etcd-узлов + бэкапы etcd в S3 (перенос `Snapshots:Export` из PgWorker); единственный секрет вне etcd — ключ бэкапа etcd (env etcdworker → спец-ключ в etcd) | P2 | R, D |
 
 Смежное вне трека: `t02-external-secret-manager` (pgworker-трек) —
 секреты вне etcd; закрыт вместе с ним — строку сюда не переносим,
-отмечаем в сводке характеристики N.
+отмечаем в сводке характеристики N. `t31-s3-cluster-creds` (s3-трек) —
+per-cluster креды S3-кластеров в etcd и признак бэкапного кластера etcd;
+зависимость `t32-etcdworker` — закрывается в своём треке, сюда не
+переносится.
 
 ## Сделано в рамках трека
 
