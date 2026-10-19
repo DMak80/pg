@@ -858,10 +858,12 @@ export interface BackupPolicyDto {
 }
 
 // Пул S3 read-минимум (t36, adminpanel/02 §12; GET /api/backups/s3-pools) —
-// без ключей/секретов: имена/состояния нод + endpoints.
+// без секретов: etcd-признак + состав кредов (имена/политики) + ноды + endpoints.
 export interface S3PoolDto {
   name: string;
-  secretProfile: string | null;
+  etcdBackup: boolean;
+  rootUser: string | null; // s3w-<C>-root — имя, не секрет
+  accessKeys: S3AccessKeyDto[] | null; // [{name, policy}] без значений
   active: boolean;
   nodes: { name: string; state: string | null }[];
   endpoints: string[];
@@ -1147,12 +1149,16 @@ export type S3SyncDto = {
   lastError: string | null;
 };
 export type S3RotationDto = { requestedUnix: number; requestedBy: string | null };
+// Ключ доступа кластера в инспекции: имя + policy; значений AccessKey/SecretKey в API нет.
+export type S3AccessKeyDto = { name: string; policy: string };
 export type S3ClusterDto = {
   name: string;
   state: 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
   platform: string;
   nodesDeclared: number;
-  secretProfile: string;
+  etcdBackup: boolean;
+  rootUser: string | null; // s3w-<C>-root — имя, не секрет
+  accessKeys: S3AccessKeyDto[] | null; // [{name, policy}] без значений
   createdUnix: number | null;
   endpoints: string | null;
   nodesList: S3NodeDto[];
@@ -1164,7 +1170,7 @@ export type S3ClusterDto = {
 };
 export type CreateS3ClusterRequestDto = {
   name: string;
-  secretProfile: string;
+  etcdBackup?: boolean;
   instances: { name: string; placement: S3PlacementDto; resources?: S3ResourcesDto | null }[];
   resources?: S3ResourcesDto | null;
 };

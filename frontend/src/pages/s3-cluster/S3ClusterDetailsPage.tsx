@@ -1,4 +1,4 @@
-// Детали s3-кластера: шапка (state-бейджи, endpoints, secretProfile, кнопки
+// Детали s3-кластера: шапка (state-бейджи, endpoints, etcd-признак, кнопки
 // зонд/ротация/удаление) + вкладки Ноды/Репликация/Связность и синхронность
 // (arch/03 §12.3). Порт ValkeyClusterDetailsPage; canMutate = ACTIVE.
 import { useQuery } from '@tanstack/react-query';
@@ -48,7 +48,7 @@ export function S3ClusterDetailsPage() {
             <Badge color="gray" variant="light">not initialized</Badge>
           ) : null}
           {c.rotation !== null ? (
-            <Tooltip label="secrets rotation ticket is live: the worker re-issues the profile via rolling recreation">
+            <Tooltip label="secrets rotation ticket is live: the worker re-issues the cluster credentials via rolling recreation">
               <Badge color="blue" variant="light">
                 secrets rotation · {c.rotation.requestedBy ?? '—'}
               </Badge>
@@ -67,7 +67,7 @@ export function S3ClusterDetailsPage() {
       <Card withBorder padding="md" radius="md">
         <SimpleGrid cols={{ base: 2, md: 4 }}>
           <Field label="Platform">{c.platform}</Field>
-          <Field label="Secret profile">{c.secretProfile || '—'}</Field>
+          <Field label="Etcd backup">{c.etcdBackup ? 'yes' : 'no'}</Field>
           <Field label="Endpoints">
             <Text size="sm" ff="monospace">{c.endpoints ?? '—'}</Text>
           </Field>
@@ -75,6 +75,34 @@ export function S3ClusterDetailsPage() {
             {c.createdUnix !== null ? new Date(c.createdUnix * 1000).toLocaleString() : '—'}
           </Field>
         </SimpleGrid>
+      </Card>
+
+      {/* Креды клиентской грани (arch/23 §2): состав без значений — их в API нет. */}
+      <Card withBorder padding="md" radius="md">
+        <Group justify="space-between" mb="xs">
+          <Text size="sm" fw={500}>Client credentials</Text>
+          {c.etcdBackup ? (
+            <Tooltip label="the backups key of this cluster is external: the etcd backup special key (per-install env pair)">
+              <Badge color="violet" variant="light">backups key is external</Badge>
+            </Tooltip>
+          ) : null}
+        </Group>
+        {c.rootUser === null ? (
+          <Text c="dimmed">Not provisioned yet</Text>
+        ) : (
+          <SimpleGrid cols={{ base: 1, md: 2 }}>
+            <Field label="Root user">
+              <Text size="sm" ff="monospace">{c.rootUser}</Text>
+            </Field>
+            <Field label="Access keys">
+              <Stack gap={2}>
+                {(c.accessKeys ?? []).map((k) => (
+                  <Text key={k.name} size="sm" ff="monospace">{k.name} ({k.policy})</Text>
+                ))}
+              </Stack>
+            </Field>
+          </SimpleGrid>
+        )}
       </Card>
 
       <Tabs defaultValue="nodes" keepMounted={false}>

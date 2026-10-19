@@ -1,5 +1,5 @@
 // Форма создания s3-кластера (arch/03 §12.3; валидации 02 §12.3): имя,
-// secret_profile (текст), платформа read-only «owns3», динамический список
+// etcdBackup (переключатель), платформа read-only «owns3», динамический список
 // инстансов 0..9 (имя + placement + ресурсы) с fallback на общие ресурсы.
 // Клиентская валидация — зеркало серверной (arch/24 §1.1), сервер — истина.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -7,6 +7,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Group,
   Modal,
   NumberInput,
@@ -47,7 +48,7 @@ interface InstanceForm {
 
 interface FormState {
   name: string;
-  secretProfile: string;
+  etcdBackup: boolean;
   instances: InstanceForm[];
   commonCpu: string;
   commonMemGi: string;
@@ -67,7 +68,7 @@ const EMPTY_INSTANCE: InstanceForm = {
 
 const EMPTY: FormState = {
   name: '',
-  secretProfile: '',
+  etcdBackup: false,
   instances: [{ ...EMPTY_INSTANCE }],
   commonCpu: '',
   commonMemGi: '',
@@ -135,8 +136,6 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
   // Валидация-зеркало 02 §12.3 (сервер — источник истины, это UX).
   function validate(): string | null {
     if (!NAME_RE.test(form.name)) return 'cluster name: [a-z][a-z0-9_]{0,62} (lowercase, no hyphen)';
-    if (form.secretProfile.trim() === '')
-      return 'secret profile: non-empty name of a per-install S3Worker env profile';
     if (form.instances.length > 9) return 'at most 9 instances';
     for (const [i, inst] of form.instances.entries()) {
       if (!NAME_RE.test(inst.name))
@@ -175,7 +174,7 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
     const common = parseResources(form.commonCpu, form.commonMemGi, form.commonDiskGi);
     const request: CreateS3ClusterRequestDto = {
       name: form.name,
-      secretProfile: form.secretProfile.trim(),
+      etcdBackup: form.etcdBackup,
       instances: form.instances.map((inst) => ({
         name: inst.name,
         placement: parsePlacement(inst),
@@ -196,12 +195,11 @@ export function CreateS3ClusterModal({ opened, onClose }: { opened: boolean; onC
           onChange={(e) => set('name', e.currentTarget.value)}
           error={formError !== null && formError.startsWith('cluster name') ? formError : undefined}
         />
-        <TextInput
-          label="Secret profile"
-          description="the name of a per-install S3Worker env profile; a 422 from the worker will list the available ones"
-          placeholder="backups-main"
-          value={form.secretProfile}
-          onChange={(e) => set('secretProfile', e.currentTarget.value)}
+        <Checkbox
+          label="Etcd backup cluster"
+          description="provision this cluster as the installation's etcd backup target; requires the worker's S3W_ETCD_BACKUP_* env pair; at most one per installation"
+          checked={form.etcdBackup}
+          onChange={(e) => set('etcdBackup', e.currentTarget.checked)}
         />
         <Text size="sm" c="dimmed">Platform: owns3 (the only canonical value)</Text>
 
