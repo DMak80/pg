@@ -45,11 +45,11 @@ public static class TlsEndpoints
         {
             case ManagedCertStatus.Found:
                 serverCert = TlsMaterial.LoadPemPair(managedCert.CertPem!, managedCert.KeyPem!);
-                source = "etcd:/workers/api_tls/s3worker";
+                source = "etcd:/workers/api_tls/etcdworker";
                 break;
             case ManagedCertStatus.Broken:
                 throw new ApplicationException(
-                    $"EtcdWorker:Api:Tls: key /workers/api_tls/s3worker is broken ({managedCert.Error}) — "
+                    $"EtcdWorker:Api:Tls: key /workers/api_tls/etcdworker is broken ({managedCert.Error}) — "
                     + "fix it from the panel (PUT api-cert) or delete it (DELETE api-cert)");
             default:
                 serverCert = LoadServerCertificate(tls);
@@ -61,7 +61,7 @@ public static class TlsEndpoints
 
         if (serverCert is null)
             throw new ApplicationException(
-                "EtcdWorker:Api:Tls: server certificate/key not set (ETCDW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/s3worker; arch/24 §1.1)");
+                "EtcdWorker:Api:Tls: server certificate/key not set (ETCDW_API_TLS_CERT/KEY or *_PATH; etcd key /workers/api_tls/etcdworker; arch/24 §1.1)");
 
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "EtcdWorker:Api:Tls: ClientCA not set (ETCDW_API_TLS_CLIENT_CA[_PATH])");
@@ -78,7 +78,7 @@ public static class TlsEndpoints
     }
 
     // Итог конфигурации серта (arch/24 §1.1): применённый серт + источник
-    // ("etcd:/workers/api_tls/s3worker" | "env") + warning (etcd недоступен,
+    // ("etcd:/workers/api_tls/etcdworker" | "env") + warning (etcd недоступен,
     // старт на env). ServerCert=null — AllowInsecureHttp (WAF-тесты).
     public sealed record ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning);
 

@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using EtcdWorker.App;
 using Shared.Metrics;
 using EtcdWorker.App.Api;
+using EtcdWorker.App.Api.Operations;
 using EtcdWorker.App.HealthChecks;
 using EtcdWorker.App.Loops;
 using Shared.Core.HealthChecks;
@@ -116,12 +118,26 @@ builder.Services.AddSingleton(sp => new PortAllocLock(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ClaimStore>().InstanceId));
 
+// HTTP API хендлеры (arch/25 §1.1, фаза 5) + счётчик операций — зеркало S3Worker.
+builder.Services.AddSingleton(sp => new EtcdApiMetrics(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+builder.Services.AddSingleton(sp => new PutEtcdConfigHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+// Graceful self-stop (arch/25 §1.1): рестарт из панели применяет серт/конфиг.
+builder.Services.AddSingleton(sp => new RestartHandler(
+    sp.GetRequiredService<IHostApplicationLifetime>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
+
 // Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/24 §6);
 // остальные циклы — фаза 4.
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 
 // Наблюдаемость (arch/25 §7): агрегированный health + per-loop обёртка.
+// DockerEngineFactory — docker-пробы ServiceProbes (полный docker-стек — фаза 5).
+builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<EtcdWorkerHealth>();
 builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
@@ -159,7 +175,7 @@ if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("EtcdWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
-// MapWorkerApi — шаг 5 (API): mTLS-эндпоинты состава добавляются фазой 5.
+app.MapWorkerApi();
 
 await app.RunAsync();
 

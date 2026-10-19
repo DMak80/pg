@@ -11,6 +11,7 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing"/>
         <PackageReference Include="Microsoft.NET.Test.Sdk"/>
         <PackageReference Include="Testcontainers"/>
         <PackageReference Include="xunit.runner.visualstudio">
@@ -22,6 +23,9 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\Shared.Etcd\Shared.Etcd.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Core\EtcdWorker.Core.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Etcd\EtcdWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.App\EtcdWorker.App.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
