@@ -83,7 +83,6 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.S3ApiMetrics(
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.CreateClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<S3Worker.Provisioning.SecretProfileStore>(),
     sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.DeleteClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),

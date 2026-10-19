@@ -6,7 +6,8 @@ using Shared.Etcd.Client;
 namespace S3Worker.App.Api.Operations;
 
 // POST /api/seed/demo: флаг S3Worker:Api:EnableSeedEndpoint=false → 404;
-// on → создать demo-кластер (инстансы east1/east2, профиль backups-main,
+// on → создать demo-кластер (инстансы east1/east2, без профиля секретов —
+// креды per-cluster в etcd, EtcdBackup=false,
 // placement docker_host=local ×2, cpu 1/memGi 1/diskGi 10) через
 // CreateClusterHandler-логику + put links {east1,east2} (демонстрация графа);
 // живой demo → 200 идемпотентно.
@@ -30,7 +31,7 @@ public sealed class SeedDemoHandler(
             return Result<SeedDemoDto>.Success(new SeedDemoDto(false));
 
         var request = new CreateS3ClusterRequest(
-            "demo", S3Limits.Platform, "backups-main",
+            "demo", S3Limits.Platform, false,
             [
                 new S3InstanceDto("east1", new S3PlacementDto("local", null, null), null),
                 new S3InstanceDto("east2", new S3PlacementDto("local", null, null), null),

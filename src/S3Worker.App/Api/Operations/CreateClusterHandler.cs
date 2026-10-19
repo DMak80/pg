@@ -13,17 +13,17 @@ public sealed record S3ClusterCreatedDto(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("nodes")] int Nodes,
-    [property: JsonPropertyName("secretProfile")] string SecretProfile,
+    [property: JsonPropertyName("etcdBackup")] bool EtcdBackup,
     [property: JsonPropertyName("instances")] IReadOnlyList<string> Instances);
 
-// Создание S3-кластера через API воркера: валидация (400) → профиль (422) →
-// клэйм-txn NotExists(config) + пакет (config c nodes=len(instances) +
+// Создание S3-кластера через API воркера: валидация (400) → гварды etcdBackup
+// (422/409) → клэйм-txn NotExists(config) + пакет (config c nodes=len(instances) +
 // instances × {placement, resources, state=NOT_INITIALIZED}; 0 инстансов —
 // только config; 409). Запись — ОДНА атомарная txn: сбой midway частичного
 // состояния не оставляет, компенсация не требуется (arch/24 §1.1).
 // Создание клэйм-lease НЕ берёт — это заявка.
 public sealed class CreateClusterHandler(
-    IEtcdGateway gateway, string[] endpoints, SecretProfileStore secrets, TimeProvider time)
+    IEtcdGateway gateway, string[] endpoints, TimeProvider time)
 {
     public async Task<Result<S3ClusterCreatedDto>> HandleAsync(CreateS3ClusterRequest request, CancellationToken ct)
     {
@@ -32,28 +32,41 @@ public sealed class CreateClusterHandler(
         if (errors.Count > 0)
             return Result<S3ClusterCreatedDto>.Failed(new S3ValidationException(errors));
 
+        // 2) Гварды etcdBackup (arch/24 §1.1): полнота спец-ключа env (422 при
+        //    отсутствии ИЛИ неполноте пары) и единственность etcd-backup кластера
+        //    установки (409). Единственность — чтение существующих config'ов
+        //    перед клэйм-txn: txn закрывает только коллизию имени кластера;
+        //    TOCTOU между чтением и txn принимается (мутации установки — одна
+        //    панель/оператор, рассинхрон признака виден пост-фактум в config'ах).
+        var etcdBackup = request.EtcdBackup ?? false;
+        if (etcdBackup && !ClusterSecretsStore.IsEtcdBackupEnvPairComplete())
+            return Result<S3ClusterCreatedDto>.Failed(new S3EtcdBackupKeyIncompleteException());
+        if (etcdBackup)
+        {
+            var existing = await S3ApiHelpers.ListEtcdBackupClustersAsync(gateway, endpoints, ct);
+            if (!existing.IsSuccess)
+                return Result<S3ClusterCreatedDto>.Failed(existing.Error!);
+            if (existing.Value is { } taken)
+                return Result<S3ClusterCreatedDto>.Failed(new S3EtcdBackupConflictException(taken));
+        }
+
         var name = request.Name!;
         var instances = request.Instances ?? [];
-        var profile = request.SecretProfile!.Trim();
-
-        // 2) Профиль секретов — по факту env воркера (422, перечень имён).
-        if (!secrets.ProfileNames.Contains(profile, StringComparer.Ordinal))
-            return Result<S3ClusterCreatedDto>.Failed(new S3SecretProfileUnavailableException(secrets.ProfileNames));
 
         // 3) Коллизия имён инстансов в кластере (409): txn-сравнение ведёт только
         // config, состав проверяем фактическим чтением (гонка закрывается
         // атомарностью клэйм-txn имени кластера).
-        var existing = await S3ApiHelpers.ListNodeNamesAsync(gateway, endpoints, name, ct);
-        if (!existing.IsSuccess)
-            return Result<S3ClusterCreatedDto>.Failed(existing.Error!);
-        var collision = instances.FirstOrDefault(i => existing.Value.Contains(i.Name!, StringComparer.Ordinal));
+        var existingNodeNames = await S3ApiHelpers.ListNodeNamesAsync(gateway, endpoints, name, ct);
+        if (!existingNodeNames.IsSuccess)
+            return Result<S3ClusterCreatedDto>.Failed(existingNodeNames.Error!);
+        var collision = instances.FirstOrDefault(i => existingNodeNames.Value.Contains(i.Name!, StringComparer.Ordinal));
         if (collision is not null)
             return Result<S3ClusterCreatedDto>.Failed(new S3NodeAlreadyExistsException(name, collision.Name!));
 
         // 4) Клэйм имени одной txn: NotExists config + put config + пакет инстансов.
         var created = time.GetUtcNow().ToUnixTimeSeconds();
         var configValue = S3ProcessCommon.SerializeCanonicalConfig(
-            S3Limits.Platform, instances.Count, etcdBackup: false, created, "NOT_INITIALIZED");
+            S3Limits.Platform, instances.Count, etcdBackup, created, "NOT_INITIALIZED");
         var configKey = S3ApiHelpers.ConfigKey(name);
         var ops = new List<TxnOp> { new TxnOp.Put(configKey, configValue, null) };
         foreach (var instance in instances)
@@ -77,14 +90,14 @@ public sealed class CreateClusterHandler(
             return Result<S3ClusterCreatedDto>.Failed(new S3ClusterAlreadyExistsException(name));
 
         return Result<S3ClusterCreatedDto>.Success(
-            new S3ClusterCreatedDto(name, "NOT_INITIALIZED", instances.Count, profile,
+            new S3ClusterCreatedDto(name, "NOT_INITIALIZED", instances.Count, etcdBackup,
                 instances.Select(i => i.Name!).ToList()));
     }
 }
 
 // Валидатор создания (чистая функция; arch/24 §1.1: name/platform/instances 0..9
 // c именами паттерна кластера и обязательным placement; ресурсы — per-instance
-// с fallback на общий; профиль — 422 в хендлере по факту env).
+// с fallback на общий).
 public static class S3ClusterValidator
 {
     public static List<ValidationError> Validate(CreateS3ClusterRequest request)
@@ -118,8 +131,6 @@ public static class S3ClusterValidator
         }
 
         ValidateResources(request.Resources, errors);
-        if (string.IsNullOrWhiteSpace(request.SecretProfile))
-            errors.Add(new("secretProfile", "secretProfile: non-empty env profile name (arch/23 §6)"));
 
         return errors;
     }
