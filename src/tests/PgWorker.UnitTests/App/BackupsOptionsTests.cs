@@ -31,11 +31,11 @@ public class BackupsOptionsTests
     [Fact]
     public void Enabled_CompleteS3_Valid()
     {
-        // Arrange — полный per-install S3-комплект (env-секреты arch/19 §7).
+        // Arrange — включённая подсистема: из per-install констант — Bucket
+        // (креды пула — per-cluster secrets etcd, arch/19 §7).
         var options = new BackupsOptions
         {
             Enabled = true,
-            // t36: только Bucket (креды — env-профили, arch/19 §7).
             S3 = new BackupsS3Options
             {
                 Bucket = "pgworker-backups",
@@ -46,8 +46,9 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue();
     }
 
-    // t36 (arch/19 §7): конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
-    // влияют на валидность — креды только env-профилями; достаточно Bucket.
+    // arch/19 §7: конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
+    // влияют на валидность — креды пула читаются из /s3/clusters/<C>/secrets;
+    // достаточно Bucket.
     [Fact]
     public void Enabled_BucketOnly_ValidWithoutConfigCreds()
     {
@@ -58,7 +59,7 @@ public class BackupsOptionsTests
             S3 = new BackupsS3Options { Bucket = "pgworker-backups" },
         };
 
-        // Act / Assert — 1 env-профиль кредов → валидно.
+        // Act / Assert — креды из secrets-ключа пула → валидно.
         options.IsValid().Should().BeTrue();
     }
 
@@ -116,7 +117,8 @@ public class BackupsOptionsTests
     [Fact]
     public void ToRuntime_MergesAllSections_AndAdvertisedFallback()
     {
-        // Arrange — t36: только bucket/CA (endpoint/креды — пул и env-профили).
+        // Arrange — из per-install констант только bucket/CA (креды — пул и
+        // его per-cluster secrets-ключ etcd).
         var options = new BackupsOptions
         {
             Job = new BackupsJobOptions { Image = "pgworker-backup:test" },

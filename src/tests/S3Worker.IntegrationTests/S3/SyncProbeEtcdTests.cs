@@ -31,18 +31,14 @@ public class SyncProbeEtcdTests(S3EtcdFixture etcd) : IAsyncLifetime
     // Управляемые часы: гейт двигается тестом явно.
     private readonly FixedTime _clock = new() { Utc = DateTimeOffset.UtcNow };
 
-    // Секреты профиля на словаре (образец S3ClusterFixture).
-    private static readonly Dictionary<string, string?> Secrets = new()
-    {
-        ["S3W_NODE_SECRETS__backups-main__ROOT_USER"] = "root",
-        ["S3W_NODE_SECRETS__backups-main__ROOT_PASSWORD"] = "pw",
-    };
-
     public async ValueTask InitializeAsync()
     {
-        // Сид Active-кластера: config без state, обе ноды RUNNING, portalloc.
+        // Сид Active-кластера: config без state, обе ноды RUNNING, portalloc;
+        // креды — предзаписанный per-cluster secrets-ключ (канон arch/23 §2).
         await etcd.PutAsync($"/s3/clusters/{_cluster}/config",
-            """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1760156800}""");
+            """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
+        await etcd.PutAsync($"/s3/clusters/{_cluster}/secrets",
+            """{"root_user":"root","root_password":"pw","access_keys":[{"name":"backups","access_key":"bk","secret_key":"sk","policy":"read-write"},{"name":"panel","access_key":"pk","secret_key":"ps","policy":"read-only"}]}""");
         await etcd.PutAsync($"/s3/clusters/{_cluster}/nodes/east1/state", "RUNNING");
         await etcd.PutAsync($"/s3/clusters/{_cluster}/nodes/east2/state", "RUNNING");
         await etcd.PutAsync($"/s3worker/portalloc/{_cluster}",

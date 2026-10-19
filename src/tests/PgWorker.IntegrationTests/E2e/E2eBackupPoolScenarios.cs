@@ -11,8 +11,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E пула S3 (t36, spec §9 AC1–AC8): инстансы пула — ownS3-ноды окружения
-// (SeedS3PoolAsync), воркер с env-профилем кредов, policy с секцией s3.
+// E2E пула S3 (spec §9 AC1–AC8): инстансы пула — ownS3-ноды окружения
+// (SeedS3PoolAsync сеет и config, и per-cluster secrets-ключ — воркер читает
+// креды из etcd), policy с секцией s3.
 // Каждый Fact — ПОЛНОСТЬЮ СВОЁ окружение (своя сеть/etcd/ownS3 — канон
 // e2e-isolation §1), teardown при любом исходе + ассерт чистоты в фикстуре.
 // AC1 — «пул не выбран → молчание», выбор policy → COMPLETED;
@@ -66,15 +67,14 @@ public abstract class E2eBackupPoolScenarios
     protected static string HostPort(string endpoint)
         => endpoint.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/');
 
-    // Воркер с включённой подсистемой: пул — policy.s3 (etcd), bucket и env-профиль
-    // кредов — env (t36); образы e2e, ускоренный бэкофф, короткие пороги WAL.
+    // Воркер с включённой подсистемой: пул и креды — etcd (policy.s3 +
+    // /s3/clusters/<C>/secrets, сеет SeedS3PoolAsync), bucket — env;
+    // образы e2e, ускоренный бэкофф, короткие пороги WAL.
     protected Task<HostInstance> StartPoolHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__ACCESS_KEY"] = E2eEnvironment.S3WriterKey,
-            [$"PGW_BACKUP_S3_PROFILES__{E2eEnvironment.PoolProfile}__SECRET_KEY"] = E2eEnvironment.S3WriterSecret,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
@@ -873,10 +873,10 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             await Fx.SeedS3PoolAsync(Pool, ct, [Fx.S3Endpoint, ep2]);
             // Пул в состоянии TO_REMOVE + пул с Заявленной нодой без portalloc.
             await G.PutAsync(Endpoint, "/s3/clusters/toremove/config",
-                """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760000000,"state":"TO_REMOVE"}""",
+                """{"platform":"owns3","nodes":1,"created_unix":1760000000,"state":"TO_REMOVE"}""",
                 null, ct);
             await G.PutAsync(Endpoint, "/s3/clusters/claiming/config",
-                """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760000000}""",
+                """{"platform":"owns3","nodes":1,"created_unix":1760000000}""",
                 null, ct);
             await G.PutAsync(Endpoint, "/s3/clusters/claiming/nodes/node1/placement",
                 """{"docker_host":"local"}""", null, ct);

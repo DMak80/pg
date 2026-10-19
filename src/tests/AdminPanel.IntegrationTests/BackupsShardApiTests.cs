@@ -41,6 +41,13 @@ public class BackupsShardDetailsApiTests(
             ("demo/s1/wal/000000010000000000000002", new string('a', 16)),
             ("demo/s1/wal/00000002.history", new string('a', 4)),
         ], TestContext.Current.CancellationToken);
+        await EtcdSeed.SeedS3PoolAsync(
+            etcd.Endpoint, s3.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey,
+            TestContext.Current.CancellationToken);
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
@@ -131,6 +138,13 @@ public class BackupsOrphansApiTests(
             ("ghost_shard/s9/full/b9/base.tar", new string('a', 50)),
             ("noowner/s1/wal/000000010000000000000003", new string('a', 16)),
         ], TestContext.Current.CancellationToken);
+        await EtcdSeed.SeedS3PoolAsync(
+            etcd.Endpoint, s3.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey,
+            TestContext.Current.CancellationToken);
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
         var loop = _factory.Services.GetRequiredService<S3InventoryLoop>();
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);

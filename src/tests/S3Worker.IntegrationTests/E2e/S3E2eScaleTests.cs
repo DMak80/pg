@@ -183,7 +183,6 @@ public class S3E2eScaleTests
             {
                 name = cluster,
                 platform = "owns3",
-                secretProfile = S3E2eEnvironment.ProfileName,
                 instances = instances
                     .Select(name => (object)new
                     {

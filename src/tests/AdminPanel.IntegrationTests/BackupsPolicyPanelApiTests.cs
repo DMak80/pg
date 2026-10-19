@@ -81,8 +81,14 @@ public class BackupsPolicyPanelApiTests : IClassFixture<EtcdContainerFixture>,
         await EtcdSeed.PutAsync(_etcdEndpoint, "/pgworker/backups/demo/policy",
             """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":2}}""",
             ct);
-        // Объект demo/s1 в S3 — кластер появляется в дереве инвентаря.
+        // Объект demo/s1 в S3 — кластер появляется в дереве инвентаря; пул —
+        // в etcd (цели грани), тики: S3-снапшот → инвентарь → снапшот.
         await _storage.SeedObjectsAsync([("demo/s1/full/b1/base.tar", new string('a', 64))], ct);
+        await EtcdSeed.SeedS3PoolAsync(
+            _etcdEndpoint, _storage.HostEndpoint,
+            S3NodeContainerFixture.AccessKey, S3NodeContainerFixture.SecretKey, ct);
+        (await _factory.Services.GetRequiredService<S3SnapshotRefresher>()
+            .RefreshOnceAsync(ct)).IsSuccess.Should().BeTrue();
         var s3 = _factory.Services.GetRequiredService<S3InventoryLoop>();
         await s3.RunOnceAsync(ct);
         (await _factory.Services.GetRequiredService<SnapshotRefresher>().RefreshOnceAsync(ct))

@@ -42,7 +42,7 @@ public class S3E2eSyncProbeTests
 
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             var objectKey = $"sync/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -53,7 +53,7 @@ public class S3E2eSyncProbeTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     await s3.GetObjectAsync(new GetObjectRequest
                     {
                         BucketName = S3E2eEnvironment.BucketName,
@@ -200,7 +200,7 @@ public class S3E2eSyncProbeTests
             await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             var objectKey = $"dead/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -211,7 +211,7 @@ public class S3E2eSyncProbeTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     await s3.GetObjectAsync(new GetObjectRequest
                     {
                         BucketName = S3E2eEnvironment.BucketName,
@@ -317,7 +317,7 @@ public class S3E2eSyncProbeTests
             await fx.RunDockerAsync(["pause", $"s3w-{cluster}-east2"], ct);
             var objectKeys = Enumerable.Range(0, 100)
                 .Select(_ => $"lag/{Guid.NewGuid():N}.txt").ToList();
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 foreach (var key in objectKeys)
                     await s3.PutObjectAsync(new PutObjectRequest
                     {
@@ -354,7 +354,7 @@ public class S3E2eSyncProbeTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     foreach (var key in objectKeys)
                     {
                         var found = await s3.GetObjectAsync(new GetObjectRequest
@@ -427,7 +427,7 @@ public class S3E2eSyncProbeTests
             await S3E2eScaleTests.WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
             var ports = Json(await S3E2eScaleTests.GetOrNullAsync(fx, $"/s3worker/portalloc/{cluster}", ct));
             var objectKey = $"deny/{Guid.NewGuid():N}.txt";
-            using (var s3 = S3Client(PortOf(ports, "east1")))
+            using (var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east1"), ct))
                 await s3.PutObjectAsync(new PutObjectRequest
                 {
                     BucketName = S3E2eEnvironment.BucketName,
@@ -438,7 +438,7 @@ public class S3E2eSyncProbeTests
             {
                 try
                 {
-                    using var s3 = S3Client(PortOf(ports, "east2"));
+                    using var s3 = await S3ClientAsync(fx, cluster, PortOf(ports, "east2"), ct);
                     await s3.GetObjectAsync(new GetObjectRequest
                     {
                         BucketName = S3E2eEnvironment.BucketName,
@@ -457,7 +457,7 @@ public class S3E2eSyncProbeTests
                 .StatusCode.Should().Be(HttpStatusCode.Accepted);
             await fx.WaitPhaseAsync("isolated", async () =>
             {
-                var status = await ReplicationStatusOrNullAsync(PortOf(ports, "east1"), ct);
+                var status = await ReplicationStatusOrNullAsync(fx, cluster, PortOf(ports, "east1"), ct);
                 return status is not null
                     && !status.Value.GetProperty("neighbors").EnumerateArray().Any();
             }, TimeSpan.FromSeconds(90), ct);
@@ -493,16 +493,22 @@ public class S3E2eSyncProbeTests
 
     // ── Хелперы сценария ──
 
-    // S3-клиент по хост-порту из portalloc (паттерн MeshTests — приватная копия).
-    private static IAmazonS3 S3Client(int port) => new AmazonS3Client(
-        new Amazon.Runtime.BasicAWSCredentials(S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword),
-        new AmazonS3Config
-        {
-            ServiceURL = $"http://localhost:{port}",
-            ForcePathStyle = true,
-            Timeout = TimeSpan.FromSeconds(10),
-            MaxErrorRetry = 1,
-        });
+    // S3-клиент по хост-порту из portalloc (паттерн MeshTests — приватная копия);
+    // креды — per-cluster secrets-ключ etcd (arch/23 §2), без печати.
+    private static async Task<IAmazonS3> S3ClientAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
+    {
+        var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
+        return new AmazonS3Client(
+            new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),
+            new AmazonS3Config
+            {
+                ServiceURL = $"http://localhost:{port}",
+                ForcePathStyle = true,
+                Timeout = TimeSpan.FromSeconds(10),
+                MaxErrorRetry = 1,
+            });
+    }
 
     private static int PortOf(JsonElement alloc, string instance)
         => alloc.GetProperty(instance).GetProperty("s3").GetInt32();
@@ -522,14 +528,16 @@ public class S3E2eSyncProbeTests
 
     // Репликация-статус ownS3 (SigV4 root) — паттерн ReplicationStatusOrNullAsync
     // MeshTests; null при любом отказе (транзиент — поллинг продолжит).
-    private static async Task<JsonElement?> ReplicationStatusOrNullAsync(int port, CancellationToken ct)
+    private static async Task<JsonElement?> ReplicationStatusOrNullAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
         try
         {
+            var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:{port}/admin/replication/status");
             var signed = S3Worker.Core.OwnS3.SigV4GetSigner.Sign(
                 "/admin/replication/status", $"localhost:{port}",
-                S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword);
+                rootUser, rootPassword);
             request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
             request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
             request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);

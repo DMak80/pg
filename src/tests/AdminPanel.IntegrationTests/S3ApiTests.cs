@@ -90,7 +90,7 @@ public sealed class S3ApiFixture : IAsyncLifetime
         // Сид: Active-кластер (config/нода/placement/resources/links/зонды/
         // denylist/endpoints) + живой ключ API воркера (если не выключен кейсом).
         await EtcdSeed.PutAsync(Endpoint, $"/s3/clusters/{Cluster}/config",
-            """{"platform":"owns3","nodes":1,"secret_profile":"backups-main","created_unix":1760156800}""", ct);
+            """{"platform":"owns3","nodes":1,"created_unix":1760156800}""", ct);
         await EtcdSeed.PutAsync(Endpoint, $"/s3/clusters/{Cluster}/endpoints", "h1:18001,h2:18002", ct);
         await EtcdSeed.PutAsync(Endpoint, $"/s3/clusters/{Cluster}/links", """[{"a":"east1","b":"east2"}]""", ct);
         await EtcdSeed.PutAsync(Endpoint, $"/s3/clusters/{Cluster}/denylist", """["west1"]""", ct);
@@ -268,7 +268,7 @@ public class S3ApiTests(S3ApiFixture fx)
         try
         {
             await EtcdSeed.PutAsync(fx.Endpoint, $"/s3/clusters/{prefix}lonely/config",
-                """{"platform":"owns3","nodes":0,"secret_profile":"backups-main"}""", ct);
+                """{"platform":"owns3","nodes":0,"created_unix":1760156800}""", ct);
             var factory = new S3ApiFactory { EtcdEndpoint = fx.Endpoint, UseStubGateway = false };
             factory.Time.Utc = DateTimeOffset.UtcNow;
             factory.EnsureBuilt();
@@ -321,8 +321,10 @@ public class S3ApiTests(S3ApiFixture fx)
         var details = await client.GetStringAsync(
             $"/api/s3/clusters/{fx.Cluster}", TestContext.Current.CancellationToken);
 
-        // Assert: все секции; PKI/секретов в ответе нет.
-        details.Should().Contain("\"secretProfile\":\"backups-main\"");
+        // Assert: все секции; PKI/значений секретов в ответе нет. Сид не пишет
+        // secrets-ключ — состав кредов null, признак etcdBackup на месте.
+        details.Should().Contain("\"etcdBackup\":false");
+        details.Should().Contain("\"rootUser\":null");
         details.Should().Contain("\"denied\":false");  // east1 не в denylist
         details.Should().Contain("\"state\":\"SYNCED\"");
         details.Should().Contain("\"denylist\":[\"west1\"]");

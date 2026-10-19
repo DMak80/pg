@@ -192,8 +192,6 @@ public class E2eBackupVerifyScenarios
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };
-        foreach (var (key, value) in Fx.BackupPoolEnv())
-            env[key] = value;
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);

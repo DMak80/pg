@@ -38,7 +38,7 @@ public class SupervisionTests(S3ClusterFixture fx)
         // Метка-объект в bucket (данные на volume).
         var s3 = NewS3Client(address.S3Port);
         var bucketExists = await fx.NodeClient.BucketExistsAsync(
-            S3ClusterFixture.AdvertisedHost, address.S3Port, fx.Secrets, "pgworker-backups",
+            S3ClusterFixture.AdvertisedHost, address.S3Port, fx.NodeSecrets, "pgworker-backups",
             TestContext.Current.CancellationToken);
         bucketExists.Value.Should().BeTrue(
             $"bucket after provisioning: exists={bucketExists.Value} err={bucketExists.Error?.Message}");

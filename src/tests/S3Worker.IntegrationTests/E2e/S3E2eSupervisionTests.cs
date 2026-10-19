@@ -40,7 +40,7 @@ public class S3E2eSupervisionTests
                 $"/s3/clusters/{cluster}/endpoints", ct);
             var endpoints = S3E2eScaleTests.EndpointsOf(endpointsValue)[0];
             var probePort = int.Parse(endpoints.Split(':')[1]);
-            await PutTestObjectAsync(probePort, ct);
+            await PutTestObjectAsync(fx, cluster, probePort, ct);
 
             var placedOn = await S3E2eScaleTests.GetOrNullAsync(fx,
                 $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct);
@@ -58,7 +58,7 @@ public class S3E2eSupervisionTests
             (await S3E2eScaleTests.GetOrNullAsync(fx,
                     $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct))
                 .Should().Be(placedOn, "re-creation — on the same placed_on (node volume lives on the host)");
-            (await ListTestObjectsAsync(probePort, ct)).Should().Contain("s3w-e2e-supervise",
+            (await ListTestObjectsAsync(fx, cluster, probePort, ct)).Should().Contain("s3w-e2e-supervise",
                 "test object survived node re-creation (volume preserved)");
 
             // Act 2: pause → health молчит → UNREACHABLE по NodeDeadSec=15
@@ -110,10 +110,13 @@ public class S3E2eSupervisionTests
     }
 
     // S3-клиент к ноде root-кредом (path-style).
-    private static AmazonS3Client NewS3Client(int port)
-        => new(
-            new Amazon.Runtime.BasicAWSCredentials(
-                S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword),
+    private static async Task<AmazonS3Client> NewS3ClientAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
+    {
+        // Креды — per-cluster secrets-ключ etcd (arch/23 §2); без печати.
+        var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
+        return new AmazonS3Client(
+            new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),
             new AmazonS3Config
             {
                 ServiceURL = $"http://host.docker.internal:{port}",
@@ -122,10 +125,12 @@ public class S3E2eSupervisionTests
                 Timeout = TimeSpan.FromSeconds(10),
                 MaxErrorRetry = 2,
             });
+    }
 
-    private static async Task PutTestObjectAsync(int port, CancellationToken ct)
+    private static async Task PutTestObjectAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
-        using var s3 = NewS3Client(port);
+        using var s3 = await NewS3ClientAsync(fx, cluster, port, ct);
         await s3.PutObjectAsync(new Amazon.S3.Model.PutObjectRequest
         {
             BucketName = S3E2eEnvironment.BucketName,
@@ -134,9 +139,10 @@ public class S3E2eSupervisionTests
         }, ct);
     }
 
-    private static async Task<List<string>> ListTestObjectsAsync(int port, CancellationToken ct)
+    private static async Task<List<string>> ListTestObjectsAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
-        using var s3 = NewS3Client(port);
+        using var s3 = await NewS3ClientAsync(fx, cluster, port, ct);
         var list = await s3.ListObjectsV2Async(new Amazon.S3.Model.ListObjectsV2Request
         {
             BucketName = S3E2eEnvironment.BucketName,

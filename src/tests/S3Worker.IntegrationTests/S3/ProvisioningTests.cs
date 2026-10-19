@@ -46,7 +46,7 @@ public class ProvisioningTests(S3ClusterFixture fx)
             S3ClusterFixture.AdvertisedHost, address.S3Port, TestContext.Current.CancellationToken);
         health.IsSuccess.Should().BeTrue();
         health.Value.Should().BeTrue("ownS3 /healthz after provisioning");
-        var secrets = fx.Secrets;
+        var secrets = fx.NodeSecrets;
         var bucket = await fx.NodeClient.BucketExistsAsync(
             S3ClusterFixture.AdvertisedHost, address.S3Port, secrets, "pgworker-backups", TestContext.Current.CancellationToken);
         bucket.IsSuccess.Should().BeTrue(bucket.Error?.Message);

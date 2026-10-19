@@ -77,9 +77,19 @@ public sealed class S3ClusterFixture : IAsyncLifetime
         new(HostPorts.From, HostPorts.To, NodeBootSec: 100, NodeDeadSec: 90, HealthIntervalSec: 15,
             AdvertisedHost, "owns3:dev", "pgworker-backups");
 
-    // Демо-профиль секретов рига (значения — тестовые).
-    public OwnS3NodeSecrets Secrets { get; } =
-        new("it-root", "it-root-password", [new OwnS3AccessKey("it-rw-key", "it-rw-secret", "read-write")]);
+    // Креды рига — канонический состав per-cluster secrets (arch/23 §6:
+    // root-пара + backups rw + panel ro; значения — тестовые). Предзаписаны
+    // сидом в /s3/clusters/<C>/secrets: put-if-absent воркера сохраняет их,
+    // клиенты теста знают ожидаемые креды контейнеров.
+    public ClusterSecrets Secrets { get; } =
+        new("it-root", "it-root-password",
+        [
+            new ClusterAccessKey("backups", "it-rw-key", "it-rw-secret", "read-write"),
+            new ClusterAccessKey("panel", "it-ro-key", "it-ro-secret", "read-only"),
+        ]);
+
+    // Ожидаемые креды контейнеров нод (root + access keys канона).
+    public OwnS3NodeSecrets NodeSecrets => Secrets.ToNodeSecrets();
 
     public S3ClusterFixture()
     {
@@ -226,15 +236,17 @@ public sealed class S3ClusterFixture : IAsyncLifetime
             Options with { NodeDeadSec = nodeDeadSec }, healer);
 
     // Сид заявки кластера (config NOT_INITIALIZED + instances[] с именами —
-    // arch/24 §1.1: placement/resources/state на каждый инстанс).
+    // arch/24 §1.1: placement/resources/state на каждый инстанс) + предзапись
+    // per-cluster secrets-ключа канонического состава (креды процессов).
     public async Task SeedClusterAsync(string cluster, params string[] instances)
     {
         var ct = TestContext.Current.CancellationToken;
         if (instances.Length == 0)
             instances = ["node1"];
         await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/config",
-            $$"""{"platform":"owns3","nodes":{{instances.Length}},"secret_profile":"backups-main","created_unix":1756500000,"state":"NOT_INITIALIZED"}""",
+            $$"""{"platform":"owns3","nodes":{{instances.Length}},"created_unix":1756500000,"state":"NOT_INITIALIZED"}""",
             lease: null, ct);
+        await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/secrets", SecretsJson(), lease: null, ct);
         foreach (var instance in instances)
         {
             await Gateway.PutAsync(Endpoint, $"/s3/clusters/{cluster}/nodes/{instance}/state",
@@ -245,6 +257,11 @@ public sealed class S3ClusterFixture : IAsyncLifetime
                 """{"cpu":"1","mem":"1Gi","disk":"5Gi"}""", lease: null, ct);
         }
     }
+
+    // Канонический JSON secrets-ключа (arch/23 §2; порядок полей как сериализация
+    // воркера) из известных тесту кредов.
+    public string SecretsJson() =>
+        $$"""{"root_user":"{{Secrets.RootUser}}","root_password":"{{Secrets.RootPassword}}","access_keys":[{"name":"backups","access_key":"it-rw-key","secret_key":"it-rw-secret","policy":"read-write"},{"name":"panel","access_key":"it-ro-key","secret_key":"it-ro-secret","policy":"read-only"}]}""";
 
     // Снапшот кластера из etcd (как ReconcileLoop).
     public async Task<S3ClusterSnapshot?> SnapshotAsync(string cluster)

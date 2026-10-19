@@ -49,7 +49,6 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    secretProfile = S3E2eEnvironment.ProfileName,
                     instances = new object[]
                     {
                         new { name = "east1", placement = new { dockerHost = "local" } },
@@ -63,17 +62,24 @@ public class S3E2eLifecycleTests
             // [PHASE] wait-provision: обе ноды RUNNING + контейнеры живы (≤ 100 c + тики).
             await WaitClusterActiveAsync(fx, cluster, ct, "east1", "east2");
 
-            // Assert 1: config — канонический JSON Active (state снят, nodes=2).
+            // Assert 1: config — канонический JSON Active (state снят, nodes=2,
+            // без secret_profile); per-cluster secrets-ключ записан воркером.
             var config = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
                 $"/s3/clusters/{cluster}/config", ct)).Value!.Value;
             config.Should().NotContain("\"state\"", "Active — state removed by the worker");
+            config.Should().NotContain("secret_profile", "per-install profiles are gone");
             using (var doc = JsonDocument.Parse(config))
             {
                 doc.RootElement.GetProperty("platform").GetString().Should().Be("owns3");
                 doc.RootElement.GetProperty("nodes").GetInt32().Should().Be(2);
-                doc.RootElement.GetProperty("secret_profile").GetString()
-                    .Should().Be(S3E2eEnvironment.ProfileName);
+                doc.RootElement.TryGetProperty("secret_profile", out _).Should().BeFalse();
             }
+            var secretsKey = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/s3/clusters/{cluster}/secrets", ct)).Value;
+            secretsKey.Should().NotBeNull("per-cluster secrets key written by the worker");
+            secretsKey!.Value.Should().Contain("\"root_user\"");
+            secretsKey.Value.Should().Contain("\"policy\":\"read-write\"")
+                .And.Contain("\"policy\":\"read-only\"");
 
             // Assert 2: placed_on = local (placement-селектор резолвнут).
             foreach (var node in new[] { "east1", "east2" })
@@ -117,7 +123,7 @@ public class S3E2eLifecycleTests
             foreach (var address in addresses)
             {
                 var port = int.Parse(address.Split(':')[1]);
-                (await ListBucketsWithRootAsync(port, ct)).Should()
+                (await ListBucketsWithRootAsync(fx, cluster, port, ct)).Should()
                     .Contain(S3E2eEnvironment.BucketName,
                         $"bucket {S3E2eEnvironment.BucketName} created by the orchestrator on :{port}");
                 using var health = await new HttpClient().GetAsync(
@@ -166,7 +172,6 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    secretProfile = S3E2eEnvironment.ProfileName,
                     instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
                     resources = new { cpu = 0.5m, memGi = 1, diskGi = 5 },
                 }, ct);
@@ -238,7 +243,6 @@ public class S3E2eLifecycleTests
                 {
                     name = cluster,
                     platform = "owns3",
-                    secretProfile = S3E2eEnvironment.ProfileName,
                     instances = new object[]
                     {
                         new { name = "east1", placement = new { dockerHost = "local" } },
@@ -305,7 +309,7 @@ public class S3E2eLifecycleTests
                     .GetProperty("s3").GetInt32();
             }
 
-            (await ListBucketsWithRootAsync(node3Port, ct))
+            (await ListBucketsWithRootAsync(fx, cluster, node3Port, ct))
                 .Should().Contain(S3E2eEnvironment.BucketName, "bucket on west1 created");
 
             // Act 4: DELETE → 202 → демонтаж воркером (канон самоочистки).
@@ -384,12 +388,15 @@ public class S3E2eLifecycleTests
         }, TimeSpan.FromSeconds(60), ct);
     }
 
-    // S3-клиент к ноде root-кредом (path-style; advertised-хост резолвим с хоста).
-    private static async Task<List<string>> ListBucketsWithRootAsync(int port, CancellationToken ct)
+    // S3-клиент к ноде root-кредом кластера из per-cluster secrets-ключа etcd
+    // (arch/23 §2; path-style; advertised-хост резолвим с хоста; значения
+    // только в память — без печати).
+    private static async Task<List<string>> ListBucketsWithRootAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
     {
+        var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
         using var s3 = new AmazonS3Client(
-            new Amazon.Runtime.BasicAWSCredentials(
-                S3E2eEnvironment.RootUser, S3E2eEnvironment.RootPassword),
+            new Amazon.Runtime.BasicAWSCredentials(rootUser, rootPassword),
             new AmazonS3Config
             {
                 ServiceURL = $"http://host.docker.internal:{port}",

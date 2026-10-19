@@ -28,7 +28,6 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
     {
         name,
         platform = "owns3",
-        secretProfile = TestSecrets.Profile,
         instances = (instances ?? ["east1", "east2"]).Select(Instance).ToArray(),
         resources = new { cpu = 1m, memGi = 1, diskGi = 5 },
     };
@@ -80,14 +79,18 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
             "/api/s3/clusters", CreateBody(cluster), TestContext.Current.CancellationToken);
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
-        // Assert: 201; config NOT_INITIALIZED; инстансам state/placement/resources.
+        // Assert: 201; DTO без secretProfile, с etcdBackup:false, без значений
+        // секретов; config NOT_INITIALIZED без secret_profile.
         response.StatusCode.Should().Be(HttpStatusCode.Created, body);
-        body.Should().Contain("east1").And.Contain("east2").And.NotContain("it-secret");
+        body.Should().Contain("east1").And.Contain("east2")
+            .And.Contain("\"etcdBackup\":false")
+            .And.NotContain("secretProfile")
+            .And.NotContain("it-secret");
         var gateway = fx.Etcd.Gateway;
         var config = await gateway.GetAsync(fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", TestContext.Current.CancellationToken);
         config.Value!.Value.Should().Contain("\"state\":\"NOT_INITIALIZED\"")
             .And.Contain("\"platform\":\"owns3\"")
-            .And.Contain("\"secret_profile\":\"backups-main\"");
+            .And.NotContain("secret_profile");
         var state = await gateway.GetAsync(fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/nodes/east1/state", TestContext.Current.CancellationToken);
         state.Value!.Value.Should().Be("NOT_INITIALIZED");
         var placement = await gateway.GetAsync(fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/nodes/east1/placement", TestContext.Current.CancellationToken);
@@ -144,7 +147,7 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
 
         // Act
         using var response = await client.PostAsJsonAsync("/api/s3/clusters",
-            new { name = cluster, platform = "minio", secretProfile = TestSecrets.Profile,
+            new { name = cluster, platform = "minio",
                 instances = new object[] { new { name = "9bad", placement = new { dockerHost = "local" } } },
                 resources = new { cpu = 0.001m, memGi = 0, diskGi = 0 } },
             TestContext.Current.CancellationToken);
@@ -158,27 +161,128 @@ public class ClusterMutationsApiTests(S3ApiFixture fx)
         config.Value.Should().BeNull();
     }
 
+    // Гварды etcdBackup (arch/24 §1.1): гвард читает env-пару ЖИВО на каждом
+    // запросе, тест управляет переменными вокруг вызова и восстанавливает
+    // в finally (ModuleInitializer TestSecrets ставит обе = "it-secret");
+    // тесты коллекции последовательны — гонки нет.
     [Fact]
-    public async Task Create_UnknownProfile_422WithList()
+    public async Task Create_EtcdBackup_WithoutEnvPair_422()
     {
-        // Arrange: профиль absent-profile отсутствует в env воркера.
-        var cluster = Cluster("prof");
+        // Arrange: пара СНЯТА (обе null — отсутствие = неполная, гвард полноты).
+        var cluster = Cluster("ebnoenv");
         using var client = Client;
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_ACCESSKEY", null);
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_SECRETKEY", null);
+        try
+        {
+            // Act
+            using var response = await client.PostAsJsonAsync("/api/s3/clusters",
+                new { name = cluster, platform = "owns3", etcdBackup = true,
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
+                    resources = new { cpu = 1m, memGi = 1, diskGi = 5 } },
+                TestContext.Current.CancellationToken);
+            var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
-        // Act
-        using var response = await client.PostAsJsonAsync("/api/s3/clusters",
-            new { name = cluster, platform = "owns3", secretProfile = "absent-profile",
-                instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
-                resources = new { cpu = 1m, memGi = 1, diskGi = 5 } },
-            TestContext.Current.CancellationToken);
-        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            // Assert: 422 с упоминанием env-пары; кластер не создан; значений нет.
+            response.StatusCode.Should().Be((HttpStatusCode)422, body);
+            body.Should().Contain("S3W_ETCD_BACKUP").And.NotContain("it-secret");
+            var config = await fx.Etcd.Gateway.GetAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", TestContext.Current.CancellationToken);
+            config.Value.Should().BeNull();
+        }
+        finally
+        {
+            foreach (var name in TestSecrets.EnvNames)
+                Environment.SetEnvironmentVariable(name, "it-secret");
+        }
+    }
 
-        // Assert: 422 с перечнем имён; значений секретов нет.
-        response.StatusCode.Should().Be((HttpStatusCode)422, body);
-        body.Should().Contain(TestSecrets.Profile).And.NotContain("it-secret");
-        var config = await fx.Etcd.Gateway.GetAsync(
-            fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", TestContext.Current.CancellationToken);
-        config.Value.Should().BeNull();
+    [Fact]
+    public async Task Create_EtcdBackup_FullEnvPair_201()
+    {
+        // Arrange: полная пара (значения тестовые).
+        var cluster = Cluster("ebok");
+        using var client = Client;
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_ACCESSKEY", "it-access");
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_SECRETKEY", "it-secret");
+        try
+        {
+            // Act
+            using var response = await client.PostAsJsonAsync("/api/s3/clusters",
+                new { name = cluster, platform = "owns3", etcdBackup = true,
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
+                    resources = new { cpu = 1m, memGi = 1, diskGi = 5 } },
+                TestContext.Current.CancellationToken);
+            var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+            // Assert: 201, DTO etcdBackup:true без значений секретов; config
+            // несёт признак (запись secrets-ключа — provisioning-цикл, E2E).
+            response.StatusCode.Should().Be(HttpStatusCode.Created, body);
+            body.Should().Contain("\"etcdBackup\":true")
+                .And.NotContain("secretProfile")
+                .And.NotContain("it-access").And.NotContain("it-secret");
+            var config = await fx.Etcd.Gateway.GetAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/config", TestContext.Current.CancellationToken);
+            config.Value!.Value.Should().Contain("\"etcd_backup\":true");
+        }
+        finally
+        {
+            foreach (var name in TestSecrets.EnvNames)
+                Environment.SetEnvironmentVariable(name, "it-secret");
+            // Изоляция факта в общем etcd коллекции: свой etcd-backup кластер
+            // убираем целиком — иначе гвард единственности 409-факта увидит
+            // «первый» кластер уже созданным.
+            await fx.Etcd.Gateway.DeleteAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{cluster}/", prefix: true,
+                TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task Create_EtcdBackup_SecondCluster_409()
+    {
+        // Arrange: первый etcd-backup кластер создан (полная пара).
+        var first = Cluster("eb1");
+        var second = Cluster("eb2");
+        using var client = Client;
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_ACCESSKEY", "it-access");
+        Environment.SetEnvironmentVariable("S3W_ETCD_BACKUP_SECRETKEY", "it-secret");
+        try
+        {
+            using var created = await client.PostAsJsonAsync("/api/s3/clusters",
+                new { name = first, platform = "owns3", etcdBackup = true,
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
+                    resources = new { cpu = 1m, memGi = 1, diskGi = 5 } },
+                TestContext.Current.CancellationToken);
+            created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+            // Act: второй etcd-backup при живом первом.
+            using var response = await client.PostAsJsonAsync("/api/s3/clusters",
+                new { name = second, platform = "owns3", etcdBackup = true,
+                    instances = new object[] { new { name = "east1", placement = new { dockerHost = "local" } } },
+                    resources = new { cpu = 1m, memGi = 1, diskGi = 5 } },
+                TestContext.Current.CancellationToken);
+            var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+            // Assert: 409 (единственность etcd-backup на инсталляцию); второй
+            // config не создан.
+            response.StatusCode.Should().Be(HttpStatusCode.Conflict, body);
+            var config = await fx.Etcd.Gateway.GetAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{second}/config", TestContext.Current.CancellationToken);
+            config.Value.Should().BeNull();
+        }
+        finally
+        {
+            foreach (var name in TestSecrets.EnvNames)
+                Environment.SetEnvironmentVariable(name, "it-secret");
+            // Изоляция факта в общем etcd коллекции (см. FullEnvPair-факт).
+            await fx.Etcd.Gateway.DeleteAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{first}/", prefix: true,
+                TestContext.Current.CancellationToken);
+            await fx.Etcd.Gateway.DeleteAsync(
+                fx.Etcd.Endpoint, $"/s3/clusters/{second}/", prefix: true,
+                TestContext.Current.CancellationToken);
+        }
     }
 
     [Fact]
