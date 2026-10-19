@@ -13,7 +13,7 @@ using Shared.Etcd.Client;
 // Точка входа S3Worker (arch/24 §8): host-builder с mTLS-гранью HTTP API
 // (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
-// профили секретов нод (S3W_NODE_SECRETS__*, arch/23 §6).
+// спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
 // Каркас t32 Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
 // процессы — Tasks 10–13, API-эндпоинты — Task 14 (каждая задача правит свой
 // блок DI; инкрементальный рост Program).
