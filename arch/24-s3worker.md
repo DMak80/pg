@@ -5,7 +5,8 @@
 AdminPanel **заявляет** кластер через **HTTP API воркера** (§1.1;
 `state=NOT_INITIALIZED`) — воркер **поднимает** инстансы (volume данных +
 контейнер ownS3 на хосте из placement-селектора, репликационный PKI из
-etcd — arch/23 §6), создаёт bucket per-install, доводит граф репликации
+etcd — arch/23 §6), создаёт bucket per-install (etcd-backup кластер —
+дополнительно фиксированный etcd-слепковый bucket, arch/23 §5), доводит граф репликации
 (links → join) и deny-list до инстансов, пишет `endpoints` и снимает
 `state`; перевод в `TO_REMOVE` — воркер демонтирует кластер полностью.
 **Ответственность изменений etcd**: префиксы `/s3/`, `/s3worker/` пишет
@@ -275,8 +276,11 @@ P2 выпуск per-cluster secrets (EnsureSecrets, txn put-if-absent — arch/2
    portalloc);
    health-ожидание — бюджет NodeBootSec, transient-толерантный цикл
    (поллинг-инвариант t19 — без одиночных блокирующих вызовов)
-P3 bucket per-install на каждом инстансе — идемпотентно (exists → пропуск;
-   CreateBucket root-кредом из secrets-ключа — права admin, owns3/05 §3)
+P3 bucket'ы на каждом инстансе — идемпотентно (exists → пропуск;
+   CreateBucket root-кредом из secrets-ключа — права admin, owns3/05 §3):
+   per-install + для etcd-backup кластера фиксированный etcd-слепковый
+   `etcd-backups` (имя-константа, arch/23 §5; потребитель — EtcdWorker,
+   arch/25 §4)
 P4 доводка состава mesh по links (arch/23 §2) — та же механика, что G
    (§5 G): deny-доведение + join недостающих пар + снос лишних
    target-записей; links пуст/0 инстансов — no-op

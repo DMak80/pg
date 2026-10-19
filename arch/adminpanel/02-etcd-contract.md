@@ -127,7 +127,6 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/backups/orphan-holds/<C>/<X>` | JSON `{"set_unix":<unix>,"set_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.Holds` (§3) | hold-флаги сирот (DR-hold): панель читает для индикации (бейдж «hold», текст алерта `backup-orphan`) и ставит/снимает через мутации §9.10 — API PgWorker, панель в etcd не пишет; sweeper воркера гасит ключи несирот (воскрес/исчез) |
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | JSON `{"requested_unix":<unix>,"requested_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.DeleteRequests` (§3) | заявки явного удаления сирот: панель читает (индикация «к удалению» до прохода sweeper'а) и ставит через confirm-мутацию §9.10 (API PgWorker); исполняет sweeper воркера ближайшим проходом, заявка гасится вместе с записью |
 | `/pgworker/backups/<C>/<X>/drill` | JSON-статус дрилла шарда `{"state":"RUNNING"\|"SUCCEEDED"\|"FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}` (канон — arch/19 §4, reliability t02) | `DrillInfo` (§3) | панель читает, пишет только PgWorker (держатель клэйма `<C>`); кормит алерты `backup-drill-failed`/`backup-drill-stale` (03 §4) и per-shard статус грани «Хранилище бэкапов»; `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура); снятая фаза у терминального ключа = контур подтверждённо снесён; ключ перезаписывается каждым новым дриллом; битый JSON — parseError-запись (толерантный читатель: нет ключей — правила дрилла молчат) |
-| `/pgworker/etcd-snapshots` | JSON `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/14 §3.3, reliability t08) | `EtcdSnapshotExportInfo` (§3) | статус выгрузки etcd-снапшотов в S3: пишет ТОЛЬКО PgWorker (инстанс-исполнитель экспорта), панель читает; кормит алерты `etcd-snapshot-export-failed`/`etcd-snapshot-export-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; `enabled=false`/отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -184,6 +183,22 @@ pg/kafka/valkey-инстансов) пробит живые инстансы S3W
 Отсутствие живых ключей → 503 мутаций + critical-алерт
 `worker-api-unreachable` (03 §12.4). Остальные ключи `/s3worker/` панель
 не читает и не пишет (кроме `rotations/` — §12.1).
+
+### 2.3.5. `/etcd/` + `/etcdworker/` — домен EtcdWorker
+
+Etcd-контур установки (канон — arch/25): панель читает декларацию состава и
+статусы managed-узлов, мутацию состава (число узлов) отправляет в HTTP API
+воркера (§9.13); в etcd домена не пишет ничего.
+
+| Ключ | Формат значения | В модель | Примечания |
+|---|---|---|---|
+| `/etcd/config` | JSON `{"nodes":N,"created_unix":<unix>}` (канон — arch/25 §5) | `EtcdDomain.Config` (§3) | декларация числа managed-узлов контура; отсутствие ключа = 0 (только наблюдение, external-контур); мутация — API воркера (§9.13), панель читает |
+| `/etcd/nodes/<k>/state` | строка `NOT_INITIALIZED\|PROVISIONING\|RUNNING\|UNREACHABLE\|REMOVING` | `EtcdDomain.ManagedNode` (§3) | жизненный цикл managed-узла; + `placed_on` (имя docker-хоста); отображается на странице «etcd» рядом с member list (03 §2) |
+| `/etcdworker/snapshots` | JSON `{"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/25 §5) | `EtcdSnapshotExportInfo` (§3) | статус DR-выгрузки слепков etcd: пишет ТОЛЬКО EtcdWorker (инстанс-исполнитель выгрузки), панель читает; кормит алерты `etcd-snapshot-export-failed`/`-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
+| `/etcdworker/api/<id>` | lease TTL 15 c, JSON `{"url","instance","since_unix","cert_thumbprint"?}` | `WorkerEndpoint[]` (§3) | дискавери API EtcdWorker — источник URL для мутации состава §9.13; серверный серт — ключ `/workers/api_tls/etcdworker` (§9.9); по тем же URL тик `/healthz` (общий поллер) → warning-алерт `worker-unhealthy`; отсутствие живых ключей → 503 мутаций + critical `worker-api-unreachable` |
+
+Координационные ключи `/etcdworker/{leader,locks,instances,portalloc,work}`
+панель не читает (вне контракта; work — journal фаз, оператор читает etcdctl'ом).
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -834,7 +849,8 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 ### 9.9. Серверные серты API воркеров (создание/замена/удаление + перезапуск)
 
 Управление серверными сертами входящих mTLS-граней воркеров
-(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`) и перезапуск инстансов.
+(`pgworker`, `kafkaworker`, `valkeyworker`, `s3worker`, `etcdworker`) и
+перезапуск инстансов.
 В отличие от §9.1–§9.8, запись идёт **напрямую в etcd** (не через API
 воркера): воркер не может «принять» серт без перезапуска, а панель должна
 уметь положить серт ДО первого запуска воркера. Воркеры ключи только читают
@@ -849,6 +865,7 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 /workers/api_tls/kafkaworker   (симметрично)
 /workers/api_tls/valkeyworker  (симметрично; t03)
 /workers/api_tls/s3worker   (симметрично; env-фоллбек воркера — S3W_API_TLS_{CERT,KEY,CLIENT_CA})
+/workers/api_tls/etcdworker   (симметрично; env-фоллбек воркера — ETCDW_API_TLS_{CERT,KEY,CLIENT_CA})
 ```
 
 `key_pem` — приватный ключ: в снапшот/API/UI отдаются ТОЛЬКО метаданные
@@ -979,6 +996,24 @@ N суток» (0 = выкл, диапазон валидации 0..3650; ис�
 воркера нет, 404 кластера нет. Панель парсер policy — толерантен:
 policy без секций `drill`/`s3` читается без ошибок (дефолт), drill-ключей нет —
 правила дрилла молчат, секции `s3` нет — правила `backup-pool-*` молчат.
+
+### 9.13. Мутация состава etcd-контура: декларация nodes (t32)
+
+Панель НЕ пишет в etcd — мутация декларации состава управляемых узлов
+etcd-контура (`/etcd/config`, arch/25 §5) — прокси в API EtcdWorker:
+
+`PUT /api/etcd/config` (панель) → `PUT /api/etcd/config` API EtcdWorker
+(arch/25 §1.1) телом `{"nodes":N}` — замещение целиком. Валидация (истина —
+сервер воркера, панель дублирует для UX): `N` — целое 0..7; гвард кворума —
+итоговое число членов контура (external + N) ≥ 3, иначе 409 «состав ниже
+безопасного». Применение асинхронно: MembershipProcess воркера доводит
+состав (add learner + promote / rolling remove, arch/25 §3.1) — панель видит
+прогресс по `/etcd/nodes/<k>/state` и member list страницы «etcd». Коды —
+как у прочих прокси-мутаций: 200/204 успех, 400 валидация, 409 гвард
+кворума, 503 живых инстансов воркера нет. UI — форма «поддерживать N
+узлов» на странице «etcd» (03 §2), двойной клик защищён, подтверждение не
+требуется (декларация обратима: то же поле возвращает прежнее число;
+доводка состава — только вперёд по одному шагу за тик).
 
 ## 10. Kafka (чтение + записи панели)
 

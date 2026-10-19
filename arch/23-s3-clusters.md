@@ -210,7 +210,12 @@ probe по собственным targets; линки симметричны):
   собирается репозиторием `../OwnS3` (`deploy/build-image.sh` там);
   в registry не кладётся; инстанс — ownS3 single-drive (`OWNS3_DATA_DIR=/data`);
   bucket per-install ([19-backups.md](19-backups.md) §5) на каждом
-  инстансе (CreateBucket admin-кредом, идемпотентно);
+  инстансе (CreateBucket admin-кредом, идемпотентно); **etcd-backup кластер**
+  (`etcd_backup=true`, §2): на каждом инстансе ДОПОЛНИТЕЛЬНО фиксированный
+  etcd-слепковый bucket — имя-константа `etcd-backups`, одинаковое на всех
+  установках (создаёт S3Worker тем же идемпотентным CreateBucket, arch/24
+  §5 A P3; потребитель — EtcdWorker, [25-etcdworker.md](25-etcdworker.md)
+  §4 — имя не конфигурируется);
   mesh-репликация — внутренняя механика ownS3
   ([owns3/07-replication.md](../OwnS3/arch/owns3/07-replication.md); конфиг per-install
   — R6 `../OwnS3/docs/owns3-replication-requirements.md`): состав mesh инстансов

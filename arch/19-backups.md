@@ -773,18 +773,24 @@ s3://<bucket>/<C>/<X>/
   полного бэкапа лежат и в `full/<id>/pg_wal/` (1:1 с manifest — база
   verify t04), и копией в `wal/` (общий префикс — стартовая точка цепочки
   t03); перезапись одного и того же сегмента идемпотентна.
-- **Служебный префикс `etcd/` (reliability t08)**: выгрузка снапшотов etcd
+- **Служебный префикс `etcd/`**: выгрузка снапшотов etcd
   (контроль-плейн) — `etcd/snapshot-<id>.db` 1:1 + `etcd/snapshot-<id>.meta.json`
   (sha256/size/revision?/taken_unix/uploaded_unix/instance; `uploaded_unix` —
   фактическое время put'а объекта, в отличие от «покрытия» в статус-ключе).
-  Каждый снятый слепок выгружается; статус-ключ покрытия
-  `/pgworker/etcd-snapshots` (arch/14 §3) обновляется после каждой выгрузки.
+  Экспортёр — EtcdWorker (arch/25 §4): цель — фиксированный etcd-слепковый
+  bucket `etcd-backups` на нодах etcd-backup кластера `/s3/clusters/`
+  (признак `etcd_backup=true`, arch/23 §2; bucket создаёт S3Worker — arch/23
+  §5; креды — ключ `backups` secrets-ключа кластера), каденс — плановый
+  интервал + детекция изменений; каждый снятый слепок выгружается;
+  статус-ключ покрытия `/etcdworker/snapshots` (arch/25 §5) обновляется
+  после каждой выгрузки.
   Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот t07 его не группирует (ключи короче
   3 сегментов); ретенция t06 и sweeper t07 к `etcd/` не прикасаются (их пути
   адресны: `full/<id>/`, `wal/`, `<C>/<X>/`). Единственный удаляющий — ретенция
-  самого экспорта (N последних пар, guard ≥1 полная пара). Объекты `etcd/`
-  входят в `used_bytes` ключа `/pgworker/backups/storage` (list всего bucket —
-  занятость bucket, корректно).
+  самого экспорта (N последних пар, guard ≥1 полная пара). Слепковый bucket
+  `etcd-backups` — отдельный от per-install bucket'а бэкапов: объекты `etcd/`
+  в `used_bytes` ключа `/pgworker/backups/storage` не входят (list
+  per-install bucket'а пула; объём слепков — собственная ретенция N пар).
 - **Ретенционная чистка (t06, §4)**: удаление полного = delete всего
   префикса `full/<id>/` (list + batch-delete, идемпотентно; 404/пустой
   префикс = уже удалён); чистка WAL = delete сегментов `wal/<segment>` со
@@ -893,13 +899,15 @@ s3://<bucket>/<C>/<X>/
   transient-отказ резолва с маркером `s3-pool-exhausted` у процессов,
   ретраи тиком, НЕ краш тика — §4); единого
   `PGW_BACKUP_S3_ENDPOINT/REGION/ACCESS_KEY/SECRET_KEY/ADVERTISED_ENDPOINT`
-  больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки —
-  ОТДЕЛЬНАЯ per-install env-пара** `PgWorker:Snapshots:Export:S3`
-  (env `PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY`) —
-  обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
-  [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
-  переиспользуется: источник правды о DR-слепках не живёт в
-  восстанавливаемом etcd. Передача агенту/джобу — env контейнера (t02/t03:
+  больше нет — цели даёт пул per-cluster (§4); (в) **etcd-слепки — зона
+  EtcdWorker** ([25-etcdworker.md](25-etcdworker.md) §4): цель —
+  фиксированный bucket `etcd-backups` на нодах etcd-backup кластера
+  `/s3/clusters/` (признак `etcd_backup=true`, arch/23 §2; bucket создаёт
+  S3Worker, arch/23 §5), креды — ключ `backups` его secrets-ключа (значение —
+  спец-ключ из env S3Worker, arch/23 §6: per-install ключ бэкапа etcd живёт у
+  S3Worker и материализуется в secrets при provisioning кластера); источник
+  правды о DR-слепках не живёт в восстанавливаемом etcd — резолв живой на
+  каждом проходе. У PgWorker env-пары слепков НЕТ. Передача агенту/джобу — env контейнера (t02/t03:
   bucket + списки endpoints по роли + креды read-write из secrets пула).
   Стенд/контур-режим:
   адресация S3 всех потребителей контура — по имени сети (`http://owns3:9000`
@@ -987,10 +995,7 @@ s3://<bucket>/<C>/<X>/
   лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
   `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`)
   — fail-fast (проверок наличия кредов пулов в etcd на старте НЕ вводится:
-  креды появляются/исчезают динамически, резолв — живой, §7);
-  `Snapshots:Export:Enabled=true` → полная
-  слепочная пара `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*`)
-  — fail-fast; отрицательные
+  креды появляются/исчезают динамически, резолв — живой, §7); отрицательные
   таймауты/TTL супервизора — fail-fast; отрицательные
   `Drill:IntervalDays`/`Drill:TimeoutSec` — fail-fast (`0` интервала
   валиден — глобальное выключение новых запусков).
