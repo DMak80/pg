@@ -9,4 +9,10 @@
     <ItemGroup>
         <Using Include="Shared.Core"/>
     </ItemGroup>
+
+    <ItemGroup>
+        <!-- Минимальный S3-клиент слепков (осознанное дублирование BackupS3,
+             arch/25 §8): AWSSDK как в PgWorker.Backups (центральные версии). -->
+        <PackageReference Include="AWSSDK.S3"/>
+    </ItemGroup>
 </Project>
