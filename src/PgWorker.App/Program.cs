@@ -55,16 +55,6 @@ builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => o.Api.Tls.AllowInsecureHttp
         || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
         "PgWorker:Api:AdvertiseUrl must be https:// (mTLS-only API, arch/14 §1.1)")
-    // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
-    // default Enabled=false — подсистема не активна, поведение не меняется.
-    // t36: Enabled=true требует непустой Bucket + хотя бы один env-профиль
-    // кредов пулов (arch/19 §7/§9 — единый endpoint записи ушёл). Профили —
-    // из DI-store (единый экземпляр с полупарами/регистрацией ниже): валидация
-    // проверяет ТО, чем приложение пользуется (new Store() в лямбде читал env
-    // мимо DI и делал валидацию несовместимой с тестовыми хостами).
-    .Validate<BackupSecretProfileStore>(
-        (o, profiles) => o.Backups.IsValid(profiles.ProfileNames.Count),
-        "PgWorker:Backups: Enabled=true requires non-empty PgWorker:Backups:S3:Bucket (env PGW_BACKUP_S3_BUCKET) and at least one profile PGW_BACKUP_S3_PROFILES__* (arch/19 §7/§9)")
     // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
     // ПОЛНУЮ СОБСТВЕННУЮ пару PgWorker:Snapshots:Export:S3 (t36, env
     // PGW_SNAPSHOTS_S3_* — не креды пулов бэкапов); диапазоны — всегда.
@@ -83,17 +73,6 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Docker:RestTls is required: both PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
         "(per-install CA for REST-TLS nodes; HTTP mode does not exist)")
     .ValidateOnStart();
-
-// t36 (arch/19 §9): полупары env-профилей кредов пулов — fail-fast старта
-// (ACCESS_KEY без SECRET_KEY — мусорный деплой, резолверу creds не бывает).
-// Единый экземпляр store: та же инстанция уходит в DI (валидация выше читает
-// её же — инвариант «валидация == то, чем пользуется резолвер»).
-var backupProfiles = new BackupSecretProfileStore();
-var halfPairs = backupProfiles.ValidateEnvPairs();
-if (halfPairs.Count > 0)
-    throw new ApplicationException(
-        $"PGW_BACKUP_S3_PROFILES__: half-pairs of env profiles (ACCESS_KEY and SECRET_KEY must be set together): {string.Join(", ", halfPairs)}");
-builder.Services.AddSingleton(backupProfiles);
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
 // ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
@@ -709,14 +688,12 @@ builder.Services.AddSingleton<IS3PoolStore>(sp => new PgWorker.Etcd.S3.S3PoolSto
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Etcd.S3.S3PoolStore>()));
 builder.Services.AddSingleton(sp => new BackupPoolResolver(
     sp.GetRequiredService<IS3PoolStore>(),
-    sp.GetRequiredService<BackupSecretProfileStore>(),
     policyReader: new BackupPolicyReader(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints).ReadAsync));
 builder.Services.AddSingleton(sp => new BackupS3Factory(
     sp.GetRequiredService<BackupPoolResolver>(),
     sp.GetRequiredService<IS3PoolStore>(),
-    sp.GetRequiredService<BackupSecretProfileStore>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3Bucket,
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime().S3CaBundlePath,
     // Пер-попыточный таймаут S3-запроса (arch/19 §5): половина окна watchdog.

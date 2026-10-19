@@ -552,15 +552,14 @@ public sealed class BackupsOptions
         ContourNetwork: contourNetwork);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
-    /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET) и хотя бы один
-    /// env-профиль кредов PGW_BACKUP_S3_PROFILES__* (t36, arch/19 §7/§9;
-    /// секреты — env-only, число профилей сюда приносит Program.cs);
+    /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET); env-профили
+    /// кредов пулов упразднены — креды читаются per-cluster из etcd
+    /// (/s3/clusters/&lt;C&gt;/secrets), проверок их наличия на старте нет;
     /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
     /// мусорный конфиг виден на старте.</summary>
-    public bool IsValid(int secretProfileCount)
+    public bool IsValid()
         => (!Enabled
             || (!string.IsNullOrWhiteSpace(S3.Bucket)
-                && secretProfileCount > 0
                 && !string.IsNullOrWhiteSpace(Job.Image)
                 && !string.IsNullOrWhiteSpace(Wal.AgentImage)))   // t27: образ wal-агента
            && Quota.WarnPercent < Quota.CritPercent
@@ -656,8 +655,8 @@ public sealed class BackupsRetryOptions
 }
 
 /// <summary>S3-хранилище бэкапов (t36, arch/19 §5/§7): bucket per-install
-/// (единый на всех нодах пулов) + CA https; endpoint/креды — пул per-cluster
-/// (policy.s3) и env-профили PGW_BACKUP_S3_PROFILES__* (не конфиг).</summary>
+/// (единый на всех нодах пулов) + CA https; endpoint/креды пула — per-cluster
+/// в etcd (/s3/clusters/&lt;C&gt;/secrets, не конфиг).</summary>
 public sealed class BackupsS3Options
 {
     public string Bucket { get; set; } = "";

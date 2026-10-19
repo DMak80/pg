@@ -12,7 +12,6 @@ namespace PgWorker.Backups;
 public sealed class BackupS3Factory(
     BackupPoolResolver resolver,
     IS3PoolStore pools,
-    BackupSecretProfileStore secrets,
     Func<string> bucket,
     Func<string?> caBundlePath,
     TimeSpan requestTimeout,
@@ -70,21 +69,20 @@ public sealed class BackupS3Factory(
         if (s3pool.ToRemove)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
                 $"s3-pool: pool {pool} in state TO_REMOVE"));
-        string? accessKey = null;
-        string? secretKey = null;
-        string? diag = null;
-        if (s3pool.SecretProfile is null
-            || !secrets.TryGet(s3pool.SecretProfile, out accessKey, out secretKey, out diag))
+        // Креды — per-cluster secrets из etcd (/s3/clusters/<pool>/secrets,
+        // ключ backups), без секрет-профилей.
+        if (s3pool.Secrets is not { } poolSecrets)
             return Result<(PoolBackupS3, BackupPoolContext)>.Failed(new ApplicationException(
-                $"s3-pool: {diag ?? $"pool {pool} without secret_profile"}"));
+                $"s3-pool: pool {s3pool} has no readable secrets in etcd (/s3/clusters/{s3pool}/secrets, key backups)"));
 
         // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
         // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).
         var endpoints = BackupPoolResolver.ReadAllUris(s3pool);
         return Result<(PoolBackupS3, BackupPoolContext)>.Success((
-            new PoolBackupS3(endpoints, endpoints, accessKey!, secretKey!, bucket(), caBundlePath(),
-                requestTimeout, targetFactory: targetFactory),
-            new BackupPoolContext(pool, accessKey!, secretKey!, endpoints, endpoints, endpoints)));
+            new PoolBackupS3(endpoints, endpoints, poolSecrets.AccessKey, poolSecrets.SecretKey, bucket(),
+                caBundlePath(), requestTimeout, targetFactory: targetFactory),
+            new BackupPoolContext(pool, poolSecrets.AccessKey, poolSecrets.SecretKey, endpoints, endpoints,
+                endpoints)));
     }
 
     // Сборка клиента из резолвнутого контекста вынесена в public Create(ctx).

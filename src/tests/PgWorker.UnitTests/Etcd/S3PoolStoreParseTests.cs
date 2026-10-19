@@ -19,7 +19,7 @@ public class S3PoolStoreParseTests
             new FakeGateway(new Dictionary<string, string>
             {
                 ["/s3/clusters/backups/config"] =
-                    """{"platform":"owns3","nodes":2,"secret_profile":"backups-main","created_unix":1}""",
+                    """{"platform":"owns3","nodes":2,"created_unix":1}""",
                 ["/s3/clusters/backups/nodes/east1/state"] = "\"RUNNING\"",
                 ["/s3/clusters/backups/nodes/east1/placement"] = """{"docker_host":"h1"}""",
                 ["/s3/clusters/backups/nodes/east1/placed_on"] = "\"h1\"",
@@ -40,7 +40,6 @@ public class S3PoolStoreParseTests
         result.Value.Should().NotBeNull();
         var pool = result.Value!;
         pool.Name.Should().Be("backups");
-        pool.SecretProfile.Should().Be("backups-main");
         pool.ToRemove.Should().BeFalse();
         pool.Endpoints.Should().Equal("h1:18001", "h2:18002");
         pool.Nodes.Should().HaveCount(2);
@@ -62,7 +61,7 @@ public class S3PoolStoreParseTests
             new FakeGateway(new Dictionary<string, string>
             {
                 ["/s3/clusters/backups/config"] =
-                    """{"platform":"owns3","nodes":2,"secret_profile":"p","created_unix":1}""",
+                    """{"platform":"owns3","nodes":2,"created_unix":1}""",
                 ["/s3/clusters/backups/nodes/east1/state"] = "\"RUNNING\"",
                 ["/s3/clusters/backups/nodes/east1/placement"] = """{"docker_host":"h1"}""",
                 ["/s3/clusters/backups/nodes/east2/state"] = "\"PROVISIONING\"",

@@ -15,7 +15,7 @@ public class BackupsOptionsTests
 
         // Act / Assert — поведение воркера не меняется: подсистема выключена.
         options.Enabled.Should().BeFalse();
-        options.IsValid(1).Should().BeTrue();
+        options.IsValid().Should().BeTrue();
     }
 
     [Fact]
@@ -25,7 +25,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions { Enabled = true };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeTrue();
+        options.IsValid().Should().BeTrue();
     }
 
     // t36 (arch/19 §7): конфиг-креды (Endpoint/AccessKey/SecretKey) больше НЕ
@@ -59,7 +59,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — 1 env-профиль кредов → валидно.
-        options.IsValid(1).Should().BeTrue();
+        options.IsValid().Should().BeTrue();
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -189,7 +189,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — fail-fast старта.
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -202,7 +202,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -215,7 +215,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -228,7 +228,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     [Fact]
@@ -238,7 +238,7 @@ public class BackupsOptionsTests
         var options = new BackupsOptions();
 
         // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
-        options.IsValid(1).Should().BeTrue();
+        options.IsValid().Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
         options.Quota.Bytes.Should().Be(0);
@@ -303,7 +303,7 @@ public class BackupsOptionsTests
         options.Job.RestoreTimeoutSec = restore;
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse("negative/zero budgets are garbage config");
+        options.IsValid().Should().BeFalse("negative/zero budgets are garbage config");
     }
 
     // AAA: OrphanTtlSec=0 — валиден (только алерт, без авто-удаления)
@@ -317,7 +317,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
+        options.IsValid().Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
     }
 
     // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
@@ -375,7 +375,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert — Program.cs ValidateOnStart уронит старт.
-        options.IsValid(1).Should().BeFalse("negative Drill budgets are garbage config");
+        options.IsValid().Should().BeFalse("negative Drill budgets are garbage config");
     }
 
     // AAA: IntervalDays=0 валиден (глобальное выключение новых запусков)
@@ -389,7 +389,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeTrue("0 is a legitimate switch-off of new runs");
+        options.IsValid().Should().BeTrue("0 is a legitimate switch-off of new runs");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
 
@@ -423,7 +423,7 @@ public class BackupsOptionsTests
         };
 
         // Act / Assert
-        options.IsValid(1).Should().BeFalse();
+        options.IsValid().Should().BeFalse();
     }
 
     // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)

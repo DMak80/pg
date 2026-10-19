@@ -319,24 +319,20 @@ public static class FakePoolFactory
 {
     public static BackupS3Factory Single(IBackupS3 target, string bucket = "pgworker-backups")
     {
-        var pool = new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+        var pool = new PgWorker.Etcd.S3.S3Pool("backups", false,
             [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
-            ["h1:9000"]);
+            ["h1:9000"], Secrets: new("ak", "sk"));
         var ctx = new BackupPoolContext(
             "backups", "ak", "sk",
             ["http://h1:9000"], ["http://h1:9000"], ["http://h1:9000"]);
-        var secrets = new BackupSecretProfileStore(
-            getenv: _ => "x",
-            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
         return new BackupS3Factory(
             new BackupPoolResolver(
                 new FixedPoolStore(pool),
-                secrets,
                 policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
                     new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
                         S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
                             "backups", ["node1"], ["node1"])))),
-            new FixedPoolStore(pool), secrets,
+            new FixedPoolStore(pool),
             () => bucket, () => null, TimeSpan.FromSeconds(5),
             targetFactory: _ => target);
     }
@@ -348,25 +344,21 @@ public static class FakePoolFactory
     public static (BackupS3Factory Factory, PgWorker.Etcd.S3.IS3PoolStore Store) TwoPoolsSameTarget(
         IBackupS3 target, string bucket = "pgworker-backups")
     {
-        var secrets = new BackupSecretProfileStore(
-            getenv: _ => "x",
-            envNames: ["PGW_BACKUP_S3_PROFILES__backups-main__ACCESS_KEY", "PGW_BACKUP_S3_PROFILES__backups-main__SECRET_KEY"]);
         var store = new MultiPoolStore(
-            new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+            new PgWorker.Etcd.S3.S3Pool("backups", false,
                 [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
-                ["h1:9000"]),
-            new PgWorker.Etcd.S3.S3Pool("cold", "backups-main", false,
+                ["h1:9000"], Secrets: new("ak", "sk")),
+            new PgWorker.Etcd.S3.S3Pool("cold", false,
                 [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
-                ["h1:9000"]));
+                ["h1:9000"], Secrets: new("ak", "sk")));
         var factory = new BackupS3Factory(
             new BackupPoolResolver(
                 store,
-                secrets,
                 policyReader: (_, _) => Task.FromResult<PgWorker.Etcd.Parsing.BackupPolicy?>(
                     new PgWorker.Etcd.Parsing.BackupPolicy(1, 1, 1, 86400, true,
                         S3: new PgWorker.Etcd.Parsing.BackupPolicyS3(
                             "backups", ["node1"], ["node1"])))),
-            store, secrets,
+            store,
             () => bucket, () => null, TimeSpan.FromSeconds(5),
             targetFactory: _ => target);
         return (factory, store);
@@ -375,9 +367,9 @@ public static class FakePoolFactory
     // Отдельный store для процессов, берущих фабрику И store раздельно
     // (RetentionProcess/BackupOrphanSweeper — union пулов).
     public static PgWorker.Etcd.S3.IS3PoolStore Store() => new FixedPoolStore(
-        new PgWorker.Etcd.S3.S3Pool("backups", "backups-main", false,
+        new PgWorker.Etcd.S3.S3Pool("backups", false,
             [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
-            ["h1:9000"]));
+            ["h1:9000"], Secrets: new("ak", "sk")));
 
     private sealed class FixedPoolStore(PgWorker.Etcd.S3.S3Pool? pool) : PgWorker.Etcd.S3.IS3PoolStore
     {
