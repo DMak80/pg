@@ -33,7 +33,8 @@ internal static class BackupsLogin
     }
 }
 
-// AC1 (t08 spec §7.1): без AdminPanel:Backups:S3:Endpoint панель стартует,
+// AC1 (t08 spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
+// с endpoints и secrets) панель стартует,
 // GET /api/backups/storage → 200 {configured:false}, инвентарь-тик — no-op
 // (стоп пуст), алерт backup-s3-unreachable не горит.
 [Collection("backups")]

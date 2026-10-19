@@ -99,7 +99,7 @@ public class BackupStorageQueryTests
 
         // Assert
         dto.Configured.Should().BeFalse();
-        dto.NotConfiguredReason.Should().Contain("AdminPanel:Backups:S3");
+        dto.NotConfiguredReason.Should().Contain("/s3/clusters/");
         dto.Clusters.Should().BeEmpty();
         dto.LiveUsedBytes.Should().BeNull();
         dto.InventoryUpdatedUnix.Should().Be(0);
