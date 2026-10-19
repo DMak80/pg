@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+    </ItemGroup>
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+</Project>

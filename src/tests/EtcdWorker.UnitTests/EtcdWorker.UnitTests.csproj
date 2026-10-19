@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <Using Include="Xunit"/>
+        <Using Include="FluentAssertions"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\EtcdWorker.Core\EtcdWorker.Core.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Etcd\EtcdWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Docker\EtcdWorker.Docker.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.Provisioning\EtcdWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\..\EtcdWorker.App\EtcdWorker.App.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Docker"/>
+        <Using Include="Shared.Core.Planning"/>
+        <Using Include="Shared.Core.Writing"/>
+        <Using Include="Shared.Etcd.Maintenance"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+    </ItemGroup>
+
+</Project>
