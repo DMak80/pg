@@ -25,10 +25,13 @@
 ⚠️ **E2E на свежем Release — обязателен в мерж-гейте задач, трогающих код воркеров.**
 Задачи, меняющие `src/PgWorker.App`/`Core`/`Provisioning`/`Etcd` (и аналоги
 KafkaWorker), в мерж-гейте прогоняют docker-E2E серию PgWorker на свежем
-Release: минимум кейс-маркер
-`DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Scale_AddEmptyShard`;
+Release. Сборка и запуск — ВСЕГДА двумя ОТДЕЛЬНЫМИ командами, в этом порядке:
+1) сборка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo`;
+2) тесты — ТОЛЬКО с `--no-build` и env-префиксом при самой команде (не
+   `export`): минимум кейс-маркер
+`DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build --filter FullyQualifiedName~Scale_AddEmptyShard`;
 полный прогон E2eFixture — при изменении provisioning/portalloc/moves-процессов.
-E2eFixture собирает Release сам (инкрементальный no-op — секунды);
+Свежесть бинаря видна отдельной командой сборки (её вывод — часть гейта);
 `PGW_TEST_E2E_NOBUILD=1` — только для бисекта/отладки конкретного бинаря.
 Урок t09: устаревший зелёный бинарь маскировал регрессию 29.08–02.09.
 ⚠️ **Перед docker-E2E PgWorker — обязательная статическая подготовка ОДНИМ
