@@ -201,6 +201,26 @@ export interface EtcdStatusDto {
   lastRefreshUtc: string;
 }
 
+// GET /api/etcd/domain — домен EtcdWorker (t32, adminpanel/02 §2.3.5):
+// декларация состава + managed-узлы + статус DR-выгрузки слепков.
+export interface EtcdDomainDto {
+  declaredNodes: number | null; // null — ключа /etcd/config нет («только наблюдение»)
+  createdUnix: number | null;
+  nodes: EtcdManagedNodeDto[];
+  snapshots: EtcdSnapshotsDto | null;
+}
+
+export interface EtcdManagedNodeDto {
+  k: number;
+  state: string | null;
+  placedOn: string | null;
+}
+
+// Ответ 200 PUT /api/etcd/config (t32): зеркало тела воркера {"nodes":N}.
+export interface EtcdConfigUpdatedDto {
+  nodes: number;
+}
+
 export interface EtcdEndpointDto {
   url: string;
   reachable: boolean;

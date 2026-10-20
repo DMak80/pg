@@ -77,6 +77,7 @@ public sealed class GenerateWorkerApiCertCommandHandler(
             "kafkaworker" => kafka?.WorkerEndpoints ?? [],
             "valkeyworker" => valkey?.WorkerEndpoints ?? [],
             "s3worker" => s3?.WorkerEndpoints ?? [],
+            "etcdworker" => pg?.EtcdWorkerEndpoints ?? [], // t32: домен в основном снапшоте
             _ => [], // 404 даст сервис (гвард до KeyOf)
         })
         .Select(e => WorkerCertService.HostOf(e.Url))
@@ -126,7 +127,7 @@ public sealed class RestartWorkerCommandHandler(IWorkerApiGateway api)
 {
     public async ValueTask<Result<WorkerRestartDto>> Handle(RestartWorkerCommand c, CancellationToken ct)
     {
-        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker"))
+        if (c.Worker is not ("pgworker" or "kafkaworker" or "valkeyworker" or "s3worker" or "etcdworker"))
             return Result<WorkerRestartDto>.Failed(new WorkerNotFoundException(c.Worker));
         IReadOnlyList<WorkerApiInstanceResult> results;
         try

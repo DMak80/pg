@@ -197,7 +197,7 @@ public class ValkeyWorkersInfraTests
         card.TargetCert!.Thumbprint.Should().Be("abc123");
         // kafka-карточка не пострадала (порядок pg→kafka→valkey; s3 — t34).
         result.Value.Workers.Select(w => w.Worker).Should()
-            .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker");
+            .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker", "etcdworker"); // t32: ряд etcdworker
     }
 
     // ===== 2. Gateway: резолв endpoints по /valkeyworker/api/ =====

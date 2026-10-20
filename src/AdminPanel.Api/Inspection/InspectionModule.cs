@@ -36,6 +36,14 @@ public static class InspectionModule
             return ResultToHttp(result);
         });
 
+        // GET /api/etcd/domain — домен EtcdWorker (t32, adminpanel/02 §2.3.5):
+        // декларация состава + managed-узлы + статус DR-выгрузки слепков.
+        endpoints.MapGet("/api/etcd/domain", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<EtcdDomainQuery, EtcdDomainDto>(new EtcdDomainQuery(), ct);
+            return ResultToHttp(result);
+        });
+
         // GET /api/backups/s3-pools (t36, adminpanel/02 §12.4): пулы — из единого
         // домена S3 (S3Snapshot, тот же тик) — Select модала «Пул бэкапов»
         // (без ключей/секретов).

@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
 using AdminPanel.Etcd.Workers;
+using AdminPanel.Api.Operations.Etcd;
 using Shared.Core.CQRS;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -158,6 +159,26 @@ public static class OperationsModule
                 new UpdateClusterConfigCommand(cluster, request), ct);
             if (result.IsSuccess)
                 return Results.NoContent();
+
+            return Error(result);
+        });
+
+        // PUT /api/etcd/config — декларация состава etcd-контура (t32, 02 §9.13):
+        // панель НЕ пишет в etcd — прокси в API EtcdWorker телом {"nodes":N}
+        // (замещение целиком); 200 / 400 (N вне 0..7 — дубль для UX, истина —
+        // воркер) / 409 кворум-гвард / 503 живых инстансов нет.
+        endpoints.MapPut("/api/etcd/config", async (
+            PutEtcdConfigRequest request, IHandler handler, CancellationToken ct) =>
+        {
+            if (request.Nodes is < 0 or > 7)
+                return Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid body",
+                    detail: $"nodes must be an integer in 0..7, got {request.Nodes}");
+            var result = await handler.HandleCommand<PutEtcdConfigCommand, EtcdConfigPanelDto>(
+                new PutEtcdConfigCommand(request.Nodes), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
 
             return Error(result);
         });
