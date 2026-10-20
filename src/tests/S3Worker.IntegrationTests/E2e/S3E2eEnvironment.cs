@@ -425,8 +425,13 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         {
             await process.WaitForExitAsync(timeoutCts.Token);
             if (process.ExitCode != 0)
+            {
+                // В ошибку — ОБА потока: MSBuild/dotnet пишут ошибки в STDOUT
+                // (stderr пуст) — без него отказ publish неразличим («→ 1: »).
+                var output = await outTask;
                 throw new ApplicationException(
-                    $"{file} {string.Join(' ', args)} → {process.ExitCode}: {await errTask}");
+                    $"{file} {string.Join(' ', args)} → {process.ExitCode}: {await errTask}\nstdout: {output}");
+            }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
