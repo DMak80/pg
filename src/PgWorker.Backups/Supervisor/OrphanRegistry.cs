@@ -45,6 +45,15 @@ public static class OrphanRegistry
     /// проходом (обходит hold и автоправило) и гасит ключ по исполнении/погашении.</summary>
     public const string DeletesPrefix = "/pgworker/backups/orphan-deletes/";
 
+    /// <summary>Глобальный ключ журнала фаз лидер-прохода свипера сирот
+    /// (arch/19 §4): {"op":"backup-orphan-sweeper","phase":"orphan-…/&lt;C&gt;/&lt;X&gt;",
+    /// "instance":"…","updated_unix":T,"last_error"?}; вне per-cluster префиксов
+    /// (D2-чистки deprovisioning не касается); пишет ТОЛЬКО глобальный лидер
+    /// /pgworker/leader plain put'ом без read-modify-write (единственный
+    /// писатель — гонок нет); «последняя фаза побеждает» — ключ перезаписывается
+    /// каждым проходом, чистка не нужна.</summary>
+    public const string JournalKey = "/pgworker/backups/orphan-journal";
+
     /// <summary>Реестр осиротевших S3-префиксов установки — значение глобального
     /// ключа /pgworker/backups/orphans (формат arch/19 §4). Пишет ТОЛЬКО
     /// глобальный лидер-проход (BackupOrphanSweeper); панель читает
@@ -91,6 +100,13 @@ public static class OrphanRegistry
     private sealed record DeletePayload(
         [property: JsonPropertyName("requested_unix")] long RequestedUnix,
         [property: JsonPropertyName("requested_by")] string RequestedBy);
+
+    private sealed record JournalPayload(
+        [property: JsonPropertyName("op")] string Op,
+        [property: JsonPropertyName("phase")] string Phase,
+        [property: JsonPropertyName("instance")] string Instance,
+        [property: JsonPropertyName("updated_unix")] long UpdatedUnix,
+        [property: JsonPropertyName("last_error")] string? LastError);
 
     /// <summary>Группировка list-объектов (один проход): суммы размеров по
     /// префиксам «&lt;C&gt;/&lt;X&gt;/» нашей формы (имена валидны по regex;
@@ -224,6 +240,14 @@ public static class OrphanRegistry
     /// {"requested_unix":T,"requested_by":"…"}.</summary>
     public static string DeleteToJson(long requestedUnix, string requestedBy)
         => JsonSerializer.Serialize(new DeletePayload(requestedUnix, requestedBy), Json);
+
+    /// <summary>Значение ключа журнала фаз свипера (arch/19 §4, строго):
+    /// {"op":"backup-orphan-sweeper","phase":"…","instance":"…",
+    /// "updated_unix":T,"last_error"?} — null-поля опускаются сериализацией
+    /// (WhenWritingNull); парсер в прод-коде не нужен (читатель — оператор).</summary>
+    public static string JournalPhaseToJson(string phase, string instance, long updatedUnix, string? lastError)
+        => JsonSerializer.Serialize(
+            new JournalPayload("backup-orphan-sweeper", phase, instance, updatedUnix, lastError), Json);
 
     /// <summary>Сериализация в формат ключа arch/19 §4 (snake_case).</summary>
     public static string ToJson(Registry registry)

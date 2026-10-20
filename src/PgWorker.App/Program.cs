@@ -771,7 +771,6 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphan
     sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<IS3PoolStore>(),
     sp.GetRequiredService<ClaimStore>(),
-    sp.GetRequiredService<WorkJournal>(),
     () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
         ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null,

@@ -29,7 +29,6 @@ public sealed class BackupOrphanSweeper(
     BackupS3Factory s3Factory,
     PgWorker.Etcd.S3.IS3PoolStore pools,
     ClaimStore claims,
-    WorkJournal journal,
     Func<BackupsRuntimeOptions?> runtime,
     TimeProvider time,
     ILogger? logger = null)
@@ -123,8 +122,7 @@ public sealed class BackupOrphanSweeper(
             else if (await DeleteKeyAsync(kv.Key, ct) is { IsSuccess: false } delHold)
                 return delHold; // transient — следующий проход повторит
             else
-                await journal.WritePhaseAsync(prefix.Split('/')[0], Op,
-                    $"orphan-key-cleaned/{prefix}", claims.InstanceId, null, ct);
+                await WriteJournalAsync($"orphan-key-cleaned/{prefix}", ct);
         }
         string? requested = null; // префикс первой заявки (по ordinal ключа)
         foreach (var kv in deletesRange.Value.OrderBy(k => k.Key, StringComparer.Ordinal))
@@ -137,8 +135,7 @@ public sealed class BackupOrphanSweeper(
             }
             if (await DeleteKeyAsync(kv.Key, ct) is { IsSuccess: false } delReq)
                 return delReq;
-            await journal.WritePhaseAsync(prefix.Split('/')[0], Op,
-                $"orphan-key-cleaned/{prefix}", claims.InstanceId, null, ct);
+            await WriteJournalAsync($"orphan-key-cleaned/{prefix}", ct);
         }
 
         // (4) Отбор (спека §3.1): (1) доводка первого DELETING безусловно →
@@ -194,8 +191,7 @@ public sealed class BackupOrphanSweeper(
             if (await DeleteKeyAsync(OrphanRegistry.DeleteKey(candidate), ct)
                     is { IsSuccess: false } delReqCancelled)
                 return delReqCancelled;
-            await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-                $"orphan-cancelled/{candidate}", claims.InstanceId, null, ct);
+            await WriteJournalAsync($"orphan-cancelled/{candidate}", ct);
             logger?.LogInformation(
                 "{Op}: orphan {Prefix} cancelled — owner resurrected", Op, candidate);
             return Result.Success();
@@ -212,8 +208,7 @@ public sealed class BackupOrphanSweeper(
         // journal-before-manipulations: DELETING пишется ДО удаления объектов.
         // По заявке — журнал заявки до перехода в DELETING (AC4).
         if (byRequest)
-            await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-                $"orphan-delete-requested/{candidate}", claims.InstanceId, null, ct);
+            await WriteJournalAsync($"orphan-delete-requested/{candidate}", ct);
         var deleting = merged with
         {
             Orphans = merged.Orphans
@@ -223,8 +218,7 @@ public sealed class BackupOrphanSweeper(
         };
         if (await PutRegistryAsync(deleting, ct) is { IsSuccess: false } putDeleting)
             return putDeleting; // запись остаётся OBSERVED — следующий проход повторит
-        await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-            $"orphan-deleting/{candidate}", claims.InstanceId, null, ct);
+        await WriteJournalAsync($"orphan-deleting/{candidate}", ct);
 
         // batch-delete префикса + list-подтверждение пустоты — через КАЖДЫЙ
         // доступный пул (t36: префикс <C>/<X> может лежать в любом пуле;
@@ -259,8 +253,7 @@ public sealed class BackupOrphanSweeper(
         };
         if (await PutRegistryAsync(done, ct) is { IsSuccess: false } putDone)
             return putDone;
-        await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
-            $"orphan-deleted/{candidate}", claims.InstanceId, null, ct);
+        await WriteJournalAsync($"orphan-deleted/{candidate}", ct);
         logger?.LogInformation("{Op}: orphan {Prefix} deleted {Reason}", Op, candidate,
             byRequest ? "by operator request" : "by TTL");
 
@@ -371,5 +364,25 @@ public sealed class BackupOrphanSweeper(
 
         return Result.Failed(last.Error ?? new ApplicationException(
             $"put {OrphanRegistry.Key}: no live endpoints"));
+    }
+
+    // Фаза свипера — глобальный ключ /pgworker/backups/orphan-journal
+    // (arch/19 §4): failover-put по endpoints (образец PutRegistryAsync),
+    // plain put без read-modify-write. Журнал — наблюдаемость: неудача
+    // записи НЕ роняет проход (все endpoints упали — предупреждение).
+    private async Task WriteJournalAsync(string phase, CancellationToken ct)
+    {
+        foreach (var endpoint in endpoints)
+        {
+            var put = await etcd.PutAsync(
+                endpoint, OrphanRegistry.JournalKey,
+                OrphanRegistry.JournalPhaseToJson(
+                    phase, claims.InstanceId, time.GetUtcNow().ToUnixTimeSeconds(), null),
+                null, ct);
+            if (put.IsSuccess)
+                return;
+        }
+
+        logger?.LogWarning("{Op}: orphan journal write failed for phase {Phase}", Op, phase);
     }
 }
