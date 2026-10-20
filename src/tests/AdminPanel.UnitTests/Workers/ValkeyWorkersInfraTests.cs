@@ -285,6 +285,8 @@ public class ValkeyWorkersInfraTests
             // t34: s3-пара нейтральна для valkey-сценариев.
             new StubS3Reader(),
             new S3WorkerHealthStore(),
+            // t32: etcdworker-пара нейтральна (ключей /etcdworker/api/ нет).
+            new EtcdWorkerHealthStore(),
             new StubHttpClientFactory(handler),
             Options.Create(new WorkerApiOptions { HealthIntervalSec = 15, TimeoutSec = 3 }),
             new FixedTimeProvider { Utc = Now },

@@ -4,10 +4,11 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-snapshot-export-failed (critical, reliability t08, adminpanel/03 §4):
-// выгрузка снапшотов etcd в S3 провалилась (state=FAILED, текст error) —
-// контроль-плейн не защищён от потери хоста. Выключенная опция/нет ключа —
-// молчание (образец backup-full-stale: выключенная подсистема не алертит).
+// etcd-snapshot-export-failed (critical, t32, adminpanel/03 §4): выгрузка
+// DR-слепков etcd в S3 провалилась (state=FAILED статуса EtcdWorker, текст
+// error, в т.ч. маркер etcd-backup-missing: цель не заявлена/недоступна) —
+// контроль-плейн не защищён от потери хоста. Нет ключа — молчание
+// (толерантный читатель).
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class EtcdSnapshotExportFailedRule : IAlertRule
 {
@@ -18,8 +19,8 @@ public sealed class EtcdSnapshotExportFailedRule : IAlertRule
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
         var export = snapshot.EtcdSnapshots;
-        if (export is not { Enabled: true, State: "FAILED" })
-            yield break; // выключено/нет ключа — молчим
+        if (export is not { State: "FAILED" })
+            yield break; // нет ключа — молчим
 
         yield return new Alert(
             KindName,
@@ -35,6 +36,6 @@ public sealed class EtcdSnapshotExportFailedRule : IAlertRule
             null,
             "control plane is not protected against host loss — etcd snapshot export to S3 failed",
             AlertRemedy.OperatorRunbook,
-            "docs/runbook.md §«Восстановление etcd из S3-выгрузки (t08)»: check S3 availability (PGW_BACKUP_S3_*) and the status key /pgworker/etcd-snapshots; the worker completes the export on a RetryIntervalSec tick");
+            "docs/runbook.md §\"Восстановление etcd из S3-выгрузки\": check the etcd-backup S3 cluster (/s3/clusters/, etcd_backup=true) and the status key /etcdworker/snapshots; EtcdWorker completes the export on a RetryIntervalSec tick");
     }
 }

@@ -49,6 +49,8 @@ public class WorkerHealthPollerTests
             new StubValkeyReader(null), new ValkeyWorkerHealthStore(),
             // t34: s3-пара нейтральна для pg/kafka/valkey-сценариев.
             new StubS3Reader(null), new S3WorkerHealthStore(),
+            // t32: etcdworker-пара нейтральна (ключей /etcdworker/api/ нет).
+            new EtcdWorkerHealthStore(),
             new StubFactory(new FakeHandler(respond)),
             Options.Create(new WorkerApiOptions { HealthIntervalSec = 15, TimeoutSec = 3 }),
             time, NullLogger<WorkerHealthPoller>.Instance);

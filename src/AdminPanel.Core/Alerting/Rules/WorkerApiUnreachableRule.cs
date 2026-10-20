@@ -6,6 +6,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 // worker-api-unreachable (critical, task etcd-via-worker-api): нет живых ключей
 // /pgworker/api/ (arch/02 §2.3.1) — мутации панели (прокси в API PgWorker)
 // отвечают 503; чтение данных не страдает. Kafka-грань — в KafkaAlertEngine.
+// Отдельный ряд etcdworker (t32, arch/02 §2.3.5): мутация состава контура.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class WorkerApiUnreachableRule : IAlertRule
 {
@@ -15,19 +16,30 @@ public sealed class WorkerApiUnreachableRule : IAlertRule
 
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
-        if (snapshot.PgWorkerEndpoints.Count > 0)
-            yield break;
+        if (snapshot.PgWorkerEndpoints.Count == 0)
+            yield return new Alert(
+                $"{KindName}:pgworker",
+                AlertSeverity.Critical,
+                KindName,
+                "pgworker",
+                "PgWorker API unreachable: no live /pgworker/api/ keys — panel mutations return 503; data reads are unaffected",
+                null,
+                null,
+                Hint: "worker writes the lease key at startup; no key = worker did not start or died ≤15 s ago",
+                Remedy: AlertRemedy.OperatorRunbook,
+                RemedyText: "start the worker container (deploy/docker-compose.yml), check /healthz and PgWorker:Api:AdvertiseUrl");
 
-        yield return new Alert(
-            $"{KindName}:pgworker",
-            AlertSeverity.Critical,
-            KindName,
-            "pgworker",
-            "PgWorker API unreachable: no live /pgworker/api/ keys — panel mutations return 503; data reads are unaffected",
-            null,
-            null,
-            Hint: "worker writes the lease key at startup; no key = worker did not start or died ≤15 s ago",
-            Remedy: AlertRemedy.OperatorRunbook,
-            RemedyText: "start the worker container (deploy/docker-compose.yml), check /healthz and PgWorker:Api:AdvertiseUrl");
+        if (snapshot.EtcdWorkerEndpoints is not { Count: > 0 })
+            yield return new Alert(
+                $"{KindName}:etcdworker",
+                AlertSeverity.Critical,
+                KindName,
+                "etcdworker",
+                "EtcdWorker API unreachable: no live /etcdworker/api/ keys — contour membership mutations return 503; data reads are unaffected",
+                null,
+                null,
+                Hint: "worker writes the lease key at startup; no key = worker did not start or died ≤15 s ago",
+                Remedy: AlertRemedy.OperatorRunbook,
+                RemedyText: "start the etcdworker container (deploy/docker-compose.yml), check /healthz and EtcdWorker:Api:AdvertiseUrl");
     }
 }

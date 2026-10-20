@@ -54,9 +54,10 @@ public sealed record BackupStorageInfo(
     long UsedBytes, long? QuotaBytes, double? UsedPercent,
     BackupStorageState State, long UpdatedUnix);
 
-/// <summary>Статус выгрузки etcd-снапшотов в S3 (t08, adminpanel/02 §2.3.1):
-/// ключ /pgworker/etcd-snapshots, пишет PgWorker; null-поля — толерантный
-/// парсинг (битые/старые ключи); enabled=false/ключа нет — правила молчат.</summary>
+/// <summary>Статус DR-выгрузки слепков etcd в S3 (t08 → t32: ключ
+/// /etcdworker/snapshots, arch/25 §5; пишет EtcdWorker): null-поля —
+/// толерантный парсинг (битые/старые ключи); поля enabled в формате нет —
+/// выгрузка безусловна; ключа нет — правила молчат.</summary>
 public sealed record EtcdSnapshotExportInfo(
-    bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
+    string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);

@@ -9,7 +9,8 @@ namespace AdminPanel.Etcd.Workers;
 /// <summary>
 /// Шлюз в API воркеров: URL резолвит по живым lease-ключам из снапшота
 /// (/pgworker/api/ — EtcdSnapshot, /kafkaworker/api/ — KafkaSnapshot,
-/// /s3worker/api/ — S3Snapshot, arch/02 §2.3.1/§2.3.2/§2.3.4). Сетевой
+/// /s3worker/api/ — S3Snapshot, /etcdworker/api/ — EtcdSnapshot,
+/// arch/02 §2.3.1/§2.3.2/§2.3.4/§2.3.5). Сетевой
 /// сбой/таймаут одного URL → следующий ключ (failover); ответ получен (любой
 /// статус) → результат с телом как есть; живых нет/все молчат →
 /// WorkerApiUnavailableException (503 панели).
@@ -123,13 +124,15 @@ public sealed class WorkerApiGateway(
         return await client.SendAsync(request, ct);
     }
 
-    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03; s3 — t34).
+    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03; s3 — t34;
+    // etcdworker — t32: живые ключи лежат в основном EtcdSnapshot, 02 §2.3.5).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,
         "kafkaworker" => kafkaStore.Current?.WorkerEndpoints,
         "valkeyworker" => valkeyStore.Current?.WorkerEndpoints,
         "s3worker" => s3Store.Current?.WorkerEndpoints,
-        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "expected pgworker|kafkaworker|valkeyworker|s3worker"),
+        "etcdworker" => pgStore.Current?.EtcdWorkerEndpoints,
+        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "expected pgworker|kafkaworker|valkeyworker|s3worker|etcdworker"),
     };
 }

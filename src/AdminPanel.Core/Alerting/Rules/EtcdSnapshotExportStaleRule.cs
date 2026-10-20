@@ -4,12 +4,11 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-snapshot-export-stale (warning, reliability t08, adminpanel/03 §4):
-// «выгрузка молчит» — last_uploaded_unix отсутствует или старше 2×interval_min
-// (панельный дефолт 360 мин). Порог честен благодаря семантике «покрытия»
-// (adminpanel/02 §2.3.1): поле двигается каждым выгруженным слепком — живой
-// контур с работающей выгрузкой под порог не попадает. Выключенная опция/нет
-// ключа — молчание.
+// etcd-snapshot-export-stale (warning, t32, adminpanel/03 §4): «выгрузка
+// молчит» — last_uploaded_unix отсутствует или старше 2×interval_min
+// (панельный дефолт 360 мин). Порог честен благодаря семантике «покрытия»:
+// поле двигается каждым выгруженным слепком — живой контур с работающей
+// выгрузкой под порог не попадает. Нет ключа — молчание.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class EtcdSnapshotExportStaleRule : IAlertRule
 {
@@ -23,8 +22,8 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
         var export = snapshot.EtcdSnapshots;
-        if (export is not { Enabled: true })
-            yield break; // выключено/ключа нет — молчим
+        if (export is null)
+            yield break; // ключа нет — молчание
 
         var intervalMin = export.IntervalMin ?? DefaultIntervalMin;
         var nowUnix = context.NowUtc.ToUnixTimeSeconds();
@@ -33,7 +32,7 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
 
         var message = export.LastUploadedUnix is { } last
             ? $"etcd snapshot export silent for {nowUnix - last} s — threshold 2×{intervalMin} min"
-            : "no successful etcd snapshot export while the option is enabled";
+            : "no successful etcd snapshot export yet";
         yield return new Alert(
             KindName,
             AlertSeverity.Warning,
@@ -46,8 +45,8 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
                 ["lastUploadedUnix"] = export.LastUploadedUnix?.ToString() ?? string.Empty,
             },
             null,
-            "export is silent — control-plane changes accumulate only in the leader's local volume (both worker instances down / eternal transient / snapshot leadership not executing)",
+            "export is silent — control-plane changes accumulate only in the leader's local volume (both EtcdWorker instances down / eternal transient / snapshot leadership not executing)",
             AlertRemedy.OperatorRunbook,
-            "check healthz of both PgWorker instances and the status key /pgworker/etcd-snapshots; S3 access — runbook t08");
+            "check healthz of both EtcdWorker instances and the status key /etcdworker/snapshots; S3 access — runbook §\"Восстановление etcd из S3-выгрузки\"");
     }
 }

@@ -894,9 +894,8 @@ export interface OrphanDeleteAcceptedDto {
   requestedBy: string;
 }
 
-// Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
+// Статус DR-выгрузки etcd-слепков (t32): ключ /etcdworker/snapshots.
 export interface EtcdSnapshotsDto {
-  enabled: boolean;
   state: string | null;
   lastUploadedUnix: number | null;
   lastObject: string | null;

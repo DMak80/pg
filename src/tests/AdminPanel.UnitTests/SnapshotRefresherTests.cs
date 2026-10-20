@@ -41,9 +41,18 @@ internal static class RefresherTestHarness
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
             s3 ?? new S3InventoryStore(),
+            new EtcdWorkerHealthStore(),
+            new SettableS3SnapshotReader(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
+}
+
+// Управляемый читатель S3-домена (t32 — конструктор refresher'а): null — домен
+// не читался (алерт etcd-backup-cluster-missing молчит).
+internal sealed class SettableS3SnapshotReader : IS3SnapshotReader
+{
+    public AdminPanel.Core.S3.S3Snapshot? Current { get; set; }
 }
 
 // Управляемый стор состояния проб (unit-аналог TestSnapshotStore; spec §10.8).
@@ -319,10 +328,12 @@ public class SnapshotRefresherTests
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
         // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4)
-        // + worker-api-unreachable (живых ключей /pgworker/api/ в фикстуре нет, arch/03 §4.1).
+        // + worker-api-unreachable ×2: pgworker и etcdworker (живых ключей /pgworker/api/
+        // и /etcdworker/api/ в фикстуре нет, arch/03 §4.1; t32).
         var alerts = store.Current!.Alerts;
-        alerts.Should().HaveCount(7);
+        alerts.Should().HaveCount(8);
         alerts.Should().Contain(a => a.Id == "worker-api-unreachable:pgworker");
+        alerts.Should().Contain(a => a.Id == "worker-api-unreachable:etcdworker");
         alerts.Should().Contain(a => a.Id == "key-malformed:/clusters/demo/buckets/status/bucket_9");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_3");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_7");

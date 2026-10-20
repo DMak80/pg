@@ -5,8 +5,8 @@ namespace PgWorker.UnitTests.App;
 // Валидация старта S3-конфигурации бэкапов (arch/19 §7/§9):
 // Enabled=true → непустой Bucket (env PGW_BACKUP_S3_BUCKET); креды пулов —
 // per-cluster в etcd (/s3/clusters/<C>/secrets), на старте НЕ проверяются
-// (появляются/исчезают динамически, резолв — живой); слепки — собственная
-// полная пара PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*).
+// (появляются/исчезают динамически, резолв — живой); слепки контроль-плейна
+// etcd — зона EtcdWorker (arch/25), PgWorker их не выгружает.
 public class BackupsOptionsValidationTests
 {
     // AAA: Enabled=true без Bucket — невалидно.

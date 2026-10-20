@@ -3,9 +3,9 @@ using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 
-/// <summary>Толерантный парсер ключа /pgworker/etcd-snapshots (t08): битый
-/// JSON/state → parseError-запись + null (правила молчат, толерантный читатель);
-/// отсутствующие поля — null-компоненты.</summary>
+/// <summary>Толерантный парсер ключа /etcdworker/snapshots (t32, arch/25 §5):
+/// битый JSON/state → parseError-запись + null (правила молчат); отсутствующие
+/// поля — null-компоненты; поля enabled в формате нет (выгрузка безусловна).</summary>
 public static class EtcdSnapshotsParser
 {
     public static (EtcdSnapshotExportInfo? Info, IReadOnlyList<KeyParseError> Errors) Parse(Kv? kv)
@@ -16,7 +16,6 @@ public static class EtcdSnapshotsParser
         {
             using var doc = System.Text.Json.JsonDocument.Parse(kv.Value);
             var root = doc.RootElement;
-            var enabled = root.TryGetProperty("enabled", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.True;
             var state = JsonValues.ReadString(root, "state");
             var uploaded = JsonValues.ReadLong(root, "last_uploaded_unix");
             var lastObject = JsonValues.ReadString(root, "last_object");
@@ -26,11 +25,11 @@ public static class EtcdSnapshotsParser
             var error = JsonValues.ReadString(root, "error");
             if (state is not null and not ("OK" or "FAILED"))
                 return (null, [new KeyParseError(kv.Key, $"unknown export status state: {state}")]);
-            return (new EtcdSnapshotExportInfo(enabled, state, uploaded, lastObject, sha, size, interval, error), []);
+            return (new EtcdSnapshotExportInfo(state, uploaded, lastObject, sha, size, interval, error), []);
         }
         catch (System.Text.Json.JsonException ex)
         {
-            return (null, [new KeyParseError(kv.Key, $"broken etcd-snapshots export status JSON: {ex.Message}")]);
+            return (null, [new KeyParseError(kv.Key, $"broken etcdworker snapshots status JSON: {ex.Message}")]);
         }
     }
 }

@@ -665,7 +665,7 @@ probe-алерты (`ha-member-not-streaming`, `replica-lag-high`, `slot-*`,
 
 | kind | severity | Условие | Источник |
 |---|---|---|---|
-| `worker-api-unreachable` | critical | нет живых ключей `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`) — мутации домена из панели недоступны (503) | снапшот (lease-ключи дискавери) |
+| `worker-api-unreachable` | critical | нет живых ключей `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`) — мутации домена из панели недоступны (503); отдельный ряд `target=etcdworker` — нет живых ключей `/etcdworker/api/` (02 §2.3.5): мутация состава контура 503 | снапшот (lease-ключи дискавери) |
 
 Kind наблюдаемости провижининга и здоровья воркера (2026-09-01; источники —
 02 §2.3.1 `work`-журналы и опрос `/healthz`):
@@ -673,7 +673,7 @@ Kind наблюдаемости провижининга и здоровья в�
 | kind | severity | Условие | Источник |
 |---|---|---|---|
 | `provision-stuck` | warning | `/pgworker/work/<C>`: `last_error` жив + возраст серии фейлов (`now − fail_first_unix`) > `ProvisionStuckSec` (300 c) — воркер сообщил причину (текст — в Message/details), но кластер не инициализируется | `/pgworker/work/<C>` |
-| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`, t09), но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
+| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`, t09), но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут); отдельный ряд `target=etcdworker/<id>` — инстансы EtcdWorker (02 §2.3.5, общий поллер) | тик опроса /healthz |
 
 UI: карточка алерта раскрывает Hint и Remedy (бейдж движителя); API
 `/api/alerts` отдаёт поля `hint`, `remedy` (строка `worker-auto` /
