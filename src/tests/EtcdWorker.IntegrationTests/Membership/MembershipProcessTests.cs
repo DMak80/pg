@@ -173,14 +173,30 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         return output;
     }
 
-    // Самоочистка кейса: контейнеры/тома, члены, листы, portalloc. Удаления
-    // членов — лучшее усилие (кворум мог быть потерян упавшим кейсом —
-    // окружение серии всё равно демонтируется целиком).
+    // Самоочистка кейса: ЧЛЕНЫ (строго, с ретраями — контейнеры ещё на месте,
+    // кворум жив; иначе remove 503-ит вечно) → контейнеры/тома → листы/
+    // portalloc/журнал/config → ассерт чистоты состава (канон e2e-isolation:
+    // следующий кейс не должен наследовать мёртвые члены).
     private static async Task CleanupAsync(Rig rig, EtcdWorkerEnvironment env)
     {
         var ct = TestContext.Current.CancellationToken;
-        foreach (var m in await ManagedAsync(env))
-            await env.Gateway.MemberRemoveAsync(env.Endpoint, m.Member.Id, ct);
+
+        // 1) Члены — ДО контейнеров; ретраи: conf-change переходы дают
+        // «unhealthy»/лаг member list на follower — по одному за проход.
+        var membersDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
+        while (DateTimeOffset.UtcNow < membersDeadline)
+        {
+            var remaining = await ManagedAsync(env);
+            if (remaining.Count == 0)
+                break;
+            foreach (var m in remaining)
+            {
+                await env.Gateway.MemberRemoveAsync(env.Endpoint, m.Member.Id, ct);
+                await Task.Delay(2000, ct);
+            }
+        }
+
+        // 2) Контейнеры/тома узлов.
         var objects = await rig.Driver.ListNodeObjectsAsync(ct);
         if (objects.IsSuccess)
             foreach (var name in objects.Value)
@@ -193,9 +209,16 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
                     await rig.Driver.RemoveNodeAsync(k, removeVolume: true, ct);
             }
 
+        // 3) Ключи домена (config — тоже: декларация не должна протекать).
         await env.Gateway.DeleteAsync(env.Endpoint, "/etcd/nodes/", prefix: true, ct);
+        await env.Gateway.DeleteAsync(env.Endpoint, EtcdDomainKeys.ConfigKey, prefix: false, ct);
         await env.Gateway.DeleteAsync(env.Endpoint, EtcdPortAllocStore.Key, prefix: false, ct);
         await env.Gateway.DeleteAsync(env.Endpoint, EtcdWorker.Provisioning.EtcdWorkJournal.Key, prefix: false, ct);
+
+        // 4) Ассерт чистоты: managed-членов не осталось.
+        var final = await ManagedAsync(env);
+        final.Should().BeEmpty(
+            $"managed members must be removed by cleanup (left: {string.Join(",", final.Select(m => m.K))}) — иначе кворум контура отравлен для следующих кейсов");
     }
 
     // AAA: nodes=2 → seed + 2 managed, все started (learner → promote),
@@ -278,9 +301,24 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
                 return managed.Count == 2 && managed.All(m => m.Member.Name is { Length: > 0 });
             }, budgetSec: 480, "2 managed started members");
 
-            // Act: снос контейнера И тома НЕ лидера (окружение потеряно).
-            var status = await env.Gateway.StatusAsync(env.Endpoint, TestContext.Current.CancellationToken);
-            var leaderId = status.Value!.LeaderMemberId;
+            // Act: снос контейнера И тома НЕ лидера. Лидер должен быть
+            // СТАБИЛЕН (две пробы подряд) — иначе выборы уведут его на жертву
+            // и гвард замены (не-лидер) корректно заблокирует вывод.
+            ulong? leaderId = null;
+            var ct2 = TestContext.Current.CancellationToken;
+            for (var i = 0; i < 20; i++)
+            {
+                var s1 = (await env.Gateway.StatusAsync(env.Endpoint, ct2)).Value?.LeaderMemberId;
+                await Task.Delay(1000, ct2);
+                var s2 = (await env.Gateway.StatusAsync(env.Endpoint, ct2)).Value?.LeaderMemberId;
+                if (s1 is not null && s1 == s2)
+                {
+                    leaderId = s1;
+                    break;
+                }
+            }
+
+            leaderId.Should().NotBeNull("stable leader expected before killing a non-leader");
             var dead = (await ManagedAsync(env)).First(m => m.Member.Id != leaderId);
             var killed = await rig.Driver.RemoveNodeAsync(dead.K, removeVolume: true, TestContext.Current.CancellationToken);
             killed.IsSuccess.Should().BeTrue(killed.Error?.Message);
@@ -307,6 +345,7 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     }
 
     // AAA: orphan — контейнер узла без члена в составе сносится надзором
+    // (от 2 managed: вывод одного члена member-API не роняет кворум 3 voting)
     [Fact]
     public async Task Orphan_ContainerWithoutMember_Removed()
     {
@@ -314,14 +353,25 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         var rig = NewRig();
         try
         {
-            await DeclareAsync(env, 1);
-            await RunUntilAsync(rig, env, async () => (await ManagedAsync(env)).Count == 1,
-                budgetSec: 120, "1 managed started member");
+            await DeclareAsync(env, 2);
+            await RunUntilAsync(rig, env, async () => (await ManagedAsync(env)).Count == 2,
+                budgetSec: 480, "2 managed started members");
 
             // Act: вывод члена member-API (контейнер остаётся — orphan).
-            var victim = (await ManagedAsync(env))[0];
-            var removed = await env.Gateway.MemberRemoveAsync(
-                env.Endpoint, victim.Member.Id, TestContext.Current.CancellationToken);
+            var victim = (await ManagedAsync(env))
+                .OrderByDescending(m => m.K).First();
+            // «unhealthy cluster» на member-remove — транзиент raft-лага:
+            // ретраи до успеха (бюджет 30 с).
+            Result removed = Result.Failed(new ApplicationException("not attempted"));
+            for (var i = 0; i < 15; i++)
+            {
+                removed = await env.Gateway.MemberRemoveAsync(
+                    env.Endpoint, victim.Member.Id, TestContext.Current.CancellationToken);
+                if (removed.IsSuccess)
+                    break;
+                await Task.Delay(2000, TestContext.Current.CancellationToken);
+            }
+
             removed.IsSuccess.Should().BeTrue(removed.Error?.Message);
             var cleanup = await rig.Supervisor.OrphanCleanupAsync(
                 [], TestContext.Current.CancellationToken);
