@@ -48,12 +48,28 @@ public class S3E2eSupervisionTests
 
             // Act 1: kill ноды → тик надзора пересоздаёт на том же placed_on
             // (PROVISIONING → RUNNING), volume сохранён — тест-объект читается.
+            // Гвард устаревшего чтения: etcd-значение state==RUNNING обязан
+            // подкреплять СВЕЖИЙ usage-ключ (updated_unix позже сноса) — usage
+            // пишет ТОЛЬКО health-ok тик надзора живой ноды (arch/24 §5 C).
+            // Без гварда поллинг ловит RUNNING до сноса, пока пересозданный
+            // контейнер ещё в PROVISIONING: пауза такой ноды клинит сценарий —
+            // трек PROVISIONING заморожен (чужой процесс), add-node ловит
+            // 409 на start запаузенного (docker отказывает rm paused) —
+            // UNREACHABLE не наступает никогда (флейк wait-unreachable).
+            var removedAtUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             await fx.RunDockerAsync(["rm", "-f", $"s3w-{cluster}-east1"], ct);
             await fx.WaitPhaseAsync("wait-rebuild", async () =>
-                await fx.ContainerAliveAsync($"s3w-{cluster}-east1")
-                && await S3E2eScaleTests.GetOrNullAsync(fx,
-                        $"/s3/clusters/{cluster}/nodes/east1/state", ct) == "RUNNING",
-                TimeSpan.FromSeconds(60), ct);
+            {
+                if (await S3E2eScaleTests.GetOrNullAsync(fx,
+                        $"/s3/clusters/{cluster}/nodes/east1/state", ct) != "RUNNING")
+                    return false;
+                var usage = await S3E2eScaleTests.GetOrNullAsync(fx,
+                    $"/s3/clusters/{cluster}/nodes/east1/usage", ct);
+                if (usage is null)
+                    return false;
+                using var doc = JsonDocument.Parse(usage);
+                return doc.RootElement.GetProperty("updated_unix").GetInt64() > removedAtUnix;
+            }, TimeSpan.FromSeconds(60), ct);
 
             (await S3E2eScaleTests.GetOrNullAsync(fx,
                     $"/s3/clusters/{cluster}/nodes/east1/placed_on", ct))
