@@ -114,11 +114,15 @@ public sealed class PortAllocHealer(
         return Result<HealedAddress>.Success(new HealedAddress(address, Recreated: false));
     }
 
-    // Ветка 3: новая аллокация (паттерн AddBrokerProcess.EnsurePortsAsync):
-    // под клэймом busy = docker ∪ portalloc чужих ∪ свои закрепления →
-    // PlacementPlanner+PortAllocator → RMW portalloc (mod_revision) →
-    // EnsureNode (state=PROVISIONING пишет вызывающий supervise) →
-    // RMW endpoints (mod_revision; put если ключа нет).
+    // Ветка 3: новая аллокация (паттерн AddBrokerProcess.EnsurePortsAsync).
+    // Под клэймом — ТОЛЬКО узкая секция «чтение занятости → выбор портов →
+    // RMW portalloc (mod_revision)» (контракт клэйма arch/15 §4: секция
+    // короткая, без keepalive — docker-операции, не укладывающиеся в TTL 15 с,
+    // в неё не входят). EnsureNode и RMW endpoints — ПОСЛЕ освобождения:
+    // адрес закреплён в portalloc (окно «записан, контейнеров ещё нет» для
+    // чужих довыделений закрывает union-чтение занятости, arch/16 §2.1),
+    // endpoints строятся из СВЕЖЕГО portalloc — сосед, довыделивший порты
+    // за время docker-фазы, из bootstrap-списка не выпадает.
     private async Task<Result<HealedAddress>> ReallocateAsync(
         KafkaClusterSnapshot snap, string broker,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
@@ -130,6 +134,8 @@ public sealed class PortAllocHealer(
             return Result<HealedAddress>.Failed(acquired.Error!);
         if (!acquired.Value)
             return Result<HealedAddress>.Failed(new PortLockBusyException(portLock.Key));
+
+        NodeAddress address;
         try
         {
             var read = await ReadPortAllocWithRevisionAsync(cluster, ct);
@@ -175,26 +181,28 @@ public sealed class PortAllocHealer(
             if (!portTxn.Value.Succeeded)
                 return Result<HealedAddress>.Failed(new ApplicationException(
                     $"portalloc {cluster} changed under the claim — retry on next tick"));
-            var address = merged[broker];
-
-            // Контейнер по новому адресу (env — как EnsureNodeAsync надзора).
-            var ensured = await EnsureNodeAsync(snap, broker, address, ct);
-            if (!ensured.IsSuccess)
-                return Result<HealedAddress>.Failed(ensured.Error!);
-
-            // RMW endpoints: пересборка advertise-адресов всех брокеров из
-            // восстановленного portalloc (AdvertisedClientHost ?? host:port).
-            var endpointsError = await UpdateEndpointsAsync(snap, merged, ct);
-            if (endpointsError is not null)
-                return Result<HealedAddress>.Failed(endpointsError);
-
-            await journal.WritePhaseAsync(cluster, Op, "reallocated", claims.InstanceId, null, ct);
-            return Result<HealedAddress>.Success(new HealedAddress(address, Recreated: true));
+            address = merged[broker];
         }
         finally
         {
             await portLock.ReleaseAsync();
         }
+
+        // Контейнер по новому адресу (env — как EnsureNodeAsync надзора) — вне
+        // лока; фейл docker-фазы не теряет аллокацию: следующий тик идёт по
+        // ветке 1 (pinned), контейнер доезжает пересозданием надзора (§5 C).
+        var ensured = await EnsureNodeAsync(snap, broker, address, ct);
+        if (!ensured.IsSuccess)
+            return Result<HealedAddress>.Failed(ensured.Error!);
+
+        // RMW endpoints: пересборка advertise-адресов всех брокеров из
+        // СВЕЖЕГО portalloc (AdvertisedClientHost ?? host:port).
+        var endpointsError = await UpdateEndpointsAsync(snap, ct);
+        if (endpointsError is not null)
+            return Result<HealedAddress>.Failed(endpointsError);
+
+        await journal.WritePhaseAsync(cluster, Op, "reallocated", claims.InstanceId, null, ct);
+        return Result<HealedAddress>.Success(new HealedAddress(address, Recreated: true));
     }
 
     // Пересоздание контейнера брокера по адресу (копия NodeSupervisor.EnsureNodeAsync:
@@ -224,12 +232,18 @@ public sealed class PortAllocHealer(
     }
 
     // RMW /kafka/clusters/<C>/endpoints: advertise-адреса всех брокеров из
-    // portalloc; ключа нет → put, есть → txn mod_revision (проигрыш — ретрай тиком).
+    // СВЕЖЕГО portalloc (чтение после освобождения лока — включает закрепления
+    // соседей за время docker-фазы, снимок секции был бы устаревшим);
+    // ключа нет → put, есть → txn mod_revision (проигрыш — ретрай тиком).
     private async Task<Exception?> UpdateEndpointsAsync(
-        KafkaClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> merged, CancellationToken ct)
+        KafkaClusterSnapshot snap, CancellationToken ct)
     {
+        var read = await ReadPortAllocAsync(snap.Cluster, ct);
+        if (!read.IsSuccess)
+            return read.Error!;
+
         var key = EndpointsKey(snap.Cluster);
-        var value = string.Join(",", merged
+        var value = string.Join(",", read.Value
             .OrderBy(p => p.Key, StringComparer.Ordinal)
             .Select(p => $"{options.AdvertisedClientHost ?? p.Value.Host}:{p.Value.ClientPort.ToString(CultureInfo.InvariantCulture)}"));
 

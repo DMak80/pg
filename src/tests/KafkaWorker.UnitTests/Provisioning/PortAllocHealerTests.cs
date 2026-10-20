@@ -134,6 +134,64 @@ public class PortAllocHealerTests
         endpoints!.Value.Should().Contain(allocatedPort.ToString(), "endpoints RMW-updated (clients re-read on the next tick)");
     }
 
+    // AAA: ветка 3 — EnsureNode (docker-фаза) исполняется ПОСЛЕ освобождения
+    // portalloc-клэйма: секция лока — только «чтение занятости → запись
+    // portalloc» (arch/15 §4, без keepalive: docker-операции не укладываются
+    // в TTL 15 с, чужой takeover не должен застать секцию открытой).
+    [Fact]
+    public async Task Reallocate_EnsureNode_RunsOutsidePortLock()
+    {
+        // Arrange: во время docker-фазы сосед пробует взять клэйм.
+        var rig = await NewRig();
+        var foreign = new PortAllocLock("/kafkaworker", [Ep], rig.Etcd, TimeProvider.System, "other-instance");
+        var lockFreeDuringEnsure = false;
+        rig.Driver.EnsureResultByNode = _ =>
+        {
+            lockFreeDuringEnsure = foreign.TryAcquireAsync(CancellationToken.None).GetAwaiter().GetResult().Value;
+            return Result.Success();
+        };
+
+        // Act: лестница (ветка 3 — контейнера нет).
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: аллокация удалась, к моменту EnsureNode клэйм уже отпущен.
+        resolved.IsSuccess.Should().BeTrue();
+        lockFreeDuringEnsure.Should().BeTrue(
+            "EnsureNode runs after the portalloc lock is released");
+    }
+
+    // AAA: ветка 3 — endpoints строятся из СВЕЖЕГО portalloc (после
+    // освобождения лока): сосед, довыделивший broker2 за время нашей
+    // docker-фазы, остаётся в bootstrap-списке (снимок секции устарел бы).
+    [Fact]
+    public async Task Reallocate_EndpointsBuiltFromFreshPortAlloc()
+    {
+        // Arrange: во время docker-фазы сосед закрепляет broker2 в portalloc.
+        var rig = await NewRig();
+        rig.Driver.EnsureResultByNode = _ =>
+        {
+            var current = rig.Etcd
+                .GetAsync(Ep, "/kafkaworker/portalloc/events", CancellationToken.None)
+                .GetAwaiter().GetResult().Value!.Value; // наш broker1 уже записан
+            rig.Etcd.PutAsync(Ep, "/kafkaworker/portalloc/events",
+                current[..^1] + @",""broker2"":{""host"":""h1"",""client"":21090}}",
+                null, CancellationToken.None).GetAwaiter().GetResult();
+            return Result.Success();
+        };
+
+        // Act: лестница (ветка 3 — контейнера нет).
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: endpoints содержат и наш, и соседский адрес.
+        resolved.IsSuccess.Should().BeTrue();
+        var allocatedPort = resolved.Value.Address.ClientPort.ToString();
+        var endpoints = (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None)).Value;
+        endpoints.Should().NotBeNull();
+        endpoints!.Value.Should().Contain(allocatedPort, "our healed broker is in the bootstrap list");
+        endpoints!.Value.Should().Contain("21090",
+            "the neighbor's broker allocated during our docker phase stays in the bootstrap list");
+    }
+
     // AAA: ветка 1 — адрес уже в portalloc → без записей (ранний выход
     // гарантирует вызывающий; healer это тоже уважает).
     [Fact]
