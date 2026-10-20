@@ -163,12 +163,15 @@ public sealed class WorkerMetricsInstrumentationTests
         // WriteSupervisionAsync мимо события) и evacuate (только waiting-*) не имеют
         // терминальной фазы: фазовые серии для них НЕ эмитим — иначе вечно горящий
         // ProcessPhaseStuck; живость надзора закрывает WorkerLoopStalled.
+        // backup-orphan-sweeper — журнал домена сирот (свой ключ
+        // /pgworker/backups/orphan-journal): его фазы подавлены тоже.
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
 
         // Act
         sut.OnJournalPhase("demo", "supervise", "dcs-converge");
         sut.OnJournalPhase("demo", "evacuate", "waiting-alive");
+        sut.OnJournalPhase("demo", "backup-orphan-sweeper", "orphan-deleting/ghost/s1");
 
         // Assert: подавлены полностью — ни серий, ни операций
         sut.DebugSnapshot().Phases.Should().BeEmpty();

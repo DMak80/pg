@@ -35,6 +35,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var ct = TestContext.Current.CancellationToken;
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, "/pgworker/leader", prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.Key, prefix: false, ct);
+        await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.JournalKey, prefix: false, ct);
         // hold/заявки кейсов t04 — чистка от предыдущих тестов (изоляция сида).
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.HoldsPrefix, prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.DeletesPrefix, prefix: true, ct);
@@ -118,6 +119,40 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         registry!.Orphans.Should().BeEmpty("the removal is confirmed — the record is retired");
     }
 
+    // AAA: проход с TTL-удалением сироты пишет последнюю фазу в ГЛОБАЛЬНЫЙ
+    // ключ /pgworker/backups/orphan-journal; work-ключ кластера сироты
+    // НЕ создаётся (фантомных журналов несуществующего кластера нет)
+    [Fact]
+    public async Task SweepTtlExpiredWritesOrphanJournalPhase()
+    {
+        // Arrange — сирота в реестре с first_seen 2 минуты назад (ttl 60 c)
+        var ct = TestContext.Current.CancellationToken;
+        var s3 = new FakeBackupS3();
+        var clock = await SeedAsync(s3);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
+        var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60));
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue(); // сирота в реестре
+
+        // Act — время вперёд за TTL; проход с удалением
+        clock.Now = clock.Now.AddMinutes(2);
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ключ orphan-journal содержит ПОСЛЕДНЮЮ фазу прохода:
+        // op/instance/updated_unix соответствуют payload свипера
+        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, OrphanRegistry.JournalKey, ct);
+        journal.Value.Should().NotBeNull("a pass with removal writes its last phase");
+        using var doc = System.Text.Json.JsonDocument.Parse(journal.Value!.Value);
+        var root = doc.RootElement;
+        root.GetProperty("op").GetString().Should().Be("backup-orphan-sweeper");
+        root.GetProperty("phase").GetString().Should().Be("orphan-deleted/ghost/s1");
+        root.GetProperty("instance").GetString().Should().Be(claims.InstanceId);
+        root.GetProperty("updated_unix").GetInt64().Should().Be(clock.Now.ToUnixTimeSeconds());
+        // work-ключ кластера сироты НЕ создан — прямой ассерт цели фикса
+        (await KeyExistsAsync("/pgworker/work/ghost")).Should()
+            .BeFalse("the sweeper does not write into per-cluster work keys");
+    }
+
     // AAA (AC7): OrphanTtlSec=0 — реестр живёт, удаления нет
     [Fact]
     public async Task SweepTtlZeroRegistryOnly()
@@ -186,6 +221,8 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var kv = await fixture.Gateway.GetAsync(
             fixture.Endpoint, OrphanRegistry.Key, ct);
         kv.Value.Should().BeNull("only the global leader writes the registry");
+        (await KeyExistsAsync(OrphanRegistry.JournalKey)).Should()
+            .BeFalse("non-leader does not write the orphan journal either");
         s3.DeletedKeys.Should().BeEmpty();
     }
 
