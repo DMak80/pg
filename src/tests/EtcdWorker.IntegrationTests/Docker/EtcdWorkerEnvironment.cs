@@ -229,6 +229,8 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
     public Task<Result<Kv?>> GetAsync(string key)
         => Gateway.GetAsync(Endpoint, TestPrefix + key, TestContext.Current.CancellationToken);
 
+    // Готовность seed-etcd: 30 попыток × (проба с 3-с таймаутом + пауза 1 с),
+    // бюджет ≈ 120 с в худшем случае (отказы соединения до поднятия ноды).
     private async Task WaitReadyAsync(CancellationToken ct)
     {
         using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
@@ -251,14 +253,15 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd at {Endpoint} did not come up within 30 s");
+        throw new InvalidOperationException(
+            $"etcd at {Endpoint} did not come up within 30 probes (≈120 s worst case)");
     }
 }
 
 // Одно окружение на EtcdWorker-интеграции сборки: сеть+seed поднимаются один,
 // dispose фикстуры — полная зачистка серии. Parallelization ВЫКЛЮЧЕНА: состав
 // кластера — глобальное состояние, etcd 3.5 допускает ровно ОДИН unstarted
-// learner (сверка шага 2 t32: второй add → "too many learner members").
+// learner (повторный add того же peer-URL → "too many learner members").
 [CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class EtcdWorkerCollection : ICollectionFixture<EtcdWorkerEnvironment>
 {

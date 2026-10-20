@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-backup-cluster-missing (critical, t32, adminpanel/03 §4): S3-домен
+// etcd-backup-cluster-missing (critical, adminpanel/03 §4): S3-домен
 // прочитан, но в /s3/clusters/ нет живого (не TO_REMOVE) кластера с признаком
 // etcd_backup=true — DR-слепкам etcd некуда выгружаться. Молчание, пока
 // S3-домен не читался (факт EtcdBackupTarget вносит SnapshotRefresher из

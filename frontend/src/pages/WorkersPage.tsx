@@ -15,7 +15,7 @@ const WORKER_TITLES: Record<string, string> = {
   pgworker: 'PgWorker (DB)',
   kafkaworker: 'KafkaWorker (Kafka)',
   s3worker: 'S3Worker (S3 storage)',
-  etcdworker: 'EtcdWorker (etcd contour)', // t32, arch/02 §2.3.5
+  etcdworker: 'EtcdWorker (etcd contour)', // arch/02 §2.3.5
 };
 
 // Действия с confirm-модалом (тексты предупреждений — arch/adminpanel/03 §3.7).

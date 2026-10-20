@@ -2,15 +2,16 @@ using EtcdWorker.Core;
 using EtcdWorker.Docker.Drivers;
 using EtcdWorker.Etcd;
 using Shared.Etcd.Client;
+using Shared.Etcd.Coordination;
 
 namespace EtcdWorker.Provisioning.Processes;
 
-/// <summary>Доводка состава managed-узлов etcd (arch/25 §3.1, шаг 12 t32):
-/// недобор декларации /etcd/config → add-learner → provision → promote;
-/// перебор → вывод старейшего не-лидера (кворум-гвард ≥3 после вывода);
-/// авто-замена мёртвого члена по фактам supervisor (порог NodeDeadSec, не
-/// лидер). Каждый шаг перепроверяет факт (идемпотентность); one-shot за тик:
-/// одна структурная операция — следующий тик продолжает. Журнал фаз —
+/// <summary>Доводка состава managed-узлов etcd (arch/25 §3.1): недобор
+/// декларации /etcd/config → add-learner → provision → promote; перебор →
+/// вывод старейшего не-лидера (кворум-гвард ≥3 после вывода); авто-замена
+/// мёртвого члена по фактам supervisor (порог NodeDeadSec, не лидер). Каждый
+/// шаг перепроверяет факт (идемпотентность); one-shot за тик: одна
+/// структурная операция — следующий тик продолжает. Журнал фаз —
 /// EtcdWorkJournal (add-learner/promoting/removing/replacing).</summary>
 public sealed class MembershipProcess(
     Shared.Etcd.Client.IEtcdGateway gateway,
@@ -20,12 +21,13 @@ public sealed class MembershipProcess(
     EtcdPortAllocStore portAlloc,
     EtcdNodeProvisioner provisioner,
     ClaimStore claims,
-    EtcdProvisioningOptions options)
+    EtcdProvisioningOptions options,
+    PortAllocLock portLock)
 {
     private const string Op = "membership";
 
     /// <summary>Тик доводки (только лидер ReconcileLoop): deadFacts —
-    /// наблюдения supervisor (шаг 13). Возвращает transient-Failed —
+    /// наблюдения supervisor. Возвращает transient-Failed —
     /// следующий тик продолжает.</summary>
     public async Task<Result> TickAsync(
         IReadOnlyList<ManagedDeadFact> deadFacts, CancellationToken ct)
@@ -51,17 +53,21 @@ public sealed class MembershipProcess(
 
         var nodes = await ReadNodesAsync(ct);
 
-        // In-progress resume: PROVISIONING-узел с членом — доводим promote
-        // (member добавлен, контейнер поднимается/жив — promote ретраится
-        // тиками до синхронизации).
+        // In-progress resume: PROVISIONING-узел с членом — доводим контейнер
+        // (краш-окно могло оставить узел без него), затем promote (member
+        // добавлен — promote ретраится тиками до синхронизации).
         var inProgress = managed.FirstOrDefault(m =>
             nodes.FirstOrDefault(n => n.K == m.K) is { State: not null } node
             && node.State == ManagedNodeStates.Provisioning);
         if (inProgress is { } resuming)
-            return await PromoteAsync(resuming, ct);
+            return await ResumeAsync(resuming, ct);
 
         // Авто-замена: мёртвый член (порог NodeDeadSec, окружение не
         // восстановлено, не лидер) → вывод; недобор доберёт следующим тиком.
+        // Гейт здорового кворума цикла — лидер жив; ≥3-гвард перебора к
+        // замене НЕ применяется: замена сохраняет итоговый состав, окно с
+        // меньшим числом voting в 3-членном контуре — принятый риск R1
+        // (мёртвый член не голосует, arch/25 §3.1).
         var dead = MembershipDecisions.DetectDeadReplacement(
             deadFacts, options.NodeDeadSec, leaderId,
             DateTimeOffset.UtcNow.ToUnixTimeSeconds());
@@ -83,7 +89,11 @@ public sealed class MembershipProcess(
         if (managed.Count < config.Nodes)
             return await AddAsync(members.Value, managed, nodes, ct);
 
-        return Result.Success();
+        // Состав сошёлся — reconcile-чистка осиротевших ключей (takeover-
+        // доводка): листы /etcd/nodes/<k>/* и записи portalloc без члена в
+        // составе и без docker-объекта — краш-окно вывода не оставляет
+        // вечных ключей.
+        return await CleanupOrphanKeysAsync(nodes, ct);
     }
 
     private async Task<Result> AddAsync(
@@ -113,27 +123,50 @@ public sealed class MembershipProcess(
 
         await journal.WriteAsync(Op, "add-learner", claims.InstanceId, null, ct);
 
-        // Client-порт: portalloc RMW + docker-занятость.
-        var busy = await driver.GetBusyPortsAsync(ct);
-        if (!busy.IsSuccess)
-            return Result.Failed(busy.Error!);
-        var port = await portAlloc.AllocateAsync(
-            k, host, options.PortFrom, options.PortTo, busy.Value, ct);
-        if (!port.IsSuccess)
-            return Result.Failed(port.Error!);
-
-        // Листы узла (до member-add: узел виден в домене с самого начала).
-        await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.NotInitialized}\"", ct);
-        await PutFailoverAsync(EtcdDomainKeys.PlacedOnKey(k), $"\"{host}\"", ct);
-
-        // Член: learner по peer-URL имени сети (детект-паттерн).
-        var added = await MemberFailoverAsync(
-            (e, c) => gateway.MemberAddAsync(
-                e, [$"http://etcdw-node-{k}:2380"], isLearner: true, c), ct);
-        if (!added.IsSuccess)
+        // Глобальный portalloc-клэйм (arch/25 §3.1/§5, паттерн t90): окно
+        // аллокации client-порта + member-add; клэйм у соседнего инстанса —
+        // PortLockBusyException → transient-отказ тика (ретрай следующим).
+        var acquired = await portLock.TryAcquireAsync(ct);
+        if (!acquired.IsSuccess)
+            return Result.Failed(acquired.Error!);
+        if (!acquired.Value)
+            return Result.Failed(new PortLockBusyException(portLock.Key));
+        EtcdPortAllocStore.NodePort port;
+        Shared.Etcd.Client.EtcdMember addedMember;
+        try
         {
-            await CleanupKeysAsync(k, ct);
-            return Result.Failed(added.Error!);
+            // Client-порт: portalloc RMW + docker-занятость.
+            var busy = await driver.GetBusyPortsAsync(ct);
+            if (!busy.IsSuccess)
+                return Result.Failed(busy.Error!);
+            var allocated = await portAlloc.AllocateAsync(
+                k, host, options.PortFrom, options.PortTo, busy.Value, ct);
+            if (!allocated.IsSuccess)
+                return Result.Failed(allocated.Error!);
+            port = allocated.Value;
+
+            // Листы узла (до member-add: узел виден в домене с самого начала).
+            await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.NotInitialized}\"", ct);
+            await PutFailoverAsync(EtcdDomainKeys.PlacedOnKey(k), $"\"{host}\"", ct);
+
+            // Член: learner по peer-URL имени сети (детект-паттерн).
+            var added = await MemberFailoverAsync(
+                (e, c) => gateway.MemberAddAsync(
+                    e, [$"http://etcdw-node-{k}:2380"], isLearner: true, c), ct);
+            if (!added.IsSuccess)
+            {
+                // Откат: члена нет — порт не закреплён за узлом (без снятия
+                // утекал бы навсегда), листы чистим.
+                await portAlloc.ReleaseAsync(k, ct);
+                await CleanupKeysAsync(k, ct);
+                return Result.Failed(added.Error!);
+            }
+
+            addedMember = added.Value;
+        }
+        finally
+        {
+            await portLock.ReleaseAsync();
         }
 
         await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.Provisioning}\"", ct);
@@ -142,23 +175,55 @@ public sealed class MembershipProcess(
         // initial-cluster — полный состав для join (без него etcd не может
         // fetch cluster info при state=existing).
         var initialCluster = EtcdNodeSpecBuilder.InitialCluster(allMembers, k);
-        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options.AdvertisedHost, port.Value.Client, initialCluster);
+        var (cmd, env) = EtcdNodeSpecBuilder.Build(k, options.AdvertisedHost, port.Client, initialCluster);
         var spec = new EtcdNodeSpec(
-            k, host, port.Value.Client, options.Image, cmd, env, options.Network);
+            k, host, port.Client, options.Image, cmd, env, options.Network);
         var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);
         if (!ensured.IsSuccess)
         {
             // Бюджет исчерпан: откат члена, retry следующим тиком новым номером.
-            await RemoveAsync(k, added.Value.Id, "removing", removeVolume: false, ct);
+            await RemoveAsync(k, addedMember.Id, "removing", removeVolume: false, ct);
             return Result.Failed(ensured.Error!);
         }
 
-        var promoted = await PromoteAsync(new ManagedMember(k, added.Value), ct);
+        var promoted = await PromoteAsync(new ManagedMember(k, addedMember), ct);
         if (!promoted.IsSuccess)
             return promoted; // transient: promote-ретраи тиками (PROVISIONING)
 
         await journal.WriteAsync(Op, "done", claims.InstanceId, null, ct);
         return Result.Success();
+    }
+
+    // Takeover-доводка PROVISIONING-узла (arch/25 §3.1): контейнер мог не
+    // доехать (краш-окно после member-add до ensure) — доводим его путём
+    // добавления (порт — из portalloc, закреплён с member-add), затем promote.
+    private async Task<Result> ResumeAsync(ManagedMember member, CancellationToken ct)
+    {
+        var inspect = await driver.InspectNodeAsync(member.K, ct);
+        if (!inspect.IsSuccess)
+            return Result.Failed(inspect.Error!);
+        if (inspect.Value is not { Running: true })
+        {
+            var ports = await portAlloc.ReadAllAsync(ct);
+            if (!ports.IsSuccess)
+                return Result.Failed(ports.Error!);
+            if (!ports.Value.TryGetValue(member.K, out var port))
+                return Result.Failed(new ApplicationException(
+                    $"etcdw-node-{member.K}: PROVISIONING member without portalloc entry"));
+            var members = await MemberListFailoverAsync(ct);
+            if (!members.IsSuccess)
+                return Result.Failed(members.Error!);
+            var host = port.Host is { Length: > 0 } h ? h : options.PlainHost;
+            var initialCluster = EtcdNodeSpecBuilder.InitialCluster(members.Value, member.K);
+            var (cmd, env) = EtcdNodeSpecBuilder.Build(member.K, options.AdvertisedHost, port.Client, initialCluster);
+            var spec = new EtcdNodeSpec(
+                member.K, host, port.Client, options.Image, cmd, env, options.Network);
+            var ensured = await provisioner.EnsureNodeAsync(spec, options.AdvertisedHost, ct);
+            if (!ensured.IsSuccess)
+                return Result.Failed(ensured.Error!);
+        }
+
+        return await PromoteAsync(member, ct);
     }
 
     // Promote learner → voting: журнал promoting; not-in-sync — transient
@@ -193,6 +258,61 @@ public sealed class MembershipProcess(
 
         await journal.WriteAsync(Op, "done", claims.InstanceId, null, ct);
         return Result.Success();
+    }
+
+    // Reconcile-чистка (takeover-доводка): листы /etcd/nodes/<k>/* и записи
+    // portalloc, у которых НЕТ члена в составе и НЕТ docker-объекта — чистятся
+    // (краш-окно вывода — после member-remove до чистки ключей/portalloc —
+    // больше не оставляет вечных ключей). Состав и docker-объекты — свежие,
+    // НА МОМЕНТ решения (снимок начала тика мог устареть).
+    private async Task<Result> CleanupOrphanKeysAsync(
+        IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes, CancellationToken ct)
+    {
+        var ports = await portAlloc.ReadAllAsync(ct);
+        if (!ports.IsSuccess)
+            return Result.Failed(ports.Error!);
+        if (nodes.Count == 0 && ports.Value.Count == 0)
+            return Result.Success();
+
+        var members = await MemberListFailoverAsync(ct);
+        if (!members.IsSuccess)
+            return Result.Failed(members.Error!);
+        var (fresh, _) = EtcdContourMembers.Build(members.Value);
+        var memberKs = fresh.Select(m => m.K).ToHashSet();
+
+        var objects = await driver.ListNodeObjectsAsync(ct);
+        if (!objects.IsSuccess)
+            return Result.Failed(objects.Error!);
+        var dockerKs = objects.Value
+            .Select(ParseNodeK)
+            .ToHashSet();
+
+        var candidates = nodes.Select(n => n.K)
+            .Concat(ports.Value.Keys)
+            .Where(k => !memberKs.Contains(k) && !dockerKs.Contains(k))
+            .Distinct()
+            .OrderBy(k => k)
+            .ToList();
+        foreach (var k in candidates)
+        {
+            await journal.WriteAsync(Op, "cleanup-orphans", claims.InstanceId, null, ct);
+            await CleanupKeysAsync(k, ct);
+            var released = await portAlloc.ReleaseAsync(k, ct);
+            if (!released.IsSuccess)
+                return Result.Failed(released.Error!);
+        }
+
+        return Result.Success();
+    }
+
+    // etcdw-node-<k> | etcdw-node-<k>-data → k (0 — не имя объекта узла).
+    private static int ParseNodeK(string name)
+    {
+        if (!name.StartsWith("etcdw-node-", StringComparison.Ordinal))
+            return 0;
+        var suffix = name["etcdw-node-".Length..];
+        var kPart = suffix.EndsWith("-data", StringComparison.Ordinal) ? suffix[..^5] : suffix;
+        return int.TryParse(kPart, out var k) && k > 0 ? k : 0;
     }
 
     private async Task<Result<string>> PlacementFailoverAsync(

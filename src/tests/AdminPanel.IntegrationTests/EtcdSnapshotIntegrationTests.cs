@@ -67,7 +67,7 @@ public static class EtcdTestHarness
             new WorkerHealthStore(),
             // t08: стор S3-инвентаря (в сценариях без S3-тика — пустой).
             new AdminPanel.Probes.S3.S3InventoryStore(),
-            // t32: etcdworker-пара (в сценариях без EtcdWorker — пустые).
+ // etcdworker-пара (в сценариях без EtcdWorker — пустые).
             new AdminPanel.Etcd.Workers.EtcdWorkerHealthStore(),
             new NullS3SnapshotReader(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
@@ -75,7 +75,7 @@ public static class EtcdTestHarness
             NullLogger<SnapshotRefresher>.Instance);
 }
 
-// t32: пустой читатель S3-домена (домен не читался — алерт
+ // пустой читатель S3-домена (домен не читался — алерт
 // etcd-backup-cluster-missing молчит).
 internal sealed class NullS3SnapshotReader : IS3SnapshotReader
 {

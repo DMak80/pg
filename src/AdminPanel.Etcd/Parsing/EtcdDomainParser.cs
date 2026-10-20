@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 
-/// <summary>Парсер домена /etcd/ (t32, adminpanel/02 §2.3.5): config →
+/// <summary>Парсер домена /etcd/ (adminpanel/02 §2.3.5): config →
 /// декларация; nodes/&lt;k&gt;/{state,placed_on} → managed-узлы. Битые значения —
 /// parseError-записи, тик не падает; unknown-листы узлов игнорируются.</summary>
 public static class EtcdDomainParser

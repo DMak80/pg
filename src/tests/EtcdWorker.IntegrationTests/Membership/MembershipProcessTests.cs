@@ -67,8 +67,10 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         var claims = new ClaimStore("/etcdworker", [env.Endpoint], env.Gateway, TimeProvider.System);
         var ports = new EtcdPortAllocStore(env.Gateway, [env.Endpoint]);
         var provisioner = new EtcdNodeProvisioner(driver, env.Gateway, 60);
+        var portLock = new PortAllocLock(
+            "/etcdworker", [env.Endpoint], env.Gateway, TimeProvider.System, claims.InstanceId);
         var membership = new MembershipProcess(
-            env.Gateway, [env.Endpoint], journal, driver, ports, provisioner, claims, options);
+            env.Gateway, [env.Endpoint], journal, driver, ports, provisioner, claims, options, portLock);
         var supervisor = new NodeSupervisor(
             env.Gateway, [env.Endpoint], journal, driver, provisioner, ports, claims, options, TimeProvider.System);
         return new Rig(membership, supervisor, ports, driver, options, claims);
@@ -246,6 +248,51 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         var final = await ManagedAsync(env);
         final.Should().BeEmpty(
             $"managed members must be removed by cleanup (left: {string.Join(",", final.Select(m => m.K))}) — иначе кворум контура отравлен для следующих кейсов; remove-попытки: {string.Join(" | ", removeErrors)}");
+    }
+
+    // AAA: клэйм /etcdworker/locks/portalloc у соседнего инстанса — окно
+    // аллокации порта не входит: тик завершается transient-отказом
+    // (PortLockBusyException), состав не меняется; снятие клэйма — следующий
+    // тик доводит состав (arch/25 §3.1/§5, t90-паттерн)
+    [Fact]
+    public async Task AddAsync_PortAllocLockHeld_TransientRefusal()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var rig = NewRig();
+        try
+        {
+            await DeclareAsync(env, 1);
+            var neighbor = new PortAllocLock(
+                "/etcdworker", [env.Endpoint], env.Gateway, TimeProvider.System, "neighbor-inst");
+            var held = await neighbor.TryAcquireAsync(TestContext.Current.CancellationToken);
+            held.IsSuccess.Should().BeTrue(held.Error?.Message);
+            held.Value.Should().BeTrue("the portalloc lock key is free before the tick");
+
+            // Act: тик с недобором при занятом соседом клэйме.
+            var ports = await rig.Ports.ReadAllAsync(TestContext.Current.CancellationToken);
+            var facts = await rig.Supervisor.ObserveAsync([], [], ports.Value, TestContext.Current.CancellationToken);
+            var tick = await rig.Membership.TickAsync(facts.Value, TestContext.Current.CancellationToken);
+
+            // Assert: transient-отказ, члены/ключи не менялись.
+            tick.IsSuccess.Should().BeFalse();
+            tick.Error.Should().BeOfType<PortLockBusyException>(
+                "a tick without the global portalloc claim must refuse transiently and retry next tick");
+            (await ManagedAsync(env)).Should().BeEmpty("no member is added while the neighbor holds the claim");
+            (await rig.Ports.ReadAllAsync(TestContext.Current.CancellationToken)).Value.Should().BeEmpty(
+                "no port is allocated while the neighbor holds the claim");
+
+            // Снятие клэйма — доводка проходит (клэйм свободно берётся тиком).
+            await neighbor.ReleaseAsync();
+            await RunUntilAsync(rig, env, async () =>
+            {
+                var managed = await ManagedAsync(env);
+                return managed.Count == 1 && managed.All(m => m.Member.Name is { Length: > 0 });
+            }, budgetSec: 360, "1 managed started member after the lock is released");
+        }
+        finally
+        {
+            await CleanupAsync(rig, env);
+        }
     }
 
     // AAA: nodes=2 → seed + 2 managed, все started (learner → promote),

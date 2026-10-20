@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.App.Loops;
 
-// Цикл доводки состава (arch/25 §3, шаг 13 t32): лидер ClaimStore →
+// Цикл доводки состава (arch/25 §3): лидер ClaimStore →
 // кворум-гейт (StatusAsync → LeaderMemberId; без лидера — наблюдательный сон)
 // → надзор (факты проблем) → MembershipProcess (недобор/перебор/замена)
 // → repair → orphan-cleanup; короткий сон ScanIntervalSec (пульсирующий).
@@ -47,16 +47,20 @@ internal sealed class ReconcileLoop(
                 }
 
                 var started = Stopwatch.GetTimestamp();
+                var tickResult = Result.Success();
                 if (claims.IsLeader)
                 {
                     var tick = await TickLeaderAsync(stoppingToken);
                     if (!tick.IsSuccess && tick.Error is { } error)
+                    {
                         logger.LogWarning(error, "membership tick failed: {Message}", error.Message);
+                        tickResult = tick;
+                    }
                 }
 
                 health.MarkReconcileActivity();
-                health.MarkReconcileTick(ok: true, claimsHeld: 1);
-                metrics.LoopTick("reconcile", ok: true);
+                health.MarkReconcileTick(ok: tickResult.IsSuccess, claimsHeld: 1);
+                metrics.LoopTick("reconcile", ok: tickResult.IsSuccess);
                 metrics.LoopDuration("reconcile", Stopwatch.GetElapsedTime(started).TotalSeconds);
                 await Shared.Core.Hosting.PulsingDelay.SleepAsync(
                     TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec),
@@ -114,9 +118,9 @@ internal sealed class ReconcileLoop(
         if (!converged.IsSuccess)
             return converged;
 
-        // Repair (один шаг) + orphan-cleanup (состав перечитывает сам —
-        // снимок начала тика не отражает члена, добавленного этим тиком).
-        var repaired = await supervisor.RepairAsync(members.Value, managed, nodes, ports, ct);
+        // Repair (один шаг) + orphan-cleanup (каждый своряет состав/объекты
+        // сам — снимок начала тика не отражает изменений этого же тика).
+        var repaired = await supervisor.RepairAsync(nodes, ports, ct);
         if (!repaired.IsSuccess)
             return Result.Failed(repaired.Error!);
         return await supervisor.OrphanCleanupAsync(ct);

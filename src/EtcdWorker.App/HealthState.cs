@@ -1,7 +1,7 @@
 namespace EtcdWorker.App;
 
 /// <summary>
-/// Пассивные состояния наблюдаемости (arch/24 §7): циклы пишут тики/события,
+/// Пассивные состояния наблюдаемости (arch/25 §7): циклы пишут тики/события,
 /// health-проба /healthz читает снимок. Immutable-снимок + lock — без гонок.
 /// Реализует ILoopProgress — доставка прогресс-отметок в процессы ниже App.
 /// </summary>
@@ -9,7 +9,6 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
 {
     private readonly object _sync = new();
 
-    private DateTimeOffset? _lastEtcdOk;
     private DateTimeOffset? _lastReconcileTick;
     private DateTimeOffset? _lastReconcileActivity;
     private DateTimeOffset? _lastKeepaliveTick;
@@ -17,15 +16,6 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
     private DateTimeOffset? _lastSnapshotActivity;
     private DateTimeOffset? _lastSnapshotTaken;
     private int _claimsHeld;
-
-    /// <summary>Успешный цикл чтения etcd (Range /s3/clusters/).</summary>
-    public void MarkEtcdOk()
-    {
-        lock (_sync)
-        {
-            _lastEtcdOk = clock.GetUtcNow();
-        }
-    }
 
     /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него
     /// (тик — тоже активность).</summary>
@@ -98,7 +88,7 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         lock (_sync)
         {
             return new HealthSnapshot(
-                _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
+                _lastReconcileTick, _lastKeepaliveTick,
                 _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
                 _lastReconcileActivity, _lastSnapshotActivity);
         }
@@ -107,7 +97,6 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
 
 /// <summary>Снимок состояний циклов на момент чтения.</summary>
 public sealed record HealthSnapshot(
-    DateTimeOffset? LastEtcdOk,
     DateTimeOffset? LastReconcileTick,
     DateTimeOffset? LastKeepaliveTick,
     DateTimeOffset? LastSnapshotTick,

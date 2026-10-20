@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер /etcdworker/snapshots (t32, adminpanel/02 §2.3.1): полный формат,
+// Парсер /etcdworker/snapshots (adminpanel/02 §2.3.1): полный формат,
 // толерантность к отсутствующим полям, битый JSON — parseError (правила молчат).
 public class EtcdSnapshotsParserTests
 {

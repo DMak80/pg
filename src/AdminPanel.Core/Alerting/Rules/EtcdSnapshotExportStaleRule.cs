@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-snapshot-export-stale (warning, t32, adminpanel/03 §4): «выгрузка
+// etcd-snapshot-export-stale (warning, adminpanel/03 §4): «выгрузка
 // молчит» — last_uploaded_unix отсутствует или старше 2×interval_min
 // (панельный дефолт 360 мин). Порог честен благодаря семантике «покрытия»:
 // поле двигается каждым выгруженным слепком — живой контур с работающей

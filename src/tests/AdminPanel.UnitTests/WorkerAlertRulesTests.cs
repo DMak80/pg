@@ -52,7 +52,7 @@ public class WorkerAlertRulesTests
     }
 
     // AAA: инстанс EtcdWorker Degraded при живом lease — warning per-instance
-    // ряда etcdworker/<id> (t32, adminpanel/03 §4).
+    // ряда etcdworker/<id> (adminpanel/03 §4).
     [Fact]
     public void WorkerUnhealthy_EtcdWorkerDegraded_WarningPerInstance()
     {
@@ -76,7 +76,7 @@ public class WorkerAlertRulesTests
     }
 
     // AAA: нет живых ключей /etcdworker/api/ при живом PgWorker — только ряд
-    // etcdworker-алерта (pg-ряд молчит, t32, adminpanel/03 §4).
+    // etcdworker-алерта (pg-ряд молчит, adminpanel/03 §4).
     [Fact]
     public void WorkerApiUnreachable_EtcdWorkerNoKeys_CriticalEtcdWorkerRowOnly()
     {

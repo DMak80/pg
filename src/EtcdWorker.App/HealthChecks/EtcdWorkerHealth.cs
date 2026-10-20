@@ -4,13 +4,15 @@ using Microsoft.Extensions.Options;
 namespace EtcdWorker.App.HealthChecks;
 
 /// <summary>
-/// Агрегированный health EtcdWorker — каркас по образцу S3WorkerHealth:
-/// пассивные данные — из HealthState (тики циклов), активные пробы и
-/// доменные секции добавят фазы 4–5. Минимальный чек etcdworker: метка
-/// инстанса (ClaimStore) и живость keepalive-цикла; нет тика / тише порога →
-/// Degraded (сервис жив, но требует внимания), секции отдаются в Data.
+/// Агрегированный health EtcdWorker (arch/25 §1.1/§7): секции
+/// etcd-reachable, docker-hosts, loops-alive (keepalive), snapshot-export.
+/// Пассивные данные — из HealthState (тики циклов), активные пробы —
+/// ServiceProbes. Недоступный etcd / docker-хост / зависший цикл → Degraded
+/// (сервис жив, но требует внимания); snapshot-export — информационная секция
+/// (алерт панели). Секции отдаются в Data.
 /// </summary>
 public sealed class EtcdWorkerHealth(
+    ServiceProbes probes,
     HealthState health,
     ClaimStore claims,
     EtcdWorker.Provisioning.SnapshotExporter exporter,
@@ -45,6 +47,21 @@ public sealed class EtcdWorkerHealth(
         // Метка инстанса: кто отвечает за этот healthz (id из ClaimStore +
         // лидерство координации).
         data["instance"] = $"{claims.InstanceId}; leader={claims.IsLeader}";
+
+        // etcd-reachable: активная проба (range по endpoints, ServiceProbes).
+        var etcd = await probes.EtcdReachableAsync(ct);
+        data["etcd"] = etcd.IsSuccess ? "reachable" : etcd.Error!.Message;
+        if (!etcd.IsSuccess)
+            degraded.Add("etcd unreachable");
+
+        // docker-hosts: ping каждого хоста конфигурации (Plain — таблица
+        // Hosts; Swarm — manager).
+        var hosts = await probes.PingDockerHostsAsync(ct);
+        data["docker-hosts"] = hosts.Count == 0
+            ? "no configured hosts"
+            : string.Join("; ", hosts.Select(p => $"{p.Key}={(p.Value.IsSuccess ? "ok" : p.Value.Error!.Message)}"));
+        foreach (var failed in hosts.Where(p => !p.Value.IsSuccess))
+            degraded.Add($"docker host {failed.Key} unreachable");
 
         // loops-alive: возраст последнего keepalive-тика (пассивно, HealthState);
         // порог — общий хелпер LoopStaleness (keepalive — быстрый цикл).

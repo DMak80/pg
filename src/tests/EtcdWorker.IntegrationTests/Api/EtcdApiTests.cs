@@ -29,19 +29,28 @@ public sealed class EtcdApiTests(EtcdApiFixture fx)
 
         // Act
         var first = await PutConfigAsync(client, 2);
+        var firstCfg = await ReadConfigAsync();
         var second = await PutConfigAsync(client, 3);
+        var secondCfg = await ReadConfigAsync();
 
         // Assert
         first.StatusCode.Should().Be(HttpStatusCode.OK);
         second.StatusCode.Should().Be(HttpStatusCode.OK);
         (await second.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
             .GetProperty("nodes").GetInt32().Should().Be(3);
+        firstCfg.Should().NotBeNull();
+        secondCfg.Should().NotBeNull();
+        secondCfg!.Nodes.Should().Be(3);
+        secondCfg.CreatedUnix.Should().Be(firstCfg!.CreatedUnix,
+            "a repeated declaration replaces nodes only — created_unix of the first declaration is kept");
+    }
+
+    private async Task<EtcdConfigJson.EtcdConfig?> ReadConfigAsync()
+    {
         var kv = await fx.Env.Gateway.GetAsync(fx.Env.Endpoint, EtcdDomainKeys.ConfigKey,
             TestContext.Current.CancellationToken);
-        kv.IsSuccess.Should().BeTrue();
-        var cfg = EtcdConfigJson.Parse(kv.Value!.Value);
-        cfg.Should().NotBeNull();
-        cfg!.Nodes.Should().Be(3);
+        kv.IsSuccess.Should().BeTrue(kv.Error?.Message);
+        return EtcdConfigJson.Parse(kv.Value!.Value);
     }
 
     // AAA: N вне 0..7 — 400 ProblemDetails (гвард валидации до etcd-обращений)

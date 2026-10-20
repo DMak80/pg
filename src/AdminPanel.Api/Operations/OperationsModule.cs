@@ -163,7 +163,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // PUT /api/etcd/config — декларация состава etcd-контура (t32, 02 §9.13):
+        // PUT /api/etcd/config — декларация состава etcd-контура (02 §9.13):
         // панель НЕ пишет в etcd — прокси в API EtcdWorker телом {"nodes":N}
         // (замещение целиком); 200 / 400 (N вне 0..7 — дубль для UX, истина —
         // воркер) / 409 кворум-гвард / 503 живых инстансов нет.

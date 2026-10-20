@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Парсер домена /etcd/ (t32, adminpanel/02 §2.3.5): config → декларация
+// Парсер домена /etcd/ (adminpanel/02 §2.3.5): config → декларация
 // (nodes, created_unix), nodes/<k>/{state,placed_on} → managed-узлы.
 // Битый config-JSON — parseError, тик не падает; unknown-листы игнорируются.
 public class EtcdDomainParserTests

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace EtcdWorker.IntegrationTests.Snapshots;
 
-// Интеграции экспорта DR-слепков (arch/25 §4, шаг 9 t32): экспортёр и
+// Интеграции экспорта DR-слепков (arch/25 §4): экспортёр и
 // расписание на живом контуре — etcd окружения + ownS3-нода цели (лениво,
 // засев /s3/clusters/eb с признаком etcd_backup). Пара db+meta в фиксированном
 // bucket etcd-backups, статус /etcdworker/snapshots, транзиент цели —

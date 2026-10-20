@@ -36,7 +36,7 @@ public static class InspectionModule
             return ResultToHttp(result);
         });
 
-        // GET /api/etcd/domain — домен EtcdWorker (t32, adminpanel/02 §2.3.5):
+        // GET /api/etcd/domain — домен EtcdWorker (adminpanel/02 §2.3.5):
         // декларация состава + managed-узлы + статус DR-выгрузки слепков.
         endpoints.MapGet("/api/etcd/domain", async (IHandler handler, CancellationToken ct) =>
         {

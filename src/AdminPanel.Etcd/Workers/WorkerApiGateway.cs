@@ -124,8 +124,8 @@ public sealed class WorkerApiGateway(
         return await client.SendAsync(request, ct);
     }
 
-    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03; s3 — t34;
-    // etcdworker — t32: живые ключи лежат в основном EtcdSnapshot, 02 §2.3.5).
+    // Ключи доступа из снапшота соответствующего воркера (valkey — t03; s3 — t34;
+    // etcdworker — живые ключи лежат в основном EtcdSnapshot, 02 §2.3.5).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,

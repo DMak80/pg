@@ -5,7 +5,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 // worker-unhealthy (warning): живой lease-ключ /pgworker/api/<id>, но /healthz ≠ 200 —
 // процесс нездоров ДО истечения lease (docker-healthcheck гасит контейнер, ключи
 // вот-вот исчезнут → эстафета worker-api-unreachable critical). arch/adminpanel/03 §4.
-// Отдельный ряд etcdworker/<id> (t32, arch/02 §2.3.5) — тот же общий поллер.
+// Отдельный ряд etcdworker/<id> (arch/02 §2.3.5) — тот же общий поллер.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class WorkerUnhealthyRule : IAlertRule
 {

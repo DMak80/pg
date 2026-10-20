@@ -143,10 +143,10 @@ public sealed class SnapshotRefresher(
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
-        // Префикс-запрос точечный: ровно один ключ /etcdworker/snapshots (t32,
-        // паттерн WorkerApiCert; arch/25 §5).
+        // Префикс-запрос точечный: ровно один ключ /etcdworker/snapshots
+        // (паттерн WorkerApiCert; arch/25 §5).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
-        // Домен EtcdWorker (t32, adminpanel/02 §2.3.5): декларация + managed-узлы,
+        // Домен EtcdWorker (adminpanel/02 §2.3.5): декларация + managed-узлы,
         // живые ключи /etcdworker/api/, целевой серт /workers/api_tls/etcdworker.
         var etcdDomainParsed = EtcdDomainParser.Parse(etcdConfigKv.Value.FirstOrDefault(), etcdNodesKv.Value);
         var etcdwApiParsed = WorkerEndpointsParser.Parse(etcdwApiKv.Value);
@@ -194,7 +194,7 @@ public sealed class SnapshotRefresher(
             // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
             S3Storage = inventoryStore.Current,
-            // t32: health etcdworker-инстансов — готовым из стора общего
+ // health etcdworker-инстансов — готовым из стора общего
             // поллера (паттерн S3WorkerHealthStore); факт etcd-backup
             // S3-кластера — агрегатом из S3-домена (adminpanel/03 §4).
             EtcdWorkerHealth = etcdWorkerHealthStore.Current ?? [],
@@ -278,12 +278,12 @@ public sealed class SnapshotRefresher(
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
             previous?.S3Storage, // S3-инвентарь переживает отказ etcd (t08, как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
-            previous?.EtcdSnapshots, // статус DR-выгрузки слепков переживает отказный тик (t32)
-            previous?.EtcdDomain, // домен EtcdWorker переживает отказный тик (t32)
-            previous?.EtcdWorkerEndpoints ?? [], // живые ключи /etcdworker/api/ (t32)
-            previous?.EtcdWorkerHealth ?? [], // health etcdworker — независимый поллер (t32)
-            previous?.EtcdBackupTarget, // факт etcd-backup S3-кластера — из S3-домена (t32)
-            previous?.EtcdWorkerApiCert); // целевой серт etcdworker (t32, не переносится только при отсутствии)
+            previous?.EtcdSnapshots, // статус DR-выгрузки слепков переживает отказный тик
+            previous?.EtcdDomain, // домен EtcdWorker переживает отказный тик
+            previous?.EtcdWorkerEndpoints, // «не читались» переживает отказный тик (null ≠ пусто)
+            previous?.EtcdWorkerHealth ?? [], // health etcdworker — независимый поллер
+            previous?.EtcdBackupTarget, // факт etcd-backup S3-кластера — из S3-домена
+            previous?.EtcdWorkerApiCert); // целевой серт etcdworker (не переносится только при отсутствии)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
@@ -331,14 +331,14 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
-        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (t32, arch/25 §5)
-        public const string EtcdConfig = "/etcd/config";             // декларация состава контура (t32, 02 §2.3.5)
-        public const string EtcdNodes = "/etcd/nodes/";              // managed-узлы контура (t32, 02 §2.3.5)
-        public const string EtcdWorkerApi = "/etcdworker/api/";      // живые ключи EtcdWorker (t32, 02 §2.3.5)
-        public const string EtcdWorkerCert = "/workers/api_tls/etcdworker"; // целевой серт EtcdWorker (t32, 02 §9.9)
+        public const string EtcdSnapshots = "/etcdworker/snapshots"; // статус DR-слепков EtcdWorker (arch/25 §5)
+        public const string EtcdConfig = "/etcd/config";             // декларация состава контура (02 §2.3.5)
+        public const string EtcdNodes = "/etcd/nodes/";              // managed-узлы контура (02 §2.3.5)
+        public const string EtcdWorkerApi = "/etcdworker/api/";      // живые ключи EtcdWorker (02 §2.3.5)
+        public const string EtcdWorkerCert = "/workers/api_tls/etcdworker"; // целевой серт EtcdWorker (02 §9.9)
     }
 
-    // Факт etcd-backup S3-кластера (t32, adminpanel/03 §4): из S3-домена готовым
+    // Факт etcd-backup S3-кластера (adminpanel/03 §4): из S3-домена готовым
     // агрегатом (паттерн live-инвентаря S3Storage); null — домен ещё не читался
     // (алерт etcd-backup-cluster-missing молчит), Cluster=null — кластера нет.
     private static EtcdBackupTargetInfo? ResolveEtcdBackupTarget(S3Snapshot? s3)

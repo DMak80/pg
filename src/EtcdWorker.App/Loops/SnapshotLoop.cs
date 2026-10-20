@@ -7,7 +7,7 @@ using Shared.Core.HealthChecks;
 
 namespace EtcdWorker.App.Loops;
 
-// Цикл DR-слепков etcd (arch/25 §4, шаг 9 t32): лидер ClaimStore доводит
+// Цикл DR-слепков etcd (arch/25 §4): лидер ClaimStore доводит
 // отстающую выгрузку (CatchUp ДО снятия — транзиент цели не растягивает
 // RPO-окно), решает снятие чистым SnapshotSchedule (плановый раз в
 // IntervalMin + внеочередной при росте revision и выгрузке старше
@@ -46,9 +46,11 @@ internal sealed class SnapshotLoop(
             while (!stoppingToken.IsCancellationRequested)
             {
                 // Лидерство — только здесь (singleton-работа слепков).
+                Result<bool>? claimTry = null;
                 if (!claims.IsLeader)
                 {
                     var became = await claims.TryBecomeLeaderAsync(stoppingToken);
+                    claimTry = became;
                     if (became.IsSuccess && became.Value)
                         logger.LogInformation("snapshot leadership acquired: {InstanceId}", claims.InstanceId);
                 }
@@ -72,9 +74,10 @@ internal sealed class SnapshotLoop(
                 }
                 else
                 {
-                    // Не лидер: ждём до следующей попытки захвата.
+                    // Не лидер: ждём до следующей попытки захвата (итог тика —
+                    // сама попытка: transient-отказ клэйма виден в метрике).
                     health.MarkSnapshotTick();
-                    metrics.LoopTick("snapshot", ok: true);
+                    metrics.LoopTick("snapshot", ok: claimTry is null || claimTry.Value.IsSuccess);
                     await Task.Delay(
                         TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec), stoppingToken);
                 }
@@ -162,7 +165,7 @@ internal sealed class SnapshotLoop(
         }
 
         health.MarkSnapshotTick();
-        metrics.LoopTick("snapshot", ok: true);
+        metrics.LoopTick("snapshot", ok: StatusError.IsSuccess);
 
         // Повторный расчёт отставания ПОСЛЕ снятия (механика t08): первый
         // транзиент перевёл статус в FAILED уже после расчёта «до» — без

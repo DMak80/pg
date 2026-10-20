@@ -228,7 +228,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 перемазеркалировать (старую версию из registry можно удалить — см. «Удаление
 образа» в инструкции registry).
 
-## HA-etcd контур контроль-плейна (t09; модель t32 — имена/сеть)
+## HA-etcd контур контроль-плейна (t09; имена/сеть — arch/25)
 
 Канон — `arch/04-deploy-etcd.md` §8 (адресация по именам узлов в общей сети,
 бутстрап seed-узлом, состав доводит EtcdWorker — arch/25; параметры,
@@ -373,7 +373,7 @@ CaRotator, arch/21 §5 K) по заявке `/valkeyworker/ca_rotations/<C>` —
 ## Восстановление etcd из S3-выгрузки
 
 Снапшоты etcd (контроль-плейн: декларации кластеров, маршрутизация, секреты,
-клэймы, portalloc) снимает и выгружает EtcdWorker (t32, arch/25 §4) в
+клэймы, portalloc) снимает и выгружает EtcdWorker (arch/25 §4) в
 фиксированный bucket `etcd-backups` на нодах etcd-backup S3-кластера
 (признак `etcd_backup=true` в `/s3/clusters/`, arch/23 §2; bucket создаёт
 S3Worker — arch/23 §5): префикс `etcd/`, пары `snapshot-<id>.db` +

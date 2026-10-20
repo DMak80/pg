@@ -49,10 +49,10 @@ public static class SnapshotBuilder
             backups.Orphans, // /pgworker/backups/orphans (t07)
             null, // S3Storage вносит SnapshotRefresher из стора (t08)
             workerCert?.Cert, // /workers/api_tls/pgworker (adminpanel/02 §9.9)
-            etcdSnapshots?.Info, // /etcdworker/snapshots (t32, adminpanel/02 §2.3.5)
-            etcdDomain?.Domain, // /etcd/config + /etcd/nodes/ (t32, 02 §2.3.5)
-            etcdWorkerEndpoints?.Endpoints ?? [], // /etcdworker/api/ (t32, 02 §2.3.5)
-            [], // EtcdWorkerHealth вносит SnapshotRefresher из стора (t32)
-            null, // EtcdBackupTarget вносит SnapshotRefresher из S3-домена (t32)
-            etcdWorkerCert?.Cert); // /workers/api_tls/etcdworker (t32, 02 §9.9)
+            etcdSnapshots?.Info, // /etcdworker/snapshots (adminpanel/02 §2.3.5)
+            etcdDomain?.Domain, // /etcd/config + /etcd/nodes/ (02 §2.3.5)
+            etcdWorkerEndpoints?.Endpoints ?? [], // /etcdworker/api/ (02 §2.3.5)
+            [], // EtcdWorkerHealth вносит SnapshotRefresher из стора
+            null, // EtcdBackupTarget вносит SnapshotRefresher из S3-домена
+            etcdWorkerCert?.Cert); // /workers/api_tls/etcdworker (02 §9.9)
 }

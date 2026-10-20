@@ -6,7 +6,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.S3;
 
-// Фиксированный etcd-слепковый bucket (arch/23 §5, t32 §3.4-правка): кластер с
+// Фиксированный etcd-слепковый bucket (arch/23 §5): кластер с
 // признаком etcd_backup=true — на КАЖДОМ инстансе оба bucket'а (per-install +
 // etcd-backups), идемпотентно на повторном тике; новый инстанс (AddNode)
 // получает оба. Креды/спец-ключ — per-cluster secrets + env-пара рига.

@@ -201,7 +201,7 @@ export interface EtcdStatusDto {
   lastRefreshUtc: string;
 }
 
-// GET /api/etcd/domain — домен EtcdWorker (t32, adminpanel/02 §2.3.5):
+// GET /api/etcd/domain — домен EtcdWorker (adminpanel/02 §2.3.5):
 // декларация состава + managed-узлы + статус DR-выгрузки слепков.
 export interface EtcdDomainDto {
   declaredNodes: number | null; // null — ключа /etcd/config нет («только наблюдение»)
@@ -216,7 +216,7 @@ export interface EtcdManagedNodeDto {
   placedOn: string | null;
 }
 
-// Ответ 200 PUT /api/etcd/config (t32): зеркало тела воркера {"nodes":N}.
+// Ответ 200 PUT /api/etcd/config  зеркало тела воркера {"nodes":N}.
 export interface EtcdConfigUpdatedDto {
   nodes: number;
 }
@@ -914,7 +914,7 @@ export interface OrphanDeleteAcceptedDto {
   requestedBy: string;
 }
 
-// Статус DR-выгрузки etcd-слепков (t32): ключ /etcdworker/snapshots.
+// Статус DR-выгрузки etcd-слепков  ключ /etcdworker/snapshots.
 export interface EtcdSnapshotsDto {
   state: string | null;
   lastUploadedUnix: number | null;

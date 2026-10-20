@@ -54,7 +54,7 @@ public sealed record BackupStorageInfo(
     long UsedBytes, long? QuotaBytes, double? UsedPercent,
     BackupStorageState State, long UpdatedUnix);
 
-/// <summary>Статус DR-выгрузки слепков etcd в S3 (t08 → t32: ключ
+/// <summary>Статус DR-выгрузки слепков etcd в S3 (ключ
 /// /etcdworker/snapshots, arch/25 §5; пишет EtcdWorker): null-поля —
 /// толерантный парсинг (битые/старые ключи); поля enabled в формате нет —
 /// выгрузка безусловна; ключа нет — правила молчат.</summary>

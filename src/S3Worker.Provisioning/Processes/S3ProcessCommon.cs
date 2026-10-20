@@ -89,7 +89,7 @@ public static class S3ProcessCommon
 
     /// <summary>Клиентские креды кластера (arch/23 §2/§6): ленивая генерация
     /// при provisioning (txn put-if-absent), ротация — замена целиком; читатели
-    /// — S3Worker/PgWorker/панель/etcdworker (t32).</summary>
+    /// — S3Worker/PgWorker/панель/etcdworker.</summary>
     public static string ClusterSecretsKey(string cluster)
         => $"/s3/clusters/{cluster}/secrets";
 

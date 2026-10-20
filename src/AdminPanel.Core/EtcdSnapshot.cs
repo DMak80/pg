@@ -21,12 +21,12 @@ public sealed record EtcdSnapshot(
     BackupOrphansInfo? BackupOrphans = null,      // ключ /pgworker/backups/orphans (t07)
     S3StorageInfo? S3Storage = null,       // live-S3-инвентарь (t08, adminpanel/02 §2.5)
     WorkerApiCert? WorkerApiCert = null,         // целевой серт API PgWorker (adminpanel/02 §9.9)
-    EtcdSnapshotExportInfo? EtcdSnapshots = null,   // статус DR-выгрузки слепков (ключ /etcdworker/snapshots, t32, 02 §2.3.5)
-    EtcdDomainInfo? EtcdDomain = null,              // домен EtcdWorker /etcd/ (t32, 02 §2.3.5)
-    IReadOnlyList<WorkerEndpoint>? EtcdWorkerEndpoints = null, // живые ключи /etcdworker/api/ (t32, 02 §2.3.5); null — не читались
-    IReadOnlyList<WorkerHealth>? EtcdWorkerHealth = null,      // опрос /healthz инстансов EtcdWorker общим поллером (t32, 02 §2.3.5)
-    EtcdBackupTargetInfo? EtcdBackupTarget = null,  // факт etcd-backup S3-кластера из S3-домена (t32, 03 §4)
-    WorkerApiCert? EtcdWorkerApiCert = null);       // целевой серт /workers/api_tls/etcdworker (t32, 02 §9.9)
+    EtcdSnapshotExportInfo? EtcdSnapshots = null,   // статус DR-выгрузки слепков (ключ /etcdworker/snapshots, 02 §2.3.5)
+    EtcdDomainInfo? EtcdDomain = null,              // домен EtcdWorker /etcd/ (02 §2.3.5)
+    IReadOnlyList<WorkerEndpoint>? EtcdWorkerEndpoints = null, // живые ключи /etcdworker/api/ (02 §2.3.5); null — не читались
+    IReadOnlyList<WorkerHealth>? EtcdWorkerHealth = null,      // опрос /healthz инстансов EtcdWorker общим поллером (02 §2.3.5)
+    EtcdBackupTargetInfo? EtcdBackupTarget = null,  // факт etcd-backup S3-кластера из S3-домена (03 §4)
+    WorkerApiCert? EtcdWorkerApiCert = null);       // целевой серт /workers/api_tls/etcdworker (02 §9.9)
     // Пулы /s3/clusters/ в EtcdSnapshot НЕ входят: домен S3 — отдельный S3Snapshot
     // (adminpanel/02 §12), страница бэкапов берёт пулы из него (02 §12.4).
 

@@ -27,7 +27,7 @@ public sealed class WorkerCertNotFoundException(string worker)
 
 // 404: неизвестный воркер (worker ∈ pgworker|kafkaworker|valkeyworker|s3worker|etcdworker,
 // spec §3.3 п.4; valkeyworker — t03, s3worker — arch/adminpanel/02 §9.9, etcdworker —
-// t32, 02 §2.3.5). Гвардится
+// 02 §2.3.5). Гвардится
 // сервисом ДО KeyOf во ВСЕХ write-методах (и рестарт-хендлером панели): мусорный
 // ключ /workers/api_tls/<foo> в etcd не пишется никогда.
 public sealed class WorkerNotFoundException(string worker)

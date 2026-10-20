@@ -95,12 +95,12 @@ export function fetchEtcdStatus(): Promise<EtcdStatusDto> {
   return apiFetch<EtcdStatusDto>('/api/etcd/status');
 }
 
-// GET /api/etcd/domain — домен EtcdWorker (t32, adminpanel/02 §2.3.5).
+// GET /api/etcd/domain — домен EtcdWorker (adminpanel/02 §2.3.5).
 export function fetchEtcdDomain(): Promise<EtcdDomainDto> {
   return apiFetch<EtcdDomainDto>('/api/etcd/domain');
 }
 
-// PUT /api/etcd/config — декларация состава контура (t32, 02 §9.13): панель —
+// PUT /api/etcd/config — декларация состава контура (02 §9.13): панель —
 // прокси в API EtcdWorker; 200 / 400 (0..7) / 409 (кворум-гвард) / 503.
 export function putEtcdConfig(nodes: number): Promise<EtcdConfigUpdatedDto> {
   return apiFetch<EtcdConfigUpdatedDto>('/api/etcd/config', { method: 'PUT', body: { nodes } });

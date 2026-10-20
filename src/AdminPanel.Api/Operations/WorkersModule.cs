@@ -157,7 +157,7 @@ public sealed class GetWorkersQueryHandler(
                 (s?.WorkerEndpoints ?? []).Select(e => Instance(e, s?.WorkerApiCert,
                     s?.WorkerHealth?.FirstOrDefault(h => h.InstanceId == e.InstanceId))).ToList(),
                 Cert(s?.WorkerApiCert)),
-            // t32: ряд etcdworker (arch/02 §2.3.5) — ключи/health/серт из
+ // ряд etcdworker (arch/02 §2.3.5) — ключи/health/серт из
             // основного EtcdSnapshot (домен живёт в pg-тике).
             new("etcdworker",
                 (p?.EtcdWorkerEndpoints ?? []).Select(e => Instance(e, p?.EtcdWorkerApiCert,

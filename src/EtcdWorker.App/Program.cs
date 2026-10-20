@@ -15,9 +15,6 @@ using Shared.Etcd.Client;
 // Точка входа EtcdWorker (arch/25 §8): host-builder с mTLS-гранью HTTP API
 // (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
 // env-секреты — TLS API (ETCDW_API_TLS_*), docker-транспорт (ETCDW_DOCKER_*).
-// Каркас t32 фаза 4: координация (клэймы/журнал) и keepalive-цикл — эта фаза;
-// порт-механика/процессы/API-эндпоинты — фаза 5 (каждая задача правит свой
-// блок DI; инкрементальный рост Program).
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -25,7 +22,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<EtcdWorkerOptions>(builder.Configuration.GetSection("EtcdWorker"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
-// Прогресс-отметки долгих фаз в глубину процессов (provisioning — фаза 5).
+// Прогресс-отметки долгих фаз в глубину процессов (health-ожидание провижининга).
 builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
 // Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
@@ -108,9 +105,9 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
-// Глобальный portalloc-клэйм (arch/25 §8) — DI-синглтон, InstanceId единый с
-// ClaimStore (сквозная диагностика держателя). Порт-механика подключается
-// фазой 5 — клэйм уже регистрируется.
+// Глобальный portalloc-клэйм (arch/25 §5) — DI-синглтон, InstanceId единый с
+// ClaimStore (сквозная диагностика держателя); потребляется MembershipProcess
+// (окно аллокации client-порта + member-add).
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
     sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Etcd.Endpoints,
@@ -118,7 +115,7 @@ builder.Services.AddSingleton(sp => new PortAllocLock(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ClaimStore>().InstanceId));
 
-// HTTP API хендлеры (arch/25 §1.1, фаза 5) + счётчик операций — зеркало S3Worker.
+// HTTP API хендлеры (arch/25 §1.1) + счётчик операций — зеркало S3Worker.
 builder.Services.AddSingleton(sp => new EtcdApiMetrics(
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
 builder.Services.AddSingleton(sp => new PutEtcdConfigHandler(
@@ -131,9 +128,10 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
 // Циклы: keepalive (продление lease'ов + instance/api-ключи, arch/24 §6)
-// и слепки (arch/25 §4, шаг 9): SnapshotJob без sink — цикл сам экспортирует;
+// и слепки (arch/25 §4): SnapshotJob без sink — цикл сам экспортирует;
 // цель — живой резолвер etcd-backup кластера, S3-клиент per-попытка (первый
-// endpoint списка), CA-bundle/таймаут из Snapshots-опций.
+// endpoint списка), CA-bundle/таймаут из Snapshots-опций; пульс конечного
+// S3-вызова (arch/14 §6) — активность snapshot-цикла вокруг выгрузки.
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddSingleton(sp => new Shared.Etcd.Maintenance.SnapshotJob(
@@ -154,12 +152,14 @@ builder.Services.AddSingleton(sp =>
             t.Endpoints[0], t.Bucket, t.AccessKey, t.SecretKey,
             opts.Snapshots.S3.CaBundlePath, TimeSpan.FromSeconds(opts.Snapshots.TimeoutSec)),
         opts.Snapshots.RetentionObjects, opts.Snapshots.TimeoutSec,
-        sp.GetRequiredService<ClaimStore>().InstanceId, opts.Snapshots.IntervalMin);
+        sp.GetRequiredService<ClaimStore>().InstanceId, opts.Snapshots.IntervalMin,
+        sp.GetRequiredService<HealthState>().MarkSnapshotActivity,
+        TimeSpan.FromSeconds(Math.Max(1, opts.Loops.Watchdog.CheckIntervalSec) / 2));
 });
 builder.Services.AddSingleton<SnapshotLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 
-// Состав контура (arch/25 §3, шаг 13): драйвер по Mode (Plain — единственный
+// Состав контура (arch/25 §3): драйвер по Mode (Plain — единственный
 // хост; Swarm — manager), порт-механика + провижинер + процессы + цикл.
 builder.Services.AddSingleton<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(sp =>
 {
@@ -186,7 +186,8 @@ builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdPortAllocSto
 builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.EtcdNodeProvisioner(
     sp.GetRequiredService<EtcdWorker.Docker.Drivers.IEtcdNodeDriver>(),
     sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Thresholds.NodeBootSec));
+    sp.GetRequiredService<IOptions<EtcdWorkerOptions>>().Value.Thresholds.NodeBootSec,
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.MembershipProcess(
     sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
     sp.GetRequiredService<EtcdWorker.Provisioning.EtcdWorkJournal>(),
@@ -194,7 +195,8 @@ builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.Member
     sp.GetRequiredService<EtcdWorker.Provisioning.EtcdPortAllocStore>(),
     sp.GetRequiredService<EtcdWorker.Provisioning.EtcdNodeProvisioner>(),
     sp.GetRequiredService<ClaimStore>(),
-    sp.GetRequiredService<EtcdWorker.Core.EtcdProvisioningOptions>()));
+    sp.GetRequiredService<EtcdWorker.Core.EtcdProvisioningOptions>(),
+    sp.GetRequiredService<PortAllocLock>()));
 builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.NodeSupervisor(
     sp.GetRequiredService<IEtcdGateway>(), etcdEndpoints,
     sp.GetRequiredService<EtcdWorker.Provisioning.EtcdWorkJournal>(),
@@ -207,8 +209,8 @@ builder.Services.AddSingleton(sp => new EtcdWorker.Provisioning.Processes.NodeSu
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-// Наблюдаемость (arch/25 §7): агрегированный health + per-loop обёртка.
-// DockerEngineFactory — docker-пробы ServiceProbes (полный docker-стек — фаза 5).
+// Наблюдаемость (arch/25 §7): агрегированный health (активные пробы
+// ServiceProbes) + per-loop обёртка. DockerEngineFactory — docker-побы.
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<EtcdWorkerHealth>();

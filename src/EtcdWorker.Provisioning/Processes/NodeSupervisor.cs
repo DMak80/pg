@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace EtcdWorker.Provisioning.Processes;
 
-/// <summary>Надзор managed-узлов (arch/25 §3.1, шаг 13 t32): health-пробы
+/// <summary>Надзор managed-узлов (arch/25 §3.2): health-пробы
 /// клиентской грани (интервал HealthIntervalSec), трек ПЕРВОГО наблюдения
 /// проблемы члена (unstarted ИЛИ health-молчание — метка для
 /// DetectDeadReplacement; восстановление — сброс), state=UNREACHABLE при
@@ -46,13 +46,18 @@ public sealed class NodeSupervisor(
             if (ports.TryGetValue(m.K, out var port))
             {
                 var gateOk = !_lastProbed.TryGetValue(m.K, out var probed) || now - probed >= options.HealthIntervalSec;
-                if (gateOk)
+                if (!gateOk)
                 {
-                    _lastProbed[m.K] = now;
-                    var probeHost = options.AdvertisedHost is { Length: > 0 } host ? host : "localhost";
-                    var status = await gateway.StatusAsync($"http://{probeHost}:{port.Client}", ct);
-                    healthy = status.IsSuccess;
+                    // Гейт пробы закрыт (проба была недавно): данных нет — нет
+                    // факта, наблюдение узла пропускается (ProblemSince не
+                    // фиксируется: «молчит дольше NodeDeadSec» честнее без
+                    // фантомных проблем, arch/25 §3.2).
+                    continue;
                 }
+
+                _lastProbed[m.K] = now;
+                var status = await gateway.StatusAsync($"http://{ProbeHost(port.Host)}:{port.Client}", ct);
+                healthy = status.IsSuccess;
             }
 
             if (started && healthy)
@@ -89,17 +94,26 @@ public sealed class NodeSupervisor(
     /// — пересоздание (volume жив, порт закреплён); расхождение client-порта
     /// контейнера — remove + recreate.</summary>
     public async Task<Result> RepairAsync(
-        IReadOnlyList<Shared.Etcd.Client.EtcdMember> allMembers,
-        IReadOnlyList<ManagedMember> managed,
         IReadOnlyList<EtcdNodesParser.ManagedNodeState> nodes,
         IReadOnlyDictionary<int, EtcdPortAllocStore.NodePort> ports,
         CancellationToken ct)
     {
+        // Состав перечитывается НА МОМЕНТ решения (как OrphanCleanupAsync):
+        // снимок начала тика устаревает, если доводка ЭТОГО же тика вывела
+        // члена (перебор/замена) — repair по старому списку «воскрешал» узел
+        // (state-ключ + контейнер выведенного члена). Узел без члена не
+        // трогаем — мусорщик снесёт (идемпотентность по факту, arch/25 §6).
+        var members = await MemberListFailoverAsync(ct);
+        if (!members.IsSuccess)
+            return Result.Failed(members.Error!);
+        var (managed, _) = EtcdContourMembers.Build(members.Value);
+        var managedKs = managed.Select(m => m.K).ToHashSet();
+
         foreach (var node in nodes)
         {
             if (node.State is not (ManagedNodeStates.Running or ManagedNodeStates.Unreachable))
                 continue;
-            if (!managed.Any(m => m.K == node.K) || !ports.TryGetValue(node.K, out var port))
+            if (!managedKs.Contains(node.K) || !ports.TryGetValue(node.K, out var port))
                 continue;
 
             var inspect = await driver.InspectNodeAsync(node.K, ct);
@@ -118,7 +132,7 @@ public sealed class NodeSupervisor(
             }
 
             await PutStateAsync(node.K, ManagedNodeStates.Provisioning, ct);
-            var initialCluster = EtcdNodeSpecBuilder.InitialCluster(allMembers, node.K);
+            var initialCluster = EtcdNodeSpecBuilder.InitialCluster(members.Value, node.K);
             var (cmd, env) = EtcdNodeSpecBuilder.Build(node.K, options.AdvertisedHost, expectedPort, initialCluster);
             var spec = new EtcdNodeSpec(
                 node.K, port.Host, expectedPort, options.Image, cmd, env, options.Network);
@@ -187,6 +201,16 @@ public sealed class NodeSupervisor(
         return Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>>.Failed(
             last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
+
+    // Хост пробы клиентской грани — host размещения из portalloc (arch/25 §3.2;
+    // мультихост-канон: проба адресует хост размещения узла, а не окружение
+    // самого воркера). NodePort.Host пишет AllocateAsync при закреплении порта
+    // (Plain — имя хоста таблицы, Swarm — swarm-нода); пустой хост и
+    // стендовое имя "local" — локальный docker-демон → localhost.
+    private static string ProbeHost(string? portAllocHost)
+        => portAllocHost is { Length: > 0 } host && !string.Equals(host, "local", StringComparison.Ordinal)
+            ? host
+            : "localhost";
 
     private async Task PutStateAsync(int k, string state, CancellationToken ct)
     {

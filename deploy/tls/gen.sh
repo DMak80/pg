@@ -47,7 +47,7 @@ if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
-# t32: сетевые таргеты etcdworker/etcdworker-2 (arch/25 §1.1) — серт без
+# Сетевые таргеты etcdworker/etcdworker-2 (arch/25 §1.1) — серт без
 # DNS:etcdworker-2 перегенерируем (CA жив).
 if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:etcdworker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"

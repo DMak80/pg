@@ -541,7 +541,7 @@ public class EtcdGatewayTests
         put.GetProperty("value").GetString().Should().Be("dg==");
     }
 
-    // --- Кейсы member add/remove/promote (t32: динамический рост etcd-кластера) ---
+    // --- Кейсы member add/remove/promote (динамический рост etcd-кластера) ---
 
     [Fact]
     public async Task MemberAdd_BodyHasPeerUrlsAndIsLearner_ResponseMapped()

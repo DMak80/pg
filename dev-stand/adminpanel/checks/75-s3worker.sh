@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 75-s3worker.sh (t32, arch/24 §1.1; мерж-гейт задачи): S3-домен против ЖИВОГО
+# 75-s3worker.sh (arch/24 §1.1; мерж-гейт задачи): S3-домен против ЖИВОГО
 # воркера (s3worker из deploy-контура, mTLS healthcheck-парой): демо-кластер
 # через API (201 → provisioning воркером ≤ NodeBootSec+тик-запас → Active) →
 # валидации (400/422) → sync-probe 202 → снос (202 → чистота etcd/docker/volume).

@@ -69,7 +69,7 @@ public sealed record S3HealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
-// Статус DR-выгрузки etcd-слепков (t32): ключ /etcdworker/snapshots.
+// Статус DR-выгрузки etcd-слепков: ключ /etcdworker/snapshots.
 public sealed record EtcdSnapshotsDto(
     string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
@@ -81,7 +81,7 @@ public sealed record BackupStorageDto(
     S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
-    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdworker/snapshots (t32, read-only карточка)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /etcdworker/snapshots (read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
@@ -215,7 +215,7 @@ public static class BackupStorageMappers
             storage.UsedBytes, storage.QuotaBytes, storage.UsedPercent,
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
 
-    // Статус DR-выгрузки слепков etcd (t32): карточка живёт в грани независимо
+    // Статус DR-выгрузки слепков etcd: карточка живёт в грани независимо
     // от настроенности S3-грани панели — ключ читается всегда.
     public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
         => export is null ? null : new EtcdSnapshotsDto(

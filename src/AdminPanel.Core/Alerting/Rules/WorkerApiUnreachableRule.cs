@@ -6,7 +6,7 @@ namespace AdminPanel.Core.Alerting.Rules;
 // worker-api-unreachable (critical, task etcd-via-worker-api): нет живых ключей
 // /pgworker/api/ (arch/02 §2.3.1) — мутации панели (прокси в API PgWorker)
 // отвечают 503; чтение данных не страдает. Kafka-грань — в KafkaAlertEngine.
-// Отдельный ряд etcdworker (t32, arch/02 §2.3.5): мутация состава контура.
+// Отдельный ряд etcdworker (arch/02 §2.3.5): мутация состава контура.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class WorkerApiUnreachableRule : IAlertRule
 {

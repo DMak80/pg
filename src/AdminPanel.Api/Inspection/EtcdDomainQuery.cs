@@ -5,7 +5,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Inspection;
 
-// Запрос домена EtcdWorker (t32, adminpanel/02 §2.3.5): декларация состава +
+// Запрос домена EtcdWorker (adminpanel/02 §2.3.5): декларация состава +
 // managed-узлы + статус DR-выгрузки для страницы «etcd» (arch/03 §2).
 public sealed record EtcdDomainQuery : IQuery<EtcdDomainDto>;
 

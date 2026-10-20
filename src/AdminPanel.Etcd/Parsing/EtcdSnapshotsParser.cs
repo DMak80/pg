@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 
-/// <summary>Толерантный парсер ключа /etcdworker/snapshots (t32, arch/25 §5):
+/// <summary>Толерантный парсер ключа /etcdworker/snapshots (arch/25 §5):
 /// битый JSON/state → parseError-запись + null (правила молчат); отсутствующие
 /// поля — null-компоненты; поля enabled в формате нет (выгрузка безусловна).</summary>
 public static class EtcdSnapshotsParser

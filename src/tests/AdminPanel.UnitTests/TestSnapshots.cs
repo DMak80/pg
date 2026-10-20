@@ -9,7 +9,7 @@ internal static class TestSnapshots
 {
     // Здоровый снапшот: 3 живых endpoints, полный кластер demo, живые ключи API
     // воркеров (канон task etcd-via-worker-api: здоровая система = воркеры живы;
-    // t32: etcdworker — хозяин контура, живой ключ обязателен), без алертов/ошибок.
+ // etcdworker — хозяин контура, живой ключ обязателен), без алертов/ошибок.
     public static EtcdSnapshot Healthy(DateTimeOffset builtAt) => new(
         builtAt,
         HealthyEtcd(builtAt),

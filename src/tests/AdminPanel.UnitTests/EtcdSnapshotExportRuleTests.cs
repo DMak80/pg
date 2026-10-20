@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Алерты экспорта etcd-снапшотов (t32, adminpanel/03 §4): FAILED → critical
+// Алерты экспорта etcd-снапшотов (adminpanel/03 §4): FAILED → critical
 // с текстом error; тишина > 2×interval_min → warning; ключа нет — молчат;
 // живой ритм выгрузки — под порогом (семантика покрытия).
 public class EtcdSnapshotExportRuleTests

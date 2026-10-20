@@ -77,7 +77,7 @@ public sealed class GenerateWorkerApiCertCommandHandler(
             "kafkaworker" => kafka?.WorkerEndpoints ?? [],
             "valkeyworker" => valkey?.WorkerEndpoints ?? [],
             "s3worker" => s3?.WorkerEndpoints ?? [],
-            "etcdworker" => pg?.EtcdWorkerEndpoints ?? [], // t32: домен в основном снапшоте
+            "etcdworker" => pg?.EtcdWorkerEndpoints ?? [], // домен в основном снапшоте
             _ => [], // 404 даст сервис (гвард до KeyOf)
         })
         .Select(e => WorkerCertService.HostOf(e.Url))

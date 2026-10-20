@@ -20,7 +20,6 @@ public sealed class EtcdWorkerLoopsVitality(
             Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
         var snap = health.Snapshot();
 
-        // Шаги 9/13 t32: snapshot и reconcile живут; перечень = все циклы.
         return
         [
             // активность = тик или прогресс-отметка; keepalive — активность = тик

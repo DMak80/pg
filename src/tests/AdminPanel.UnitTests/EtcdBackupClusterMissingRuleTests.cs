@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// EtcdBackupClusterMissingRule (t32, adminpanel/03 §4): S3-домен прочитан и
+// EtcdBackupClusterMissingRule (adminpanel/03 §4): S3-домен прочитан и
 // живого etcd-backup кластера нет → critical; цель жива/домен не читался — молчание.
 public class EtcdBackupClusterMissingRuleTests
 {

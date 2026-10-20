@@ -75,7 +75,7 @@ public sealed class WorkerHealthPoller(
         var s3Results = await Task.WhenAll(s3Endpoints.Select(e => ProbeAsync(e, s3At, ct)));
         s3Store.Replace([.. s3Results.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
 
-        // EtcdWorker-инстансы (t32, arch/02 §2.3.5): тот же тик/клиент/семантика;
+        // EtcdWorker-инстансы (arch/02 §2.3.5): тот же тик/клиент/семантика;
         // живые ключи — /etcdworker/api/ основного снапшота, результаты вносит
         // pg-refresher (паттерн S3WorkerHealthStore).
         var etcdwEndpoints = snapshotReader.Current?.EtcdWorkerEndpoints ?? [];

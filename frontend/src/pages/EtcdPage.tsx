@@ -1,5 +1,5 @@
-// Панель etcd: endpoints (+метка «активный»), блок «Состав» контура (t32:
-// декларация EtcdWorker, managed-узлы, форма «Поддерживать N узлов» — 02 §9.13),
+// Панель etcd: endpoints (+метка «активный»), блок «Состав» контура
+// (декларация EtcdWorker, managed-узлы, форма «Поддерживать N узлов» — 02 §9.13),
 // members/лидер (+пометки managed/external), карточка DR-слепков, alarms,
 // lastRefresh, баннер подозрения кворума (t08 spec §5).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -128,7 +128,7 @@ function EndpointRow({ endpoint }: { endpoint: EtcdEndpointDto }) {
   );
 }
 
-// Блок «Состав» контура (t32, arch/03 §2): заявлено N управляемых узлов или
+// Блок «Состав» контура (arch/03 §2): заявлено N управляемых узлов или
 // «только наблюдение»; managed-узлы /etcd/nodes/<k>/; форма «Поддерживать N
 // узлов» — мутация через API воркера (PUT /api/etcd/config, 02 §9.13).
 function ContourCard({ domain, membersTotal }: { domain: EtcdDomainDto | undefined; membersTotal: number }) {
@@ -201,7 +201,7 @@ function NodeStateBadge({ state }: { state: string | null }) {
   return <Badge color={color} variant="light">{state ?? '—'}</Badge>;
 }
 
-// Модал «Поддерживать N узлов» (t32, 02 §9.13): NumberInput 0..7, двойной клик
+// Модал «Поддерживать N узлов» (02 §9.13): NumberInput 0..7, двойной клик
 // защищён (isPending); текст ошибки (400/409/503) — из ProblemDetails как есть.
 function MaintainNodesModal({
   opened,
@@ -270,7 +270,7 @@ function MaintainNodesModal({
 }
 
 // Члены кластера etcd: id, имена, URL; лидер — меткой; managed/external —
-// по префиксу имени etcdw (t32, arch/25 §2, arch/03 §2).
+// по префиксу имени etcdw (arch/25 §2, arch/03 §2).
 function MembersCard({ data }: { data: EtcdStatusDto }) {
   return (
     <Card withBorder padding="md" radius="md">
@@ -316,7 +316,7 @@ function MembersCard({ data }: { data: EtcdStatusDto }) {
   );
 }
 
-// Карточка «DR-слепки» (t32, arch/03 §2): статус выгрузки EtcdWorker
+// Карточка «DR-слепки» (arch/03 §2): статус выгрузки EtcdWorker
 // (/etcdworker/snapshots): состояние, возраст, sha-префикс, размер, ошибка.
 function DrSnapshotsCard({ domain }: { domain: EtcdDomainDto | undefined }) {
   const snap = domain?.snapshots ?? null;

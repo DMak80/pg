@@ -150,7 +150,7 @@ public class S3WorkerCardTests
         card.TargetCert!.Thumbprint.Should().Be("sha256hex");
         // порядок pg→kafka→valkey→s3.
         result.Value.Workers.Select(w => w.Worker).Should()
-            .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker", "etcdworker"); // t32: ряд etcdworker
+            .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker", "etcdworker"); // ряд etcdworker
     }
 
     // Arrange: worker="s3worker". Act: WorkerCertService.GenerateAndPutAsync гвард /
