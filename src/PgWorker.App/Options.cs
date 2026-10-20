@@ -387,79 +387,12 @@ public sealed class ParallelismOptions
     public int MaxClusters { get; set; } = 4;
 }
 
-/// <summary>Снапшоты P12: каталог тома и ретеншн файлов.</summary>
+/// <summary>Локальные слепки P12 (arch/14 §8 после t32): каталог тома и ретеншн файлов; выгрузка/обслуживание — зона EtcdWorker (arch/25 §4).</summary>
 public sealed class SnapshotOptions
 {
     public string Dir { get; set; } = "/snapshots";
 
     public int RetentionFiles { get; set; } = 10;
-
-    /// <summary>Интервал обслуживания etcd: compact + defrag (минуты, по умолчанию 60).</summary>
-    public int MaintenanceIntervalMin { get; set; } = 60;
-
-    /// <summary>Выгрузка слепков etcd в S3 (t08, arch/14 §8).</summary>
-    public SnapshotExportOptions Export { get; set; } = new();
-}
-
-/// <summary>Выгрузка снапшотов etcd в S3 (t08, arch/14 §8): каждый слепок уходит
-/// в bucket ОТДЕЛЬНОЙ env-пары PgWorker:Snapshots:Export:S3 (t36, env
-/// PGW_SNAPSHOTS_S3_*; префикс etcd/ — в её bucket) — источник правды о
-/// DR-слепках не живёт в восстанавливаемом etcd и не переиспользует креды
-/// пулов бэкапов. Backups:Enabled НЕ требуется — контроль-плейн не зависит от
-/// подсистемы бэкапов PG. Enabled=false (дефолт) — sink не подключается,
-/// поведение прежнее (§2.10).</summary>
-public sealed class SnapshotExportOptions
-{
-    /// <summary>Выгрузка включена.</summary>
-    public bool Enabled { get; set; }
-
-    /// <summary>Сколько последних пар .db+.meta.json держать в S3 (≥1;
-    /// 28 ≈ неделя при интервале 6 ч).</summary>
-    public int RetentionObjects { get; set; } = 28;
-
-    /// <summary>Сон лидера-тика при отстающей выгрузке, с (&gt;0;
-    /// вместо полного SnapshotIntervalMin — RPO-окно транзиента закрывается минутами).</summary>
-    public int RetryIntervalSec { get; set; } = 300;
-
-    /// <summary>Единый бюджет ОДНОЙ попытки экспорта (&gt;0): ExportAsync целиком
-    /// (puts + ретенция + статус, linked-CTS CancelAfter) — транзиент не тормозит
-    /// фазы процессов кластеров.</summary>
-    public int TimeoutSec { get; set; } = 30;
-
-    /// <summary>Собственная пара слепков (t36, arch/14 §6/§8; env
-    /// PGW_SNAPSHOTS_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY).</summary>
-    public SnapshotExportS3Options S3 { get; set; } = new();
-
-    /// <summary>Fail-fast старта (образец BackupsOptions.IsValid): Enabled=true
-    /// требует ПОЛНУЮ собственную пару S3; диапазоны — всегда.</summary>
-    public bool IsValid()
-        => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
-                && !string.IsNullOrWhiteSpace(S3.Bucket)
-                && !string.IsNullOrWhiteSpace(S3.AccessKey)
-                && !string.IsNullOrWhiteSpace(S3.SecretKey)))
-           && RetentionObjects >= 1
-           && RetryIntervalSec > 0
-           && TimeoutSec > 0;
-}
-
-/// <summary>S3-цель слепков etcd (t36): per-install env-пара, не креды пулов
-/// бэкапов (arch/19 §7; CA https — опциональный собственный путь).</summary>
-public sealed class SnapshotExportS3Options
-{
-    public string Endpoint { get; set; } = "";
-
-    public string Bucket { get; set; } = "";
-
-    public string AccessKey { get; set; } = "";
-
-    public string SecretKey { get; set; } = "";
-
-    /// <summary>Регион (опц.; ownS3 не требует — null).</summary>
-    public string? Region { get; set; }
-
-    /// <summary>Путь CA-bundle https-endpoint слепков (опц.; пусто — системное доверие).</summary>
-    public string? CaBundlePath { get; set; }
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка

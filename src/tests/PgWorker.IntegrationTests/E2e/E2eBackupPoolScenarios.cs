@@ -27,7 +27,6 @@ namespace PgWorker.IntegrationTests.E2e;
 public abstract class E2eBackupPoolScenarios
 {
     protected const string Bucket = "pgworker-backups";
-    protected const string SnapshotBucket = "pgworker-etcd-snapshots";
 
     // Пул E2E (etcd у Fact'а свой — имя может быть постоянным). Вторая нода —
     // alias в сети окружения (StartExtraS3NodeAsync("e2e-owns3-2")).
@@ -782,83 +781,11 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
     }
 }
 
-// AC7 (слепки на отдельной паре + fail-fast (AC7)) — отдельный класс: свой guid-контур; коллекции классов
-// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
-public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
-{
-    // ===== AC7 =====
-
-    // AAA: Enabled + полная пара → слепки уходят в СВОЙ bucket pgworker-etcd-
-    // snapshots (префикс etcd/), статус-ключ OK; Enabled БЕЗ пары → воркер
-    // падает стартом (fail-fast, в логе имя секции) (AC7).
-    [Fact]
-    public async Task Snapshots_OwnPair_BucketAndFailFast()
-    {
-        DockerTrait.SkipIfUnavailable();
-        var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac7", withS3Node: true, ct: ct);
-        Fx = fx;
-        try
-        {
-            // Arrange — bucket слепков на ownS3-ноды окружения (свой, не пуловый).
-            var ep1 = HostPort(Fx.S3Endpoint);
-            await Fx.RunMcAsync(
-                $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                + $" && mc mb --ignore-existing t/{SnapshotBucket}", ct);
-
-            // Act 1 — воркер со слепочной парой (localhost-вид: sink из процесса).
-            var s3Endpoint = Fx.S3Endpoint;
-            await using var app = await Fx.StartHostAsync("pac7", extraEnv: new Dictionary<string, string>
-            {
-                ["PgWorker__Snapshots__Export__Enabled"] = "true",
-                ["PgWorker__Snapshots__Export__RetryIntervalSec"] = "5",
-                ["PgWorker__Snapshots__Export__S3__Endpoint"] = s3Endpoint,
-                ["PgWorker__Snapshots__Export__S3__Bucket"] = SnapshotBucket,
-                ["PgWorker__Snapshots__Export__S3__AccessKey"] = E2eEnvironment.S3RootUser,
-                ["PgWorker__Snapshots__Export__S3__SecretKey"] = E2eEnvironment.S3RootPassword,
-            }, ct: ct);
-
-            // Assert 1 — статус OK, пара db+meta в своём bucket (префикс etcd/).
-            var ok = await E2eFixture.WaitForAsync(async () =>
-                (await G.GetAsync(Endpoint, "/pgworker/etcd-snapshots", ct)).Value?.Value
-                    .Contains("\"state\":\"OK\"") == true,
-                TimeSpan.FromSeconds(120), ct);
-            ok.Should().BeTrue("the snapshot pair serves the export");
-            var listing = await Fx.RunMcAsync(
-                $"mc alias set t http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                + $" && mc ls --recursive t/{SnapshotBucket}/etcd/ || true", ct);
-            listing.Should().Contain(".db").And.Contain(".meta.json",
-                "the snapshot pair — in its OWN bucket with the etcd/ prefix");
-
-            // Act 2 — Enabled БЕЗ пары: процесс падает стартом (fail-fast),
-            // диагностика называет секцию.
-            var thrown = await Assert.ThrowsAnyAsync<ApplicationException>(() =>
-                Fx.StartHostAsync("pac7nofail", extraEnv: new Dictionary<string, string>
-                {
-                    ["PgWorker__Snapshots__Export__Enabled"] = "true",
-                }, ct: ct));
-            thrown.Message.Should().Contain("did not come up within",
-                "the worker does not serve the API (start fail-fast; the section text is in the worker logs, artifacts)");
-        }
-        catch
-        {
-            Fx.MarkFailed();
-            throw;
-        }
-    }
-}
-
-// AC8 (policy-API 400 по полям + restore source_pool (AC8)) — отдельный класс: свой guid-контур; коллекции классов
-// не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
-// контуров — канон docs/e2e-launch.md).
+// AC8 (валидация политики бэкапов) — отдельный класс: свой guid-контур;
+// коллекции классов не сериализуют сценарии между собой (параллельный запуск
+// E2E, ≤5 живых контуров — канон docs/e2e-launch.md).
 public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
 {
-    // ===== AC8 =====
-
-    // AAA: policy-API — 400 по полям (пул не найден / TO_REMOVE / нода не в пуле /
-    // дубликат / пустой список; заявленный без portalloc инстанс — ВАЛИДЕН);
-    // restore из source_pool чужого пула — COMPLETED (AC8).
     [Fact]
     public async Task PolicyValidation_400_ByField_And_SourcePool_Restore()
     {
