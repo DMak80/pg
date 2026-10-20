@@ -89,7 +89,7 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | `worker_loop_duration_seconds` | gauge | `loop` | длительность последнего тика |
 | `worker_claims_held` | gauge | — | сколько кластеров держим под клэймом |
 | `worker_process_phase_duration_seconds` | gauge | `cluster`, `process`, `phase` | сколько секунд кластер в текущей фазе процесса (source: марк-методы фаз; смена фазы/завершение процесса сбрасывает серию) |
-| `worker_operation_total` | counter | `operation`, `result` | завершённые операции (provision/deprovision/rotate/move/rollback/finalize/abort…; подавленные ops — supervise/evacuate — не считаются, см. ниже), `result` ∈ {ok,error,expired} (`expired` — заявка снята возрастным таймаутом воркером, t10) |
+| `worker_operation_total` | counter | `operation`, `result` | завершённые операции (provision/deprovision/rotate/move/rollback/finalize/abort…; подавленные ops — supervise/evacuate/backup-orphan-sweeper — не считаются, см. ниже), `result` ∈ {ok,error,expired} (`expired` — заявка снята возрастным таймаутом воркером, t10) |
 | `worker_snapshot_age_seconds` | gauge | — | возраст последнего снапшота P12 |
 | `worker_watchdog_restarts_total` | counter | `loop` | инициированные watchdog-остановки цикла по отсутствию активности (тик или прогресс-отметка) (внутренний watchdog воркера: arch/14 §6, arch/16 §6, arch/21 §6); источник — марк-метод `WatchdogRestart` |
 
@@ -107,8 +107,10 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 `skipped` — промежуточная фаза усыновления, серию НЕ закрывает).
 Стационарные ops без терминальной фазы — `supervise` (пишется и через
 `WriteSupervisionAsync`, мимо фазового события) и `evacuate` (только
-`waiting-*`/`blocked-moving`) — фазовых серий НЕ эмитят: их живость
-закрывает `worker_loop_last_success_timestamp_seconds` (алерт
+`waiting-*`/`blocked-moving`), а также `backup-orphan-sweeper`
+(журнал домена сирот — свой ключ `/pgworker/backups/orphan-journal`
+(arch/19 §4), в work-фазовые метрики не входит) — фазовых серий НЕ
+эмитят: их живость закрывает `worker_loop_last_success_timestamp_seconds` (алерт
 WorkerLoopStalled), вечные серии не копятся.
 
 ### 2.3. Kafka-домен (коллектор KafkaWorker §4)
