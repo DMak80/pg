@@ -97,6 +97,12 @@ public sealed class BackupProcess(
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
+            // Живая сверка клэйма перед мутациями шарда (arch/17 S5): супервизия
+            // (вердикты/старты джобов), hba-патчи, планирование нового полного.
+            if (!await ClaimAliveAsync(cluster, shard.Name, ct))
+                return Result<ProcessOutcome>.Failed(new ApplicationException(
+                    $"{Op} {cluster}: claim lost before shard {shard.Name} supervision"));
+
             mine.Shards.TryGetValue(shard.Name, out var shardBackups);
             var fulls = shardBackups?.Full ?? (IReadOnlyList<FullBackupState>)[];
 
@@ -314,6 +320,20 @@ public sealed class BackupProcess(
         _ = snapshot;
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Живая сверка клэйма перед мутациями шарда (arch/17 S5): IsMine на входе
+    // тика не защищает длинный тик от takeover. false — ключа нет/чужой/etcd
+    // недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, Op, $"claim-lost/{shard}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
     }
 
     // S: супервизия активного по детерминированному имени контейнера на

@@ -29,6 +29,9 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
     // Инъекция сбоя Put (etcd недоступен): если задан — возвращает её результат.
     public Func<string, Result>? PutFault;
 
+    // Инъекция сбоя Get (etcd недоступен): если задан — возвращает её результат.
+    public Func<string, Result<Kv?>>? GetFault;
+
     // Прямой посев ключа (имитация перехвата к чужого инстанса): put БЕЗ lease —
     // снимает привязку ключа к прежнему lease (семантика etcd), иначе revoke
     // держателя удалил бы перезаписанный чужой ключ.
@@ -50,8 +53,10 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
     }
 
     public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
-        => Task.FromResult(Result<Kv?>.Success(
-            Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
+        => Task.FromResult(GetFault is { } fault
+            ? fault(key)
+            : Result<Kv?>.Success(
+                Store.TryGetValue(key, out var v) ? new Kv(key, v, 1) : null));
 
     public async Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
     {

@@ -108,6 +108,236 @@ public class CoordinationTests
         store.IsMine("shop").Should().BeFalse();
     }
 
+    // Cancellation-гвард клэйма (arch/17 S5): держатель несёт cancel-токен,
+    // потеря lease keepalive-тиком отменяет его — исполняющийся тик прерывается.
+    [Fact]
+    public async Task ClaimStore_KeepaliveFailure_CancelsLeaseToken()
+    {
+        // Arrange — клэйм + чужой клэйм; сбой keepalive ТОЛЬКО у shop-lease
+        // (как etcd: lease истёк — ключ под ним удалён сам).
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        await store.TryClaimClusterAsync("billing", CancellationToken.None);
+        var shopToken = store.LeaseToken("shop");
+        var billingToken = store.LeaseToken("billing");
+        shopToken.IsCancellationRequested.Should().BeFalse();
+        var shopLease = gateway.KeyLeases[$"{Prefix}/claims/shop"];
+        gateway.KeepaliveOverride = lease =>
+        {
+            if (lease != shopLease)
+                return Result.Success();
+            foreach (var key in gateway.KeyLeases.Where(p => p.Value == lease).Select(p => p.Key).ToList())
+            {
+                gateway.Store.Remove(key);
+                gateway.KeyLeases.Remove(key);
+            }
+
+            return Result.Failed(new ApplicationException("lease expired"));
+        };
+
+        // Act
+        await store.KeepaliveTickAsync(CancellationToken.None);
+
+        // Assert: гвард shop отменён, гвард billing жив
+        shopToken.IsCancellationRequested.Should().BeTrue();
+        billingToken.IsCancellationRequested.Should().BeFalse();
+        store.IsMine("shop").Should().BeFalse();
+        store.IsMine("billing").Should().BeTrue();
+    }
+
+    // Перев-захват после потери: LeaseToken возвращает СВЕЖИЙ (не отменённый) токен —
+    // следующий тик кластера исполняется с рабочим гвардом.
+    [Fact]
+    public async Task ClaimStore_ReclaimAfterLoss_IssuesFreshToken()
+    {
+        // Arrange — потеря клэйма keepalive-провалом (etcd удалил ключ сам)
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        gateway.KeepaliveOverride = lease =>
+        {
+            foreach (var key in gateway.KeyLeases.Where(p => p.Value == lease).Select(p => p.Key).ToList())
+            {
+                gateway.Store.Remove(key);
+                gateway.KeyLeases.Remove(key);
+            }
+
+            return Result.Failed(new ApplicationException("lease expired"));
+        };
+        await store.KeepaliveTickAsync(CancellationToken.None);
+        store.LeaseToken("shop").IsCancellationRequested.Should().BeTrue();
+        gateway.KeepaliveOverride = null;
+
+        // Act — пере-захват
+        var reclaimed = await store.TryClaimClusterAsync("shop", CancellationToken.None);
+
+        // Assert: токен снова живой
+        reclaimed.Value.Should().BeTrue();
+        store.LeaseToken("shop").IsCancellationRequested.Should().BeFalse();
+    }
+
+    // Гвард ReleaseCluster: явное освобождение тоже прерывает исполняющийся тик
+    // (deprovisioning D3 — кластер демонтируется, мутации недопустимы).
+    [Fact]
+    public async Task ClaimStore_ReleaseCluster_CancelsLeaseToken()
+    {
+        // Arrange
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        var token = store.LeaseToken("shop");
+
+        // Act
+        await store.ReleaseClusterAsync("shop", CancellationToken.None);
+
+        // Assert
+        token.IsCancellationRequested.Should().BeTrue();
+    }
+
+    // Токен БЕЗ клэйма — отменённый (мутировать нечем): гонка «тик запросил токен
+    // после потери гварда» обязана получить прерванный тик, а не живой.
+    [Fact]
+    public async Task ClaimStore_LeaseTokenWithoutClaim_IsCancelled()
+    {
+        // Arrange — store без клэймов
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+
+        // Act + Assert
+        store.LeaseToken("shop").IsCancellationRequested.Should().BeTrue();
+    }
+
+    // Cancellation-гвард лидерства: потеря leader-lease отменяет LeaderToken,
+    // клэймовые гварды не задеваются.
+    [Fact]
+    public async Task ClaimStore_LeaderLeaseLoss_CancelsLeaderTokenOnly()
+    {
+        // Arrange — лидерство + клэйм
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryBecomeLeaderAsync(CancellationToken.None);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        var leaderToken = store.LeaderToken;
+        var claimToken = store.LeaseToken("shop");
+        gateway.KeepaliveOverride = lease =>
+            lease == gateway.KeyLeases[$"{Prefix}/leader"]
+                ? Result.Failed(new ApplicationException("leader lease expired"))
+                : Result.Success();
+
+        // Act
+        await store.KeepaliveTickAsync(CancellationToken.None);
+
+        // Assert: лидерский гвард отменён, клэймовый жив, лидерство снято
+        leaderToken.IsCancellationRequested.Should().BeTrue();
+        claimToken.IsCancellationRequested.Should().BeFalse();
+        store.IsLeader.Should().BeFalse();
+    }
+
+    // Dispose отменяет все гварды: исполняющиеся тики не переживают остановку хоста.
+    [Fact]
+    public async Task ClaimStore_Dispose_CancelsAllGuardTokens()
+    {
+        // Arrange — клэйм + лидерство
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        await store.TryBecomeLeaderAsync(CancellationToken.None);
+        var claimToken = store.LeaseToken("shop");
+        var leaderToken = store.LeaderToken;
+
+        // Act
+        await store.DisposeAsync();
+
+        // Assert
+        claimToken.IsCancellationRequested.Should().BeTrue();
+        leaderToken.IsCancellationRequested.Should().BeTrue();
+    }
+
+    // EnsureClaimAlive — наш клэйм в etcd: true, гварды не тронуты.
+    [Fact]
+    public async Task ClaimStore_EnsureClaimAlive_OurKey_ReturnsTrue()
+    {
+        // Arrange
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+
+        // Act
+        var alive = await store.EnsureClaimAliveAsync("shop", CancellationToken.None);
+
+        // Assert
+        alive.IsSuccess.Should().BeTrue();
+        alive.Value.Should().BeTrue();
+        store.IsMine("shop").Should().BeTrue();
+        store.LeaseToken("shop").IsCancellationRequested.Should().BeFalse();
+    }
+
+    // EnsureClaimAlive — ключ исчез (lease истёк, etcd удалил): false + потеря
+    // фиксируется (гвард отменён, IsMine=false) — takeover другим инстансом уже
+    // возможен, мутации недопустимы.
+    [Fact]
+    public async Task ClaimStore_EnsureClaimAlive_KeyGone_MarksLostAndCancelsGuard()
+    {
+        // Arrange — клэйм есть локально, ключа в etcd нет
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        gateway.Store.Remove($"{Prefix}/claims/shop");
+        var token = store.LeaseToken("shop");
+
+        // Act
+        var alive = await store.EnsureClaimAliveAsync("shop", CancellationToken.None);
+
+        // Assert
+        alive.IsSuccess.Should().BeTrue();
+        alive.Value.Should().BeFalse();
+        store.IsMine("shop").Should().BeFalse();
+        token.IsCancellationRequested.Should().BeTrue();
+    }
+
+    // EnsureClaimAlive — ключ перезахвачен другим инстансом: false + потеря.
+    [Fact]
+    public async Task ClaimStore_EnsureClaimAlive_ForeignKey_MarksLost()
+    {
+        // Arrange — чужой instance в значении ключа
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        gateway.Seed($"{Prefix}/claims/shop", """{"instance":"other","since_unix":1}""");
+        var token = store.LeaseToken("shop");
+
+        // Act
+        var alive = await store.EnsureClaimAliveAsync("shop", CancellationToken.None);
+
+        // Assert
+        alive.Value.Should().BeFalse();
+        store.IsMine("shop").Should().BeFalse();
+        token.IsCancellationRequested.Should().BeTrue();
+    }
+
+    // EnsureClaimAlive — etcd недоступен: Failed (не false!) — без свежего чтения
+    // мутация не начинается (P9), но и «потеря» не заявляется: связность могла
+    // вернуться, verdict — отказ тика.
+    [Fact]
+    public async Task ClaimStore_EnsureClaimAlive_EtcdUnreachable_ReturnsFailed()
+    {
+        // Arrange — Get падает на всех endpoints
+        var gateway = new FakeCoordinationGateway();
+        var store = NewStore(gateway);
+        await store.TryClaimClusterAsync("shop", CancellationToken.None);
+        var token = store.LeaseToken("shop");
+        gateway.GetFault = _ => Result<Kv?>.Failed(new ApplicationException("etcd down"));
+
+        // Act
+        var alive = await store.EnsureClaimAliveAsync("shop", CancellationToken.None);
+
+        // Assert: Failed, потеря НЕ фиксируется
+        alive.IsSuccess.Should().BeFalse();
+        store.IsMine("shop").Should().BeTrue();
+        token.IsCancellationRequested.Should().BeFalse();
+    }
+
     [Fact]
     public async Task ClaimStore_KeepaliveFailure_ClaimIsLost_AndCanBeReclaimed()
     {

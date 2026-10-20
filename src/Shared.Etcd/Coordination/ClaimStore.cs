@@ -21,6 +21,12 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
     private readonly object _sync = new();
     private readonly Dictionary<string, long> _clusterLeases = []; // cluster → lease (live)
+    // Cancellation-гварды потери клэйма (arch/17 S5): cluster → токен прерывания
+    // исполняющегося тика. Отменяются при потере lease (keepalive-провал), release
+    // и dispose; не диспозятся — CTS без CancelAfter не держит неуправляемых
+    // ресурсов, а dispose создал бы риски порядка с держателями токенов.
+    private readonly Dictionary<string, CancellationTokenSource> _clusterGuards = [];
+    private CancellationTokenSource? _leaderGuard;
     private long? _leaderLease;
     private long? _instanceLease;
     private CancellationTokenSource? _loopCts;
@@ -42,7 +48,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         lock (_sync)
         {
             if (_clusterLeases.ContainsKey(cluster))
-                return Result<bool>.Success(true); // уже наш и продлевается
+                return Result<bool>.Success(true); // уже наш и продлевается (гвард жив — см. LeaseToken)
         }
 
         var grant = await GrantAsync(ct);
@@ -62,6 +68,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         lock (_sync)
         {
             _clusterLeases[cluster] = grant.Value;
+            EnsureClusterGuardLocked(cluster); // свежий гвард на новую постановку
         }
 
         return Result<bool>.Success(true);
@@ -93,6 +100,8 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         lock (_sync)
         {
             _leaderLease = grant.Value;
+            if (_leaderGuard is null || _leaderGuard.IsCancellationRequested)
+                _leaderGuard = new CancellationTokenSource(); // свежий гвард на новую постановку
         }
 
         return Result<bool>.Success(true);
@@ -118,19 +127,80 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         }
     }
 
+    // Cancellation-гвард потери клэйма (arch/17 S5): тик кластера линкует свой
+    // токен с этим после захвата — потеря lease прерывает исполняющиеся операции.
+    // Клэйма нет → отменённый токен (мутировать нечем).
+    public CancellationToken LeaseToken(string cluster)
+    {
+        lock (_sync)
+        {
+            return _clusterGuards.TryGetValue(cluster, out var guard)
+                ? guard.Token
+                : new CancellationToken(canceled: true);
+        }
+    }
+
+    // То же для leader-клэйма (singleton-циклы снапшотов P12/orphan-sweeper).
+    public CancellationToken LeaderToken
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _leaderGuard?.Token ?? new CancellationToken(canceled: true);
+            }
+        }
+    }
+
+    // Живая сверка владения клэймом перед критической мутацией (arch/17 S5):
+    // чтение ключа claims/<C> — наш → true; ключа нет (lease истёк, etcd удалил
+    // сам) или чужой → false + потеря фиксируется (гвард отменён); etcd недоступен
+    // → Failed — без свежего чтения мутация не начинается (P9).
+    public async Task<Result<bool>> EnsureClaimAliveAsync(string cluster, CancellationToken ct)
+    {
+        var read = await WithFailoverAsync(endpoint => gateway.GetAsync(endpoint, ClaimKey(cluster), ct));
+        if (!read.IsSuccess)
+            return Result<bool>.Failed(read.Error!);
+
+        if (read.Value is not { } kv)
+        {
+            MarkClusterLost(cluster);
+            return Result<bool>.Success(false);
+        }
+
+        ClaimPayload? payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<ClaimPayload>(kv.Value, PayloadJson.Json);
+        }
+        catch (JsonException)
+        {
+            payload = null;
+        }
+
+        if (payload is not { } p || p.Instance != InstanceId)
+        {
+            MarkClusterLost(cluster); // ключ перезахвачен другим инстансом
+            return Result<bool>.Success(false);
+        }
+
+        return Result<bool>.Success(true);
+    }
+
     // Освободить клэйм сейчас (deprovisioning D3): del ключа + revoke lease — не ждём TTL.
     public async Task ReleaseClusterAsync(string cluster, CancellationToken ct)
     {
         long lease;
+        CancellationTokenSource? guard;
         lock (_sync)
         {
-            if (_clusterLeases.TryGetValue(cluster, out var l))
-                _clusterLeases.Remove(cluster);
-            else
+            if (!_clusterLeases.TryGetValue(cluster, out lease))
                 return;
-            lease = l;
+            _clusterLeases.Remove(cluster);
+            _clusterGuards.Remove(cluster, out guard);
         }
 
+        guard?.Cancel(); // гвард вне lock: прерывает исполняющийся тик кластера
         await WithFailoverAsync(endpoint => gateway.DeleteAsync(endpoint, ClaimKey(cluster), prefix: false, ct));
         await RevokeSilentlyAsync(lease);
     }
@@ -196,16 +266,34 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             if (ct.IsCancellationRequested)
                 return;
 
-            // lease истёк/отозван: помечаем потерю, ключ под ним etcd уже удалил сам
+            // lease истёк/отозван: помечаем потерю, ключ под ним etcd уже удалил сам.
+            // Гварды собираются под lock, отменяются ВНЕ lock: колбэки linked-токенов
+            // прерывают исполняющиеся тики (arch/17 S5).
+            var lostGuards = new List<CancellationTokenSource>();
+            CancellationTokenSource? leaderGuard = null;
             lock (_sync)
             {
                 foreach (var (cluster, l) in _clusterLeases.Where(p => p.Value == lease).ToList())
+                {
                     _clusterLeases.Remove(cluster);
+                    if (_clusterGuards.Remove(cluster, out var guard))
+                        lostGuards.Add(guard);
+                }
+
                 if (_leaderLease == lease)
+                {
                     _leaderLease = null;
+                    leaderGuard = _leaderGuard;
+                    _leaderGuard = null;
+                }
+
                 if (_instanceLease == lease)
                     _instanceLease = null;
             }
+
+            foreach (var guard in lostGuards)
+                guard.Cancel();
+            leaderGuard?.Cancel();
         }
     }
 
@@ -231,6 +319,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
         // стартовавшая после — выйдет по _instanceDisposed.
         await _instanceGate.WaitAsync();
         List<long> leases;
+        List<CancellationTokenSource> guards;
         try
         {
             lock (_sync)
@@ -244,6 +333,9 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
                 _clusterLeases.Clear();
                 _leaderLease = null;
                 _instanceLease = null;
+                guards = [.. _clusterGuards.Values, .. _leaderGuard is { } lg ? [lg] : Array.Empty<CancellationTokenSource>()];
+                _clusterGuards.Clear();
+                _leaderGuard = null;
             }
         }
         finally
@@ -251,6 +343,8 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             _instanceGate.Release();
         }
 
+        foreach (var guard in guards)
+            guard.Cancel(); // гварды вне lock: прервать исполняющиеся тики
         foreach (var lease in leases)
             await RevokeSilentlyAsync(lease);
     }
@@ -345,6 +439,30 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
     private string ClaimKey(string cluster) => $"{keyPrefix}/claims/{cluster}";
+
+    // Под lock: гварда кластера нет (или отменён прежний) — поставить свежий.
+    // Вызывается при каждой постановке клэйма: гвард живёт ровно с lease.
+    private void EnsureClusterGuardLocked(string cluster)
+    {
+        if (_clusterGuards.TryGetValue(cluster, out var existing) && !existing.IsCancellationRequested)
+            return;
+        _clusterGuards[cluster] = new CancellationTokenSource();
+    }
+
+    // Отметить потерю клэйма кластера (EnsureClaimAliveAsync: ключ исчез/чужой).
+    // Словарь lease чистится (тик перестанет продлевать и признает IsMine=false),
+    // гвард отменяется вне lock — исполняющийся тик прерывается (arch/17 S5).
+    private void MarkClusterLost(string cluster)
+    {
+        CancellationTokenSource? guard;
+        lock (_sync)
+        {
+            _clusterLeases.Remove(cluster);
+            _clusterGuards.Remove(cluster, out guard);
+        }
+
+        guard?.Cancel();
+    }
 
     // Failover по endpoints: первый успешный ответ выигрывает; все недоступны → последняя ошибка.
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)

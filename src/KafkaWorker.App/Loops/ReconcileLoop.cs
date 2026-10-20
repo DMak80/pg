@@ -148,6 +148,7 @@ internal sealed class ReconcileLoop(
     private async Task ProcessClusterAsync(KafkaClusterSnapshot snap, SemaphoreSlim gate, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
+        CancellationTokenSource? lease = null; // linked-токен клэйма — виден catch'ам
         try
         {
             var cluster = snap.Cluster;
@@ -164,29 +165,42 @@ internal sealed class ReconcileLoop(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
+            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // исполняющийся тик кластера — linked-токен течёт во все операции.
+            lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
+            var tick = lease.Token;
+
             switch (work)
             {
                 case KafkaClusterWork.Provision:
                     await RunClusterOpAsync(cluster, "provision",
-                        () => processes.ProvisionAsync(snap, ct), ct);
+                        () => processes.ProvisionAsync(snap, tick), ct, tick);
                     break;
 
                 case KafkaClusterWork.Deprovision:
                     await RunClusterOpAsync(cluster, "deprovision",
-                        () => processes.DeprovisionAsync(snap, ct), ct);
+                        () => processes.DeprovisionAsync(snap, tick), ct, tick);
                     break;
 
                 default:
                     // Active-ветка: надзор → converge; scale-проход (remove → add),
                     // ротация и TopicSync — расширения волн B/C (arch/16 §5).
                     await RunClusterOpAsync(cluster, "active",
-                        () => processes.ActiveAsync(snap, ct), ct);
+                        () => processes.ActiveAsync(snap, tick), ct, tick);
                     break;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // остановка host'а посреди тика — не ошибка цикла
+        }
+        catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
+        {
+            // Потеря клэйма прервала операцию кластера (гвард arch/17 S5):
+            // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
+            logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
+                snap.Cluster, oce.Message);
+            await WriteLeaseLostAsync(snap.Cluster, "tick");
         }
         catch (Exception ex)
         {
@@ -197,14 +211,17 @@ internal sealed class ReconcileLoop(
         }
         finally
         {
+            lease?.Dispose();
             gate.Release();
         }
     }
 
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
+    // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
+    // OCE по ct = потеря клэйма — гварда arch/17 S5).
     private async Task RunClusterOpAsync(
-        string cluster, string op, Func<Task<Result>> call, CancellationToken ct)
+        string cluster, string op, Func<Task<Result>> call, CancellationToken host, CancellationToken ct)
     {
         try
         {
@@ -214,13 +231,32 @@ internal sealed class ReconcileLoop(
             else
                 logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (host.IsCancellationRequested)
         {
             throw; // остановка host'а — пробрасываем (обработана уровнем выше)
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
         }
         catch (Exception ex)
         {
             await LogCrashAsync(cluster, op, ex);
+        }
+    }
+
+    // Фаза lease-lost в журнале воркера (arch/17 S5); CancellationToken.None —
+    // токен тика отменён, запись обязана доехать (как в LogCrashAsync).
+    private async Task WriteLeaseLostAsync(string cluster, string op)
+    {
+        try
+        {
+            await journal.WritePhaseAsync(
+                cluster, op, "lease-lost", claims.InstanceId, null, CancellationToken.None);
+        }
+        catch (Exception journalEx)
+        {
+            logger.LogWarning(journalEx, "work journal for {Cluster} was not written after lease loss", cluster);
         }
     }
 

@@ -345,13 +345,18 @@ public sealed class MoveProcess(
         bool subOnDst, bool schemaOnDst, bool reachedCutover, MoveRequest request,
         CancellationToken ct)
     {
+        var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями фаз M1+ (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"move/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before phases of {bucket}"));
+
         // M4–M6: initial copy завершён (cutover-wait) или прошлый cutover сорвался —
         // единый непрерывный блок этого тика (задача 14, spec §6.1 M4/§6.2).
         if (reachedCutover)
             return await RunCutoverAsync(
                 snap, bucket, owner, to, srcShard, dstShard, srcDsn, dstDsn, startedUnix, request, ct);
-
-        var cluster = snap.Config.Cluster;
 
         // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
         if (!subOnDst && !schemaOnDst)
@@ -466,6 +471,12 @@ public sealed class MoveProcess(
         long startedUnix, MoveRequest request, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед cutover — переключением routing (самая
+        // критическая мутация переезда, arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"cutover/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before cutover of {bucket}"));
 
         // M4: cutover — единый непрерывный блок (слот подтверждения sub_<b> живёт на
         // источнике). Снапшот flip — best-effort: неудача пишется в журнал, flip не
@@ -592,6 +603,11 @@ public sealed class MoveProcess(
     {
         const string op = "rollback";
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями rollback (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"rollback/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before rollback of {bucket}"));
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
@@ -755,6 +771,11 @@ public sealed class MoveProcess(
     {
         const string op = "finalize";
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед мутациями finalize (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"finalize/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {cluster}: claim lost before finalize of {bucket}"));
 
         if (snap.Config.State != ClusterState.Active)
             return await RejectAsync(cluster, bucket,
@@ -940,11 +961,30 @@ public sealed class MoveProcess(
 
     // op=abort — делегирует AbortSequence (t01 задача 16, spec §6.5): журнал
     // ABORTING ДО манипуляций, идемпотентная уборка, AbortMinAgeSec/force.
-    private Task<Result<ProcessOutcome>> RunAbortAsync(
+    private async Task<Result<ProcessOutcome>> RunAbortAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
+        // Живая сверка клэйма перед мутациями abort (arch/17 S5).
+        if (!await ClaimAliveAsync(snap.Config.Cluster, $"abort/{bucket}", ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"moves {snap.Config.Cluster}: claim lost before abort of {bucket}"));
+
         var abort = new AbortSequence(sql, status, requests, journal, shards, secrets, progress);
-        return abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
+        return await abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
+    }
+
+    // Живая сверка клэйма перед мутациями фаз переезда (arch/17 S5): IsMine на
+    // входе тика не защищает длинную фазу от takeover. false — ключа нет/чужой/
+    // etcd недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, "moves", $"claim-lost/{phase}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
     }
 
     // ── Исходы M0/оп-веток ──

@@ -140,6 +140,11 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
 
+        // Живая сверка клэйма перед фазой заявки (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before validate of {shard.Name}/{op.Id}"));
+
         // t36 (arch/19 §5): пул чтения — source_pool DR-заявки ?? собственный
         // пул policy.s3. null/Failed — transient: journal, ретраи тиком.
         var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
@@ -274,6 +279,11 @@ public sealed class RestoreProcess(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
+
+        // Живая сверка клэйма перед фазой демонтажа/восстановления (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before run of {shard.Name}/{op.Id}"));
 
         // t36: пул чтения — source_pool DR-заявки ?? собственный пул policy.s3.
         var poolRead = await ResolveReadPoolAsync(cluster, op, ct);
@@ -486,6 +496,11 @@ public sealed class RestoreProcess(
     private async Task<Result> DemolishAsync(
         string cluster, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
+        // Живая сверка клэйма перед сносом нод шарда (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before demolish of {shard.Name}/{op.Id}"));
+
         var agents = await driver.RemoveBackupAgentsAsync(cluster, shard.Name, ct);
         if (!agents.IsSuccess)
             return agents;
@@ -557,6 +572,11 @@ public sealed class RestoreProcess(
     {
         var cluster = snap.Config.Cluster;
         var waitKey = $"{cluster}/{shard.Name}/{op.Id}";
+
+        // Живая сверка клэйма перед фазой реинтеграции нод (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, shard.Name, op, ct))
+            return Result<ProcessOutcome>.Failed(new ApplicationException(
+                $"{Op} {cluster}: claim lost before rejoin of {shard.Name}/{op.Id}"));
 
         // Креды (P1.5-копия): ensured тройка — env нод (mover/bucket_admin —
         // канонические ключи etcd).
@@ -914,6 +934,21 @@ public sealed class RestoreProcess(
     }
 
     // transient-отказ: статус не меняем, журнал-факт, следующий тик повторит.
+    // Живая сверка клэйма перед мутациями фазы restore (arch/17 S5): IsMine на
+    // входе тика не защищает длинную фазу от takeover. false — ключа нет/чужой/
+    // etcd недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(
+        string cluster, string shard, RestoreOperationState op, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, Op, $"claim-lost/{shard}/{op.Id}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
+    }
+
     private async Task<Result<ProcessOutcome>> TransientAsync(
         string cluster, string phase, string? error, CancellationToken ct)
     {

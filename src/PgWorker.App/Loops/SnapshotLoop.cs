@@ -50,71 +50,86 @@ internal sealed class SnapshotLoop(
 
                 if (claims.IsLeader)
                 {
-                    // t08 (spec §3.5 п.1/п.3): доводка отстающей выгрузки ДО снятия — транзиент S3
-                    // не растягивает RPO-окно до планового тика. CatchUpAsync возвращает отставание
-                    // ПО СТАТУС-ключу (IsBehind: FAILED/ключа нет/локальный новее — включая FAILED
-                    // при пустом томе, без re-export); ошибка доводки — как ошибка экспорта
-                    // (статус-ключ пишется внутри sink) — тоже короткий сон.
-                    var behind = false;
-                    if (exportSink is not null)
+                    try
                     {
-                        var catchUp = await exportSink.CatchUpAsync(
-                            options.CurrentValue.Snapshots.Dir, stoppingToken);
-                        behind = catchUp.IsSuccess ? catchUp.Value : true;
-                    }
+                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // прерывает тик лидера; цикл продолжит как не-лидер.
+                        using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        var tick = leaderLease.Token;
 
-                    var started = Stopwatch.GetTimestamp();
-                    var shot = await snapshots.TakeAsync(stoppingToken);
-                    metrics.LoopDuration("snapshot", Stopwatch.GetElapsedTime(started).TotalSeconds);
-                    if (shot.IsSuccess)
-                    {
-                        // healthz = «последний тик» (живой-Ф7): успешный снимок гасит
-                        // ошибку прошлого — иначе единственный фейл = вечный unhealthy.
-                        StatusError = Result.Success();
-                        health.MarkSnapshotTaken();
-                        metrics.SnapshotTaken(clock.GetUtcNow());
-                        logger.LogInformation("etcd snapshot taken: {Path}", shot.Value);
-                        // Обслуживание etcd: compact + defrag (не чаще раза в час).
-                        var maintenance = await snapshots.MaintainAsync(stoppingToken);
-                        if (!maintenance.IsSuccess)
-                            logger.LogWarning(maintenance.Error, "etcd maintenance failed: {Message}", maintenance.Error!.Message);
-                    }
-                    else
-                    {
-                        StatusError = shot;
-                        logger.LogError(shot.Error, "etcd snapshot failed: {Message}", shot.Error!.Message);
-                    }
+                        // t08 (spec §3.5 п.1/п.3): доводка отстающей выгрузки ДО снятия — транзиент S3
+                        // не растягивает RPO-окно до планового тика. CatchUpAsync возвращает отставание
+                        // ПО СТАТУС-ключу (IsBehind: FAILED/ключа нет/локальный новее — включая FAILED
+                        // при пустом томе, без re-export); ошибка доводки — как ошибка экспорта
+                        // (статус-ключ пишется внутри sink) — тоже короткий сон.
+                        var behind = false;
+                        if (exportSink is not null)
+                        {
+                            var catchUp = await exportSink.CatchUpAsync(
+                                options.CurrentValue.Snapshots.Dir, tick);
+                            behind = catchUp.IsSuccess ? catchUp.Value : true;
+                        }
 
-                    health.MarkSnapshotTick();
-                    metrics.LoopTick("snapshot", ok: true);
-                    // t08 (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
-                    // транзиент S3 в тике TakeAsync переводит статус-ключ в FAILED уже ПОСЛЕ
-                    // расчёта «до»; без пере-расчёта лидер ушёл бы в полный SnapshotIntervalMin
-                    // с невыгруженным слепком (запрещено §3.5 п.3). Считаем по свежему
-                    // статус-ключу и метке новейшего локального слепка (тот самый, только что
-                    // снятый); отказ чтения ключа — трактуем как отставание (короткий сон).
-                    if (exportSink is not null)
-                    {
-                        var fresh = await exportSink.ReadStatusAsync(stoppingToken);
-                        var latest = EtcdSnapshotSink.LatestLocalFile(options.CurrentValue.Snapshots.Dir);
-                        behind = !fresh.IsSuccess
-                                 || EtcdSnapshotStatus.IsBehind(
-                                     fresh.Value, EtcdSnapshotStatus.TakenUnixFromName(Path.GetFileName(latest ?? "")));
-                    }
+                        var started = Stopwatch.GetTimestamp();
+                        var shot = await snapshots.TakeAsync(tick);
+                        metrics.LoopDuration("snapshot", Stopwatch.GetElapsedTime(started).TotalSeconds);
+                        if (shot.IsSuccess)
+                        {
+                            // healthz = «последний тик» (живой-Ф7): успешный снимок гасит
+                            // ошибку прошлого — иначе единственный фейл = вечный unhealthy.
+                            StatusError = Result.Success();
+                            health.MarkSnapshotTaken();
+                            metrics.SnapshotTaken(clock.GetUtcNow());
+                            logger.LogInformation("etcd snapshot taken: {Path}", shot.Value);
+                            // Обслуживание etcd: compact + defrag (не чаще раза в час).
+                            var maintenance = await snapshots.MaintainAsync(tick);
+                            if (!maintenance.IsSuccess)
+                                logger.LogWarning(maintenance.Error, "etcd maintenance failed: {Message}", maintenance.Error!.Message);
+                        }
+                        else
+                        {
+                            StatusError = shot;
+                            logger.LogError(shot.Error, "etcd snapshot failed: {Message}", shot.Error!.Message);
+                        }
 
-                    // Сон тика лидера (spec §3.5 п.3): выгрузка здорова (state=OK, не отстаёт —
-                    // каждый успешный проход sink'а продвигает покрытие к метке нового слепка) —
-                    // SnapshotIntervalMin как раньше; отстаёт/FAILED — RetryIntervalSec
-                    // (RPO-окно транзиента закрывается минутами; исправный контур выгружает
-                    // каждый плановый слепок — каденс остаётся плановым, AC2).
-                    var delay = exportSink is not null && behind
-                        ? TimeSpan.FromSeconds(options.CurrentValue.Snapshots.Export.RetryIntervalSec)
-                        : TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin);
-                    // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
-                    // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
-                    await Shared.Core.Hosting.PulsingDelay.SleepAsync(delay,
-                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
-                        health.MarkSnapshotActivity, stoppingToken);
+                        health.MarkSnapshotTick();
+                        metrics.LoopTick("snapshot", ok: true);
+                        // t08 (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
+                        // транзиент S3 в тике TakeAsync переводит статус-ключ в FAILED уже ПОСЛЕ
+                        // расчёта «до»; без пере-расчёта лидер ушёл бы в полный SnapshotIntervalMin
+                        // с невыгруженным слепком (запрещено §3.5 п.3). Считаем по свежему
+                        // статус-ключу и метке новейшего локального слепка (тот самый, только что
+                        // снятый); отказ чтения ключа — трактуем как отставание (короткий сон).
+                        if (exportSink is not null)
+                        {
+                            var fresh = await exportSink.ReadStatusAsync(tick);
+                            var latest = EtcdSnapshotSink.LatestLocalFile(options.CurrentValue.Snapshots.Dir);
+                            behind = !fresh.IsSuccess
+                                     || EtcdSnapshotStatus.IsBehind(
+                                         fresh.Value, EtcdSnapshotStatus.TakenUnixFromName(Path.GetFileName(latest ?? "")));
+                        }
+
+                        // Сон тика лидера (spec §3.5 п.3): выгрузка здорова (state=OK, не отстаёт —
+                        // каждый успешный проход sink'а продвигает покрытие к метке нового слепка) —
+                        // SnapshotIntervalMin как раньше; отстаёт/FAILED — RetryIntervalSec
+                        // (RPO-окно транзиента закрывается минутами; исправный контур выгружает
+                        // каждый плановый слепок — каденс остаётся плановым, AC2).
+                        var delay = exportSink is not null && behind
+                            ? TimeSpan.FromSeconds(options.CurrentValue.Snapshots.Export.RetryIntervalSec)
+                            : TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin);
+                        // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
+                        // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
+                        await Shared.Core.Hosting.PulsingDelay.SleepAsync(delay,
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                            health.MarkSnapshotActivity, tick);
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Потеря leader-lease прервала тик (гвард arch/17 S5): не ошибка —
+                        // цикл продолжит как не-лидер и пере-захватит ≤ TTL + тик скана.
+                        logger.LogWarning("snapshot leadership lost mid-tick");
+                    }
                 }
                 else
                 {

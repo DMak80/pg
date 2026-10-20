@@ -256,12 +256,31 @@ public sealed class NodeSupervisor(
     private static Result<SuperviseOutcome> Fail(Exception error)
         => Result<SuperviseOutcome>.Failed(error);
 
+    // Живая сверка клэйма перед критической мутацией (arch/17 S5): IsMine на входе
+    // тика не защищает длинный тик от takeover. false — ключа нет/чужой/etcd
+    // недоступен: мутация не начинается (P9), журнал несёт claim-lost/<фазу>.
+    private async Task<bool> ClaimAliveAsync(string cluster, string phase, CancellationToken ct)
+    {
+        var alive = await claims.EnsureClaimAliveAsync(cluster, ct);
+        if (alive is { IsSuccess: true, Value: true })
+            return true;
+
+        await journal.WritePhaseAsync(cluster, "supervise", $"claim-lost/{phase}", claims.InstanceId,
+            alive.IsSuccess ? "claim key is gone or foreign" : alive.Error!.Message, ct);
+        return false;
+    }
+
     // Сверка декларации: EnsureNode плановых нод без docker-объекта.
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
     {
+        // Живая сверка клэйма перед фазой пересозданий (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, "declared-nodes", ct))
+            return Fail(new ApplicationException(
+                $"supervise {cluster}: claim lost before declared-nodes step"));
+
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return objects;
@@ -425,6 +444,10 @@ public sealed class NodeSupervisor(
         if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 
+        // Живая сверка клэйма перед PATCH /config (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"dcs-converge/{shard.Name}", ct))
+            return Result.Success(); // транзиент-подобный отказ тика: конвергенция повторится
+
         var applied = await probe.PatchConfigAsync(probeNode, divergence.Patch, restPassword, ct);
         if (!applied.IsSuccess)
             return Result.Success(); // транзиент — патч следующим тиком
@@ -485,6 +508,12 @@ public sealed class NodeSupervisor(
         if (candidate is null)
             return Result<FailoverAcceleration>.Success(FailoverAcceleration.NoCandidate);
 
+        // Живая сверка клэйма перед мутацией DCS (failover-ключ + снятие
+        // лидер-ключа — самые опасные гонки двух инстансов, arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, $"failover/{shard.Name}/{missing}", ct))
+            return Result<FailoverAcceleration>.Failed(new ApplicationException(
+                $"supervise {cluster}: claim lost before failover acceleration of {shard.Name}/{missing}"));
+
         var scheduled = clock.GetUtcNow().UtcDateTime.ToString("o");
         var marked = await PutAsync($"/service/{scope}/failover",
             $$"""{"leader":"{{missing}}","member":"{{candidate}}","scheduled_at":"{{scheduled}}"}""", ct);
@@ -520,6 +549,11 @@ public sealed class NodeSupervisor(
     {
         if (!driver.SupportsRunningInspection)
             return Result.Success(); // Swarm: инспекция env — заглушка, шаг no-op
+
+        // Живая сверка клэйма перед фазой пересозданий REST-TLS (arch/17 S5).
+        if (!await ClaimAliveAsync(cluster, "rest-tls", ct))
+            return Fail(new ApplicationException(
+                $"supervise {cluster}: claim lost before rest-tls step"));
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
@@ -747,6 +781,11 @@ public sealed class NodeSupervisor(
                 continue; // не лидер, но и источника basebackup нет — ждём
             }
 
+            // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+            if (!await ClaimAliveAsync(cluster, $"recreate/{shard.Name}/{node.Name}", ct))
+                return Fail(new ApplicationException(
+                    $"supervise {cluster}: claim lost before recreate of {shard.Name}/{node.Name}"));
+
             var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
             if (!removed.IsSuccess)
                 return removed;
@@ -928,6 +967,10 @@ public sealed class NodeSupervisor(
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
                 if (addr is null)
                     continue;
+                // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
+                if (!await ClaimAliveAsync(cluster, $"rebuild/{shard.Name}/{name}", ct))
+                    return Fail(new ApplicationException(
+                        $"supervise {cluster}: claim lost before rebuild of {shard.Name}/{name}"));
                 var removed = await driver.RemoveNodeAsync(cluster, shard.Name, name, ct);
                 if (!removed.IsSuccess)
                     return removed;

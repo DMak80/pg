@@ -96,6 +96,7 @@ internal sealed class S3ClusterProcesses(
     private async Task ProcessClusterAsync(S3ClusterSnapshot snap, SemaphoreSlim gate, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
+        CancellationTokenSource? lease = null; // linked-токен клэйма — виден catch'ам
         try
         {
             var cluster = snap.Cluster;
@@ -112,16 +113,21 @@ internal sealed class S3ClusterProcesses(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
+            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // исполняющийся тик кластера — linked-токен течёт во все операции.
+            lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
+            var tick = lease.Token;
+
             switch (kind)
             {
                 case S3ClusterKind.Provision:
                     await RunClusterOpAsync(cluster, "provision",
-                        () => provision.RunAsync(snap, ct), ct);
+                        () => provision.RunAsync(snap, tick), ct, tick);
                     break;
 
                 case S3ClusterKind.Deprovision:
                     await RunClusterOpAsync(cluster, "deprovision",
-                        () => deprovision.TickAsync(snap, ct), ct);
+                        () => deprovision.TickAsync(snap, tick), ct, tick);
                     break;
 
                 case S3ClusterKind.Active:
@@ -133,9 +139,9 @@ internal sealed class S3ClusterProcesses(
                     {
                         // Живая заявка ротации (failover по endpoints: read-only
                         // проверка — первый живой endpoint выигрывает).
-                        var rotating = await GetWithFailoverAsync($"/s3worker/rotations/{cluster}", ct);
+                        var rotating = await GetWithFailoverAsync($"/s3worker/rotations/{cluster}", tick);
                         if (rotating.IsSuccess && rotating.Value is not null)
-                            return await rotator.TickAsync(snap, ct);
+                            return await rotator.TickAsync(snap, tick);
 
                         // Прогресс-отметки ветки (ILoopProgress): каждая стадия
                         // с молчащей нодой легитимно длится до ~15-22 с (последо-
@@ -143,30 +149,30 @@ internal sealed class S3ClusterProcesses(
                         // поллинг-инвариант); без отметок watchdog примет живой
                         // тик за зависание (порог 30 c) и уронит воркер.
                         progress.Mark();
-                        var supervised = await supervisor.TickAsync(snap, ct);
+                        var supervised = await supervisor.TickAsync(snap, tick);
                         if (!supervised.IsSuccess)
                             return supervised;
                         progress.Mark();
-                        var added = await addNode.TickAsync(snap, ct);
+                        var added = await addNode.TickAsync(snap, tick);
                         if (!added.IsSuccess)
                             return added;
                         progress.Mark();
-                        var removed = await removeNode.TickAsync(snap, ct);
+                        var removed = await removeNode.TickAsync(snap, tick);
                         if (!removed.IsSuccess)
                             return removed;
                         // Доводка состава (arch/24 §5 G) — до F: зонд видит
                         // состав mesh доведённым тика; ошибка G прерывает
                         // ветку до F (ранний return — заявка зонда живёт).
                         progress.Mark();
-                        var meshed = await mesh.TickAsync(snap, ct);
+                        var meshed = await mesh.TickAsync(snap, tick);
                         if (!meshed.IsSuccess)
                             return meshed;
                         // Зонд F — последний в Active-ветке (arch/24 §5):
                         // пишет connectivity/sync (arch/23 §3); долгие фазы
                         // отмечает сам (перед каждым вызовом грани).
                         progress.Mark();
-                        return await syncProbe.TickAsync(snap, ct);
-                    }, ct);
+                        return await syncProbe.TickAsync(snap, tick);
+                    }, ct, tick);
                     break;
 
                 case S3ClusterKind.Skip:
@@ -178,6 +184,14 @@ internal sealed class S3ClusterProcesses(
         {
             // остановка host'а посреди тика — не ошибка цикла
         }
+        catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
+        {
+            // Потеря клэйма прервала операцию кластера (гвард arch/17 S5):
+            // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
+            logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
+                snap.Cluster, oce.Message);
+            await WriteLeaseLostAsync(snap.Cluster, "tick");
+        }
         catch (Exception ex)
         {
             // Страховка контура кластера: даже исключение вне вызова процесса
@@ -186,14 +200,17 @@ internal sealed class S3ClusterProcesses(
         }
         finally
         {
+            lease?.Dispose();
             gate.Release();
         }
     }
 
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
+    // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
+    // OCE по ct = потеря клэйма — гварда arch/17 S5).
     internal async Task RunClusterOpAsync(
-        string cluster, string op, Func<Task<Result>> call, CancellationToken ct)
+        string cluster, string op, Func<Task<Result>> call, CancellationToken host, CancellationToken ct)
     {
         try
         {
@@ -203,9 +220,13 @@ internal sealed class S3ClusterProcesses(
             else
                 logger.LogError(outcome.Error, "{Op} {Cluster} failed: {Message}", op, cluster, outcome.Error!.Message);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (host.IsCancellationRequested)
         {
             throw; // остановка host'а — пробрасываем (обработана уровнем выше)
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
         }
         catch (Exception ex)
         {
@@ -220,6 +241,21 @@ internal sealed class S3ClusterProcesses(
             {
                 logger.LogWarning(journalEx, "work journal for {Cluster} not written after exception", cluster);
             }
+        }
+    }
+
+    // Фаза lease-lost в журнале воркера (arch/17 S5); CancellationToken.None —
+    // токен тика отменён, запись обязана доехать.
+    private async Task WriteLeaseLostAsync(string cluster, string op)
+    {
+        try
+        {
+            await journal.WritePhaseAsync(
+                cluster, op, "lease-lost", claims.InstanceId, null, CancellationToken.None);
+        }
+        catch (Exception journalEx)
+        {
+            logger.LogWarning(journalEx, "work journal for {Cluster} not written after lease loss", cluster);
         }
     }
 

@@ -128,6 +128,27 @@ public class NodeSupervisorTests
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
 
+    // AAA (arch/17 S5): потеря клэйма ПОСЛЕ входа в тик (ключ исчез из etcd —
+    // как по истёкшему lease при takeover) — мутации фаз не начинаются:
+    // первый EnsureClaimAlive отказывает тик, журнал несёт claim-lost/declared-nodes.
+    [Fact]
+    public async Task Tick_ClaimKeyVanishedMidTick_RefusesBeforeMutations()
+    {
+        // Arrange: клэйм захвачен ригом; ключ из etcd убираем, локальный словарь
+        // store'а об этом не знает (IsMine остаётся true — как в реальности).
+        var rig = await NewRig(_ => Ok(), nodeObjects: []);
+        rig.Etcd.Store.Remove("/pgworker/claims/shop");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: тик отказал ДО мутаций; журнал — claim-lost/declared-nodes.
+        outcome.IsSuccess.Should().BeFalse();
+        outcome.Error!.Message.Should().Contain("claim lost");
+        var work = (await rig.Etcd.GetAsync(Ep, "/pgworker/work/shop", CancellationToken.None)).Value;
+        work!.Value.Should().Contain("claim-lost/declared-nodes");
+    }
+
     // AAA (t06, spec §6.4): strict=false в config кластера — конвергенция ведёт
     // DCS к false (per-cluster ожидание, не константа).
     [Fact]

@@ -39,35 +39,52 @@ internal sealed class BackupOrphanSweeperLoop(
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)
                 {
-                    // Проход может длиться дольше окна watchdog (порт сноса 30 c):
-                    // S3-вызовы сверки на недоступном endpoint идут до
-                    // пер-попыточного таймаута клиента (bad-S3 — штатный
-                    // прод-контур, arch/19 §5 «transient — следующий проход»).
-                    // Пульс АКТИВНОСТИ (MarkOrphanSweepActivity, зеркально
-                    // snapshot-ветке; тики ≠ активность — healthz loops-alive
-                    // читает только тики) каждые полокна проверки: «проход
-                    // жив», watchdog не гасит цикл посреди сверки (arch/14 §6).
-                    using var sweepPulse = new Timer(
-                        _ => health.MarkOrphanSweepActivity(), null,
-                        TimeSpan.Zero,
-                        TimeSpan.FromTicks(Math.Max(
-                            TimeSpan.TicksPerSecond,
-                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec).Ticks / 2)));
-                    // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
-                    // S3/etcd повторит следующий проход). Реестр в etcd переживает
-                    // смену лидера — продолжение с факта, не с нуля.
-                    var result = await sweeper.SweepAsync(stoppingToken);
-                    if (!result.IsSuccess)
-                        logger.LogWarning("orphan-sweep: {Error}", result.Error?.Message);
+                    try
+                    {
+                        // Cancellation-гвард лидерства (arch/17 S5): потеря leader-lease
+                        // прерывает проход; цикл продолжит как не-лидер.
+                        using var leaderLease = CancellationTokenSource.CreateLinkedTokenSource(
+                            stoppingToken, claims.LeaderToken);
+                        var tick = leaderLease.Token;
 
-                    // Сон лидера чанками короче окна проверки watchdog с отметкой
-                    // живости в каждом чанке (общий хелпер): Supervisor:IntervalSec
-                    // (600 c) ≫ порога сноса — непрерывный сон без отметок дал бы
-                    // ложный self-restart watchdog'ом.
-                    await PulsingDelay.SleepAsync(
-                        TimeSpan.FromSeconds(options.CurrentValue.Backups.Supervisor.IntervalSec),
-                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
-                        health.MarkOrphanSweepTick, stoppingToken);
+                        // Проход может длиться дольше окна watchdog (порт сноса 30 c):
+                        // S3-вызовы сверки на недоступном endpoint идут до
+                        // пер-попыточного таймаута клиента (bad-S3 — штатный
+                        // прод-контур, arch/19 §5 «transient — следующий проход»).
+                        // Пульс АКТИВНОСТИ (MarkOrphanSweepActivity, зеркально
+                        // snapshot-ветке; тики ≠ активность — healthz loops-alive
+                        // читает только тики) каждые полокна проверки: «проход
+                        // жив», watchdog не гасит цикл посреди сверки (arch/14 §6).
+                        using var sweepPulse = new Timer(
+                            _ => health.MarkOrphanSweepActivity(), null,
+                            TimeSpan.Zero,
+                            TimeSpan.FromTicks(Math.Max(
+                                TimeSpan.TicksPerSecond,
+                                TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec).Ticks / 2)));
+                        // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
+                        // S3/etcd повторит следующий проход). Реестр в etcd переживает
+                        // смену лидера — продолжение с факта, не с нуля.
+                        var result = await sweeper.SweepAsync(tick);
+                        if (!result.IsSuccess)
+                            logger.LogWarning("orphan-sweep: {Error}", result.Error?.Message);
+
+                        // Сон лидера чанками короче окна проверки watchdog с отметкой
+                        // живости в каждом чанке (общий хелпер): Supervisor:IntervalSec
+                        // (600 c) ≫ порога сноса — непрерывный сон без отметок дал бы
+                        // ложный self-restart watchdog'ом.
+                        await PulsingDelay.SleepAsync(
+                            TimeSpan.FromSeconds(options.CurrentValue.Backups.Supervisor.IntervalSec),
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                            health.MarkOrphanSweepTick, tick);
+                    }
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Потеря leader-lease прервала проход (гвард arch/17 S5) —
+                        // пауза скана, пере-захват следующим тиком.
+                        await Task.Delay(
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec),
+                            stoppingToken);
+                    }
                 }
                 else
                 {

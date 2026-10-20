@@ -160,6 +160,7 @@ internal sealed class ReconcileLoop(
         ClusterSnapshot snap, SemaphoreSlim gate, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
+        CancellationTokenSource? lease = null; // linked-токен клэйма — виден catch'ам
         try
         {
             var cluster = snap.Config.Cluster;
@@ -176,20 +177,25 @@ internal sealed class ReconcileLoop(
             if (!claimed.Value)
                 return; // обрабатывает другой инстанс
 
+            // Cancellation-гвард клэйма (arch/17 S5): потеря lease прерывает
+            // исполняющийся тик кластера — linked-токен течёт во все операции.
+            lease = CancellationTokenSource.CreateLinkedTokenSource(ct, claims.LeaseToken(cluster));
+            var tick = lease.Token;
+
             switch (work)
             {
                 case ClusterWork.Provision:
                     await RunClusterOpAsync(cluster, "provision",
-                        () => processes.ProvisionAsync(snap, ct), ct);
+                        () => processes.ProvisionAsync(snap, tick), ct, tick);
                     break;
 
                 case ClusterWork.Deprovision:
                     await RunClusterOpAsync(cluster, "deprovision",
-                        () => processes.DeprovisionAsync(snap, ct), ct);
+                        () => processes.DeprovisionAsync(snap, tick), ct, tick);
                     break;
 
                 default:
-                    var supervised = await RunSuperviseAsync(cluster, snap, backups, ct);
+                    var supervised = await RunSuperviseAsync(cluster, snap, backups, ct, tick);
                     if (supervised is null)
                         break;
 
@@ -197,38 +203,38 @@ internal sealed class ReconcileLoop(
                     // portalloc — до scale (add смотрит pinned portalloc) и до
                     // repair/moves (SQL нужен адрес).
                     await RunClusterOpAsync(cluster, "adopt",
-                        () => processes.AdoptAsync(snap, ct), ct);
+                        () => processes.AdoptAsync(snap, tick), ct, tick);
 
                     // Scale-проход (t06 spec §5.1): remove → add, после надзора, до
                     // эвакуаций/moves — демонтаж освобождает хосты/порты для подъёма (Д13).
                     await RunClusterOpAsync(cluster, "scale-shards",
-                        () => processes.ScaleShardsAsync(snap, ct), ct);
+                        () => processes.ScaleShardsAsync(snap, tick), ct, tick);
 
                     // Ротация app-пароля (spec §4.3, arch/14 §5 I): короткая плановая
                     // операция — до эвакуаций/переездов, не ждёт длинных moves.
                     await RunClusterOpAsync(cluster, "rotate-app-password",
-                        () => processes.RotateAppPasswordAsync(snap, ct), ct);
+                        () => processes.RotateAppPasswordAsync(snap, tick), ct, tick);
 
                     // Полные бэкапы (t02, arch/19 §2): после коротких плановых
                     // операций, до репарации; тик запускает/поллит джобы, не ждёт их.
                     // Выключенная подсистема не зовётся вовсе (поведение без t02).
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backups",
-                            () => processes.BackupsAsync(snap, backups, ct), ct);
+                            () => processes.BackupsAsync(snap, backups, tick), ct, tick);
 
                     // WAL-архивация (t03, arch/19 §3): после ротации (креды агента —
                     // свежий пароль в пересоздании) и до repair/moves (короткая).
                     // Зовётся ВСЕГДА: при Enabled=false это стоп-семантика
                     // (агенты вниз + финальный STOPPED в живых ключах).
                     await RunClusterOpAsync(cluster, "backup-wal",
-                        () => processes.WalStreamAsync(snap, backups, ct), ct);
+                        () => processes.WalStreamAsync(snap, backups, tick), ct, tick);
 
                     // Проверки полных бэкапов (t04, arch/19 §5): после WAL-потока,
                     // до ретенции и repair; тик запускает/поллит verify-джобы, не ждёт
                     // их (non-blocking). Выключенная подсистема не зовётся вовсе.
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backup-verify",
-                            () => processes.VerifyBackupsAsync(snap, backups, ct), ct);
+                            () => processes.VerifyBackupsAsync(snap, backups, tick), ct, tick);
 
                     // Ретенция (t06, arch/19 §4): после backup-wal/verify (чистит только
                     // то, что не нужно оставляемым полным; порядок verify→retention канон
@@ -237,7 +243,7 @@ internal sealed class ReconcileLoop(
                     // не зовётся вовсе (AC8).
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backups-retention",
-                            () => processes.RetentionAsync(snap, backups, ct), ct);
+                            () => processes.RetentionAsync(snap, backups, tick), ct, tick);
 
                     // Сверка S3↔etcd (t07, arch/19 §4): мусор full/<id>/ живого шарда
                     // без etcd-ключа; после ретенции (гигиена FAILED может оставить
@@ -245,7 +251,7 @@ internal sealed class ReconcileLoop(
                     // не зовётся.
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backup-supervisor",
-                            () => processes.SuperviseBackupsAsync(snap, backups, ct), ct);
+                            () => processes.SuperviseBackupsAsync(snap, backups, tick), ct, tick);
 
                     // Restore шардов из бэкапов (t05, arch/19 §3.5): после wal-потока
                     // (агент снесён демонтажём — процесс сам стопает), до repair/moves.
@@ -253,35 +259,43 @@ internal sealed class ReconcileLoop(
                     // машина состояний процесса (старейшая по Id).
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backup-restore",
-                            () => processes.RestoreAsync(snap, backups, ct), ct);
+                            () => processes.RestoreAsync(snap, backups, tick), ct, tick);
 
                     // Дрилл восстановимости (reliability t02, arch/19 §3.6): после backup-restore
                     // (гвард restore-владения отработал в отборе), до repair. Зовётся ВСЕГДА:
                     // Backups:Enabled=false / интервал 0 — стоп-семантика в процессе (доводка
                     // активного дрилла и сноса контура, новых запусков нет).
                     await RunClusterOpAsync(cluster, "backup-drill",
-                        () => processes.DrillAsync(snap, backups, ct), ct);
+                        () => processes.DrillAsync(snap, backups, tick), ct, tick);
 
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
                     await RunClusterOpAsync(cluster, "repair",
-                        () => processes.RepairAsync(snap, ct), ct);
+                        () => processes.RepairAsync(snap, tick), ct, tick);
 
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",
-                            () => processes.EvacuateAsync(snap, deadShard, backups, ct), ct);
+                            () => processes.EvacuateAsync(snap, deadShard, backups, tick), ct, tick);
 
                     // Заявки переездов бакетов (t01, spec §5.3): после надзора и
                     // эвакуаций; MoveProcess сам держит клэйм-гвард (инвариант §4.3).
                     await RunClusterOpAsync(cluster, "moves",
-                        () => processes.ProcessMovesAsync(snap, ct), ct);
+                        () => processes.ProcessMovesAsync(snap, tick), ct, tick);
                     break;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // остановка host'а посреди тика — не ошибка цикла
+        }
+        catch (OperationCanceledException oce) when (lease?.IsCancellationRequested == true)
+        {
+            // Потеря клэйма прервала операцию кластера вне обёрток (arch/17 S5):
+            // внятная фаза в журнале; кластер подхватит следующий тик/инстанс.
+            logger.LogWarning("cluster {Cluster}: lease lost — tick aborted ({Message})",
+                snap.Config.Cluster, oce.Message);
+            await WriteLeaseLostAsync(snap.Config.Cluster, "tick");
         }
         catch (Exception ex)
         {
@@ -292,14 +306,17 @@ internal sealed class ReconcileLoop(
         }
         finally
         {
+            lease?.Dispose();
             gate.Release();
         }
     }
 
     // Вызов процесса под catch-all: исключение процесса → лог + журнал
     // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
+    // host — токен остановки хоста (дискриминатор: OCE по нему = остановка,
+    // OCE по ct = потеря клэйма — гварда arch/17 S5).
     private async Task RunClusterOpAsync(
-        string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken ct)
+        string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken host, CancellationToken ct)
     {
         // heartbeat (канон t19): завершение каждой операции кластера — активность
         // тика; долгие операции отмечают прогресс сами (provisioning/deprovision/
@@ -310,9 +327,13 @@ internal sealed class ReconcileLoop(
         {
             await LogOutcomeAsync(cluster, op, await call());
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (host.IsCancellationRequested)
         {
             throw; // остановка host'а — пробрасываем (обработана уровнем выше)
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteLeaseLostAsync(cluster, op); // потеря клэйма — гвард arch/17 S5
         }
         catch (Exception ex)
         {
@@ -324,7 +345,7 @@ internal sealed class ReconcileLoop(
     // Надзор: результат — SuperviseOutcome (мёртвые шарды); null = не прошёл
     // (ошибка Result залогирована) либо упал исключением (журнал записан).
     private async Task<SuperviseOutcome?> RunSuperviseAsync(
-        string cluster, ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        string cluster, ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken host, CancellationToken ct)
     {
         try
         {
@@ -338,14 +359,35 @@ internal sealed class ReconcileLoop(
 
             return supervised.Value;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (host.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException)
+        {
+            await WriteLeaseLostAsync(cluster, "supervise"); // потеря клэйма — гвард arch/17 S5
+            return null;
         }
         catch (Exception ex)
         {
             await LogCrashAsync(cluster, "supervise", ex);
             return null;
+        }
+    }
+
+    // Фаза lease-lost в журнале воркера (arch/17 S5): потери клэйма видно из etcd,
+    // без логов воркера. CancellationToken.None — токен тика отменён, запись
+    // обязана доехать (как в LogCrashAsync).
+    private async Task WriteLeaseLostAsync(string cluster, string op)
+    {
+        try
+        {
+            await journal.WritePhaseAsync(
+                cluster, op.Split('/')[0], "lease-lost", claims.InstanceId, null, CancellationToken.None);
+        }
+        catch (Exception journalEx)
+        {
+            logger.LogWarning(journalEx, "work journal for {Cluster} not written after lease loss", cluster);
         }
     }
 
