@@ -24,7 +24,7 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
 
     private readonly INetwork _network;
 
-    private readonly IContainer _etcd;
+    private IContainer _etcd;
 
     // ownS3-нода цели слепков (шаг 9): поднимается ЛЕНИВО (только тестам
     // слепков нужна; member-API-тесты образ не грузят) — образ owns3:dev
@@ -86,6 +86,34 @@ public sealed class EtcdWorkerEnvironment : IAsyncLifetime
         if (_ownS3 is { } ownS3)
             await ownS3.DisposeAsync();
         await _network.DeleteAsync();
+    }
+
+    // Пересоздание seed-контура (анти-отравление серии): свежий etcd без
+    // managed-членов и ключей — cleanup кейса зовёт при упорном (raft-
+    // транзиент) отказе вывода членов; следующий кейс серии строит rig по
+    // свежему env.Endpoint и получает чистый raft-состав. Host-порт меняется
+    // на новый динамический (Endpoint обновляется).
+    public async Task ResetSeedAsync(CancellationToken ct)
+    {
+        await _etcd.DisposeAsync();
+        _etcd = new ContainerBuilder("quay.io/coreos/etcd:v3.5.21")
+            .WithNetwork(_network)
+            .WithNetworkAliases("seed")
+            .WithCommand(
+                "etcd",
+                "--name=seed",
+                "--data-dir=/etcd-data",
+                "--listen-client-urls=http://0.0.0.0:2379",
+                "--advertise-client-urls=http://localhost:2379",
+                "--listen-peer-urls=http://0.0.0.0:2380",
+                "--initial-advertise-peer-urls=http://seed:2380",
+                "--initial-cluster=seed=http://seed:2380",
+                "--initial-cluster-state=new")
+            .WithPortBinding(2379, assignRandomHostPort: true)
+            .Build();
+        await _etcd.StartAsync(ct);
+        Endpoint = $"http://localhost:{_etcd.GetMappedPublicPort(2379)}";
+        await WaitReadyAsync(ct);
     }
 
     // ownS3-нода (лениво): контейнер owns3:dev в сети контура, порт 9000 —

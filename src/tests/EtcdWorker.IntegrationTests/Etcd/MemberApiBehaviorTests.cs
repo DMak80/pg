@@ -31,7 +31,7 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
                 TestContext.Current.CancellationToken);
 
             // Assert
-            added.IsSuccess.Should().BeTrue();
+            added.IsSuccess.Should().BeTrue(added.Error?.Message);
             memberId = added.Value.Id;
             added.Value.IsLearner.Should().BeTrue();
             var list = await Env.Gateway.MemberListAsync(Env.Endpoint, TestContext.Current.CancellationToken);
@@ -57,7 +57,7 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
         var added = await Env.Gateway.MemberAddAsync(
             Env.Endpoint, ["http://etcdw-node-2:2380"], isLearner: true,
             TestContext.Current.CancellationToken);
-        added.IsSuccess.Should().BeTrue();
+        added.IsSuccess.Should().BeTrue(added.Error?.Message);
 
         // Act
         var removed = await Env.Gateway.MemberRemoveAsync(
@@ -80,7 +80,7 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
         var added = await Env.Gateway.MemberAddAsync(
             Env.Endpoint, ["http://etcdw-node-3:2380"], isLearner: true,
             TestContext.Current.CancellationToken);
-        added.IsSuccess.Should().BeTrue();
+        added.IsSuccess.Should().BeTrue(added.Error?.Message);
 
         try
         {
@@ -110,7 +110,7 @@ public sealed class MemberApiBehaviorTests(EtcdWorkerEnvironment env)
             var added = await Env.Gateway.MemberAddAsync(
                 Env.Endpoint, ["http://etcdw-node-4:2380"], isLearner: true,
                 TestContext.Current.CancellationToken);
-            added.IsSuccess.Should().BeTrue();
+            added.IsSuccess.Should().BeTrue(added.Error?.Message);
             memberId = added.Value.Id;
 
             // Act

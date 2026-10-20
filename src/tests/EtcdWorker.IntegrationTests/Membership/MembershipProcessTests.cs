@@ -89,13 +89,15 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     }
 
     // Цикл тиков состава до условия (бюджет секунд); каждый тик — как
-    // ReconcileLoop лидера: надзор → доводка.
+    // ReconcileLoop лидера: надзор → доводка. Последние deadFacts/лидер —
+    // в текст таймаута (телеметрия «почему замена не выбирается»).
     private static async Task RunUntilAsync(
         Rig rig, EtcdWorkerEnvironment env, Func<Task<bool>> done, int budgetSec, string because)
     {
         var ct = TestContext.Current.CancellationToken;
         var deadline = DateTimeOffset.UtcNow.AddSeconds(budgetSec);
         string? lastError = null;
+        Result<IReadOnlyList<ManagedDeadFact>>? lastFacts = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
             var managed = await ManagedAsync(env);
@@ -110,6 +112,7 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
             var nodes = EtcdNodesParser.Parse(nodesRange.Value ?? []);
             var ports = await rig.Ports.ReadAllAsync(ct);
             var facts = await rig.Supervisor.ObserveAsync(managed, nodes, ports.Value, ct);
+            lastFacts = facts;
             await rig.Membership.TickAsync(facts.Value, ct);
             if (await done())
                 return;
@@ -117,8 +120,17 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         }
 
         var diagnosis = await DiagnoseAsync(env);
+        IReadOnlyList<ManagedDeadFact> deadFacts = lastFacts is { IsSuccess: true } f ? f.Value : [];
+        var factsView = lastFacts is { IsSuccess: true }
+            ? string.Join(",", deadFacts.Select(f =>
+                $"k{f.Member.K}:since={(f.ProblemSinceUnix is { } s ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() - s + "s ago" : "null")},envMissing={f.EnvironmentMissing}"))
+            : lastFacts?.Error?.Message ?? "<no facts>";
+        var leader = await env.Gateway.StatusAsync(env.Endpoint, ct);
+        var leaderView = leader.IsSuccess
+            ? leader.Value?.LeaderMemberId?.ToString() ?? "none"
+            : leader.Error!.Message;
         throw new TimeoutException(
-            $"membership did not converge: {because}; last range error: {lastError};{diagnosis}");
+            $"membership did not converge: {because}; last range error: {lastError}; deadFacts=[{factsView}]; leader={leaderView};{diagnosis}");
     }
 
     // Телеметрия таймаута (канон docs/e2e-launch.md): контейнеры узлов,
@@ -176,13 +188,16 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
     // Самоочистка кейса: ЧЛЕНЫ (строго, с ретраями — контейнеры ещё на месте,
     // кворум жив; иначе remove 503-ит вечно) → контейнеры/тома → листы/
     // portalloc/журнал/config → ассерт чистоты состава (канон e2e-isolation:
-    // следующий кейс не должен наследовать мёртвые члены).
+    // следующий кейс не должен наследовать мёртвые члены). Упорный (raft-
+    // транзиент) отказ вывода → пересоздание seed-контура фикстурой: серия
+    // получает чистый raft-состав, отравление не течёт в следующие кейсы.
     private static async Task CleanupAsync(Rig rig, EtcdWorkerEnvironment env)
     {
         var ct = TestContext.Current.CancellationToken;
 
         // 1) Члены — ДО контейнеров; ретраи: conf-change переходы дают
         // «unhealthy»/лаг member list на follower — по одному за проход.
+        var removeErrors = new List<string>();
         var membersDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
         while (DateTimeOffset.UtcNow < membersDeadline)
         {
@@ -191,9 +206,20 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
                 break;
             foreach (var m in remaining)
             {
-                await env.Gateway.MemberRemoveAsync(env.Endpoint, m.Member.Id, ct);
+                var removed = await env.Gateway.MemberRemoveAsync(env.Endpoint, m.Member.Id, ct);
+                if (!removed.IsSuccess)
+                    removeErrors.Add($"k{m.K}: {removed.Error?.Message}");
                 await Task.Delay(2000, ct);
             }
+        }
+
+        // Анти-отравление: члены не вывелись за бюджет — seed-контур
+        // пересоздаётся (новый raft-состав без managed-членов).
+        var stuck = await ManagedAsync(env);
+        if (stuck.Count > 0)
+        {
+            removeErrors.Add($"seed contour reset (stuck members: {string.Join(",", stuck.Select(m => m.K))})");
+            await env.ResetSeedAsync(ct);
         }
 
         // 2) Контейнеры/тома узлов.
@@ -215,10 +241,11 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
         await env.Gateway.DeleteAsync(env.Endpoint, EtcdPortAllocStore.Key, prefix: false, ct);
         await env.Gateway.DeleteAsync(env.Endpoint, EtcdWorker.Provisioning.EtcdWorkJournal.Key, prefix: false, ct);
 
-        // 4) Ассерт чистоты: managed-членов не осталось.
+        // 4) Ассерт чистоты: managed-членов не осталось (после возможного
+        // reset — состав нового seed; текст — с телеметрией remove-попыток).
         var final = await ManagedAsync(env);
         final.Should().BeEmpty(
-            $"managed members must be removed by cleanup (left: {string.Join(",", final.Select(m => m.K))}) — иначе кворум контура отравлен для следующих кейсов");
+            $"managed members must be removed by cleanup (left: {string.Join(",", final.Select(m => m.K))}) — иначе кворум контура отравлен для следующих кейсов; remove-попытки: {string.Join(" | ", removeErrors)}");
     }
 
     // AAA: nodes=2 → seed + 2 managed, все started (learner → promote),
