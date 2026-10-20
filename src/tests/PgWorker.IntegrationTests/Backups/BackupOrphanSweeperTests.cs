@@ -49,7 +49,6 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         IEtcdGateway? gateway = null)
         => new(gateway ?? fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
             FakePoolFactory.Store(), claims,
-            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options ?? Options(), clock ?? TimeProvider.System);
 
     private async Task<OrphanRegistry.Registry?> ReadRegistryAsync()
@@ -418,7 +417,6 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var (factory, store) = FakePoolFactory.TwoPoolsSameTarget(s3);
         var sweeper = new BackupOrphanSweeper(fixture.Gateway, [fixture.Endpoint],
             factory, store, claims,
-            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), clock);
 
         // Act — один проход

@@ -29,7 +29,6 @@ public sealed class BackupOrphanSweeperLoopTests
         var sweeper = new BackupOrphanSweeper(
             etcd, options.CurrentValue.Etcd.Endpoints,
             UnitPoolFactory.Disabled(), UnitPoolFactory.Store(), claims,
-            new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             () => null, TimeProvider.System, NullLogger<BackupOrphanSweeper>.Instance);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, health,
             NullLogger<BackupOrphanSweeperLoop>.Instance);
@@ -129,7 +128,6 @@ public sealed class BackupOrphanSweeperLoopTests
         var sweeper = new BackupOrphanSweeper(
             etcd, options.CurrentValue.Etcd.Endpoints,
             UnitPoolFactory.Wrap(s3), UnitPoolFactory.Store(), claims,
-            new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
             NullLogger<BackupOrphanSweeper>.Instance);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, health,

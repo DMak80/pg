@@ -16,9 +16,12 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
 
     // Ops без терминальной фазы: supervise (стационарные записи, часть через
-    // WriteSupervisionAsync мимо события) и evacuate (только waiting-*/blocked-moving).
+    // WriteSupervisionAsync мимо события), evacuate (только waiting-*/blocked-moving)
+    // и backup-orphan-sweeper (журнал домена сирот — свой ключ
+    // /pgworker/backups/orphan-journal, arch/19 §4, в work-фазовые метрики
+    // не входит).
     public static readonly IReadOnlySet<string> SuppressedOps =
-        new HashSet<string> { "supervise", "evacuate" };
+        new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper" };
 
     private readonly TimeProvider _clock;
     private readonly object _lock = new();
@@ -540,7 +543,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     // Журнальное событие фазы (подписка WorkJournal.PhaseWritten/WriteAsync):
-    //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate) — ИГНОР:
+    //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate,
+    //    backup-orphan-sweeper) — ИГНОР:
     //    стационарные записи (часть — через WriteSupervisionAsync мимо события),
     //    живость надзора закрывает WorkerLoopStalled (решение ревью Ф4-2);
     //  - терминальные фазы (FinalPhases, фактический словарь журналов обоих
