@@ -52,10 +52,10 @@ DR-источник защищён от сиротского TTL (t04): сиро
 контур и контролирует выход из recovery, снос контура — доводимая фазой
 cleaning при любом исходе (t02-restore-drill, arch/19 §3.6).
 Контроль-плейн восстановим из S3: каждый etcd-слепок (плановый 6 ч +
-внеочередные в точках изменений) выгружается в бэкап-бакет (префикс `etcd/`,
-пары db+meta с sha256, ретенция 28 пар), восстановление — runbook-канон:
-ручная sha256-сверка — барьер, `etcdutl snapshot restore` верифицирует
-(t08-etcd-snapshot-export).
+внеочередные в точках изменений) выгружается EtcdWorker'ом в bucket
+`etcd-backups` etcd-backup S3-кластера (пары db+meta с sha256,
+ретенция 28 пар), восстановление — runbook-канон: ручная sha256-сверка —
+барьер, `etcdutl snapshot restore` верифицирует (arch/25 §4).
 
 Открытые разрывы: бэкапы не шифрованы и в единственном хранилище
 (`t01`, `t03`).
@@ -68,8 +68,8 @@ takeover воркера ≤15 с, идемпотентность «по факт
 эвакуация мёртвого шарда (осознанное RPO = момент смерти, слияние
 отвергнуто — решение 2026-09-28, arch/14 R4); контроль-плейн переживает
 потерю хоста с etcd — каждый слепок (плановый 6 ч + внеочередные)
-выгружается в S3 с доводкой тиком `RetryIntervalSec` при транзиенте,
-восстановление — runbook-канон (t08).
+выгружается EtcdWorker'ом в S3 с доводкой тиком `RetryIntervalSec`
+при транзиенте, восстановление — runbook-канон (arch/25 §4).
 
 Открытые разрывы: Swarm без ускоренного failover (`t11`); сценарии
 отказа хоста/DC не отработаны (`t21`). Takeover второго инстанса
@@ -106,7 +106,7 @@ TLS per-install CA + basic-auth мутаций (пробы/скрейп по htt
 | Шифрование бэкапов | отсутствует | риск признан arch/19 §10 |
 | Control-plane (код) | высокая | stateless-воркеры, всё в etcd, идемпотентность по факту, takeover доказан E2E kill-тестами |
 | Деплой-уровень | средне-высокая | воркеры по два инстанса (t07: клэймы мигрируют ≤15 с, надзор без SPOF); etcd 3-узловой HA-контур (`t09`) |
-| etcd-обслуживание | средне-высокая | снапшоты 6 ч + внеочередные, каждый слепок выгружается в S3 (t08: префикс `etcd/`, пары db+meta sha256, ретенция 28 пар, статус-ключ с доводкой `RetryIntervalSec`), восстановление — runbook-канон (ручное) |
+| etcd-обслуживание | средне-высокая | снапшоты 6 ч + внеочередные, каждый слепок выгружается EtcdWorker'ом в bucket `etcd-backups` etcd-backup S3-кластера (пары db+meta sha256, ретенция 28 пар, статус-ключ `/etcdworker/snapshots` с доводкой `RetryIntervalSec`), восстановление — runbook-канон (ручное); состав etcd-контура доводит EtcdWorker (декларация nodes=N, авто-замена мёртвого узла) |
 | Надёжность Kafka | средняя | RF/minISR converge, тома неприкосновенны, drain перед демонтажом; бэкапов нет — позиция зафиксирована (невосстановимо из бэкапов, RPO = RF×minISR, arch/16 §6); USR — только наблюдение |
 | Valkey | по назначению — ок | кеш by design: nodes=1, без персистентности; не для не-кеш данных |
 | Ротации секретов/CA/TLS | высокая | пароли/CA без простоев (окна двойного доверия), миграция plain→TLS; секреты в etcd открыто — закрывается `t02-external-secret-manager` (pgworker-трек) |
@@ -122,7 +122,6 @@ TLS per-install CA + basic-auth мутаций (пробы/скрейп по htt
 | `t13-alert-notifications` | внешняя нотификация алертов + история | P3 | N |
 | `t16-cert-expiry-monitoring` | мониторинг сроков сертификатов | P3 | N |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |
-| `t32-etcdworker` | выделенный etcdworker: состав etcd-узлов + бэкапы etcd в S3 (перенос `Snapshots:Export` из PgWorker); цель бэкапов — etcd-backup S3-кластер (`etcd_backup=true`, `/s3/clusters/`); per-install ключ бэкапа etcd — зона S3Worker (механика t31: env `S3W_ETCD_BACKUP_*`, спец-ключ в secrets кластера), etcdworker — читатель | P2 | R, D |
 
 Смежное вне трека: `t02-external-secret-manager` (pgworker-трек) —
 секреты вне etcd; закрыт вместе с ним — строку сюда не переносим,
@@ -137,6 +136,7 @@ TLS per-install CA + basic-auth мутаций (пробы/скрейп по htt
 
 | Тег | Merge | Влияние на характеристику |
 |---|---|---|
+| `t32-etcdworker` | — (мерж-коммит t32-etcdworker) | выделенный оркестратор etcd-контура — EtcdWorker (R, D): 5 сборок (App/Core/Etcd/Provisioning/Docker, каркас образца S3Worker с vitality/watchdog/probes); поддержание состава etcd-узлов — `PUT /api/etcd/config {"nodes":0..7}` с кворум-гвардом (409 при недопустимом выводе), learner+promote добавление, авто-замена мёртвого managed-узла (member remove + пересоздание, arch/25 §3), orphan-cleanup; DR-слепки etcd — EtcdWorker'ом в bucket `etcd-backups` etcd-backup S3-кластера (`/s3/clusters/`, arch/23 §5) со статус-ключом `/etcdworker/snapshots` (arch/25 §4: ретенция 28 пар, доводка тиком при транзиенте; экспортёр слепков — EtcdWorker, зона выгрузки изъята у PgWorker — `Snapshots:Export` демонтирован); домен etcd в etcd-контуре: `/etcd/config` + `/etcd/nodes/<k>/{state,placed_on}` + координация `/etcdworker/{api/,snapshots}` (arch/25 §5); панель: домен etcd (состав managed/external, модал «Maintain N nodes», карточка DR-слепков), алерты export-failed/stale/etcd-backup-cluster-missing + worker-ряды etcdworker (arch/adminpanel/02 §2.3.5); deploy/стенд: сервисы etcdworker ×2 (mTLS-API, docker.sock, порт-ряд 8087/8088), seed-рецепт deploy/etcd (бутстрап контура одним узлом, вывод seed — runbook, arch/04 §8); приёмка: юниты EtcdWorker 84/84 (вкл. витальность watchdog-циклов), полные интеграции 21/21 (docker; orphan-cleanup сверяется с фактическим составом на момент решения), панели 733/733, PgWorker 1161/1161 после демонтажа зоны, E2E кейс-маркер Scale_AddEmptyShard зелёный, seed-сценарий arch/04 §8 п.5 на локальном контуре |
 | `t20-kfw-vwk-takeover-e2e` | — (мерж-коммит t20-kfw-vwk-takeover-e2e) | takeover второго инстанса KafkaWorker/ValkeyWorker при внезапной смерти держателя клэйма доказан docker-E2E host-kill'ом (характеристика R): `KafkaE2eTakeoverTests` — kill держателя посреди provisioning 3-брокерного кластера (якорь broker1+state+claims): выживший доводит без дублей, клэйм/дискавери мигрируют ≤TTL, admin-дискавери видит 3 брокера, TO_REMOVE-демонтаж выжившим ≤60 с; `ValkeyE2eTakeoverTests` — kill держателя посреди демонтажа (якорь pre-X0): выживший доигрывает X0–X3 одним тиком, терминальная чистота ≤15 с, I2 — конструктивная цепь + документальный лог survivor'а; оба кейса — kill доказательно в держателя (резолв claims→api→порт) и новое окружение Kfw-E2E с двумя инстансами воркера. Попутно закрыт корень 409-хвоста демонтажа Valkey (~100 с → 2,2 с): env-TLS — серты нод PEM в env (`VALKEY_TLS_*`) + cmd-обёртка старта (модель KafkaWorker, arch/21 arch-first): TLS-том и helper-механика `Put/GetVolumeArchive`/`sleep 120` демонтированы из движка и модели (TarArchive — мёртвый код), миграция живых кластеров надзорной env-сверкой + легаси-чистка осиротевших томов; чек 51 и runbook синхронизированы. Приёмка: build 0/0; юниты Valkey 265/265 + Pg 1061/1061; интеграции Valkey 49/49 (docker); оба takeover-кейса + Scale_AddEmptyShard зелёные; код-ревью OK ×2 (полный дифф + контрольное на фиксы) |
 | `t22-patroni-rest-tls` | — (мерж-коммит t22-patroni-rest-tls) | внутренняя зона кластера без открытого HTTP, мутационная грань REST за аутентификацией (N): Patroni REST :8008 — TLS с серверными сертами нод из per-install API-CA (выпуск и кеш процесса воркера, SAN — имена нод; Spilo поднимает REST-TLS штатно из env) + basic-auth per-cluster `rest_password` (седьмой ensure-ключ ClusterSecretEnsurer, ротация — четвёртый секрет процесса I: rolling-пересоздание нод общим шагом надзора ≤1 нода/тик с сохранением volume, окно `rest_pending` журнала, txn-коммит после применения на всех нодах); все клиенты :8008 — единая https-ветка (воркер, Patroni-ноды, master-lease P11 по loopback ca-файлу, панель, Prometheus-скрейп, эмуляторы стенда); живые легаси-кластеры конвергируют шагом надзора без rebuild/UNREACHABLE; граница ca.key — риск R16 (TLS-том поставки ro, бэкап пакета — runbook)
 | `t15-prometheus-file-sd` | — (мерж-коммит t15-prometheus-file-sd) | метрики реальных Patroni-нод собираются Prometheus'ом напрямую (N): мини-сервис `sd-generator` (профиль metrics) тиком 15 с читает `/pgworker/portalloc/` read-only (failover по endpoints, консервативная свежесть — ошибка etcd не трогает файл) и атомарно (tmp+rename, diff-only) пишет file_sd JSON в volume Prometheus; словарь — нативные `patroni_*` Patroni 4.x (канон-минимум по E2E-факту, полный набор 23 серии — arch/18 §2.5), джобы `patroni-nodes`/`sd-generator`, алерты `PatroniNodeDown`/`PatroniReplicaLagHigh`/`SdGeneratorStalled` (рулов 21), панели «(real)» в pg.json, чек 65 с условным шагом 2.1; единая сеть мониторинга `pgw-metrics` — deploy объявляет, воркеры (aliases) и кластерные ноды (ensure-attach движком, опц. поля `alias`/`net` в portalloc с RMW-preserve) внутри, Prometheus external-attach, extra_hosts демонтированы полностью, таргеты `alias:8008` с advertised-деградацией для записей без alias (усыновлённый демо-кластер стенда — static-джоба `patroni`); E2E `E2ePatroniFileSd` — единый контур одной сетью без host-форвардинга; попутно канон «пульс конечного внешнего вызова» (arch/14 §6 + arch/19 §5: AmazonS3Config.Timeout + S3Pulse на все S3-вызовы бэкап-процессов, честная MarkOrphanSweepActivity) — watchdog больше не гасит воркер на легитимно долгих S3-операциях (корень хронических падений Backup_FailsOnBadS3/Backup_Deprovision), заявки E2E 8Gi→2Gi, детерминизм WalReceiverCoreTests |

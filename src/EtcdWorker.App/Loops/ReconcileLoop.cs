@@ -114,11 +114,12 @@ internal sealed class ReconcileLoop(
         if (!converged.IsSuccess)
             return converged;
 
-        // Repair (один шаг) + orphan-cleanup.
+        // Repair (один шаг) + orphan-cleanup (состав перечитывает сам —
+        // снимок начала тика не отражает члена, добавленного этим тиком).
         var repaired = await supervisor.RepairAsync(members.Value, managed, nodes, ports, ct);
         if (!repaired.IsSuccess)
             return Result.Failed(repaired.Error!);
-        return await supervisor.OrphanCleanupAsync(managed, ct);
+        return await supervisor.OrphanCleanupAsync(ct);
     }
 
     private async Task<Result<IReadOnlyList<EtcdMember>>> MemberListFailoverAsync(

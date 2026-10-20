@@ -401,13 +401,19 @@ public sealed class MembershipProcessTests(EtcdWorkerEnvironment env)
 
             removed.IsSuccess.Should().BeTrue(removed.Error?.Message);
             var cleanup = await rig.Supervisor.OrphanCleanupAsync(
-                [], TestContext.Current.CancellationToken);
+                TestContext.Current.CancellationToken);
 
-            // Assert: снос успешен, объектов узла не осталось.
+            // Assert: объекты выведенного члена снесены; выживший член жив
+            // (orphan-cleanup сверяется с ФАКТИЧЕСКИМ составом на момент
+            // решения, а не со снимком вызывающего тика).
             cleanup.IsSuccess.Should().BeTrue(cleanup.Error?.Message);
             var objects = await rig.Driver.ListNodeObjectsAsync(TestContext.Current.CancellationToken);
-            objects.Value.Where(o => o.StartsWith("etcdw-node-", StringComparison.Ordinal))
-                .Should().BeEmpty("orphan container and volume removed");
+            var nodeObjects = objects.Value
+                .Where(o => o.StartsWith("etcdw-node-", StringComparison.Ordinal)).ToList();
+            nodeObjects.Should().NotContain(o => o.StartsWith("etcdw-node-2", StringComparison.Ordinal),
+                "orphan container and volume of the removed member are removed");
+            nodeObjects.Should().OnlyContain(o => o.StartsWith("etcdw-node-1", StringComparison.Ordinal),
+                "the container of the live member is kept by the fact-based orphan cleanup");
         }
         finally
         {

@@ -133,18 +133,30 @@ public sealed class NodeSupervisor(
     }
 
     /// <summary>Orphan-cleanup: объекты etcdw-node-* (label воркера), чей номер
-    /// не имеет члена в составе — контейнер/сервис + том сносятся.</summary>
-    public async Task<Result> OrphanCleanupAsync(IReadOnlyList<ManagedMember> managed, CancellationToken ct)
+    /// не имеет члена в составе — контейнер/сервис + том сносятся. Состав
+    /// перечитывается НА МОМЕНТ решения: снимок начала тика устаревает, если
+    /// доводка этого же тика добавила члена (свежеподнятый узел сносился как
+    /// сирота — bootstrap-дедлок кворума); нечитаемый состав — мусорщик
+    /// молчит (снос без факта небезопасен).</summary>
+    public async Task<Result> OrphanCleanupAsync(CancellationToken ct)
     {
         var objects = await driver.ListNodeObjectsAsync(ct);
         if (!objects.IsSuccess)
             return Result.Failed(objects.Error!);
-        var managedKs = managed.Select(m => m.K).ToHashSet();
-        foreach (var name in objects.Value)
+        var nodeObjects = objects.Value
+            .Where(o => o.StartsWith("etcdw-node-", StringComparison.Ordinal))
+            .ToList();
+        if (nodeObjects.Count == 0)
+            return Result.Success();
+
+        var members = await MemberListFailoverAsync(ct);
+        if (!members.IsSuccess)
+            return Result.Failed(members.Error!);
+        var (fresh, _) = EtcdContourMembers.Build(members.Value);
+        var managedKs = fresh.Select(m => m.K).ToHashSet();
+        foreach (var name in nodeObjects)
         {
             // etcdw-node-<k> | etcdw-node-<k>-data
-            if (!name.StartsWith("etcdw-node-", StringComparison.Ordinal))
-                continue;
             var suffix = name["etcdw-node-".Length..];
             var kPart = suffix.EndsWith("-data", StringComparison.Ordinal) ? suffix[..^5] : suffix;
             if (!int.TryParse(kPart, out var k) || k <= 0 || managedKs.Contains(k))
@@ -157,6 +169,23 @@ public sealed class NodeSupervisor(
         }
 
         return Result.Success();
+    }
+
+    // Member list failover-перебором endpoints (состав на момент решения).
+    private async Task<Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>>> MemberListFailoverAsync(
+        CancellationToken ct)
+    {
+        Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>> last = default;
+        foreach (var endpoint in endpoints)
+        {
+            var list = await gateway.MemberListAsync(endpoint, ct);
+            if (list.IsSuccess)
+                return list;
+            last = list;
+        }
+
+        return Result<IReadOnlyList<Shared.Etcd.Client.EtcdMember>>.Failed(
+            last.Error ?? new EtcdUnreachableException("etcd endpoints are not set"));
     }
 
     private async Task PutStateAsync(int k, string state, CancellationToken ct)

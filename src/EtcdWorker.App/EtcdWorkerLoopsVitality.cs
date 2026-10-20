@@ -26,8 +26,15 @@ public sealed class EtcdWorkerLoopsVitality(
             // активность = тик или прогресс-отметка; keepalive — активность = тик
             // (долгих фаз нет)
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
-            new LoopHeartbeat("snapshot", snap.LastSnapshotTick ?? snap.LastSnapshotActivity, staleAfter),
+            // snapshot: тик ИЛИ пульс Retry-сна (застрявший тик после первого
+            // прохода игнорировал пульс — watchdog сносил цикл в законном
+            // RetryIntervalSec-ожидании при отстающей выгрузке, arch/25 §5/§6)
+            new LoopHeartbeat("snapshot", Latest(snap.LastSnapshotTick, snap.LastSnapshotActivity), staleAfter),
             new LoopHeartbeat("reconcile", snap.LastReconcileActivity ?? snap.LastReconcileTick, staleAfter),
         ];
     }
+
+    // Последняя из двух отметок (тик/пульс) — живость цикла в длинном сне.
+    private static DateTimeOffset? Latest(DateTimeOffset? a, DateTimeOffset? b)
+        => a is null ? b : b is null ? a : a > b ? a : b;
 }
