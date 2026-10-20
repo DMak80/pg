@@ -228,6 +228,51 @@ x-s3worker-base: &s3worker-base
     - "local:host-gateway"
     - "host.docker.internal:host-gateway"
 
+x-etcdworker-env: &etcdworker-env
+  # HA-контур (arch/25 §1): клиентские endpoints (дефолты — стендовые
+  # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт).
+  EtcdWorker__Etcd__Endpoints__0: ${ETCDW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
+  EtcdWorker__Etcd__Endpoints__1: ${ETCDW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
+  EtcdWorker__Etcd__Endpoints__2: ${ETCDW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
+  # Состав контура (arch/25 §2): адресация ТОЛЬКО именами узлов в etcdw-net.
+  EtcdWorker__Docker__Network: ${ETCDW_DOCKER_NETWORK:-etcdw-net}
+  EtcdWorker__Docker__Mode: ${ETCDW_DOCKER_MODE:-Plain}
+  EtcdWorker__Docker__Hosts__0__Name: ${ETCDW_DOCKER_HOST_NAME:-local}
+  EtcdWorker__Docker__Hosts__0__Endpoint: ${ETCDW_DOCKER_HOST_ENDPOINT:-unix:///var/run/docker.sock}
+  # Образ etcd-узла — внешний, зеркалирован в registry (docs/runbook.md).
+  EtcdWorker__Docker__Images__Etcd: ${ETCDW_ETCD_IMAGE:-192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21}
+  # Advertised-хост клиентской грани managed-узлов → endpoints в etcd
+  # резолвимы клиентами (arch/25 §2 advertised-правило).
+  EtcdWorker__Docker__AdvertisedHost: ${ETCDW_ADVERTISED_HOST:-host.docker.internal}
+  # HTTP API воркера (arch/25 §1.1): mTLS-серты из /tls (env-фоллбек до
+  # ключа /workers/api_tls/etcdworker от панели).
+  ETCDW_API_TLS_CERT_PATH: /tls/server.crt
+  ETCDW_API_TLS_KEY_PATH: /tls/server.key
+  ETCDW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+
+x-etcdworker-base: &etcdworker-base
+  build:
+    context: ..
+    dockerfile: docker/EtcdWorker.Dockerfile
+    args:
+      ETCDW_PUBLISH_DIR: artifacts/etcdworker/publish
+  image: etcdworker:dev
+  restart: unless-stopped
+  volumes:
+    # docker-транспорт Plain-режима: docker.sock хоста (как x-s3worker-base;
+    # без него Plain-драйвер не создаёт контейнеры managed-узлов).
+    - /var/run/docker.sock:/var/run/docker.sock
+    - etcdw-snapshots:/snapshots
+    # mTLS HTTP API (arch/25 §1.1): общий TLS-volume pgw-api-tls (серты
+    # kfw/vwk/s3w-ряда с SAN etcdworker* — добавить SAN в deploy/tls/gen.sh,
+    # наполнение 00-up.sh); симметрично s3worker.
+    - pgw-api-tls:/tls:ro
+  extra_hosts:
+    # docker-хост "local" (EtcdWorker:Docker:Hosts) + advertised-хост
+    # клиентской грани — из контейнера резолвим их в шлюз docker-хоста.
+    - "local:host-gateway"
+    - "host.docker.internal:host-gateway"
+
 services:
   pgworker:
     <<: *pgworker-base
@@ -320,6 +365,26 @@ services:
     environment:
       <<: *s3worker-env
       S3Worker__Api__AdvertiseUrl: https://host.docker.internal:${S3W_API_HOST_PORT2:-8089}
+
+  # EtcdWorker (arch/25): хозяин etcd-контура — состав managed-узлов + DR-слепки
+  # в фиксированный bucket etcd-backups; портовой ряд 8087 (после pg 8080-8083 /
+  # kfw 8081-8084 / vwk 8082-8085 / s3w 8086-8089); узлы контура он поднимает сам.
+  etcdworker:
+    <<: *etcdworker-base
+    ports:
+      - "${ETCDW_API_HOST_PORT:-8087}:8080"
+    environment:
+      <<: *etcdworker-env
+      EtcdWorker__Api__AdvertiseUrl: ${ETCDW_API_ADVERTISE_URL:-https://host.docker.internal:${ETCDW_API_HOST_PORT:-8087}}
+
+  # Второй инстанс EtcdWorker (takeover ≤ TTL 15 с); том etcdw-snapshots — общий.
+  etcdworker-2:
+    <<: *etcdworker-base
+    ports:
+      - "${ETCDW_API_HOST_PORT2:-8088}:8080"
+    environment:
+      <<: *etcdworker-env
+      EtcdWorker__Api__AdvertiseUrl: https://host.docker.internal:${ETCDW_API_HOST_PORT2:-8088}
 
   # ownS3 (../OwnS3/arch/owns3/01, 05 §6): хранилище бэкапов стенда (стенд: alias
   # `owns3` в стендовой сети — override `docker-compose.contour.yml`,
@@ -468,6 +533,7 @@ networks:
 
 volumes:
   s3w-snapshots:
+  etcdw-snapshots:
   pgw-snapshots:
   pgw-api-tls:
   kfw-snapshots:

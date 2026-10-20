@@ -58,16 +58,16 @@ public sealed class EtcdWorkerHealth(
             degraded.Add(
                 $"loop keepalive has not ticked for {(clock.GetUtcNow() - snapshot.LastKeepaliveTick.Value).TotalSeconds:F0} s");
 
-        // snapshot-export (arch/25 §5): факт последней выгрузки DR-слепка в S3 —
-        // FAILED деградирует health (алерт панели); «ключа ещё нет» — стартовое
-        // окно первого слепка, не деградация.
+        // snapshot-export (arch/25 §1.1/§5): факт последней выгрузки DR-слепка
+        // в S3 — секция ИНФОРМАЦИОННАЯ (OK/FAILED/возраст): FAILED-выгрузка не
+        // деградирует health (алерт etcd-snapshot-export-failed — панель;
+        // установка может жить без etcd-backup S3-кластера — R6, §7.3-стенд);
+        // «ключа ещё нет» — стартовое окно первого слепка.
         var export = await exporter.ReadStatusAsync(ct);
         if (export.IsSuccess && export.Value is { } exportStatus)
         {
             data["snapshot-export"] =
                 $"{exportStatus.State}; last_uploaded_unix={exportStatus.LastUploadedUnix}; object={exportStatus.LastObject}";
-            if (exportStatus.State == "FAILED")
-                degraded.Add($"snapshot export FAILED: {exportStatus.Error}");
         }
         else
         {

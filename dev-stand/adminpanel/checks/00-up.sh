@@ -37,6 +37,9 @@ export PGW_API_HOST_PORT2="${PGW_API_HOST_PORT2:-8083}"
 # Хост-публикации API s3worker (ряд 8086/8089; advertise следует за портом).
 export S3W_API_HOST_PORT="${S3W_API_HOST_PORT:-8086}"
 export S3W_API_HOST_PORT2="${S3W_API_HOST_PORT2:-8089}"
+# Хост-публикации API etcdworker (ряд 8087/8088; advertise следует за портом).
+export ETCDW_API_HOST_PORT="${ETCDW_API_HOST_PORT:-8087}"
+export ETCDW_API_HOST_PORT2="${ETCDW_API_HOST_PORT2:-8088}"
 [ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
 # t15: таргеты джобы pgworker — сетевые адреса deploy-воркеров (aliases в
 # pgw-metrics); host-порты PGW_API_HOST_PORT* остаются — advertise/чеки/панель,
@@ -92,6 +95,14 @@ dotnet publish "$ROOT/src/S3Worker.App/S3Worker.App.csproj" \
   || { echo "❌ S3Worker publish failed"; exit 1; }
 echo ">>> [PHASE] S3Worker publish ready ($(date +%H:%M:%S))"
 
+# EtcdWorker (arch/25): publish НА ХОСТЕ → образ publish-COPY (канон
+# «сборка и запуск двумя отдельными командами»).
+echo ">>> [PHASE] publish EtcdWorker.App ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/EtcdWorker.App/EtcdWorker.App.csproj" \
+  -c Release -o "$ROOT/artifacts/etcdworker/publish" --nologo \
+  || { echo "❌ EtcdWorker publish failed"; exit 1; }
+echo ">>> [PHASE] EtcdWorker publish ready ($(date +%H:%M:%S))"
+
 # Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
 # deploy/.env в .gitignore; t41: стенд задаёт PGW_CONTOUR_NETWORK/
 # METRICS-ключи = стендовая сеть — шаблон уже несёт).
@@ -111,7 +122,7 @@ else
   printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
 fi
 # Синхронизация хост-портов API s3worker в .env (чеки читают порт из .env).
-for k in S3W_API_HOST_PORT S3W_API_HOST_PORT2; do
+for k in S3W_API_HOST_PORT S3W_API_HOST_PORT2 ETCDW_API_HOST_PORT ETCDW_API_HOST_PORT2; do
   v="${!k}"
   if grep -q "^$k=" "$ROOT/deploy/.env"; then
     sed -i.bak "s/^$k=.*/$k=$v/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
@@ -160,7 +171,7 @@ done
 pg_up_ok=0
 for _ in 1 2 3; do
   if ( cd "$ROOT/deploy" && docker compose -f docker-compose.yml -f docker-compose.contour.yml \
-       --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 s3worker s3worker-2 2>&1 | tail -2 ); then
+       --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 s3worker s3worker-2 etcdworker etcdworker-2 2>&1 | tail -2 ); then
     pg_up_ok=1; break
   fi
   echo "  deploy up failed (port not released after recreate) — pausing 15 s"; sleep 15
@@ -256,6 +267,29 @@ done
 [ "${s3w_keys:-0}" -ge 2 ] \
   || { echo "❌ /s3worker/api/ contains ${s3w_keys:-0} keys (<2; docker compose logs s3worker s3worker-2)"; exit 1; }
 echo "  s3worker alive ×2 (:${S3W_API_HOST_PORT:-8086} + :${S3W_API_HOST_PORT2:-8089}/healthz mTLS; /s3worker/api/ keys: ${s3w_keys})"
+
+# 7d) etcdworker жив ×2 (arch/25): healthz по mTLS healthcheck-парой +
+#     дискавери /etcdworker/api/ по ключам (по образцу s3worker 7c).
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT:-8087}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT:-8087}/healthz >/dev/null \
+  || { echo "❌ etcdworker did not come alive within 60 s (docker logs deploy-etcdworker-1)"; exit 1; }
+for i in $(seq 1 60); do "${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT2:-8088}/healthz >/dev/null 2>&1 && break; sleep 1; done
+"${MTLS[@]}" https://localhost:${ETCDW_API_HOST_PORT2:-8088}/healthz >/dev/null \
+  || { echo "❌ etcdworker-2 did not come alive within 60 s (docker logs deploy-etcdworker-2-1)"; exit 1; }
+etcdw_keys=0
+for i in $(seq 1 30); do
+  etcdw_keys="$(ect get /etcdworker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
+  [ "${etcdw_keys:-0}" -ge 2 ] && break
+  sleep 1
+done
+[ "${etcdw_keys:-0}" -ge 2 ] \
+  || { echo "❌ /etcdworker/api/ contains ${etcdw_keys:-0} keys (<2; docker compose logs etcdworker etcdworker-2)"; exit 1; }
+echo "  etcdworker alive ×2 (:${ETCDW_API_HOST_PORT:-8087} + :${ETCDW_API_HOST_PORT2:-8088}/healthz mTLS; /etcdworker/api/ keys: ${etcdw_keys})"
+# Наблюдение статуса DR-слепков (spec §7.3-стенд): ключ /etcdworker/snapshots
+# появляется при поднятых etcd-backup S3-кластере и воркере — отсутствие НЕ fail
+# (стенд может жить без etcd-backup кластера); значение — в чек-вывод.
+snap_status="$(ect get /etcdworker/snapshots 2>/dev/null || true)"
+echo "  etcdworker snapshots status: ${snap_status:-<no key — etcd-backup S3 cluster is not up>}"
 
 # 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
 #    /api/healthz опубликован на :5050.

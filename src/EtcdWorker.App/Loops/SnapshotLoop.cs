@@ -129,11 +129,20 @@ internal sealed class SnapshotLoop(
                 var data = await File.ReadAllBytesAsync(shot.Value, ct);
                 var exported = await exporter.ExportAsync(
                     Path.GetFileName(shot.Value), data, revision, ct);
-                if (exported.IsSuccess && revision is { } rev)
-                    _lastExportedRevision = rev;
-                StatusError = exported;
-                if (!exported.IsSuccess)
+                if (exported.IsSuccess)
+                {
+                    if (revision is { } rev)
+                        _lastExportedRevision = rev;
+                    StatusError = Result.Success();
+                }
+                else
+                {
+                    // Отказ выгрузки — домен статус-ключа, НЕ цикла (arch/25 §5:
+                    // FAILED с маркером etcd-backup-missing/транзиент — ретраи
+                    // тиком, CatchUp догонит; алерт — панель): снятие прошло,
+                    // слепок в локальном томе, цикл здоров.
                     logger.LogError(exported.Error, "etcd snapshot export failed: {Message}", exported.Error!.Message);
+                }
 
                 // Обслуживание etcd: compact + defrag (интервал в Snapshots).
                 var maintenance = await snapshots.MaintainAsync(ct);
