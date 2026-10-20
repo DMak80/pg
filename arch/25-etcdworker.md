@@ -168,7 +168,10 @@ lease-ключ `/etcdworker/api/<id>`; URL — из `EtcdWorker:Api:AdvertiseUrl
   peer-URL-паттерна `/etcdw-node-<k>:` отображаются панелью как external
   (seed, стендовые `etcdN`).
 - Journal — `/etcdworker/work` (journal-before-manipulations, фазы
-  `add-learner/promoting/removing/replacing`); takeover продолжает фазу.
+  `add-learner/promoting/removing/replacing/cleanup-orphans`; `cleanup-orphans`
+  — чистка листов узла и portalloc-записи без члена и без docker-объекта,
+  мусор краш-окон; снос осиротевших docker-объектов — фаза `orphan-cleanup`
+  надзора §3.2); takeover продолжает фазу.
 - **Транспорт member-API** — расширение `Shared.Etcd` EtcdGateway:
   `MemberAddAsync` (isLearner), `MemberRemoveAsync`, `MemberPromoteAsync`
   (HTTP JSON `/v3/cluster/member/*`, базовый транспорт тот же).

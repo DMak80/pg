@@ -145,9 +145,15 @@ public sealed class MembershipProcess(
                 return Result.Failed(allocated.Error!);
             port = allocated.Value;
 
-            // Листы узла (до member-add: узел виден в домене с самого начала).
-            await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.NotInitialized}\"", ct);
-            await PutFailoverAsync(EtcdDomainKeys.PlacedOnKey(k), $"\"{host}\"", ct);
+            // Листы узла (до member-add: узел виден в домене с самого начала);
+            // отказ записи — transient-отказ тика (иначе узел застрял бы в
+            // NOT_INITIALIZED: resume матчит только PROVISIONING).
+            var statePut = await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.NotInitialized}\"", ct);
+            if (!statePut.IsSuccess)
+                return Result.Failed(statePut.Error!);
+            var placedPut = await PutFailoverAsync(EtcdDomainKeys.PlacedOnKey(k), $"\"{host}\"", ct);
+            if (!placedPut.IsSuccess)
+                return Result.Failed(placedPut.Error!);
 
             // Член: learner по peer-URL имени сети (детект-паттерн).
             var added = await MemberFailoverAsync(
@@ -169,7 +175,9 @@ public sealed class MembershipProcess(
             await portLock.ReleaseAsync();
         }
 
-        await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.Provisioning}\"", ct);
+        var provisioningPut = await PutFailoverAsync(EtcdDomainKeys.StateKey(k), $"\"{ManagedNodeStates.Provisioning}\"", ct);
+        if (!provisioningPut.IsSuccess)
+            return Result.Failed(provisioningPut.Error!);
 
         // Контейнер (сеть контура, флаги EtcdNodeSpecBuilder, client-порт);
         // initial-cluster — полный состав для join (без него etcd не может
