@@ -15,7 +15,11 @@ namespace PgWorker.Backups.Supervisor;
 /// hold-ключа (DR-hold t04). Санитар прохода (t04): hold/заявки с префиксом вне
 /// merged-реестра (воскрес/исчез/уже удалён) гасятся. ОДИН префикс за проход:
 /// DELETING → batch-delete → list-подтверждение → del записи (+ del заявки).
-/// Выполняется ТОЛЬКО глобальным лидером /pgworker/leader (двойного писателя
+/// Перед удалением — перепроверка (arch/19 §4): лидерство, владельцы /clusters/
+/// и hold-ключ кандидата заново (снимок /clusters/ мог устареть) — воскресший
+/// владелец отменяет и DELETING-доводку: гасятся запись/hold/заявка, объекты
+/// живого владельца не трогаются. Выполняется ТОЛЬКО глобальным лидером
+/// /pgworker/leader (двойного писателя
 /// нет); runtime() == null (Enabled=false) → no-op. Все шаги идемпотентны,
 /// transient-отказы (S3/etcd) — Result.Failed без мутаций, следующий проход
 /// повторит (arch/17).</summary>
@@ -155,6 +159,56 @@ public sealed class BackupOrphanSweeper(
             return Result.Success();
         var entry = merged.Orphans.First(e => e.Prefix == candidate);
 
+        // (4.5) Перепроверка перед удалением (arch/19 §4): снимок /clusters/ (2)
+        // мог устареть — воскресение владельца между снимком и удалением отменяет
+        // и DELETING-доводку: вместо объектов гасятся запись реестра, hold-ключ и
+        // заявка (объекты живого владельца не трогаются). Потеря лидерства — тихий
+        // no-op (удаление повторит проход нового лидера). Hold, появившийся на
+        // TTL-кандидата после отбора, откладывает удаление до следующего прохода
+        // (DELETING-доводка и заявка hold не проверяют — канон: «DELETING-записи
+        // hold не защищают», заявка минует hold).
+        if (!claims.IsLeader)
+            return Result.Success();
+        var recheckClusters = await RangeClustersAsync(ct);
+        if (!recheckClusters.IsSuccess)
+            return Result.Failed(recheckClusters.Error!);
+        var reparsed = ClusterSnapshotParser.ParseClusters(recheckClusters.Value, out _);
+        if (!reparsed.IsSuccess)
+            return Result.Failed(reparsed.Error!);
+        var (candCluster, candShard) = SplitPrefix(candidate);
+        var ownerLive = candCluster is not null && reparsed.Value.Any(snap =>
+            snap.Config.Cluster == candCluster
+            && snap.Config.State != ClusterState.ToRemove
+            && snap.Shards.Any(sh => sh.Name == candShard && !sh.ToRemove));
+        if (ownerLive)
+        {
+            var cancelled = merged with
+            {
+                Orphans = merged.Orphans.Where(e => e.Prefix != candidate).ToList(),
+            };
+            if (await PutRegistryAsync(cancelled, ct) is { IsSuccess: false } putCancelled)
+                return putCancelled; // запись остаётся — следующий проход повторит отмену
+            if (await DeleteKeyAsync(OrphanRegistry.HoldKey(candidate), ct)
+                    is { IsSuccess: false } delHoldCancelled)
+                return delHoldCancelled;
+            if (await DeleteKeyAsync(OrphanRegistry.DeleteKey(candidate), ct)
+                    is { IsSuccess: false } delReqCancelled)
+                return delReqCancelled;
+            await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
+                $"orphan-cancelled/{candidate}", claims.InstanceId, null, ct);
+            logger?.LogInformation(
+                "{Op}: orphan {Prefix} cancelled — owner resurrected", Op, candidate);
+            return Result.Success();
+        }
+        if (!byRequest && entry.State == OrphanState.Observed)
+        {
+            var holdRecheck = await RangeKeysAsync(OrphanRegistry.HoldKey(candidate), ct);
+            if (!holdRecheck.IsSuccess)
+                return holdRecheck;
+            if (holdRecheck.Value.Any(kv => kv.Key == OrphanRegistry.HoldKey(candidate)))
+                return Result.Success(); // hold после отбора — удалит следующий проход
+        }
+
         // journal-before-manipulations: DELETING пишется ДО удаления объектов.
         // По заявке — журнал заявки до перехода в DELETING (AC4).
         if (byRequest)
@@ -255,6 +309,15 @@ public sealed class BackupOrphanSweeper(
     // «<C>/<X>» — 2 последних сегмента ключа hold/заявки (формат arch/19 §4).
     private static string PrefixOfKey(string key)
         => string.Join('/', key.Split('/')[^2..]);
+
+    // «<C>/<X>» → компоненты (записи реестра всегда нашей формы — фильтр
+    // SplitPrefix merge'а); не-нашей-формы → (null, null): владельческая
+    // перепроверка мимо, удаление как раньше.
+    private static (string? Cluster, string? Shard) SplitPrefix(string prefix)
+    {
+        var parts = prefix.Split('/');
+        return parts.Length == 2 ? (parts[0], parts[1]) : (null, null);
+    }
 
     // Чтение /clusters/ (failover по endpoints) — владельцы префиксов.
     private async Task<Result<IReadOnlyList<Kv>>> RangeClustersAsync(CancellationToken ct)

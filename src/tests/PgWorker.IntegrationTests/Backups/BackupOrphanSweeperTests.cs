@@ -1,6 +1,7 @@
 using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
+using Shared.Core;
 using Shared.Etcd.Client;
 using PgWorker.IntegrationTests.Etcd;
 using Xunit;
@@ -44,8 +45,9 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
     }
 
     private BackupOrphanSweeper BuildSweeper(
-        FakeBackupS3 s3, ClaimStore claims, MutableClock? clock = null, BackupsRuntimeOptions? options = null)
-        => new(fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+        FakeBackupS3 s3, ClaimStore claims, MutableClock? clock = null, BackupsRuntimeOptions? options = null,
+        IEtcdGateway? gateway = null)
+        => new(gateway ?? fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
             FakePoolFactory.Store(), claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options ?? Options(), clock ?? TimeProvider.System);
@@ -426,5 +428,156 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         var entry = (await ReadRegistryAsync())!.Orphans.Should().ContainSingle().Subject;
         entry.Prefix.Should().Be("ghost/s1");
         entry.SizeBytes.Should().Be(200, "dedup by (pool, key) — a cross-pool duplicate is not collapsed");
+    }
+
+    // ── Перепроверка перед удалением (arch/19 §4): окно гонки снимок→удаление ──
+
+    // Декоратор gateway — инъекция события в окно гонки свипера: подмешивает
+    // ключи в результат range-вызова с заданным префиксом после skip совпавших
+    // вызовов (снимок /clusters/ шага (2) остаётся чистым — воскресение/hold
+    // видит только перепроверка перед удалением (4.5)). Реальный etcd не трогает.
+    private sealed class InjectingGateway(IEtcdGateway inner) : IEtcdGateway
+    {
+        private sealed class Injection(int skip, List<Kv> kvs)
+        {
+            public int Skip { get; } = skip;
+            public List<Kv> Kvs { get; } = kvs;
+            public int Seen { get; set; }
+            public bool Fired { get; set; }
+        }
+
+        private readonly Dictionary<string, Injection> pending = new(StringComparer.Ordinal);
+
+        // Первые skip совпавших range-вызовов — чистые, следующий — с ключами.
+        public void InjectAfterRanges(string prefix, int skip, params (string Key, string Value)[] kvs)
+            => pending[prefix] = new Injection(skip,
+                kvs.Select(kv => new Kv(kv.Key, kv.Value, 1)).ToList());
+
+        public async Task<Result<IReadOnlyList<Kv>>> RangeAsync(
+            string endpoint, string prefix, CancellationToken ct)
+        {
+            var result = await inner.RangeAsync(endpoint, prefix, ct);
+            if (!pending.TryGetValue(prefix, out var injection) || !result.IsSuccess)
+                return result;
+            injection.Seen++;
+            if (injection.Fired || injection.Seen <= injection.Skip)
+                return result;
+            injection.Fired = true;
+            return Result<IReadOnlyList<Kv>>.Success(
+                result.Value.Concat(injection.Kvs).ToList());
+        }
+
+        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+            => inner.GetAsync(endpoint, key, ct);
+
+        public Task<Result> PutAsync(
+            string endpoint, string key, string value, long? lease, CancellationToken ct)
+            => inner.PutAsync(endpoint, key, value, lease, ct);
+
+        public Task<Result> DeleteAsync(
+            string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+            => inner.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
+
+        public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
+            => inner.TxnAsync(endpoint, req, ct);
+
+        public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+            => inner.LeaseGrantAsync(endpoint, ttlSec, ct);
+
+        public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+            => inner.LeaseRevokeAsync(endpoint, lease, ct);
+
+        public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+            => inner.LeaseKeepaliveAsync(endpoint, lease, ct);
+
+        public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+            => inner.SnapshotSaveAsync(endpoint, ct);
+
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+            => inner.StatusAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => inner.MemberListAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => inner.AlarmAsync(endpoint, ct);
+
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+            => inner.CompactAsync(endpoint, revision, ct);
+
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+            => inner.DefragmentAsync(endpoint, ct);
+    }
+
+    // AAA (arch/19 §4): воскресение владельца, видимое ТОЛЬКО перепроверкой
+    // (снимок /clusters/ шага (2) чист), отменяет и DELETING-доводку: объекты
+    // живого владельца не трогаются, гасятся запись реестра, hold и заявка
+    [Fact]
+    public async Task SweepOwnerResurrectedAfterSnapshotCancelsDeleting()
+    {
+        // Arrange — DELETING-запись в реестре (идущая доводка); hold + заявка;
+        // воскресение инъецируется на перепроверке /clusters/ (2-й range-вызов)
+        var ct = TestContext.Current.CancellationToken;
+        var s3 = new FakeBackupS3();
+        var clock = await SeedAsync(s3);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
+        var gateway = new InjectingGateway(fixture.Gateway);
+        var sweeper = BuildSweeper(s3, claims, clock, gateway: gateway);
+        var deleting = new OrphanRegistry.Registry(
+        [
+            new OrphanEntry("ghost/s1", "cluster", 100,
+                clock.Now.AddMinutes(-2).ToUnixTimeSeconds(), OrphanState.Deleting),
+        ], clock.Now.ToUnixTimeSeconds());
+        await fixture.Gateway.PutAsync(fixture.Endpoint, OrphanRegistry.Key,
+            OrphanRegistry.ToJson(deleting), null, ct);
+        await PutHoldAsync("ghost/s1");
+        await PutDeleteRequestAsync("ghost/s1");
+        gateway.InjectAfterRanges("/clusters/", skip: 1,
+            ("/clusters/ghost/config", """{"buckets":1,"dbname":"ghost","created_unix":1757100000}"""),
+            ("/clusters/ghost/shards/s1/replicas", "2"));
+
+        // Act — снимок чист (владелец «мёртв») → доводка кандидата; перепроверка
+        // видит воскресшего — удаление объектов отменяется
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы; запись/hold/заявка погашены
+        s3.DeletedKeys.Should().BeEmpty("a resurrected owner cancels the deletion");
+        (await ReadRegistryAsync())!.Orphans.Should()
+            .BeEmpty("the record is retired, not the objects");
+        (await KeyExistsAsync(OrphanRegistry.HoldKey("ghost/s1"))).Should()
+            .BeFalse("the hold is retired with the cancelled deletion");
+        (await KeyExistsAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should()
+            .BeFalse("the request is retired with the cancelled deletion");
+    }
+
+    // AAA (arch/19 §4): hold, появившийся ПОСЛЕ TTL-отбора (видим только
+    // перепроверкой), откладывает удаление: объекты живы, запись остаётся OBSERVED
+    [Fact]
+    public async Task SweepHoldAppearedAfterSelectionDelaysRemoval()
+    {
+        // Arrange — сирота OBSERVED; инъекция hold-ключа на перепроверке (1-й
+        // range по точному hold-ключу прохода — она и есть)
+        var ct = TestContext.Current.CancellationToken;
+        var s3 = new FakeBackupS3();
+        var clock = await SeedAsync(s3);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
+        var gateway = new InjectingGateway(fixture.Gateway);
+        var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60), gateway);
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
+        (await ReadRegistryAsync())!.Orphans.Should()
+            .ContainSingle(e => e.State == OrphanState.Observed);
+        gateway.InjectAfterRanges(OrphanRegistry.HoldKey("ghost/s1"), skip: 0,
+            (OrphanRegistry.HoldKey("ghost/s1"), OrphanRegistry.HoldToJson(1757764800, "operator")));
+        clock.Now = clock.Now.AddMinutes(2);
+
+        // Act — TTL истёк, отбор выбирает кандидата; перепроверка видит hold
+        (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы, запись осталась OBSERVED (удаление отложено)
+        s3.DeletedKeys.Should().BeEmpty("a hold appeared after selection — removal is delayed");
+        (await ReadRegistryAsync())!.Orphans.Should()
+            .ContainSingle(e => e.Prefix == "ghost/s1" && e.State == OrphanState.Observed);
     }
 }
