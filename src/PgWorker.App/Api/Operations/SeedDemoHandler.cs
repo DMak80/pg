@@ -23,7 +23,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
                 new WorkerApiNotFoundException("seed endpoint disabled (PgWorker:Api:EnableSeedEndpoint)"));
 
         // 2) Идемпотентность: сбой чтения → 503; config жив → no-op.
-        var config = await EtcdFailover.CallAsync(endpoints,
+        var config = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.GetAsync(endpoint, "/clusters/demo/config", ct));
         if (!config.IsSuccess)
             return Result<SeedDemoDto>.Failed(config.Error!);
@@ -36,7 +36,7 @@ public sealed class SeedDemoHandler(IEtcdGateway gateway, string[] endpoints, Ti
         var plan = new PostgresDemoSeedPlan(clock.GetUtcNow().ToUnixTimeSeconds());
         foreach (var put in plan.Puts)
         {
-            var result = await EtcdFailover.CallAsync(endpoints,
+            var result = await EtcdEndpointFailover.CallAsync(endpoints,
                 endpoint => gateway.PutAsync(endpoint, put.Key, put.Value, null, ct));
             if (!result.IsSuccess)
                 return Result<SeedDemoDto>.Failed(result.Error!);

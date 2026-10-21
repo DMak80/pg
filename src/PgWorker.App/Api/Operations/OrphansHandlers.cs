@@ -31,7 +31,7 @@ internal static partial class OrphanGuards
             return Result<OrphanEntry>.Failed(new BackupsDisabledException());
 
         var prefix = $"{cluster}/{shard}";
-        var kv = await EtcdFailover.CallAsync(endpoints,
+        var kv = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.GetAsync(e, OrphanRegistry.Key, ct));
         if (!kv.IsSuccess)
             return Result<OrphanEntry>.Failed(kv.Error!);
@@ -62,7 +62,7 @@ public sealed class OrphanHoldHandler(
             return Result.Failed(guard.Error!);
 
         var now = time.GetUtcNow().ToUnixTimeSeconds();
-        return await EtcdFailover.CallAsync(endpoints,
+        return await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.PutAsync(e, OrphanRegistry.HoldKey(guard.Value.Prefix),
                 OrphanRegistry.HoldToJson(now, requestedBy), null, ct));
     }
@@ -74,7 +74,7 @@ public sealed class OrphanHoldHandler(
         if (runtime() is null)
             return Result.Failed(new BackupsDisabledException());
 
-        return await EtcdFailover.CallAsync(endpoints,
+        return await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.DeleteAsync(e, OrphanRegistry.HoldKey($"{cluster}/{shard}"), prefix: false, ct));
     }
 }
@@ -103,7 +103,7 @@ public sealed class OrphanDeleteHandler(
                 new OrphanConfirmMismatchException(prefix, body?.Confirm ?? ""));
 
         var now = time.GetUtcNow().ToUnixTimeSeconds();
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.PutAsync(e, OrphanRegistry.DeleteKey(prefix),
                 OrphanRegistry.DeleteToJson(now, requestedBy), null, ct));
         if (!put.IsSuccess)

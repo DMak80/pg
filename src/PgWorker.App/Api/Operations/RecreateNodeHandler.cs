@@ -41,7 +41,7 @@ public sealed partial class RecreateNodeHandler(IEtcdGateway gateway, string[] e
         //    HaScopes из снапшота) → cluster/shard из имени скопа.
         var dash = scope.IndexOf('-');
         var (cluster, shard) = (scope[..dash], scope[(dash + 1)..]);
-        var serviceRange = await EtcdFailover.CallAsync(endpoints,
+        var serviceRange = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/service/{scope}/", ct));
         if (!serviceRange.IsSuccess)
             return Result<NodeRecreatedDto>.Failed(serviceRange.Error!);
@@ -93,7 +93,7 @@ public sealed partial class RecreateNodeHandler(IEtcdGateway gateway, string[] e
         if (normalizedMode is not ("soft" or "hard"))
             return Result<NodeRecreatedDto>.Failed(new InvalidRecreateModeException(mode!));
 
-        var putMode = await EtcdFailover.CallAsync(endpoints,
+        var putMode = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, modeKey, normalizedMode, null, ct));
         if (!putMode.IsSuccess)
             return Result<NodeRecreatedDto>.Failed(putMode.Error!);
@@ -105,7 +105,7 @@ public sealed partial class RecreateNodeHandler(IEtcdGateway gateway, string[] e
             return Result<NodeRecreatedDto>.Success(new NodeRecreatedDto(scope, node, ToRecreateState, normalizedMode));
 
         // 7) PUT маркера.
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, markerKey, ToRecreateState, null, ct));
         if (!put.IsSuccess)
             return Result<NodeRecreatedDto>.Failed(put.Error!);
@@ -114,7 +114,7 @@ public sealed partial class RecreateNodeHandler(IEtcdGateway gateway, string[] e
 
     private async Task<Result<string?>> ReadKeyAsync(string key, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, key, ct));
         if (!range.IsSuccess)
             return Result<string?>.Failed(range.Error!);

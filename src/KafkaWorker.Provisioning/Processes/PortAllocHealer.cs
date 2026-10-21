@@ -348,40 +348,15 @@ public sealed class PortAllocHealer(
 
     private static string EndpointsKey(string cluster) => $"/kafka/clusters/{cluster}/endpoints";
 
-    // Failover-обёртки: первый успешный endpoint выигрывает.
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.GetAsync(endpoint, key, ct));
+    // Failover-обёртки: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
 
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.PutAsync(endpoint, key, value, null, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
-
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.TxnAsync(endpoint, req, token), ct);
 
     // Страховка: клэйм не остаётся удержанным при сбое вызывающего между тиками.
     public async ValueTask DisposeAsync()
