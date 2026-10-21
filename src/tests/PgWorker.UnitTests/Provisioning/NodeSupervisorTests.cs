@@ -1792,7 +1792,7 @@ public class NodeSupervisorTests
         rig.Driver.NodeEnvs["shard1/shard1a"].Should().ContainKey(RestRotation.EnvCert);
         rig.Driver.NodeEnvs["shard1/shard1a"][RestRotation.EnvPasswordHash]
             .Should().Be(RestRotation.PasswordHash(Fakes.FakeSecretEnsurer.RestPassword));
-        engine.Stopped.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
+        engine.Killed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.RemovedVolumes.Should().BeEmpty("volume is preserved (not RemoveNodeAsync)");
         rig.Driver.RemovedNodes.Should().BeEmpty();
@@ -2137,9 +2137,9 @@ public class NodeSupervisorTests
         var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: жёсткий снос лидера (выборы за Patroni) + пересоздание в TLS
-        // с парой ensure; volume сохранён (stop+rm, не RemoveNodeAsync).
+        // с парой ensure; volume сохранён (kill+rm, не RemoveNodeAsync).
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        engine.Stopped.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
+        engine.Killed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
         engine.RemovedVolumes.Should().BeEmpty("volume is preserved");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");

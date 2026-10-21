@@ -305,7 +305,7 @@ public sealed class PlainClusterDriver(
                     return; // контейнер на месте с планом — идемпотентность
                 }
 
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
                 var removed = await engine.RemoveContainerAsync(name, force: true, ct);
@@ -352,7 +352,7 @@ public sealed class PlainClusterDriver(
             foreach (var engine in _engines.Values)
             {
                 // 404 на каждом шаге — успех (движок); volume pgw-…-data удаляем следом.
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
                 var removed = await engine.RemoveContainerAsync(name, force: true, ct);
@@ -409,9 +409,9 @@ public sealed class PlainClusterDriver(
             var name = NodeName(cluster, shard, nodeName);
             foreach (var engine in _engines.Values)
             {
-                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(name, ct);
                 if (!stopped.IsSuccess)
-                    throw stopped.Error!; // карантин E3: только stop, volume/данные на месте
+                    throw stopped.Error!; // карантин E3: только kill (spilo, arch/14 §5 D E3), volume/данные на месте
             }
         });
     }

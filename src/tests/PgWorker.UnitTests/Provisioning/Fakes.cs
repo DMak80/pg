@@ -237,12 +237,19 @@ internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
 internal sealed class FakeContainerEngine : IDockerEngine
 {
     public readonly List<string> Stopped = [];
+    public readonly List<string> Killed = [];
     public readonly List<string> Removed = [];
     public readonly List<string> RemovedVolumes = [];
 
     public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
     {
         Stopped.Add(idOrName);
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
+    {
+        Killed.Add(idOrName);
         return Task.FromResult(Result.Success());
     }
 

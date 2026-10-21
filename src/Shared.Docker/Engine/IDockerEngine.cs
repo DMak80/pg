@@ -16,6 +16,9 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct);
     Task<Result> StartContainerAsync(string idOrName, CancellationToken ct);
     Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct);
+    // Жёсткая остановка spilo-нод PgWorker (arch/14 §6/§5 D E3): SIGKILL —
+    // exited-факт немедленный, поллинг не нужен; 404 = успех (идемпотентность).
+    Task<Result> KillContainerAsync(string idOrName, CancellationToken ct);
     Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct);
     Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct);
     Task<Result> EnsureNetworkAsync(string name, CancellationToken ct);
