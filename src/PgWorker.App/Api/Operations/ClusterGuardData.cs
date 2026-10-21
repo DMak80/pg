@@ -22,7 +22,7 @@ internal sealed record ClusterGuardData(
     public static async Task<Result<ClusterGuardData>> ReadAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/", ct));
         if (!range.IsSuccess)
             return Result<ClusterGuardData>.Failed(range.Error!);

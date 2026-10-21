@@ -47,7 +47,7 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/reliability` | грань «Надёжность» (read-only): per-cluster/per-shard RPO-блок (mode wal/full/off, возраст валидного полного + id, лаг/возраст WAL, сводный RPO-потенциал, порог) и RTO-блок (последний failover/rebuild с cause/duration/ongoing, длительности последнего drill/restore); всегда 200 с пустыми секциями при выключенных подсистемах, 503 — нет снапшота |
-| `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (t08, 02 §2.5) |
+| `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (02 §2.5) |
 | `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
 | `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в S3-хранилище на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
@@ -76,7 +76,7 @@ CreateClusterRequestDto: name, sharded (bool, опционально: отсут
                           requestCpu (число ядер, десятичное),
                           requestMem (GiB, целое), requestDisk (GiB, целое),
                           synchronousModeStrict (bool, опционально:
-                          отсутствие = true; false допускает replicas=1 — t06)
+                          отсутствие = true; false допускает replicas=1)
 ```
 
 Ответ 201 (кластер записан в etcd, состояние NOT_INITIALIZED; снапшот
@@ -302,7 +302,7 @@ EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
               quorumSuspected, lastRefreshUtc
 ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
               state(ACTIVE|NOT_INITIALIZED|TO_REMOVE), sharded(bool),
-              synchronousModeStrict(bool — снапшот-поле, t06), shards[ShardDto],
+              synchronousModeStrict(bool — снапшот-поле), shards[ShardDto],
               buckets[BucketDto], pendingMoves[MoveTicketDto] — очередь заявок
               /pgworker/moves/<C>/ (02 §2.3.1; джойн по кластеру, сортировка
               по requestedUnix), work{op, phase, updatedUnix, lastError}?
@@ -314,7 +314,7 @@ ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
               UI-блок «Стендовая топология» рисуется при наличии)
 ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
               notInitialized(bool), toRemove(bool), shardsTotal, shardsWithMaster,
-              synchronousModeStrict(bool — снапшот-поле, t06), activeMoves
+              synchronousModeStrict(bool — снапшот-поле), activeMoves
 ShardDto:     name, state(ACTIVE|TO_REMOVE — маркер демонтажа 02 §2.1/§9.6,
               отсутствие ключа = ACTIVE), dsn, hosts[], replicasDeclared,
               masterAddress, masterLeaseAlive(bool), nodes[{name, state}],
@@ -377,7 +377,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 `SYNCING|FROZEN|ABORTING`: `NOT_INITIALIZED` — не переезд, а начальное
 состояние бакета (02 §9).
 
-Грань «Хранилище бэкапов» (t08): `BackupStorageDto`,
+Грань «Хранилище бэкапов»: `BackupStorageDto`,
 `BackupShardStorageDto`, `BackupObjectsPageDto` (+ вложенные `BackupFullDto`,
 `BackupWalDto`, `BackupOrphanDto`, `S3HealthDto`); camelCase; S3-ключи
 (AccessKey/SecretKey) НЕ отдаются никогда.
@@ -389,8 +389,8 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **Login** | форма логин/пароль; ошибка 401 |
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит); карточка «Бэкапы»: health S3-хранилища (бейджи api/live, cluster — «n/a» вне ownS3-контура) + место (used/quota, state-бейдж OK/WARN/CRIT воркера, live-факт) — клиентская агрегация `GET /api/backups/storage` (по образцу HA-агрегации, `OverviewDto` backup-полей не содержит); карточка «Надёжность»: worst RPO-потенциал по Active-кластерам, число шардов mode=full («RPO держится только полным») и mode=off, длительность последнего failover установки — клиентская агрегация `GET /api/reliability` |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
-| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (t06, по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; блок «Журнал воркера» — поле `work` деталей: последний op/phase/updated/last_error процесса (результат исполненной/отвергнутой заявки)), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, бейдж режима «strict»/«availability» (t06, по
+| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; блок «Журнал воркера» — поле `work` деталей: последний op/phase/updated/last_error процесса (результат исполненной/отвергнутой заявки)), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, бейдж режима «strict»/«availability» (по
 `synchronousModeStrict`) и переключатель strict-режима (мутация только для
 Active; не-Active — контрол заблокирован с подсказкой «после инициализации»;
 подтверждение — модальный диалог с предупреждением о последствиях: включение —
@@ -402,7 +402,7 @@ Active; не-Active — контрол заблокирован с подска�
 | **Надёжность** | `/reliability` (read-only): таблица кластер×шард — RPO-колонки (возраст валидного полного с индикацией по порогу policy + id, лаг WAL сегм., возраст WAL-хвоста, «потеряем ≈ N» с индикацией источника wal/full/off; клик по id полного — переход к деталям шарда грани бэкапов) + RTO-колонки (последний failover: длительность/когда/cause/node; последний rebuild: аналогично; drill: итог+длительность; restore: итог+длительность); ongoing-значения — бейдж «идёт» с тикающей длительностью; polling — общий переключатель; форм ввода нет |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
 | **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker/ValkeyWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
-| **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets, etcd-снапшоты (reliability t08: последняя выгрузка — время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only); таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки; колонка «Пул» — бейдж имени пула policy либо красный «пул не выбран», кнопка «Пул бэкапов» per-кластер → модал §3.8: Select пула + два упорядоченных списка мастера/реплики из нод пула); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Единственная форма ввода — модал «Пул бэкапов» (§3.8; мутация — прокси в policy-API воркера, 02 §9.12) |
+| **Хранилище бэкапов** | `/backups-storage` (read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets, etcd-снапшоты (: последняя выгрузка — время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only); таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки; колонка «Пул» — бейдж имени пула policy либо красный «пул не выбран», кнопка «Пул бэкапов» per-кластер → модал §3.8: Select пула + два упорядоченных списка мастера/реплики из нод пула); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Единственная форма ввода — модал «Пул бэкапов» (§3.8; мутация — прокси в policy-API воркера, 02 §9.12) |
 | **S3Clusters** / **S3ClusterDetails** | модуль S3 — §12.3 (вкладки Ноды/Репликация/Связность и синхронность) |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
@@ -410,7 +410,7 @@ Active; не-Active — контрол заблокирован с подска�
 Модальный диалог (Mantine Modal + TextInput/NumberInput) с кнопки «Создать
 кластер» на панели Clusters. Поля: имя; бакеты; шарды (≤ бакетов); реплики
 (дефолт 2, минимум 1 — только мастер); чекбокс «Синхронный strict-режим
-(блокировать запись при потере sync-реплики)» — дефолт включён (t06);
+(блокировать запись при потере sync-реплики)» — дефолт включён;
 группа «Ресурсы нод (заявка, на каждую
 ноду)»: CPU (ядра, шаг 0.1), память (GiB), диск (GiB). Клиентская валидация —
 зеркало 02 §9.3 (быстрая ошибка у поля): strict + replicas=1 → ошибка у поля
@@ -422,11 +422,11 @@ Active; не-Active — контрол заблокирован с подска�
 занято», 400 — по полям, 503 — «etcd недоступен»). Двойной клик защищён
 блокировкой кнопки на время мутации.
 
-### 3.2. Форма «Добавить шард» (t06)
+### 3.2. Форма «Добавить шард»
 
 Модальный диалог с кнопки «Добавить шард» в заголовке вкладки Шарды на
 Cluster details (только Active-кластер). Поля: реплики (дефолт 2, минимум 1 —
-только мастер; у strict-кластера минимум 2 — клиентская валидация, t06;
+только мастер; у strict-кластера минимум 2 — клиентская валидация;
 серверная — arch/14 §5 G), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
 шаг 0.1), память (GiB), диск (GiB); поля имени НЕТ — имя генерирует сервер
 (`shard<max+1>`, 02 §9.5). Подпись в форме: «Шард стартует пустым —
@@ -605,7 +605,7 @@ DnD-библиотек). Поля:
 | `replica-lag-high` | warning | лаг реплики > `ReplicaLagBytes` (16 МБ) | Patroni REST |
 | `slot-lag-high` / `slot-wal-lost` | warning / critical | лаг слота > порога / `wal_status='lost'` (P4) | SQL-проба |
 | `slot-invalidation-risk` | warning | `safe_wal_size` < порога (P4, ДО среза) | SQL-проба |
-| `sync-standby-missing` | strict ? critical : warning (t06: strict — запись блокирована, инцидент; не-strict — предусловие переездов) | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов); Hint/Remedy (t06): для strict ремеди «запись блокирована — восстановите реплику (rebuild воркера) или выключите strict (PUT config)» | SQL-проба |
+| `sync-standby-missing` | strict ? critical : warning (strict — запись блокирована, инцидент; не-strict — предусловие переездов) | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов); Hint/Remedy: для strict ремеди «запись блокирована — восстановите реплику (rebuild воркера) или выключите strict (PUT config)» | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
 | `backup-s3-unreachable` | warning | грань настроена && S3-инвентарь-тик падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | S3 live-тик (02 §2.5) |
@@ -672,7 +672,7 @@ Kind наблюдаемости провижининга и здоровья в�
 | kind | severity | Условие | Источник |
 |---|---|---|---|
 | `provision-stuck` | warning | `/pgworker/work/<C>`: `last_error` жив + возраст серии фейлов (`now − fail_first_unix`) > `ProvisionStuckSec` (300 c) — воркер сообщил причину (текст — в Message/details), но кластер не инициализируется | `/pgworker/work/<C>` |
-| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`, t09), но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
+| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`), но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
 
 UI: карточка алерта раскрывает Hint и Remedy (бейдж движителя); API
 `/api/alerts` отдаёт поля `hint`, `remedy` (строка `worker-auto` /
@@ -732,12 +732,12 @@ select pg_is_in_recovery();
 | `PUT /api/kafka/clusters/{cluster}/topics/{topic}` | конфиг-заявка топика (02 §10.2-6, волна C): тело `KafkaTopicDesiredRequestDto` → 204 \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired` | отмена конфиг-заявки (02 §10.2-7, волна C): 204 \| 404 \| 503 |
 | `POST /api/kafka/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля (02 §10.2-8): без тела → 201+`KafkaPasswordRotatedDto` \| 404 \| 409 \| 503 |
-| `POST /api/kafka/clusters/{cluster}/topics` | создание топика — lifecycle-заявка (02 §10.2-9, t01): тело `CreateTopicRequestDto` → 201+`KafkaTopicCreatedDto` \| 400 \| 404 \| 409 \| 503 |
-| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}` | удаление топика — lifecycle-заявка (02 §10.2-10, t01; идемпотентен): 204 \| 404 \| 409 \| 503 |
-| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.create` | отмена заявки создания (02 §10.2-11, t01): 204 \| 404 \| 409 \| 503 |
-| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.delete` | отмена заявки удаления (02 §10.2-12, t01; окно деструктивности): 204 \| 404 \| 409 \| 503 |
-| `POST /api/kafka/clusters/{cluster}/rebalance` | заявка ребалансировки партиций (02 §10.2-13, t02): без тела → 201+`KafkaRebalanceRequestedDto` \| 404 \| 409 \| 503 |
-| `DELETE /api/kafka/clusters/{cluster}/rebalance` | отмена заявки ребалансировки (02 §10.2-14, t02): 204 \| 404 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/topics` | создание топика — lifecycle-заявка (02 §10.2-9): тело `CreateTopicRequestDto` → 201+`KafkaTopicCreatedDto` \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}` | удаление топика — lifecycle-заявка (02 §10.2-10; идемпотентен): 204 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.create` | отмена заявки создания (02 §10.2-11): 204 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.delete` | отмена заявки удаления (02 §10.2-12; окно деструктивности): 204 \| 404 \| 409 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/rebalance` | заявка ребалансировки партиций (02 §10.2-13): без тела → 201+`KafkaRebalanceRequestedDto` \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/rebalance` | отмена заявки ребалансировки (02 §10.2-14): 204 \| 404 \| 503 |
 
 `GET /api/alerts` объединяет алерты обоих движков (kind уже различает
 `kafka-*`); `GET /api/overview` получает kafka-сводку (clustersTotal,
@@ -754,11 +754,11 @@ KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
     defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
     brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
     (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
-    caRotation{requestedUnix, requestedBy}?(nullable — t10),
+    caRotation{requestedUnix, requestedBy}?(nullable),
     rebalance{requestedUnix, requestedBy}?(nullable),
     ticketOutcome{kind(password-app|password-admin|ca|rebalance),
     outcome(expired|done), reason?, requestedUnix, requestedBy,
-    finishedUnix}?(nullable — ключа нет = исходов не было; t10),
+    finishedUnix}?(nullable — ключа нет = исходов не было),
     reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
     partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
@@ -770,7 +770,7 @@ KafkaTopicDto: name, partitions, replicationFactor, retentionMs, minInSyncReplic
     (null — конфиг отсутствует в факте), desired{partitions, retentionMs,
     minInSyncReplicas, requestedUnix, requestedBy}?(nullable), missing(bool),
     syncedUnix, lifecycle{op(create|delete), partitions?, replicationFactor?,
-    retentionMs?, minInSyncReplicas?, requestedUnix, requestedBy}?(nullable — t01;
+    retentionMs?, minInSyncReplicas?, requestedUnix, requestedBy}?(nullable;
     create-заявка без факт-ключа — «виртуальная» строка: факт-поля null/0,
     параметры — в lifecycle-части)
 KafkaGroupDto: group, state, members, totalLag (волна C — из пробы)
@@ -793,9 +793,9 @@ KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
 CreateTopicRequestDto: name, partitions?(1..1000 def config.default_partitions),
     replicationFactor?(1..9 ≤ brokers def config.replication_factor),
     retentionMs?(1..2147483647 опц.), minInSyncReplicas?(1..RF опц.)
-    — валидация 02 §10.3 (t01)
-KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor (t01)
-KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy (t02)
+    — валидация 02 §10.3
+KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor
+KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy
 ```
 
 ### 7.3. Панели UI
@@ -803,7 +803,7 @@ KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy (t02)
 | Панель | Что показывает |
 |---|---|
 | **KafkaClusters** | список: имя, state-бейдж, брокеры running/всего, топики (кол-во), endpoints (сокращённо), бейдж ротации; кнопка «Создать кластер» → модальная форма §7.3.1 |
-| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), бейдж reassignment («drain broker4: осталось 5/12 партиций» / «ребалансировка: 7/20»), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Перебалансировать» (модал-предупреждение о переносе данных между брокерами; живая заявка — «Отменить ребалансировку»; 409 — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — подпись «drain: осталось N партиций» по прогресс-ключу, кнопка активна: воркер сам дренирует и демонтирует) + кнопка «Добавить брокера» (форма resources); вкладка **Топики** (t01): кнопка «Создать топик» (модал: name/partitions/RF/retention/minISR, дефолты из config кластера, клиентская валидация-зеркало 02 §10.3), per-row бейджи lifecycle-заявок («создание: N партиций, RF R» / «удаление…» + возраст/автор) с кнопкой «Отменить заявку», красная per-row «Удалить топик» (подтверждение с вводом имени топика: «данные будут удалены безвозвратно; заявка исполнится в течение ~15 с, до этого можно отменить»); create-заявка без факт-ключа — «виртуальная» строка (факт-поля `—`, параметры в бейдже); подпись: «создание/удаление топиков — заявками панели; внешние изменения (CLI/клиенты) подхватываются автосинком»; `canMutate` = Active; вкладка **Группы** — волна C (до неё — заглушка) |
+| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), бейдж reassignment («drain broker4: осталось 5/12 партиций» / «ребалансировка: 7/20»), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Перебалансировать» (модал-предупреждение о переносе данных между брокерами; живая заявка — «Отменить ребалансировку»; 409 — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — подпись «drain: осталось N партиций» по прогресс-ключу, кнопка активна: воркер сам дренирует и демонтирует) + кнопка «Добавить брокера» (форма resources); вкладка **Топики**: кнопка «Создать топик» (модал: name/partitions/RF/retention/minISR, дефолты из config кластера, клиентская валидация-зеркало 02 §10.3), per-row бейджи lifecycle-заявок («создание: N партиций, RF R» / «удаление…» + возраст/автор) с кнопкой «Отменить заявку», красная per-row «Удалить топик» (подтверждение с вводом имени топика: «данные будут удалены безвозвратно; заявка исполнится в течение ~15 с, до этого можно отменить»); create-заявка без факт-ключа — «виртуальная» строка (факт-поля `—`, параметры в бейдже); подпись: «создание/удаление топиков — заявками панели; внешние изменения (CLI/клиенты) подхватываются автосинком»; `canMutate` = Active; вкладка **Группы** — волна C (до неё — заглушка) |
 
 ### 7.3.1. Форма «Создать kafka-кластер»
 
@@ -821,7 +821,7 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 `AdminPanel:KafkaAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
 ротации удаляется демонтажем кластера (arch/16 X-фазы), исполнением или
-возрастным таймаутом не-начатой (arch/16 §5, t10) — вечный
+возрастным таймаутом не-начатой (arch/16 §5) — вечный
 `kafka-rotation-pending` невозможен по построению; зависание ДО снятия
 видно stale-алертом, факт снятия — алертом исхода.
 
@@ -832,11 +832,11 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-broker-not-running` | critical | Active-кластер, broker state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `kafka-endpoints-missing` | critical | Active без `endpoints` |
 | `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` или `/kafkaworker/admin_rotations/<C>` |
-| `kafka-ca-rotation-pending` | info | живая заявка CA-ротации `/kafkaworker/ca_rotations/<C>` (t10) |
-| `kafka-rotation-stale` | warning | заявка ротации (app/admin) жива дольше `RotationStaleSeconds` (1800; до таймаута воркера остаётся полчаса) — t10 |
-| `kafka-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) — t10 |
-| `kafka-rebalance-stale` | warning | заявка ребалансировки жива дольше `RotationStaleSeconds` (1800) — t10 |
-| `kafka-ticket-expired` | warning | `/kafkaworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера (не-начатая, возраст > `RotationTicketTimeoutSec`); Hint: устранить причину reason и повторить заявку (t10) |
+| `kafka-ca-rotation-pending` | info | живая заявка CA-ротации `/kafkaworker/ca_rotations/<C>` |
+| `kafka-rotation-stale` | warning | заявка ротации (app/admin) жива дольше `RotationStaleSeconds` (1800; до таймаута воркера остаётся полчаса) |
+| `kafka-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) |
+| `kafka-rebalance-stale` | warning | заявка ребалансировки жива дольше `RotationStaleSeconds` (1800) |
+| `kafka-ticket-expired` | warning | `/kafkaworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера (не-начатая, возраст > `RotationTicketTimeoutSec`); Hint: устранить причину reason и повторить заявку |
 | `kafka-rebalance-pending` | info | живая заявка ребалансировки `/kafkaworker/rebalances/<C>` |
 | `kafka-reassignment-stale` | warning | прогресс-ключ `/kafkaworker/reassignments/<C>` жив, но `partitions_remaining` не двигается дольше `ReassignStaleSec` (900) — drain/баланс буксует |
 | `kafka-key-malformed` | warning | kafka-ключ не разобран (parseError) |
@@ -844,11 +844,11 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-desired-stale` | warning | desired не снят дольше `StaleDesiredSec` (600) — волна C |
 | `kafka-topic-under-replicated` | warning | проба: партиции с USR>0 — волна C |
 | `kafka-group-lag-high` | warning | проба: totalLag > `GroupLagMessages` (100000) — волна C |
-| `kafka-topic-create-pending` | info | живая create-заявка `topics/<T>/desired.create` (t01) |
-| `kafka-topic-delete-pending` | warning | живая delete-заявка `topics/<T>/desired.delete` (t01 — деструктивная близка к исполнению) |
-| `kafka-lifecycle-stale` | warning | lifecycle-заявка не снята дольше `StaleDesiredSec` (600) — воркер буксует/кластер лежит (t01) |
+| `kafka-topic-create-pending` | info | живая create-заявка `topics/<T>/desired.create` |
+| `kafka-topic-delete-pending` | warning | живая delete-заявка `topics/<T>/desired.delete` (деструктивная, близка к исполнение) |
+| `kafka-lifecycle-stale` | warning | lifecycle-заявка не снята дольше `StaleDesiredSec` (600) — воркер буксует/кластер лежит |
 
-## 8. Valkey: панель и REST API (`/api/valkey/*`) — t03
+## 8. Valkey: панель и REST API (`/api/valkey/*`)
 
 Четвёртый домен (etcd-контракт — 02 §11, канон ключей — arch/20; мутации
 исполняет ValkeyWorker, arch/21 §1.1). Источник данных — отдельный снапшот
@@ -881,10 +881,10 @@ ValkeyClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
 ValkeyClusterDto: name, state, nodesTotal(=1), maxmemoryBytes,
     maxmemoryPolicy, createdUnix, endpoints, nodesList[ValkeyNodeDto],
     rotation{role(app|admin), requestedUnix, requestedBy}?(nullable),
-    caRotation{requestedUnix, requestedBy}?(nullable — t10),
+    caRotation{requestedUnix, requestedBy}?(nullable),
     ticketOutcome{kind(password-app|password-admin|ca), outcome(expired|done),
     reason?, requestedUnix, requestedBy, finishedUnix}?(nullable — исходов
-    не было; t10)
+    не было)
 ValkeyNodeDto: name(=node1), state(raw: NOT_INITIALIZED|PROVISIONING|
     RUNNING|UNREACHABLE|REMOVING|TO_REMOVE), cpu, memGi, diskGi
     (nullable — заявка resources), live(bool|null — из пробы PING;
@@ -928,7 +928,7 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 `AdminPanel:ValkeyAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
 ротации удаляется исполнением E2/E3/K-C, демонтажом кластера (arch/21 X2)
-или возрастным таймаутом не-начатой (arch/21 §5 E/K, t10) — вечный
+или возрастным таймаутом не-начатой (arch/21 §5 E/K) — вечный
 `valkey-rotation-pending` невозможен по построению; зависание ДО снятия
 видно stale-алертом, факт снятия — алертом исхода.
 
@@ -939,9 +939,9 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 | `valkey-node-not-running` | critical | Active-кластер, нода state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `valkey-endpoints-missing` | critical | Active без `endpoints` (arch/20 §5) |
 | `valkey-rotation-pending` | info | живая заявка ротации `/valkeyworker/rotations/<C>` |
-| `valkey-rotation-stale` | warning | заявка ротации креда жива дольше `RotationStaleSeconds` (1800) — t10 |
-| `valkey-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) — t10 |
-| `valkey-ticket-expired` | warning | `/valkeyworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера; Hint: устранить причину reason и повторить заявку (t10) |
+| `valkey-rotation-stale` | warning | заявка ротации креда жива дольше `RotationStaleSeconds` (1800) |
+| `valkey-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) |
+| `valkey-ticket-expired` | warning | `/valkeyworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера; Hint: устранить причину reason и повторить заявку |
 | `valkey-key-malformed` | warning | valkey-ключ не разобран (parseError; arch/20 §5) |
 | `worker-api-unreachable` | critical | нет живых ключей `/valkeyworker/api/` (02 §2.3.3) — valkey-мутации панели 503; target `valkeyworker` |
 | `worker-unhealthy` | warning | живой ключ, но `/healthz` ≠ 200 (02 §2.3.3); target `valkeyworker/<id>` |

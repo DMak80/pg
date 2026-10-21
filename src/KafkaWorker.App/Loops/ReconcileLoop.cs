@@ -276,18 +276,8 @@ internal sealed class ReconcileLoop(
         }
     }
 
-    private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
+    // Failover: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
         string[] endpoints, string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 }

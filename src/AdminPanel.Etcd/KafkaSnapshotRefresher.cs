@@ -173,23 +173,18 @@ public sealed class KafkaSnapshotRefresher(
         string prefix,
         CancellationToken ct)
     {
-        var start = Array.IndexOf(endpoints, active);
-        Exception? last = null;
-        for (var i = 0; i < endpoints.Length; i++)
+        var start = Math.Max(Array.IndexOf(endpoints, active), 0);
+        var result = await EtcdEndpointFailover.CallAsync(endpoints, async (endpoint, token) =>
         {
-            var endpoint = endpoints[(start + i) % endpoints.Length];
-            var result = await gateway.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-            {
+            var range = await gateway.RangeAsync(endpoint, prefix, token);
+            if (range.IsSuccess)
                 _activeEndpoint = endpoint;
-                return result;
-            }
-
-            last = result.Error!;
-        }
-
-        return Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(
-            $"all endpoints failed to answer range {prefix}: {last?.Message}"));
+            return range;
+        }, ct, start);
+        return result.IsSuccess
+            ? result
+            : Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(
+                $"all endpoints failed to answer range {prefix}: {result.Error!.Message}"));
     }
 
     // Отказ тика: прежние данные/BuiltAtUtc, Reachable=false, счётчик растёт.

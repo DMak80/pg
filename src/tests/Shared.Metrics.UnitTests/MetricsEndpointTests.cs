@@ -95,7 +95,7 @@ public sealed class MetricsEndpointTests
     [Fact]
     public async Task MetricsEndpoint_ProcessLabelValues_Canonical()
     {
-        // Arrange: все фактические op журналов обоих воркеров (arch/18 §2.2, канон = факт;
+        // Arrange: все фактические op журналов воркеров (arch/18 §2.2, канон = факт;
         // ревью Ф4.2-1: rollback/finalize — MoveProcess.cs:592/691/755)
         var pgOps = new[]
         {
@@ -106,11 +106,15 @@ public sealed class MetricsEndpointTests
         {
             "provision", "deprovision", "add-broker", "remove-broker", "reassign", "rotate", "regen", "topicsync",
         };
+        var valkeyOps = new[] { "provision", "deprovision", "rotate" };
+        var s3Ops = new[] { "provision", "deprovision", "add-node", "remove-node", "rotate-secrets" };
+        // Подавляемые ops (arch/18 §2.2): фазовых серий не эмитят вовсе.
+        var suppressedOps = new[] { "supervise", "evacuate", "backup-orphan-sweeper", "healing-portalloc" };
         var app = await StartHostAsync();
         try
         {
             var sut = app.Services.GetRequiredService<WorkerMetricsInstrumentation>();
-            foreach (var op in pgOps.Concat(kafkaOps))
+            foreach (var op in pgOps.Concat(kafkaOps).Concat(valkeyOps).Concat(s3Ops))
             {
                 sut.OnJournalPhase("demo", op, "planned");
 
@@ -118,16 +122,22 @@ public sealed class MetricsEndpointTests
                 sut.OnJournalPhase("demo", op, "done");
             }
 
+            foreach (var op in suppressedOps)
+                sut.OnJournalPhase("demo", op, "started");
+
             var (code, body) = await GetAsync(app);
 
-            // Assert: после done фазовых серий нет вовсе; каждая op посчитана ok.
+            // Assert: после done фазовых серий нет вовсе; каждая op посчитана ok;
+            // подавляемые ops фазовых серий не создали (вечные серии не копятся).
             // Факт экспортёра 1.16.0-beta.1: системный лейбл otel_scope_name (= имя
             // Meter) добавляется к сериям — фиксируем (канон = факт, arch/18 §2.2).
             code.Should().Be(HttpStatusCode.OK);
             body.Should().NotContain("worker_process_phase_duration_seconds{");
             body.Should().Contain("otel_scope_name=\"TestWorker\"");
-            foreach (var op in pgOps.Concat(kafkaOps).Distinct())
+            foreach (var op in pgOps.Concat(kafkaOps).Concat(valkeyOps).Concat(s3Ops).Distinct())
                 body.Should().Contain($"operation=\"{op}\",result=\"ok\"");
+            foreach (var op in suppressedOps)
+                body.Should().NotContain($"process=\"{op}\"");
         }
         finally
         {

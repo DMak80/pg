@@ -39,7 +39,7 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
 
         // 2) Клэйм имени: compare NotExists + put config (атомарная уникальность, arch/02 §9.2)
         var plan = ClusterCreatePlan.Build(request, time.GetUtcNow().ToUnixTimeSeconds());
-        var claim = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
+        var claim = await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
             endpoint,
             TxnRequest.Of([TxnCompare.NotExists(plan.ConfigKey)], [new TxnOp.Put(plan.ConfigKey, plan.ConfigValue, null)]),
             ct));
@@ -51,7 +51,7 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
         // 3) Пакет PUT (без txn: max-txn-ops=128 не вмещает 2N+ ключей — arch/02 §9.2)
         foreach (var put in plan.Puts)
         {
-            var putResult = await EtcdFailover.CallAsync(endpoints,
+            var putResult = await EtcdEndpointFailover.CallAsync(endpoints,
                 endpoint => gateway.PutAsync(endpoint, put.Key, put.Value, null, ct));
             if (putResult.IsSuccess)
                 continue;
@@ -71,10 +71,10 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
     // маскирует исходную: частичный кластер безопасен (повтор создания → 409).
     private async Task CompensateAsync(ClusterCreatePlan plan, CancellationToken ct)
     {
-        await EtcdFailover.CallAsync(endpoints, endpoint => gateway.DeleteAsync(
+        await EtcdEndpointFailover.CallAsync(endpoints, endpoint => gateway.DeleteAsync(
             endpoint, $"/clusters/{plan.ConfigKey.Split('/')[2]}/", prefix: true, ct));
         foreach (var key in plan.RequestKeys)
-            await EtcdFailover.CallAsync(endpoints,
+            await EtcdEndpointFailover.CallAsync(endpoints,
                 endpoint => gateway.DeleteAsync(endpoint, key, prefix: false, ct));
     }
 }

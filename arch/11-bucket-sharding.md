@@ -112,7 +112,7 @@ failover невозможны, кэш не протухает; не может �
                                                      # кладётся txn put-if-absent — оба ключа атомарно
 /clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin"  # вход шарда
 /clusters/<C>/shards/X/replicas   → 2            # декларативное число реплик
-/clusters/<C>/shards/X/state      → "TO_REMOVE"  # маркер демонтажа (t06: пишет панель, читают PgWorker и панель; отсутствие = обычный шард)
+/clusters/<C>/shards/X/state      → "TO_REMOVE"  # маркер демонтажа (пишет панель, читают PgWorker и панель; отсутствие = обычный шард)
 /clusters/<C>/shards/X/master     → "host:6432"  # lease TTL 5с + продление, Patroni-callback on_role_change
 /clusters/<C>/buckets/routing/bucket_42 → "shard1"                  # владелец (авторитет)
 /clusters/<C>/buckets/status/bucket_42  → {"state":"SYNCING", ...}  # только при переезде
@@ -299,7 +299,7 @@ etcd на нодах кластера **не живёт** — внешний и�
 > состояние (снятие `state` и status-ключей). Скрипты этого раздела остаются
 > ручным путём для уже поднятых кластеров и стендов без PgWorker.
 
-**Декларативный add/remove-shard (t06).** Для кластеров под управлением
+**Декларативный add/remove-shard.** Для кластеров под управлением
 PgWorker панель AdminPanel заявляет новый шард переиспользованием ключей
 декларации (replicas + nodes/NOT_INITIALIZED + request_*, без dsn — его
 запишет PgWorker) и помечает демонтаж маркером `shards/<X>/state=TO_REMOVE`;
@@ -590,7 +590,7 @@ EOF
 ./scripts/abort-move.sh  --cluster C abort bucket_42 [--yes]    # отмена + уборка артефактов
 ```
 
-> **C#-путь (t01):** в кластерах под управлением PgWorker эти же операции
+> **C#-путь:** в кластерах под управлением PgWorker эти же операции
 > выполняет оркестратор по заявкам в etcd (`/pgworker/moves/<C>/bucket_<i>`,
 > формат статуса и имена артефактов pub_/sub_ — идентичны скриптам; контракт —
 > [14-pgworker.md](14-pgworker.md) §3.3/§5 F). Скрипты остаются ручным путём

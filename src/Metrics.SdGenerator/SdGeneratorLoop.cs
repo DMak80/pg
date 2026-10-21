@@ -14,7 +14,7 @@ public sealed class SdGeneratorLoop(
     /// (warning-лог, файл и last_success НЕ тронуты).</summary>
     public async Task<bool> TickAsync(CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints, ep => etcd.RangeAsync(ep, TargetMapping.PortallocPrefix, ct));
+        var range = await EtcdEndpointFailover.CallAsync(endpoints, ep => etcd.RangeAsync(ep, TargetMapping.PortallocPrefix, ct));
         if (!range.IsSuccess)
         {
             logger.LogWarning("portalloc read failed: {Error}", range.Error);

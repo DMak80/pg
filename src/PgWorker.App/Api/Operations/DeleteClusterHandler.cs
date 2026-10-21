@@ -24,7 +24,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
 
         // 2) Config напрямую: отсутствие ключа = 404.
         var configKey = $"/clusters/{name}/config";
-        var read = await EtcdFailover.CallAsync(endpoints,
+        var read = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, configKey, ct));
         if (!read.IsSuccess)
             return Result.Failed(read.Error!);
@@ -47,7 +47,7 @@ public sealed class DeleteClusterHandler(IEtcdGateway gateway, string[] endpoint
             return Result.Failed(new InvalidClusterConfigException(name));
         }
 
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, configKey, rewritten, null, ct));
         return put.IsSuccess ? Result.Success() : Result.Failed(put.Error!);
     }

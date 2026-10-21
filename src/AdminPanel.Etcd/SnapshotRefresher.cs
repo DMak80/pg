@@ -202,19 +202,13 @@ public sealed class SnapshotRefresher(
         Func<string, CancellationToken, Task<Result<T>>> call,
         CancellationToken ct)
     {
-        var start = Array.IndexOf(alive, active);
-        Exception? last = null;
-        for (var i = 0; i < alive.Length; i++)
-        {
-            var endpoint = alive[(start + i) % alive.Length];
-            var result = await call(endpoint.Url, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result.Error!;
-        }
-
-        return Result<T>.Failed(new EtcdUnreachableException(
-            $"all alive endpoints failed to answer: {last?.Message}"));
+        var result = await EtcdEndpointFailover.CallAsync(
+            alive.Select(e => e.Url).ToArray(), call, ct,
+            Math.Max(Array.IndexOf(alive, active), 0));
+        return result.IsSuccess
+            ? result
+            : Result<T>.Failed(new EtcdUnreachableException(
+                $"all alive endpoints failed to answer: {result.Error!.Message}"));
     }
 
     // Отказ тика: свежий Etcd-статус + прежние данные/BuiltAtUtc (spec §3.9).
