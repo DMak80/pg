@@ -12,8 +12,9 @@ namespace KafkaWorker.Provisioning.Processes;
 // Лестница источников адреса при утере portalloc (E9, arch/17; t05 spec §3.3):
 // 1) portalloc есть → адрес из журнала (advertise стабилен);
 // 2) журнала нет, контейнер есть (положительная инспекция) → реконструкция
-//    из docker inspect (published-порт + host) клэйм-txn version==0;
-//    контейнер не трогаем — данные неприкосновенны;
+//    из docker inspect (published-порт + host) RMW-merge по mod_revision
+//    (merge с живыми записями соседей); контейнер не трогаем — данные
+//    неприкосновенны;
 // 3) нет ни журнала, ни контейнера → брокер мёртв по S7-свидетельству →
 //    новая аллокация под клэймом locks/portalloc (S5/t90) + пересоздание +
 //    RMW endpoints — клиенты перечитают дискавери тиком.
@@ -62,9 +63,11 @@ public sealed class PortAllocHealer(
         return await ReallocateAsync(snap, broker, addresses, ct); // ветка 3 (S7)
     }
 
-    // Ветка 2: запись восстановленного закрепления put-if-absent (version==0)
-    // под глобальным клэймом; проигрыш txn → re-read (первый записавший —
-    // истина, S5). Контейнер НЕ трогаем. Контроль: клиентский порт advertised
+    // Ветка 2: запись восстановленного закрепления — RMW-merge по mod_revision
+    // под глобальным клэймом (merge с живыми записями соседей; отсутствие
+    // ключа — ревизия 0 = NotExists); проигрыш txn → re-read (первый
+    // записавший — истина, S5; нашей записи нет — retry следующим тиком).
+    // Контейнер НЕ трогаем. Контроль: клиентский порт advertised
     // env == published — расхождение journal-warning (канон — PortBindings).
     private async Task<Result<HealedAddress>> ReconstructAsync(
         KafkaClusterSnapshot snap, string broker, NodeEndpointInspection found, CancellationToken ct)
@@ -80,13 +83,14 @@ public sealed class PortAllocHealer(
         try
         {
             var key = PortAllocKey(cluster);
-            var read = await ReadPortAllocAsync(cluster, ct);
+            var read = await ReadPortAllocWithRevisionAsync(cluster, ct);
             if (!read.IsSuccess)
                 return Result<HealedAddress>.Failed(read.Error!);
-            var merged = new Dictionary<string, NodeAddress>(read.Value);
+            var (revision, pinnedAddresses) = read.Value;
+            var merged = new Dictionary<string, NodeAddress>(pinnedAddresses);
             merged[broker] = address;
             var txn = await TxnAsync(
-                TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, SerializePortAlloc(merged), null)]), ct);
+                TxnRequest.Of([CompareKeyUnchanged(key, revision)], [new TxnOp.Put(key, SerializePortAlloc(merged), null)]), ct);
             if (!txn.IsSuccess)
                 return Result<HealedAddress>.Failed(txn.Error!);
             if (!txn.Value.Succeeded)
@@ -97,6 +101,9 @@ public sealed class PortAllocHealer(
                     return Result<HealedAddress>.Failed(reread.Error!);
                 if (reread.Value.TryGetValue(broker, out var foreign))
                     address = foreign;
+                else
+                    return Result<HealedAddress>.Failed(new ApplicationException(
+                        $"portalloc {cluster} changed under the claim — retry on next tick"));
             }
         }
         finally
