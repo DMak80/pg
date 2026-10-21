@@ -84,8 +84,8 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 
 | Имя | Тип | Лейблы | Смысл |
 |---|---|---|---|
-| `worker_loop_ticks_total` | counter | `loop`, `ok` | тики циклов (Reconcile/Keepalive/Snapshot); `ok` ∈ {true,false} |
-| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер» WorkerLoopStalled — только быстрые циклы `{loop=~"reconcile\|keepalive"}`, порог 60 с: reconcile/keepalive тикают каждые 5 с; snapshot-цикл тикает раз в SnapshotIntervalMin (6 ч) и под порог не попадает — его живость закрывает SnapshotStale по `worker_snapshot_age_seconds`) |
+| `worker_loop_ticks_total` | counter | `loop`, `ok` | тики циклов (Reconcile/Keepalive/Snapshot/OrphanSweep); `ok` ∈ {true,false} |
+| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер» WorkerLoopStalled — только быстрые циклы `{loop=~"reconcile\|keepalive"}`, порог 60 с: reconcile/keepalive тикают каждые 5 с; snapshot-цикл тикает раз в SnapshotIntervalMin (6 ч) и под порог не попадает — его живость закрывает SnapshotStale по `worker_snapshot_age_seconds`; цикл `orphan-sweep` (BackupOrphanSweeperLoop, тик лидера раз в `Backups:Supervisor:IntervalSec`, дефолт 600 с; `ok` = успех прохода `SweepAsync`) — живость закрывает отдельное правило **OrphanSweepStalled** (`time() - worker_loop_last_success_timestamp_seconds{loop="orphan-sweep"} > 1800`, порог 3× дефолтного интервала; серия эмитится только лидером при `Backups:Enabled=true` — выключенная подсистема не алертится, смерть процесса ловит ServiceDown)) |
 | `worker_loop_duration_seconds` | gauge | `loop` | длительность последнего тика |
 | `worker_claims_held` | gauge | — | сколько кластеров держим под клэймом |
 | `worker_process_phase_duration_seconds` | gauge | `cluster`, `process`, `phase` | сколько секунд кластер в текущей фазе процесса (source: марк-методы фаз; смена фазы/завершение процесса сбрасывает серию) |
@@ -110,8 +110,9 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 `waiting-*`/`blocked-moving`), а также `backup-orphan-sweeper`
 (журнал домена сирот — свой ключ `/pgworker/backups/orphan-journal`
 (arch/19 §4), в work-фазовые метрики не входит) — фазовых серий НЕ
-эмитят: их живость закрывает `worker_loop_last_success_timestamp_seconds` (алерт
-WorkerLoopStalled), вечные серии не копятся.
+эмитят, вечные серии не копятся: живость `supervise`/`evacuate` закрывают клэйм-циклы
+(`loop="reconcile"` → алерт WorkerLoopStalled), живость `backup-orphan-sweeper` —
+цикл `orphan-sweep` (LoopTick по итогам SweepAsync → алерт OrphanSweepStalled).
 
 ### 2.3. Kafka-домен (коллектор KafkaWorker §4)
 
