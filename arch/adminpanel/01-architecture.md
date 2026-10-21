@@ -74,7 +74,7 @@ critical-алерт `worker-api-unreachable` (03 §4.1); чтение при э�
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».
-- **S3 live-тик панели** (t08): отдельный `BackgroundService`
+- **S3 live-тик панели**: отдельный `BackgroundService`
   `S3InventoryLoop` пишет инвентарь bucket'а бэкапов в
   `S3InventoryStore`; `SnapshotRefresher` вносит готовое состояние в
   `EtcdSnapshot.S3Storage` (по образцу `WorkerHealth`) — KV-тик не
@@ -90,10 +90,10 @@ critical-алерт `worker-api-unreachable` (03 §4.1); чтение при э�
 
 | Проект | Роль |
 |---|---|
-| `/common/` (Shared.Core, Shared.Etcd, Shared.Tls) | Общие сборки монорепо (паттерн `Shared.Metrics`, шаблон `../Puzzle` `Infrastructure.App`): `Shared.Core` — каркас (attribute-DI, `Result`, CQRS, Contexts, Traces, HealthChecks-базис, Retry); `Shared.Etcd` — etcd-клиент HTTP JSON gateway `/v3/*` (вкл. транспортные records `EtcdMember`/`EtcdAlarm`); `Shared.Tls` — хелперы mTLS-граней. Бывший `AdminPanel.Infrastructure` (t08) |
+| `/common/` (Shared.Core, Shared.Etcd, Shared.Tls) | Общие сборки монорепо (паттерн `Shared.Metrics`, шаблон `../Puzzle` `Infrastructure.App`): `Shared.Core` — каркас (attribute-DI, `Result`, CQRS, Contexts, Traces, HealthChecks-базис, Retry); `Shared.Etcd` — etcd-клиент HTTP JSON gateway `/v3/*` (вкл. транспортные records `EtcdMember`/`EtcdAlarm`); `Shared.Tls` — хелперы mTLS-граней. Бывший `AdminPanel.Infrastructure` |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>`, транспортные records etcd (`EtcdMember`/`EtcdAlarm`) — общие из `Shared.Etcd` |
 | `AdminPanel.Etcd` | Клиент etcd — общая сборка `Shared.Etcd` (`IEtcdGateway`); у панели: парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
-| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3-инвентарь бэкапов (t08: read-only обёртка AWSSDK.S3 + health-проба с фолбэком /healthz). Обогащение снапшота полями runtime |
+| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3-инвентарь бэкапов (read-only обёртка AWSSDK.S3 + health-проба с фолбэком /healthz). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
 | `tests/AdminPanel.UnitTests` | xunit v3 + FluentAssertions: парсеры etcd-ключей, `AlertEngine`, auth-логика, DTO-мапперы |
@@ -155,11 +155,10 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
   и так производные от тиков refresher'а, а меньше движущихся частей.
 - **Dev-режим**: `vite dev` с proxy `/api` → `http://localhost:5050`
   (Kestrel), CORS не нужен.
-- **Каркас SPA** (t07): `frontend/src` — общий API-клиент (fetch-обёртка с
+- **Каркас SPA**: `frontend/src` — общий API-клиент (fetch-обёртка с
   обработкой 401/ProblemDetails + типы DTO из [03](03-panels.md) §2),
-  layout с навигацией и страницей Login; остальные панели — заглушки,
-  наполняются задачами t08/t09. Guard: layout при монтировании проверяет
-  `GET /api/auth/me`; любой 401 от API (кроме запроса самой формы логина)
+  layout с навигацией и страницей Login; остальные панели построены на каркасе.
+  Guard: layout при монтировании проверяет `GET /api/auth/me`; любой 401 от API (кроме запроса самой формы логина)
   → редирект на `/login`.
 - **Раздача SPA**: статику и SPA-fallback (`index.html` на неизвестных
   путях) хост отдаёт без авторизации; неизвестные пути `/api/*` при этом —
@@ -177,7 +176,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | `AdminPanel:Probes` | `PatroniEnabled` (true), `SqlEnabled` (true), `Interval` (15 c), `Timeout` (3 c), `Password` (для SQL; DSN берётся из etcd), `HostMap` (пусто; словарь «etcd-адрес ноды `host:port`» → «адрес, достижимый с хоста панели») | live-пробы; отключаются целиком; `HostMap` — override адресов проб для локальных стендов ([02](02-etcd-contract.md) §6, [04](04-local-stand.md) §2.3) |
 | `AdminPanel:Auth` | `Username`, `Password`, `PasswordHash`, `SessionHours` (8), `AllowHttp` (false) | аутентификация |
 | `AdminPanel:Alerts` | `StaleMoveSeconds` (600), `FrozenSeconds` (60), `ReplicaLagBytes` (16 МБ) | пороги алертов |
-| `AdminPanel:Backups` | `S3 {Endpoint, Region?, Bucket, AccessKey, SecretKey, PathStyle=true}`, `IntervalSec` (60), `TimeoutSec` (5) | грань «Хранилище бэкапов» (t08); пустой `Endpoint` — грань выключена (тик не стартует, API `configured=false`); креды только env (arch/19 §7) |
+| `AdminPanel:Backups` | `S3 {Endpoint, Region?, Bucket, AccessKey, SecretKey, PathStyle=true}`, `IntervalSec` (60), `TimeoutSec` (5) | грань «Хранилище бэкапов»; пустой `Endpoint` — грань выключена (тик не стартует, API `configured=false`); креды только env (arch/19 §7) |
 
 Секреты (SQL-пароль, пароль админа) — env-переменными поверх `appsettings.json`
 (`AdminPanel__Probes__Password` и т.п.), в git их нет.

@@ -16,12 +16,12 @@ Patroni REST/SQL (тик 15 c), 25 правил алертов.
 | Путь | Что там |
 |---|---|
 | [`arch/`](../../arch/adminpanel/README.md) | Контракт (источник истины): [архитектура](../../arch/adminpanel/01-architecture.md), [etcd-контракт](../../arch/adminpanel/02-etcd-contract.md), [панели/API](../../arch/adminpanel/03-panels.md), [dev-стенд](../../arch/adminpanel/04-local-stand.md), [roadmap](../../arch/adminpanel/roadmap/README.md) |
-| [`docs/`](INDEX.md) | Практические документы подсистем: чек-листы и грабли t01–t10 |
+| [`docs/`](INDEX.md) | Практические документы подсистем: чек-листы и грабли |
 | `src/AdminPanel.Api` | Host: Program.cs (модульная композиция), auth, REST `/api/*`, `/api/healthz`, раздача SPA |
 | `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (25 правил) |
 | `src/AdminPanel.Etcd` | etcd-клиент (общая сборка `Shared.Etcd`), парсеры, `SnapshotRefresher`/`SnapshotStore` |
 | `src/AdminPanel.Probes` | Live-пробы Patroni REST/SQL, `HostMapResolver` |
-| `src/Shared.Core` | Каркас из референса `Puzzle` (/common/, t08): attribute-DI, CQRS, `Result`, health-checks |
+| `src/Shared.Core` | Каркас из референса `Puzzle` (/common/): attribute-DI, CQRS, `Result`, health-checks |
 | `src/tests/` | Unit (xunit v3 + FluentAssertions) + Integration (Testcontainers: etcd, postgres:18) |
 | [`frontend/`](frontend/package.json) | SPA (React+Vite+TS+Mantine); сборка в `src/AdminPanel.Api/wwwroot` |
 | [`dev-stand/adminpanel/`](../../dev-stand/adminpanel/README.md) | Docker-стенд — один контур одна сеть (etcd + канонический PG-demo движком + PgWorker/ownS3 + мониторинг) и e2e-чеки |

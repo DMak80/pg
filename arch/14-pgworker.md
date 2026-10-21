@@ -22,9 +22,9 @@ AdminPanel **заявляет** кластер через **HTTP API ворке�
    на живые шарды (без логической репликации — источник недоступен) с
    карантином вернувшегося;
 5. **Переезды бакетов** (MoveProcess, §5 F) — плановые онлайн-переезды/откаты/
-   уборка/отмена по заявкам в etcd (t01);
+   уборка/отмена по заявкам в etcd;
 6. **Add/remove шарда** (§5 G/H) — подъём/демонтаж отдельного шарда живого
-   Active-кластера по декларации/маркеру от панели (t06); без автоматической
+   Active-кластера по декларации/маркеру от панели; без автоматической
    перебалансировки бакетов;
 7. **Ротация per-cluster секретов** (ClusterSecretRotator, §5 I) — смена
    app/bucket_admin/bucket_mover на всех шардах кластера по заявке из etcd
@@ -45,19 +45,18 @@ lease-клэймы в etcd, §3); смерть контролирующего и
 идемпотентны; всё значимое состояние переживает смерть контроллера (etcd +
 самих нодах).
 
-Границы (что НЕ входит): панельные кнопки ЯВНЫХ переездов бакетов — roadmap
-`t07-move-bucket-ui`; в t06 переезды инициируются только etcdctl'ом (заявки
-`/pgworker/moves/`, t01); ручной скриптовый путь остаётся для стендов без PgWorker — не
+Границы (что НЕ входит): переезды бакетов инициируются только заявками
+`/pgworker/moves/` (панель ставит их через API, adminpanel/03); ручной скриптовый путь остаётся для стендов без PgWorker — не
 смешивать с заявками в одном окне переезда; балансировка по метрикам,
 per-cluster секреты, метрики PG-репликации
 у прод-нод (scrape Patroni — arch/18 §5.4),
 управление etcd-слоем, тонкий RBAC Engine API
 (authz-плагины Docker CE) —
 подсистема бэкапов шардов (хозяин — PgWorker, механика и хранилище —
-отдельный канон [19-backups.md](19-backups.md)) —
-[roadmap/pgworker.md](roadmap/pgworker.md). Транспортная безопасность (TLS к
+отдельный канон [19-backups.md](19-backups.md)).
+Транспортная безопасность (TLS к
 Docker Engine API, SSH-туннели, RBAC/docker-группы, mTLS HTTP API) —
-t03-docker-tls-ssh (§1.1, §2.2–2.3).
+§1.1, §2.2–2.3.
 
 ---
 
@@ -122,7 +121,7 @@ restart); поле опционально (инстансы до введени�
 (при ошибке соединения — следующий; все умерли — 503 + critical-алерт
 `worker-api-unreachable`, arch/adminpanel/03 §4.1).
 
-**Аутентификация — mTLS (t03)**: вся HTTP-грань воркера (вкл. `/healthz` и
+**Аутентификация — mTLS**: вся HTTP-грань воркера (вкл. `/healthz` и
 `/metrics`) обслуживается только по TLS; клиенты (панель, стендовый сид,
 скрейп Prometheus, docker-HEALTHCHECK) аутентифицируются клиентским
 сертификатом, подписанным per-install API-CA (единая пакета с KafkaWorker —
@@ -177,7 +176,7 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover + `rest_password`) | 02 §9.8 |
 | `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда; опциональное `source_pool` — имя пула `/s3/clusters/` DR-источника: данные старого кластера лежат в другом пуле; отсутствие — собственный пул кластера policy.s3; валидация поля — живое чтение `/s3/clusters/<C>/config`: пул существует и не `TO_REMOVE`, иначе 400 по полю `source_pool`) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
-| `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (t06; замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (reliability t02; валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется); тело дополнительно принимает `"s3":{"pool","write_master","write_replica"}` (arch/19 §4; замещение целиком — как drill): валидация — 400 по полям: `pool` существует в `/s3/clusters/` (живое чтение) и не `TO_REMOVE`, имена списков — инстансы пула (существует `nodes/<I>/placement`), без дублей внутри списка, списки непустые (пустой список = «не выбрано» — это отсутствие секции целиком), `pool` обязателен при заданных списках; отсутствие секции `s3` — удаление из policy (бэкапы кластера выключаются) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
+| `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется); тело дополнительно принимает `"s3":{"pool","write_master","write_replica"}` (arch/19 §4; замещение целиком — как drill): валидация — 400 по полям: `pool` существует в `/s3/clusters/` (живое чтение) и не `TO_REMOVE`, имена списков — инстансы пула (существует `nodes/<I>/placement`), без дублей внутри списка, списки непустые (пустой список = «не выбрано» — это отсутствие секции целиком), `pool` обязателен при заданных списках; отсутствие секции `s3` — удаление из policy (бэкапы кластера выключаются) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/restart` | graceful self-stop инстанса (перезапуск контейнера — docker-политикой) | etcd НЕ пишет: 202 → `StopApplication` (§1.1 выше); применение серверного серта из `/workers/api_tls/pgworker` — при следующем старте |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |
@@ -230,7 +229,7 @@ keepalive цикл 1 с, TTL 5 с). Внутри контейнера всё о�
 работает и в plain, и в swarm (у swarm нет host-network и «подов»; sidecar'ы
 отдельными сервисами громоздки).
 
-**Канонические тайминги Patroni (t09)**: `ttl=20, loop_wait=1,
+**Канонические тайминги Patroni**: `ttl=20, loop_wait=1,
 retry_timeout=3` (плюс `synchronous_mode=true`; `synchronous_mode_strict` —
 НЕ глобальная константа, а per-cluster опция из `/clusters/<C>/config`, §3:
 отсутствие поля = `true`, дефолт durability-first; bootstrap ноды подставляет
@@ -240,7 +239,7 @@ retry_timeout=3` (плюс `synchronous_mode=true`; `synchronous_mode_strict` �
 Patroni 4.x валидирует динамический конфиг жёсткими полами — `loop_wait≥1`,
 `retry_timeout≥3`, **`ttl≥20`** — и правилом `loop_wait + 2*retry_timeout ≤
 ttl`; заниженное значение молча поднимается до пола и записывается обратно в
-DCS (t09: заявленный ttl=5 Patroni 4.1 заменил на 20 — «failover за 5с» через
+DCS (заявленный ttl=5 Patroni 4.1 заменил на 20 — «failover за 5с» через
 ttl недостижим; бюджет смены лидера — §5 C). Значения задаются в
 `bootstrap.dcs` SPILO_CONFIGURATION (применяется при ПЕРВОЙ инициализации
 DCS-кластера, далее действует динамический конфиг из etcd) и **гарантируются
@@ -273,10 +272,10 @@ add-shard/пересоздание/rebuild) от актуальных заяво
 следствие — дрейф pg-конфига между нодами шарда при изменении заявок
 работающего кластера: ноды, поднятые ранее, продолжают работать на прежнем
 конфиге — консистентность на операторе). Конвергенция pg-параметров
-работающих нод реализована (t11): желаемый набор — единый источник и для
+работающих нод реализована: желаемый набор — единый источник и для
 bootstrap (SPILO_CONFIGURATION), и для живого конфига (DCS
 `postgresql.parameters` через PATCH /config, механизм §5 C); bootstrap и
-конвергенция не могут разойтись по определению. Факт среды (урок t11, Spilo
+конвергенция не могут разойтись по определению. Факт среды (Spilo
 4.1-p2): `bootstrap.dcs.parameters` при инициализации ноды НЕ попадают ни в
 живой DCS-конфиг (`/config`), ни в postgresql.conf — Spilo пересчитывает
 часть значений сам (например `shared_buffers` — из памяти контейнера).
@@ -321,7 +320,7 @@ rebuild — пересоздание контейнера пишет и новы
   выявляется сверкой при ensure и лечится по канону идемпотентности
   (агент — пересозданием; нода с данными — переподключением к сети
   кластера `docker network connect`). Дополнительно, при заданном
-  `PgWorker:Docker:ScrapeNetwork` (t15 — имя docker-сети контура мониторинга
+  `PgWorker:Docker:ScrapeNetwork` (имя docker-сети контура мониторинга
   поставки) канонические ноды Ensure-attach'ятся движком к этой сети (поверх
   `pgw-net-<C>`, идемпотентно по inspect; wal-агенты НЕ подключаются — им
   scrape-сеть не нужна). Сеть контура движком НЕ создаётся и НЕ удаляется
@@ -389,7 +388,7 @@ data-каталог создаётся от root и недоступен patroni
   `ssh://user@10.0.1.11[:22]` (SSH-туннель `PgWorker:Docker:Ssh`).
   Каждый хост — свой клиент Docker Engine API (per-host connection).
   Клиент Engine API — общая сборка трёх воркеров `Shared.Docker`
-  (унификация t07: три копии движка объединены; SSH/TLS — опции фабрики,
+  (три копии движка объединены; SSH/TLS — опции фабрики,
   доступные всем доменам; create при отсутствии образа — pull+retry).
 - PgWorker сам вычисляет placement (§2.4) и создаёт контейнеры на выбранных
   хостах: `POST /containers/create?name=pgw-<C>-<X>-<n>` → `start`.
@@ -401,7 +400,7 @@ data-каталог создаётся от root и недоступен patroni
   (§2.2.1); plaintext `tcp://…:2375` — не канон (допустим в dev/тестах,
   warning-лог воркера).
 
-#### 2.2.1. Транспорт к Engine API: TLS, SSH-туннели, RBAC (t03)
+#### 2.2.1. Транспорт к Engine API: TLS, SSH-туннели, RBAC
 
 Engine API = root на docker-хосте: транспорт и доступ к нему защищаются
 per-install docker-PKI и каноном хостов (Docker CE тонкого RBAC не имеет —
@@ -440,7 +439,7 @@ authz-плагины вне скоупа, граница зафиксирова�
   воркера = root всех docker-хостов установки → серт в env-секрете, ротация —
   перегенерация пакета.
 - **Реализация транспорта** (unix / tcp+TLS / ssh-туннель с кэшем и
-  reconnect, docker-PKI-материал) — общая сборка `Shared.Docker` (t07);
+  reconnect, docker-PKI-материал) — общая сборка `Shared.Docker`;
   env-секреты `PGW_DOCKER_TLS_*`/`PGW_DOCKER_SSH_*` — pg-слой `PgWorker.App`
   (`DockerEnvBindings`).
 
@@ -489,7 +488,7 @@ authz-плагины вне скоупа, граница зафиксирова�
    каноническая нода нашего провижининга. У усыновлённой ноды `patroni`/`doorman`
    могут быть `0` (внешние ноды без Patroni-REST/doorman в этом контейнере —
    Patroni-REST может жить сайдкаром, живость такой ноды — SQL-проба, §5 C)
-   + опциональные `"alias"`/`"net"` (t15): сетевая идентичность ноды для
+   + опциональные `"alias"`/`"net"`: сетевая идентичность ноды для
    скрейпа — пишутся ТОЛЬКО каноническим нодам при заданном
    `PgWorker:Docker:ScrapeNetwork` (`alias` = полное docker-имя
    `pgw-<C>-<X>-<n>`, глобально уникально, резолвится user-defined DNS сети
@@ -499,7 +498,7 @@ authz-плагины вне скоупа, граница зафиксирова�
    dsn/endpoints/панельные пробы (потребитель один — file_sd-генератор
    [18](18-metrics.md) §5.4); записи без полей — легаси/деградационный
    контур.
-   **Глобальный portalloc-клэйм** (t90): довыделение новых троек (недобор
+   **Глобальный portalloc-клэйм**: довыделение новых троек (недобор
    нод, а не переиспользование закреплений) — глобально взаимоисключающая
    секция «чтение занятости (docker ∪ portalloc соседей) → выбор троек →
    запись `/pgworker/portalloc/<C>`»: выполняется только держателем клэйма
@@ -567,7 +566,7 @@ S3-хранилищем поставки; `pgw-net-<C>` не используе�
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).
 Масштабирование — N реплик: координацию разбирает etcd (§3).
 
-Деплой-рецепт поставки ≥2 инстансов (t07): `deploy/docker-compose.yml` поднимает
+Деплой-рецепт поставки ≥2 инстансов: `deploy/docker-compose.yml` поднимает
 **два** инстанса по умолчанию — SPOF надзора устраняется дефолтом, а не опцией.
 Каждый инстанс — отдельный сервис того же образа с уникальным хост-портом
 публикации API (`PGW_API_HOST_PORT` / `PGW_API_HOST_PORT2`, ряд 8080/8083) и
@@ -598,7 +597,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 |---|---|
 | `/clusters/<C>/config` | константы (buckets=N, dbname) + `state` (NOT_INITIALIZED/TO_REMOVE/отсутствует) |
 
-Формат config-JSON (t06) дополнен полем `"synchronous_mode_strict"?: true|false`
+Формат config-JSON дополнен полем `"synchronous_mode_strict"?: true|false`
 — per-cluster HA-режим: отсутствие поля или не-bool значение = `true`
 (durability-first: strict-кластер при отсутствии sync-standby блокирует
 запись). Пишут ТОЛЬКО API создания (POST /api/clusters) и мутации
@@ -611,11 +610,11 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/clusters/<C>/buckets/status/bucket_<i>` | `NOT_INITIALIZED` — снять после создания схемы; SYNCING/FROZEN/ABORTING — незавершённый переезд (эвакуация такого бакета запрещена) |
 | `/service/<scope>/…` (scope=`<C>-<X>`) | Patroni DCS: `leader`, `members/<name>`, `initialize` — подтверждение поднятия HA-кластера |
 | `/service/<scope>/request_{cpu,mem,disk}` | заявки ресурсов на ноду (лимиты контейнера/сервиса) |
-| `/clusters/<C>/shards/<X>/state` | маркер демонтажа шарда `TO_REMOVE` (пишет ТОЛЬКО панель; отсутствие = обычный шард; t06) |
+| `/clusters/<C>/shards/<X>/state` | маркер демонтажа шарда `TO_REMOVE` (пишет ТОЛЬКО панель; отсутствие = обычный шард) |
 | `/clusters/<C>/app_user` | per-cluster логин приложения; значение `"app"`; пишет ТОЛЬКО PgWorker (P1.5 ensure, txn put-if-absent); читают PgWorker (роли) и приложение |
 | `/clusters/<C>/app_password` | per-cluster пароль приложения; строка 32 симв `[A-Za-z0-9]`; те же писатель/читатели; удаляется с префиксом кластера (D2); ротация — процесс I по заявке `/pgworker/rotations/<C>` (§3.3) |
-| `/clusters/<C>/mover_password` | per-cluster пароль роли `bucket_mover` (REPLICATION — подписки переездов P2/P3); строка 32 симв `[A-Za-z0-9]`; имя роли фиксировано — отдельного user-ключа нет; пишет ТОЛЬКО PgWorker (ensure P1.5/adopt, txn put-if-absent; env `PGW_BUCKET_MOVER_PASSWORD` — fallback до ensure, t02 §4); читает PgWorker (mover-DSN переездов/проб); ротация — процесс I |
-| `/clusters/<C>/bucket_admin_user` | per-cluster логин DSN-точки входа; канон после t02 — ключ etcd: ensure P1.5/adopt (значение из config или `"bucket_admin"`, txn put-if-absent); порядок чтения: ключ → config → env `PGW_BUCKET_ADMIN_USER`; пишет/читает PgWorker |
+| `/clusters/<C>/mover_password` | per-cluster пароль роли `bucket_mover` (REPLICATION — подписки переездов P2/P3); строка 32 симв `[A-Za-z0-9]`; имя роли фиксировано — отдельного user-ключа нет; пишет ТОЛЬКО PgWorker (ensure P1.5/adopt, txn put-if-absent; env `PGW_BUCKET_MOVER_PASSWORD` — fallback до ensure); читает PgWorker (mover-DSN переездов/проб); ротация — процесс I |
+| `/clusters/<C>/bucket_admin_user` | per-cluster логин DSN-точки входа; канон — ключ etcd: ensure P1.5/adopt (значение из config или `"bucket_admin"`, txn put-if-absent); порядок чтения: ключ → config → env `PGW_BUCKET_ADMIN_USER`; пишет/читает PgWorker |
 | `/clusters/<C>/bucket_admin_password` | per-cluster пароль DSN-точки входа; тот же ensure и порядок чтения (ключ → config → env `PGW_BUCKET_ADMIN_PASSWORD`); попадает в dsn-ключи шардов (перезапись при ротации, §5 I); панель не читает |
 | `/clusters/<C>/shards/<X>/nodes/<n>/app_params` | per-node серверные параметры подключения (libpq `keyword=value` через пробел, дефолт `sslmode=require` из `PgWorker:AppParams:Default`); пишет ТОЛЬКО PgWorker put-if-absent (существующее значение — ручные правки оператора — НЕ перезаписывается); ensure в provisioning P2.5'/AddShard A5 и миграционно в надзоре C; читает приложение (concat к DSN, [11](11-bucket-sharding.md) §3); панель не читает |
 
@@ -623,10 +622,10 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 
 | Ключ | Когда | Значение |
 |---|---|---|
-| `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster — канон ключи `bucket_admin_*` (t02 §3.1), порядок чтения ключи → config → env; порты — выделенные аллокатором, §2.4; app-секрет в DSN не попадает никогда) |
+| `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster — канон ключи `bucket_admin_*`, порядок чтения ключи → config → env; порты — выделенные аллокатором, §2.4; app-секрет в DSN не попадает никогда) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | весь жизненный цикл | таблица состояний §5 |
 | `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [11](11-bucket-sharding.md) §2, панели 02 §2.1) |
-| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`); `synchronous_mode_strict` (t06) — переносится из прочитанного config БЕЗ изменения (пер-кластерная опция не стирается: созданный со strict=false кластер не «молча» становится strict) |
+| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`); `synchronous_mode_strict` — переносится из прочитанного config БЕЗ изменения (пер-кластерная опция не стирается: созданный со strict=false кластер не «молча» становится strict) |
 | `/clusters/<C>/…` (весь префикс) | TO_REMOVE, финал | `del --prefix` |
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
 | `/service/<C>-<X>/` (весь scope) | TO_REMOVE, после удаления нод | `del --prefix` (guard: контейнеров/сервисов нет) |
@@ -645,7 +644,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 без правок), все `status/bucket_<i>` удалены (бакеты ACTIVE), у каждого
 шарда есть `dsn`, у каждой ноды `state=RUNNING`.
 
-Дельта add/remove шарда живого кластера (t06; процессы §5 G/H):
+Дельта add/remove шарда живого кластера (процессы §5 G/H):
 
 | Ключ | Когда | Действие |
 |---|---|---|
@@ -674,15 +673,15 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 |---|---|---|
 | `/pgworker/leader` | lease TTL 15 с | глобальный лидер для singleton-задач (регулярные снапшоты P12). Value: `{"instance":"<id>","since_unix":…}`. Захват: txn `version==0` + put-with-lease; продление keepalive раз в 5 с. Умер лидер → lease истёк → любой другой захватывает. |
 | `/pgworker/claims/<C>` | lease TTL 15 с | **пер-кластерный клэйм** работы: exclusivity обработки кластера одним инстансом. Value: `{"instance":"<id>","since_unix":…,"phase":…}`. Захват txn `version==0` + put-with-lease; держатель продлевает. Takeover: lease истёк → ключ исчез сам → txn другого инстанса succeeds. |
-| `/pgworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t90, §2.4): взаимоисключение секции довыделения портов «чтение занятости → выбор троек → запись `/pgworker/portalloc/<C>`» (provision P1 / add-shard / adoption-реплан) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
-| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?,"last_failover"?,"last_rebuild"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. Поля ретраев (2026-09-01): `fail_count` — подряд идущие фейлы (сбрасывается при успехе/`done`), `fail_first_unix` — первый фейл серии (возраст проблемы; живёт до закрытия серии), `retry_not_before_unix` — до какого времени тики процесса — skip (бэкофф §5 A); переносятся записями фаз внутри серии. Читает панель (алерт `provision-stuck`, arch/adminpanel/02 §2.3.1) и оператор. Одна запись на процесс — «последняя фаза побеждает»: каждая фаза/тик перезаписывает ключ, журнал — НЕ лог-история (счёт событий/вхождений по нему невозможен, урок t11); наблюдаемость «мутация происходит/не происходит» — по mod_revision целевого ключа (идемпотентность конвергенции DCS проверяется стабильностью mod_revision `/service/<scope>/config`, §5 C). Поля HA-фактов надзора (последний факт каждого вида, без истории): `last_failover` — недоступность лидера HA-scope, завершившаяся сменой лидера: `{"shard":"<X>","node":"<n>","cause":"accelerated"|"elections","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`; `last_rebuild` — пересоздание ноды: `{"shard":"<X>","node":"<n>","cause":"auto-dead"|"operator-recreate","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`. `detected_unix` — первый тик недоступности из трека `unreachable` (для operator-recreate живой ноды — момент исполнения маркера); `resolved_unix`/`duration_sec` отсутствуют — событие открыто (идёт сейчас; takeover продолжает от сохранённого `detected_unix`). Длительность — от первого тика недоступности до работоспособности (окно детекции входит — честный RTO). Новое событие того же вида перезаписывает поле. Владелец полей — надзор (единственный писатель); фазовые записи процессов переносят оба поля (как `unreachable`). |
+| `/pgworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (§2.4): взаимоисключение секции довыделения портов «чтение занятости → выбор троек → запись `/pgworker/portalloc/<C>`» (provision P1 / add-shard / adoption-реплан) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
+| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?,"last_failover"?,"last_rebuild"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. Поля ретраев (2026-09-01): `fail_count` — подряд идущие фейлы (сбрасывается при успехе/`done`), `fail_first_unix` — первый фейл серии (возраст проблемы; живёт до закрытия серии), `retry_not_before_unix` — до какого времени тики процесса — skip (бэкофф §5 A); переносятся записями фаз внутри серии. Читает панель (алерт `provision-stuck`, arch/adminpanel/02 §2.3.1) и оператор. Одна запись на процесс — «последняя фаза побеждает»: каждая фаза/тик перезаписывает ключ, журнал — НЕ лог-история (счёт событий/вхождений по нему невозможен); наблюдаемость «мутация происходит/не происходит» — по mod_revision целевого ключа (идемпотентность конвергенции DCS проверяется стабильностью mod_revision `/service/<scope>/config`, §5 C). Поля HA-фактов надзора (последний факт каждого вида, без истории): `last_failover` — недоступность лидера HA-scope, завершившаяся сменой лидера: `{"shard":"<X>","node":"<n>","cause":"accelerated"|"elections","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`; `last_rebuild` — пересоздание ноды: `{"shard":"<X>","node":"<n>","cause":"auto-dead"|"operator-recreate","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`. `detected_unix` — первый тик недоступности из трека `unreachable` (для operator-recreate живой ноды — момент исполнения маркера); `resolved_unix`/`duration_sec` отсутствуют — событие открыто (идёт сейчас; takeover продолжает от сохранённого `detected_unix`). Длительность — от первого тика недоступности до работоспособности (окно детекции входит — честный RTO). Новое событие того же вида перезаписывает поле. Владелец полей — надзор (единственный писатель); фазовые записи процессов переносят оба поля (как `unreachable`). |
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J; +опц. `"alias"`/`"net"` сетевой идентичности при PgWorker:Docker:ScrapeNetwork, §2.4 п.2) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
 | `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI — только сводка инстансов на грани «Воркеры» (03 §3) |
-| `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
+| `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену: `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 | `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_mover, bucket_admin И `rest_password` (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда + rolling-пересоздание нод для `rest_password` → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`+`rest_password`, перезапись dsn-ключей, del заявки; для rest — rolling-пересоздание + txn-коммит). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
-| `/pgworker/etcd-snapshots` | обычный | **статус выгрузки снапшотов etcd в S3** (reliability t08): `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix":N,"last_object":"etcd/snapshot-<id>.db","last_sha256":"<hex>","size_bytes":N,"interval_min":360,"error"?:"…"}`. Каждый снятый слепок выгружается; статус-ключ обновляется после каждой выгрузки. `last_uploaded_unix` — семантика «покрытия», не времени put-запроса: метка снятия последнего слепка, чьё содержимое подтверждённо доставлено в S3 фактическим upload'ом; поле двигается каждым успешным проходом sink'а (иначе детект отставания и stale-алерт врут на живом контуре). `last_object` — объект последней выгрузки, реально лежащий в S3; `last_sha256` — sha256 этой выгрузки (наблюдаемость). Пишет ТОЛЬКО инстанс PgWorker, выполнивший экспорт-операцию (лидер снапшотов или процесс в точках изменений — put одним ключом без RMW); панель читает (adminpanel/02 §2.3.1). Наблюдаемость; источником для восстановления НЕ является (etcd мёртв — ключа нет). |
+| `/pgworker/etcd-snapshots` | обычный | **статус выгрузки снапшотов etcd в S3**: `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix":N,"last_object":"etcd/snapshot-<id>.db","last_sha256":"<hex>","size_bytes":N,"interval_min":360,"error"?:"…"}`. Каждый снятый слепок выгружается; статус-ключ обновляется после каждой выгрузки. `last_uploaded_unix` — семантика «покрытия», не времени put-запроса: метка снятия последнего слепка, чьё содержимое подтверждённо доставлено в S3 фактическим upload'ом; поле двигается каждым успешным проходом sink'а (иначе детект отставания и stale-алерт врут на живом контуре). `last_object` — объект последней выгрузки, реально лежащий в S3; `last_sha256` — sha256 этой выгрузки (наблюдаемость). Пишет ТОЛЬКО инстанс PgWorker, выполнивший экспорт-операцию (лидер снапшотов или процесс в точках изменений — put одним ключом без RMW); панель читает (adminpanel/02 §2.3.1). Наблюдаемость; источником для восстановления НЕ является (etcd мёртв — ключа нет). |
 
 Смежный ключ вне префикса `/pgworker/` — **`/workers/api_tls/pgworker`**
 (обычный, без lease): серверный серт API воркера (`cert_pem`+`key_pem`+аудит)
@@ -710,7 +709,7 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    в БД выравнивается идемпотентным `ALTER ROLE … PASSWORD` на каждом шарде),
    `mover_password` (роль `bucket_mover`) и `bucket_admin_user`/
    `bucket_admin_password` (DSN-точка входа; попадают в dsn-ключ шарда и env
-   контейнера ноды) — t02: канон для всех трёх ролей один, ensure P1.5/R1/
+   контейнера ноды) — канон для всех трёх ролей один, ensure P1.5/R1/
    adopt txn put-if-absent (для bucket_admin вход — config JSON или генерация).
    Четвёртый per-cluster секрет — `rest_password` (etcd, ensure txn
    put-if-absent, `AppSecretGenerator`, 32 симв): basic-auth пара Patroni REST
@@ -729,11 +728,11 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    UI/API их не отдают.
 2. **per-install, из env PgWorker** (не в git, не в etcd — P12/P17):
    `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
-   `PGW_BUCKET_ADMIN_PASSWORD`, `PGW_BUCKET_MOVER_PASSWORD` — с t02 это
+   `PGW_BUCKET_ADMIN_PASSWORD`, `PGW_BUCKET_MOVER_PASSWORD` — это
    fallback-значения группы 1 ДО первого ensure (порядок чтения кредов:
    ключи etcd → config → env). `PGW_APP_ROLE_PASSWORD` исключён (app-секрет —
    только группа 1).
-3. **per-install TLS/транспорт (t03, §1.1/§2.2.1)** — env-секреты процесса,
+3. **per-install TLS/транспорт (§1.1/§2.2.1)** — env-секреты процесса,
    не в git: `PGW_API_TLS_{CERT,KEY}` (серверный серт mTLS API — с управлением
    из панели это БУТСТРАП-ФОЛЛБЭК: приоритет у etcd-ключа
    `/workers/api_tls/pgworker`, §1.1; `…_PATH` из volume),
@@ -770,7 +769,7 @@ PgWorker; панель отображает как строку — правок
 Классификация в цикле: `config.state=NOT_INITIALIZED` → Provisioning;
 `TO_REMOVE` → Deprovisioning; иначе (инициализирован) → надзор.
 
-Active-ветка после надзора выполняет scale-проход `ScaleShardsAsync` (t06):
+Active-ветка после надзора выполняет scale-проход `ScaleShardsAsync`:
 remove-кандидаты (`shards/<X>/state=TO_REMOVE`) → затем add-кандидаты
 (declared-ноды без `dsn`), по одному шард-за-тик; демонтаж освобождает
 хосты/порты до подъёма (Д13).
@@ -837,17 +836,17 @@ P2 на каждый шард X:
         docs/pgtune-calculation-spec.md) — ОДИН результат на все ноды
         прохода; сбой расчёта — фейл фазы тика (транзиент-ретрай)
    P2.1 для каждой ноды n: создать volume + контейнер/сервис с конфигом
-       (поллинг-инвариант t19 §6: create/start контейнера — долгая операция
+       (поллинг-инвариант §6: create/start контейнера — долгая операция
         медленного daemon; выполняется идемпотентными поллинг-итерациями с
         таймаутом короче окна проверки watchdog, каждая итерация — отметка
         ILoopProgress + лог elapsed; одиночный блокирующий вызов без
         поллинга оставляет слепую зону watchdog)
        (Spilo env: SCOPE=<C>-<X>, ETCD3_HOSTS=host:port (etcd v3),
         канонические тайминги ttl=20/loop_wait=1/retry_timeout=3 в
-        bootstrap.dcs (§2.1, t09: полы Patroni 4.x; гарантируются
+        bootstrap.dcs (§2.1: полы Patroni 4.x; гарантируются
         конвергенцией §5 C); `SpiloEnvBuilder` подставляет
-        `synchronous_mode_strict` из config кластера (per-cluster опция,
-        t06) в bootstrap.dcs рядом с `synchronous_mode`,
+        `synchronous_mode_strict` из config кластера (per-cluster опция)
+        в bootstrap.dcs рядом с `synchronous_mode`,
         параметры PG — merge(PGTune ∪ канон): PGTune-вывод P2.0 в порядке
         §5.2, канон P3/P4 поверх (wal_level=logical +
         sync_replication_slots + max_slot_wal_keep_size, walsenders/slots=10);
@@ -920,7 +919,7 @@ D2 удалить префикс /clusters/<C>/ (del --prefix) + точечны�
    (guard: docker-объектов не осталось) + /pgworker/moves/<C>/ +
    /pgworker/rotations/<C> + /pgworker/{portalloc,work,claims}/<C>*
    + del --prefix /pgworker/evacuations/<C>/ — журналы эвакуаций не
-   переживают удаление кластера (t06, симметрия с S3)
+   переживают удаление кластера (симметрия с S3)
 D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый клэйм; имя
    освобождается (повторное создание панели пройдёт)
 ```
@@ -948,7 +947,7 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   Лидер недоступен → ускорение
   failover (ниже) + ожидание: выборы делает Patroni; лидер-призрак станет
   репликой и обработается общим путём.
-- **Бюджет смены лидера (t09, критическое требование ≤5 с)**: канал
+- **Бюджет смены лидера (критическое требование ≤5 с)**: канал
   graceful (SIGTERM/stop) — Patroni-демоут + промоушен синхронной реплики
   ≈ `loop_wait`-циклы, ≤3–5 с; канал жёсткой смерти — истечение lease
   лидер-ключа ограничено полом Patroni 4.x `ttl≥20` (§2.1), т.е. 20+ с —
@@ -967,10 +966,10 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   кандидат — по GET /cluster), после чего промоушен происходит в пределах
   `loop_wait`. Итоговый бюджет: тик надзора + проба + loop_wait
   (e2e-профиль: ≤5 с).
-- **Конвергенция DCS-конфига (t09; pg-параметры — t11)**: раз в тик надзора
+- **Конвергенция DCS-конфига (pg-параметры)**: раз в тик надзора
   по одному узлу шарда — GET /config; расхождение с каноном (§2.1:
   ttl/loop_wait/retry_timeout/synchronous_mode + `synchronous_mode_strict`
-  с per-cluster ожиданием из config кластера (t06, не константа) +
+  с per-cluster ожиданием из config кластера (не константа) +
   `postgresql.parameters` =
   merge(PGTune ∪ канон) от актуальных заявок `request_{cpu,mem}` и опций
   `PgWorker:Pgtune`, пересчёт на каждый тик конвергенции, БЕЗ фиксации в
@@ -980,7 +979,7 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   при смене заявок или добавлен в `ExcludeParams`; «старое не живёт параллельно
   канону», включая вручную записанные оператором ключи — канал переопределения
   один: опции `PgWorker:Pgtune` + `ExcludeParams`); порядок ключей патча
-  детерминированный: тайминги → strict → параметры (t06). Динамические параметры
+  детерминированный: тайминги → strict → параметры. Динамические параметры
   Patroni применяет сам (reload в пределах loop_wait); postmaster-параметры
   (`max_connections`, `shared_buffers`, …) Patroni помечает `pending_restart`
   (GET /patroni) — применяются при ближайшем рестарте ноды (rebuild/эвакуация/
@@ -993,7 +992,7 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   ноды по остаточному ресурсу нельзя), тайминги конвергируются как раньше.
   Нода, начавшая работу на чужом/дефолтном/мусорном конфиге, приводится к
   канону без пересоздания; в т.ч. свежеподнятая нода — bootstrap-параметры в
-  живой конфиг не попадают (§2.1, урок t11: Spilo 4.1-p2), первый тик
+  живой конфиг не попадают (§2.1, Spilo 4.1-p2), первый тик
   конвергенции приводит её к канону; патч недоступен (шард мёртв) — лечат
   общие контуры (rebuild/эвакуация).
 - Весь шард недоступен (все ноды молчат, master-ключ протух) дольше
@@ -1068,7 +1067,7 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   soft-switchover — skip тика (мутации ретраются после txn-коммита);
   ускорение failover мёртвого лидера — DCS-ключ, работает.
 
-Границы надзора (t06): шард без `dsn` — домен AddShardProcess (пробы/
+Границы надзора: шард без `dsn` — домен AddShardProcess (пробы/
 самовосстановление/UNREACHABLE-переходы не трогаем — state нод входит в
 A1-гвард add); с маркером TO_REMOVE самовосстановление отключено (домен
 RemoveShardProcess — не пересоздавать демонтируемое), пробы остаются (шард
@@ -1109,7 +1108,7 @@ E4 journal state=DONE; снапшот P12 «после»
 удаляет и не запускает сам. RPO эвакуации = момент смерти шарда (фиксируется
 в journal).
 
-### F. MoveProcess (плановые переезды бакетов, M0–M6; t01)
+### F. MoveProcess (плановые переезды бакетов, M0–M6)
 
 Резолв мастера шарда для SQL (общий сервис ShardEndpoints; один и тот же у
 всех SQL-путей — moves/эвакуация/ротация/репарация) — цепочка по убыванию
@@ -1184,12 +1183,12 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
 `flip-<bucket>-<shard>` (после flip, best-effort). Конфигурация — §8
 (`PgWorker:Moves` + пороги `CutoverTimeoutSec`/`ConnFailBudgetSec`).
 
-Отказы M0 (t06): move `to` = шард в TO_REMOVE → перманентный отказ
+Отказы M0: move `to` = шард в TO_REMOVE → перманентный отказ
 «шард помечен к удалению — выберите другую цель»; `to` без dsn → «шард ещё
 не поднят (add-shard не завершён)»; finalize с `old_shard` без dsn →
 «шард удалён — убирать нечего». Переезды ИЗ TO_REMOVE-шарда разрешены.
 
-### G. AddShardProcess (A0–A6; t06)
+### G. AddShardProcess (A0–A6)
 
 Подъём ОТДЕЛЬНОГО пустого шарда в Active-кластере (панель заявила декларацию
 §9.5 контракта панели: replicas + nodes/NOT_INITIALIZED + request_*).
@@ -1205,7 +1204,7 @@ phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/i
 поднимающийся Patroni после A3 — идемпотентность повторных тиков); коллизия
 имён — initialize с чужим лидером (перманентная ошибка);
 имя шарда `^[a-z][a-z0-9_]{0,30}$`; перечитывание config (R6) — NOT_INITIALIZED/
-TO_REMOVE → phase=aborted; strict-гвард (t06): strict-кластер
+TO_REMOVE → phase=aborted; strict-гвард: strict-кластер
 (`config.synchronous_mode_strict` = true, отсутствие поля = true) отклоняет
 add-shard с `replicas < 2` (400 панели) — без sync-standby новый шард
 блокировал бы запись. Перед созданием ролей — ensure app-секрета
@@ -1217,7 +1216,7 @@ A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
 В SQL-фазе A5 — свежий re-read app-кредов (пока нода поднималась, ротация
 §5 I могла сменить app_password) и ensure app_params нод шарда (как P2.5').
 
-### H. RemoveShardProcess (S0–S4; t06)
+### H. RemoveShardProcess (S0–S4)
 
 Демонтаж шарда по маркеру `shards/<X>/state=TO_REMOVE` (пишет панель).
 Guard'ы G1–G7 в S1 перед любым разрушающим действием (таблица §4.4):
@@ -1362,7 +1361,7 @@ AD2' инвариант адресов Active (каждый тик, Д2): portal
     и в остальных EnsureNode-путях (ReadShardResourcesAsync →
     PgtuneInputsFactory.Create(resources), §2.1 п.4); заявки нет — фейл
     тика (транзиент-ретрай), дефолтов нет.
-    Граница с эвакуацией (§5 D, t09): когда В ШАРДЕ не жив ни один контейнер
+    Граница с эвакуацией (§5 D): когда В ШАРДЕ не жив ни один контейнер
     (все ноды шарда отсутствуют в running-инспекции), черепок-пересоздание НЕ
     применяется — сценарий всего-шарда-мёртв решает BucketEvacuator: мгновенный
     recreate стопнутых нод не давал supervise досчитать до ShardDeadSec
@@ -1448,7 +1447,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
 - **Снапшоты P12**: регулярные (лидер, раз в 6 ч) + в точках изменений
   (provisioning/deprovisioning/эвакуация — до и после). Restore — внешний
   рецепт (`restore-cluster.sh`), PgWorker только снимает.
-- **Экспорт слепков в S3 (reliability t08)**: каждый снятый слепок (плановый
+- **Экспорт слепков в S3**: каждый снятый слепок (плановый
   и внеочередной) уезжает в bucket ОТДЕЛЬНОЙ per-install env-пары
   `PgWorker:Snapshots:Export:S3` (env `PGW_SNAPSHOTS_S3_*` — не
   креды/bucket пулов бэкапов: источник правды о DR-слепках не живёт в
@@ -1465,7 +1464,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   `/pgworker/etcd-snapshots`, доводка — тиком лидера `RetryIntervalSec`
   (re-export новейшего локального слепка). Ретенция S3 — N
   последних пар (guard ≥1). Восстановление — операторский runbook
-  (docs/runbook.md §t08, arch/09 §4): etcd без воркера не живёт,
+  (docs/runbook.md, arch/09 §4): etcd без воркера не живёт,
   автоматизировать некому.
 - **Ретраи**: короткие сетевые/SQL — Polly jitter-политики; долгие ожидания
   (Patroni-подъём, догоняние) — транзиент-толерантные циклы с бюджетом;
@@ -1479,13 +1478,11 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   (Shared.Core, `BackgroundService`) следит за **активностью** всех
   фоновых циклов (reconcile/keepalive/snapshot/orphan-sweep) по отметкам
   `HealthState`; активность = тик ИЛИ прогресс-отметка долгой фазы
-  (`ILoopProgress`, t19). Порог сноса = `Loops:Watchdog:Multiplier` ×
+  (`ILoopProgress`). Порог сноса = `Loops:Watchdog:Multiplier` ×
   `Loops:Watchdog:CheckIntervalSec` (дефолт 2 × 15 = 30 с, единый для всех
-  циклов; «правило 2 по 15 — суммарно через 30 с срабатывает», t19).
-  Дефект до t19: в формулу входил порог healthz loops-alive
-  (`LoopStaleness`) — StaleAfter = Multiplier × healthz-порог (в E2E
-  2×18=36 с) — watchdog зависел от ЧУЖОЙ семантики; healthz-порог из
-  формулы ИСКЛЮЧЁН: watchdog знает только собственные опции, формулы
+  циклов; «правило 2 по 15 — суммарно через 30 с срабатывает»).
+  healthz-порог (`LoopStaleness`) в формулу НЕ входит:
+  watchdog знает только собственные опции, формулы
   healthz (`LoopStaleness`) потребляет только healthz. `WatchdogOptions`
   без изменений (Enabled/Multiplier/CheckIntervalSec/StopDelaySec — как
   было). Механика сноса прежняя: проверка раз в `CheckIntervalSec`,
@@ -1509,7 +1506,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   снапшотов) — «пульсирующий сон» чанками короче окна проверки, каждый
   чанк — отметка активности БЕЗ тика (healthz loops-alive читает только
   тики — семантика healthz/Degraded-окна не меняется).
-  **Инвариант поллинга долгих фаз** (t19): ни один одиночный блокирующий
+  **Инвариант поллинга долгих фаз**: ни один одиночный блокирующий
   вызов внутри фазы reconcile (docker create/start контейнеров
   нод/wal-агентов/джобов, SQL/HTTP-пробы, etcd-операции) не имеет права
   молчать дольше порога сноса — медленный daemon делает одиночный вызов
@@ -1541,7 +1538,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   запрещено. Границы паттерна: слепое окно = ОДНА логическая S3-операция
   (пульс угасает с завершением вызова); пер-попыточный таймаут ОБЯЗАТЕЛЕН
   — «пульс вокруг потенциально вечного вызова» запрещён (это и отличает
-  его от t19-поллинга: нет идемпотентных итераций внутри, есть конечность
+  его от поллинга долгих фаз: нет идемпотентных итераций внутри, есть конечность
   вызова снаружи); зависание процесса живого цикла всё равно ловится
   watchdog'ом (вызов умрёт таймаутом, отметки тиков/фаз прекратятся).
   Граница: «завис весь процесс» (healthz не
@@ -1590,7 +1587,7 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000,
                  Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
-                 # watchdog зависших циклов (t19): порог сноса = Multiplier ×
+                 # watchdog зависших циклов: порог сноса = Multiplier ×
                  # CheckIntervalSec («2 по 15» = 30 с, единый для всех циклов);
                  # порог healthz loops-alive в формуле НЕ участвует (watchdog
                  # знает только свои опции); Enabled=false — компонент не
@@ -1622,7 +1619,7 @@ PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10,
                               RetryIntervalSec=300, TimeoutSec=30,
                               S3 { Endpoint, Bucket, AccessKey, SecretKey,
                                    Region?, CaBundlePath? } } }
-                # t08: выгрузка слепков в S3, префикс etcd/ (в СВОЁМ
+                # выгрузка слепков в S3, префикс etcd/ (в СВОЁМ
                 # bucket отдельной пары, не bucket бэкапов);
                 # S3-комплект — СОБСТВЕННАЯ env-пара
                 # PgWorker:Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*),
@@ -1653,11 +1650,11 @@ PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",
                   # etcd-канала переопределения нет, параметры не фиксируются
 PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
                Tls {ServerCertPem|Path, ServerKeyPem|Path, ClientCaPem|Path,
-                    AllowInsecureHttp=false} } # §1.1: mTLS-only грань (t03);
+                    AllowInsecureHttp=false} } # §1.1: mTLS-only грань;
                   # URL API (достижимый панелью) в /pgworker/api/<id> — https://;
                   # демо-сид-эндпоинт за флагом; AllowInsecureHttp — только WAF-тесты
 # секреты — env PGW_* (§4): per-install пароли + PGW_API_TLS_* / PGW_DOCKER_TLS_* /
-#   PGW_DOCKER_SSH_* (t03); PGW_REST_TLS_* — REST-TLS нод (§2.1); PGW_API_KEY
+#   PGW_DOCKER_SSH_*; PGW_REST_TLS_* — REST-TLS нод (§2.1); PGW_API_KEY
 #   исключён (§1.1 — mTLS вместо X-Api-Key)
 ```
 
