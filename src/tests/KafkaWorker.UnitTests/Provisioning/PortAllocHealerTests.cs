@@ -236,6 +236,37 @@ public class PortAllocHealerTests
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
+    // AAA: ветка 2, частичная утеря — ключ portalloc жив с записью соседа
+    // broker2, записи нашего broker1 нет: RMW-merge дописывает broker1
+    // адресом инспекции, запись соседа не затёрта, контейнер не тронут.
+    [Fact]
+    public async Task Resolve_ContainerAlive_PartialLossMergesIntoLiveKey()
+    {
+        // Arrange: ключ жив с чужой записью broker2 (нашей broker1 нет);
+        // инспекция broker1 засеяна (живой контейнер).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker2":{"host":"h2","client":21020}}""");
+        rig.Driver.Endpoints["broker1"] = new NodeEndpointInspection(
+            "h1", 21037, "CLIENT://host.docker.internal:21037");
+
+        // Act: лестница для broker1.
+        var resolved = await rig.Healer.ResolveAsync(rig.Snapshot, "broker1", rig.Addresses, CancellationToken.None);
+
+        // Assert: merge — ключ содержит и broker1 (адрес инспекции), и
+        // соседа broker2 (запись не затёрта); контейнер не тронут.
+        resolved.IsSuccess.Should().BeTrue();
+        resolved.Value.Address.Should().Be(new NodeAddress("h1", 21037));
+        resolved.Value.Recreated.Should().BeFalse("a live container is left untouched");
+        var pinned = await ReadPortAllocAsync(rig.Etcd);
+        pinned["broker1"].Should().Be(new NodeAddress("h1", 21037),
+            "reconstructed address is pinned in etcd");
+        pinned["broker2"].Should().Be(new NodeAddress("h2", 21020),
+            "neighbor records survive the merge");
+        rig.Driver.Ensured.Should().BeEmpty("a live container is left untouched");
+        rig.Driver.Removed.Should().BeEmpty("a live container is left untouched");
+    }
+
     // AAA: клэйм занят — без мутаций, PortLockBusyException наружу
     // (supervise → waiting-portalloc-lock, следующий тик).
     [Fact]

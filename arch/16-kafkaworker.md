@@ -533,9 +533,13 @@ X3 снапшот P12 «после»; клэйм снят явно
   Active-ветки; docker-часть надзора и provisioning не гейтятся. В etcd
   backoff ничего не пишет. **Лестница E9** (arch/17): безадресные
   Supervisable-брокеры — до любых деструктивных действий — portalloc →
-  реконструкция из inspect живого контейнера (published-порт CLIENT + host,
-  put-if-absent под `locks/portalloc`, проигрыш txn → re-read) → новая
-  аллокация (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
+  реконструкция из inspect живого контейнера (published-порт CLIENT + host),
+  закрепление — RMW `/kafkaworker/portalloc/<C>` под `locks/portalloc`:
+  merge восстановленной записи с живыми записями соседей, txn по
+  `mod_revision` (отсутствие ключа — ревизия 0 = NotExists); проигрыш txn →
+  re-read (первый записавший — истина, S5; нашей записи нет — retry
+  следующим тиком); записи соседей не затираются → новая аллокация
+  (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
   в portalloc» устранён; клэйм занят → journal waiting-portalloc-lock
   (InProgress, следующий тик).
 - Перевод `PROVISIONING`→`RUNNING` — по трём фактам: контейнер жив, зрячая
