@@ -196,6 +196,10 @@ internal static class MoveRig
                 sql.LastDsn == SrcDsn ? srcRows : dstRows,
             _ => preflight(s),
         };
+        var preflightList = sql.ListResolver;
+        sql.ListResolver = s => s.Contains("c.relkind IN ('r','p'")
+            ? ["items"]
+            : preflightList(s);
     }
 
     /// <summary>Стенд: etcd-сид + SQL-мок + клэйм (claim=true) + MoveProcess со снапшот-очередью.</summary>
