@@ -341,4 +341,29 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
             .Should().Be("h1:16000,h1:16001,h1:16002");
     }
+
+    // AAA (arch/16 §5 A K3): частичный portalloc (держатель убит посреди
+    // аллокации — survivor видит не все адреса) → journal-фаза
+    // waiting-portalloc/<broker> и InProgress-исход, НЕ исключение тика
+    // (до фикса — KeyNotFoundException с вечным crashed, E2E-фейл 4)
+    [Fact]
+    public async Task Run_PartialPortAlloc_WaitsForBrokerAddress_InProgress()
+    {
+        // Arrange — закреплён частичный план: broker3 отсутствует (K1-фиксация
+        // уже была: txn NotExists проигрывает существующему ключу, reread
+        // возвращает частичный словарь)
+        var rig = await NewRig(brokers: 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: transient-ретрай тиком; контейнер недостающего брокера не создан
+        result.IsSuccess.Should().BeTrue("the missing address is transient — the next tick retries");
+        (await rig.Journal.ReadAsync("events", CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-portalloc/broker3");
+        rig.Driver.Ensured.Should().NotContain(s => s.NodeName == "broker3",
+            "the container for the unallocated broker is not created");
+    }
 }

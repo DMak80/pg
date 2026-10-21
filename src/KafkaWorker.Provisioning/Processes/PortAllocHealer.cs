@@ -181,7 +181,10 @@ public sealed class PortAllocHealer(
             if (!portTxn.Value.Succeeded)
                 return Result<HealedAddress>.Failed(new ApplicationException(
                     $"portalloc {cluster} changed under the claim — retry on next tick"));
-            address = merged[broker];
+            if (!merged.TryGetValue(broker, out var healed))
+                return Result<HealedAddress>.Failed(new ApplicationException(
+                    $"portalloc healing {cluster}: allocation for {broker} returned no address — retry on next tick"));
+            address = healed;
         }
         finally
         {

@@ -91,7 +91,13 @@ public sealed class ProvisioningProcess(
         // K3: создать контейнеры брокеров (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, addresses, roles, secret.Value, ct);
         if (!ensured.IsSuccess)
+        {
+            // Частичный portalloc после takeover: адрес появится K1-фиксацией/
+            // healer'ом — transient-ретрай тиком (arch/16 §5 A), не сбой.
+            if (ensured.Error is MissingPortAllocException missing)
+                return await FinishAsync(cluster, $"waiting-portalloc/{missing.Broker}", ct);
             return Fail(cluster, ensured.Error!, "ensure-nodes");
+        }
 
         // R6: панель перевела в TO_REMOVE посреди provisioning — безопасный выход.
         if (await IsRemovedAsync(cluster, ct))
@@ -272,7 +278,8 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            var addr = addresses[broker.Name];
+            if (!addresses.TryGetValue(broker.Name, out var addr))
+                return Result.Failed(new MissingPortAllocException(broker.Name));
             var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
             // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/16 §2.3).
             var (certPem, keyPem) = certificates.GetOrCreate(
@@ -516,4 +523,12 @@ public sealed class ProvisioningProcess(
         [property: JsonPropertyName("default_partitions")] int DefaultPartitions,
         [property: JsonPropertyName("default_retention_ms")] long DefaultRetentionMs,
         [property: JsonPropertyName("created_unix")] long? CreatedUnix);
+
+    // K3-гвард (arch/16 §5 A): адреса нет в portalloc (частичный план после
+    // takeover) → transient-фаза waiting-portalloc/<broker>, не исключение тика.
+    private sealed class MissingPortAllocException(string broker)
+        : Exception($"portalloc has no address for {broker}")
+    {
+        public string Broker { get; } = broker;
+    }
 }
