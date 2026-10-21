@@ -348,6 +348,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             ["S3Worker__Docker__Images__OwnS3"] = OwnS3Image,
             ["S3Worker__Bucket"] = BucketName,
             ["S3Worker__Loops__ScanIntervalSec"] = "1",
+            ["S3Worker__OwnS3__ReplicationReconcileIntervalSec"] = "10",
             ["S3Worker__Thresholds__NodeBootSec"] = "100",
             ["S3Worker__Thresholds__NodeDeadSec"] = "15",
             ["S3Worker__Thresholds__HealthIntervalSec"] = "3",

@@ -33,7 +33,11 @@ public sealed record S3ProvisioningOptions(
     int SyncIntervalSec = 60,
 
     /// <summary>Бюджет страниц сверки на сторону пары (spec §3.3; 20 = 20 000 объектов).</summary>
-    int SyncMaxPages = 20)
+    int SyncMaxPages = 20,
+
+    /// <summary>Период reconcile mesh-репликации инстансов (arch/24 §8):
+    /// 0 — env OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS не ставится.</summary>
+    int OwnS3ReplicationReconcileIntervalSec = 0)
 {
     public static S3ProvisioningOptions Default { get; } =
         new(18000, 18999, 100, 90, 15, null, "owns3:dev", "pgworker-backups",

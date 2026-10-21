@@ -402,7 +402,8 @@ static S3Worker.Provisioning.Processes.S3ProvisioningOptions ToProvisioningOptio
     opts.Bucket,
     opts.Docker.ContourNetwork,
     opts.Thresholds.SyncIntervalSec,
-    opts.Thresholds.SyncMaxPages);
+    opts.Thresholds.SyncMaxPages,
+    opts.OwnS3.ReplicationReconcileIntervalSec);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)

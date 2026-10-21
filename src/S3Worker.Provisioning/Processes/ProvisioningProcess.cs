@@ -306,7 +306,8 @@ public sealed class ProvisioningProcess(
             var addr = addresses[node.Node];
             var env = envComposer.Compose(
                 nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
-                $"http://{options.AdvertisedHost ?? addr.Host}:{addr.S3Port}");
+                $"http://{options.AdvertisedHost ?? addr.Host}:{addr.S3Port}",
+                options.OwnS3ReplicationReconcileIntervalSec);
             var resources = S3ProcessCommon.ParseResources(node.Resources);
             var ensured = await driver.EnsureNodeAsync(
                 new S3NodeSpec(

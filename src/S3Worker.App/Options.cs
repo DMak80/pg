@@ -19,6 +19,8 @@ public sealed class S3WorkerOptions
 
     public LoopsOptions Loops { get; set; } = new();
 
+    public OwnS3Options OwnS3 { get; set; } = new();
+
     public ThresholdsOptions Thresholds { get; set; } = new();
 
     public ParallelismOptions Parallelism { get; set; } = new();
@@ -148,6 +150,15 @@ public sealed class LoopsOptions
     /// <summary>Watchdog зависших циклов (arch/24 §6): Enabled=false — компонент
     /// не регистрируется; порог сноса = Multiplier × CheckIntervalSec.</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
+}
+
+/// <summary>Параметры инстансов ownS3 (arch/24 §8).</summary>
+public sealed class OwnS3Options
+{
+    /// <summary>Период reconcile mesh-репликации (с) — env
+    /// OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS инстансов (owns3/07 §9);
+    /// 0/не задана — переменная не ставится (прод-дефолт OwnS3 3 ч).</summary>
+    public int ReplicationReconcileIntervalSec { get; set; }
 }
 
 /// <summary>Пороги процессов (arch/24 §8).</summary>
