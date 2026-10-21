@@ -204,11 +204,24 @@ public sealed class ProvisioningProcess(
             foreach (var (node, addr) in allocated.Value)
                 existing[node] = addr;
 
-            // Создание ключа — только если нет (compare version==0); проигрыш → re-read.
+            // Создание ключа — NotExists (compare version==0); частичный
+            // закреплённый план (takeover: держатель убит посреди аллокации) —
+            // RMW-достроение под клэймом (ModRevisionEqual): без этого
+            // NotExists проигрывает на существующем частичном ключе, адреса
+            // теряются и K3 циклится waiting-portalloc (arch/16 §5 A: план
+            // достроит K1-фиксация/healer). Чужой concurrent writer под тем
+            // же клэймом невозможен; проигрыш — re-read (прежняя семантика).
             var key = PortAllocKey(cluster);
             var serialized = SerializePortAlloc(existing);
-            var txn = await TxnAsync(
-                TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, serialized, null)]), ct);
+            var current = await GetAsync(key, ct);
+            TxnRequest portTxn = current is { IsSuccess: true, Value: { } pinnedKv }
+                ? TxnRequest.Of(
+                    [TxnCompare.ModRevisionEqual(key, (long)pinnedKv.ModRevision)],
+                    [new TxnOp.Put(key, serialized, null)])
+                : TxnRequest.Of(
+                    [TxnCompare.NotExists(key)],
+                    [new TxnOp.Put(key, serialized, null)]);
+            var txn = await TxnAsync(portTxn, ct);
             if (!txn.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
             if (!txn.Value.Succeeded)
