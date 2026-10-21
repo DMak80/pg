@@ -160,4 +160,158 @@ public sealed class BackupOrphanSweeperLoopTests
         // S3-проход висит, но канал активен (арх/14 §6, зеркально snapshot).
         activity.Should().NotBeNull("a hanging S3 pass must pulse activity");
     }
+
+    // AAA: лидерский проход с Backups:Enabled=true и живым S3 — по итогам SweepAsync
+    // инструментация пишет тик цикла orphan-sweep с ok=true (arch/18 §2.2; ок
+    // последнего успешного тика двигает last_success — серия появляется).
+    [Fact]
+    public async Task ExecuteAsync_LeaderSweep_TicksOrphanSweepOkTrue()
+    {
+        // Arrange: Enabled=true, лидерство возьмёт FakeEtcd-txn; S3 отвечает пустыми
+        // list'ами мгновенно; MeterListener собирает counter worker.loop.ticks.
+        var etcd = new Fakes.FakeEtcd();
+        var options = new FixedOptionsMonitor(new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 0 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+        var health = new HealthState(TimeProvider.System);
+        var claims = new ClaimStore(
+            "/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System);
+        using var meter = new Meter("TestOrphanSweep");
+        var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(meter, TimeProvider.System);
+        var seen = new List<(string Loop, bool Ok)>();
+        using var listener = new MeterListener();
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name != "worker.loop.ticks")
+                return;
+            var pairs = tags.ToArray();
+            seen.Add((
+                pairs.First(t => t.Key == "loop").Value!.ToString()!,
+                (bool)pairs.First(t => t.Key == "ok").Value!));
+        });
+        listener.InstrumentPublished = (instrument, enable) =>
+        {
+            if (instrument.Meter.Name == "TestOrphanSweep")
+                enable.EnableMeasurementEvents(instrument);
+        };
+        listener.Start();
+        var sweeper = new BackupOrphanSweeper(
+            etcd, options.CurrentValue.Etcd.Endpoints,
+            UnitPoolFactory.Wrap(new EmptyS3()), UnitPoolFactory.Store(), claims,
+            () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
+            NullLogger<BackupOrphanSweeper>.Instance);
+        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
+            NullLogger<BackupOrphanSweeperLoop>.Instance);
+        using var cts = new CancellationTokenSource();
+
+        // Act: цикл идёт; ждём первого завершённого прохода лидера (поллинг ≤5 с).
+        await loop.StartAsync(cts.Token);
+        for (var i = 0; i < 100 && seen.All(s => s.Loop != "orphan-sweep"); i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        cts.Cancel();
+
+        // Assert: успешный проход отметил тик цикла orphan-sweep с ok=true.
+        seen.Should().Contain(s => s.Loop == "orphan-sweep" && s.Ok);
+    }
+
+    // AAA: провальный проход лидера (list пулов S3 вернул Result-ошибку) — тик цикла
+    // orphan-sweep с ok=false; last_success не двигает (семантика закреплена
+    // Shared.Metrics.UnitTests LoopTick_OkFalse_DoesNotMoveLastSuccess).
+    [Fact]
+    public async Task ExecuteAsync_LeaderSweepFails_TicksOrphanSweepOkFalse()
+    {
+        // Arrange: Enabled=true, лидерство возьмёт FakeEtcd-txn; list пулов S3
+        // возвращает Result-ошибку → SweepAsync проваливается на первом шаге.
+        var etcd = new Fakes.FakeEtcd();
+        var options = new FixedOptionsMonitor(new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 0 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+        var health = new HealthState(TimeProvider.System);
+        var claims = new ClaimStore(
+            "/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System);
+        using var meter = new Meter("TestOrphanSweep");
+        var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(meter, TimeProvider.System);
+        var seen = new List<(string Loop, bool Ok)>();
+        using var listener = new MeterListener();
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
+        {
+            if (instrument.Name != "worker.loop.ticks")
+                return;
+            var pairs = tags.ToArray();
+            seen.Add((
+                pairs.First(t => t.Key == "loop").Value!.ToString()!,
+                (bool)pairs.First(t => t.Key == "ok").Value!));
+        });
+        listener.InstrumentPublished = (instrument, enable) =>
+        {
+            if (instrument.Meter.Name == "TestOrphanSweep")
+                enable.EnableMeasurementEvents(instrument);
+        };
+        listener.Start();
+        var sweeper = new BackupOrphanSweeper(
+            etcd, options.CurrentValue.Etcd.Endpoints,
+            UnitPoolFactory.Disabled(), new FaultingPoolStore(), claims,
+            () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
+            NullLogger<BackupOrphanSweeper>.Instance);
+        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
+            NullLogger<BackupOrphanSweeperLoop>.Instance);
+        using var cts = new CancellationTokenSource();
+
+        // Act: цикл идёт; ждём первого завершённого (провального) прохода лидера
+        // (поллинг ≤5 с).
+        await loop.StartAsync(cts.Token);
+        for (var i = 0; i < 100 && seen.All(s => s.Loop != "orphan-sweep"); i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        cts.Cancel();
+
+        // Assert: провальный проход отметил тик цикла orphan-sweep с ok=false.
+        seen.Should().Contain(s => s.Loop == "orphan-sweep" && !s.Ok);
+    }
+
+    // S3-стаб с мгновенными пустыми list-ответами: проход sweeper'а завершается
+    // сразу (HangingS3 не подходит — нужен ЗАВЕРШАЮЩИЙСЯ фейк для тика ok=true).
+    private sealed class EmptyS3 : IBackupS3
+    {
+        public Task<Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
+            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>.Success(
+                (IReadOnlyList<PgWorker.Backups.S3ObjectInfo>)[]));
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(
+            string cluster, string shard, string objectKey, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    // Пул-стор S3 с ошибкой list пулов: SweepAsync сразу возвращает Result.Failed —
+    // проход лидера провальный (ok=false; ListPrefixAsync-ошибку проход поглотил бы).
+    private sealed class FaultingPoolStore : IS3PoolStore
+    {
+        public Task<Result<S3Pool?>> ReadAsync(string pool, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListPoolNamesAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<string>>.Failed(
+                new ApplicationException("pool store unreachable")));
+    }
 }
