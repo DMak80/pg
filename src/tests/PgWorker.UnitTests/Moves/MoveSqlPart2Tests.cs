@@ -271,4 +271,53 @@ public class MoveSqlPart2Tests
         freeze.Should().Throw<ArgumentException>("the role is an SQL identifier");
         createSub.Should().Throw<ArgumentException>("the subscription name is an SQL identifier");
     }
+
+    // AAA: каталоговые имена (pg_class.relname) вне алфавита Ident — квотируются,
+    //      а не отвергаются: " удваивается, ' / пробелы / регистр — как есть;
+    //      инъекция-вектор даёт ровно один закавыченный идентификатор, без исключения
+    [Theory]
+    [InlineData("Orders", "bucket_42.\"Orders\"")]
+    [InlineData("a\"b", "bucket_42.\"a\"\"b\"")]
+    [InlineData("a'b", "bucket_42.\"a'b\"")]
+    [InlineData("order items", "bucket_42.\"order items\"")]
+    [InlineData("select", "bucket_42.\"select\"")]
+    [InlineData("t1\"; DROP TABLE x; --", "bucket_42.\"t1\"\"; DROP TABLE x; --\"")]
+    public void RowCount_QuotesCatalogNames_WithoutValidation(string table, string qualified)
+    {
+        // Act
+        var sql = MoveSql.RowCount("bucket_42", table);
+
+        // Assert
+        sql.Should().Be($"SELECT count(*) FROM {qualified}");
+    }
+
+    // AAA: sequence-билдеры — то же квотирование каталоговых имён (схема через Ident)
+    [Theory]
+    [InlineData("Orders", "bucket_42.\"Orders\"")]
+    [InlineData("a\"b", "bucket_42.\"a\"\"b\"")]
+    [InlineData("a'b", "bucket_42.\"a'b\"")]
+    public void SequenceIssuedNext_QuoteCatalogNames(string seq, string qualified)
+    {
+        // Act
+        var issued = MoveSql.SequenceIssued("bucket_42", seq);
+        var next = MoveSql.SequenceNext("bucket_42", seq);
+
+        // Assert
+        issued.Should().Be($"SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM {qualified}");
+        next.Should().Be($"SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM {qualified}");
+    }
+
+    // AAA: setval — Qualified лежит в SQL-литерале (regclass-аргумент):
+    //      " удваивается квотированием, ' экранируется удвоением
+    [Theory]
+    [InlineData("a\"b", "bucket_42.\"a\"\"b\"")]
+    [InlineData("a'b", "bucket_42.\"a''b\"")]
+    public void SetvalForward_EscapesQuotesInsideLiteral(string seq, string qualified)
+    {
+        // Act
+        var sql = MoveSql.SetvalForward("bucket_42", seq, 100);
+
+        // Assert
+        sql.Should().Be($"SELECT setval('{qualified}', 100, true)");
+    }
 }

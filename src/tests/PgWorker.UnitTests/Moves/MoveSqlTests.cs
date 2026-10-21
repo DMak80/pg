@@ -197,6 +197,19 @@ public class MoveSqlTests
                         "WHERE s.relkind = 'S' AND ns.nspname = 'bucket_42' ORDER BY 1");
     }
 
+    // AAA: имена r/p-таблиц построчно для сверки строк (verify P8) — квотирование
+    //      на стороне C#; детерминизм списка (ORDER BY 1, как SequenceNames)
+    [Fact]
+    public void TableRelnames_ListsSorted()
+    {
+        // Act
+        var sql = MoveSql.TableRelnames("bucket_42");
+
+        // Assert
+        sql.Should().Be("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                        "WHERE c.relkind IN ('r','p') AND n.nspname = 'bucket_42' ORDER BY 1");
+    }
+
     // AAA: осиротевшие tablesync-слоты — LIKE sub_<bucket>_sync_% (P8, finalize)
     [Fact]
     public void OrphanTablesyncSlots_LikesSyncPattern()
