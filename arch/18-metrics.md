@@ -73,13 +73,13 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | `dotnet_*` (gc, threadpool, allocations, process) | разные | OTel `System.Runtime`-метры |
 | `http_server_request_duration_seconds` | histogram | OTel ASP.NET-метр (панель; у воркеров — при наличии HTTP-грани). Факт пинов 1.16.0-beta.1 (фиксирует тест `Shared.Metrics.UnitTests`): на минимальном slim-хосте гистограмма не эмитится; фактически присутствуют `http_server_active_requests`, `kestrel_*`, `aspnetcore_memory_pool_*` — на реальных сервисах сверяют интеграционные тесты Ф3–Ф5 |
 
-### 2.2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; PgWorker + KafkaWorker)
+### 2.2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; воркеры PgWorker/KafkaWorker/ValkeyWorker/S3Worker)
 
 Имена инструментов глобальны (имя Meter в метрику не входит) — оба воркера
 пишут в одни серии; различение сервисов/инстансов — лейблы `job`/`instance`,
 которые назначает Prometheus по scrape-джобе (§5.2). Факт экспортёра
 1.16.0-beta.1 (фиксирует интеграционный тест §6): к каждой серии добавляется
-системный лейбл `otel_scope_name` = имя Meter (`PgWorker`/`KafkaWorker`) —
+системный лейбл `otel_scope_name` = имя Meter (свой у каждого воркера) —
  PromQL-запросы словаря от него не зависят, но факт зафиксирован для инспекции.
 
 | Имя | Тип | Лейблы | Смысл |
@@ -98,8 +98,9 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 `add-shard`, `remove-shard`, `rotate-app-password`, `move`, `rollback`,
 `finalize`, `repair`, `abort`; у KafkaWorker — `provision`, `deprovision`, `add-broker`,
 `remove-broker`, `reassign`, `rotate`, `regen`, `topicsync`;
-у ValkeyWorker — `provision`, `deprovision`, `rotate`, `supervise` (подавляемый),
-`healing-portalloc` (вспомогательный). `phase` —
+у ValkeyWorker — `provision`, `deprovision`, `rotate`, `supervise` (подавляемый);
+у S3Worker — `provision`, `deprovision`, `add-node`, `remove-node`,
+`rotate-secrets`, `supervise` (подавляемый). `phase` —
 фаза машины состояний (journal-фаза). Завершение фазовой серии —
 терминальные фазы журнала по фактическому словарю: `done`, `failed`,
 `crashed`, `rejected`, `cancelled`, `expired` (возрастное снятие
@@ -113,6 +114,10 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 эмитят, вечные серии не копятся: живость `supervise`/`evacuate` закрывают клэйм-циклы
 (`loop="reconcile"` → алерт WorkerLoopStalled), живость `backup-orphan-sweeper` —
 цикл `orphan-sweep` (LoopTick по итогам SweepAsync → алерт OrphanSweepStalled).
+Подавляемый также `healing-portalloc` — вспомогательная точечная реконструкция
+portalloc внутри клэйм-тика надзора (arch/21 §5 C / arch/23 §7, общий
+EtcdPortAllocHealer): фазовые серии не нужны, зависание закрывается watchdog'ом
+того же reconcile-цикла.
 
 ### 2.3. Kafka-домен (коллектор KafkaWorker §4)
 

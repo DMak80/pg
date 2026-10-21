@@ -165,6 +165,9 @@ public sealed class WorkerMetricsInstrumentationTests
         // ProcessPhaseStuck; живость надзора закрывает WorkerLoopStalled.
         // backup-orphan-sweeper — журнал домена сирот (свой ключ
         // /pgworker/backups/orphan-journal): его фазы подавлены тоже.
+        // healing-portalloc — точечная реконструкция portalloc внутри клэйм-тика
+        // надзора (arch/21 §5 C / arch/23 §7): фазы started/reconstructed не
+        // терминальные — без подавления серия не сбрасывалась бы никогда.
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
 
@@ -172,6 +175,8 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.OnJournalPhase("demo", "supervise", "dcs-converge");
         sut.OnJournalPhase("demo", "evacuate", "waiting-alive");
         sut.OnJournalPhase("demo", "backup-orphan-sweeper", "orphan-deleting/ghost/s1");
+        sut.OnJournalPhase("demo", "healing-portalloc", "started");
+        sut.OnJournalPhase("demo", "healing-portalloc", "reconstructed");
 
         // Assert: подавлены полностью — ни серий, ни операций
         sut.DebugSnapshot().Phases.Should().BeEmpty();
