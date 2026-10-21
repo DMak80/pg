@@ -81,8 +81,22 @@ public class DockerEngineFactory : IAsyncDisposable
         return sockets;
     }
 
+    // Поллинг-инвариант (arch/14 §6): одиночный docker-вызов не молчит дольше
+    // окна проверки watchdog — пер-попыточный таймаут = половина окна (7.5 с при
+    // дефолтах), симметрия etcd/patroni (AddHttpClient воркеров). Зависший вызов →
+    // исключение → transient-фейл тика, а не молчание до дефолтных 100 с HttpClient.
+    // Гарантия для глобального portalloc-лока (arch/15 §4: без keepalive, секция
+    // ≪ TTL 15 с): любой одиночный docker-чтение секции довыделения умирает
+    // таймаутом задолго до истечения lease.
+    internal static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(7.5);
+
     // hostAlias — имя docker-хоста для BusyPorts plain-режима (swarm: null).
     public virtual IDockerEngine Create(string endpoint, string? hostAlias = null)
+        => Create(endpoint, hostAlias, CallTimeout);
+
+    // Тестовое окно: internal-перегрузка с настраиваемым пер-попыточным
+    // таймаутом; публичный контракт Create(endpoint, hostAlias) неизменен.
+    internal IDockerEngine Create(string endpoint, string? hostAlias, TimeSpan callTimeout)
     {
         var scheme = EndpointScheme.Parse(endpoint);
         if (scheme.Scheme == EndpointScheme.Ssh)
@@ -94,7 +108,11 @@ public class DockerEngineFactory : IAsyncDisposable
             : (_tls is not null
                 ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
                 : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
-        var httpClient = new HttpClient(CreateHandler(endpoint)) { BaseAddress = new Uri(baseAddress) };
+        var httpClient = new HttpClient(CreateHandler(endpoint))
+        {
+            BaseAddress = new Uri(baseAddress),
+            Timeout = callTimeout,
+        };
         return new DockerEngine(httpClient, hostAlias);
     }
 
