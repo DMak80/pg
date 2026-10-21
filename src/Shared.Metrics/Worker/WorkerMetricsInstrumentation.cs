@@ -20,6 +20,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     // и backup-orphan-sweeper (журнал домена сирот — свой ключ
     // /pgworker/backups/orphan-journal, arch/19 §4, в work-фазовые метрики
     // не входит).
+    // Живость: supervise/evacuate — клэйм-циклы (алерт WorkerLoopStalled),
+    // backup-orphan-sweeper — цикл orphan-sweep (алерт OrphanSweepStalled, arch/18 §2.2).
     public static readonly IReadOnlySet<string> SuppressedOps =
         new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper" };
 
@@ -546,7 +548,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate,
     //    backup-orphan-sweeper) — ИГНОР:
     //    стационарные записи (часть — через WriteSupervisionAsync мимо события),
-    //    живость надзора закрывает WorkerLoopStalled (решение ревью Ф4-2);
+    //    живость supervise/evacuate закрывает WorkerLoopStalled (решение ревью Ф4-2),
+    //    backup-orphan-sweeper — цикл orphan-sweep (алерт OrphanSweepStalled);
     //  - терминальные фазы (FinalPhases, фактический словарь журналов обоих
     //    воркеров): done, failed, crashed, rejected, cancelled, expired →
     //    ProcessFinished + Operation(process, result: done → ok, expired →
