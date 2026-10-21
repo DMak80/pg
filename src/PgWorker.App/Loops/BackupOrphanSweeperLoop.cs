@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PgWorker.Backups.Supervisor;
 using Shared.Core.Hosting;
+using System.Diagnostics;
 
 namespace PgWorker.App.Loops;
 
@@ -17,6 +18,7 @@ internal sealed class BackupOrphanSweeperLoop(
     IOptionsMonitor<PgWorkerOptions> options,
     ClaimStore claims,
     BackupOrphanSweeper sweeper,
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
     HealthState health,
     ILogger<BackupOrphanSweeperLoop> logger) : BackgroundService
 {
@@ -63,8 +65,13 @@ internal sealed class BackupOrphanSweeperLoop(
                                 TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec).Ticks / 2)));
                         // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
                         // S3/etcd повторит следующий проход). Реестр в etcd переживает
-                        // смену лидера — продолжение с факта, не с нуля.
+                        // смену лидера — продолжение с факта, не с нуля. Тик/длительность
+                        // цикла orphan-sweep (arch/18 §2.2): ok = успех ЗАВЕРШЁННОГО
+                        // прохода лидера; не-лидер и Backups:Enabled=false серию не пишут.
+                        var startedAt = Stopwatch.GetTimestamp();
                         var result = await sweeper.SweepAsync(tick);
+                        metrics.LoopDuration("orphan-sweep", Stopwatch.GetElapsedTime(startedAt).TotalSeconds);
+                        metrics.LoopTick("orphan-sweep", ok: result.IsSuccess);
                         if (!result.IsSuccess)
                             logger.LogWarning("orphan-sweep: {Error}", result.Error?.Message);
 

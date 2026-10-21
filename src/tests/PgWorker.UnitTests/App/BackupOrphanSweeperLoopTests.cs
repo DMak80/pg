@@ -4,6 +4,8 @@ using PgWorker.App.Loops;
 using PgWorker.Backups.Supervisor;
 using PgWorker.UnitTests.Provisioning;
 using Shared.Core.Hosting;
+using System.Diagnostics.Metrics;
+using PgWorker.Etcd.S3;
 
 namespace PgWorker.UnitTests.App;
 
@@ -30,7 +32,9 @@ public sealed class BackupOrphanSweeperLoopTests
             etcd, options.CurrentValue.Etcd.Endpoints,
             UnitPoolFactory.Disabled(), UnitPoolFactory.Store(), claims,
             () => null, TimeProvider.System, NullLogger<BackupOrphanSweeper>.Instance);
-        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, health,
+        var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+            new Meter("TestOrphanSweep"), TimeProvider.System);
+        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
             NullLogger<BackupOrphanSweeperLoop>.Instance);
         return (loop, health, new CancellationTokenSource());
     }
@@ -130,7 +134,9 @@ public sealed class BackupOrphanSweeperLoopTests
             UnitPoolFactory.Wrap(s3), UnitPoolFactory.Store(), claims,
             () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
             NullLogger<BackupOrphanSweeper>.Instance);
-        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, health,
+        var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+            new Meter("TestOrphanSweep"), TimeProvider.System);
+        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
             NullLogger<BackupOrphanSweeperLoop>.Instance);
         using var cts = new CancellationTokenSource();
 

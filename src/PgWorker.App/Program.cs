@@ -780,6 +780,7 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLo
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<PgWorker.Backups.Supervisor.BackupOrphanSweeper>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
     sp.GetRequiredService<HealthState>(),
     sp.GetRequiredService<ILogger<PgWorker.App.Loops.BackupOrphanSweeperLoop>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
