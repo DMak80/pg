@@ -214,8 +214,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     // Жёсткая остановка spilo-нод (arch/14 §6/§5 D E3): SIGKILL — грейса нет,
     // exited-факт немедленный, поллинг не нужен; одиночный запрос ≤ CallTimeout.
-    // 404 = успех (контейнера нет — идемпотентность); контракт Task<Result>
-    // прежний (Result.FromAsync): любой сбой — Failed, не исключение.
+    // 404 = контейнера нет; 409 = контейнер не running (уже остановлен) —
+    // оба = целевое состояние «не живой» (идемпотентность kill-пути);
+    // контракт Task<Result> прежний (Result.FromAsync): любой сбой — Failed,
+    // не исключение.
     public async Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
@@ -223,9 +225,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             {
                 await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/kill", ct: ct);
             }
-            catch (DockerHttpException e) when (e.StatusCode == 404)
+            catch (DockerHttpException e) when (e.StatusCode is 404 or 409)
             {
-                // контейнера уже нет — идемпотентность (как stop/карантин E3)
+                // 404 — контейнера уже нет; 409 — контейнер не running (уже
+                // остановлен): оба — целевое состояние kill-пути (как stop E3)
             }
         });
 

@@ -62,6 +62,23 @@ public class DockerEngineKillTests
         result.IsSuccess.Should().BeTrue();
     }
 
+    // AAA: 409 — контейнер не running (уже остановлен) — успех: целевое
+    //      состояние kill-пути «не живой» достигнуто (recovery UNREACHABLE:
+    //      супервизор kill'ит exited-контейнер)
+    [Fact]
+    public async Task Kill_NotRunning409_Success()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json(
+            """{"message":"cannot kill container: pgw-shop: container is not running"}""", HttpStatusCode.Conflict));
+
+        // Act
+        var result = await Engine(handler).KillContainerAsync("pgw-shop", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue("a not-running container is already in the target state");
+    }
+
     // AAA: ошибка демона (500) — Result.Failed, НЕ исключение (контракт
     //      Task<Result> — вызыватели классифицируют исходы по Result)
     [Fact]
