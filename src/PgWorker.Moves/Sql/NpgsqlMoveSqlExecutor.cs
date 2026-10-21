@@ -17,6 +17,21 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
 
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
 
+    // Поллинг-инвариант (arch/14 §6): одиночная SQL-операция не молчит дольше
+    // окна проверки watchdog — таймауты подключения и команды = половина окна
+    // (7 c при дефолтах 15 c); зависшая операция → исключение → transient-фейл,
+    // а не молчание до дефолтных Npgsql 15/30 c.
+    private const int SqlTimeoutSec = 7;
+
+    private static NpgsqlConnection OpenConnection(string dsn)
+    {
+        var csb = new NpgsqlConnectionStringBuilder(dsn) { Timeout = SqlTimeoutSec };
+        return new NpgsqlConnection(csb.ConnectionString);
+    }
+
+    private static NpgsqlCommand Command(string sql, NpgsqlConnection conn, int commandTimeoutSec)
+        => new(sql, conn) { CommandTimeout = commandTimeoutSec };
+
     // Скалярный запрос (префлайт/пробы/счётчики; DBNull → null).
     public async Task<Result<object?>> ScalarAsync(string dsn, string sql, CancellationToken ct)
     {
@@ -25,10 +40,9 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
         {
             var value = await pipeline.ExecuteAsync(async token =>
             {
-                await using var conn = new NpgsqlConnection(dsn);
+                await using var conn = OpenConnection(dsn);
                 await conn.OpenAsync(token);
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = sql;
+                await using var cmd = Command(sql, conn, SqlTimeoutSec);
                 return await cmd.ExecuteScalarAsync(token);
             }, ct);
             return Result<object?>.Success(value is DBNull ? null : value);
@@ -47,10 +61,9 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
         {
             var rows = await pipeline.ExecuteAsync(async token =>
             {
-                await using var conn = new NpgsqlConnection(dsn);
+                await using var conn = OpenConnection(dsn);
                 await conn.OpenAsync(token);
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = sql;
+                await using var cmd = Command(sql, conn, SqlTimeoutSec);
                 await using var reader = await cmd.ExecuteReaderAsync(token);
                 var items = new List<string>();
                 while (await reader.ReadAsync(token))
@@ -76,10 +89,9 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
         {
             await pipeline.ExecuteAsync(async token =>
             {
-                await using var conn = new NpgsqlConnection(dsn);
+                await using var conn = OpenConnection(dsn);
                 await conn.OpenAsync(token);
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = sql;
+                await using var cmd = Command(sql, conn, SqlTimeoutSec);
                 await cmd.ExecuteNonQueryAsync(token);
             }, ct);
             return Result.Success();
@@ -98,18 +110,22 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
     {
         try
         {
-            await using var conn = new NpgsqlConnection(dsn);
+            await using var conn = OpenConnection(dsn);
             await conn.OpenAsync(ct);
             await using var tx = await conn.BeginTransactionAsync(ct);
-            await using (var setup = conn.CreateCommand())
+            // Command-бюджет обязан ПОКРЫВАТЬ lock_timeout: LOCK-барьер сам
+            // ждёт lock_timeout (ретраи — задача процесса, не SQL-слоя); +2 —
+            // запас тела батча (SET LOCAL + REVOKE×3); нижняя граница 7 —
+            // поллинг-инвариант arch/14 §6 (дефолтный FreezeLockTimeoutSec = 5
+            // → ровно 7 с, симметрия с остальными методами).
+            var bodyTimeoutSec = Math.Max(SqlTimeoutSec, lockTimeoutSec + 2);
+            await using (var setup = Command($"SET LOCAL lock_timeout = '{lockTimeoutSec}s'", conn, bodyTimeoutSec))
             {
-                setup.CommandText = $"SET LOCAL lock_timeout = '{lockTimeoutSec}s'";
                 await setup.ExecuteNonQueryAsync(ct);
             }
 
-            await using (var body = conn.CreateCommand())
+            await using (var body = Command(sql, conn, bodyTimeoutSec))
             {
-                body.CommandText = sql;
                 await body.ExecuteNonQueryAsync(ct);
             }
 

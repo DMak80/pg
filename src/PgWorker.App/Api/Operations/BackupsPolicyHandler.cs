@@ -46,7 +46,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
             return Result<string>.Failed(new ClusterNotFoundException(cluster));
 
         // 2) Гвард кластера: /clusters/<C>/config отсутствует → 404 (spec §3.5).
-        var config = await EtcdFailover.CallAsync(endpoints,
+        var config = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, $"/clusters/{cluster}/config", ct));
         if (!config.IsSuccess)
             return Result<string>.Failed(new EtcdWriteUnavailableException());
@@ -123,7 +123,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
                 ["write_replica"] = s3.WriteReplica!,
             };
         var payload = JsonSerializer.Serialize(policyBody);
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, $"/pgworker/backups/{cluster}/policy", payload, null, ct));
         if (!put.IsSuccess)
             return Result<string>.Failed(new EtcdWriteUnavailableException());

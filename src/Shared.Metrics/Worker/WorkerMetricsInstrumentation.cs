@@ -16,12 +16,16 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
 
     // Ops без терминальной фазы: supervise (стационарные записи, часть через
-    // WriteSupervisionAsync мимо события), evacuate (только waiting-*/blocked-moving)
-    // и backup-orphan-sweeper (журнал домена сирот — свой ключ
+    // WriteSupervisionAsync мимо события), evacuate (только waiting-*/blocked-moving),
+    // backup-orphan-sweeper (журнал домена сирот — свой ключ
     // /pgworker/backups/orphan-journal, arch/19 §4, в work-фазовые метрики
-    // не входит).
+    // не входит) и healing-portalloc (вспомогательная точечная реконструкция
+    // portalloc внутри клэйм-тика надзора, arch/21 §5 C / arch/23 §7).
+    // Живость: supervise/evacuate/healing-portalloc — клэйм-циклы
+    // (алерт WorkerLoopStalled), backup-orphan-sweeper — цикл orphan-sweep
+    // (алерт OrphanSweepStalled, arch/18 §2.2).
     public static readonly IReadOnlySet<string> SuppressedOps =
-        new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper" };
+        new HashSet<string> { "supervise", "evacuate", "backup-orphan-sweeper", "healing-portalloc" };
 
     private readonly TimeProvider _clock;
     private readonly object _lock = new();
@@ -544,9 +548,10 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
 
     // Журнальное событие фазы (подписка WorkJournal.PhaseWritten/WriteAsync):
     //  - ops без терминальной фазы (SuppressedOps: supervise, evacuate,
-    //    backup-orphan-sweeper) — ИГНОР:
+    //    backup-orphan-sweeper, healing-portalloc) — ИГНОР:
     //    стационарные записи (часть — через WriteSupervisionAsync мимо события),
-    //    живость надзора закрывает WorkerLoopStalled (решение ревью Ф4-2);
+    //    живость supervise/evacuate закрывает WorkerLoopStalled (решение ревью Ф4-2),
+    //    backup-orphan-sweeper — цикл orphan-sweep (алерт OrphanSweepStalled);
     //  - терминальные фазы (FinalPhases, фактический словарь журналов обоих
     //    воркеров): done, failed, crashed, rejected, cancelled, expired →
     //    ProcessFinished + Operation(process, result: done → ok, expired →

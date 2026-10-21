@@ -1,6 +1,6 @@
 # 01 — Каркас: attribute-DI, CQRS, Result
 
-> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/Shared.Core (/common/; бывший AdminPanel.Infrastructure, t08)`
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/Shared.Core (/common/; бывший AdminPanel.Infrastructure)`
 > (скопирован из `Puzzle`, обрезан до read-only: без Bus/Outbox/миграций).
 > Контракт слоёв: [arch/01](../../arch/adminpanel/01-architecture.md) §1–2.
 
@@ -77,14 +77,14 @@ sp.GetService(type)`), т.е. интерфейс и класс разрешаю�
 
 - **Статический кеш сборок** (`DI/ServiceCollectionExtensions.cs`: `_assemblies`,
   `_behaviours`): `AutoRegistration` дедуплицирует сборки на процесс — **второй
-  DI-хост в том же процессе не получает регистраций** (урок t02 §14 → t03 §15).
+  DI-хост в том же процессе не получает регистраций** .
   Поэтому: один `WebApplicationFactory` на тестовую сборку (коллекция `api`,
   `AuthWebFactory`), а харнессы без attribute-DI конструируют модули напрямую
   (`EtcdTestHarness` — `new Gateway/new Refresher/Options.Create`).
 - **Порядок**: `UseDiBehaviours(…)` строго до первого `AutoRegistration` — поведения
   учитываются только уже добавленные.
 - **NU1903 как ошибка**: обновление CPM-пакета может уронить сборку предупреждением
-  об уязвимости (прецедент: `Microsoft.AspNetCore.OpenApi` 10.0.9 → 10.0.11, t01);
+  об уязвимости (прецедент: `Microsoft.AspNetCore.OpenApi` 10.0.9 → 10.0.11);
   после любого обновления `Directory.Packages.props` — полный `dotnet build`.
 - **`[InjectAs…]` ищется только на самом классе** (не наследуется) — базовые
   generic-хендлеры помечать в каждой реализации или регистрировать явно.

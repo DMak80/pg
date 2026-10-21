@@ -87,7 +87,7 @@ public sealed partial class DeleteShardHandler(IEtcdGateway gateway, string[] en
         if (marker.Value == ToRemoveState)
             return Result.Success();
 
-        var put = await EtcdFailover.CallAsync(endpoints,
+        var put = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, markerKey, ToRemoveState, null, ct));
         return put.IsSuccess ? Result.Success() : Result.Failed(put.Error!);
     }
@@ -96,7 +96,7 @@ public sealed partial class DeleteShardHandler(IEtcdGateway gateway, string[] en
     // Success(null) — ровно «ключа нет».
     private async Task<Result<string?>> ReadKeyAsync(string key, CancellationToken ct)
     {
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.RangeAsync(endpoint, key, ct));
         if (!range.IsSuccess)
             return Result<string?>.Failed(range.Error!);

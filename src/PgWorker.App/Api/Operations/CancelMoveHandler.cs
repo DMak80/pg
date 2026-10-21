@@ -26,7 +26,7 @@ public sealed partial class CancelMoveHandler(IEtcdGateway gateway, string[] end
 
         // 2) Чтение ключа напрямую одним get: нет → 404 «заявки нет».
         var key = $"/pgworker/moves/{cluster}/{bucket}";
-        var existing = await EtcdFailover.CallAsync(endpoints,
+        var existing = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.GetAsync(endpoint, key, ct));
         if (!existing.IsSuccess)
             return Result.Failed(existing.Error!);
@@ -34,7 +34,7 @@ public sealed partial class CancelMoveHandler(IEtcdGateway gateway, string[] end
             return Result.Failed(new MoveTicketNotFoundException(cluster, bucket));
 
         // 3) del ключа → успех (204 ставит маршрут).
-        var deleted = await EtcdFailover.CallAsync(endpoints,
+        var deleted = await EtcdEndpointFailover.CallAsync(endpoints,
             endpoint => gateway.DeleteAsync(endpoint, key, prefix: false, ct));
         return deleted.IsSuccess ? Result.Success() : Result.Failed(deleted.Error!);
     }

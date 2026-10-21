@@ -109,7 +109,7 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
 
         // 6) Гвард «максимум один активный restore на шард» (§3.1) + существующие
         //    id (NextId суффиксирует коллизию в ту же секунду).
-        var range = await EtcdFailover.CallAsync(endpoints,
+        var range = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.RangeAsync(e, $"/pgworker/backups/{cluster}/{shard}/restore/", ct));
         if (!range.IsSuccess)
             return Result<RestoreRequestedDto>.Failed(range.Error!);
@@ -133,7 +133,7 @@ public sealed partial class RestoreShardHandler(IEtcdGateway gateway, string[] e
             source, target, node, time.GetUtcNow().ToUnixTimeSeconds(), requestedBy,
             SourcePool: string.IsNullOrWhiteSpace(body.SourcePool) ? null : body.SourcePool);
         var key = BackupNames.RestoreKey(cluster, shard, id);
-        var txn = await EtcdFailover.CallAsync(endpoints,
+        var txn = await EtcdEndpointFailover.CallAsync(endpoints,
             e => gateway.TxnAsync(e,
                 TxnRequest.Of([TxnCompare.NotExists(key)],
                     [new TxnOp.Put(key, RestoreStatusJson.Serialize(op), null)]), ct));

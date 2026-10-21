@@ -396,17 +396,6 @@ public sealed class NodeSupervisor(
     private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => ProvisioningProcess.GetWithFailoverAsync(gateway, endpoints, key, ct);
 
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-    {
-        Result<TxnResult> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await gateway.TxnAsync(endpoint, req, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => gateway.TxnAsync(endpoint, req, token), ct);
 }

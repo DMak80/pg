@@ -48,7 +48,7 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 батчами партиций), preferred leader election, метрики самих Kafka-брокеров
 (JMX-exporter; лаги/USR снимает коллектор — arch/18 §4), клиентская
 библиотека дискавери — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
-Ротация CA/сертов — входит (CaRotator, §5 K, t07).
+Ротация CA/сертов — входит (CaRotator, §5 K).
 
 ---
 
@@ -109,11 +109,11 @@ URL API — из etcd)       URL воркера (§1.1)
 живые ключи в kafka-снапшоте и зовёт любой живой (failover на следующий; все
 умерли — 503 + critical-алерт `worker-api-unreachable`).
 
-**Аутентификация — mTLS (t03)**: вся HTTP-грань воркера (вкл. `/healthz`)
+**Аутентификация — mTLS**: вся HTTP-грань воркера (вкл. `/healthz`)
 обслуживается только по TLS; клиенты (панель) аутентифицируются
 клиентским сертификатом, подписанным per-install API-CA. Клиент без
 валидного серта — 401 (TLS-хендшейк-отказ). `X-Api-Key`/`KFW_API_KEY`
-удалён (t03). Отключение TLS
+удалён. Отключение TLS
 (`KafkaWorker:Api:Tls:AllowInsecureHttp`, default false) — только для
 in-memory WAF-тестов; в deploy/стенде всегда mTLS.
 
@@ -150,14 +150,14 @@ kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не испол
   `broker_{m+1}..B` — broker-only. `brokers/<k>/role` фиксирует роль навсегда;
   добавляемые позже брокеры — всегда broker-only (кворум не меняется),
   контроллерные ноды не демонтируются.
-- **Listeners (канон безопасности t03)**: `CONTROLLER :9093` (PLAINTEXT,
+- **Listeners (канон безопасности)**: `CONTROLLER :9093` (PLAINTEXT,
   KRaft-кворум — только внутри закрытой сети `kfw-net-<C>`), `INTERNAL :9092`
   (межброкерный, **SASL_SSL**, advertised = docker-DNS имя ноды), `CLIENT
   :9094` (**SASL_SSL**, опубликован на хост портом из portalloc, advertised —
   по правилу ниже). TLS-сертификаты — per-cluster CA (§2.3); механизм
   SASL — PLAIN поверх TLS. Сеть `kfw-net-<C>` — per-cluster,
   attachable (alias = имя ноды, уникален в пределах сети своего кластера;
-  t09-фикс: единая сеть с общими короткими алиасами `broker<N>` ломала
+  единая сеть с общими короткими алиасами `broker<N>` ломала
   Raft-голоса через docker-DNS round-robin — на одном docker-хосте собирался
   максимум один кластер; несколько кластеров обязаны быть изолированы сетями).
 - **Advertised-правило CLIENT-listener (канон)**: advertised-хост ноды =
@@ -183,14 +183,14 @@ kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не испол
   брокеров при создании (§2.2) и одновременно converge-цель (§5 E).
 - **Volume**: `kfw-<C>-<b>-data` → `/var/lib/kafka/data` (`KAFKA_LOG_DIRS`);
   имя детерминировано, данные переживают пересоздание контейнера.
-- **Placement/порты**: анти-аффинити нод по docker-хостам (общий `Shared.Core/Planning`, порт t09); порт-аллокатор из диапазона `16000–16999`
+- **Placement/порты**: анти-аффинити нод по docker-хостам (общий `Shared.Core/Planning`); порт-аллокатор из диапазона `16000–16999`
   (**1 клиентский порт на ноду**), закрепление в
   `/kafkaworker/portalloc/<C>`; лимиты контейнера из `resources` (cpu/mem;
   disk-заявка — инфо, квоты томов — roadmap). Занятость для довыделения =
   docker-публикации ∪ записи portalloc ВСЕХ чужих кластеров
   (`/kafkaworker/portalloc/*`, кроме своего — свой переиспользуется как
   закрепление; закрывает кросс-кластерную коллизию, включая окно «portalloc
-  записан, контейнеры ещё не созданы»). **Глобальный portalloc-клэйм** (t91):
+  записан, контейнеры ещё не созданы»). **Глобальный portalloc-клэйм**:
   довыделение новых портов (недобор нод, не переиспользование закреплений) —
   глобально взаимоисключающая секция «чтение занятости → выбор портов →
   запись», выполняется только держателем `/kafkaworker/locks/portalloc`
@@ -205,7 +205,7 @@ kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не испол
   (`docker/KafkaWorker.Dockerfile`). **Env-секреты per-install — только
   TLS API** (§1.1): per-cluster-секреты (`app_password`, `admin_password`,
   `ca_key`) живут в etcd, генерирует воркер (§4).
-- **Два инстанса по умолчанию** (t07): деплой-рецепт поднимает второй сервис
+- **Два инстанса по умолчанию**: деплой-рецепт поднимает второй сервис
   `kafkaworker-2` того же образа — уникальный хост-порт публикации
   (`KFW_API_HOST_PORT2`, ряд 8081/8084) и уникальный `Api:AdvertiseUrl`
   (lease-ключ `/kafkaworker/api/<InstanceId>`), общие на оба инстанса тома
@@ -224,7 +224,7 @@ kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не испол
 | `KAFKA_CONTROLLER_QUORUM_VOTERS` | `1@host:9093,2@host:9093,…` — только controller-ноды (внутренние адреса сети `kfw-net-<C>` кластера) |
 | `KAFKA_LISTENERS` | `CONTROLLER://:9093,INTERNAL://:9092,CLIENT://:9094` |
 | `KAFKA_ADVERTISED_LISTENERS` | `INTERNAL://<docker-DNS имя ноды>:9092,CLIENT://<AdvertisedClient>:<клиентский порт>` (AdvertisedClient — правило §2.1; CONTROLLER не advertised) |
-| `KAFKA_LISTENER_SECURITY_PROTOCOL_MAP` | `CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL` (§2.1, t03) |
+| `KAFKA_LISTENER_SECURITY_PROTOCOL_MAP` | `CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL` (§2.1) |
 | `KAFKA_CONTROLLER_LISTENER_NAMES` | `CONTROLLER` |
 | `KAFKA_INTER_BROKER_LISTENER_NAME` | `INTERNAL` |
 | `KAFKA_SASL_ENABLED_MECHANISMS` | `PLAIN` |
@@ -261,7 +261,7 @@ e2e волны C). Пользователь `inter` с детерминиров�
 кластера. `inter` — super.user (§2.3): репликация/internal-топики не зависят
 от ACL.
 
-### 2.3. PKI, TLS и authorization (t03 — канон безопасности кластера)
+### 2.3. PKI, TLS и authorization (канон безопасности кластера)
 
 **Per-cluster CA** (генерирует воркер, provisioning K2 / миграция M1; ensure
 txn put-if-absent — единый механизм с кредами):
@@ -274,10 +274,10 @@ txn put-if-absent — единый механизм с кредами):
   (provisioning/add-broker/rebuild/NodeRegenerator/ротация). Панель не читает.
 - `ca_pem` — публичный сертификат того же CA; точка дискавери (приложения и
   панель строят truststore из него — 15 §5). Ротация CA/сертов — процесс
-  CaRotator (§5 K, t07): в окне ротации `ca_pem` — bundle OLD+NEW
+  CaRotator (§5 K): в окне ротации `ca_pem` — bundle OLD+NEW
   (PEM-конкатенация, 15 §4/§5), после коммита — только NEW.
 
-**Ротация CA/сертов (t07, §5 K) — окно двойного доверия**: порядок фаз
+**Ротация CA/сертов (§5 K) — окно двойного доверия**: порядок фаз
 P→D→R→C гарантирует, что клиенты не видят недоверенного серта: (P) staging
 `ca_next_{key,pem}` put-if-absent; (D) `ca_pem` ← bundle OLD+NEW — клиенты,
 перечитав точку дискавери, доверяют сертам обоих поколений; (R) rolling-
@@ -345,10 +345,10 @@ placement constraint, `publish mode=host`. Объекты для сверок �
   (последний брокер; пул subnet'ов docker-хоста конечен — сиротские сети
   не копим); короткие алиасы `broker<N>` уникальны
   в своей сети — несколько кластеров на одном docker-хосте изолированы
-  (t09-фикс; бэквард-совместимость: существующие контейнеры в старой единой
+  (бэквард-совместимость: существующие контейнеры в старой единой
   `kfw-net` продолжают работать — кластер самодостаточен внутри своей сети).
 
-Клиент Engine API — общий `Shared.Docker` (порт t07-унификации движка;
+Клиент Engine API — общий `Shared.Docker` (
 канон-суперсет семантики: start 304-идемпотентен, create при отсутствии
 образа — pull+retry, exec-ошибка включает stdout, label
 контейнеров/сервисов — `kafkaworker`).
@@ -368,7 +368,7 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafka/clusters/<C>/topics/<T>` | реестр топиков (факт + desired-заявки) |
 | `/kafkaworker/rotations/<C>` | заявка ротации app-пароля |
 | `/kafkaworker/admin_rotations/<C>` | заявка ротации admin-пароля (H) |
-| `/kafkaworker/ca_rotations/<C>` | заявка ротации per-cluster CA/сертов (K, t07) |
+| `/kafkaworker/ca_rotations/<C>` | заявка ротации per-cluster CA/сертов (K) |
 | `/kafka/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K): подпись сертов фазы R, источник bundle `ca_pem`; вне ротации ключей нет |
 | `/kafkaworker/rebalances/<C>` | заявка ребалансировки партиций (I) |
 | `/workers/api_tls/kafkaworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
@@ -388,8 +388,8 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafka/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
 | `/kafkaworker/reassignments/<C>` | процесс I: put при работе, del по завершении | `{"mode","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}` (15 §4) |
 | `/kafkaworker/regens/<C>` | процесс J: put при старте первого пересоздания, del по сходимости | `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}` (15 §4) — прогресс rolling-регенерации |
-| `/kafkaworker/locks/portalloc` | захват секции довыделения портов (t91, §2.1) | `{"instance":"<id>","since_unix":…}` — lease TTL 15 с, txn `version==0` + put-with-lease; del + revoke lease по завершении секции (arch/15 §4) |
-| `/kafkaworker/ticket_outcomes/<C>` | исход заявки: экспирация (t10) или успешный финал | `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?:"waiting-cluster"\|…,"requested_unix","requested_by","finished_unix"}` — перезаписывается каждым новым исходом (любого вида); чистка — демонтаж X2; панель читает (алерт `kafka-ticket-expired`) |
+| `/kafkaworker/locks/portalloc` | захват секции довыделения портов (§2.1) | `{"instance":"<id>","since_unix":…}` — lease TTL 15 с, txn `version==0` + put-with-lease; del + revoke lease по завершении секции (arch/15 §4) |
+| `/kafkaworker/ticket_outcomes/<C>` | исход заявки: экспирация или успешный финал | `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?:"waiting-cluster"\|…,"requested_unix","requested_by","finished_unix"}` — перезаписывается каждым новым исходом (любого вида); чистка — демонтаж X2; панель читает (алерт `kafka-ticket-expired`) |
 | `/kafkaworker/rebalances/<C>` | процесс I: del по завершении ребалансировки | заявка панели, дожившая до факта == план (порядок «сначала факт, потом del заявки» — повтор тика после сбоя del безвреден) |
 | `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,admin_rotations,rebalances,reassignments,regens,ticket_outcomes}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки, прогресс и исходы**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
 
@@ -431,7 +431,7 @@ remove (G) → add (F) → ротация паролей (H, по одному �
 admin) → ротация CA (K) → регенерация (J, одно пересоздание за тик) →
 TopicSync (D, тик `TopicSyncIntervalSec`).
 
-**Возрастная самозачистка заявок (t10)**: заявка (ротации пароля app/admin,
+**Возрастная самозачистка заявок**: заявка (ротации пароля app/admin,
 CA-ротации, ребалансировки) старше `RotationTicketTimeoutSec` (возраст — по
 `requested_unix` payload) снимается самим воркером в точке waiting-исхода
 ТОЛЬКО при строгом «не начато» — тройной гвард: заявка жива ∧ окно ротации
@@ -454,7 +454,7 @@ Reassignment стоит перед remove — к моменту G дрениру
 исполняющийся тик (cancellation-гвард), критические шаги — после живой
 сверки клэйма (S5 [17](17-synchronization-principles.md));
 journal-before-manipulations. Kafka-шаги Active (E–J, D) пропускаются на
-время backoff недоступного кластера (15→60→300 с, сброс при успехе, t05) —
+время backoff недоступного кластера (15→60→300 с, сброс при успехе) —
 тик успех; docker-надзор и provisioning не гейтятся (self-healing
 не зависит от kafka).
 
@@ -529,16 +529,20 @@ X3 снапшот P12 «после»; клэйм снят явно
   только по исчезновению из декларации); пересоздания по молчанию запрещены —
   собственная слепота воркера не повод трогать брокеров. Слепота пробы ≠
   молчание брокеров.
-- **Backoff недоступного кластера** (t05): окно 15→60→300 с (сброс при
+- **Backoff недоступного кластера**: окно 15→60→300 с (сброс при
   успехе; писатели — проба надзора и коллектор метрик — первые kafka-контакты
   конвейера) гейтит kafka-пробу (окно активно → слепая проба без сети и без
   клиента; unreachable-трек заморожен — флап ≠ смерть, S7) и kafka-шаги
   Active-ветки; docker-часть надзора и provisioning не гейтятся. В etcd
   backoff ничего не пишет. **Лестница E9** (arch/17): безадресные
   Supervisable-брокеры — до любых деструктивных действий — portalloc →
-  реконструкция из inspect живого контейнера (published-порт CLIENT + host,
-  put-if-absent под `locks/portalloc`, проигрыш txn → re-read) → новая
-  аллокация (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
+  реконструкция из inspect живого контейнера (published-порт CLIENT + host),
+  закрепление — RMW `/kafkaworker/portalloc/<C>` под `locks/portalloc`:
+  merge восстановленной записи с живыми записями соседей, txn по
+  `mod_revision` (отсутствие ключа — ревизия 0 = NotExists); проигрыш txn →
+  re-read (первый записавший — истина, S5; нашей записи нет — retry
+  следующим тиком); записи соседей не затираются → новая аллокация
+  (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
   в portalloc» устранён; клэйм занят → journal waiting-portalloc-lock
   (InProgress, следующий тик).
 - Перевод `PROVISIONING`→`RUNNING` — по трём фактам: контейнер жив, зрячая
@@ -575,7 +579,7 @@ Kafka-конфиги: `default_retention_ms`→`log.retention.ms`,
 `min_insync_replicas`→`min.insync.replicas`. Фактические топики не
 трогаются (только desired-заявками).
 
-**ACL-converge (t03, тот же лёгкий шаг тика)**: DescribeAcls → diff к
+**ACL-converge (тот же лёгкий шаг тика)**: DescribeAcls → diff к
 каноническому ACL-плану роли app (§2.3) → CreateAcls/DeleteAcls
 (идемпотентная сходимость; admin/inter — super.users, ACL для них не
 нужны). Авторизатор StandardAuthorizer включён env нод (§2.2);
@@ -622,9 +626,9 @@ DescribeCluster (слепой преф-чек проходится каждым 
 (staging `ca_next_*` жив) → journal `waiting-ca-window` (передержка —
 rolling-и не смешиваются; окно доиграет K этим же/следующими тиками,
 затем H продолжит). Живая, но НЕ начатая ca-заявка H НЕ гейтит
-(приоритет H перед K, t10): при обеих живых заявках H доигрывает свою
+(приоритет H перед K): при обеих живых заявках H доигрывает свою
 (del заявки в фазе B), затем K исполняет свою — взаимное ожидание двух
-заявок (дедлок) невозможно. Возрастная самозачистка (t10) — в
+заявок (дедлок) невозможно. Возрастная самозачистка — в
 waiting-исходе ТОЛЬКО при гварде «не начато» §5: журнал роли показывает
 незавершённую мутацию (`phase-a`/`rotated-commit`/`phase-c` — заявка
 уже раскатывается, слепота кластера в середине A — передержка) → чистый
@@ -666,11 +670,11 @@ describe-all (метаданные всех топиков **включая `__`
   первая реплика (лидер) сохраняется, добор остальных — наименее загруженные
   живые брокеры, детерминизм сортировкой (topic, partition, brokerId).
   Сходимость = факт == план по всем партициям → del заявки + put
-  `ticket_outcomes/<C>` outcome=done (kind=rebalance, t10).
+  `ticket_outcomes/<C>` outcome=done (kind=rebalance).
 - **Цели переезда** — только `RUNNING`-брокеры (не TO_REMOVE/REMOVING/
   PROVISIONING/UNREACHABLE). Заявка balance при живых drain-кандидатах
   ждёт (journal waiting-drain): сначала демонтаж, потом баланс.
-  Возрастная самозачистка (t10): заявка balance старше
+  Возрастная самозачистка: заявка balance старше
   `RotationTicketTimeoutSec`, чьи батчи не подаются (waiting-drain или
   передержка слепой пробы — прогресс-ключ balance не жив), снимается как
   не-начатая (§5 «Возрастная самозачистка», kind=rebalance); ИДУЩАЯ
@@ -730,7 +734,7 @@ vs декларация; `resources=null` или `disk` — не сверяют�
 - Регенерация — без снапшотов P12 (etcd-декларацию воркер не меняет; как
   add/remove брокеров, §6).
 
-### K. CaRotator (ротация per-cluster CA и сертов — окно двойного доверия, t07)
+### K. CaRotator (ротация per-cluster CA и сертов — окно двойного доверия)
 
 Исполнение заявки `/kafkaworker/ca_rotations/<C>` (панель, клэйм-txn; формат
 §9.8 один в один с ротациями H). Исполнитель — держатель клэйма `<C>`; фазы —
@@ -769,9 +773,9 @@ M); живая пароль-ротация H (заявка `rotations/<C>`/`admi
 ИЛИ журнал `rotate` в мутационной фазе роли `phase-a`/`rotated-commit`/
 `phase-c`, вкл. `admin:`-префиксы; терминальные `done`/`expired` — не
 живые: expired пишется только вне мутаций) → waiting-password-rotation
-(H доиграет и K продолжит — приоритет H, t10); живой reassignment (`reassignments/<C>`)
+(H доиграет и K продолжит — приоритет H); живой reassignment (`reassignments/<C>`)
 или regen (`regens/<C>`) → waiting без действий (rolling не смешивается
-с чужими). Экспирация (t10) действует в этих waiting-точках ТОЛЬКО под
+с чужими). Экспирация действует в этих waiting-точках ТОЛЬКО под
 тройным гвардом «не начато» §5 (staging отсутствует ∧ журнал rotate-ca
 не в мутационной фазе): ca-заявка старше `RotationTicketTimeoutSec` →
 §5 «Возрастная самозачистка». Отказ между
@@ -783,7 +787,7 @@ env выравнивается надзором C). Финал K4 — вмест
 `ticket_outcomes/<C>` outcome=done. Endpoint API —
 `POST /api/kafka/clusters/{c}/ca/rotate` (§1.1); заявка уже стоит → 409.
 
-### M. SecurityMigrator (премиграционные кластеры → канон t03)
+### M. SecurityMigrator (премиграционные кластеры → канон §2.3)
 
 Детект (Active-ветка, до всех остальных шагов): у кластера нет
 `ca_pem`/`ca_key`/`admin_password` в etcd ИЛИ env живых контейнеров
@@ -800,7 +804,7 @@ M0 claim + journal(op=migrate-security); снапшот P12 «до»; guard'ы:
    (`reassignments/<C>`, `regens/<C>`) и открытое окно CA-ротации
    (staging `ca_next_*`) → передержка journal-waiting; живые ЗАЯВКИ
    (rotations/admin_rotations/ca_rotations/rebalances) миграцию НЕ
-   гейтят (t10): на премиграционном кластере их исполнение не начато
+   гейтят: на премиграционном кластере их исполнение не начато
    (H/K сами уходят в waiting-cluster до миграции) — после M заявки
    исполнятся штатно; взаимное ожидание M↔заявка невозможно
 M1 ensure: CA (ca_pem/ca_key) + admin-кред txn put-if-absent
@@ -818,8 +822,8 @@ M4 ACL-converge (E) стартовый; endpoints не меняются (хос�
 тика доводит (пересоздание оставшихся; поднятые пропускаются сверкой env).
 Данные неприкосновенны (тома сохраняются всегда). Клиентский контракт
 меняется одним шагом: приложения/панель, ещё не умеющие TLS, получают
-отказ до обновления (breaking change дискавери 15 §5 — заявляется релизом
-t03; панель обновляется тем же релизом). После M кластер неотличим от
+отказ до обновления (breaking change дискавери 15 §5 — заявляется одним релизом
+панель обновляется тем же релизом). После M кластер неотличим от
 поднятого канонически (второй детект-проход — no-op).
 
 ## 6. Надёжность
@@ -833,7 +837,7 @@ t03; панель обновляется тем же релизом). После
   Двойной контроллер невозможен: операции — только под живым клэймом.
 - **Атомарность etcd**: переходы — txn с compare (`mod_revision` config,
   `version==0` клэймы, RMW topics/endpoints).
-- **AdminClient-кэш (t05)**: фабрика — sharable-кэш per
+- **AdminClient-кэш**: фабрика — sharable-кэш per
   (bootstrap, user, password); Create — «получить клиент ключа», DisposeAsync
   адаптера — no-op (владение у кэша); пины librdkafka
   `reconnect/retry.backoff.ms ≥ 1000` (+ rdkafka-лог на Debug); Failed
@@ -849,7 +853,7 @@ t03; панель обновляется тем же релизом). После
   неактивные ключи вытесняются
   (dispose вытесняемого — тот же дрейн); остановка — детерминированный
   Dispose (кэш = IDisposable DI-синглтон; тот же дрейн с бюджетом по каждому
-  клиенту — вечного ожидания нет). Инцидент-класс: t11 (панель).
+  клиенту — вечного ожидания нет)..
 - **Снапшоты P12**: лидер регулярно (раз в 6 ч) + **«до/после» в точках
   изменений** — provisioning (K0/K6), deprovisioning (X0/X3), ротация
   (старт/финал). Add/remove брокеров и регенерация (J) — без снапшотов
@@ -859,7 +863,7 @@ t03; панель обновляется тем же релизом). После
 - **Отказ etcd**: контрол-плейн заморожен; живые брокеры от него не
   зависят. **Отказ docker-хоста**: размещение фиксировано (portalloc);
   нода UNREACHABLE → сценарии надзора.
-- **Самозачистка зависших заявок (t10)**: заявки ротаций/ребалансировки
+- **Самозачистка зависших заявок**: заявки ротаций/ребалансировки
   не висят вечно — не-начатая заявка старше `RotationTicketTimeoutSec`
   снимается воркером в waiting-точке под тройным гвардом не-начатости
   (staging отсутствует ∧ журнал процесса не в мутационной фазе ∧ прогресс
@@ -878,15 +882,15 @@ t03; панель обновляется тем же релизом). После
   (Shared.Core, `BackgroundService`) следит за активностью (тик или
   прогресс-отметка; глубоких долгих фаз у KafkaWorker нет — ожидания
   расползаются по тикам; сон snapshot-лидера длиннее окна проверки —
-  пульсирующим сном, t19) циклов
+  пульсирующим сном) циклов
   (reconcile/keepalive/snapshot) по отметкам `HealthState`; возраст
   активности сверх порога `Loops:Watchdog:Multiplier` ×
-  `Loops:Watchdog:CheckIntervalSec` («2 по 15» = 30 с, t19; порог
+  `Loops:Watchdog:CheckIntervalSec` («2 по 15» = 30 с; порог
   healthz loops-alive в формуле НЕ участвует — watchdog знает только
   свои опции, `WatchdogOptions` без изменений; сон snapshot-лидера
-  длиннее порога — пульсирующим сном, t19; интервалы
+  длиннее порога — пульсирующим сном; интервалы
   `ScanIntervalSec`/`KeepaliveSec` < порога сноса — fail-fast старта,
-  общий `WatchdogConfigGuard` в Program.cs трёх воркеров, t19)
+  общий `WatchdogConfigGuard` в Program.cs трёх воркеров)
   → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
   graceful `StopApplication` — контейнер поднимает docker-политика, lease
   гаснут ≤15 с, takeover вторым инстансом. Механика (инварианты живости/
@@ -899,7 +903,7 @@ t03; панель обновляется тем же релизом). После
 Health `/healthz`: `etcd-reachable` (все endpoints), `docker-hosts`
 (per-host ping), `loops-alive` (последний тик каждого цикла), `claims`
 (сколько держим), `snapshot-freshness`, `watchdog` (armed/stale —
-состояние компонента). Канон честного health (t09):
+состояние компонента). Канон честного health:
 
 - **healthz = последнее состояние цикла, а не первый сбой**: успешный тик
   гасит `StatusError` прошлого тика (живой-Ф7, порт циклов PgWorker) —
@@ -914,7 +918,7 @@ Health `/healthz`: `etcd-reachable` (все endpoints), `docker-hosts`
   `ConnectCallback` — параллельные A/AAAA-запросы .NET против Docker
   embedded DNS (127.0.0.11) флейпят «Name or service not known».
 
-**Единая правда для панели** (t09): панель опрашивает `/healthz` живых
+**Единая правда для панели**: панель опрашивает `/healthz` живых
 инстансов по URL из `/kafkaworker/api/<id>` (порт паттерна PgWorker,
 arch/adminpanel/02 §2.3.2) — docker-health и панель видят одно и то же
 здоровье, degraded/unhealthy виден алертом `worker-unhealthy` ≤ 2 тиков
@@ -936,14 +940,14 @@ KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                     TopicSyncIntervalSec=15, ReassignIntervalSec=15,
                     ReassignBatchPartitions=10,
                     Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
-                    # watchdog зависших циклов (t19): порог сноса = Multiplier ×
+                    # watchdog зависших циклов: порог сноса = Multiplier ×
                     # CheckIntervalSec («2 по 15» = 30 с); порог healthz в
                     # формуле НЕ участвует; Enabled=false — компонент не
                     # регистрируется; ScanIntervalSec/KeepaliveSec < порога
                     # сноса — fail-fast старта
 KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
                          ReassignRetrySubmitSec=120, RotationTicketTimeoutSec=3600 }
-                         # RotationTicketTimeoutSec (t10): возраст не-начатой
+                         # RotationTicketTimeoutSec: возраст не-начатой
                          # заявки (ротации app/admin/CA, ребалансировка), после
                          # которого воркер снимает её в waiting-точке (§5)
 KafkaWorker:Parallelism { MaxClusters=4 }
@@ -957,7 +961,7 @@ KafkaWorker:Api { AdvertiseUrl (https://…), EnableSeedEndpoint=false,
                                         # URL https:// в /kafkaworker/api/<id>
 # env-секреты (§1.1/§4): KFW_API_TLS_CERT / KFW_API_TLS_KEY /
 #   KFW_API_TLS_CLIENT_CA (PEM) или KFW_API_TLS_{CERT,KEY,CLIENT_CA}_PATH
-#   (файлы volume kfw-api-tls); KFW_API_KEY удалён (t03)
+#   (файлы volume kfw-api-tls); KFW_API_KEY удалён
 ```
 
 `AdvertisedClientHost=null` допустим только когда имя docker-хоста
@@ -977,7 +981,7 @@ KafkaWorker:Api { AdvertiseUrl (https://…), EnableSeedEndpoint=false,
 | R7 | Уменьшение mem/cpu в мутации №15 ниже рабочего набора брокера → OOM-килл / деградация (валидация §10.3 границы не отсекает) | ответственность оператора (UI-предупреждение в модалке); OOM-рестарт подхватит надзор C (том жив — данные не теряются) |
 | R8 | SAN сертификата ноды не покрывает фактический advertised-хост (смена `AdvertisedClientHost` после подъёма) → TLS-отказ клиентов на CLIENT | SAN строится по тому же advertised-правилу §2.1 при каждой пересборке env; смена host-настройки требует пересоздания брокеров (NodeRegenerator-событие или пере-ensure: снапшот-детект env vs декларация — M-механика); ротация CA (§5 K) пересобирает серты с тем же SAN-правилом |
 | R9 | Окно миграции M: клиенты без TLS-поддержки получают отказ после M2 (breaking change дискавери) | заявляется релизом (панель обновляется тем же релизом; приложения — библиотекой дискавери); окно ~1–3 мин, тома живы, повтор тика доводит |
-| R10 | Приватный ключ CA (`ca_key`) в etcd — компрометация etcd = подделка сертов кластера | etcd — уже хранилище per-cluster-секретов (паролей); зона доверия контроль-плейна; ротация CA — процесс CaRotator (§5 K, t07): компрометированный OLD-ключ уничтожается перезаписью в фазе C, серты нод перевыпускаются; доступ к etcd только из закрытой сети установки |
+| R10 | Приватный ключ CA (`ca_key`) в etcd — компрометация etcd = подделка сертов кластера | etcd — уже хранилище per-cluster-секретов (паролей); зона доверия контроль-плейна; ротация CA — процесс CaRotator (§5 K): компрометированный OLD-ключ уничтожается перезаписью в фазе C, серты нод перевыпускаются; доступ к etcd только из закрытой сети установки |
 
 ---
 

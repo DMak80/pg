@@ -1073,61 +1073,17 @@ public sealed class NodeSupervisor(
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
-    // Failover-обёртки: первый успешный endpoint выигрывает.
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover-обёртки: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.PutAsync(endpoint, key, value, null, token), ct);
 
     // Failover-обёртка удаления ключа (маркер режима recreate).
-    private async Task<Result> DeleteAsync(string key, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    private Task<Result> DeleteAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.DeleteAsync(endpoint, key, prefix: false, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
-    {
-        Result<IReadOnlyList<Kv>> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.RangeAsync(endpoint, prefix, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
 }

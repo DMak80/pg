@@ -36,13 +36,13 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль приложений; в UI/API панели не отдаётся (как dsn-пароль pg) |
 | `admin_user` | `"admin"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь **администратора** (воркер AdminClient/CLI, пробы панели; super.user, 16 §2.3) |
 | `admin_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль администратора; панель читает для проб, в UI/API не отдаёт |
-| `ca_pem` | PEM-сертификат self-signed per-cluster CA; **в окне ротации (t07) — bundle: конкатенация PEM OLD+NEW** (фаза D CaRotator, 16 §2.3), после коммита — только NEW | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | публичный CA-серт кластера (CN=`kfw-<C>-ca-<отпечаток>` — subject уникален на генерацию, 10 лет; см. 16 §2.3): доверие клиентов TLS (SASL_SSL INTERNAL/CLIENT, 16 §2.1) — **точка дискавери приложений и панели** (§5); PEM-конкатенация стандартна для truststore (`ssl.ca.pem`/`ssl.ca.location`) — читатели используют значение как есть |
+| `ca_pem` | PEM-сертификат self-signed per-cluster CA; **в окне ротации — bundle: конкатенация PEM OLD+NEW** (фаза D CaRotator, 16 §2.3), после коммита — только NEW | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | публичный CA-серт кластера (CN=`kfw-<C>-ca-<отпечаток>` — subject уникален на генерацию, 10 лет; см. 16 §2.3): доверие клиентов TLS (SASL_SSL INTERNAL/CLIENT, 16 §2.1) — **точка дискавери приложений и панели** (§5); PEM-конкатенация стандартна для truststore (`ssl.ca.pem`/`ssl.ca.location`) — читатели используют значение как есть |
 | `ca_key` | PEM PKCS#8 приватный ключ CA; при ротации перезаписывается ключом NEW CA (фаза C, 16 §2.3) — OLD-ключ уничтожается перезаписью | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | секрет кластера: подпись брокерных сертификатов (provisioning/add-broker/rebuild/ротация, 16 §2.3); панель НЕ читает, в UI/API не отдаётся |
 | `ca_next_key` | PEM PKCS#8 приватный ключ НОВОЙ CA; staging — живут только в окне ротации (фазы P→C, 16 §2.3) | воркер (CaRotator, фаза P, txn put-if-absent; фаза C — del) | подпись брокерных сертов в rolling-фазе R до коммита; отсутствует вне ротации — ensure не создаёт |
 | `ca_next_pem` | PEM-сертификат НОВОЙ CA; staging, аналогично `ca_next_key` | воркер (CaRotator) | источник bundle для `ca_pem` (фаза D) и подписи в фазе R; в UI/API панели не отдаётся |
 | `topics/<T>` | JSON — гибрид автосинка и конфиг-заявки, см. §3 | воркер (автосинк факта), панель (только `desired`-часть, RMW) | реестр топиков для дискавери |
-| `topics/<T>/desired.create` | JSON `{"partitions":P,"replication_factor":R,"configs"?:{...},"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка создания (t01); `configs` — только управляемые (`retention.ms`, `min.insync.replicas`); отсутствие = брокерные дефолты |
-| `topics/<T>/desired.delete` | JSON `{"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка удаления (деструктивная; t01) |
+| `topics/<T>/desired.create` | JSON `{"partitions":P,"replication_factor":R,"configs"?:{...},"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка создания; `configs` — только управляемые (`retention.ms`, `min.insync.replicas`); отсутствие = брокерные дефолты |
+| `topics/<T>/desired.delete` | JSON `{"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка удаления (деструктивная) |
 
 Неизвестные ключи внутри `/kafka/` — не ошибка: лог + счётчик `unknownKeys`
 в снапшоте читателя (как pg 02 §2.1; система развивается, парсеры не падают).
@@ -91,7 +91,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
  "synced_unix":1750000300,"missing":true}
 ```
 
-`topics/audit/desired.create` (заявка создания с начальными конфигами, t01 §3.1):
+`topics/audit/desired.create` (заявка создания с начальными конфигами, §3.1):
 
 ```json
 {"partitions":12,"replication_factor":3,
@@ -155,7 +155,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
   фактом (`desired` отсутствует). Исчезновение и появление — штатные циклы
   реестра.
 
-### 3.1. Lifecycle-заявки создания/удаления (t01)
+### 3.1. Lifecycle-заявки создания/удаления
 
 Ключи `topics/<T>/desired.create` / `topics/<T>/desired.delete` (§2): ставит панель
 клэйм-txn `version==0` (повтор при живой заявке — 409; отмена — del ключа заявки),
@@ -192,16 +192,16 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/claims/<C>` | lease TTL 15 с | пер-кластерный клэйм (exclusivity обработки одним инстансом) |
 | `/kafkaworker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` |
 | `/kafkaworker/portalloc/<C>` | обычный | `{"broker<k>":{"host":"h","client":16001}}` — закрепление клиентских портов (переживает rebuild) |
-| `/kafkaworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t91, arch/16 §2.1): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/kafkaworker/portalloc/<C>`» (provision K1 / add-broker) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
+| `/kafkaworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (arch/16 §2.1): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/kafkaworker/portalloc/<C>`» (provision K1 / add-broker) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/kafkaworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (arch/16 §1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель; префикс `/kafka/` и этот координационный слой пишет только воркер (мутации панели — через его API) |
-| `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10, 16 §5) |
-| `/kafkaworker/admin_rotations/<C>` | обычный | заявка ротации admin-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn `version==0` — протокол ротаций; исполнение — фазы A/B/C с окном двух кредов `user_admin`/`user_admin2`, 16 §5 H; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10) |
-| `/kafkaworker/ca_rotations/<C>` | обычный | заявка ротации per-cluster CA/сертов `{"requested_unix","requested_by"}` (t07; формат/протокол — 02 §9.8 один в один; исполнение — 16 §5 K; del воркером в коммите фазы C или возрастным таймаутом не-начатой — t10) |
-| `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10, 16 §5 I) |
+| `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — 16 §5) |
+| `/kafkaworker/admin_rotations/<C>` | обычный | заявка ротации admin-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn `version==0` — протокол ротаций; исполнение — фазы A/B/C с окном двух кредов `user_admin`/`user_admin2`, 16 §5 H; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой) |
+| `/kafkaworker/ca_rotations/<C>` | обычный | заявка ротации per-cluster CA/сертов `{"requested_unix","requested_by"}` (формат/протокол — 02 §9.8 один в один; исполнение — 16 §5 K; del воркером в коммите фазы C или возрастным таймаутом не-начатой) |
+| `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — 16 §5 I) |
 | `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |
 | `/kafkaworker/regens/<C>` | обычный | прогресс rolling-регенерации брокеров (16 §5 J) — пишет только воркер: `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте первого пересоздания, del по сходимости всех лимитов — пусто = операции нет) |
-| `/kafkaworker/ticket_outcomes/<C>` | обычный | последний исход заявки (t10) — пишет только воркер: `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?,"requested_unix","requested_by","finished_unix"}`; перезаписывается новым исходом, чистится демонтажом (16 X2); панель читает (алерт `kafka-ticket-expired`, 03 §7.4) |
+| `/kafkaworker/ticket_outcomes/<C>` | обычный | последний исход заявки — пишет только воркер: `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?,"requested_unix","requested_by","finished_unix"}`; перезаписывается новым исходом, чистится демонтажом (16 X2); панель читает (алерт `kafka-ticket-expired`, 03 §7.4) |
 
 Панель читает из `/kafkaworker/` только `rotations/`, `admin_rotations/`,
 `ca_rotations/`, `rebalances/`, `reassignments/`, `regens/`,
@@ -219,7 +219,7 @@ dsn/app_password/routing):
    (`security.protocol=SASL_SSL`, `sasl.mechanisms=PLAIN`; CA-серт(ы) —
    truststore). Truststore подаётся ФАЙЛОМ (`ssl.ca.location`): inline
    `ssl.ca.pem` librdkafka читает ОДИН серт — bundle окна ротации требует
-   файла. В окне ротации CA (t07, 16 §2.3) значение — bundle OLD+NEW:
+   файла. В окне ротации CA (16 §2.3) значение — bundle OLD+NEW:
    читатель пишет его в файл как есть (конкатенация PEM валидна для
    truststore); клиент, перечитавший bundle до пересоздания брокеров,
    переживает замену сертов без реконфигурации;
@@ -231,8 +231,8 @@ dsn/app_password/routing):
    `desired.{create,delete}` по числу сегментов (факт-ключи — 6 сегментов).
 
 Библиотека дискавери (по образцу `Puzzle .../ha-db-etcd-clusters`,
-watch-long-poll/poll) — roadmap (`t05-kafka-discovery-lib`, в репозиторий
-Puzzle); контракт etcd выше уже содержит всё необходимое.
+watch-long-poll/poll) — в репозитории
+Puzzle; контракт etcd выше уже содержит всё необходимое.
 
 ## 6. Обработка сбоев (толерантность читателей)
 

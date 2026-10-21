@@ -259,20 +259,10 @@ internal sealed class S3ClusterProcesses(
         }
     }
 
-    // Чтение одного ключа с failover: первый успешный endpoint выигрывает.
-    private async Task<Result<Kv?>> GetWithFailoverAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in options.CurrentValue.Etcd.Endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not configured");
-    }
+    // Чтение одного ключа с failover: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetWithFailoverAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(options.CurrentValue.Etcd.Endpoints,
+            (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
         string[] endpoints, string prefix, CancellationToken ct)

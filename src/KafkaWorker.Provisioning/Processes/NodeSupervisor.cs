@@ -417,50 +417,14 @@ public sealed class NodeSupervisor(
     private static string BrokerStateKey(string cluster, string broker)
         => $"/kafka/clusters/{cluster}/brokers/{broker}/state";
 
-    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
-    {
-        Result<Kv?> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.GetAsync(endpoint, key, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
+    // Failover-обёртки: первый успешный endpoint выигрывает (общий хелпер).
+    private Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.GetAsync(endpoint, key, token), ct);
 
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    private Task<Result> PutAsync(string key, string value, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.PutAsync(endpoint, key, value, null, token), ct);
 
-    private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
-    {
-        Result last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await etcd.PutAsync(endpoint, key, value, null, ct);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
-
-    // Txn через failover (порт ProvisioningProcess.TxnAsync — RMW-сравнения
-    // mod_revision: сходимость endpoints).
-    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
-        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
-
-    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
-    {
-        Result<T> last = default;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-
-        return last.Error ?? new EtcdUnreachableException("etcd endpoints are not set");
-    }
+    // Txn через failover (RMW-сравнения mod_revision: сходимость endpoints).
+    private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.TxnAsync(endpoint, req, token), ct);
 }

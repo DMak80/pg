@@ -4,9 +4,7 @@ using Polly.Retry;
 
 namespace PgWorker.Core.Retry;
 
-// SQL-ретрай воркера (Npgsql): HttpRetry/GeneralRetry — общие в Shared.Core.Retry
-// (t08), локальный класс переименован из RetryPolicies, чтобы не пересекаться
-// именем с общим.
+// SQL-ретрай воркера (Npgsql): единственный в монорепо модуль ретраев.
 public static class SqlRetryPolicies
 {
     // Транзиентные ошибки Npgsql (обрывы соединения, timeout) и отмены задач;
