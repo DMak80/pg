@@ -147,10 +147,10 @@ else
   echo "  arch/18 §2 dictionary series in TSDB (kafka series skipped: no brokers — conservative freshness, arch/18 §4)"
 fi
 
-# 4) rules зарегистрированы (21 алерт: 11 + 7 группы backups §2.7 + 3 t15 patroni-nodes)
+# 4) rules зарегистрированы (22 алерта: 12 + 7 группы backups §2.7 + 3 t15 patroni-nodes)
 rules=$(curl -fsS "$PROM/api/v1/rules" | jq '[.data.groups[].rules[] | select(.type=="alerting")] | length')
 [ "$rules" -ge 21 ] || { echo "  ❌ alert rules: $rules < 21"; exit 1; }
-echo "  rules: $rules alerts registered (18 + 3 t15: patroni-nodes)"
+echo "  rules: $rules alerts registered (19 + 3 t15: patroni-nodes)"
 
 # 5) Grafana: дашборды провиженены (basic admin/admin — стенд)
 ds=$(curl -fsS -u admin:admin "$GRAFANA/api/search?type=dash-db" | jq 'length')
