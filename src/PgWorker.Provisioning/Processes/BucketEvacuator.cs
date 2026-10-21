@@ -20,8 +20,10 @@ namespace PgWorker.Provisioning.Processes;
 /// шарда остаются на его дисках и вернутся вместе с ним). Guard'ы:
 /// незавершённый переезд блокирует эвакуацию; живых нет — ждём. Журнал
 /// /pgworker/evacuations/&lt;C&gt;/&lt;X&gt; — ДО манипуляций (P7); снапшоты до/после
-/// (P12). Возврат шарда (journal DONE + живой REST) — карантин: docker stop
-/// БЕЗ удаления (данные целы), state=QUARANTINED, returned_unix.
+/// (P12). Возврат шарда (journal DONE + живой REST) — карантин: факт возврата
+/// фиксируется в журнале (QUARANTINED + returned_unix) ДО docker-стопов (P7);
+/// docker stop БЕЗ удаления (данные целы), сбой стопа не отменяет возврат —
+/// retry тиком; state=QUARANTINED, returned_unix.
 /// Адресация мастеров — общий сервис ShardEndpoints (t01 задача 9).
 /// </summary>
 public sealed class BucketEvacuator(
@@ -227,7 +229,19 @@ public sealed class BucketEvacuator(
         if (!alive)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // ещё мёртв — держим карантин
 
-        // Шард «ожил» после эвакуации: docker stop без удаления (данные целы).
+        // Шард «ожил» после эвакуации: факт возврата — в журнал ДО docker-стопов
+        // (P7 journal-before-manipulations, arch/14 §5 D/E3): сбой стопа не
+        // отменяет возврат — Failed-тик, retry следующим тиком.
+        if (journalState.State != "QUARANTINED" || journalState.ReturnedUnix is null)
+        {
+            var returned = journalState with { State = "QUARANTINED", ReturnedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
+            var written = await evacuations.WriteAsync(cluster, deadShard, returned, ct);
+            if (!written.IsSuccess)
+                return Result<ProcessOutcome>.Failed(written.Error!);
+        }
+
+        // Docker stop без удаления (данные целы; P1-«призраки» не пишут в
+        // осиротевшие схемы); идемпотентные стопы — сбой дозавершается тиком.
         foreach (var node in shard.Nodes)
         {
             var stopped = await driver.StopNodeAsync(cluster, deadShard, node.Name, ct);
@@ -241,14 +255,6 @@ public sealed class BucketEvacuator(
                 if (!marked.IsSuccess)
                     return Result<ProcessOutcome>.Failed(marked.Error!);
             }
-        }
-
-        if (journalState.State != "QUARANTINED" || journalState.ReturnedUnix is null)
-        {
-            var returned = journalState with { State = "QUARANTINED", ReturnedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
-            var written = await evacuations.WriteAsync(cluster, deadShard, returned, ct);
-            if (!written.IsSuccess)
-                return Result<ProcessOutcome>.Failed(written.Error!);
         }
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);

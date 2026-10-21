@@ -319,6 +319,9 @@ internal sealed class FakeDriver : IClusterDriver
         public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
         public List<string> NodeObjects = [];
         public Func<string, Result>? EnsureResultByNode { get; set; }
+        // Исход StopNodeAsync по ноде "<shard>/<node>" (null — успех); вызов
+        // фиксируется в StoppedNodes ДО исхода (порядок событий теста).
+        public Func<string, Result>? StopResultByNode { get; set; }
         public Func<string, IReadOnlyList<string>, Result<string>>? ExecResult { get; set; }
         public bool RemoveFailsOnce { get; set; }
         private bool _removeFailed;
@@ -454,12 +457,14 @@ internal sealed class FakeDriver : IClusterDriver
 
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         {
+            string key;
             lock (_gate)
             {
-                StoppedNodes.Add($"{shard}/{nodeName}");
+                key = $"{shard}/{nodeName}";
+                StoppedNodes.Add(key);
             }
 
-            return Task.FromResult(Result.Success());
+            return Task.FromResult(StopResultByNode is { } stopResult ? stopResult(key) : Result.Success());
         }
 
         public Task<Result<string>> ExecNodeAsync(
