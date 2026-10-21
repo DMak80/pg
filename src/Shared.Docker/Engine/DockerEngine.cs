@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -146,18 +147,91 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // Останов контейнера — поллинг до exited-факта (arch/14 §6): блокирующий
+    // POST /stop?t=N живого контейнера (graceful-shutdown PG/spilo) длится
+    // дольше пер-попыточного клиентского таймаута — обрыв НЕ неудача: демон
+    // продолжает остановку. Итерации ≤ клиентского таймаута (повторный
+    // идемпотентный POST /stop — демон продолжает прежний; между ними
+    // GET-инспект State.Running) до факта exited/304/404 в бюджете
+    // t + один клиентский таймаут, суммарно не дольше порога сноса (30 с);
+    // каждая итерация — лог-строка elapsed. Бюджет без факта → Failed.
+    // Контракт Task<Result> прежний (семантика бывшей обёртки Result.FromAsync):
+    // любой сбой (500/сеть/отмена ct) — Result.Failed, НЕ исключение.
     public async Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
-        => await Result.FromAsync(async () =>
+    {
+        try
         {
-            try
+            var budget = TimeSpan.FromSeconds(timeoutSec) + httpClient.Timeout;
+            if (budget > TimeSpan.FromSeconds(30))
+                budget = TimeSpan.FromSeconds(30);
+            var elapsed = Stopwatch.StartNew();
+            while (true)
             {
-                await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/stop?t={timeoutSec}", ct: ct);
+                try
+                {
+                    await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/stop?t={timeoutSec}", ct: ct);
+                    return Result.Success(); // демон вернулся из stop — контейнер остановлен
+                }
+                catch (DockerHttpException e) when (e.StatusCode is 304 or 404)
+                {
+                    // 304 — уже остановлен; 404 — контейнера нет (идемпотентность карантина E3)
+                    return Result.Success();
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // Клиентский таймаут < грейса стопа: демон продолжает остановку —
+                    // сверяем факт и повторяем в бюджете поллинга.
+                    Console.Error.WriteLine(
+                        $"[docker] stop {idOrName}: client timeout after {elapsed.Elapsed.TotalSeconds:F1}s, polling for the exited fact (budget {budget.TotalSeconds:F1}s)");
+                }
+
+                bool stopped;
+                try
+                {
+                    stopped = await IsContainerStoppedAsync(idOrName, ct);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    stopped = false; // GET-инспект сам не уложился в клиентский таймаут — факта нет, цикл продолжит
+                }
+
+                if (stopped)
+                    return Result.Success();
+
+                if (elapsed.Elapsed >= budget)
+                    return Result.Failed(new ApplicationException(
+                        $"stop of container {idOrName} did not reach the exited fact within {budget.TotalSeconds:F0}s"));
             }
-            catch (DockerHttpException e) when (e.StatusCode is 304 or 404)
-            {
-                // 304 — уже остановлен; 404 — контейнера нет (идемпотентность карантина E3)
-            }
-        });
+        }
+        catch (Exception e)
+        {
+            // Контракт Task<Result> (бывшая обёртка Result.FromAsync): сбой
+            // демона/сети/внешняя отмена — Failed; вызыватели без своей
+            // обёртки (NodeSupervisor) получают Result, не исключение.
+            return Result.Failed(e);
+        }
+    }
+
+    // Статус «остановлен» для поллинга стопа: State.Running из инспекта
+    // (образец InspectNodeEndpointAsync); 404 — контейнера нет (останавливать
+    // нечего); пустое тело — факта нет.
+    private async Task<bool> IsContainerStoppedAsync(string idOrName, CancellationToken ct)
+    {
+        try
+        {
+            var body = await GetAsync<JsonElement>($"/containers/{Uri.EscapeDataString(idOrName)}/json", ct);
+            if (body.ValueKind == JsonValueKind.Undefined)
+                return false;
+            return !(body.TryGetProperty("State", out var state)
+                     && state.ValueKind == JsonValueKind.Object
+                     && state.TryGetProperty("Running", out var running)
+                     && running.ValueKind == JsonValueKind.True);
+        }
+        catch (DockerHttpException e) when (e.StatusCode == 404)
+        {
+            return true; // контейнера нет — стоп не нужен
+        }
+    }
 
     public async Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
         => await Result.FromAsync(async () =>
