@@ -57,7 +57,10 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
         var claimed = await TryPutLeasedKeyAsync(ClaimKey(cluster), new ClaimPayload(InstanceId, Now(), null), grant.Value, ct);
         if (claimed is { IsSuccess: false })
+        {
+            await RevokeSilentlyAsync(grant.Value); // transport-фейл txn — lease не гниёт до TTL
             return claimed;
+        }
 
         if (!claimed.Value)
         {
@@ -89,7 +92,10 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
 
         var claimed = await TryPutLeasedKeyAsync($"{keyPrefix}/leader", new ClaimPayload(InstanceId, Now(), null), grant.Value, ct);
         if (claimed is { IsSuccess: false })
+        {
+            await RevokeSilentlyAsync(grant.Value); // transport-фейл txn — lease не гниёт до TTL
             return claimed;
+        }
 
         if (!claimed.Value)
         {
