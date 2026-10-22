@@ -658,20 +658,73 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     private async Task WriteAsync(string fileName, string content)
         => await File.WriteAllTextAsync(Path.Combine(ArtifactsDir, fileName), content);
 
-    private async Task ShellToFileAsync(string program, string args, string path)
+    // Телеметрия процесса в файл ОБЪЕДИНЁННО (stdout-блок, затем stderr-блок —
+    // docker-CLI разводит потоки контейнера по своим потокам, канон
+    // docs/e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
+    // выхода — полный stderr-пайп при непараллельном чтении дедлокит процесс;
+    // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
+    // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не
+    // пробрасываются. Статический доступ — для факта той же сборки
+    // (инстанс окружения создаётся только фабрикой E2E).
+    internal static async Task ShellToFileAsync(string program, string args, string path)
     {
         try
         {
             var startInfo = new ProcessStartInfo(program, args)
-            { RedirectStandardOutput = true, RedirectStandardError = true };
-            using var process = Process.Start(startInfo)!;
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            await File.WriteAllTextAsync(path, output);
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var process = Process.Start(startInfo)
+                ?? throw new ApplicationException($"failed to start {program}");
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            // Оба потока — параллельно и БЕЗ токена бюджета: при kill пайпы
+            // закрываются, накопленный вывод доступен (канон E2eFixture).
+            var outTask = process.StandardOutput.ReadToEndAsync();
+            var errTask = process.StandardError.ReadToEndAsync();
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+                var output = await outTask;
+                var error = await errTask;
+                await File.WriteAllTextAsync(path, MergeOutput(output, error));
+            }
+            catch (OperationCanceledException)
+            {
+                // Бюджет исчерпан: убить дерево, дренировать, писать доступное.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // процесс мог уже выйти
+                }
+
+                var drained = await DrainAsync(outTask, errTask);
+                await File.WriteAllTextAsync(path, drained);
+            }
         }
         catch
         {
             // телеметрия — лучшее усилие
+        }
+    }
+
+    // Дренаж вывода убитого процесса: короткое страховочное окно (5 с) —
+    // диагностика уже убитого процесса, НЕ бюджет выполняемой команды.
+    private static async Task<string> DrainAsync(Task<string> outTask, Task<string> errTask)
+    {
+        try
+        {
+            var drained = await Task.WhenAll(outTask, errTask).WaitAsync(TimeSpan.FromSeconds(5));
+            return drained[0] + drained[1];
+        }
+        catch (TimeoutException)
+        {
+            return "";
         }
     }
 
