@@ -365,7 +365,8 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         => RunProcessAsync("docker", [.. args], ct, TimeSpan.FromMinutes(2));
 
     private static async Task<string> RunProcessAsync(
-        string file, string[] args, CancellationToken ct, TimeSpan timeout)
+        string file, string[] args, CancellationToken ct, TimeSpan timeout,
+        bool mergeStderrOnSuccess = false)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -389,7 +390,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             var error = await errTask;
             if (process.ExitCode != 0)
                 throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
-            return output.Trim();
+            return mergeStderrOnSuccess ? MergeOutput(output, error) : output.Trim();
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -417,6 +418,32 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                 $"{file} {string.Join(' ', args)} did not finish within {timeout.TotalSeconds:0} s — killed; tail:\n{drained}");
         }
     }
+
+    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
+    /// один перевод строки, края тримятся. docker-CLI разводит потоки
+    /// контейнера по своим потокам — stdout-only теряет stderr-диагностику.
+    /// Интерливинг по времени не восстанавливается.</summary>
+    private static string MergeOutput(string output, string error)
+    {
+        var o = output.Trim();
+        var e = error.Trim();
+        return e.Length == 0 ? o : o.Length == 0 ? e : o + "\n" + e;
+    }
+
+    /// <summary>Процесс с объединённым возвратом (stdout+stderr) при exit=0 —
+    /// телеметрия docker logs; контракт RunProcessAsync/RunDockerAsync
+    /// (только stdout) не меняется.</summary>
+    internal static Task<string> RunProcessMergedAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan timeout)
+        => RunProcessAsync(file, args, ct, timeout, mergeStderrOnSuccess: true);
+
+    /// <summary>docker logs — всегда объединённо (stdout+stderr контейнера):
+    /// ["logs", .. logsArgs] — подкоманду logs подставляет сам хелпер;
+    /// бюджет 60 с (канон docs/e2e-launch.md §1).</summary>
+    public Task<string> RunDockerLogsAsync(IReadOnlyList<string> logsArgs, CancellationToken ct)
+        => RunProcessMergedAsync("docker", ["logs", .. logsArgs], ct,
+            TimeSpan.FromSeconds(60));
 
     // mTLS-клиент API (клиентский серт окружения — от per-install CA;
     // PFX round-trip — macOS SslStream требует экспортируемый ключ).
@@ -631,20 +658,73 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     private async Task WriteAsync(string fileName, string content)
         => await File.WriteAllTextAsync(Path.Combine(ArtifactsDir, fileName), content);
 
-    private async Task ShellToFileAsync(string program, string args, string path)
+    // Телеметрия процесса в файл ОБЪЕДИНЁННО (stdout-блок, затем stderr-блок —
+    // docker-CLI разводит потоки контейнера по своим потокам, канон
+    // docs/e2e-launch.md §1). Оба потока читаются ПАРАЛЛЕЛЬНО до ожидания
+    // выхода — полный stderr-пайп при непараллельном чтении дедлокит процесс;
+    // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
+    // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не
+    // пробрасываются. Статический доступ — для факта той же сборки
+    // (инстанс окружения создаётся только фабрикой E2E).
+    internal static async Task ShellToFileAsync(string program, string args, string path)
     {
         try
         {
             var startInfo = new ProcessStartInfo(program, args)
-            { RedirectStandardOutput = true, RedirectStandardError = true };
-            using var process = Process.Start(startInfo)!;
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-            await File.WriteAllTextAsync(path, output);
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var process = Process.Start(startInfo)
+                ?? throw new ApplicationException($"failed to start {program}");
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            // Оба потока — параллельно и БЕЗ токена бюджета: при kill пайпы
+            // закрываются, накопленный вывод доступен (канон E2eFixture).
+            var outTask = process.StandardOutput.ReadToEndAsync();
+            var errTask = process.StandardError.ReadToEndAsync();
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+                var output = await outTask;
+                var error = await errTask;
+                await File.WriteAllTextAsync(path, MergeOutput(output, error));
+            }
+            catch (OperationCanceledException)
+            {
+                // Бюджет исчерпан: убить дерево, дренировать, писать доступное.
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // процесс мог уже выйти
+                }
+
+                var drained = await DrainAsync(outTask, errTask);
+                await File.WriteAllTextAsync(path, drained);
+            }
         }
         catch
         {
             // телеметрия — лучшее усилие
+        }
+    }
+
+    // Дренаж вывода убитого процесса: короткое страховочное окно (5 с) —
+    // диагностика уже убитого процесса, НЕ бюджет выполняемой команды.
+    private static async Task<string> DrainAsync(Task<string> outTask, Task<string> errTask)
+    {
+        try
+        {
+            var drained = await Task.WhenAll(outTask, errTask).WaitAsync(TimeSpan.FromSeconds(5));
+            return drained[0] + drained[1];
+        }
+        catch (TimeoutException)
+        {
+            return "";
         }
     }
 

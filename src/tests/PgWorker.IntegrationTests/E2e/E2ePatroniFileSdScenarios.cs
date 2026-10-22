@@ -238,7 +238,7 @@ public class E2ePatroniFileSdScenarios
                 {
                     await File.WriteAllTextAsync(
                         Path.Combine(Fx.ArtifactsDir, $"container-{c}.log"),
-                        await E2eFixture.RunDockerAsync(["logs", "--timestamps", c], CancellationToken.None),
+                        await E2eFixture.RunDockerLogsAsync(["--timestamps", c], CancellationToken.None),
                         CancellationToken.None);
                 }
                 catch

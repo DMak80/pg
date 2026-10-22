@@ -42,9 +42,12 @@ dotnet run --project src/tests/PgWorker.E2ePrepare -c Release
   SUT-воркеры, раннер) снимаются в teardown **до любого удаления** —
   `E2eEnvironment.CollectDiagnosticsAsync` (каталог телеметрии:
   `/tmp/pgw-e2e-artifacts-{guid}/`, выводится в журнал строкой
-  `e2e[slug]: телеметрия … → …`);
+  `e2e[slug]: телеметрия … → …`); docker-логи снимаются **объединённо**:
+  stdout-блок, затем stderr-блок (docker logs разделяет потоки контейнера
+  по потокам CLI);
 - полный stdout/stderr раннера (тестовый журнал, `[PHASE]`-строки,
-  диагностика ассертов) — `runner.log` там же (вывод `docker logs` раннера);
+  диагностика ассертов) — `runner.log` там же (вывод `docker logs` раннера,
+  объединённо stdout+stderr);
   логи воркеров — `docker logs` их контейнеров (хост-процессов и host.log
   в контуре нет);
 - вывод внешних процессов переживает таймаут: kill по бюджету оставляет
@@ -158,7 +161,7 @@ per-контур окна PortRange для продуктовых публика
 
 | Что | Где |
 |---|---|
-| docker-логи контейнеров (`container-*.log`, `container-*.json`, вкл. воркеров и раннера) | `/tmp/pgw-e2e-artifacts-<guid>/` |
+| docker-логи контейнеров (`container-*.log` (stdout+stderr), `container-*.json`, вкл. воркеров и раннера) | `/tmp/pgw-e2e-artifacts-<guid>/` |
 | полный тестовый журнал раннера (`runner.log`) | там же |
 | фазовый журнал (`phases.log`, UTC-метки) | там же |
 | отметки медленных фаз (`*-slow-phase-*.txt`) | там же |
