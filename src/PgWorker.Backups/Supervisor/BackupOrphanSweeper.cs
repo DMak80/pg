@@ -97,9 +97,11 @@ public sealed class BackupOrphanSweeper(
         // только при изменении записей (безделье не пишет; updated_unix —
         // свежесть прохода, в сравнение не входит).
         var current = await ReadRegistryAsync(ct);
+        if (!current.IsSuccess)
+            return Result.Failed(current.Error!); // transient — повтор прохода
         var merged = OrphanRegistry.Merge(
-            current, observed, grouped.FullPrefixes, liveShards, liveClusters, nowUnix);
-        var changed = current is null || !OrphanRegistry.SameOrphans(current, merged);
+            current.Value, observed, grouped.FullPrefixes, liveShards, liveClusters, nowUnix);
+        var changed = current.Value is null || !OrphanRegistry.SameOrphans(current.Value, merged);
         if (changed && await PutRegistryAsync(merged, ct) is { IsSuccess: false } putMerged)
             return putMerged; // transient — реестр не записан, удаление не начинаем
 
@@ -328,25 +330,27 @@ public sealed class BackupOrphanSweeper(
             ?? new EtcdUnreachableException("etcd endpoints not configured"));
     }
 
-    // Чтение реестра (failover по endpoints); ключа нет → null; битый → null.
-    private async Task<OrphanRegistry.Registry?> ReadRegistryAsync(CancellationToken ct)
+    // Чтение реестра (failover по endpoints): ключа нет или битый → Success(null)
+    // (следующий проход пересоберёт реестр — Parse), все endpoints недоступны →
+    // Failed (transient — повтор прохода): контракт как у соседних методов, без
+    // throw мимо различения шага.
+    private async Task<Result<OrphanRegistry.Registry?>> ReadRegistryAsync(CancellationToken ct)
     {
-        Result last = default;
+        Result<OrphanRegistry.Registry?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, OrphanRegistry.Key, ct);
             if (!result.IsSuccess)
             {
-                last = result;
+                last = Result<OrphanRegistry.Registry?>.Failed(result.Error!);
                 continue;
             }
 
             return result.Value is { } kv ? OrphanRegistry.Parse(kv.Value) : null;
         }
 
-        if (!last.IsSuccess)
-            throw new ApplicationException($"get {OrphanRegistry.Key}: {last.Error!.Message}");
-        return null;
+        return Result<OrphanRegistry.Registry?>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints not configured"));
     }
 
     // Failover-put реестра (образец WalStreamProcess.PutAsync).
