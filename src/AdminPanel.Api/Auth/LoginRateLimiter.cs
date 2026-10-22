@@ -31,9 +31,20 @@ public sealed class LoginRateLimiter(TimeProvider timeProvider) : ILoginRateLimi
             _ => (windowId, 1),
             (_, current) => current.WindowId == windowId ? (windowId, current.Count + 1) : (windowId, 1))
            .Count;
+        EvictStaleWindows(windowId);
         return count <= MaxAttempts
             ? new LoginRateDecision(true, 0)
             : new LoginRateDecision(false, RetryAfterSeconds(now, windowId));
+    }
+
+    // Вытеснение окон прошлых интервалов: словарь не растёт безгранично по
+    // уникальным clientKey. TryRemove пары (ключ, значение) — гонка с параллельным
+    // обновлением того же ключа безопасна: свежезаписанное окно не сотрётся.
+    private void EvictStaleWindows(long currentWindowId)
+    {
+        foreach (var (key, window) in _windows)
+            if (window.WindowId < currentWindowId)
+                _windows.TryRemove(KeyValuePair.Create(key, window));
     }
 
     // Остаток текущего окна в секундах (1..60) для заголовка Retry-After.
