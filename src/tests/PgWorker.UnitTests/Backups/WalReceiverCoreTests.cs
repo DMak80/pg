@@ -93,6 +93,7 @@ public class WalReceiverCoreTests
         public int OpenCalls;
         public int StartCalls;
         public ulong? StartLsn;
+        public uint? LastTimeline;
 
         // ПЕРВАЯ позиция START_REPLICATION: transient-переподключение стартует
         // заново от свежего хвоста S3 и перезаписывает StartLsn — ассерты старта
@@ -114,13 +115,17 @@ public class WalReceiverCoreTests
                 : Result.Success());
         }
 
-        public Task<Result> StartReplicationAsync(string slot, ulong startLsn, CancellationToken ct)
+        public Task<Result> StartReplicationAsync(string slot, ulong startLsn, uint? timeline, CancellationToken ct)
         {
             StartCalls++;
             StartLsn = startLsn;
+            LastTimeline = timeline;
             FirstStartLsn ??= startLsn;
             return Task.FromResult(Result.Success());
         }
+
+        public Task<Result<ServerIdentity>> IdentifySystemAsync(CancellationToken ct)
+            => Task.FromResult(Result<ServerIdentity>.Success(new ServerIdentity(1, 0)));
 
         public IAsyncEnumerable<XLogChunk> Stream => StreamImpl();
 

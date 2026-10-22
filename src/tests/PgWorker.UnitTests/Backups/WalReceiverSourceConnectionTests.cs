@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Npgsql;
 using Npgsql.Replication;
 using NpgsqlTypes;
 using PgWorker.WalReceiver;
@@ -56,7 +57,7 @@ public class WalReceiverSourceConnectionTests
 
         // Act — OpenAsync ок, StartReplication падает (слот занят/протокол).
         (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
-        var start = await source.StartReplicationAsync("slot", 0x1000000, CancellationToken.None);
+        var start = await source.StartReplicationAsync("slot", 0x1000000, null, CancellationToken.None);
 
         // Assert — сбой отражён, соединение погашено (0 живых): следующий
         // цикл OpenAsync создаст свежее, а не переиспользует сломанное.
@@ -76,7 +77,7 @@ public class WalReceiverSourceConnectionTests
         for (var i = 0; i < 5; i++)
         {
             (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
-            (await source.StartReplicationAsync("slot", 0x1000000, CancellationToken.None))
+            (await source.StartReplicationAsync("slot", 0x1000000, null, CancellationToken.None))
                 .IsSuccess.Should().BeFalse();
         }
 
@@ -84,6 +85,85 @@ public class WalReceiverSourceConnectionTests
         // каждый walsender жил ровно до своей замены).
         fake.Opened.Should().Be(5);
         fake.Disposed.Should().BeGreaterThanOrEqualTo(fake.Opened - 1);
+    }
+
+    [Fact]
+    public async Task StartRefused_58P01_ReturnsTypedMarker()
+    {
+        // Arrange — отказ старта по 58P01 (сегмент срезан/не существует на таймлайне).
+        var fake = new FakeReplicationConnection
+        {
+            StartReplicationException = new PostgresException(
+                // Сигнатура Npgsql 10.0.3: (messageText, severity, invariantSeverity, sqlState).
+                "requested WAL segment 000000020000000000000003 has already been removed",
+                "ERROR", "ERROR", "58P01")
+        };
+        await using var source = Source(fake);
+        (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        // Act
+        var start = await source.StartReplicationAsync("slot", 0x1000000, null, CancellationToken.None);
+
+        // Assert — типизированный WalStartRefused наружу, текст исходной ошибки
+        // сохранён в Message; соединение погашено (следующий старт требует OpenAsync).
+        start.IsSuccess.Should().BeFalse();
+        start.Error.Should().BeOfType<WalStartRefused>();
+        start.Error!.Message.Should().Contain("has already been removed");
+        fake.Disposed.Should().Be(fake.Opened, "the refused start must kill the connection");
+    }
+
+    [Fact]
+    public async Task StartFailed_OtherSqlState_PlainApplicationException()
+    {
+        // Arrange — отказ старта с другим SqlState (не 58P01).
+        var fake = new FakeReplicationConnection
+        {
+            StartReplicationException = new PostgresException(
+                "replication slot is active", "ERROR", "ERROR", "42P01")
+        };
+        await using var source = Source(fake);
+        (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        // Act
+        var start = await source.StartReplicationAsync("slot", 0x1000000, null, CancellationToken.None);
+
+        // Assert — НЕ WalStartRefused (58P01-маркер только для 58P01).
+        start.IsSuccess.Should().BeFalse();
+        start.Error.Should().NotBeOfType<WalStartRefused>();
+    }
+
+    [Fact]
+    public async Task IdentifySystem_ConnectionClosed()
+    {
+        // Arrange — короткоживущее Identify-соединение: без предварительного
+        // OpenAsync источника (стрим-коннект после failed-старта уже погашен).
+        var fake = new FakeReplicationConnection();
+        await using var source = Source(fake);
+
+        // Act
+        var identity = await source.IdentifySystemAsync(CancellationToken.None);
+
+        // Assert — попытка успешна и соединение погашено: открытий = закрытий
+        // (инвариант «закрытий ≥ открытий − 1» — короткоживущее живёт ровно
+        // до своего Dispose).
+        identity.IsSuccess.Should().BeTrue();
+        identity.Value!.Tli.Should().Be(1);
+        fake.Opened.Should().Be(1);
+        fake.Disposed.Should().Be(fake.Opened);
+    }
+
+    [Fact]
+    public async Task IdentifySystem_Failed_ReturnsFailed()
+    {
+        // Arrange — отказ открытия короткоживущего Identify-соединения.
+        var fake = new FakeReplicationConnection { FailOpen = true };
+        await using var source = Source(fake);
+
+        // Act
+        var identity = await source.IdentifySystemAsync(CancellationToken.None);
+
+        // Assert — Failed (transient-семантика ядра), соединение погашено.
+        identity.IsSuccess.Should().BeFalse();
     }
 
     /// <summary>Фейк replication-соединения: счётчики открытий/закрытий;
@@ -97,14 +177,31 @@ public class WalReceiverSourceConnectionTests
         public Task Open(CancellationToken ct)
         {
             Opened++;
+            if (FailOpen)
+                throw new IOException("fake: open failed");
             return Task.CompletedTask;
         }
 
+        // Точки программирования: флаг отказа Open (сбой открытия короткоживящего
+        // Identify-соединения), исключение из StartReplication (например,
+        // PostgresException с SqlState 58P01), результат IdentifySystem.
+        public bool FailOpen;
+        public Exception? StartReplicationException;
+        public (uint Tli, ulong XLogPos) IdentifyResult = (1, 0);
+
+        public Task<(uint Tli, ulong XLogPos)> IdentifySystem(CancellationToken ct)
+            => Task.FromResult(IdentifyResult);
+
         public IAsyncEnumerable<XLogDataMessage> StartReplication(
-            PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn, CancellationToken ct)
-            => FailStartReplication
+            PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn,
+            CancellationToken ct, uint? timeline)
+        {
+            if (StartReplicationException is { } ex)
+                throw ex;
+            return FailStartReplication
                 ? throw new InvalidOperationException("fake: start replication failed")
                 : EmptyStream();
+        }
 
         public void SetReplicationStatus(NpgsqlLogSequenceNumber lsn)
         {

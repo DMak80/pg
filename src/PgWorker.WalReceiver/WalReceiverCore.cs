@@ -101,7 +101,7 @@ public sealed class WalReceiverCore
                 }
 
                 // 3. START_REPLICATION с явной стартовой позицией.
-                var started = await source.StartReplicationAsync(o.Slot, tail.Value, ct);
+                var started = await source.StartReplicationAsync(o.Slot, tail.Value, null, ct);
                 if (!started.IsSuccess)
                 {
                     // Диагностика отказа старта стрима (слот/позиция) — в stderr,

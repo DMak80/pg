@@ -13,8 +13,12 @@ internal interface IReplicationConnection : IAsyncDisposable
 {
     Task Open(CancellationToken ct);
 
+    /// <summary>IDENTIFY_SYSTEM: (Timeline, XLogPos) сервера.</summary>
+    Task<(uint Tli, ulong XLogPos)> IdentifySystem(CancellationToken ct);
+
     IAsyncEnumerable<XLogDataMessage> StartReplication(
-        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn, CancellationToken ct);
+        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn,
+        CancellationToken ct, uint? timeline);
 
     void SetReplicationStatus(NpgsqlLogSequenceNumber lsn);
 
@@ -32,9 +36,18 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
 
     public Task Open(CancellationToken ct) => _inner.Open(ct);
 
+    public async Task<(uint Tli, ulong XLogPos)> IdentifySystem(CancellationToken ct)
+    {
+        var identity = await _inner.IdentifySystem(ct);
+        return (identity.Timeline, (ulong)identity.XLogPos);
+    }
+
     public IAsyncEnumerable<XLogDataMessage> StartReplication(
-        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn, CancellationToken ct)
-        => _inner.StartReplication(slot, startLsn, ct);
+        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn,
+        CancellationToken ct, uint? timeline)
+        => timeline is { } tli
+            ? _inner.StartReplication(slot, startLsn, ct, tli)
+            : _inner.StartReplication(slot, startLsn, ct);
 
     public void SetReplicationStatus(NpgsqlLogSequenceNumber lsn)
         => _inner.SetReplicationStatus(lsn);
@@ -143,15 +156,24 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         }
     }
 
-    public async Task<Result> StartReplicationAsync(string slot, ulong startLsn, CancellationToken ct)
+    public async Task<Result> StartReplicationAsync(string slot, ulong startLsn, uint? timeline, CancellationToken ct)
     {
         try
         {
             var replication = _replication ?? throw new InvalidOperationException("OpenAsync not called");
             var physicalSlot = new PhysicalReplicationSlot(slot);
             _messages = replication.StartReplication(
-                physicalSlot, (NpgsqlLogSequenceNumber)startLsn, ct);
+                physicalSlot, (NpgsqlLogSequenceNumber)startLsn, ct, timeline);
             return Result.Success();
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "58P01")
+        {
+            // Отказ старта по 58P01: типизированный маркер наружу (матч по SqlState,
+            // не по тексту) — tli-процедура ядра; соединение гасим как при любом
+            // сбое старта (не переиспользуем полуживой walsender; процедуре нужен
+            // свежий OpenAsync перед её стартом).
+            await KillReplicationAsync();
+            return Result.Failed(new WalStartRefused(e.MessageText));
         }
         catch (Exception e)
         {
@@ -160,6 +182,25 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
             // источнику полуживой walsender.
             await KillReplicationAsync();
             return Result.Failed(new ApplicationException($"START_REPLICATION {slot}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<ServerIdentity>> IdentifySystemAsync(CancellationToken ct)
+    {
+        // IDENTIFY_SYSTEM — replication-команда: короткоживущее соединение по
+        // образцу ReadTimelineHistoryAsync (стрим-коннект после failed-старта
+        // уже погашен); каждая попытка живёт ровно до своего Dispose.
+        try
+        {
+            await using var connection = NewConnection();
+            await connection.Open(ct);
+            var (tli, xlogPos) = await connection.IdentifySystem(ct);
+            return Result<ServerIdentity>.Success(new ServerIdentity(tli, xlogPos));
+        }
+        catch (Exception e)
+        {
+            return Result<ServerIdentity>.Failed(new ApplicationException(
+                $"IDENTIFY_SYSTEM {_o.PgHost}:{_o.PgPort}: {e.Message}", e));
         }
     }
 
