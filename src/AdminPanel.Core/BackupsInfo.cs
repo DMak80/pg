@@ -7,6 +7,11 @@ namespace AdminPanel.Core;
 // t07: Broken — разрыв цепочки (permanent; воркер переснимает полный).
 public enum WalStreamInfoState { Active, Degraded, Stopped, Broken }
 
+/// <summary>Границы RPO-зазора tli-прыжка приёмника из поля gap wal-ключа
+/// (архивный формат arch/19 §4): сегменты (From .. To] невосстановимы из
+/// бэкапов.</summary>
+public sealed record WalGapInfo(string From, string To, uint Tli);
+
 /// <summary>WAL-поток шарда из ключа /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal.</summary>
 public sealed record WalStreamInfo(
     string Cluster, string Shard, WalStreamInfoState State,
@@ -14,7 +19,9 @@ public sealed record WalStreamInfo(
     long? LagSegments, string? Error,
     // t08: etcd-факт wal-сверки (строка сегмента из ключа; опционально —
     // старые/битые ключи поля не несут).
-    string? LastUploadedSegment = null);
+    string? LastUploadedSegment = null,
+    // t24: опционально — старые/битые ключи поля не несут.
+    WalGapInfo? Gap = null);
 
 /// <summary>Одна запись реестра сирот из глобального ключа
 /// /pgworker/backups/orphans (t07; дубль воркерной модели — осознанный):
