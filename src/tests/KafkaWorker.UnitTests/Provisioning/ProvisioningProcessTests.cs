@@ -391,4 +391,41 @@ public class ProvisioningProcessTests
         rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker3",
             "the K1 completion adds the missing address and K3 creates the broker");
     }
+
+    // AAA (arch/16 §5 A K3): проигрыш RMW-достроения частичного портплана
+    //      (конкурент переписал ключ до сравнения → ModRevisionEqual ложно →
+    //      reread возвращает всё ещё частичный план) — transient-фаза
+    //      waiting-portalloc/<broker>: тик успешен (InProgress, не исключение),
+    //      недостающий брокер не создаётся (доведут K1-фиксация/healer).
+    [Fact]
+    public async Task Run_PartialPortAlloc_WaitsForBrokerAddress_InProgress()
+    {
+        // Arrange — частичный закреплённый портплан: broker3 отсутствует; любой
+        // txn тика встречает переписанный ДО сравнения ключ (modrev бампнут).
+        var rig = await NewRig(brokers: 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
+        rig.Etcd.OnTxnBeforeCompare = _ =>
+        {
+            // Внутри lock(_gate) TxnAsync: Store мутируем напрямую (Seed
+            // нельзя — вложенный lock); бамп ModRevision ломает ModRevisionEqual.
+            var key = "/kafkaworker/portalloc/events";
+            var old = rig.Etcd.Store[key];
+            rig.Etcd.Store[key] = old with { ModRevision = old.ModRevision + 1 };
+        };
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: InProgress-семантика — успех тика, журнальная фаза
+        // waiting-portalloc/broker3; портплан не достроен; broker3 не создаётся
+        // (broker1/broker2 ensured — их адреса были в частичном плане).
+        result.IsSuccess.Should().BeTrue();
+        (await rig.Journal.ReadAsync("events", CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-portalloc/broker3");
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value.Should().NotContain("\"broker3\"");
+        rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker1");
+        rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker2");
+        rig.Driver.Ensured.Should().NotContain(s => s.NodeName == "broker3");
+    }
 }
