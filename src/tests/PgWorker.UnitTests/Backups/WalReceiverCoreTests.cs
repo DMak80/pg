@@ -95,6 +95,15 @@ public class WalReceiverCoreTests
         public ulong? StartLsn;
         public uint? LastTimeline;
 
+        // tli-механика (58P01): политика старта (startLsn, timeline) → результат;
+        // null — успех (прежнее поведение). Identify — Identity или Failed при null.
+        // OpenFailuresRemaining — программный отказ процедурного open (счётчик
+        // оставшихся открытий, которые должны упасть).
+        public Func<ulong, uint?, Result>? StartPolicy;
+        public readonly List<(ulong Lsn, uint? Timeline)> StartLog = [];
+        public ServerIdentity? Identity = new(1, 0);
+        public int OpenFailuresRemaining;
+
         // ПЕРВАЯ позиция START_REPLICATION: transient-переподключение стартует
         // заново от свежего хвоста S3 и перезаписывает StartLsn — ассерты старта
         // (от хвоста/слота) проверяют начальную позицию, а не исход гонки
@@ -110,6 +119,16 @@ public class WalReceiverCoreTests
         public Task<Result> OpenAsync(CancellationToken ct)
         {
             OpenCalls++;
+            // Отказ — ТОЛЬКО процедурных открытий (после первого старта: основной
+            // open цикла всегда предшествует START_REPLICATION; точка отказа
+            // процедурного открытия — open досыпки/прыжка tli-процедуры).
+            if (StartCalls > 0 && OpenFailuresRemaining > 0)
+            {
+                OpenFailuresRemaining--;
+                return Task.FromResult(Result.Failed(
+                    new ApplicationException("fake: open failed")));
+            }
+
             return Task.FromResult(SegmentSizeMismatch
                 ? Result.Failed(new ApplicationException("wal_segment_size 32MB ≠ 16 MiB"))
                 : Result.Success());
@@ -121,11 +140,16 @@ public class WalReceiverCoreTests
             StartLsn = startLsn;
             LastTimeline = timeline;
             FirstStartLsn ??= startLsn;
+            StartLog.Add((startLsn, timeline));
+            if (StartPolicy is { } policy)
+                return Task.FromResult(policy(startLsn, timeline));
             return Task.FromResult(Result.Success());
         }
 
         public Task<Result<ServerIdentity>> IdentifySystemAsync(CancellationToken ct)
-            => Task.FromResult(Result<ServerIdentity>.Success(new ServerIdentity(1, 0)));
+            => Task.FromResult(Identity is { } id
+                ? Result<ServerIdentity>.Success(id)
+                : Result<ServerIdentity>.Failed(new ApplicationException("identify unavailable")));
 
         public IAsyncEnumerable<XLogChunk> Stream => StreamImpl();
 
@@ -416,5 +440,236 @@ public class WalReceiverCoreTests
         // Assert
         code.Should().Be(6);
         output.Should().Contain("gap");
+    }
+
+    [Fact]
+    public async Task TliBackfill_ClosesGap_NoRpoLoss()
+    {
+        // Arrange — в S3 сегменты TLI1 №0–1; старт без TIMELINE от хвоста → 58P01
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        var refusalsRemaining = 1;
+        source.StartPolicy = (lsn, timeline) => timeline is null && refusalsRemaining-- > 0
+            ? Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"))
+            : Result.Success();
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        source.History[2] = [1, 2, 3];
+        // досыпка timeline:1 от того же хвоста: сегмент TLI1 №2; после конца потока —
+        // переподключение от выросшего хвоста: сегмент TLI2 №3
+        source.Chunks.Enqueue(Chunk(2UL * SegmentBytes));
+        source.Chunks.Enqueue(Chunk(3UL * SegmentBytes, tli: 2));
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000003"),
+            TimeSpan.FromSeconds(10),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
+                  $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — досыпка закрыла зазор: маркер tli_backfill, .history в S3,
+        // tli_jump нет; OpenCalls >= 2 (стартовый open цикла + процедурный open
+        // перед досыпкой — процедура НЕ стартует на погашенном соединении).
+        code.Should().Be(0);
+        output.Should().Contain("\"phase\":\"tli_backfill\"");
+        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
+        source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    [Fact]
+    public async Task TliBackfillRefused_FallsBackToJump()
+    {
+        // Arrange — отказ старта и без TIMELINE, и с timeline:1 (сегменты срезаны)
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        source.StartPolicy = (_, _) =>
+            Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"));
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        source.History[2] = [1, 2, 3];
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => source.StartLog.Any(e => e.Timeline == 2),
+            TimeSpan.FromSeconds(10),
+            () => $"open={source.OpenCalls} start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — оба маркера; прыжок ровно от границы сегмента xlogpos
+        // (3*SegmentBytes) с timeline:2; OpenCalls >= 3 (стартовый + open перед
+        // досыпкой + open перед прыжком — отказ досыпки гасит соединение).
+        code.Should().Be(0);
+        output.Should().Contain("\"phase\":\"tli_backfill\"");
+        output.Should().Contain("\"phase\":\"tli_jump\"");
+        output.Should().Contain("\"to_segment\":\"000000020000000000000003\"");
+        output.Should().Contain("\"from_tli\":1");
+        output.Should().Contain("\"to_tli\":2");
+        source.StartLog.Should().Contain(e => e.Lsn == 3UL * SegmentBytes && e.Timeline == 2);
+        source.OpenCalls.Should().BeGreaterThanOrEqualTo(3);
+    }
+
+    [Fact]
+    public async Task TliJump_SameTli_NoBackfillNoHistory()
+    {
+        // Arrange — сервер на том же TLI, что хвост: зазор внутри одного таймлайна
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        source.StartPolicy = (_, _) =>
+            Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"));
+        source.Identity = new ServerIdentity(1, 3UL * SegmentBytes + 5UL * Mib);
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => source.StartLog.Any(e => e.Timeline == 1),
+            TimeSpan.FromSeconds(10),
+            () => $"open={source.OpenCalls} start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — сразу прыжок (timeline:1 от границы): нет tli_backfill,
+        // нет put .history (TLI 1 истории не имеет — не запрашивается);
+        // маркер tli_jump с from_tli == to_tli == 1.
+        code.Should().Be(0);
+        output.Should().Contain("\"phase\":\"tli_jump\"");
+        output.Should().Contain("\"from_tli\":1");
+        output.Should().Contain("\"to_tli\":1");
+        output.Should().NotContain("\"phase\":\"tli_backfill\"");
+        s3.Objects.Keys.Should().NotContain("c1/shard1/wal/00000001.history");
+    }
+
+    [Fact]
+    public async Task TliProcedure_IdentifyFails_PlainRetry()
+    {
+        // Arrange — отказ старта + отказ IDENTIFY_SYSTEM
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        source.StartPolicy = (_, _) =>
+            Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"));
+        source.Identity = null; // IdentifySystemAsync → Failed
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => source.OpenCalls >= 2, TimeSpan.FromSeconds(10),
+            () => $"open={source.OpenCalls} start={source.StartCalls}");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — ретраи transient-цикла; ни одного tli_* маркера (identify
+        // падает до любых веток процедуры); чистая отмена.
+        code.Should().Be(0);
+        source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
+        output.Should().NotContain("\"phase\":\"tli_backfill\"");
+        output.Should().NotContain("\"phase\":\"tli_jump\"");
+    }
+
+    [Fact]
+    public async Task TliProcedure_HistoryMissing_StillBackfills()
+    {
+        // Arrange — история нового TLI рантаймом не отдаётся (null)
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        var refusalsRemaining = 1;
+        source.StartPolicy = (lsn, timeline) => timeline is null && refusalsRemaining-- > 0
+            ? Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"))
+            : Result.Success();
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        // History пусто: ReadTimelineHistoryAsync → Success(null)
+        source.Chunks.Enqueue(Chunk(2UL * SegmentBytes));
+        source.Chunks.Enqueue(Chunk(3UL * SegmentBytes, tli: 2));
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000003"),
+            TimeSpan.FromSeconds(10),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls}");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — маркер history_missing + досыпка продолжается штатно
+        code.Should().Be(0);
+        output.Should().Contain("\"history_missing\":\"2\"");
+        output.Should().Contain("\"phase\":\"tli_backfill\"");
+        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        s3.Objects.Should().ContainKey("c1/shard1/wal/000000020000000000000003");
+    }
+
+    [Fact]
+    public async Task TliProcedure_OpenFails_PlainRetry()
+    {
+        // Arrange — отказ старта 58P01, процедурный OpenAsync досыпки → Failed
+        // (счётчик OpenFailuresRemaining в фейке): процедура не стартовала —
+        // обычный transient-цикл, ни досыпка, ни прыжок не стартовали (каждый
+        // старт процедуры — на СВЕЖЕМ соединении; после отказа open вернуться
+        // на погашенное нельзя).
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        var refusalsRemaining = 1;
+        source.StartPolicy = (lsn, timeline) => timeline is null && refusalsRemaining-- > 0
+            ? Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"))
+            : Result.Success();
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        source.History[2] = [1, 2, 3];
+        source.OpenFailuresRemaining = 1;
+        source.Chunks.Enqueue(Chunk(2UL * SegmentBytes));
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000010000000000000002"),
+            TimeSpan.FromSeconds(10),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
+                  $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — код 0 по отмене; OpenCalls >= 2 (стартовый + отказавший
+        // процедурный); прыжка нет; стартов с явным TIMELINE нет (отказ open
+        // досыпки предотвратил и досыпку, и прыжок этой итерации).
+        code.Should().Be(0);
+        source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
+        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        source.StartLog.Should().OnlyContain(e => e.Timeline == null);
+    }
+
+    [Fact]
+    public async Task WalStartRefused_EmptyS3Tail_PlainRetry()
+    {
+        // Arrange — пустой S3, старт от restart_lsn слота; процедура неприменима
+        // (tailSegment == null — вход не определён)
+        var source = new FakeXLogSource();
+        var s3 = new FakeS3();
+        source.StartPolicy = (_, _) =>
+            Result.Failed(new WalStartRefused("fake: requested WAL segment has already been removed"));
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        var slots = new FakeSlots(5 << 24);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => source.StartCalls >= 2, TimeSpan.FromSeconds(10),
+            () => $"open={source.OpenCalls} start={source.StartCalls}");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — ретраи БЕЗ tli-маркеров (transient retry-цикл).
+        code.Should().Be(0);
+        source.StartCalls.Should().BeGreaterThanOrEqualTo(2);
+        output.Should().NotContain("\"phase\":\"tli_backfill\"");
+        output.Should().NotContain("\"phase\":\"tli_jump\"");
+    }
+
+    /// <summary>Посев непрерывной цепочки сегментов TLI 1 в мини-S3 фейка.</summary>
+    private static void SeedChain(out FakeS3 s3, uint[] segments, uint tli)
+    {
+        s3 = new FakeS3();
+        foreach (var segId in segments)
+            s3.Objects[$"c1/shard1/wal/00000001{segId / WalFileName.SegsPerLog:x8}{segId % WalFileName.SegsPerLog:x8}"]
+                = SegmentData(tli, segId * SegmentBytes);
     }
 }

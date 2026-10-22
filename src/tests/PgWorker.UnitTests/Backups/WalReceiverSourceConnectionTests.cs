@@ -166,6 +166,43 @@ public class WalReceiverSourceConnectionTests
         identity.IsSuccess.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task TliProcedure_DoesNotLeakConnections()
+    {
+        // Arrange — транспорт с отказом старта 58P01 на любой конфигурации:
+        // серия tli-процедуры «open → refuse → identify → open →
+        // backfill-refuse → open → jump-refuse» ×3 (каждый старт — свежее
+        // соединение; короткоживущее Identify-соединение гасится сразу).
+        var fake = new FakeReplicationConnection
+        {
+            StartReplicationException = new PostgresException(
+                "requested WAL segment has already been removed", "ERROR", "ERROR", "58P01"),
+            IdentifyResult = (2, 3UL * 16 * 1024 * 1024 + 5 * 1024 * 1024)
+        };
+        await using var source = Source(fake);
+
+        // Act — три полные итерации процедуры.
+        for (var i = 0; i < 3; i++)
+        {
+            (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+            var refused = await source.StartReplicationAsync("slot", 0x1000000, null, CancellationToken.None);
+            refused.Error.Should().BeOfType<WalStartRefused>();
+            (await source.IdentifySystemAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+            (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+            var backfill = await source.StartReplicationAsync("slot", 0x1000000, 1, CancellationToken.None);
+            backfill.Error.Should().BeOfType<WalStartRefused>();
+            (await source.OpenAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
+            var jump = await source.StartReplicationAsync("slot", 0x1000000, 2, CancellationToken.None);
+            jump.Error.Should().BeOfType<WalStartRefused>();
+        }
+
+        // Assert — инвариант утечки: закрытий ≥ открытий − 1 с учётом ВСЕХ
+        // открытий (процедурных включительно; каждое соединение живёт ровно
+        // до своей замены — 4 открытия на итерацию, 12 всего).
+        fake.Opened.Should().Be(12);
+        fake.Disposed.Should().BeGreaterThanOrEqualTo(fake.Opened - 1);
+    }
+
     /// <summary>Фейк replication-соединения: счётчики открытий/закрытий;
     /// StartReplication программируемо падает (сценарии сбоя старта стрима).</summary>
     private sealed class FakeReplicationConnection : IReplicationConnection
