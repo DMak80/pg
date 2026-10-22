@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Npgsql;
 using PgWorker.Core.Templates;
@@ -224,6 +225,257 @@ public class E2eWalStreamTliScenarios
         }
     }
 
+    // AC2/AC3 — fallback: пауза S3 → недоставленная генерация → смерть мастера →
+    // promote → срез удержания (drop слота + 160 пустых переключений перекручивают
+    // wal_keep_size=128 сегментов) → возврат S3 → приёмник: 58P01 → досыпка 58P01 →
+    // прыжок → маркер tli_jump, ключ DEGRADED с gap-полем и tli-gap в error;
+    // планировщик переснимает полный (wal_start ≥ gap.to) → метка снята, ключ
+    // ACTIVE; tli_backfill предшествовал tli_jump (досыпка пыталась); BROKEN нет.
+    [Fact]
+    public async Task WalStream_TliJump_GapMarked_FullRetaken()
+    {
+        // Arrange — окружение, оба агента running, база цепочки TLI 1
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24b", "shopt24b", ct);
+        await using var envOwner = fx;
+        await using var appOwner = app;
+        var hostEndpoint = Fx.S3Endpoint;
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
+        var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
+        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
+        {
+            var ps = await Fx.RunDockerAsync(
+            [
+                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
+                "--format", "{{.Names}} {{.State}}",
+            ], ct);
+            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+        }, TimeSpan.FromSeconds(300), ct);
+        bothAgents.Should().BeTrue("both agents before the failover");
+        await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
+
+        using var load = new CancellationTokenSource();
+        var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
+
+        try
+        {
+            // [PHASE] пауза S3 + недоставленная генерация + смерть мастера + promote
+            Console.WriteLine($"[PHASE] wal-t24b: docker stop {Fx.S3NodeContainerName}");
+            await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
+            await GenerateWalAsync(adminDsn, ct);
+            await Task.Delay(TimeSpan.FromSeconds(10), ct); // приёмник в put-ретрае (backpressure)
+            var (_, _, currentMaster) = await MasterPgAsync(cluster, "shard1", ct);
+            Console.WriteLine($"[PHASE] wal-t24b: docker stop pgw-{cluster}-shard1-{currentMaster}");
+            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
+            var (newMasterHost, newMasterPort, newMasterNode) = await MasterPgAsync(cluster, "shard1", ct);
+            // Точка отсчёта «после промоута»: primary-проба успешна только
+            // после завершения промоута — пересоздание агентов супервизом
+            // случается позже этой метки.
+            var failoverAt = DateTimeOffset.UtcNow;
+            var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
+            tli.Should().BeGreaterThanOrEqualTo(2u, "failover opens a new timeline");
+
+            // Ждём пересоздания агентов воркером при смене мастера (супервиз-тик
+            // пересоздаёт обоих со свежими env ролей). Признак: агент нового
+            // мастера СТАРТОВАЛ после промоута (docker logs --since). Маркер
+            // tli_jump обязан остаться в логе ЖИВОГО контейнера нового мастера —
+            // именно его хвост читает контроль воркера (arch/19 §3.2).
+            var agentsRecreated = await E2ePhase.WaitAsync(Fx, "wal-agents-recreated", async () =>
+            {
+                // --since в МИНУТАХ (docker-CLI отвергает "Ns"-длительности —
+                // ошибка уходит в merged stderr и критерий ложно-негативен)
+                var sinceMin = Math.Max(1, (int)(DateTimeOffset.UtcNow - failoverAt).TotalMinutes);
+                var ps = await Fx.RunDockerAsync(
+                [
+                    "ps", "--format", "{{.Names}}",
+                    "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
+                ], ct);
+                var newMasterAgent = $"pgw-backup-wal-{cluster}-shard1-{newMasterNode}";
+                if (!ps.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(n => n.Trim() == newMasterAgent))
+                    return false;
+                var logs = await E2eFixture.RunDockerLogsAsync(
+                    ["--since", $"{sinceMin}m", "--tail", "50", newMasterAgent], ct);
+                return logs.Contains("\"phase\":\"starting\"", StringComparison.Ordinal);
+            }, TimeSpan.FromSeconds(120), ct);
+            agentsRecreated.Should().BeTrue(
+                "agents are recreated by the supervisor on master change — the jump marker must live in the new master agent's log");
+
+            // (1) Срез удержания старых сегментов на новом мастере: drop слота +
+            // переключения с крошечной записью (pg_switch_wal на idle-базе НЕ
+            // материализует сегменты — перекрут требует логической записи в
+            // каждом сегменте); 160 сегментов перекручивают wal_keep_size=128 —
+            // сегменты старого TLI срезаны; ensure воркера пересоздаст слот уже
+            // на высокой позиции
+            var newMasterDsn = DatabaseProvisioner.BuildAdminDsn(newMasterHost, newMasterPort, cluster,
+                new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+            var slot = PgWorker.Backups.BackupNames.Slot(cluster, "shard1");
+            await using (var conn = new NpgsqlConnection(newMasterDsn))
+            {
+                await conn.OpenAsync(ct);
+                await using var drop = new NpgsqlCommand(
+                    $"SELECT pg_drop_replication_slot('{slot}')", conn);
+                await drop.ExecuteScalarAsync(ct);
+            }
+            Console.WriteLine($"[PHASE] wal-t24b: slot {slot} dropped, 160 recorded switches start");
+            await SwitchWithRecordsAsync(newMasterDsn, 160, ct);
+            Console.WriteLine("[PHASE] wal-t24b: 160 recorded switches done (old-tli segments recycled)");
+
+            // Снос старых агентов шарда ПЕРЕД возвратом S3: надзор REBUILDит
+            // стопнутую мастер-ноду и пересоздаёт агентов после реконнекта —
+            // маркеры tli-процедуры стираются вместе с контейнерами (гонка
+            // «контроль vs пересоздание»). Снос при стоящей S3: преемники
+            // (супервиз тиком по missing-desired) висят в list-ретрае — стартов
+            // нет, терять нечего; после возврата S3 они видят НИЗКИЙ (срезанный)
+            // хвост: 58P01 → backfill 58P01 → прыжок — маркеры навсегда в их
+            // живых логах, контроль ставит gap.
+            foreach (var node in new[] { currentMaster, newMasterNode })
+            {
+                Console.WriteLine($"[PHASE] wal-t24b: docker rm -f pgw-backup-wal-{cluster}-shard1-{node}");
+                await Fx.RunDockerAsync(
+                    ["rm", "-f", $"pgw-backup-wal-{cluster}-shard1-{node}"], ct);
+            }
+
+            // (2) [PHASE] возврат S3
+            Console.WriteLine($"[PHASE] wal-t24b: docker start {Fx.S3NodeContainerName}");
+            await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
+
+            // Прогресс листинга S3 (t29 §3.4)
+            Func<Task<string>> walListingProgress = async () =>
+            {
+                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+                if (!listed.IsSuccess || listed.Value.Count == 0)
+                    return "listing=empty";
+                var names = listed.Value.Select(o => o.Name).ToList();
+                var maxTli = names.Where(n => !n.EndsWith(".history", StringComparison.Ordinal))
+                    .Select(n => Convert.ToUInt32(n[..8], 16)).DefaultIfEmpty(0u).Max();
+                return $"objects={names.Count}, maxTli=0x{maxTli:x}, history={(names.Any(n => n.EndsWith(".history", StringComparison.Ordinal)) ? "present" : "absent")}";
+            };
+
+            // (а) ключ wal DEGRADED с Gap != null и tli-gap в error
+            var gapSeen = await E2ePhase.WaitAsync(Fx, "wal-tli-gap-marked", async () =>
+            {
+                var read = await writer.ReadAsync(cluster, "shard1", ct);
+                return read is { IsSuccess: true, Value: { State: WalStreamStatus.Degraded, Gap: not null } }
+                    && read.Value.Error is { } e && e.Contains("tli-gap:", StringComparison.Ordinal)
+                    && e.Contains($"→{tli}", StringComparison.Ordinal);
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            gapSeen.Should().BeTrue("the jump gap is persistently marked DEGRADED with gap (AC2)");
+            var readGap = await writer.ReadAsync(cluster, "shard1", ct);
+
+            // (б) маркер tli_jump в логе мастер-агента; tli_backfill предшествовал
+            var agentPs = await Fx.RunDockerAsync(
+            [
+                "ps", "--format", "{{.Names}}",
+                "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
+            ], ct);
+            var markerLog = "";
+            foreach (var name in agentPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                markerLog += await E2eFixture.RunDockerLogsAsync(["--tail", "2000", name.Trim()], ct);
+            markerLog.Should().Contain("\"phase\":\"tli_jump\"", "the fallback jump marker (AC2)");
+            markerLog.Should().Contain("\"phase\":\"tli_backfill\"", "the backfill was attempted before the jump (AC2)");
+            markerLog.IndexOf("\"phase\":\"tli_backfill\"", StringComparison.Ordinal)
+                .Should().BeLessThan(markerLog.IndexOf("\"phase\":\"tli_jump\"", StringComparison.Ordinal),
+                    "backfill precedes jump (AC2)");
+            var gap = readGap!.Value!.Gap!;
+            var gapTo = gap.To;
+
+            // (в) .history нового TLI в S3
+            var history = await E2ePhase.WaitAsync(Fx, "wal-history-present", async () =>
+            {
+                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+                return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            history.Should().BeTrue($"wal/{tli:x8}.history is uploaded by the receiver (AC2)");
+
+            // (4) Доставка жива: листинг растёт выше gap.to (агент не останавливался)
+            var deliveringAboveGap = await E2ePhase.WaitAsync(Fx, "wal-delivering-above-gap", async () =>
+            {
+                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+                return listed.IsSuccess && listed.Value.Select(o => o.Name).Any(n =>
+                    n.Length == 24 && !n.EndsWith(".history", StringComparison.Ordinal)
+                    && string.CompareOrdinal(n, gapTo) > 0);
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            deliveringAboveGap.Should().BeTrue("delivery continues above gap.to — the agent is alive (AC2)");
+
+            // (5) Форс-пересъём: full/<id> PLANNED → COMPLETED с wal_start ≥ gap.to
+            var fullCompleted = await E2ePhase.WaitAsync(Fx, "wal-full-retaken", async () =>
+            {
+                var keys = await FullKeysAsync(cluster, "shard1");
+                return keys.Any(k => k.Value.Contains("\"state\":\"COMPLETED\"", StringComparison.Ordinal));
+            }, TimeSpan.FromSeconds(600), ct, progress: async () =>
+            {
+                var keys = await FullKeysAsync(cluster, "shard1");
+                return $"fulls={keys.Count}";
+            });
+            fullCompleted.Should().BeTrue("the planner re-runs the full backup on a live gap (AC3)");
+            var fulls = await FullKeysAsync(cluster, "shard1");
+            var coveringExists = fulls
+                .Where(k => k.Value.Contains("\"state\":\"COMPLETED\"", StringComparison.Ordinal))
+                .Select(k => k.Value)
+                .Any(v =>
+                {
+                    var ws = ParseWalStart(v);
+                    return v.Contains("\"wal_start_segment\":\"", StringComparison.Ordinal)
+                        && ws is not null
+                        && string.CompareOrdinal(ws, gapTo) >= 0;
+                });
+            coveringExists.Should().BeTrue("the covering full starts at/above gap.to (AC3)");
+
+            // (6) Заживление: ключ ACTIVE, Gap снят, error без tli-gap
+            var healed = await E2ePhase.WaitAsync(Fx, "wal-gap-lifted", async () =>
+            {
+                var read = await writer.ReadAsync(cluster, "shard1", ct);
+                return read is { IsSuccess: true, Value: { State: WalStreamStatus.Active, Gap: null } wal }
+                    && (wal.Error is null || !wal.Error.Contains("tli-gap", StringComparison.Ordinal));
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
+            healed.Should().BeTrue("the gap is lifted by the covering full (AC3)");
+
+            // (7) BROKEN нет: CheckWithRestart непрерывна от максимального TLI
+            var readFinal = await writer.ReadAsync(cluster, "shard1", ct);
+            readFinal.Value!.State.Should().NotBe(WalStreamStatus.Broken, "no BROKEN on the tli-gap path (AC2)");
+            var listedFinal = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            listedFinal.Value.Should().NotBeNull();
+            var chainStart = PgWorker.Backups.WalFileName.TryParse(readFinal.Value.ChainStartSegment);
+            chainStart.Should().NotBeNull();
+            var chain = PgWorker.Backups.WalChain.CheckWithRestart(
+                chainStart!.Value, listedFinal.Value!.Select(o => o.Name));
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous from the max TLI (AC2)");
+        }
+        catch (Exception ex)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            await WalScenarioDiagDumpAsync(cluster, "AC2/AC3: " + ex.Message);
+            throw;
+        }
+        finally
+        {
+            await load.CancelAsync();
+            try
+            {
+                await loader;
+            }
+            catch
+            {
+                // фон умер вместе с соединением — ожидаемо после смерти мастера
+            }
+        }
+    }
+
+    /// <summary>wal_start_segment из статуса полного (строка JSON) — для
+    /// CompareOrdinal-сравнения с границей зазора.</summary>
+    private static string? ParseWalStart(string fullJson)
+    {
+        const string marker = "\"wal_start_segment\":\"";
+        var i = fullJson.IndexOf(marker, StringComparison.Ordinal);
+        if (i < 0)
+            return null;
+        var rest = fullJson[(i + marker.Length)..];
+        var end = rest.IndexOf('"');
+        return end < 0 ? null : rest[..end];
+    }
+
     private async Task<string?> AgentContainerIdAsync(string agentName, CancellationToken ct)
     {
         var ids = await Fx.RunDockerAsync(
@@ -444,6 +696,26 @@ public class E2eWalStreamTliScenarios
         await conn.OpenAsync(ct);
         for (var i = 0; i < count; i++)
         {
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
+    }
+
+    // Переключения с крошечной записью: pg_switch_wal на idle-базе НЕ создаёт
+    // новый сегмент (возвращается та же LSN) — перекрут wal_keep_size требует
+    // логической записи в каждом сегменте (t24b-сценарий среза удержания).
+    private static async Task SwitchWithRecordsAsync(string adminDsn, int count, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        await using (var create = new NpgsqlCommand(
+            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+            await create.ExecuteNonQueryAsync(ct);
+        for (var i = 0; i < count; i++)
+        {
+            await using var insert = new NpgsqlCommand(
+                "INSERT INTO wal_load(payload) VALUES ('r')", conn);
+            await insert.ExecuteNonQueryAsync(ct);
             await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
             await switchWal.ExecuteScalarAsync(ct);
         }
