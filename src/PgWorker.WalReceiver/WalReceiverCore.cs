@@ -147,7 +147,8 @@ public sealed class WalReceiverCore
                                 {
                                     await PutWithRetryAsync(
                                         s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
-                                        history.Value, retry, ct);
+                                        history.Value,
+                                        Convert.ToHexString(SHA256.HashData(history.Value)), retry, ct);
                                 }
                                 else
                                 {
@@ -157,12 +158,13 @@ public sealed class WalReceiverCore
 
                             prevTli = segment.Tli;
 
-                            // 6. Доставка сегмента: sha256-hex — серверная сверка целостности.
+                            // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
+                            //    (один расчёт: маркер и put используют один хэш).
                             await Emit(WalReceiverMarkers.Delivering(segment.Name));
                             var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
                             await PutWithRetryAsync(
                                 s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
-                                segment.Data, retry, ct);
+                                segment.Data, sha256, retry, ct);
 
                             // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
                             var confirmed = await source.SetConfirmedAsync(segment.EndLsn, ct);
@@ -207,7 +209,9 @@ public sealed class WalReceiverCore
 
     /// <summary>Put с ретраем (transient-отказ S3): на время ретраев чтение потока
     /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.
-    /// t36: исчерпание списка пула (маркер s3-pool-exhausted в ошибке) — маркер
+    /// Хэш передаёт вызывающий: сегмент уже хэширован для маркера Delivering —
+    /// повторный SHA256 16 МиБ на каждый put не считается. t36: исчерпание
+    /// списка пула (маркер s3-pool-exhausted в ошибке) — маркер
     /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
     /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).
     /// R3 «быстрый отказ, не молчание»: пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout —
@@ -216,9 +220,8 @@ public sealed class WalReceiverCore
     /// перебор — фейловер доезжает до живой ноды (прецедент AC4).</summary>
     private static async Task PutWithRetryAsync(
         IBackupS3 s3, TextWriter stdout, WalReceiverOptions o,
-        string key, byte[] data, TimeSpan retry, CancellationToken ct)
+        string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct)
     {
-        var sha256 = Convert.ToHexString(SHA256.HashData(data));
         var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
         while (true)
         {

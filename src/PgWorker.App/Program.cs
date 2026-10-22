@@ -855,7 +855,8 @@ app.MapWorkerApi();
 
 await app.RunAsync();
 
-// Секреты из env с fail-fast: отсутствующий секрет — ошибка старта (Д7).
+// Секреты из env с fail-fast: отсутствующий секрет — ошибка старта (Д7);
+// алфавит DSN-безопасный — иначе разрыв DSN в SQL-процессах (InstallSecretsGuard).
 static InstallSecrets SecretsFromEnv()
 {
     string Required(string name) =>
@@ -863,11 +864,13 @@ static InstallSecrets SecretsFromEnv()
         ?? throw new ApplicationException(
             $"required env secret {name} is not set (Д7: per-install, not in git and not in etcd)");
 
-    return new InstallSecrets(
+    var secrets = new InstallSecrets(
         Required("PGW_PG_SUPERUSER_PASSWORD"),
         Required("PGW_PG_STANDBY_PASSWORD"),
         Required("PGW_BUCKET_ADMIN_PASSWORD"),
         Required("PGW_BUCKET_MOVER_PASSWORD"));
+    PgWorker.Core.Templates.InstallSecretsGuard.EnsureDsnSafeAlphabet(secrets);
+    return secrets;
 }
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).

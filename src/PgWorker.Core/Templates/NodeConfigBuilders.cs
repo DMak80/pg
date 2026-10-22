@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using PgWorker.Core.Model;
 using PgWorker.Core.Tuning;
 
@@ -17,6 +18,34 @@ public sealed record ShardTopology(string Cluster, string Shard, string Scope,
 public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
     string BucketAdminPassword, string MoverPassword,
     string BucketAdminUser = "bucket_admin");
+
+/// <summary>Fail-fast валидация install-секретов при старте: пароли вставляются
+/// в `;`-разделённый DSN (DatabaseProvisioner.BuildAdminDsn — Escape покрывает
+/// только `'`), поэтому `;`/`=`/ведущий пробел разорвали бы DSN — «загадочные»
+/// ошибки подключения вместо отказа старта. Алфавит DSN-безопасен
+/// [A-Za-z0-9._-] (дев/стендовые и ротируемые значения в него укладываются).</summary>
+public static class InstallSecretsGuard
+{
+    private static readonly Regex DsnSafe = new("^[A-Za-z0-9._-]+$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    public static void EnsureDsnSafeAlphabet(InstallSecrets secrets)
+    {
+        foreach (var (role, value) in new (string Role, string Value)[]
+                 {
+                     ("SuPassword", secrets.SuPassword),
+                     ("StandbyPassword", secrets.StandbyPassword),
+                     ("BucketAdminPassword", secrets.BucketAdminPassword),
+                     ("MoverPassword", secrets.MoverPassword),
+                 })
+        {
+            if (!DsnSafe.IsMatch(value))
+                throw new ApplicationException(
+                    $"install secret {role} contains characters outside the DSN-safe alphabet [A-Za-z0-9._-]: " +
+                    "';'/whitespace would break the ';'-separated admin DSN built from it — fix the per-install env secret (Д7)");
+        }
+    }
+}
 
 /// <summary>
 /// REST-TLS материал ноды (t22, arch/14 §2.1): PEM серта/ключа/CA

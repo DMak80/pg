@@ -17,6 +17,11 @@ internal static partial class OrphanGuards
     [GeneratedRegex("^[a-z][a-z0-9_]{0,30}$")]
     private static partial Regex ShardPattern();
 
+    // Гвард имён (общий для hold/unhold — симметрия контракта): имена
+    // канонические (иначе 404 без похода в etcd).
+    public static bool ValidNames(string cluster, string shard)
+        => ClusterPattern().IsMatch(cluster) && ShardPattern().IsMatch(shard);
+
     // Чтение записи реестра для префикса: имена → 404 без etcd; выключено →
     // 503; сбой всех endpoints → 503 (EtcdWriteUnavailableException);
     // префикса нет → 404; DELETING → 409.
@@ -24,7 +29,7 @@ internal static partial class OrphanGuards
         IEtcdGateway gateway, string[] endpoints, string cluster, string shard,
         Func<BackupsRuntimeOptions?> runtime, CancellationToken ct)
     {
-        if (!ClusterPattern().IsMatch(cluster) || !ShardPattern().IsMatch(shard))
+        if (!ValidNames(cluster, shard))
             return Result<OrphanEntry>.Failed(
                 new OrphanNotFoundException($"{cluster}/{shard}"));
         if (runtime() is null)
@@ -68,9 +73,13 @@ public sealed class OrphanHoldHandler(
     }
 
     // Del hold-ключа — 204 идемпотентен (ключа нет — тоже успех). Реестр НЕ
-    // читаем: у unhold по контракту только 503 (spec §3.4).
+    // читаем: у unhold по контракту только 503 (spec §3.4). Гвард имён — тот
+    // же, что у hold (симметрия): ключ строится из сегментов URL только после
+    // проверки каноничности.
     public async Task<Result> RemoveAsync(string cluster, string shard, CancellationToken ct)
     {
+        if (!OrphanGuards.ValidNames(cluster, shard))
+            return Result.Failed(new OrphanNotFoundException($"{cluster}/{shard}"));
         if (runtime() is null)
             return Result.Failed(new BackupsDisabledException());
 
