@@ -248,10 +248,10 @@ public static class E2eFixture
     /// глотает — «лучшими усилиями», канон e2e-launch). logFile — полный вывод
     /// процесса (успех и таймаут — единый журнал build-вызовов, t29 §4.5);
     /// при kill по бюджету хвост вывода (~40 строк) попадает в исключение.</summary>
-    internal static async Task<string> RunProcessAsync(
+    private static async Task<string> RunProcessCoreAsync(
         string file, string[] args, CancellationToken ct, TimeSpan? timeout,
         IReadOnlyDictionary<string, string>? env = null,
-        string? logFile = null)
+        string? logFile = null, bool mergeStderrOnSuccess = false)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -284,7 +284,7 @@ public static class E2eFixture
             await WriteLogAsync(logFile, output + error);
             if (process.ExitCode != 0)
                 throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
-            return output.Trim();
+            return mergeStderrOnSuccess ? MergeOutput(output, error) : output.Trim();
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -307,6 +307,50 @@ public static class E2eFixture
                 + (tail.Length == 0 ? "" : $"; output tail:\n{tail}"));
         }
     }
+
+    /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет — по
+    /// истечении дерево процесса убивается, наружу ApplicationException.
+    /// Возврат при exit=0 — только stdout (контракт вызовов телеметрии);
+    /// объединённый съём — RunProcessMergedAsync.</summary>
+    internal static Task<string> RunProcessAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan? timeout,
+        IReadOnlyDictionary<string, string>? env = null,
+        string? logFile = null)
+        => RunProcessCoreAsync(file, args, ct, timeout, env, logFile);
+
+    /// <summary>Объединение потоков (канон docs/e2e-launch.md §1):
+    /// stdout-блок, затем stderr-блок; между двумя непустыми блоками ровно
+    /// один перевод строки, края тримятся. docker-CLI разводит потоки
+    /// контейнера по СВОИМ потокам (docker logs: stdout контейнера → stdout
+    /// CLI, stderr → stderr CLI) — stdout-only теряет диагностику агентов
+    /// (WalReceiver пишет open_failed/stream_broken в stderr). Интерливинг
+    /// по времени не восстанавливается — порядок внутри потока сохранён.</summary>
+    private static string MergeOutput(string output, string error)
+    {
+        var o = output.Trim();
+        var e = error.Trim();
+        return e.Length == 0 ? o : o.Length == 0 ? e : o + "\n" + e;
+    }
+
+    /// <summary>Процесс с объединённым возвратом (stdout+stderr) при exit=0;
+    /// исключения и таймаут-семантика — идентичны RunProcessAsync. Отдельная
+    /// точка входа для телеметрии — контракт RunProcessAsync не меняется.</summary>
+    internal static Task<string> RunProcessMergedAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan? timeout,
+        IReadOnlyDictionary<string, string>? env = null,
+        string? logFile = null)
+        => RunProcessCoreAsync(file, args, ct, timeout, env, logFile,
+            mergeStderrOnSuccess: true);
+
+    /// <summary>docker logs — всегда объединённо (stdout+stderr контейнера):
+    /// ["logs", .. logsArgs] — подкоманду logs подставляет сам хелпер.
+    /// Бюджет по умолчанию 60 с — как у logs-вызовов телеметрии;
+    /// переопределяется параметром timeout.</summary>
+    internal static Task<string> RunDockerLogsAsync(
+        IReadOnlyList<string> logsArgs, CancellationToken ct = default,
+        TimeSpan? timeout = null)
+        => RunProcessMergedAsync("docker", ["logs", .. logsArgs], ct,
+            timeout ?? TimeSpan.FromSeconds(60));
 
     // Дренаж вывода убитого процесса: после Kill(entireProcessTree) пайпы
     // закрываются операционкой и оба чтения завершаются естественно; страховка
