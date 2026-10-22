@@ -327,7 +327,7 @@ public class E2eWalStreamMasterDownScenarios
             foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
                 var name = line.Split(' ')[0];
-                var logs = await Fx.RunDockerAsync(["logs", "--tail", "60", name],
+                var logs = await E2eFixture.RunDockerLogsAsync(["--tail", "60", name],
                     TestContext.Current.CancellationToken);
                 agentLogs += $"\n== {name}:\n{logs}";
             }

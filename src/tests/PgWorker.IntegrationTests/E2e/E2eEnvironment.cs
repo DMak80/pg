@@ -989,7 +989,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             string logs;
             try
             {
-                logs = await E2eFixture.RunProcessAsync("docker", ["logs", containerName],
+                logs = await E2eFixture.RunDockerLogsAsync([containerName],
                     CancellationToken.None, TimeSpan.FromSeconds(30));
                 await File.WriteAllTextAsync(
                     Path.Combine(ArtifactsDir, $"container-{containerName}.log"), logs);
@@ -1401,8 +1401,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 var (id, name) = item;
                 try
                 {
-                    var logs = await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id],
-                        CancellationToken.None, TimeSpan.FromSeconds(60));
+                    var logs = await E2eFixture.RunDockerLogsAsync(["--timestamps", id]);
                     await File.WriteAllTextAsync(Path.Combine(ArtifactsDir, $"container-{name}.log"), logs);
                 }
                 catch (Exception e)

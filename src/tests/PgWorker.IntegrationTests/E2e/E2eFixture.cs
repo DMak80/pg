@@ -518,7 +518,7 @@ public sealed class HostInstance : IAsyncDisposable
     /// <summary>Хвост логов воркера (docker logs) — семантика host.log старого
     /// хост-инстанса (диагностика сценариев «что произошло» на живом воркере).</summary>
     public async Task<string> ReadLogTailAsync(int lines = 100, CancellationToken ct = default)
-        => await E2eFixture.RunDockerAsync(["logs", "--tail", lines.ToString(), ContainerName], ct);
+        => await E2eFixture.RunDockerLogsAsync(["--tail", lines.ToString(), ContainerName], ct);
 
     /// <summary>Состояние контейнера воркера (docker inspect): Status и ExitCode
     /// (graceful self-stop сценария — exit 0; null — контейнер жив).</summary>
@@ -558,8 +558,8 @@ public sealed class HostInstance : IAsyncDisposable
         // container-pgw-ew-*.log отсутствовал в артефактах при живых прочих).
         try
         {
-            var logs = await E2eFixture.RunDockerAsync(
-                ["logs", "--timestamps", ContainerName], CancellationToken.None);
+            var logs = await E2eFixture.RunDockerLogsAsync(
+                ["--timestamps", ContainerName], CancellationToken.None);
             await System.IO.File.WriteAllTextAsync(
                 System.IO.Path.Combine(_env.ArtifactsDir, $"container-{ContainerName}.log"),
                 logs);

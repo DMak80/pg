@@ -179,7 +179,7 @@ public static class E2eContour
         string runnerLog;
         try
         {
-            runnerLog = await E2eFixture.RunDockerAsync(["logs", runnerName], CancellationToken.None);
+            runnerLog = await E2eFixture.RunDockerLogsAsync([runnerName], CancellationToken.None);
             await File.WriteAllTextAsync(Path.Combine(contour.ArtifactsDir, "runner.log"), runnerLog);
         }
         catch (Exception e)
