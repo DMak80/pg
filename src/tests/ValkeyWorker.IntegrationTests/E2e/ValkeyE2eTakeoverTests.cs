@@ -282,7 +282,7 @@ public class ValkeyE2eTakeoverTests
             // демонтаж (logger ValkeyClusterProcesses «deprovision {C}: ok»;
             // обработчик DELETE такую строку не пишет — подтверждено grep'ом
             // логов прогона e055e1e0: у жертвы 0 вхождений).
-            var survivorLog = await fx.RunDockerAsync(["logs", survivorName], ct);
+            var survivorLog = await fx.RunDockerLogsAsync([survivorName], ct);
             survivorLog.Should().Contain($"deprovision {cluster}",
                 "documentary fact I2: the cluster deprovision was executed by the survivor — the victim was killed before X0 and never restarted");
 
