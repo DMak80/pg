@@ -70,15 +70,16 @@ public sealed class WalReceiverCore
                     continue;
                 }
 
-                // 2. Стартовая позиция: хвост S3; транспортный сбой резолва — ретрай;
+                // 2. Стартовая позиция: хвост S3 (позиция + имя хвостового сегмента —
+                //    вход tli-процедуры при 58P01); транспортный сбой резолва — ретрай;
                 //    пустой префикс — restart_lsn слота; слота нет — permanent (код 4).
-                ulong? tail = null;
-                while (tail is null)
+                WalTail? walTail = null;
+                while (walTail is null)
                 {
                     var resolved = await S3TailResolver.ResolveTailAsync(s3, o.Cluster, o.Shard, ct);
                     if (resolved.IsSuccess && resolved.Value is { } position)
                     {
-                        tail = position;
+                        walTail = position;
                         break;
                     }
 
@@ -88,7 +89,14 @@ public sealed class WalReceiverCore
                     await Task.Delay(retry, ct);
                 }
 
-                if (tail is null)
+                ulong startAt;
+                string? tailSegment;
+                if (walTail is { } tailInfo)
+                {
+                    startAt = tailInfo.Position;
+                    tailSegment = tailInfo.SegmentName;
+                }
+                else
                 {
                     var restart = await slots.ReadRestartLsnAsync(o.Slot, ct);
                     if (!restart.IsSuccess)
@@ -97,11 +105,12 @@ public sealed class WalReceiverCore
                         return 4;
                     }
 
-                    tail = restart.Value;
+                    startAt = restart.Value;
+                    tailSegment = null;
                 }
 
                 // 3. START_REPLICATION с явной стартовой позицией.
-                var started = await source.StartReplicationAsync(o.Slot, tail.Value, null, ct);
+                var started = await source.StartReplicationAsync(o.Slot, startAt, null, ct);
                 if (!started.IsSuccess)
                 {
                     // Диагностика отказа старта стрима (слот/позиция) — в stderr,
@@ -114,7 +123,7 @@ public sealed class WalReceiverCore
 
                 // 4. Приём: сборка сегментов → put (ретрай, backpressure — enumerator не
                 //    двигается) → подтверждение ТОЛЬКО после успешного put.
-                var assembler = new SegmentAssembler(tail.Value);
+                var assembler = new SegmentAssembler(startAt);
                 uint prevTli = 0;
                 try
                 {
