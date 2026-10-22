@@ -69,9 +69,12 @@ public sealed class StubScaleDriver : IClusterDriver
         return Task.FromResult(Result.Success());
     }
 
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
+    // t36: заглушка хвоста лога агента; t24: программируемый хвост
+    // (сценарии маркера tli_jump — контроль воркера читает лог мастер-агента).
+    public string BackupAgentLogTail = "";
+
     public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
+        => Task.FromResult(Result<string>.Success(BackupAgentLogTail));
 
     public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
         string cluster, CancellationToken ct)
