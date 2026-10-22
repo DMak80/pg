@@ -163,9 +163,14 @@ public class WalReceiverIntegrationTests
                 WalFileName.TryParse(minName!)!.Value, names);
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
 
-            // Assert AC1 — restart_lsn не ушёл за доставленный хвост
+            // Assert AC1 — restart_lsn не ушёл за доставленный хвост: restart_lsn
+            // читается ПЕРВЫМ, листинг ВТОРЫМ (доставка монотонна: хвост свежего
+            // листинга ≥ хвоста в момент чтения restart_lsn; обратный порядок
+            // ловит гонку роста между двумя чтениями при быстрой доставке).
             var restartLsn = await postgres.ReadRestartLsnAsync(ct);
-            var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
+            var (ac1Name, ac1Names) = await ListSegmentsAsync(s3, cluster, shard, ct);
+            var ac1Chain = WalChain.Check(WalFileName.TryParse(ac1Name!)!.Value, ac1Names);
+            var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(ac1Chain.LastSegment!.Value);
             restartLsn.Should().BeLessThanOrEqualTo(tail, "the confirm-on-delivery invariant");
         }
         finally
@@ -206,11 +211,13 @@ public class WalReceiverIntegrationTests
                 (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count > beforeNames.Count,
                 TimeSpan.FromSeconds(30));
 
-            // Assert — цепочка непрерывна (дыр нет), AC1 сохраняется
+            // Assert — цепочка непрерывна (дыр нет), AC1 сохраняется: restart_lsn
+            // читается ПЕРВЫМ, листинг ВТОРЫМ (доставка монотонна — устранение
+            // гонки роста между чтениями, образец выше).
+            var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, names);
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
-            var restartLsn = await postgres.ReadRestartLsnAsync(ct);
             var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
             restartLsn.Should().BeLessThanOrEqualTo(tail);
         }
@@ -290,6 +297,84 @@ public class WalReceiverIntegrationTests
             cts.Cancel();
             (await run).Should().Be(0);
         }
+    }
+
+    [Fact]
+    public async Task TliStart_IdentifyAndExplicitTimeline_StreamsFromTail()
+    {
+        // Arrange — своё окружение: PG (TLS+слот) + ownS3-нода; ядро приёмника
+        // (старт без TIMELINE) накатывает ≥3 закрытых сегмента и останавливается
+        // отменой — дальше проверяется прямой транспорт tli-механики.
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var postgres = await OwnPostgres.StartAsync("wal-it-tli", ct);
+        await using var s3Node = await OwnS3.StartAsync("wal-it-tli", ct);
+        var cluster = $"c{postgres.RunId[..8]}";
+        var shard = "shard1";
+        await using var s3 = HostS3(s3Node);
+
+        var (ctsCore, runCore) = await StartCoreAsync(postgres, s3Node, cluster, shard);
+        try
+        {
+            // Switches (6) переключений, а не 3: приёмник стартует от restart_lsn
+            // (середина сегмента — слот уже отпустил начало) и доставляет только
+            // ЗАКРЫТЫЕ сегменты выше него; 3 переключений дают < 3 доставленных.
+            await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
+            await WaitUntilAsync(async () =>
+                (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 3,
+                TimeSpan.FromSeconds(30),
+                async () =>
+                {
+                    var (_, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
+                    return $"segments=[{string.Join(",", names)}]";
+                });
+        }
+        finally
+        {
+            ctsCore.Cancel();
+            (await runCore).Should().Be(0);
+        }
+
+        // Act — прямой транспорт: IDENTIFY_SYSTEM по короткоживущему
+        // replication-соединению, затем START_REPLICATION с явным TIMELINE 1
+        // от хвоста S3 (перегрузка «streaming starts on timeline tli»).
+        var options = postgres.ReceiverOptions(
+            s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
+        await using var source = new PgWorker.WalReceiver.NpgsqlXLogSource(options);
+        (await source.OpenAsync(ct)).IsSuccess.Should().BeTrue();
+        var identity = await source.IdentifySystemAsync(ct);
+        identity.IsSuccess.Should().BeTrue(identity.Error?.Message);
+
+        // Assert — живой PG без промоутов: текущий таймлайн 1, позиция записи > 0
+        identity.Value!.Tli.Should().Be(1, "single-node PG: current timeline is 1");
+        identity.Value!.XLogPos.Should().BeGreaterThan(0);
+
+        // Хвост S3: конец последнего сегмента непрерывной цепочки
+        var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
+        minName.Should().NotBeNull("the chain is anchored by the first full segment");
+        var chain = WalChain.Check(WalFileName.TryParse(minName!)!.Value, names);
+        chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is continuous");
+        var tail = PgWorker.WalReceiver.S3TailResolver.EndLsn(chain.LastSegment!.Value);
+
+        (await source.StartReplicationAsync(OwnPostgres.Slot, tail, 1, ct))
+            .IsSuccess.Should().BeTrue("the explicit-timeline start succeeds on a live PG");
+
+        // Новый WAL — гарантия байтов в стриме; первый чанк — с бюджетом ≤ 30 с
+        await GenerateWalAsync(postgres.AdminDsn, 1, ct);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(30));
+        var enumerator = source.Stream.GetAsyncEnumerator(budget.Token);
+        var moved = await enumerator.MoveNextAsync().AsTask();
+
+        // Assert — перегрузка с TIMELINE стартует ровно от LSN (поведение риса
+        // §9 «не иначе»); данные чанка не пусты; утечки соединений нет —
+        // DisposeAsync source гасит стрим-соединение (проверка — успешный
+        // dispose ниже, фейков счётчиков у прод-транспорта нет).
+        moved.Should().BeTrue("the explicit-timeline stream yields data from the tail");
+        var chunk = enumerator.Current;
+        chunk.WalStart.Should().Be(tail, "explicit TIMELINE start is exact at the tail LSN");
+        chunk.Data.Length.Should().BeGreaterThan(0);
+        await enumerator.DisposeAsync();
     }
 
     [Fact]
