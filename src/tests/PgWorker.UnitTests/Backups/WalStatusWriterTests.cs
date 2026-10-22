@@ -124,12 +124,79 @@ public class WalStatusWriterTests
         gateway.Store["/pgworker/backups/c1/shard1/wal"].Should().Be(WalStatusWriter.ToJson(Sample()));
     }
 
+    // ---- t24: поле gap (RPO-зазор tli-прыжка, arch/19 §4) ----
+
+    // AAA: writer с Gap → JSON содержит gap с границами и tli
+    [Fact]
+    public void ToJson_WithGap_ContainsGapField()
+    {
+        // Arrange — живой зазор tli-прыжка (границы и TLI)
+        var state = Sample() with { Gap = new WalGapState(
+            "000000010000000000000003", "000000020000000000000007", 2) };
+
+        // Act
+        var json = WalStatusWriter.ToJson(state);
+
+        // Assert — формат канона arch/19 §4
+        json.Should().Contain(
+            "\"gap\":{\"from\":\"000000010000000000000003\"," +
+            "\"to\":\"000000020000000000000007\",\"tli\":2}");
+    }
+
+    // AAA: без Gap поле gap НЕ пишется (WhenWritingNull — обратная совместимость)
+    [Fact]
+    public void ToJson_GapNull_NoGapField()
+    {
+        // Arrange / Act
+        var json = WalStatusWriter.ToJson(Sample());
+
+        // Assert
+        json.Should().NotContain("\"gap\"");
+    }
+
+    // AAA: парсинг старого ключа (без gap) → Gap == null, без parseErrors
+    [Fact]
+    public async Task Parse_KeyWithoutGap_GapNull()
+    {
+        // Arrange — «старый» воркер: ключ без gap
+        var gateway = new FakeEtcdGateway();
+        var writer = new WalStatusWriter(gateway, ["http://test"]);
+        gateway.Store["/pgworker/backups/c1/shard1/wal"] = WalStatusWriter.ToJson(Sample());
+
+        // Act
+        var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
+
+        // Assert
+        read.IsSuccess.Should().BeTrue();
+        read.Value.Should().NotBeNull();
+        read.Value!.Gap.Should().BeNull();
+    }
+
+    // AAA: roundtrip ключа с Gap (записано → прочитано без потерь)
+    [Fact]
+    public async Task Parse_WithGap_Roundtrip()
+    {
+        // Arrange
+        var state = Sample() with { Gap = new WalGapState(
+            "000000010000000000000003", "000000020000000000000007", 2) };
+        var gateway = new FakeEtcdGateway();
+        var writer = new WalStatusWriter(gateway, ["http://test"]);
+        await writer.WriteIfChangedAsync("c1", "shard1", state, ct: TestContext.Current.CancellationToken);
+
+        // Act
+        var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
+
+        // Assert
+        read.IsSuccess.Should().BeTrue(read.Error?.Message);
+        read.Value!.Gap.Should().NotBeNull();
+        read.Value.Gap.Should().BeEquivalentTo(state.Gap);
+    }
+
     // ---- t27: поле agents (супервиз-факты per-node, arch/19 §4, AC7) ----
 
     // AAA: writer с Agents → JSON содержит agents в канонической форме
     [Fact]
-    public void ToJson_WithAgents_ContainsField()
-    {
+    public void ToJson_WithAgents_ContainsField()    {
         // Arrange — два агента per-node: мастер running, sync exited
         var state = Sample() with { Agents =
         [

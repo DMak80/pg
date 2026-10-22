@@ -804,9 +804,11 @@ public sealed class WalStreamProcess(
                 cluster, shard, wal?.State.ToString() ?? "<none>", state,
                 error is null ? "" : $"; error={error}");
 
+        // Временно: живой gap ключа не теряется при проходах контроля; следующий
+        // шаг — tli-gap-блок контроля — заменит выражение на вычисляемое Gap: gap.
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,
-            lastUploadedUnix, lag, error);
+            lastUploadedUnix, lag, error, Gap: wal?.Gap);
         await status.WriteIfChangedAsync(cluster, shard, next, ct);
         return new ControlOutcome(next); // цепочка цела (ACTIVE/DEGRADED) — супервиз разрешён
     }

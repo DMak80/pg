@@ -31,7 +31,8 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             state.LastUploadedSegment, state.LastUploadedUnix,
             state.LagSegments, state.Error,
             state.Agents?.Select(a => new WalAgentPayload(
-                a.Node, AgentName(a.State))).ToList()), Json);
+                a.Node, AgentName(a.State))).ToList(),
+            state.Gap is { } gap ? new GapPayload(gap.From, gap.To, gap.Tli) : null), Json);
 
     public async Task<Result<WalStreamState?>> ReadAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -98,7 +99,9 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
                 payload.LastUploadedSegment ?? "", payload.LastUploadedUnix,
                 payload.LagSegments, payload.Error,
                 payload.Agents?.Select(a => new WalAgentState(
-                    a.Node ?? "", AgentOf(a.State))).ToList()));
+                    a.Node ?? "", AgentOf(a.State))).ToList(),
+                payload.Gap is { From: { Length: > 0 }, To: { Length: > 0 }, Tli: not null } g
+                    ? new WalGapState(g.From, g.To, g.Tli.Value) : null));
         }
         catch (JsonException e)
         {
@@ -153,9 +156,17 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         [property: JsonPropertyName("last_uploaded_unix")] long? LastUploadedUnix,
         [property: JsonPropertyName("lag_segments")] long? LagSegments,
         [property: JsonPropertyName("error")] string? Error,
-        [property: JsonPropertyName("agents")] List<WalAgentPayload>? Agents);
+        [property: JsonPropertyName("agents")] List<WalAgentPayload>? Agents,
+        [property: JsonPropertyName("gap")] GapPayload? Gap);
 
     private sealed record WalAgentPayload(
         [property: JsonPropertyName("node")] string? Node,
         [property: JsonPropertyName("state")] string? State);
+
+    // t24 (arch/19 §4): границы RPO-зазора tli-прыжка; null не пишется
+    // (WhenWritingNull в опциях Json) — старые ключи поля не несут.
+    private sealed record GapPayload(
+        [property: JsonPropertyName("from")] string From,
+        [property: JsonPropertyName("to")] string To,
+        [property: JsonPropertyName("tli")] uint? Tli);
 }
