@@ -87,6 +87,9 @@ public class S3E2eMeshTests
                 }
                 catch (AmazonS3Exception)
                 {
+                    // Дубль env-интервала: внеплановый reconcile источника
+                    // (owns3/07 §9 триггер 5) закрывает стартовое окно.
+                    await AdminReconcileAsync(fx, cluster, PortOf(ports, "east1"), ct);
                     return false; // ещё не доставлено
                 }
             }, TimeSpan.FromSeconds(150), ct);
@@ -513,6 +516,32 @@ public class S3E2eMeshTests
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         using var response = await client.SendAsync(request, ct);
         return response.StatusCode;
+    }
+
+    // Внеплановый reconcile-проход узлу (owns3/07 §9 триггер 5; 202 — принят,
+    // идущий продолжается); best-effort — ошибки не роняют поллинг.
+    private static async Task AdminReconcileAsync(
+        S3E2eEnvironment fx, string cluster, int port, CancellationToken ct)
+    {
+        try
+        {
+            var (rootUser, rootPassword) = await fx.RootPairOfAsync(cluster, ct);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post, $"http://localhost:{port}/admin/replication/reconcile");
+            var signed = SigV4GetSigner.SignRequest(
+                "POST", "/admin/replication/reconcile", $"localhost:{port}",
+                rootUser, rootPassword);
+            request.Headers.TryAddWithoutValidation("Authorization", signed.Authorization);
+            request.Headers.TryAddWithoutValidation("x-amz-date", signed.AmzDate);
+            request.Headers.TryAddWithoutValidation("x-amz-content-sha256", signed.ContentSha256);
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            await client.SendAsync(request, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or System.OperationCanceledException
+            && !ct.IsCancellationRequested)
+        {
+            // транзиент — поллинг продолжит (следующий 404 триггернёт повтор)
+        }
     }
 
     private static IReadOnlyDictionary<string, string> EnvOf(string envJson)

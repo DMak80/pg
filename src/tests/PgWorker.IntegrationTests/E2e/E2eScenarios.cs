@@ -453,6 +453,19 @@ public class E2eScenarios(ITestOutputHelper output)
                             .Select(async n => $"{n}={await ContainerStatusAsync(n, ct)}")))}");
         }
 
+        // После P7 (журнал QUARANTINED пишется ДО docker-стопов, arch/14 §5 D)
+        // факт QUARANTINED не означает завершения стопов: ждём exited нод —
+        // ассерты ниже валидны только после фактической остановки (устранение
+        // тестовой гонки; существа сценария не меняет: exited требовался и раньше).
+        var stopped = await E2ePhase.WaitAsync(Fx, "ac6-returned-stopped", async () =>
+        {
+            foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
+                if (await ContainerStatusAsync(container, ct) != "exited")
+                    return false;
+            return true;
+        }, TimeSpan.FromSeconds(60), ct);
+        stopped.Should().BeTrue("PgWorker stops the returned nodes within the budget");
+
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
         {
             var status = await ContainerStatusAsync(container, ct);

@@ -635,14 +635,15 @@ public sealed class NodeSupervisor(
                 }
 
                 // Пересоздание с сохранением volume: stop + rm force движка
-                // (паттерн port-mismatch-ветки EnsureNodeAsync; RemoveNodeAsync
-                // снёс бы data-volume). Движок хоста ноды; null — transient.
+                // (stop → kill (spilo, arch/14 §6); паттерн port-mismatch-ветки
+                // EnsureNodeAsync; RemoveNodeAsync снёс бы data-volume).
+                // Движок хоста ноды; null — transient.
                 var engine = driver.EngineFor(addr.Host);
                 if (engine is null)
                     return Result.Failed(new ApplicationException(
                         $"supervise {cluster}: docker host {addr.Host} is unknown (rest-tls step)"));
                 var containerName = $"pgw-{cluster}-{shard.Name}-{node.Name}";
-                var stopped = await engine.StopContainerAsync(containerName, timeoutSec: 10, ct);
+                var stopped = await engine.KillContainerAsync(containerName, ct);
                 if (!stopped.IsSuccess)
                     return stopped;
                 var removed = await engine.RemoveContainerAsync(containerName, force: true, ct);

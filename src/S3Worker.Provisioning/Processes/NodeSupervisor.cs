@@ -344,7 +344,8 @@ public sealed class NodeSupervisor(
 
         var env = envComposer.Compose(
             nodeSecrets, nodePki.Value, clusterPki.Value.Ca.Ca,
-            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}");
+            $"http://{options.AdvertisedHost ?? address.Host}:{address.S3Port}",
+            options.OwnS3ReplicationReconcileIntervalSec);
         var ensured = await driver.EnsureNodeAsync(
             new S3NodeSpec(
                 cluster, node, address.Host, address.S3Port, options.OwnS3Image, env,

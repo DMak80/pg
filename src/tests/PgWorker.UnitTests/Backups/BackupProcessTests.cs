@@ -174,6 +174,9 @@ public class BackupProcessTests
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
         {
             Removed.Add(idOrName);

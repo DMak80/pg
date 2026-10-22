@@ -66,6 +66,7 @@ public class BackupJobsCleanerTests
         public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct) => throw NotSupported();
         public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct) => throw NotSupported();
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => throw NotSupported();

@@ -472,7 +472,10 @@ K2 ensure секретов кластера: CA (ca_pem/ca_key) + креды adm
    txn put-if-absent (проигрыш → re-read существующих)
 K3 на каждую ноду: volume + контейнер (env §2.2, лимиты resources,
    сеть kfw-net-<C>, клиентский host-порт) + state=PROVISIONING;
-   существующие (re-run) — сверка и пропуск
+   существующие (re-run) — сверка и пропуск;
+   адрес ноды отсутствует в portalloc (частичный план после takeover) →
+   journal `waiting-portalloc/<broker>` (InProgress, следующий тик; план
+   достроит K1-фиксация/healer)
 K4 ждать готовности: DescribeCluster отвечает, контроллер избран,
    брокеров = B (бюджет BrokerBootSec=600 с, транзиент-толерантно);
    state=RUNNING у всех

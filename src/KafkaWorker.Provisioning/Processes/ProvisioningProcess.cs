@@ -91,7 +91,13 @@ public sealed class ProvisioningProcess(
         // K3: создать контейнеры брокеров (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, addresses, roles, secret.Value, ct);
         if (!ensured.IsSuccess)
+        {
+            // Частичный portalloc после takeover: адрес появится K1-фиксацией/
+            // healer'ом — transient-ретрай тиком (arch/16 §5 A), не сбой.
+            if (ensured.Error is MissingPortAllocException missing)
+                return await FinishAsync(cluster, $"waiting-portalloc/{missing.Broker}", ct);
             return Fail(cluster, ensured.Error!, "ensure-nodes");
+        }
 
         // R6: панель перевела в TO_REMOVE посреди provisioning — безопасный выход.
         if (await IsRemovedAsync(cluster, ct))
@@ -198,11 +204,24 @@ public sealed class ProvisioningProcess(
             foreach (var (node, addr) in allocated.Value)
                 existing[node] = addr;
 
-            // Создание ключа — только если нет (compare version==0); проигрыш → re-read.
+            // Создание ключа — NotExists (compare version==0); частичный
+            // закреплённый план (takeover: держатель убит посреди аллокации) —
+            // RMW-достроение под клэймом (ModRevisionEqual): без этого
+            // NotExists проигрывает на существующем частичном ключе, адреса
+            // теряются и K3 циклится waiting-portalloc (arch/16 §5 A: план
+            // достроит K1-фиксация/healer). Чужой concurrent writer под тем
+            // же клэймом невозможен; проигрыш — re-read (прежняя семантика).
             var key = PortAllocKey(cluster);
             var serialized = SerializePortAlloc(existing);
-            var txn = await TxnAsync(
-                TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, serialized, null)]), ct);
+            var current = await GetAsync(key, ct);
+            TxnRequest portTxn = current is { IsSuccess: true, Value: { } pinnedKv }
+                ? TxnRequest.Of(
+                    [TxnCompare.ModRevisionEqual(key, (long)pinnedKv.ModRevision)],
+                    [new TxnOp.Put(key, serialized, null)])
+                : TxnRequest.Of(
+                    [TxnCompare.NotExists(key)],
+                    [new TxnOp.Put(key, serialized, null)]);
+            var txn = await TxnAsync(portTxn, ct);
             if (!txn.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
             if (!txn.Value.Succeeded)
@@ -272,7 +291,8 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            var addr = addresses[broker.Name];
+            if (!addresses.TryGetValue(broker.Name, out var addr))
+                return Result.Failed(new MissingPortAllocException(broker.Name));
             var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
             // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/16 §2.3).
             var (certPem, keyPem) = certificates.GetOrCreate(
@@ -516,4 +536,12 @@ public sealed class ProvisioningProcess(
         [property: JsonPropertyName("default_partitions")] int DefaultPartitions,
         [property: JsonPropertyName("default_retention_ms")] long DefaultRetentionMs,
         [property: JsonPropertyName("created_unix")] long? CreatedUnix);
+
+    // K3-гвард (arch/16 §5 A): адреса нет в portalloc (частичный план после
+    // takeover) → transient-фаза waiting-portalloc/<broker>, не исключение тика.
+    private sealed class MissingPortAllocException(string broker)
+        : Exception($"portalloc has no address for {broker}")
+    {
+        public string Broker { get; } = broker;
+    }
 }

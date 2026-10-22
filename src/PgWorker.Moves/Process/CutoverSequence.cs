@@ -180,10 +180,10 @@ public sealed class CutoverSequence(
         var verify = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, CutoverPhases.Verify, ct);
         if (!verify.IsSuccess)
             return Result<bool>.Failed(verify.Error!);
-        var tables = await sql.ScalarAsync(curDsn, MoveSql.TableNames(c.Bucket), ct);
+        var tables = await sql.ListAsync(curDsn, MoveSql.TableRelnames(c.Bucket), ct);
         if (!tables.IsSuccess)
             return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed, tables.Error!, unfreeze: true, ct);
-        foreach (var table in ParseTables(ToText(tables.Value)))
+        foreach (var table in tables.Value)
         {
             var src = await sql.ScalarAsync(curDsn, MoveSql.RowCount(c.Bucket, table), ct);
             if (!src.IsSuccess)
@@ -287,21 +287,6 @@ public sealed class CutoverSequence(
         return Result<(string, string)>.Success((
             ShardEndpoints.AdminDsn(curMaster.Value, snap.Config.DbName, secrets),
             ShardEndpoints.AdminDsn(newMaster.Value, snap.Config.DbName, secrets)));
-    }
-
-    // Агрегат TableNames ("sch.\"t1\", sch.\"t2\"") → имена таблиц без схемы/кавычек.
-    private static IReadOnlyList<string> ParseTables(string? aggregated)
-    {
-        if (string.IsNullOrWhiteSpace(aggregated))
-            return [];
-        return aggregated
-            .Split(", ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(entry =>
-            {
-                var dot = entry.IndexOf('.');
-                return (dot < 0 ? entry : entry[(dot + 1)..]).Trim('"');
-            })
-            .ToList();
     }
 
     // Скаляры Npgsql типизированы (bool/long/string); бэш-скрипты — t/f.

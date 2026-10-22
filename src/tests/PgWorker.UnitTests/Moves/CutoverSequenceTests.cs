@@ -53,7 +53,9 @@ public class CutoverSequenceTests
         long? issued = 100,
         long? next = 101,
         long srcRows = 50,
-        long dstRows = 50)
+        long dstRows = 50,
+        IReadOnlyList<string>? sequences = null,
+        IReadOnlyList<string>? tables = null)
     {
         var fake = new FakeMoveSql();
         fake.ScalarResolver = sql => sql switch
@@ -67,7 +69,11 @@ public class CutoverSequenceTests
                 fake.LastDsn == MoveRig.SrcDsn ? srcRows : dstRows,
             _ => 0L,
         };
-        fake.ListResolver = sql => sql.Contains("s.relkind = 'S'") ? ["seq1"] : [];
+        fake.ListResolver = sql => sql.Contains("s.relkind = 'S'")
+            ? sequences ?? ["seq1"]
+            : sql.Contains("c.relkind IN ('r','p')")
+                ? tables ?? ["items"]
+                : [];
         return fake;
     }
 
@@ -259,5 +265,69 @@ public class CutoverSequenceTests
         flip.IsSuccess.Should().BeFalse();
         ctx.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
             "a rollback before flip = the bucket is ACTIVE again (no key)");
+    }
+
+    // AAA: каталог источника с именами вне алфавита Ident ("Orders", a"b, "a, b",
+    //      "select"; sequence "Orders_seq") — cutover проходит: имена квочатся,
+    //      ArgumentException не возникает (до фикса — синхронный крах на шаге 5/6)
+    [Fact]
+    public async Task ExoticCatalogNames_CutoverFlips()
+    {
+        // Arrange
+        var ctx = NewCtx(CutoverSql(
+            issued: 100, next: 5,
+            sequences: ["Orders_seq"],
+            tables: ["Orders", "a\"b", "a, b", "select"]));
+
+        // Act
+        var flip = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
+
+        // Assert
+        flip.Value.Should().BeTrue("quoting handles any catalog name — no exception, no freeze loop");
+        ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
+            && c.Sql.Contains("count(*) FROM bucket_42.\"Orders\""), "the mixed-case table is verified quoted");
+        ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
+            && c.Sql.Contains("count(*) FROM bucket_42.\"a\"\"b\""), "an embedded double quote is doubled");
+        ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn
+            && c.Sql.Contains("count(*) FROM bucket_42.\"a, b\""), "a name with ', ' survives the row listing");
+        ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
+            && c.Sql == "SELECT setval('bucket_42.\"Orders_seq\"', 100, true)",
+            "setval forward for the quoted sequence (P6)");
+    }
+
+    // AAA: экзотическое имя + падение setval на первом заходе — transient
+    //      sequences-failed с разморозкой; повторный заход с теми же именами —
+    //      flip (идемпотентность resume: заморозка повторяема, setval только вперёд)
+    [Fact]
+    public async Task ExoticNames_SetvalFailThenRetry_Flips()
+    {
+        // Arrange — setval падает ровно один раз (первый тик)
+        var sql = CutoverSql(issued: 100, next: 5, sequences: ["Orders_seq"]);
+        var setvalFailedOnce = false;
+        sql.ExecuteResult = s =>
+        {
+            if (s.Contains("setval") && !setvalFailedOnce)
+            {
+                setvalFailedOnce = true;
+                return Result.Failed(new ApplicationException("setval failed (first tick)"));
+            }
+            return Result.Success();
+        };
+        var ctx = NewCtx(sql);
+
+        // Act
+        var first = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
+        // статус первого захода снимаем ДО второго: успешный flip повторного
+        // захода удаляет статус-ключ (нет ключа = ACTIVE) — после second его нет
+        var statusAfterFirst = await ctx.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
+        var second = await ctx.Sequence.RunAsync(ctx.Shards, MoveRig.Snap(), Move(), FastOptions, CancellationToken.None);
+
+        // Assert
+        first.IsSuccess.Should().BeFalse("the first run died on setval — transient sequences-failed");
+        ctx.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("GRANT INSERT"),
+            "the failed run unfroze the source");
+        statusAfterFirst.Value!.State.Should().Be(MoveStates.Syncing, "the move is alive: the request remains");
+        statusAfterFirst.Value!.Phase.Should().Be("sequences-failed");
+        second.Value.Should().BeTrue("the retry with the same exotic names completes the flip");
     }
 }

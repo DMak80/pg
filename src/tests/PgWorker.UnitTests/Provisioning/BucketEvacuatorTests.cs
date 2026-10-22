@@ -245,6 +245,56 @@ public class BucketEvacuatorTests
         evacuation.Value!.State.Should().Be("QUARANTINED");
         evacuation.Value.ReturnedUnix.Should().NotBeNull();
     }
+
+    // AAA (P7, arch/14 §5 D/E3): факт возврата (QUARANTINED + returned_unix)
+    //      фиксируется в журнале ДО docker-стопов; сбой стопа НЕ отменяет
+    //      возврат: тик Failed, журнал уже QUARANTINED; повторный тик дозавершает
+    [Fact]
+    public async Task Tick_ShardReturned_JournalBeforeStops_StopFailureRetried()
+    {
+        // Arrange — эвакуация завершена (journal DONE), шард «ожил»; первый
+        // stop ноды падает (клиентский docker-таймаут — фейл 1)
+        var rig = await NewRig(_ => PatroniOk());
+        await rig.Store.WriteAsync("shop", "shard1", new EvacuationJournal(
+            new Dictionary<int, string> { [0] = "shard2", [2] = "shard2" },
+            "shard-dead", 1755900000, "DONE", null), CancellationToken.None);
+        var order = new List<string>();
+        var baseOnPut = rig.Etcd.OnPut;
+        rig.Etcd.OnPut = key =>
+        {
+            baseOnPut?.Invoke(key);
+            order.Add($"etcd:{key}");
+        };
+        rig.Driver.StopResultByNode = node =>
+        {
+            order.Add($"stop:{node}");
+            return node == "shard1/shard1a"
+                ? Result.Failed(new ApplicationException("HttpClient 7.5 s"))
+                : Result.Success();
+        };
+
+        // Act — тик 1: стоп упал, но возврат уже зафиксирован
+        var first = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
+        // стоп-фейл одноразовый — тик 2 идёт чисто (retry тиком)
+        rig.Driver.StopResultByNode = null;
+        var second = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
+
+        // Assert: журнал QUARANTINED ДО первого стопа; тик 1 Failed с живым
+        // фактом возврата; тик 2 идемпотентно завершил стопы
+        first.IsSuccess.Should().BeFalse("the stop failed — the tick fails, the return fact stays");
+        second.IsSuccess.Should().BeTrue();
+        second.Value.Should().Be(ProcessOutcome.Done);
+        var journalIdx = order.IndexOf("etcd:/pgworker/evacuations/shop/shard1");
+        journalIdx.Should().BeGreaterThanOrEqualTo(0);
+        var firstStop = order.FindIndex(e => e.StartsWith("stop:", StringComparison.Ordinal));
+        journalIdx.Should().BeLessThan(firstStop, "the return is journaled BEFORE the docker stops (P7)");
+        var evacuation = await rig.Store.ReadAsync("shop", "shard1", CancellationToken.None);
+        evacuation.Value!.State.Should().Be("QUARANTINED");
+        evacuation.Value.ReturnedUnix.Should().NotBeNull();
+        rig.Driver.StoppedNodes.Should().BeEquivalentTo(
+            ["shard1/shard1a", "shard1/shard1a", "shard1/shard1b"],
+            "the second tick re-stops (idempotent) and finishes the second node");
+    }
 }
 
 // SnapshotJob (P12): /v3/snapshot/save → файл с таймштампом, ретеншн N файлов.

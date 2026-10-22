@@ -273,7 +273,10 @@ P2 выпуск per-cluster secrets (EnsureSecrets, txn put-if-absent — arch/2
    volume данных + контейнер ownS3 (образ из Images{OwnS3}; env: креды
    из secrets-ключа — OWNS3_ROOT_*/OWNS3_ACCESS_KEYS__*, репликационный материал —
    OWNS3_REPLICATION_{CERT,PRIVATE_KEY,TRUST_CA} +
-   OWNS3_REPLICATION_ADVERTISED_ENDPOINT (arch/23 §6), OWNS3_DATA_DIR=/data;
+   OWNS3_REPLICATION_ADVERTISED_ENDPOINT (arch/23 §6), OWNS3_DATA_DIR=/data,
+   `OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS` (значение — из опции
+   `S3Worker:OwnS3:ReplicationReconcileIntervalSec`, §8; не задана/0 —
+   переменная не ставится: прод-дефолт OwnS3 3 ч);
    состав mesh НЕ env — доводится P4/G; лимиты resources; S3-порт из
    portalloc);
    health-ожидание — бюджет NodeBootSec, transient-толерантный цикл
@@ -466,6 +469,7 @@ S3Worker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                   PortRange{From,To}, Images{OwnS3="owns3:dev"},
                   Tls, Ssh, ContourNetwork, AdvertisedHost }
 S3Worker:Loops { ScanIntervalSec=5, KeepaliveSec=5, Watchdog{...} }
+S3Worker:OwnS3 { ReplicationReconcileIntervalSec=0 }   # период reconcile mesh-репликации инстансов (env OWNS3_REPLICATION_RECONCILE_INTERVAL_SECONDS, owns3/07 §9; 0 — не ставится, дефолт OwnS3 3 ч)
 S3Worker:Thresholds { NodeBootSec=100, NodeDeadSec=90, HealthIntervalSec=15,
                       SyncIntervalSec=60 }   # SyncIntervalSec — период зонда F (§5 F)
 S3Worker:Parallelism { MaxClusters=4 }

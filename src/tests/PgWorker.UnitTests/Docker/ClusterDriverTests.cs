@@ -120,6 +120,12 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        public Task<Result> KillContainerAsync(string idOrName, CancellationToken ct)
+        {
+            Calls.Add(("kill", idOrName));
+            return Task.FromResult(Result.Success());
+        }
+
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
         {
             Calls.Add(("rm-container", idOrName));
@@ -522,10 +528,10 @@ public class ClusterDriverTests
         // Act
         var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
 
-        // Assert: stop → create → start с планом портов (PROVISIONING-фаза, volume жив).
+        // Assert: kill → create → start с планом портов (PROVISIONING-фаза, volume жив).
         result.IsSuccess.Should().BeTrue();
         var calls = engine.Calls.Select(c => c.Call).ToList();
-        calls.Should().ContainInOrder("stop", "create", "start");
+        calls.Should().ContainInOrder("kill", "create", "start");
         engine.CreatedSpec!.Ports.Should().Contain(new PortMap(5432, 15432));
     }
 
@@ -672,11 +678,11 @@ public class ClusterDriverTests
         // Act
         var result = await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
-        // Assert: stop → rm(force) → volume rm; далее демонтажный контроль
+        // Assert: kill → rm(force) → volume rm; далее демонтажный контроль
         // (объектов кластера нет → delete-network per-cluster сети, arch/14 §2.1)
         result.IsSuccess.Should().BeTrue();
         var calls = engine.Calls.Select(c => c.Call).ToList();
-        calls.Take(3).Should().Equal("stop", "rm-container", "rm-volume");
+        calls.Take(3).Should().Equal("kill", "rm-container", "rm-volume");
         engine.Calls[1].Arg.Should().Be("pgw-shop-shard1-shard1a");
         engine.Calls[2].Arg.Should().Be("pgw-shop-shard1-shard1a-data");
         calls.Should().Contain("delete-network");
@@ -971,9 +977,9 @@ public class ClusterDriverTests
         // Act
         var result = await driver.StopNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
-        // Assert: только stop
+        // Assert: только kill
         result.IsSuccess.Should().BeTrue();
-        engine.Calls.Select(c => c.Call).Should().Equal("stop");
+        engine.Calls.Select(c => c.Call).Should().Equal("kill");
         engine.Calls[0].Arg.Should().Be("pgw-shop-shard1-shard1a");
     }
 

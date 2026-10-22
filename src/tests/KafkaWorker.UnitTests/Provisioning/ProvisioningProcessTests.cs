@@ -341,4 +341,54 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
             .Should().Be("h1:16000,h1:16001,h1:16002");
     }
+
+    // AAA (arch/16 §5 A K1): частичный ЗАКРЕПЛЁННЫЙ portalloc (hold-владелец
+    //      убит после фиксации, до аллокации остальных) — тик ДОСТРАИВАЕТ
+    //      недостающих RMW-путём под клэймом и проходит K3 (до K1-достроения
+    //      NotExists проигрывал на существующем ключе — вечный waiting)
+    [Fact]
+    public async Task Run_PartialPinnedPortAlloc_CompletedInSameTick()
+    {
+        // Arrange — частичный закреплённый портплан: broker3 отсутствует
+        var rig = await NewRig(brokers: 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: план достроен и закреплён в этом же тике, K3 создал broker3
+        // (фаза waiting-brokers — K4 ждёт готовности Kafka, вне скоупа теста)
+        result.IsSuccess.Should().BeTrue("the missing address is completed under the lock in the same tick");
+        (await rig.Journal.ReadAsync("events", CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-brokers");
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value.Should().Contain("\"broker3\"");
+        rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker3",
+            "the K1 completion adds the missing address and K3 creates the broker");
+    }
+
+    // AAA (arch/16 §5 A K1): после достроения частичного портплана следующий
+    //      тик доводит takeover-кластер до done (survivor завершает provisioning)
+    [Fact]
+    public async Task Run_PartialPinnedPortAlloc_IsCompletedByNextTick()
+    {
+        // Arrange — частичный закреплённый портплан: broker3 отсутствует
+        var rig = await NewRig(brokers: 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
+
+        // Act — тик 1: достроение плана (waiting-brokers: Kafka ещё не готов),
+        // готовность подаётся — тик 2 доводит до done
+        var first = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        ReadyCluster(rig.Admin, 3);
+        var second = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: takeover завершён без дубликатов (один ensure на брокера)
+        first.IsSuccess.Should().BeTrue();
+        second.IsSuccess.Should().BeTrue();
+        (await rig.Journal.ReadAsync("events", CancellationToken.None)).Value!.Phase.Should().Be("done");
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value.Should().Contain("\"broker3\"");
+        rig.Driver.Ensured.Should().Contain(s => s.NodeName == "broker3",
+            "the K1 completion adds the missing address and K3 creates the broker");
+    }
 }

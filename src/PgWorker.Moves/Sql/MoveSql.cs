@@ -2,9 +2,11 @@ namespace PgWorker.Moves;
 
 /// <summary>
 /// Строковые SQL-билдеры переезда бакета — перенос buckets-common.sh/move-bucket.sh
-/// 1:1 (spec Д6: скрипты и PgWorker взаимозаменяемы). Каждый идентификатор
-/// (схема/публикация/подписка/слот/роль) валидируется перед подстановкой —
-/// защита от SQL-инъекций (паттерн DatabaseProvisioner.ValidateIdentifier).
+/// 1:1 (spec Д6: скрипты и PgWorker взаимозаменяемы). Каталоговые имена (таблицы/
+/// sequences из pg_class источника) подставляются квотированием (Quote: удвоение
+/// "; в SQL-литералах — ещё и удвоение '); заявочные/конвенционные имена (схема-
+/// бакет/публикация/подписка/слот/роль) валидируются Ident — защита от SQL-инъекций
+/// через API/etcd (паттерн DatabaseProvisioner.ValidateIdentifier).
 /// </summary>
 public static class MoveSql
 {
@@ -84,6 +86,14 @@ public static class MoveSql
         => "SELECT coalesce(string_agg(format('%I.%I', '" + Ident(schema) + "', c.relname), ', '), '') " +
            "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
            $"WHERE c.relkind IN ('r','p') AND n.nspname = '{Ident(schema)}'";
+
+    // Имена r/p-таблиц схемы построчно (verify_row_counts P8): каталог
+    // источника несёт любые валидные для PG имена — квотирование на стороне
+    // C# (Quote), без строкового roundtrip через агрегат (split/trim теряют
+    // имена с ", " и " внутри).
+    public static string TableRelnames(string schema)
+        => $"SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+           $"WHERE c.relkind IN ('r','p') AND n.nspname = '{Ident(schema)}' ORDER BY 1";
 
     // Инвентарь схемы «relkind|relname» построчно для сверки DDL (P5,
     // schema_inventory скрипта; порядок стабилен для построчного diff).
@@ -231,16 +241,23 @@ public static class MoveSql
     // setval только ВПЕРЁД (P6): счётчик приёмника доводится до выданного на
     // источнике; is_called=true, чтобы следующий nextval выдал issued+1.
     public static string SetvalForward(string schema, string seq, long issued)
-        => $"SELECT setval('{Qualified(schema, seq)}', {issued}, true)";
+        => $"SELECT setval('{Qualified(schema, seq).Replace("'", "''")}', {issued}, true)";
 
     // Count таблицы для сверки строк P8 (verify_row_counts).
     public static string RowCount(string schema, string table)
         => $"SELECT count(*) FROM {Qualified(schema, table)}";
 
-    // Схема.имя в кавычках-идентификаторах (имя всегда в «…»: последовательности
-    // и таблицы могут называться зарезервированными словами).
+    // Квотирование имени из каталога источника (pg_class.relname): любые
+    // валидные для PG имена, БЕЗ Ident-валидации. Удвоение " внутри —
+    // закавыченный идентификатор не интерпретирует ничего, кроме " —
+    // инъекция исключена.
+    private static string Quote(string name)
+        => $"\"{name.Replace("\"", "\"\"")}\"";
+
+    // Схема.имя: схема — заявочное имя (Ident, валидировано в M0/rollback),
+    // имя — из каталога источника (Quote, корректно для любых имён PG).
     private static string Qualified(string schema, string name)
-        => $"{Ident(schema)}.\"{Ident(name)}\"";
+        => $"{Ident(schema)}.{Quote(name)}";
 
     private static string Bool(bool value) => value ? "true" : "false";
 }
