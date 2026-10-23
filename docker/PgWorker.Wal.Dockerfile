@@ -8,8 +8,12 @@
 #   build: { context: .., dockerfile: docker/PgWorker.Wal.Dockerfile,
 #            args: { WAL_PUBLISH_DIR: artifacts/wal/publish } }
 # ENTRYPOINT без shell; параметры воркер передаёт ТОЛЬКО env (§7).
+# База aspnet (не runtime): WalReceiver транзитивно (Backups → Shared.Metrics)
+# объявляет FrameworkReference Microsoft.AspNetCore.App — runtimeconfig требует
+# ASP.NET Core runtime; обычный dotnet/runtime его не содержит (старт агента:
+# «No frameworks were found»).
 ARG WAL_PUBLISH_DIR=.
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 ARG WAL_PUBLISH_DIR
 WORKDIR /app
 COPY ${WAL_PUBLISH_DIR} ./

@@ -8,7 +8,11 @@
 #     -c Release -o artifacts/e2e/wal
 #   docker build -f docker/PgWorker.Wal.E2E.Dockerfile -t pgworker-wal:e2e \
 #     artifacts/e2e/wal
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+# База aspnet (не runtime): WalReceiver транзитивно (Backups → Shared.Metrics)
+# объявляет FrameworkReference Microsoft.AspNetCore.App — runtimeconfig требует
+# ASP.NET Core runtime; обычный dotnet/runtime его не содержит (старт агента:
+# «No frameworks were found»).
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY . ./
 ENTRYPOINT ["dotnet", "PgWorker.WalReceiver.dll"]

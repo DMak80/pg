@@ -100,3 +100,15 @@
   удержании gap/между тиками; воспроизводимость ~редкая (1 из прогонов).
   Разобрать писателя второй записи и стабилизировать ассерт (фейковые часы
   журнала либо сравнение payload без updated_unix).
+- **`t05-wal-image-aspnet-base`** — образы `pgworker-wal` (dev и e2e) падали на
+  старте агента: `Framework 'Microsoft.AspNetCore.App' version '10.0.0' … No
+  frameworks were found`. Причина: транзитивный FrameworkReference
+  (WalReceiver → PgWorker.Backups → Shared.Metrics) объявляет ASP.NET Core в
+  runtimeconfig, а база образов — `dotnet/runtime:10.0` (без ASP.NET Core).
+  Вскрылось docker-E2E AC4 (`Pool_FailoverList_And_Exhaustion_SelfHeal`,
+  2026-10-23, ветка `feat-t02-pool-failover-selfheal`, артефакты
+  `arch/roadmap/bugs/t05-wal-image-aspnet-base/`) — гейт Arrange
+  «agents before the node failure» ждал 480 с (агенты в restart-лупе).
+  Точечный фикс в задаче t02: база обоих Dockerfile — `dotnet/aspnet:10.0`.
+  Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
+  (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
