@@ -2014,13 +2014,15 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     // AAA (расписание, образец VerifyAtBrokenEveryTickHealsInOneTick): ключ
     // exhaustion-DEGRADED (DEGRADED с маркером в error) + VerifyIntervalSec
     // =3600 — контроль выполняется ТЕМ ЖЕ тиком (heartbeat в логе уже снимает
-    // маркер): заживление ACTIVE без ожидания интервала.
+    // маркер): заживление ACTIVE без ожидания интервала. Дискриминация bypass:
+    // прогревочный тик при ACTIVE-ключе заполняет _lastVerifyUnix — на целевом
+    // тике расписание (3600 с) НЕ наступило, и без правила «exhaustion-DEGRADED
+    // каждый тик» контроль был бы ПРОПУЩЕН (ключ остался бы DEGRADED).
     [Fact]
     public async Task ExhaustionDegradedEveryTickHealsInOneTick()
     {
-        // Arrange — сид: ключ DEGRADED с маркером; полный wal_start=..01;
-        // цепочка 1..3; слот жив; лог агента уже исцелён (heartbeat после
-        // маркера)
+        // Arrange — сид: полный wal_start=..01; цепочка 1..3; слот жив; ключ
+        // ACTIVE; лог агента исцелён (heartbeat после маркера)
         var ct = TestContext.Current.CancellationToken;
         var cluster = "pe2";
         await SeedAsync(cluster);
@@ -2034,20 +2036,33 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             BackupAgentLogTail = PoolExhaustedLine + "\n" + HeartbeatLine,
         };
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
+        var warmWal = LiveWal(cluster);
+        var warmBackups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, warmWal),
+            });
+
+        // Act — прогревочный тик: первый контроль (расписание ещё пусто)
+        // заполняет _lastVerifyUnix; ключ остаётся ACTIVE (маркер исцелён)
+        (await process.TickAsync(BuildSnap(cluster), warmBackups, ct)).IsSuccess.Should().BeTrue();
+        (await ReadWal(cluster))!.State.Should().Be(WalStreamStatus.Active);
+
+        // Arrange — ПОСЛЕ прогрева ключ перезаписывается exhaustion-DEGRADED
         var seed = LiveWal(cluster, state: WalStreamStatus.Degraded) with
         {
             Error = "s3-pool-exhausted: write list exhausted by master agent (receiver retry loop)",
         };
         await writer.WriteIfChangedAsync(cluster, "shard1", seed, ct);
-        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
         var backups = new ClusterBackups(cluster, null,
             new Dictionary<string, ShardBackups>
             {
                 ["shard1"] = new(FullShard("000000010000000000000001").Full, seed),
             });
 
-        // Act — ОДИН тик (расписание 3600 с НЕ наступило — exhaustion-DEGRADED
-        // контролирует каждый тик)
+        // Act — ОДИН тик: расписание 3600 с НЕ наступило (_lastVerifyUnix только
+        // что заполнен прогревом) — exhaustion-DEGRADED контролирует каждый тик
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — ACTIVE, error очищен
