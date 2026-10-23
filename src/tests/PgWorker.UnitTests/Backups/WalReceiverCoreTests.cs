@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.WalReceiver;
@@ -636,6 +637,67 @@ public class WalReceiverCoreTests
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
         output.Should().NotContain("\"phase\":\"tli_jump\"");
         source.StartLog.Should().OnlyContain(e => e.Timeline == null);
+    }
+
+    [Fact]
+    public async Task TliProcedure_RePromoteDuringProcedure_Converges()
+    {
+        // Arrange — сервер промоутнулся на T=3 между итерациями процедуры:
+        // 1-й цикл — identify=(2,…), досыпка timeline:1 → 58P01, прыжок
+        // timeline:2 → снова 58P01 → Success(null) → transient retry-цикл;
+        // 2-й цикл — identify=(3,…), .history(3) put, досыпка timeline:1 → успех.
+        var source = new FakeXLogSource();
+        SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
+        source.Identity = new ServerIdentity(2, 3UL * SegmentBytes + 5UL * Mib);
+        source.History[2] = [1, 2, 3];
+        source.History[3] = [1, 2, 3, 4];
+        var attempts = 0;
+        source.StartPolicy = (_, timeline) =>
+        {
+            attempts++;
+            // Смена истины между итерациями: повторный промоут на T=3
+            // (первый identify=2 уже случился — прыжок timeline:2 отказывает)
+            if (attempts == 3)
+                source.Identity = new ServerIdentity(3, 3UL * SegmentBytes + 5UL * Mib);
+            return attempts switch
+            {
+                1 or 2 or 3 or 4 => Result.Failed(
+                    new WalStartRefused("fake: requested WAL segment has already been removed")),
+                _ => Result.Success(),
+            };
+        };
+        // Досыпка 2-го цикла: сегмент TLI1 №2; после CopyDone — переподключение
+        // от выросшего хвоста: сегмент TLI3 №3 (история не перечитывается —
+        // prevTli сессии инициализируется первым сегментом)
+        source.Chunks.Enqueue(Chunk(2UL * SegmentBytes));
+        source.Chunks.Enqueue(Chunk(3UL * SegmentBytes, tli: 3));
+        var slots = new FakeSlots(0);
+        using var cts = new CancellationTokenSource();
+
+        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000030000000000000003"),
+            TimeSpan.FromSeconds(10),
+            () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
+                  $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
+        cts.Cancel();
+        var (code, output) = await run;
+
+        // Assert — две итерации процедуры (два tli_backfill), маркер tli_jump
+        // первого цикла (to_tli:2); конвергенция без счётчиков попыток: оба
+        // .history в S3, досыпка доставила TLI1 №2, доставка продолжилась TLI3
+        // №3; каждый старт процедуры — на свежем соединении (OpenCalls >= 5:
+        // стартовый цикл + open досыпки + open прыжка + стартовый + open
+        // досыпки 2-го цикла).
+        code.Should().Be(0);
+        Regex.Matches(output, "\"phase\":\"tli_backfill\"")
+            .Should().HaveCount(2, "two procedure iterations (T=2 refused, T=3 backfilled)");
+        output.Should().Contain("\"phase\":\"tli_jump\"");
+        output.Should().Contain("\"to_tli\":2");
+        s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
+        s3.Objects.Should().ContainKey("c1/shard1/wal/00000003.history");
+        s3.Objects.Should().ContainKey("c1/shard1/wal/000000010000000000000002");
+        source.StartLog.Should().Contain(e => e.Lsn == 3UL * SegmentBytes && e.Timeline == 2);
+        source.OpenCalls.Should().BeGreaterThanOrEqualTo(5);
     }
 
     [Fact]
