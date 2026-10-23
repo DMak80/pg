@@ -126,11 +126,12 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     private const int StagnantTickLimit = 3;
     private const int DiagLimit = 32;
 
-    // Периоды опроса и подачи (spec §5.6): завершённая работа обнаруживается
-    // мгновенно — опрос состояния дешёв (etcd-GET, миллисекунды), тик с exec
-    // дорог (JVM-старт CLI, секунды); интервал тика страхует от спама дешёвых
-    // waiting-тиков и ретраев хелпера. Поллинг AC10/AC11 и UpAsync (3000 мс) —
-    // вне области правки.
+    // Периоды опроса и подачи (spec §5.6; фазы H/K AC10 — вычисляемый
+    // backstop + PollMs-опрос + TickInterval-подача): завершённая работа
+    // обнаруживается мгновенно — опрос состояния дешёв (etcd-GET,
+    // миллисекунды), тик с exec дорог (JVM-старт CLI, секунды); интервал
+    // тика страхует от спама дешёвых waiting-тиков и ретраев хелпера.
+    // Поллинг AC11 и UpAsync (3000 мс) — вне области правки.
     private const int PollMs = 250;
 
     private const int TickIntervalMs = 1000;
@@ -207,7 +208,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     // ≤ExecSec=180 exec), три подряд провала — быстрое красное. Возвращает
     // длительность успешной попытки — скользящий замер темпа для backstop
     // финала (spec §5.3).
-    private async Task<TimeSpan> TickAsync(string label, string cluster, Func<Task<Result>> tick, Queue<string> diag)
+    private async Task<TimeSpan> TickAsync(
+        string label, string cluster, Func<Task<Result>> tick, Queue<string> diag,
+        Func<Task<string>>? extraDiag = null)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -220,8 +223,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             if (attempt >= FailedTickLimit)
             {
                 var context = await DiagContextAsync(cluster);
+                var extra = extraDiag is null ? "" : "; " + await extraDiag();
                 throw new Xunit.Sdk.XunitException(
-                    $"{label}: stagnation — {FailedTickLimit} consecutive failed ticks; {context}; "
+                    $"{label}: stagnation — {FailedTickLimit} consecutive failed ticks; {context}{extra}; "
                     + $"tick tail: {string.Join(" | ", diag)}");
             }
 
@@ -318,6 +322,43 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
         return null;
     }
 
+    // Признак «фаза H доиграна»: journal op=rotate + phase=done, ЛИБО заявка
+    // удалена фазой B + исход password-app/done (исход пишется до journal
+    // done). Проверка «не expired» — на каждом чтении журнала.
+    private async Task<bool> HPhaseDoneAsync(string cluster, string? workNow)
+    {
+        if (workNow is not null)
+        {
+            workNow.Should().NotContain(
+                "expired", "started rotations are never expired (triple guard)");
+            if (workNow.Contains("\"op\":\"rotate\"", StringComparison.Ordinal)
+                && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
+                return true;
+        }
+
+        if (await fixture.GetAsync($"/kafkaworker/rotations/{cluster}") is null)
+        {
+            var outcomeH = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
+            if (outcomeH is not null
+                && outcomeH.Contains("\"kind\":\"password-app\"", StringComparison.Ordinal)
+                && outcomeH.Contains("\"outcome\":\"done\"", StringComparison.Ordinal))
+                return true; // исход H done записан (до journal done)
+        }
+
+        return false;
+    }
+
+    // Признак «фаза K доиграна»: journal op=rotate-ca + phase=done;
+    // «не expired» — на каждом чтении журнала.
+    private static bool KPhaseDone(string? workNow)
+    {
+        if (workNow is null)
+            return false;
+        workNow.Should().NotContain("expired", "K window completes without expiration");
+        return workNow.Contains("\"op\":\"rotate-ca\"", StringComparison.Ordinal)
+            && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal);
+    }
+
     // Вычисляемый backstop финала (spec §5.3): объём в батчах — из
     // ФАКТИЧЕСКОГО pending первого успешного тика финального цикла, то есть
     // из remaining, который этот тик записал в прогресс-ключ (100 — объём
@@ -335,6 +376,25 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
         var batches = Math.Max(1, (int)Math.Ceiling(remainingFirst.Value / (double)ReassignBatchPartitions));
         var avgTickSec = tickSeconds.Average();
         return Math.Clamp((int)(batches * avgTickSec * 1.5 + 60), 300, 1800);
+    }
+
+    // Вычисляемый backstop фаз H/K AC10: пол = 2 rolling-фазы ×
+    // BrokerBootSec(100) + гейт-хвост 60 с = 260 с (литеральные 240/300 с
+    // ниже механики самого теста — удалены); при наличии замеров темпа
+    // (длительность успешных тиков) — batches(2) × средний тик × запас 1.5
+    // + 60 с, кап 1800 с (по образцу ConvergeBackstopSec). Счётчик стагнации
+    // по тикам для H/K НЕ вводится: передержка гейта waiting-cluster
+    // канонична и не ограничена по сроку — красит только этот backstop.
+    private const int RotationBackstopFloorSec = 260;
+    private const int RotationBackstopCapSec = 1800;
+
+    private static int RotationBackstopSec(IReadOnlyList<double> tickSeconds)
+    {
+        if (tickSeconds.Count == 0)
+            return RotationBackstopFloorSec;
+        var avgTickSec = tickSeconds.Average();
+        return Math.Clamp(
+            (int)(2 * avgTickSec * 1.5 + 60), RotationBackstopFloorSec, RotationBackstopCapSec);
     }
 
     // Красный финала AC12 с полной диагностикой (spec §4.3, §5.3): причина,
@@ -387,69 +447,101 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             var passwordSeenDone = false;
             var journalTexts = new List<string>();
             var phaseTicks = new Dictionary<string, int>(); // "op:phase" → сколько тиков вернули фазу
+            var diag = new Queue<string>();
+            var hTickSeconds = new List<double>();
 
-            // Фаза H (бюджет 240 c): тики ротатора до journal done.
-            var hDeadline = DateTimeOffset.UtcNow.AddSeconds(240);
-            while (DateTimeOffset.UtcNow < hDeadline && !passwordSeenDone)
+            // Фаза H: тики — не чаще TickIntervalMs, опрос journal/заявки/исхода —
+            // немедленно после тика и каждые PollMs; тики транзиент-толерантны
+            // (TickAsync, 3 подряд Failed → красный с диагностикой); красный —
+            // по вычисляемому backstop (RotationBackstopSec) с полным
+            // диагностическим контекстом, не по литеральным часам. Признак
+            // «H доиграна» — HPhaseDoneAsync; порядок тиков H→K —
+            // последовательный (не перемежающийся).
+            var hStarted = DateTimeOffset.UtcNow;
+            var hNextTickAt = DateTimeOffset.UtcNow; // первый тик — немедленно
+            while (!passwordSeenDone)
             {
-                var snap = (await fixture.SnapshotAsync(cluster))!;
-                var hTick = await passwordRotator.RunAsync(snap, ct);
-                hTick.IsSuccess.Should().BeTrue($"H tick must not fail: {hTick.Error?.Message}");
-
-                var workNow = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
-                if (workNow is not null)
+                if (DateTimeOffset.UtcNow >= hNextTickAt)
                 {
-                    journalTexts.Add(workNow);
-                    if (ParseJournalOpPhase(workNow) is { } opPhase)
-                        phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
-                            phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
-                    workNow.Should().NotContain(
-                        "expired", "started rotations are never expired (triple guard)");
-                    if (workNow.Contains("\"op\":\"rotate\"", StringComparison.Ordinal)
-                        && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
-                        passwordSeenDone = true;
+                    var took = await TickAsync("phase-h", cluster,
+                        async () => await passwordRotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag,
+                        extraDiag: () => RotationDiagAsync(cluster, journalTexts, phaseTicks));
+                    hTickSeconds.Add(took.TotalSeconds);
+                    hNextTickAt = DateTimeOffset.UtcNow.AddMilliseconds(TickIntervalMs);
+
+                    var workAfterTick = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+                    if (workAfterTick is not null)
+                    {
+                        journalTexts.Add(workAfterTick);
+                        if (ParseJournalOpPhase(workAfterTick) is { } opPhase)
+                            phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
+                                phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
+                    }
+
+                    passwordSeenDone = await HPhaseDoneAsync(cluster, workAfterTick);
+                    if (passwordSeenDone)
+                        break;
                 }
 
-                // Заявка удаляется фазой B — финал (C-хвост) доигрывается тиками.
-                if (!passwordSeenDone
-                    && await fixture.GetAsync($"/kafkaworker/rotations/{cluster}") is null)
-                {
-                    var outcomeH = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
-                    if (outcomeH is not null
-                        && outcomeH.Contains("\"kind\":\"password-app\"", StringComparison.Ordinal)
-                        && outcomeH.Contains("\"outcome\":\"done\"", StringComparison.Ordinal))
-                        passwordSeenDone = true; // исход H done записан (до journal done)
-                }
+                var hBackstopSec = RotationBackstopSec(hTickSeconds);
+                if (DateTimeOffset.UtcNow - hStarted >= TimeSpan.FromSeconds(hBackstopSec))
+                    throw new Xunit.Sdk.XunitException(
+                        $"phase H: backstop {hBackstopSec} s exhausted without the rotation completing "
+                        + $"(live ca ticket — deadlock broken by priority; the budget follows the rotation "
+                        + $"mechanics, not literal clocks); "
+                        + $"{await RotationDiagAsync(cluster, journalTexts, phaseTicks)}; "
+                        + $"ticks: {string.Join(" | ", diag)}");
 
-                await Task.Delay(3000, ct);
+                await Task.Delay(PollMs, ct);
+                var workPeek = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+                if (workPeek is not null)
+                    journalTexts.Add(workPeek);
+                passwordSeenDone = await HPhaseDoneAsync(cluster, workPeek);
             }
 
-            passwordSeenDone.Should().BeTrue(
-                "H must have completed within the phase budget (with a LIVE ca ticket — deadlock broken); "
-                + await RotationDiagAsync(cluster, journalTexts, phaseTicks));
-
-            // Фаза K (бюджет 300 c): тики ca-ротатора до финала K4.
-            var kDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
+            // Фаза K: та же механика, что H (PollMs-опрос, TickInterval-подача,
+            // транзиент-толерантные тики, вычисляемый backstop с полной
+            // диагностикой); тики H→K последовательны — общий журнал work/<C>.
             var caDone = false;
-            while (DateTimeOffset.UtcNow < kDeadline && !caDone)
+            var kTickSeconds = new List<double>();
+            var kStarted = DateTimeOffset.UtcNow;
+            var kNextTickAt = DateTimeOffset.UtcNow; // первый тик — немедленно
+            while (!caDone)
             {
-                var kTick = await caRotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct);
-                kTick.IsSuccess.Should().BeTrue($"K tick must not fail: {kTick.Error?.Message}");
-
-                var workNow = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
-                if (workNow is not null)
+                if (DateTimeOffset.UtcNow >= kNextTickAt)
                 {
-                    journalTexts.Add(workNow);
-                    if (ParseJournalOpPhase(workNow) is { } opPhase)
-                        phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
-                            phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
-                    workNow.Should().NotContain("expired", "K window completes without expiration");
-                    if (workNow.Contains("\"op\":\"rotate-ca\"", StringComparison.Ordinal)
-                        && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
-                        caDone = true;
+                    var took = await TickAsync("phase-k", cluster,
+                        async () => await caRotator.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag,
+                        extraDiag: () => RotationDiagAsync(cluster, journalTexts, phaseTicks));
+                    kTickSeconds.Add(took.TotalSeconds);
+                    kNextTickAt = DateTimeOffset.UtcNow.AddMilliseconds(TickIntervalMs);
+
+                    var workAfterTick = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+                    if (workAfterTick is not null)
+                    {
+                        journalTexts.Add(workAfterTick);
+                        if (ParseJournalOpPhase(workAfterTick) is { } opPhase)
+                            phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
+                                phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
+                    }
+
+                    caDone = KPhaseDone(workAfterTick);
+                    if (caDone)
+                        break;
                 }
 
-                await Task.Delay(3000, ct);
+                var kBackstopSec = RotationBackstopSec(kTickSeconds);
+                if (DateTimeOffset.UtcNow - kStarted >= TimeSpan.FromSeconds(kBackstopSec))
+                    throw new Xunit.Sdk.XunitException(
+                        $"phase K: backstop {kBackstopSec} s exhausted without the CA rotation completing; "
+                        + $"{await RotationDiagAsync(cluster, journalTexts, phaseTicks)}; "
+                        + $"ticks: {string.Join(" | ", diag)}");
+
+                await Task.Delay(PollMs, ct);
+                var workPeek = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+                if (workPeek is not null)
+                    journalTexts.Add(workPeek);
+                caDone = KPhaseDone(workPeek);
             }
 
             // Assert: обе заявки удалены; журнал — rotate-ca done (финал K);
@@ -459,9 +551,6 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 "password-rotation ticket completed by H (deadlock broken by priority)");
             (await fixture.GetAsync($"/kafkaworker/ca_rotations/{cluster}")).Should().BeNull(
                 "ca ticket completed by K after H");
-            caDone.Should().BeTrue(
-                "K must have completed within the phase budget; "
-                + await RotationDiagAsync(cluster, journalTexts, phaseTicks));
             var workFinal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
             workFinal.Should().Contain("rotate-ca").And.Contain("done");
             journalTexts.Should().NotContain(t => t.Contains("expired"));
