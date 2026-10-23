@@ -33,6 +33,22 @@ public class BackupVerifyProcessTests
 
     // ── Фейк docker-движка (по образцу BackupProcessTests.FakeBackupEngine;
     //    тест управляет State/ExitCode/Logs — супервиз-ветки задачи 9) ──
+    // ── t02 (arch/19 §2 «Наблюдаемость итога verify»): spy-логгер — снимает
+    //    форматированные строки (итог verify наблюдаем из host-лога воркера) ──
+    internal sealed class SpyLogger : Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>
+    {
+        public readonly List<string> Lines = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Lines.Add(formatter(state, exception));
+    }
+
     internal sealed class FakeVerifyEngine : IDockerEngine
     {
 
@@ -228,7 +244,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
     private BackupVerifyProcess BuildProcess(
         string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
-        Action<string, string, string>? verifyObserver = null)
+        Action<string, string, string>? verifyObserver = null,
+        Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>? logger = null)
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
@@ -238,7 +255,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
                 JobImage: "pgworker-backup:test",
                 StagingDir: "/backup-staging"),
             TimeProvider.System,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,
+            logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,
             verifyObserver);
 
     private static IReadOnlyList<ClusterBackups> BackupsOf(string cluster, params FullBackupState[] fulls)
@@ -938,5 +955,100 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
         // Assert 3 — exit 0 + ok:true → observe ok после успешной записи OK в etcd
         outcomes3.Should().ContainSingle().Which.Should().Be((cluster3, "shard1", "ok"));
+    }
+
+    // ---- t02 (arch/19 §2 «Наблюдаемость итога verify»): итог — строка host-лога ----
+
+    // AAA: итог OK от джоба (exit 0 + ok:true) — строка host-лога воркера с
+    // кластером/шардом и id полного (журнал остаётся летописью после
+    // deprovisioning'а etcd-ключей).
+    [Fact]
+    public async Task SupervisorOkLogsOutcomeToHostLog()
+    {
+        // Arrange — джоб exited с ok:true; spy-логгер снимает строки
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("hl1");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("hl1", s3);
+        var name = "pgw-backup-verify-hl1-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        var logger = new SpyLogger();
+        var process = BuildProcess("hl1", new FakeVerifyDriver(engine), s3, logger: logger);
+
+        // Act — тик супервиза итога
+        (await process.TickAsync(BuildSnap("hl1"), BackupsOf("hl1",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — строка итога OK с <C>/<X> и id полного
+        logger.Lines.Should().Contain(l =>
+            l.Contains("hl1/shard1", StringComparison.Ordinal)
+            && l.Contains("verify 20260911120000Z OK", StringComparison.Ordinal));
+    }
+
+    // AAA: итог FAILED от джоба (phase=verify, ненулевой pg_verifybackup) —
+    // строка host-лога с причиной из verify.error.
+    [Fact]
+    public async Task SupervisorVerifyPhaseFailedLogsOutcome()
+    {
+        // Arrange — джоб exited с result-JSON phase=verify
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("hl2");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("hl2", s3);
+        var name = "pgw-backup-verify-hl2-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with
+        {
+            State = "exited", ExitCode = 1,
+            Logs = "{\"ok\":false,\"phase\":\"verify\",\"error\":\"checksum mismatch failed\"}",
+        };
+        var logger = new SpyLogger();
+        var process = BuildProcess("hl2", new FakeVerifyDriver(engine), s3, logger: logger);
+
+        // Act — тик супервиза итога
+        (await process.TickAsync(BuildSnap("hl2"), BackupsOf("hl2",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — строка итога FAILED с причиной
+        logger.Lines.Should().Contain(l =>
+            l.Contains("verify 20260911120000Z FAILED", StringComparison.Ordinal)
+            && l.Contains("checksum mismatch failed", StringComparison.Ordinal));
+    }
+
+    // AAA: итог FAILED цепочечной проверки (без джоба) — строка host-лога с
+    // причиной (границы дыры); РОВНО один итог на полный — transient-пути
+    // итоговой строки не пишут.
+    [Fact]
+    public async Task ChainFailedLogsOutcome()
+    {
+        // Arrange — wal/: 1,3 (дыра на 2); набор pg_wal/3; spy-логгер
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("hl3");
+        var engine = new FakeVerifyEngine();
+        var driver = new FakeVerifyDriver(engine);
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("hl3", "shard1", "000000010000000000000001"));
+        s3.Objects.Add(("hl3", "shard1", "000000010000000000000003"));
+        s3.PrefixedObjects.Add(("hl3", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000003"));
+        var logger = new SpyLogger();
+        var process = BuildProcess("hl3", driver, s3, logger: logger);
+
+        // Act — тик: дыра цепочки → permanent FAILED без джоба
+        (await process.TickAsync(BuildSnap("hl3"), BackupsOf("hl3",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ровно одна итоговая строка FAILED с границей дыры
+        logger.Lines.Should().ContainSingle(l =>
+                l.Contains("verify 20260911120000Z FAILED", StringComparison.Ordinal)
+                && l.Contains("000000010000000000000002", StringComparison.Ordinal),
+            "exactly one terminal outcome line per full — transient paths log no outcome");
     }
 }

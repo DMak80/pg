@@ -361,6 +361,7 @@ public sealed class BackupVerifyProcess(
                 return; // transient — статус не сменился, снесём джоб следующим тиком
             await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
                 claims.InstanceId, null, ct);
+            logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
             observe(cluster, shard, "ok");
             await CleanupJobAsync(engine, containerName, ct);
             return;
@@ -376,6 +377,7 @@ public sealed class BackupVerifyProcess(
                 return;
             await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{id}",
                 claims.InstanceId, err, ct);
+            logger.LogError("{Op} {cluster}/{shard}: verify {id} FAILED: {Error}", Op, cluster, shard, id, err);
             observe(cluster, shard, "failed");
             await CleanupJobAsync(engine, containerName, ct);
             return;
@@ -433,6 +435,7 @@ public sealed class BackupVerifyProcess(
 
         await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{full.Id}",
             claims.InstanceId, error, ct);
+        logger.LogError("{Op} {cluster}/{shard}: verify {full.Id} FAILED: {Error}", Op, cluster, shard, full.Id, error);
         observe(cluster, shard, "failed");
     }
 
