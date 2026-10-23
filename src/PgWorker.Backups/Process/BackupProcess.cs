@@ -221,8 +221,18 @@ public sealed class BackupProcess(
                 && fulls.Any(f => f.State == FullBackupStatus.Completed
                     && f.WalStartSegment is { Length: > 0 } walStart
                     && string.CompareOrdinal(walStart, boundary) >= 0);
+
+            // t24 (arch/19 §2): живой непокрытый tli-gap — форс-пересъём (симметрично
+            // walChainBroken; покрывший COMPLETED-полный ждёт снятия метки контролем).
+            var gapBoundary = shardBackups?.Wal is { Gap: { } liveGap } ? liveGap.To : null;
+            var gapCovered = gapBoundary is { Length: > 0 } gapTo
+                && fulls.Any(f => f.State == FullBackupStatus.Completed
+                    && f.WalStartSegment is { Length: > 0 } walStart
+                    && string.CompareOrdinal(walStart, gapTo) >= 0);
+
             if (!BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
-                    walChainBroken: brokenBoundary is not null && !breakCovered))
+                    walChainBroken: brokenBoundary is not null && !breakCovered,
+                    walGapUncovered: gapBoundary is not null && !gapCovered))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
                 continue; // бэкофф переснятия FAILED — следующий тик

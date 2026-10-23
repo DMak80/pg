@@ -316,6 +316,18 @@ public static class BackupsParser
                         continue;
                     }
 
+                    // t24: gap — опциональное поле (толерантно: отсутствует/битое → null,
+                    // parseError не пишется — backwards-compat правила канона arch/19 §4).
+                    WalGapInfo? gap = null;
+                    if (root.TryGetProperty("gap", out var gapEl) && gapEl.ValueKind == JsonValueKind.Object)
+                    {
+                        var gapFrom = String(gapEl, "from");
+                        var gapTo = String(gapEl, "to");
+                        var gapTli = Long(gapEl, "tli");
+                        if (gapFrom is not null && gapTo is not null && gapTli is not null)
+                            gap = new WalGapInfo(gapFrom, gapTo, (uint)gapTli.Value);
+                    }
+
                     if (!wal.TryGetValue(cluster, out var perShardWal))
                         wal[cluster] = perShardWal = [];
                     perShardWal[segments[4]] = new WalStreamInfo(
@@ -325,7 +337,8 @@ public static class BackupsParser
                         unix.Value,
                         Long(root, "lag_segments"),
                         String(root, "error"),
-                        String(root, "last_uploaded_segment"));
+                        String(root, "last_uploaded_segment"),
+                        gap);
                 }
                 catch (JsonException e)
                 {

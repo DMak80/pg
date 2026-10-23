@@ -46,12 +46,16 @@ public static class BackupPlanner
     // 2026-09-13).
     public static bool IsDue(
         IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix,
-        long? lastRestoreFinishedUnix = null, bool walChainBroken = false)
+        long? lastRestoreFinishedUnix = null, bool walChainBroken = false,
+        // t24 (arch/19 §2): живой непокрытый tli-gap wal-ключа — пересъём
+        // безусловно, симметрично BROKEN; правило покрытия и бэкофф — как у
+        // walChainBroken.
+        bool walGapUncovered = false)
     {
         // t07 (arch/19 §2): BROKEN wal-ключа — пересъём безусловно (разрыв лечит
         // только новый полный); бэкофф серии FAILED применяется вызывающим как
         // всегда — шторм пересъёмов исключён.
-        if (walChainBroken)
+        if (walChainBroken || walGapUncovered)
             return true;
 
         var lastValidUnix = LastValidUnix(fulls);

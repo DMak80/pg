@@ -92,4 +92,37 @@ public class WalReceiverMarkersTests
         json.Should().NotContain("secret-password");
         json.Should().NotContain("secret-key");
     }
+
+    [Fact]
+    public void TliBackfill_ContainsPhaseFromSegmentAndToTli()
+    {
+        // Arrange
+        const string segment = "000000010000000000000003";
+
+        // Act
+        var json = WalReceiverMarkers.TliBackfill(segment, 2);
+
+        // Assert — Contain-ассерты каждого поля (порядок полей нефункционален)
+        json.Should().Contain("\"phase\":\"tli_backfill\"");
+        json.Should().Contain("\"from_segment\":\"000000010000000000000003\"");
+        json.Should().Contain("\"to_tli\":2");
+    }
+
+    [Fact]
+    public void TliJump_ContainsPhaseBoundariesAndBothTlis()
+    {
+        // Arrange
+        const string fromSegment = "000000010000000000000003";
+        const string toSegment = "000000020000000000000007";
+
+        // Act
+        var json = WalReceiverMarkers.TliJump(fromSegment, 1, 2, toSegment);
+
+        // Assert — Contain-ассерты каждого поля (порядок полей нефункционален)
+        json.Should().Contain("\"phase\":\"tli_jump\"");
+        json.Should().Contain("\"from_segment\":\"000000010000000000000003\"");
+        json.Should().Contain("\"from_tli\":1");
+        json.Should().Contain("\"to_tli\":2");
+        json.Should().Contain("\"to_segment\":\"000000020000000000000007\"");
+    }
 }

@@ -613,6 +613,7 @@ DnD-библиотек). Поля:
 | `etcd-snapshot-export-stale` | warning | `enabled=true` и (`last_uploaded_unix` отсутствует или старше `2×interval_min`, панельный дефолт 360 мин); «выгрузка молчит» (обе инстанции воркера лежат / вечный transient) | `/pgworker/etcd-snapshots` |
 | `backup-pool-missing` | critical | per-cluster: Active-кластер с включённой подсистемой, policy без секции `s3` — пул не выбран, бэкапы кластера не пишутся («только явный выбор»; Remedy: «выбери пул на странице "Хранилище бэкапов" — без выбора бэкапы кластера не пишутся») | policy-ключ `/pgworker/backups/<C>/policy` |
 | `backup-pool-unreachable` | critical | per-cluster: маркер `s3-pool-exhausted` в `error` статусов воркера — wal `DEGRADED` (приёмник в ретрай-цикле) или любой full `FAILED` (исчерпание списка/Failed-резолв пула, arch/19 §4); Remedy: «проверь ноды пула `<имя>` (/s3/): воркер не доставил запись ни на одну ноду списков» | wal/full-ключи `/pgworker/backups/<C>/<X>/…` |
+| `backup-wal-tli-gap` | critical | per-shard: живое поле `gap` wal-ключа шарда живого Active-кластера — RPO-зазор tli-прыжка приёмника (58P01 пережит, сегменты между `from`/`to` невосстановимы из бэкапов, arch/19 §3/§4; границы `from`/`to` — в тексте и атрибутах); Remedy WorkerAuto (воркер переснимает полный, снимается заживлением; оператор проверяет окно потери) | wal-ключ `/pgworker/backups/<C>/<X>/wal` |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
 `probe-failed` считается по целям текущего снапшота (исчезнувшая цель не

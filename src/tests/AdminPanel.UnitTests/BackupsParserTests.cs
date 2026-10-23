@@ -460,6 +460,87 @@ public void Parse_WalWithAgents_NoParseErrors()
     wal.MasterNode.Should().Be("s1a");
 }
 
+// AAA (t24/AC5): wal-ключ с полем gap (границы RPO-зазора tli-прыжка) читается —
+// WalGapInfo с границами и TLI доступен правилу backup-wal-tli-gap
+[Fact]
+public void Parse_WalWithGap_GapRead()
+{
+    // Arrange — воркер t24: wal-ключ с gap
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"DEGRADED","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"error":"tli-gap: ...","gap":{"from":"000000010000000000000003","to":"000000020000000000000007","tli":2}}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — Gap прочитан целиком
+    result.Errors.Should().BeEmpty();
+    var wal = result.Clusters.Single().Shards!["s1"];
+    wal!.Gap.Should().NotBeNull();
+    wal.Gap!.From.Should().Be("000000010000000000000003");
+    wal.Gap.To.Should().Be("000000020000000000000007");
+    wal.Gap.Tli.Should().Be(2);
+}
+
+// AAA (t24, backwards-compat): ключ без gap → Gap == null, parseErrors нет
+[Fact]
+public void Parse_WalWithoutGap_GapNull_NoParseErrors()
+{
+    // Arrange — «старый» воркер: ключ без gap
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
+}
+
+// AAA (t24, толерантность): gap не объект (строка) → Gap == null, parseError не пишется
+[Fact]
+public void Parse_WalGapNotObject_GapNull_NoParseErrors()
+{
+    // Arrange — «"gap":"junk"» — битое поле
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"gap":"junk"}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — ключ читается, Gap null, ошибки нет (backwards-compat §4)
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
+}
+
+// AAA (t24, толерантность): gap без обязательных полей → Gap == null, parseError не пишется
+[Fact]
+public void Parse_WalGapIncomplete_GapNull_NoParseErrors()
+{
+    // Arrange — объект без to/tli
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"gap":{"from":"000000010000000000000003"}}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Errors.Should().BeEmpty();
+    result.Clusters.Single().Shards!["s1"]!.Gap.Should().BeNull();
+}
+
 // AAA (AC7/AC8): глобальный ключ orphans парсится; битая запись — ошибка ключа
 [Fact]
 public void Parse_OrphansKey_IsRead()

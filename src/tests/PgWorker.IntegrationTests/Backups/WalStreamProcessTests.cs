@@ -1568,4 +1568,294 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         lags.Should().ContainSingle(t => t.C == "cw2" && t.Lag == null);
         ages.Should().ContainSingle(t => t.C == "cw2" && t.Age == null);
     }
+
+    // ---- t24 (arch/19 §3/§4): tli-зазор — фиксация/удержание/снятие gap ----
+
+    // Маркер прыжка tli-процедуры приёмника (формат WalReceiverMarkers.TliJump).
+    private const string TliJumpMarkerJson =
+        "{\"from_segment\":\"000000010000000000000003\",\"from_tli\":1,\"to_tli\":2," +
+        "\"to_segment\":\"000000020000000000000007\",\"phase\":\"tli_jump\"}";
+
+    // Wal-ключ ACTIVE с хвостом …003 (свежий прогресс: последний сегмент — now);
+    // chainStart — записанная граница ratchet (сценарии среза профиля сидируют
+    // актуальную точку: ratchet не понижается).
+    private static WalStreamState LiveWal(string cluster, WalGapState? gap = null,
+        WalStreamStatus state = WalStreamStatus.Active,
+        string chainStart = "000000010000000000000001",
+        string lastUploaded = "000000010000000000000003") => new(
+        state, $"pgw_bkp_{cluster}_shard1", "shard1a",
+        chainStart, lastUploaded,
+        lastUploaded, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), 0, null,
+        Gap: gap);
+
+    // Слоты: сидированный слот мастера (живой wal-ключ — иначе «слот исчез» BROKEN).
+    private static void SeedSlot(FakeWalSqlExecutor sql, string cluster)
+        => sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => [])
+            .Add($"pgw_bkp_{cluster}_shard1");
+
+    private async Task<string?> ReadRawWal(string cluster)
+    {
+        var kv = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/backups/{cluster}/shard1/wal", TestContext.Current.CancellationToken);
+        kv.Value.Should().NotBeNull("the wal key must exist after the tick");
+        return kv.Value!.Value;
+    }
+
+    // AAA (spec §3.2): маркер tli_jump в логе мастер-агента → DEGRADED с
+    // error-префиксом tli-gap:, границами зазора и TLI-переходом 1→2; поле Gap
+    // персистентно в ключе; journal-фаза wal-tli-gap/<X>.
+    [Fact]
+    public async Task TliJumpMarker_WritesDegradedGap()
+    {
+        // Arrange — полный COMPLETED (wal_start ниже), wal-ключ ACTIVE, цепочка
+        // 1..3 (профиль зазора есть), лог агента несёт маркер прыжка
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg1";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver { BackupAgentLogTail = TliJumpMarkerJson };
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed) });
+
+        // Act — тик контроля
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ключ DEGRADED, error построен из границ и TLI-перехода,
+        // поле Gap персистентно, journal-фаза wal-tli-gap/shard1
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Degraded);
+        wal.Error.Should().StartWith("tli-gap:");
+        wal.Error.Should().Contain("000000010000000000000003")
+            .And.Contain("000000020000000000000007")
+            .And.Contain("1→2");
+        wal.Gap.Should().BeEquivalentTo(new WalGapState(
+            "000000010000000000000003", "000000020000000000000007", 2));
+        var journal = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        journal.Value!.Value.Should().Contain("wal-tli-gap/shard1");
+    }
+
+    // AAA: живой Gap + COMPLETED-полный с wal_start ≥ gap.to → Gap снят,
+    // state ACTIVE (прогресс жив), error без tli-gap.
+    [Fact]
+    public async Task TliJumpGap_CoveredByFull_Lifted()
+    {
+        // Arrange — Gap (3→7) в сид-ключе; полный wal_start=..07 покрывает зазор
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg2";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster, gap: new WalGapState(
+            "000000010000000000000003", "000000020000000000000007", 2));
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000020000000000000007").Full, walSeed) });
+
+        // Act — тик контроля
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — заживление покрытием: Gap снят, ACTIVE, error без tli-gap
+        var wal = await ReadWal(cluster);
+        wal!.Gap.Should().BeNull();
+        wal.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().NotContain("tli-gap");
+    }
+
+    // AAA (AC4): внутри-TLI прыжок (from_tli == to_tli) — gap НЕ ставится
+    // (обычная дыра цепочки → BROKEN-путь контроля по объектам).
+    [Fact]
+    public async Task TliJumpSameTli_NoGap()
+    {
+        // Arrange — маркер с from_tli == to_tli == 1 в логе; полный ниже; цепочка цела
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg3";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver
+        {
+            BackupAgentLogTail =
+                "{\"from_segment\":\"000000010000000000000003\",\"from_tli\":1,\"to_tli\":1," +
+                "\"to_segment\":\"000000010000000000000007\",\"phase\":\"tli_jump\"}",
+        };
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed) });
+
+        // Act — тик контроля
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — Gap нет; state по общим правилам (прогресс жив — ACTIVE)
+        var wal = await ReadWal(cluster);
+        wal!.Gap.Should().BeNull();
+        wal.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().NotContain("tli-gap");
+    }
+
+    // AAA (WriteIfChanged, идемпотентность): два тика с тем же маркером —
+    // значение ключа стабильно; второй тик НЕ переписывает journal-фазу
+    // (установка gap — один раз; удержание переносится без мутаций).
+    [Fact]
+    public async Task TliGap_WriteIfChanged_Idempotent()
+    {
+        // Arrange — фиксированные часы: тик 1 при T, тик 2 при T+600
+        var clock = new MutableClock { Now = DateTimeOffset.UtcNow };
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg4";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver { BackupAgentLogTail = TliJumpMarkerJson };
+        var process = BuildProcess(Options(), sql, s3, driver, clock);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed) });
+
+        // Act — два тика с тем же маркером (второй — на 600 c позже)
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        var raw1 = await ReadRawWal(cluster);
+        var journal1 = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        var journalUnix1 = System.Text.Json.JsonDocument.Parse(journal1.Value!.Value)
+            .RootElement.GetProperty("updated_unix").GetInt64();
+        clock.Now = clock.Now.AddSeconds(600);
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        var raw2 = await ReadRawWal(cluster);
+        var journal2 = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        var journalUnix2 = System.Text.Json.JsonDocument.Parse(journal2.Value!.Value)
+            .RootElement.GetProperty("updated_unix").GetInt64();
+
+        // Assert — второй тик не переписал ключ (WriteIfChanged) и не написал
+        // journal-фазу повторно (updated_unix журнала — время первого тика)
+        raw1.Should().Be(raw2);
+        journalUnix1.Should().Be(journalUnix2);
+    }
+
+    // AAA: Gap жив, но профиль зазора исчез из листинга (ретенция срезала
+    // нижележащие TLI) → Gap снят даже без покрывающего полного.
+    [Fact]
+    public async Task TliGap_ProfileGone_Lifted()
+    {
+        // Arrange — Gap (3→5); полный COMPLETED wal_start=..04 (НЕ покрывает: 4 < 5,
+        // verify PENDING — chain_start строится от min-объекта, а не от …04: объекта
+        // …04 нет — ретенция срезала); листинг 5..6 — сегментов ниже gap.to нет
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg5";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 5, 6);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster, gap: new WalGapState(
+            "000000010000000000000003", "000000010000000000000005", 2),
+            chainStart: "000000010000000000000005",
+            lastUploaded: "000000010000000000000006");
+        var pendingFull = FullShard("000000010000000000000004",
+            verify: new BackupVerify(BackupVerifyStatus.Pending, 1757500400));
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(pendingFull.Full, walSeed) });
+
+        // Act — тик контроля
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — профиль срезан → Gap снят (покрытия не было — дискриминация пути)
+        var wal = await ReadWal(cluster);
+        wal!.Gap.Should().BeNull();
+        wal.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().NotContain("tli-gap");
+    }
+
+    // AAA (удержание): wal-ключ с Gap, лог агента пустой (маркер ушёл из окна) —
+    // ключ остаётся DEGRADED; текст error построен из ПОЛЕЙ записи (стабилен
+    // между тиками — WriteIfChanged), Gap перенесён.
+    [Fact]
+    public async Task TliGap_HeldWithoutMarker()
+    {
+        // Arrange — Gap (3→7, tli 2) в сид-ключе; лог агента пуст; профиль есть (1..3)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg6";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var gapSeed = new WalGapState(
+            "000000010000000000000003", "000000020000000000000007", 2);
+        var walSeed = LiveWal(cluster, gap: gapSeed, state: WalStreamStatus.Degraded);
+        await new WalStatusWriter(fixture.Gateway, [fixture.Endpoint])
+            .WriteIfChangedAsync(cluster, "shard1", walSeed, ct);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed) });
+
+        // Act — два тика без маркера в логе
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        var raw1 = await ReadRawWal(cluster);
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        var raw2 = await ReadRawWal(cluster);
+
+        // Assert — зазор удержан: DEGRADED, error из полей записи содержит 1→2,
+        // Gap перенесён; текст стабилен между тиками
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Degraded);
+        wal.Error.Should().StartWith("tli-gap:");
+        wal.Error.Should().Contain("1→2");
+        wal.Gap.Should().BeEquivalentTo(gapSeed);
+        raw1.Should().Be(raw2, "the held-gap text is built from the record fields (WriteIfChanged stable)");
+    }
+
+    // AAA (Review Focus — цикл «снятие ↔ повторная установка»): маркер в логе,
+    // НО полный с wal_start ≥ to_segment уже есть → Gap НЕ ставится.
+    [Fact]
+    public async Task TliJumpMarker_CoveredByFull_NotSet()
+    {
+        // Arrange — полный wal_start=..07 (покрывает to-границу маркера);
+        // лог несёт маркер прыжка; цепочка 1..3
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "tg7";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver { BackupAgentLogTail = TliJumpMarkerJson };
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000020000000000000007").Full, walSeed) });
+
+        // Act — тик контроля
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — покрыто полным: Gap не ставится (нет цикла снятие↔установка)
+        var wal = await ReadWal(cluster);
+        wal!.Gap.Should().BeNull();
+        wal.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().NotContain("tli-gap");
+    }
 }
