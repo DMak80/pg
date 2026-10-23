@@ -202,7 +202,9 @@ docker-E2E (§6, M3): полный фактический набор шире �
 BackupProcess (планировщик уже вычисляет обе величины, arch/19 §2), WAL-серии —
 контрольный проход WalStreamProcess (`Wal:VerifyIntervalSec`, arch/19 §3),
 counters — точки фиксации терминальных исходов verify/restore/drill. RTO-длительности
-пишутся тиком надзора (NodeSupervisor) из фактов work-ключа (arch/14 §3.3). Набор серий
+пишутся тиком надзора (NodeSupervisor) из фактов work-ключа (arch/14 §3.3);
+skipped-пулы свипера сирот — тиком глобального лидера свипера
+(BackupOrphanSweeperLoop, arch/19 §4–§5, вне клэймов). Набор серий
 кластера перезатирается каждым тиком (паттерн `UpdateCluster` §4.2): ушедшие
 шарды/кластеры стейт не копят; null-факт (нет валидного полного, зонд не удался,
 wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до появления факта. Панель этих
@@ -219,6 +221,7 @@ wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до �
 | `pgworker_backup_verify_total` | counter | cluster, shard, result | исходы verify полных, `result` ∈ {ok,failed,transient} |
 | `pgworker_backup_restore_total` | counter | cluster, shard, result | терминальные исходы restore-заявок, `result` ∈ {ok,failed} |
 | `pgworker_backup_drill_total` | counter | cluster, shard, result | терминальные исходы дрилов восстановимости, `result` ∈ {ok,failed} |
+| `pgworker_backup_orphan_skipped_pools_total` | counter | `pool` | проход свипера сирот исключил пул из union (пул недоступен/без кредов, листинг не удался — arch/19 §5): реестр сирот неполный до следующего прохода (интервал 600 с); источник — марк-метод `BackupOrphanSkippedPool` |
 | `pgworker_ha_failover_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО failover (смена лидера после недоступности; resolved − detected, arch/14 §3.3); открытого события/факта нет — серия не эмитится |
 | `pgworker_ha_rebuild_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО rebuild ноды; факта нет — серия не эмитится |
 

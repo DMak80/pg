@@ -47,6 +47,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<string, long> _watchdogRestarts = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupRestore = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupDrill = new();
+    private readonly Dictionary<string, long> _orphanSkippedPools = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -71,6 +72,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         var watchdogRestarts = meter.CreateCounter<long>(
             "worker_watchdog_restarts_total",
             description: "Watchdog-initiated stops on staleness (arch/18 §2.2)");
+        var orphanSkippedPools = meter.CreateCounter<long>(
+            "pgworker_backup_orphan_skipped_pools_total",
+            description: "Orphan sweeper pass excluded an S3 pool — incomplete orphan union (arch/19 §5)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -246,6 +250,17 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 // Пассивный наблюдатель.
             }
         };
+        BackupOrphanSkippedPoolMark = pool =>
+        {
+            try
+            {
+                orphanSkippedPools.Add(1, new KeyValuePair<string, object?>("pool", pool));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
     }
 
     private readonly Action<string, bool> LoopTickMark;
@@ -254,6 +269,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Action<string, string, string> BackupRestoreMark;
     private readonly Action<string, string, string> BackupDrillMark;
     private readonly Action<string> WatchdogRestartMark;
+    private readonly Action<string> BackupOrphanSkippedPoolMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
     // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
@@ -497,6 +513,25 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
+    /// <summary>Counter pgworker_backup_orphan_skipped_pools_total{pool}: проход свипера
+    /// сирот исключил пул из union (недоступен/без кредов, листинг не удался) —
+    /// реестр сирот неполный до следующего прохода (BackupOrphanSweeper, arch/19 §5).</summary>
+    public void BackupOrphanSkippedPool(string pool)
+    {
+        try
+        {
+            BackupOrphanSkippedPoolMark(pool);
+            lock (_lock)
+            {
+                _orphanSkippedPools[pool] = _orphanSkippedPools.TryGetValue(pool, out var n) ? n + 1 : 1;
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель: ошибка инструментария не влияет на цикл.
+        }
+    }
+
     // Число удерживаемых клэймов: gauge worker_claims_held.
     public void ClaimsHeld(int count)
     {
@@ -645,8 +680,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _walUploadedUnix.ToFrozenDictionary(),
                 age,
                 _haFailoverSec.ToFrozenDictionary(),
-                _haRebuildSec.ToFrozenDictionary());
-        }
+                _haRebuildSec.ToFrozenDictionary(),
+                _orphanSkippedPools.ToFrozenDictionary());
+    }
     }
 
     /// <summary>Immutable-снимок стейта для тестов (InternalsVisibleTo Shared.Metrics.UnitTests).</summary>
@@ -666,7 +702,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalUploadedUnix,
         double? SnapshotAgeSeconds,
         IReadOnlyDictionary<(string Cluster, string Shard), long> HaFailoverDurations,
-        IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations);
+        IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations,
+        IReadOnlyDictionary<string, long> OrphanSkippedPools);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
 }

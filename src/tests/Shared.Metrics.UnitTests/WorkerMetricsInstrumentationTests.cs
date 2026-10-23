@@ -415,4 +415,21 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().WatchdogRestarts["reconcile"].Should().Be(2);
         sut.DebugSnapshot().WatchdogRestarts["keepalive"].Should().Be(1);
     }
+
+    [Fact]
+    public void BackupOrphanSkippedPool_CountsPerPool()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act: свипер сирот дважды исключил пул p1 (недоступен/листинг не удался), один раз p2
+        sut.BackupOrphanSkippedPool("p1");
+        sut.BackupOrphanSkippedPool("p1");
+        sut.BackupOrphanSkippedPool("p2");
+
+        // Assert: counter per-pool (лейбл пула), пассивность — без исключений
+        sut.DebugSnapshot().OrphanSkippedPools["p1"].Should().Be(2);
+        sut.DebugSnapshot().OrphanSkippedPools["p2"].Should().Be(1);
+    }
 }

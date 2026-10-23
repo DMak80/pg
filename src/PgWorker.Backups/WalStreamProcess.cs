@@ -68,6 +68,37 @@ public sealed class WalStreamProcess(
     // При BROKEN-ключе шарда расписание НЕ действует — контроль каждый тик (t07).
     private readonly ConcurrentDictionary<string, long> _lastVerifyUnix = [];
 
+    // Кэш пула-клиентов per-pool (t36): клиент переиспользуется между шардами
+    // тика и между тиками — регулярное пересоздание AmazonS3Client (TLS-хендшейки)
+    // на контрольный тик каждого шарда росло с числом шардов. Дрейф контекста
+    // (policy/списки/креды — record-равенство BackupPoolContext) — инвалидация:
+    // устаревший клиент вниз, новый на свежем контексте. Ревизию policy отдельно
+    // не читаем: структурное равенство контекстов покрывает смену сущностей
+    // (смена policy без изменения списков/кредов не требует нового клиента).
+    // Тики клэйм-цикла последовательны — конкурентного use-after-dispose нет.
+    private readonly Dictionary<string, (BackupPoolContext Ctx, PoolBackupS3 Client)> _poolClients =
+        new(StringComparer.Ordinal);
+    private readonly object _poolGate = new();
+
+    private PoolBackupS3 PoolClient(BackupPoolContext pool)
+    {
+        lock (_poolGate)
+        {
+            if (_poolClients.TryGetValue(pool.Pool, out var cached))
+            {
+                if (cached.Ctx == pool)
+                    return cached.Client;
+                _poolClients.Remove(pool.Pool);
+                // DisposeAsync PoolBackupS3 синхронен по существу (обход кэша
+                // таргетов) — синхронное ожидание не блокирует надолго.
+                cached.Client.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+            var created = s3Factory.Create(pool);
+            _poolClients[pool.Pool] = (pool, created);
+            return created;
+        }
+    }
+
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, ClusterBackups? backups, CancellationToken ct)
     {
@@ -91,6 +122,10 @@ public sealed class WalStreamProcess(
 
         var shardBackups = backups?.Shards
                            ?? (IReadOnlyDictionary<string, ShardBackups>)new Dictionary<string, ShardBackups>();
+        // t36 (arch/19 §4): резолв пула — ОДИН на тик кластера (контекст общий для
+        // всех шардов): etcd-чтения policy/пула/кредов не повторяются per-shard;
+        // разбор результата (null/Failed-побочные эффекты) — per-shard ниже.
+        var poolResult = await s3Factory.ResolveAsync(cluster, ct);
         foreach (var shard in snap.Shards)
         {
             if (shard.Dsn is null)
@@ -98,7 +133,8 @@ public sealed class WalStreamProcess(
 
             try
             {
-                await TickShardAsync(cluster, snap, shard, shardBackups.GetValueOrDefault(shard.Name), options, ct);
+                await TickShardAsync(cluster, snap, shard, shardBackups.GetValueOrDefault(shard.Name),
+                    options, poolResult, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -129,7 +165,7 @@ public sealed class WalStreamProcess(
 
     private async Task TickShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard, ShardBackups? shardBackups,
-        BackupsRuntimeOptions options, CancellationToken ct)
+        BackupsRuntimeOptions options, Result<BackupPoolContext?> poolResult, CancellationToken ct)
     {
         // t05 §3.4 гвард: шард с активной restore-заявкой (PLANNED/RUNNING/
         // REJOINING) — WAL-агент не обеспечивается: демонтаж restore его снёс,
@@ -148,15 +184,19 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (1.5) t36 (arch/19 §4): резолв пула бэкапов ДО источников/слотов/агентов.
-        //     null (пул не выбран) → стоп-семантика (агенты вниз, ключ не пишем);
-        //     Failed (пул удалён/нода не заявлена/профиль без кредов/без адреса) →
-        //     transient: journal + маркер s3-pool-exhausted в wal-статусе — тик не валится.
-        var pool = await ResolvePoolAsync(cluster, shard.Name, wal: shardBackups?.Wal, ct);
-        if (pool is null)
+        // (1.5) t36 (arch/19 §4): разбор результата резолва пула (резолв — один
+        //     на тик кластера). null (пул не выбран) → стоп-семантика (агенты
+        //     вниз, ключ не пишем); Failed (пул удалён/нода не заявлена/профиль
+        //     без кредов/без адреса) → transient: journal + маркер
+        //     s3-pool-exhausted в wal-статусе — тик не валится.
+        if (await ApplyPoolResultAsync(poolResult, cluster, shard.Name, wal: shardBackups?.Wal, ct)
+                is not { } pool)
             return;
-        // Пул-клиент шарда на этот тик: control/history — перебор ReadAll/write-списков.
-        await using var poolS3 = s3Factory.Create(pool);
+        // Пул-клиент: кэш per-pool — переиспользование между шардами тика и
+        // между тиками (пересоздание клиентов с TLS-хендшейками на каждый
+        // контрольный тик росло с числом шардов); НЕ диспозится в конце тика —
+        // владелец кэш (инвалидация при дрейфе контекста).
+        var poolS3 = PoolClient(pool);
 
         // (2) Два источника (t27 §3.3 п.2): мастер + sync-standby (двойная архивация,
         //     оба из portalloc; sync нет → только мастер — второй агент тиком при
@@ -306,13 +346,14 @@ public sealed class WalStreamProcess(
         }
     }
 
-    // t36 (arch/19 §4): резолв пула бэкапов per-cluster. Контекст | null;
+    // t36 (arch/19 §4): разбор ГОТОВОГО результата резолва пула (резолв — один
+    // на тик кластера, результат общий для всех шардов). Контекст | null;
     // «пул не выбран» и Failed-резолв оба возвращают null (тик без мутаций),
     // различие — в побочных эффектах ниже.
-    private async Task<BackupPoolContext?> ResolvePoolAsync(
-        string cluster, string shardName, WalStreamState? wal, CancellationToken ct)
+    private async Task<BackupPoolContext?> ApplyPoolResultAsync(
+        Result<BackupPoolContext?> resolved, string cluster, string shardName,
+        WalStreamState? wal, CancellationToken ct)
     {
-        var resolved = await s3Factory.ResolveAsync(cluster, ct);
         if (resolved.IsSuccess)
         {
             if (resolved.Value is { } ctx)
