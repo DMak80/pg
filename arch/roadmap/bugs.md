@@ -82,3 +82,21 @@
   серий). Гипотезы: жёсткий `HttpClient.Timeout` docker-клиента против
   медленного pull под нагрузкой — разобрать таймаут/ретрай операции pull
   (или предтягивание образа в фикстуре), канон §7.2 не ослабляя.
+- **`t04-tligap-writeifchanged-flaky`** — флаки юнит-теста на границе секунд:
+  `PgWorker.IntegrationTests.Backups.WalStreamProcessTests.TliGap_WriteIfChanged_Idempotent`,
+  2026-10-23, ветка `feat-t02-pool-failover-selfheal` (HEAD `c8204e83`; тот же
+  код на `14191d92` — 54/54 зелёным). Команда:
+  `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --no-build
+  --filter "FullyQualifiedName~WalStreamProcessTests"`. Ошибка: `Expected
+  journalUnix1 to be 1792766055L, but found 1792766054L (difference of -1)`
+  (`WalStreamProcessTests.cs:1750`). Ожидаемое: второй тик не переписывает
+  journal-ключ `/pgworker/work/<C>` (updated_unix идемпотентен). Наблюдаемое:
+  updated_unix изменился на +1 между чтениями — запись журнала тика 1 легла в
+  одну реальную секунду, а повторная запись (между тиками/во втором тике)
+  — в следующую; ассерт на реальных часах нестабилен. Логи:
+  `arch/roadmap/bugs/t04-tligap-writeifchanged-flaky/` (лог упавшей серии).
+  Гипотезы: секундная гранулярность `DateTimeOffset.UtcNow` в
+  `WorkJournal.WritePhaseAsync` + журнальная запись, выполняющаяся при
+  удержании gap/между тиками; воспроизводимость ~редкая (1 из прогонов).
+  Разобрать писателя второй записи и стабилизировать ассерт (фейковые часы
+  журнала либо сравнение payload без updated_unix).
