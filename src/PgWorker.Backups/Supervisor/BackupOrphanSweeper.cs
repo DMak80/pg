@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
+using Shared.Metrics.Worker;
 using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Supervisor;
@@ -31,7 +32,8 @@ public sealed class BackupOrphanSweeper(
     ClaimStore claims,
     Func<BackupsRuntimeOptions?> runtime,
     TimeProvider time,
-    ILogger? logger = null)
+    ILogger? logger = null,
+    WorkerMetricsInstrumentation? metrics = null)
 {
     private const string Op = "backup-orphan-sweeper";
 
@@ -60,11 +62,26 @@ public sealed class BackupOrphanSweeper(
         {
             var created = await s3Factory.CreateForPoolAsync(poolName, ct);
             if (!created.IsSuccess)
-                continue; // пул недоступен/без кредов — union по остальным
+            {
+                // Пул недоступен/без кредов — union по остальным; проход НЕПОЛНЫЙ
+                // до следующего прохода, поэтому след в логах/метриках обязателен.
+                logger?.LogWarning(
+                    "{Op}: pool {Pool} excluded from orphan union — client unavailable: {Error}",
+                    Op, poolName, created.Error!.Message);
+                metrics?.BackupOrphanSkippedPool(poolName);
+                continue;
+            }
             await using var poolS3 = created.Value.Client;
             var listed = await poolS3.ListPrefixAsync("", ct: ct);
             if (!listed.IsSuccess)
-                continue; // transient этого пула — повтор прохода
+            {
+                // Transient этого пула — повтор прохода; union неполный — логируем.
+                logger?.LogWarning(
+                    "{Op}: pool {Pool} excluded from orphan union — list failed: {Error}",
+                    Op, poolName, listed.Error!.Message);
+                metrics?.BackupOrphanSkippedPool(poolName);
+                continue;
+            }
             foreach (var obj in listed.Value)
                 if (observedKeys.Add((poolName, obj.Key)))
                     observedObjects.Add(obj);

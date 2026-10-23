@@ -775,7 +775,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphan
         ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime()
         : null,
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupOrphanSweeper>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupOrphanSweeper>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()));
 builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLoop(
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
     sp.GetRequiredService<ClaimStore>(),

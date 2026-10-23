@@ -10,6 +10,8 @@
         <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
         <!-- t42: TlsMaterial.LoadPem — материал CA для S3CaHttpClientFactory (spec §5). -->
         <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+        <!-- Счётчик skipped-пулов свипера сирот — марк-метод WorkerMetricsInstrumentation (arch/18 §2.7). -->
+        <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
