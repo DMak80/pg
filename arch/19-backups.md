@@ -64,7 +64,13 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 ## 2. Механика полных бэкапов
 
 - **Инструмент**: `pg_basebackup` (plain-формат, `-X stream`,
-  `--checkpoint=spread`, `--manifest-checksums=SHA256`).
+  `--checkpoint=fast`, `--manifest-checksums=SHA256`). `fast`, а не `spread`:
+  spread берёт давний checkpoint/restartpoint источника — `wal_start_segment`
+  из `backup_label` оказывается ниже первого сегмента набора `-X stream`,
+  сегменты [wal_start .. набор) не дублируются в `wal/` → verify-полнота от
+  wal_start — вечный FAILED → бесконечные пересъёмы без валидного полного;
+  fast делает checkpoint на момент старта — wal_start-сегмент входит в набор
+  и дублируется, verify-цепь сходится.
 - **Исполнитель**: ephemeral docker-контейнер джоба
   `pgw-backup-full-<C>-<X>-<id>`, запускает PgWorker; образ — лёгкий
   `pgworker-backup` (отдельный Dockerfile в `docker/` —
@@ -343,7 +349,15 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   transient-деградации (lag/тишина): агент жив, ретраи тиками, пересъём НЕ
   триггерит; `error` DEGRADED несёт маркер `s3-pool-exhausted`, когда
   приёмник в ретрай-цикле исчерпания списка пула (§3 — алерт
-  `backup-pool-unreachable`; «lag/тишина» без маркера — обычное отставание). Слот при BROKEN: жив (не lost) — не трогаем (копит WAL в
+  `backup-pool-unreachable`; «lag/тишина» без маркера — обычное отставание).
+  Маркер исчерпания актуален, пока в хвосте лога мастер-агента последняя строка
+  `pool_exhausted` НОВЕЕ последней строки `heartbeat` (heartbeat — единственный
+  знак успешной доставки: подтверждение слота после успешного put); успешная
+  доставка после исчерпания (heartbeat позже последнего маркера) снимает
+  маркер — статус пересчитывается общим порядком (цепочка/lag/тишина), `error`
+  очищается. Exhaustion-DEGRADED (DEGRADED с маркером в `error`) — контроль
+  КАЖДЫЙ тик, как BROKEN (скорость заживления; union-листинг — один класс
+  вызовов). Слот при BROKEN: жив (не lost) — не трогаем (копит WAL в
   пределах `max_slot_wal_keep_size`), исчез или lost — пересоздаётся
   immediate+reserved СРАЗУ ЖЕ (drop+create; к старту пересъёма полного
   слот держит позицию ≤ wal_start нового
