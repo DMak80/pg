@@ -272,6 +272,43 @@ public class BackupPlannerTests
             .Should().BeFalse("DEGRADED due to lag/silence — transient, no reshoot is triggered");
     }
 
+    // AAA (t24, AC3): живой непокрытый tli-gap → due безусловно, даже при свежем
+    // валидном полном (пересъём — единственное лечение RPO-зазора)
+    [Fact]
+    public void IsDue_WalGapUncovered_True()
+    {
+        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), gap не покрыт
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110000Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1)),
+                verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now.AddHours(-1)))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, 86400, Unix(Now),
+                walGapUncovered: true)
+            .Should().BeTrue("an uncovered tli-gap is only cured by re-shooting the full");
+    }
+
+    // AAA (t24): покрытие отключает сигнал — свежий валидный полный при
+    // walGapUncovered=false — не due (шторма пересъёмов нет)
+    [Fact]
+    public void IsDue_WalGapCovered_FreshFull_NotDue()
+    {
+        // Arrange — свежий валидный COMPLETED, gap покрыт (walGapUncovered=false)
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110100Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, 86400, Unix(Now),
+                walGapUncovered: false)
+            .Should().BeFalse("a covered gap switches the signal off — no reshoot storm");
+    }
+
     // AAA: id — YYYYMMDDHHMMSSZ UTC; коллизия в пределах шарда → суффикс
     [Fact]
     public void NextId_Collision_SuffixIncrement()

@@ -70,15 +70,16 @@ public sealed class WalReceiverCore
                     continue;
                 }
 
-                // 2. Стартовая позиция: хвост S3; транспортный сбой резолва — ретрай;
+                // 2. Стартовая позиция: хвост S3 (позиция + имя хвостового сегмента —
+                //    вход tli-процедуры при 58P01); транспортный сбой резолва — ретрай;
                 //    пустой префикс — restart_lsn слота; слота нет — permanent (код 4).
-                ulong? tail = null;
-                while (tail is null)
+                WalTail? walTail = null;
+                while (walTail is null)
                 {
                     var resolved = await S3TailResolver.ResolveTailAsync(s3, o.Cluster, o.Shard, ct);
                     if (resolved.IsSuccess && resolved.Value is { } position)
                     {
-                        tail = position;
+                        walTail = position;
                         break;
                     }
 
@@ -88,7 +89,14 @@ public sealed class WalReceiverCore
                     await Task.Delay(retry, ct);
                 }
 
-                if (tail is null)
+                ulong startAt;
+                string? tailSegment;
+                if (walTail is { } tailInfo)
+                {
+                    startAt = tailInfo.Position;
+                    tailSegment = tailInfo.SegmentName;
+                }
+                else
                 {
                     var restart = await slots.ReadRestartLsnAsync(o.Slot, ct);
                     if (!restart.IsSuccess)
@@ -97,24 +105,39 @@ public sealed class WalReceiverCore
                         return 4;
                     }
 
-                    tail = restart.Value;
+                    startAt = restart.Value;
+                    tailSegment = null;
                 }
 
-                // 3. START_REPLICATION с явной стартовой позицией.
-                var started = await source.StartReplicationAsync(o.Slot, tail.Value, ct);
+                // 3. START_REPLICATION с явной стартовой позицией; отказ 58P01 — tli-процедура
+                //    (досыпка старого таймлайна / прыжок на текущий) вместо retry. Процедура
+                //    стартовала — приём продолжается от её позиции; не стартовала — обычный
+                //    transient-цикл. tailSegment == null (пустой префикс — старт от
+                //    restart_lsn слота) — процедура неприменима (вход не определён): retry-цикл.
+                //    Диагностика любой неуспешной ветки старта — start_failed в stderr (R3
+                //    «не молчание»: текст WalStartRefused несёт исходную ошибку сервера).
+                var started = await source.StartReplicationAsync(o.Slot, startAt, null, ct);
                 if (!started.IsSuccess)
                 {
-                    // Диагностика отказа старта стрима (слот/позиция) — в stderr,
-                    // stdout остаётся протоколом воркера.
-                    await Console.Error.WriteLineAsync(
-                        $"start_failed: {started.Error!.Message.Split('\n')[0]}");
-                    await Task.Delay(retry, ct);
-                    continue;
+                    var resumed = started.Error is WalStartRefused && tailSegment is not null
+                        ? await TliProcedureAsync(o, source, s3, stdout, startAt, tailSegment, retry, ct)
+                        : Result<ulong?>.Success(null);
+                    if (resumed is { IsSuccess: true, Value: { } procedureStart })
+                    {
+                        startAt = procedureStart;
+                    }
+                    else
+                    {
+                        await Console.Error.WriteLineAsync(
+                            $"start_failed: {started.Error!.Message.Split('\n')[0]}");
+                        await Task.Delay(retry, ct);
+                        continue;
+                    }
                 }
 
                 // 4. Приём: сборка сегментов → put (ретрай, backpressure — enumerator не
                 //    двигается) → подтверждение ТОЛЬКО после успешного put.
-                var assembler = new SegmentAssembler(tail.Value);
+                var assembler = new SegmentAssembler(startAt);
                 uint prevTli = 0;
                 try
                 {
@@ -205,6 +228,120 @@ public sealed class WalReceiverCore
             await Emit(WalReceiverMarkers.Result(true, null, lastDelivered));
             return 0;
         }
+    }
+
+    /// <summary>Tli-процедура (58P01, arch/19 §3): досыпка старого таймлайна от
+    /// хвоста S3 до точки переключения (CopyDone → переподключение от выросшего
+    /// хвоста — зазора нет, RPO=0) или прыжок-fallback на текущий таймлайн от
+    /// границы сегмента xlogpos (сегменты (tail .. старт] в S3 не появятся —
+    /// осознанный RPO-зазор, маркер tli_jump). Возвращает Success(стартовая LSN) —
+    /// старт выполнен, приём продолжается штатным контуром (assembler → put →
+    /// confirm; подтверждение слота ТОЛЬКО после успешного put — инвариант RPO не
+    /// меняется); Success(null) — процедура не стартовала (transient: обычный
+    /// retry-цикл). КАЖДЫЙ старт процедуры выполняется на СВЕЖЕМ replication-
+    /// соединении: отказ 58P01 гасит прежнее (транспорт), поэтому перед досыпкой
+    /// и перед прыжком — OpenAsync. Идемпотентна: гонки повторного промоута
+    /// конвергентны — каждая итерация начинается IDENTIFY_SYSTEM, счётчиков
+    /// попыток нет; старт с историческим TIMELINE безопасен (сервер отдаёт его
+    /// до конца ветки).</summary>
+    private static async Task<Result<ulong?>> TliProcedureAsync(
+        WalReceiverOptions o, IXLogReplicationSource source, IBackupS3 s3, TextWriter stdout,
+        ulong tail, string tailSegment, TimeSpan retry, CancellationToken ct)
+    {
+        if (WalFileName.TryParse(tailSegment) is not { } tailFile)
+            return Result<ulong?>.Success(null); // имя не парсится — retry (защитно)
+
+        // 1. IDENTIFY_SYSTEM: сбой — transient (retry-цикл).
+        var identity = await source.IdentifySystemAsync(ct);
+        if (!identity.IsSuccess)
+        {
+            await Console.Error.WriteLineAsync(
+                $"tli_procedure: identify failed: {identity.Error!.Message.Split('\n')[0]}");
+            return Result<ulong?>.Success(null);
+        }
+        var (serverTli, xlogPos) = identity.Value;
+
+        // 2. .history нового TLI — ДО досыпки (канон §3: загружается обязательно;
+        //    переход в потоке не наблюдается — prevTli сессии инициализируется
+        //    заново первым сегментом). TLI 1 истории не имеет — не запрашивается.
+        if (serverTli > tailFile.Tli)
+        {
+            var history = await source.ReadTimelineHistoryAsync(serverTli, ct);
+            if (history is { IsSuccess: true } && history.Value is not null)
+            {
+                await PutWithRetryAsync(
+                    s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{serverTli:x8}.history",
+                    history.Value,
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(history.Value)),
+                    retry, ct);
+            }
+            else
+            {
+                await stdout.WriteLineAsync(WalReceiverMarkers.HistoryMissing(serverTli));
+            }
+        }
+
+        // 3. Досыпка (только при T сервера > TLI хвоста): стрим старого таймлайна
+        //    от хвоста до точки переключения — байты удерживаются слотом на ноде;
+        //    повторный 58P01 (удержание потеряно) — прыжок ниже.
+        if (serverTli > tailFile.Tli)
+        {
+            await stdout.WriteLineAsync(WalReceiverMarkers.TliBackfill(tailSegment, serverTli));
+            await Console.Error.WriteLineAsync(
+                $"tli_procedure: backfill segment {tailSegment} (tli {tailFile.Tli}) up to tli {serverTli} switch point");
+            var openedBackfill = await source.OpenAsync(ct);
+            if (!openedBackfill.IsSuccess)
+            {
+                // Отказ 58P01 погасил стрим-соединение — процедуре нужно свежее;
+                // неудача открытия — transient (retry-цикл).
+                await Console.Error.WriteLineAsync(
+                    $"tli_procedure: open failed: {openedBackfill.Error!.Message.Split('\n')[0]}");
+                return Result<ulong?>.Success(null);
+            }
+
+            var backfill = await source.StartReplicationAsync(o.Slot, tail, tailFile.Tli, ct);
+            if (backfill.IsSuccess)
+                return Result<ulong?>.Success(tail);
+            if (backfill.Error is not WalStartRefused)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"tli_procedure: backfill start failed: {backfill.Error!.Message.Split('\n')[0]}");
+                return Result<ulong?>.Success(null); // transient
+            }
+
+            await Console.Error.WriteLineAsync(
+                $"tli_procedure: backfill refused (58P01) — old-tli segments recycled, jumping");
+        }
+
+        // 4. Прыжок-fallback (и единственный путь при T == TLI хвоста — зазор
+        //    внутри одного таймлайна): старт от ГРАНИЦЫ сегмента, содержащего
+        //    xlogpos — текущий записываемый сегмент существует всегда, сборщик
+        //    доставит его целиком (старт ровно на границе — головного отброса нет).
+        //    Отказ досыпки погасил соединение — прыжок на свежем.
+        var segmentStart = xlogPos / (ulong)WalFileName.SegmentBytes
+                         * (ulong)WalFileName.SegmentBytes;
+        var segId = (uint)(segmentStart / (ulong)WalFileName.SegmentBytes);
+        var toSegment = new WalFileName(
+            serverTli, segId / WalFileName.SegsPerLog, segId % WalFileName.SegsPerLog).Name;
+        await stdout.WriteLineAsync(
+            WalReceiverMarkers.TliJump(tailSegment, tailFile.Tli, serverTli, toSegment));
+        await Console.Error.WriteLineAsync(
+            $"tli_procedure: jump {tailSegment} (tli {tailFile.Tli}) -> {toSegment} (tli {serverTli})");
+        var openedJump = await source.OpenAsync(ct);
+        if (!openedJump.IsSuccess)
+        {
+            await Console.Error.WriteLineAsync(
+                $"tli_procedure: open failed: {openedJump.Error!.Message.Split('\n')[0]}");
+            return Result<ulong?>.Success(null); // transient
+        }
+
+        var jump = await source.StartReplicationAsync(o.Slot, segmentStart, serverTli, ct);
+        if (jump.IsSuccess)
+            return Result<ulong?>.Success(segmentStart);
+
+        await Console.Error.WriteLineAsync(
+            $"tli_procedure: jump start failed: {jump.Error!.Message.Split('\n')[0]}");
+        return Result<ulong?>.Success(null); // включая повторный 58P01 — новая итерация процедуры
     }
 
     /// <summary>Put с ретраем (transient-отказ S3): на время ретраев чтение потока

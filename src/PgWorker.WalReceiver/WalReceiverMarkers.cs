@@ -51,6 +51,17 @@ public static class WalReceiverMarkers
     public static string PoolExhausted()
         => ToJson(new PoolExhaustedMarker());
 
+    /// <summary>tli-процедура (58P01): досыпка старого таймлайна от хвостового
+    /// сегмента до точки переключения — зазора нет (RPO=0).</summary>
+    public static string TliBackfill(string fromSegment, uint toTli)
+        => ToJson(new TliBackfillMarker(fromSegment, toTli));
+
+    /// <summary>tli-процедура: прыжок на текущий таймлайн сервера — сегменты
+    /// (from_segment, to_segment] не будут доставлены (осознанный RPO-зазор);
+    /// контроль воркера фиксирует поле gap по этому маркеру при from_tli != to_tli.</summary>
+    public static string TliJump(string fromSegment, uint fromTli, uint toTli, string toSegment)
+        => ToJson(new TliJumpMarker(fromSegment, fromTli, toTli, toSegment));
+
     private sealed record StartingMarker([property: JsonPropertyName("phase")] string Phase = "starting");
 
     private sealed record StreamingMarker([property: JsonPropertyName("wal_start")] string WalStart)
@@ -85,4 +96,22 @@ public static class WalReceiverMarkers
 
     private sealed record PoolExhaustedMarker(
         [property: JsonPropertyName("pool_exhausted")] bool Exhausted = true);
+
+    private sealed record TliBackfillMarker(
+        [property: JsonPropertyName("from_segment")] string FromSegment,
+        [property: JsonPropertyName("to_tli")] uint ToTli)
+    {
+        [property: JsonPropertyName("phase")]
+        public string Phase => "tli_backfill";
+    }
+
+    private sealed record TliJumpMarker(
+        [property: JsonPropertyName("from_segment")] string FromSegment,
+        [property: JsonPropertyName("from_tli")] uint FromTli,
+        [property: JsonPropertyName("to_tli")] uint ToTli,
+        [property: JsonPropertyName("to_segment")] string ToSegment)
+    {
+        [property: JsonPropertyName("phase")]
+        public string Phase => "tli_jump";
+    }
 }

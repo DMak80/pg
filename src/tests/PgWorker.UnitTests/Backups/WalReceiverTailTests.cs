@@ -52,7 +52,7 @@ public class WalReceiverTailTests
 
     private static WalObject Seg(string name) => new(name, DateTimeOffset.UnixEpoch);
 
-    private static ulong? Resolve(params WalObject[] objects)
+    private static WalTail? Resolve(params WalObject[] objects)
     {
         // Arrange / Act
         var result = S3TailResolver.ResolveTailAsync(new FakeS3(objects), "c1", "shard1", CancellationToken.None)
@@ -74,8 +74,9 @@ public class WalReceiverTailTests
             Seg("000000010000000000000004"),
             Seg("000000010000000000000005"));
 
-        // Act / Assert — конец сегмента 5: (5+1)<<24
-        tail.Should().Be(6UL << 24);
+        // Act / Assert — конец сегмента 5: (5+1)<<24; имя хвоста — последний сегмент
+        tail!.Position.Should().Be(6UL << 24);
+        tail.SegmentName.Should().Be("000000010000000000000005");
     }
 
     [Fact]
@@ -88,7 +89,7 @@ public class WalReceiverTailTests
             Seg("000000010000000000000004"));
 
         // Act / Assert — конец непрерывной части (сегмент 2), старт выше дыры
-        tail.Should().Be(3UL << 24);
+        tail!.Position.Should().Be(3UL << 24);
     }
 
     [Fact]
@@ -109,7 +110,7 @@ public class WalReceiverTailTests
             Seg("00000002.history"));
 
         // Act / Assert — цепочка непрерывна, хвост — конец сегмента TLI 2
-        tail.Should().Be(3UL << 24);
+        tail!.Position.Should().Be(3UL << 24);
     }
 
     [Fact]

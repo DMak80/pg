@@ -54,6 +54,11 @@ public sealed class WalStreamProcess(
 {
     private const string Op = "backup-wal";
 
+    // t24 (arch/19 §3.2): хвост лога мастер-агента для маркеров приёмника —
+    // окно видимости однократного маркера tli_jump ≥ 15 мин при streaming 1/5 c
+    // (50 строк вымываются за ~4 мин).
+    private const int AgentLogTail = 200;
+
     // Бюджет фазы create wal-агента (PatroniBootSec-семантика существующих
     // бюджетов; ~16 итераций поллинга по 7.5 c; исчерпание — transient-фейл тика,
     // следующий тик повторит подъём агента).
@@ -751,12 +756,62 @@ public sealed class WalStreamProcess(
 
         Observe(cluster, shard, lag, now - lastUploadedUnix.Value); // t14: факт прохода
 
+        // t24 (arch/19 §3/§4): tli-зазор — маркер tli_jump приёмника в хвосте лога
+        // мастер-агента. Персистентная фиксация в ключе wal (переживает рестарты
+        // воркера/агентов — не зависит от лога контейнера); снятие — покрытием
+        // (COMPLETED-полный с wal_start ≥ gap.to) либо исчезновением профиля зазора
+        // из листинга (ретенция срезала нижележащие TLI). Установка гейтится теми же
+        // предикатами — цикл «снятие ↔ повторная установка» при живом в окне маркере
+        // исключён. Внутри-TLI прыжок (from_tli == to_tli) — обычная дыра (BROKEN
+        // путь контроля по объектам), gap НЕ ставится. Пропуск окна (маркер ушёл из
+        // хвоста) — не критичен: drill/restore периодически вскрывают зазор.
+        static bool CoveredByFull(IReadOnlyList<FullBackupState> fulls, string toSegment)
+            => fulls.Any(f => f.State == FullBackupStatus.Completed
+                && f.WalStartSegment is { Length: > 0 } walStart
+                && string.CompareOrdinal(walStart, toSegment) >= 0);
+        bool ProfileObserved(string toSegment)
+            => objects.Select(o => WalFileName.TryParse(o.Name)).OfType<WalFileName>()
+                .Any(s => string.CompareOrdinal(s.Name, toSegment) < 0);
+        var shardFulls = shardBackups?.Full ?? [];
+
+        WalGapState? gap = wal?.Gap;
+        if (gap is not null && (CoveredByFull(shardFulls, gap.To) || !ProfileObserved(gap.To)))
+            gap = null; // заживление покрытием / профиль зазора срезан ретенцией
+
+        if (gap is null)
+        {
+            var agentLogTail = await driver.BackupAgentLogsAsync(cluster,
+                BackupAgentNames.Container(cluster, shard, masterRef), AgentLogTail, ct);
+            if (agentLogTail.IsSuccess
+                && ParseTliJumpMarker(agentLogTail.Value) is { } marker
+                && marker.FromTli != marker.ToTli
+                && !CoveredByFull(shardFulls, marker.ToSegment)
+                && ProfileObserved(marker.ToSegment))
+            {
+                gap = new WalGapState(marker.FromSegment, marker.ToSegment, marker.ToTli);
+                await journal.WritePhaseAsync(cluster, Op, $"wal-tli-gap/{shard}", claims.InstanceId,
+                    $"tli jump {marker.FromTli}->{marker.ToTli}: segments ({marker.FromSegment}, {marker.ToSegment}] " +
+                    "will not be delivered — the worker re-runs the full backup", ct);
+            }
+        }
+
         // Деградации transient-природы (lag/тишина): агент НЕ останавливаем и
         // супервиз НЕ блокируем (ChainBroken=false — ретраи тиками; exited-агент
         // пересоздаётся со свежими env, spec §3.2 п.5/п.7; ревью Ф4-2 №1).
         string? error = null;
         var state = WalStreamStatus.Active;
-        if (lag > options.WalLagMaxSegments) // null → сравнение false (зонд не удался — не деградация)
+        if (gap is not null)
+        {
+            // t24 (arch/19 §3/§4): первый приоритет деградаций — живой gap. Текст
+            // строится ВСЕГДА из полей записи (from_tli = TLI хвостового сегмента
+            // gap.From — первые 8 hex имени, через TliOfSegment; имена валидированы
+            // парсером/писателем) — шаблон един для установки и удержания,
+            // WriteIfChanged стабилен между тиками.
+            state = WalStreamStatus.Degraded;
+            error = $"tli-gap: сегменты ({gap.From}, {gap.To}] не будут доставлены — приёмник пережил " +
+                    $"58P01 tli-переход {TliOfSegment(gap.From)}→{gap.Tli}; воркер переснимает полный";
+        }
+        else if (lag > options.WalLagMaxSegments) // null → сравнение false (зонд не удался — не деградация)
         {
             state = WalStreamStatus.Degraded;
             error = $"WAL stream lag {lag} segments (threshold {options.WalLagMaxSegments})";
@@ -778,7 +833,7 @@ public sealed class WalStreamProcess(
         if (state == WalStreamStatus.Active)
         {
             var agentLogs = await driver.BackupAgentLogsAsync(cluster,
-                BackupAgentNames.Container(cluster, shard, masterRef), 50, ct);
+                BackupAgentNames.Container(cluster, shard, masterRef), AgentLogTail, ct);
             if (agentLogs.IsSuccess && agentLogs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
             {
                 state = WalStreamStatus.Degraded;
@@ -793,7 +848,7 @@ public sealed class WalStreamProcess(
         if (state == WalStreamStatus.Degraded && wal is not { State: WalStreamStatus.Degraded })
         {
             var logs = await driver.BackupAgentLogsAsync(cluster,
-                BackupAgentNames.Container(cluster, shard, masterRef), 50, ct);
+                BackupAgentNames.Container(cluster, shard, masterRef), AgentLogTail, ct);
             if (logs.IsSuccess && logs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
                 error = $"{S3PoolMarkers.Exhausted}: {error}";
         }
@@ -806,7 +861,7 @@ public sealed class WalStreamProcess(
 
         var next = new WalStreamState(
             state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,
-            lastUploadedUnix, lag, error);
+            lastUploadedUnix, lag, error, Gap: gap);
         await status.WriteIfChangedAsync(cluster, shard, next, ct);
         return new ControlOutcome(next); // цепочка цела (ACTIVE/DEGRADED) — супервиз разрешён
     }
@@ -985,4 +1040,42 @@ public sealed class WalStreamProcess(
     private async Task<Result> S3PulseAsync(
         Func<CancellationToken, Task<Result>> call, CancellationToken ct)
         => await S3Pulse.CallAsync(progress, call, ct, (watchdogWindow ?? TimeSpan.FromSeconds(15)) / 2);
+
+    // t24 (arch/19 §3/§4): маркер прыжка из лога приёмника (stdout-JSON,
+    // WalReceiverMarkers.TliJump); парсится последняя строка с "phase":"tli_jump".
+    // Имена сегментов валидируются WalFileName — чужие/битые строки не маркер.
+    private sealed record TliJumpLogMarker(
+        [property: System.Text.Json.Serialization.JsonPropertyName("from_segment")] string? FromSegment,
+        [property: System.Text.Json.Serialization.JsonPropertyName("from_tli")] uint FromTli,
+        [property: System.Text.Json.Serialization.JsonPropertyName("to_tli")] uint ToTli,
+        [property: System.Text.Json.Serialization.JsonPropertyName("to_segment")] string? ToSegment);
+
+    internal static (string FromSegment, uint FromTli, uint ToTli, string ToSegment)? ParseTliJumpMarker(
+        string logTail)
+    {
+        var line = logTail
+            .Split('\n')
+            .LastOrDefault(l => l.Contains("\"phase\":\"tli_jump\"", StringComparison.Ordinal))
+            ?.Trim();
+        if (line is null)
+            return null;
+        try
+        {
+            var marker = System.Text.Json.JsonSerializer.Deserialize<TliJumpLogMarker>(line);
+            return marker is { FromSegment: { Length: > 0 }, ToSegment: { Length: > 0 } } m
+                   && WalFileName.TryParse(m.FromSegment) is not null
+                   && WalFileName.TryParse(m.ToSegment) is not null
+                ? (m.FromSegment, m.FromTli, m.ToTli, m.ToSegment)
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null; // чужая/битая строка — не маркер
+        }
+    }
+
+    // TLI из 24-hex имени сегмента (первые 8 символов); битое имя — 0 (текст
+    // tli-gap строится только из валидированных имён).
+    internal static uint TliOfSegment(string segmentName)
+        => WalFileName.TryParse(segmentName) is { } f ? f.Tli : 0;
 }

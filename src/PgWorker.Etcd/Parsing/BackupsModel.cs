@@ -108,6 +108,12 @@ public enum WalAgentPresence { Running, Exited, Absent }
 /// в поле agents ключа wal.</summary>
 public sealed record WalAgentState(string Node, WalAgentPresence State);
 
+/// <summary>Границы RPO-зазора tli-прыжка приёмника (58P01): сегменты
+/// (From .. To] не будут доставлены в S3; пишет контроль воркера по маркеру
+/// tli_jump приёмника, снимает покрытием — COMPLETED-полный с
+/// wal_start_segment ≥ To (сравнение имён CompareOrdinal).</summary>
+public sealed record WalGapState(string From, string To, uint Tli);
+
 /// <summary>WAL-поток шарда (ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal):
 /// wal-агенты per-node (t27); инвариант непрерывности chain_start →
 /// last_uploaded без дыр (arch/19 §3).</summary>
@@ -123,7 +129,10 @@ public sealed record WalStreamState(
     string? Error,
     // t27 (arch/19 §4): опциональные супервиз-факты per-node (старые ключи
     // поля не несут — парсер возвращает null, обратная совместимость AC7).
-    IReadOnlyList<WalAgentState>? Agents = null);
+    IReadOnlyList<WalAgentState>? Agents = null,
+    // t24 (arch/19 §4): опциональный RPO-зазор tli-прыжка; null у старых
+    // ключей — обратная совместимость.
+    WalGapState? Gap = null);
 
 /// <summary>Операция восстановления шарда из бэкапа (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;, id=YYYYMMDDHHMMSSZ

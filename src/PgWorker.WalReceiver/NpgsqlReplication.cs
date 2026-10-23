@@ -13,8 +13,12 @@ internal interface IReplicationConnection : IAsyncDisposable
 {
     Task Open(CancellationToken ct);
 
+    /// <summary>IDENTIFY_SYSTEM: (Timeline, XLogPos) сервера.</summary>
+    Task<(uint Tli, ulong XLogPos)> IdentifySystem(CancellationToken ct);
+
     IAsyncEnumerable<XLogDataMessage> StartReplication(
-        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn, CancellationToken ct);
+        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn,
+        CancellationToken ct, uint? timeline);
 
     void SetReplicationStatus(NpgsqlLogSequenceNumber lsn);
 
@@ -32,9 +36,18 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
 
     public Task Open(CancellationToken ct) => _inner.Open(ct);
 
+    public async Task<(uint Tli, ulong XLogPos)> IdentifySystem(CancellationToken ct)
+    {
+        var identity = await _inner.IdentifySystem(ct);
+        return (identity.Timeline, (ulong)identity.XLogPos);
+    }
+
     public IAsyncEnumerable<XLogDataMessage> StartReplication(
-        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn, CancellationToken ct)
-        => _inner.StartReplication(slot, startLsn, ct);
+        PhysicalReplicationSlot slot, NpgsqlLogSequenceNumber startLsn,
+        CancellationToken ct, uint? timeline)
+        => timeline is { } tli
+            ? _inner.StartReplication(slot, startLsn, ct, tli)
+            : _inner.StartReplication(slot, startLsn, ct);
 
     public void SetReplicationStatus(NpgsqlLogSequenceNumber lsn)
         => _inner.SetReplicationStatus(lsn);
@@ -86,7 +99,8 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
     }
 
     private IReplicationConnection? _replication;
-    private IAsyncEnumerable<XLogDataMessage>? _messages;
+    private IAsyncEnumerator<XLogDataMessage>? _stream;
+    private XLogDataMessage? _pendingFirst;
 
     private string ConnString => string.Format(
         ConnStringTemplate, _o.PgHost, _o.PgPort, _o.PgUser, _o.PgPassword, _o.PgDbname);
@@ -143,15 +157,34 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         }
     }
 
-    public async Task<Result> StartReplicationAsync(string slot, ulong startLsn, CancellationToken ct)
+    public async Task<Result> StartReplicationAsync(string slot, ulong startLsn, uint? timeline, CancellationToken ct)
     {
         try
         {
             var replication = _replication ?? throw new InvalidOperationException("OpenAsync not called");
             var physicalSlot = new PhysicalReplicationSlot(slot);
-            _messages = replication.StartReplication(
-                physicalSlot, (NpgsqlLogSequenceNumber)startLsn, ct);
+            // Npgsql выполняет протокольный exchange START_REPLICATION лениво:
+            // ошибка старта (58P01) выходит при ПЕРВОМ MoveNextAsync, а не из
+            // вызова StartReplication. Форсируем первый шаг перечисления ЗДЕСЬ —
+            // отказ 58P01 тогда выходит из самого старта (типизированный
+            // WalStartRefused наружу — tli-процедура ядра), а не обрывом потока
+            // в цикле чтения (вечные stream_broken-циклы). Полученный первый чанк
+            // буферизуется — Stream отдаёт его первым (порядок данных не меняется).
+            var messages = replication.StartReplication(
+                physicalSlot, (NpgsqlLogSequenceNumber)startLsn, ct, timeline);
+            var enumerator = messages.GetAsyncEnumerator(ct);
+            _stream = enumerator;
+            _pendingFirst = await enumerator.MoveNextAsync() ? enumerator.Current : null;
             return Result.Success();
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "58P01")
+        {
+            // Отказ старта по 58P01: типизированный маркер наружу (матч по SqlState,
+            // не по тексту) — tli-процедура ядра; соединение гасим как при любом
+            // сбое старта (не переиспользуем полуживой walsender; процедуре нужен
+            // свежий OpenAsync перед её стартом).
+            await KillReplicationAsync();
+            return Result.Failed(new WalStartRefused(e.MessageText));
         }
         catch (Exception e)
         {
@@ -163,18 +196,45 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         }
     }
 
+    public async Task<Result<ServerIdentity>> IdentifySystemAsync(CancellationToken ct)
+    {
+        // IDENTIFY_SYSTEM — replication-команда: короткоживущее соединение по
+        // образцу ReadTimelineHistoryAsync (стрим-коннект после failed-старта
+        // уже погашен); каждая попытка живёт ровно до своего Dispose.
+        try
+        {
+            await using var connection = NewConnection();
+            await connection.Open(ct);
+            var (tli, xlogPos) = await connection.IdentifySystem(ct);
+            return Result<ServerIdentity>.Success(new ServerIdentity(tli, xlogPos));
+        }
+        catch (Exception e)
+        {
+            return Result<ServerIdentity>.Failed(new ApplicationException(
+                $"IDENTIFY_SYSTEM {_o.PgHost}:{_o.PgPort}: {e.Message}", e));
+        }
+    }
+
     public IAsyncEnumerable<XLogChunk> Stream => ReadChunksAsync();
 
     private async IAsyncEnumerable<XLogChunk> ReadChunksAsync()
     {
-        var messages = _messages ?? throw new InvalidOperationException("StartReplicationAsync not called");
-        await foreach (var message in messages)
+        var enumerator = _stream ?? throw new InvalidOperationException("StartReplicationAsync not called");
+        if (_pendingFirst is { } first)
         {
+            _pendingFirst = null;
             // Data — поток, валиден только до следующего сообщения: вычитываем целиком
             // (буфер сегмента в памяти — кэш без durability, MULTI-HOST).
+            using var firstBuffer = new MemoryStream();
+            await first.Data.CopyToAsync(firstBuffer);
+            yield return new XLogChunk((ulong)first.WalStart, firstBuffer.ToArray());
+        }
+
+        while (await enumerator.MoveNextAsync())
+        {
             using var buffer = new MemoryStream();
-            await message.Data.CopyToAsync(buffer);
-            yield return new XLogChunk((ulong)message.WalStart, buffer.ToArray());
+            await enumerator.Current.Data.CopyToAsync(buffer);
+            yield return new XLogChunk((ulong)enumerator.Current.WalStart, buffer.ToArray());
         }
     }
 
@@ -226,6 +286,10 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         if (_replication is not { } replication)
             return;
         _replication = null;
+        // Буфер первого чанка и enumerator прежнего стрима умирают вместе с
+        // соединением — новый START_REPLICATION создаёт их заново.
+        _stream = null;
+        _pendingFirst = null;
         try
         {
             await replication.DisposeAsync();

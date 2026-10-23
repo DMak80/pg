@@ -34,3 +34,6 @@ deploy/s3w-node-secrets.env
 # 00-up.sh из .env; прод — создаёт оператор per-install)
 deploy/pgw-s3-profiles.env
 artifacts/
+
+# Логи багов (трек arch/roadmap/bugs.md) — в git не хранятся
+arch/roadmap/bugs/
