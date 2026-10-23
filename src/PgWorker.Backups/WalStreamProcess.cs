@@ -1115,6 +1115,33 @@ public sealed class WalStreamProcess(
         }
     }
 
+    // t02 (arch/19 §3): актуальность исчерпания write-списка мастер-агента —
+    // позиционный детектор по хвосту лога: маркер активен ⇔ найдена строка
+    // pool_exhausted и ПОСЛЕДНЯЯ такая строка стоит ПОСЛЕ последней строки
+    // heartbeat (heartbeat — единственный знак успешной доставки: подтверждение
+    // слота после успешного put приёмника; успешная доставка после исчерпания
+    // снимает маркер). Подстрочный матч по строке: единственный источник
+    // подстроки pool_exhausted — stdout-маркер приёмника
+    // {"pool_exhausted":true}; дефисная форма s3-pool-exhausted (тексты
+    // ошибок, result-JSON) не матчится — посторонние строки; фазы
+    // starting/streaming/delivering успехом НЕ считаются. Без таймеров и
+    // порогов свежести — только позиции строк.
+    internal static bool IsPoolExhaustionActive(string logTail)
+    {
+        var lastMarker = -1;
+        var lastHeartbeat = -1;
+        var lines = logTail.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Contains("pool_exhausted", StringComparison.Ordinal))
+                lastMarker = i;
+            else if (lines[i].Contains("heartbeat", StringComparison.Ordinal))
+                lastHeartbeat = i;
+        }
+
+        return lastMarker >= 0 && lastMarker > lastHeartbeat;
+    }
+
     // TLI из 24-hex имени сегмента (первые 8 символов); битое имя — 0 (текст
     // tli-gap строится только из валидированных имён).
     internal static uint TliOfSegment(string segmentName)

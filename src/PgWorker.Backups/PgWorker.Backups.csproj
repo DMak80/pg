@@ -26,7 +26,9 @@
     </ItemGroup>
 
     <ItemGroup>
-        <!-- Юниты ворк-фактов agents (t27): BuildAgentFacts — internal-функция. -->
+        <!-- Юниты ворк-фактов agents (t27) и детектора исчерпания (t02):
+             internal-функции. -->
         <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+        <InternalsVisibleTo Include="PgWorker.IntegrationTests"/>
     </ItemGroup>
 </Project>

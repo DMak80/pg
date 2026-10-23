@@ -1858,4 +1858,84 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.State.Should().Be(WalStreamStatus.Active);
         wal.Error.Should().NotContain("tli-gap");
     }
+
+    // ---- t02 (arch/19 §3): детектор актуальности исчерпания write-списка ----
+
+    // Строки маркеров приёмника (формат WalReceiverMarkers): heartbeat —
+    // единственный знак успешной доставки (подтверждение слота после put).
+    private const string HeartbeatLine = "{\"heartbeat\":\"0/8000000\"}";
+    private const string PoolExhaustedLine = "{\"pool_exhausted\":true}";
+
+    // AAA: маркер есть, heartbeat после него НЕТ — исчерпание актуально.
+    [Fact]
+    public void PoolExhaustionDetector_MarkerWithoutHeartbeat_IsActive()
+    {
+        // Arrange — хвост: старый heartbeat, затем маркер исчерпания
+        var tail = HeartbeatLine + "\n" + PoolExhaustedLine;
+
+        // Act / Assert — маркер новее последнего heartbeat → активен
+        WalStreamProcess.IsPoolExhaustionActive(tail).Should().BeTrue();
+    }
+
+    // AAA: heartbeat ПОСЛЕ последнего маркера — доставка прошла, маркер снят.
+    [Fact]
+    public void PoolExhaustionDetector_HeartbeatAfterMarker_Lifted()
+    {
+        // Arrange — хвост: маркер, затем свежий heartbeat (успешная доставка)
+        var tail = PoolExhaustedLine + "\n" + HeartbeatLine;
+
+        // Act / Assert — heartbeat новее маркера → исчерпание снято
+        WalStreamProcess.IsPoolExhaustionActive(tail).Should().BeFalse();
+    }
+
+    // AAA: маркера нет вовсе — не активен (посторонние строки и пустой хвост).
+    [Fact]
+    public void PoolExhaustionDetector_NoMarker_Inactive()
+    {
+        // Arrange — только посторонние строки (фаза старта, heartbeat,
+        // успешный result-JSON) и пустой хвост
+        var tail = "{\"phase\":\"starting\"}\n" + HeartbeatLine
+            + "\n{\"ok\":true,\"wal_start_segment\":\"000000010000000000000002\",\"size_bytes\":1024}";
+
+        // Act / Assert
+        WalStreamProcess.IsPoolExhaustionActive(tail).Should().BeFalse();
+        WalStreamProcess.IsPoolExhaustionActive("").Should().BeFalse();
+    }
+
+    // AAA: delivering успехом НЕ считается (heartbeat — единственное
+    // подтверждение): маркер + delivering без heartbeat — исчерпание держится;
+    // heartbeat после — снимает (delivering между ними не мешает снятию).
+    [Fact]
+    public void PoolExhaustionDetector_DeliveringDoesNotLift()
+    {
+        // Arrange — delivering между маркером и heartbeat
+        var delivering = "{\"phase\":\"delivering\",\"segment\":\"000000010000000000000008\"}";
+
+        // Act / Assert — delivering сам по себе не снимает маркер
+        WalStreamProcess.IsPoolExhaustionActive(PoolExhaustedLine + "\n" + delivering)
+            .Should().BeTrue("heartbeat is the only delivery confirmation");
+        // heartbeat после маркера снимает — delivering не препятствие
+        WalStreamProcess.IsPoolExhaustionActive(
+                PoolExhaustedLine + "\n" + delivering + "\n" + HeartbeatLine)
+            .Should().BeFalse();
+    }
+
+    // AAA: посторонние строки не матчатся: фазы starting/streaming, stderr,
+    // result-JSON — ВКЛЮЧАЯ дефисную форму s3-pool-exhausted в error (детектор
+    // ищет pool_exhausted с подчёркиванием — только stdout-маркер приёмника;
+    // дефисный текст ошибки маркером не является).
+    [Fact]
+    public void PoolExhaustionDetector_ForeignLinesIgnored()
+    {
+        // Arrange — только посторонние строки
+        var tail = "{\"phase\":\"starting\"}\n"
+            + "{\"phase\":\"streaming\",\"wal_start\":\"0/8000000\"}\n"
+            + "stderr: connection refused\n"
+            + "{\"ok\":false,\"error\":\"connection refused\"}\n"
+            + "{\"ok\":false,\"error\":\"s3-pool-exhausted: upload full failed on all pool endpoints\"}\n"
+            + HeartbeatLine;
+
+        // Act / Assert
+        WalStreamProcess.IsPoolExhaustionActive(tail).Should().BeFalse();
+    }
 }
