@@ -1938,4 +1938,157 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act / Assert
         WalStreamProcess.IsPoolExhaustionActive(tail).Should().BeFalse();
     }
+
+    // ---- t02 (arch/19 §3): контроль — исчерпание write-списка и self-heal ----
+
+    // AAA (контроль): фейковый лог мастер-агента с АКТИВНЫМ маркером
+    // исчерпания → wal DEGRADED с маркером s3-pool-exhausted; пока доставки
+    // нет — DEGRADED удерживается; heartbeat в логе ТОГО ЖЕ агента → контроль
+    // возвращает ACTIVE с очищенным error (self-heal одним контрольным
+    // проходом). Между тиками ключ ПЕРЕЧИТЫВАЕТСЯ из etcd (контроль берёт wal
+    // из backups-аргумента тика — паттерн BrokenSurvivesProcessRestart);
+    // VerifyIntervalSec=3600 дискриминирует расписание: без правила
+    // «exhaustion-DEGRADED каждый тик» тики 2-3 были бы пропущены.
+    [Fact]
+    public async Task ExhaustionMarker_ThenHeartbeatHealsActive()
+    {
+        // Arrange — полный wal_start=..01, цепочка 1..3, ключ ACTIVE, слот
+        // жив; лог агента: старый heartbeat, затем маркер (актуален)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "pe1";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver
+        {
+            BackupAgentLogTail = HeartbeatLine + "\n" + PoolExhaustedLine,
+        };
+        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed),
+            });
+
+        // Свежий backups из ПЕРЕЧИТАННОГО ключа (как ReconcileLoop тика)
+        var reader = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        async Task<ClusterBackups> FreshBackupsAsync()
+        {
+            var reread = await reader.ReadAsync(cluster, "shard1", ct);
+            return new ClusterBackups(cluster, null,
+                new Dictionary<string, ShardBackups>
+                {
+                    ["shard1"] = new(FullShard("000000010000000000000001").Full, reread.Value),
+                });
+        }
+
+        // Act — тик 1 (первый контроль): маркер актуален → DEGRADED с маркером
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        var degraded = await ReadWal(cluster);
+        degraded!.State.Should().Be(WalStreamStatus.Degraded);
+        degraded.Error.Should().Contain("s3-pool-exhausted");
+
+        // Act — тик 2 (ключ перечитан — exhaustion-DEGRADED, расписание 3600 с
+        // НЕ наступило, но контроль выполняется): лог не изменился (доставки
+        // нет) — DEGRADED удерживается
+        (await process.TickAsync(BuildSnap(cluster), await FreshBackupsAsync(), ct)).IsSuccess.Should().BeTrue();
+        var held = await ReadWal(cluster);
+        held!.State.Should().Be(WalStreamStatus.Degraded);
+        held.Error.Should().Contain("s3-pool-exhausted");
+
+        // Act — тик 3: в логе ТОГО ЖЕ агента появился heartbeat ПОСЛЕ маркера
+        // (успешная доставка — единственный знак снятия)
+        driver.BackupAgentLogTail = PoolExhaustedLine + "\n" + HeartbeatLine;
+        (await process.TickAsync(BuildSnap(cluster), await FreshBackupsAsync(), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — self-heal одним контрольным проходом: ACTIVE, error очищен
+        var healed = await ReadWal(cluster);
+        healed!.State.Should().Be(WalStreamStatus.Active);
+        healed.Error.Should().BeNull();
+    }
+
+    // AAA (расписание, образец VerifyAtBrokenEveryTickHealsInOneTick): ключ
+    // exhaustion-DEGRADED (DEGRADED с маркером в error) + VerifyIntervalSec
+    // =3600 — контроль выполняется ТЕМ ЖЕ тиком (heartbeat в логе уже снимает
+    // маркер): заживление ACTIVE без ожидания интервала.
+    [Fact]
+    public async Task ExhaustionDegradedEveryTickHealsInOneTick()
+    {
+        // Arrange — сид: ключ DEGRADED с маркером; полный wal_start=..01;
+        // цепочка 1..3; слот жив; лог агента уже исцелён (heartbeat после
+        // маркера)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "pe2";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver
+        {
+            BackupAgentLogTail = PoolExhaustedLine + "\n" + HeartbeatLine,
+        };
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        var seed = LiveWal(cluster, state: WalStreamStatus.Degraded) with
+        {
+            Error = "s3-pool-exhausted: write list exhausted by master agent (receiver retry loop)",
+        };
+        await writer.WriteIfChangedAsync(cluster, "shard1", seed, ct);
+        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, seed),
+            });
+
+        // Act — ОДИН тик (расписание 3600 с НЕ наступило — exhaustion-DEGRADED
+        // контролирует каждый тик)
+        (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ACTIVE, error очищен
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().BeNull();
+    }
+
+    // AAA (Review Focus): docker-чтение лога мастер-агента упало (transient:
+    // агент пересоздаётся) — контроль НЕ падает тиком и НЕ деградирует
+    // фантомно: статус по общим правилам (цепочка/lag/тишина).
+    [Fact]
+    public async Task ExhaustionMarker_AgentLogReadFailure_NoPhantomDegradation()
+    {
+        // Arrange — полный wal_start=..01, цепочка 1..3, ключ ACTIVE, слот
+        // жив; docker-чтение лога агента — транспорт-фейл
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = "pe3";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
+        var sql = new FakeWalSqlExecutor();
+        SeedSlot(sql, cluster);
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 3);
+        var driver = new StubScaleDriver { FailBackupAgentLogs = true };
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walSeed = LiveWal(cluster);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, walSeed),
+            });
+
+        // Act — тик контроля (лог агента недоступен)
+        var result = await process.TickAsync(BuildSnap(cluster), backups, ct);
+
+        // Assert — тик успешен; ключ ACTIVE без маркера (лог-фейл — не
+        // деградация, transient повторит следующий контрольный проход)
+        result.IsSuccess.Should().BeTrue();
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Active);
+        wal.Error.Should().BeNull();
+    }
 }
