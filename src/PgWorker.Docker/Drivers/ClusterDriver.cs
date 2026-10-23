@@ -522,16 +522,16 @@ public sealed class PlainClusterDriver(
     public async Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
         string cluster, CancellationToken ct)
     {
+        // Контейнеры целиком из ОДНОГО листинга на движок: повторный list на каждое
+        // имя (N+1) бессмыслен — первый list уже вернул DockerContainer со State.
         var result = new List<DockerContainer>();
         foreach (var engine in _engines.Values)
-        foreach (var agent in await ListAgentsOfEngineAsync(engine, cluster, ct))
         {
-            var listed = await engine.ListContainersAsync(agent, all: true, ct);
+            var listed = await engine.ListContainersAsync(BackupAgentNames.Prefix(cluster), all: true, ct);
             if (!listed.IsSuccess)
                 return Result<IReadOnlyList<DockerContainer>>.Failed(listed.Error!);
-            var match = listed.Value.FirstOrDefault(c => c.Names.Contains(agent));
-            if (match is not null)
-                result.Add(match);
+            result.AddRange(listed.Value.Where(c => c.Names.Any(n =>
+                n.TrimStart('/').StartsWith(BackupAgentNames.Prefix(cluster), StringComparison.Ordinal))));
         }
 
         return Result<IReadOnlyList<DockerContainer>>.Success(result);
