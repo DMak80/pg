@@ -155,13 +155,24 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     /// хотя бы один узел; исчерпание — маркер.</summary>
     public async Task<Result<IReadOnlyList<WalObject>>> ListWalUnionAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await ListUnionAsync(cluster, shard, "wal/", maxKeysPerTest, ct);
+
+    /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (t02,
+    /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую
+    /// ноду момента заливки — набор full/&lt;id&gt;/pg_wal/ и wal/-дубли
+    /// размещены по нодам; соло-листинг первой живой цели даёт ложное «пусто»
+    /// (verify FAILED «set contains no pg_wal WAL segments») и ложный gap
+    /// (drill). Дедуп по имени; успех — если ответил хотя бы один узел;
+    /// исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<WalObject>>> ListUnionAsync(
+        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
         var merged = new Dictionary<string, WalObject>(StringComparer.Ordinal);
         Result<IReadOnlyList<WalObject>> last = default;
         var anySuccess = false;
         foreach (var uri in _readTargets)
         {
-            var result = await AttemptAsync(uri, () => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct));
+            var result = await AttemptAsync(uri, () => Target(uri).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct));
             if (!result.IsSuccess)
             {
                 last = result;
@@ -175,7 +186,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
 
         if (!anySuccess)
             return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
-                $"{S3PoolMarkers.Exhausted}: list-wal-union — all pool nodes are unavailable: {last.Error!.Message}"));
+                $"{S3PoolMarkers.Exhausted}: list-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
         return Result<IReadOnlyList<WalObject>>.Success([.. merged.Values]);
     }
 

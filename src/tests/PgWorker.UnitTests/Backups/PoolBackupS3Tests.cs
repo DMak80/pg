@@ -335,4 +335,59 @@ public class PoolBackupS3Tests
         second.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
         second.Error!.Message.Should().Contain("conn refused");
     }
+
+    // AAA (t02, arch/19 §5 «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
+    // префикса объединяет ответы ВСЕХ read-целей с дедупом по имени и живёт,
+    // пока отвечает хотя бы одна (первая живая может не иметь сегмента,
+    // залитого на вторую — прецедент AC4: полный заливается на первую живую
+    // ноду, а лист набора verify с FirstAlive видел пусто).
+    [Fact]
+    public async Task ListUnion_MergesAllTargets_DedupByName()
+    {
+        // Arrange — n1: сегмент 02; n2: 02 (дубль) и 03; n3 — мёртвая.
+        WalObject W(string s) => new(s, DateTimeOffset.UnixEpoch);
+        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Success([W("000000010000000000000002")])));
+        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Success(
+            [W("000000010000000000000002"), W("000000010000000000000003")])));
+        var t3 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("n3 down"))));
+        var map = new Dictionary<string, IBackupS3>
+        {
+            ["http://n1:9000"] = t1, ["http://n2:9000"] = t2, ["http://n3:9000"] = t3,
+        };
+        var pool = new PoolBackupS3(
+            ["http://n1:9000"], ["http://n1:9000", "http://n2:9000", "http://n3:9000"],
+            "ak", "sk", "b", null,
+            targetFactory: uri => map[uri]);
+
+        // Act — union префикса набора полного (как verify-валидация).
+        var result = await pool.ListUnionAsync("c", "s", "full/id1/pg_wal/", ct: CancellationToken.None);
+
+        // Assert — успех при мёртвой n3; дедуп 02; 03 из n2 присутствует.
+        result.IsSuccess.Should().BeTrue();
+        var names = result.Value.Select(o => o.Name).OrderBy(n => n).ToList();
+        names.Should().BeEquivalentTo(
+            ["000000010000000000000002", "000000010000000000000003"]);
+    }
+
+    // AAA: ВСЕ цели мертвы → Failed с маркером исчерпания (не пустой успех).
+    [Fact]
+    public async Task ListUnion_AllTargetsFail_ExhaustedMarker()
+    {
+        // Arrange
+        var t1 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
+        var t2 = new FakeTargetS3(list: _ => Task.FromResult(
+            Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException("S3 list: down"))));
+        var pool = Pool(t1, t2);
+
+        // Act
+        var result = await pool.ListUnionAsync("c", "s", "wal/", ct: CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
+    }
 }

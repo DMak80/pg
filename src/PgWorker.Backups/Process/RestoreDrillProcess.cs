@@ -157,8 +157,12 @@ public sealed class RestoreDrillProcess(
                 $"full/{backupId}: wal_start '{walStart}' cannot be parsed", ct);
 
         // 3. Непрерывность WAL-цепочки (WalChain t03); S3-отказ → transient
-        // (статус не трогаем — тик повторит).
-        var wal = await S3Pulse.CallAsync(progress, token => s3.ListWalAsync(cluster, shard, ct: token), ct, WatchdogWindow / 2);
+        // (статус не трогаем — тик повторит). Листинг — UNION по всем нодам
+        // пула (t02, arch/19 §5 «где данные есть»): соло-лист первой живой
+        // ноды не содержит сегментов, залитых на другие (полный — на первую
+        // живую момента заливки) → ложный gap «expected wal_start, found N+1»
+        // и валидационный FAILED — предшественник шторма пересъёмов.
+        var wal = await S3Pulse.CallAsync(progress, token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct, WatchdogWindow / 2);
         if (!wal.IsSuccess)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
