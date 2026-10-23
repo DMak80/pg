@@ -478,6 +478,12 @@ public class WalReceiverCoreTests
         output.Should().NotContain("\"phase\":\"tli_jump\"");
         s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
+
+        // Assert — ветка досыпки: подтверждение слота строго после put сегмента —
+        // журнал ровно по одному на доставленный сегмент, строго по порядку
+        // (confirm k — сразу после успешного put k, значение — конец только что
+        // положенного сегмента: досыпка TLI1 №2 → EndLsn(2), затем TLI2 №3 → EndLsn(3))
+        source.ConfirmJournal.Should().Equal($"{EndLsn(2)}", $"{EndLsn(3)}");
     }
 
     [Fact]

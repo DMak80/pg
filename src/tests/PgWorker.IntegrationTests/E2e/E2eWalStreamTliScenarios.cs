@@ -355,16 +355,18 @@ public class E2eWalStreamTliScenarios
                 return string.CompareOrdinal(chainLastSegment, control.Name) >= 0;
             }, TimeSpan.FromSeconds(900), ct, progress: ConvergenceProgressAsync);
 
-            // Жёсткие ассерты по факту сходимости (детали — в debug-дампе фазы)
+            // Жёсткие ассерты по факту сходимости (детали — в debug-дампе фазы).
+            // Сначала общий факт сходимости: при несходимости тест падает с
+            // осмысленным сообщением, а не NRE на отсутствующем wal-ключе.
+            converged.Should().BeTrue(
+                "the system converges after the induced segment recycling: cluster Active, wal ACTIVE w/o gap, " +
+                "chain glued, fresh COMPLETED full, delivery caught up to the control insert (§3.7 inv.1-5)");
             var finalRead = await writer.ReadAsync(cluster, "shard1", ct);
             finalRead.IsSuccess.Should().BeTrue("the wal key is readable at convergence");
             finalRead.Value!.State.Should().Be(WalStreamStatus.Active,
                 "wal key is ACTIVE at convergence (§3.7 inv.2)");
             finalRead.Value.Gap.Should().BeNull("no live gap at convergence (§3.7 inv.2)");
             finalRead.Value.State.Should().NotBe(WalStreamStatus.Broken, "no BROKEN at convergence (§3.7 inv.2)");
-            converged.Should().BeTrue(
-                "the system converges after the induced segment recycling: cluster Active, wal ACTIVE w/o gap, " +
-                "chain glued, fresh COMPLETED full, delivery caught up to the control insert (§3.7 inv.1-5)");
             chainLastSegment.Should().NotBeNull();
             var assertTli = await PrimaryTimelineAsync(cluster, "shard1", ct);
             var controlSegment = PgWorker.Backups.WalFileName.FromLsn(assertTli, controlLsn!);
@@ -424,13 +426,6 @@ public class E2eWalStreamTliScenarios
         var rest = fullJson[(i + marker.Length)..];
         var end = rest.IndexOf('"');
         return end < 0 ? null : rest[..end];
-    }
-
-    private async Task<string?> AgentContainerIdAsync(string agentName, CancellationToken ct)
-    {
-        var ids = await Fx.RunDockerAsync(
-            ["ps", "-a", "--format", "{{.ID}}", "--filter", $"name=^{agentName}$"], ct);
-        return ids.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim();
     }
 
     // TLI текущего primary шарда: Patroni GET /cluster ноды (timeline члена-лидера).
