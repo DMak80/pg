@@ -68,3 +68,5 @@ pgw-e2e-runner/pgworker-{node,backup,wal}/sdgenerator и пишет штамп �
 ## Roadmap
 
 Backlog живёт в [`arch/roadmap/`](arch/roadmap/README.md). Обозначения (теги `tNN-slug`, `←`-зависимости) и правило ведения — в [`arch/roadmap/README.md`](arch/roadmap/README.md). Треки по направлениям: **infra** (каркас, auth, поставка), **etcd** (клиент, снапшот, инспекция etcd), **sharding** (кластеры/шарды/бакеты/переезды), **ha** (Patroni/live-пробы, HA-алерты), **frontend** (React-панели), **stand** (dev-стенд, e2e). Каждый пункт — отдельный spec→plan→код (dev-flow); порядок номеров тегов = порядок исполнения.
+
+**Найденные баги** (падения тестов/дефекты вне текущей задачи) — в трек [`arch/roadmap/bugs.md`](arch/roadmap/bugs.md): пункт + своя подпапка логов `arch/roadmap/bugs/<tNN-slug>/` (состав сведений и правило закрытия — в файле трека).
