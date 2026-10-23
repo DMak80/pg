@@ -127,4 +127,12 @@
   `arch/roadmap/bugs/t06-scale-runner-container-vanished/`. Гипотезы: конкуренция
   внешнего docker-prune/очистки с живым контуром; внутрираннерный crash без
   передачи exit-кода. Разобрать телеметрию pgw-er-* (telemetry-флаг на снимок
-  логов раннера ДО его сноса).
+  логов раннера ДО его сноса). ПОВТОР (тот же день, после анализа): второй фейл
+  2/2 — ДРУГАЯ точка: `EnableSyncModeAsync` (E2eScaleScenarios.cs:490) — «master
+  shard3 must have a sync-standby after the PATCH, but found False» (гейт
+  Patroni synchronous_mode в scale-механике, вне области t02); в stack trace
+  пути сборки `worktrees/fix-t01-kafka-rotation-timeout` — docker-тег
+  `pgw-e2e-runner:e2e` ОБЩИЙ на хосте: параллельный агент перезаписал образ
+  между prepare и прогоном (интерференция параллельных агентов). Разобрать:
+  per-worktree тег раннера (guid/ветка в имени) + гейт sync-standby (механика
+  PATCH/retry).
