@@ -21,7 +21,7 @@ FAIL() {
 
 LOG '{"phase":"basebackup"}'
 rm -rf "$STAGING/full"
-pg_basebackup -d "$PGW_BK_DSN" -D "$STAGING/full" -X stream --checkpoint=spread --manifest-checksums=SHA256 \
+pg_basebackup -d "$PGW_BK_DSN" -D "$STAGING/full" -X stream --checkpoint=fast --manifest-checksums=SHA256 \
   || FAIL "pg_basebackup failed"
 
 # wal_start_segment из backup_label: "START WAL LOCATION: ... (file <seg>)"
