@@ -148,6 +148,57 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
         return $"progress={progress ?? "<none>"}; journal={journal ?? "<none>"}; outcome={outcome ?? "<none>"}";
     }
 
+    // Полный диагностический контекст фаз H/K AC10: журнал work/<C> + хвост
+    // journalTexts, счётчик тиков по journal-фазам, живость заявок и исход,
+    // наличие ключей снапшота (различает «слепой снапшот» от «слепого
+    // преф-чека»), прямая describe-проба тестом (фактический текст ошибки
+    // брокера/клиента при явном RequestTimeout 10 с) и CreatedClients фабрики
+    // (маркер Unhealthy-цикла пересозданий). Сборщик не бросает: ошибки
+    // чтений и пробы попадают в текст, не маскируя причину падения.
+    private async Task<string> RotationDiagAsync(
+        string cluster, IReadOnlyList<string> journalTexts, IReadOnlyDictionary<string, int> phaseTicks)
+    {
+        var work = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
+        var rotTicket = await fixture.GetAsync($"/kafkaworker/rotations/{cluster}");
+        var caTicket = await fixture.GetAsync($"/kafkaworker/ca_rotations/{cluster}");
+        var outcome = await fixture.GetAsync($"/kafkaworker/ticket_outcomes/{cluster}");
+        var endpoints = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
+        var appPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
+        var adminPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password");
+        var caPem = await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem");
+
+        string probe;
+        if (endpoints is null)
+        {
+            probe = "skip: endpoints key is null (blind snapshot branch)";
+        }
+        else
+        {
+            try
+            {
+                using var admin = (await fixture.DiscoveryAdminBuilderAsync(cluster, "admin")).Build();
+                // Confluent.Kafka 2.15: DescribeClusterAsync — только options
+                // (без ct), отмена не нужна: проба ограничена RequestTimeout.
+                var view = await admin.DescribeClusterAsync(
+                    new DescribeClusterOptions { RequestTimeout = TimeSpan.FromSeconds(10) });
+                probe = $"ok: brokers={view.Nodes.Count}";
+            }
+            catch (Exception e)
+            {
+                probe = $"fail: {e.Message}";
+            }
+        }
+
+        var createdClients = ((KafkaAdminClientFactory)fixture.AdminFactory).CreatedClients;
+        var phases = string.Join(",", phaseTicks.Select(kv => $"{kv.Key}={kv.Value}"));
+        return $"work={work ?? "<none>"}; rotations={rotTicket ?? "<none>"}; "
+            + $"ca_rotations={caTicket ?? "<none>"}; outcome={outcome ?? "<none>"}; "
+            + $"snapshot: endpoints={endpoints is not null} app_password={appPassword is not null} "
+            + $"admin_password={adminPassword is not null} ca_pem={caPem is not null}; "
+            + $"describe probe={probe}; createdClients={createdClients}; "
+            + $"phase ticks: {phases}; journal tail: {string.Join(" | ", journalTexts.TakeLast(6))}";
+    }
+
     // Транзиент-толерантный тик (spec §5.1): одиночный Result.Failed — не
     // провал теста: процесс идемпотентен, следующий тик переподаст батч
     // (arch/16 §5 I); подряд FailedTickLimit неудачных — исключение с
@@ -248,6 +299,25 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
         return false;
     }
 
+    // op/phase journal-записи work/<C> (null — битый JSON или полей нет):
+    // ключ счётчика тиков по journal-фазам фаз H/K.
+    private static (string Op, string Phase)? ParseJournalOpPhase(string workJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(workJson);
+            if (doc.RootElement.TryGetProperty("op", out var op) && op.ValueKind == JsonValueKind.String
+                && doc.RootElement.TryGetProperty("phase", out var phase) && phase.ValueKind == JsonValueKind.String)
+                return (op.GetString()!, phase.GetString()!);
+        }
+        catch (JsonException)
+        {
+            // битый JSON журнала — в счётчик фаз не попадает
+        }
+
+        return null;
+    }
+
     // Вычисляемый backstop финала (spec §5.3): объём в батчах — из
     // ФАКТИЧЕСКОГО pending первого успешного тика финального цикла, то есть
     // из remaining, который этот тик записал в прогресс-ключ (100 — объём
@@ -316,6 +386,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // (rotated-commit) — известная гонка общего журнала, вне буквы t10.
             var passwordSeenDone = false;
             var journalTexts = new List<string>();
+            var phaseTicks = new Dictionary<string, int>(); // "op:phase" → сколько тиков вернули фазу
 
             // Фаза H (бюджет 240 c): тики ротатора до journal done.
             var hDeadline = DateTimeOffset.UtcNow.AddSeconds(240);
@@ -329,6 +400,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 if (workNow is not null)
                 {
                     journalTexts.Add(workNow);
+                    if (ParseJournalOpPhase(workNow) is { } opPhase)
+                        phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
+                            phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
                     workNow.Should().NotContain(
                         "expired", "started rotations are never expired (triple guard)");
                     if (workNow.Contains("\"op\":\"rotate\"", StringComparison.Ordinal)
@@ -352,7 +426,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
 
             passwordSeenDone.Should().BeTrue(
                 "H must have completed within the phase budget (with a LIVE ca ticket — deadlock broken); "
-                + "journal (last phases): " + string.Join(" | ", journalTexts.TakeLast(6)));
+                + await RotationDiagAsync(cluster, journalTexts, phaseTicks));
 
             // Фаза K (бюджет 300 c): тики ca-ротатора до финала K4.
             var kDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
@@ -366,6 +440,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
                 if (workNow is not null)
                 {
                     journalTexts.Add(workNow);
+                    if (ParseJournalOpPhase(workNow) is { } opPhase)
+                        phaseTicks[$"{opPhase.Op}:{opPhase.Phase}"] =
+                            phaseTicks.GetValueOrDefault($"{opPhase.Op}:{opPhase.Phase}") + 1;
                     workNow.Should().NotContain("expired", "K window completes without expiration");
                     if (workNow.Contains("\"op\":\"rotate-ca\"", StringComparison.Ordinal)
                         && workNow.Contains("\"phase\":\"done\"", StringComparison.Ordinal))
@@ -383,8 +460,8 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             (await fixture.GetAsync($"/kafkaworker/ca_rotations/{cluster}")).Should().BeNull(
                 "ca ticket completed by K after H");
             caDone.Should().BeTrue(
-                "K must have completed within the phase budget; journal: "
-                + string.Join(" | ", journalTexts.TakeLast(6)));
+                "K must have completed within the phase budget; "
+                + await RotationDiagAsync(cluster, journalTexts, phaseTicks));
             var workFinal = await fixture.GetAsync($"/kafkaworker/work/{cluster}");
             workFinal.Should().Contain("rotate-ca").And.Contain("done");
             journalTexts.Should().NotContain(t => t.Contains("expired"));
