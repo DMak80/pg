@@ -5,7 +5,9 @@
 
 ## Диагноз
 
-**Ветка матрицы (spec §5.4): D4 — невоспроизведённый.**
+**Ветка матрицы (spec §5.4): D4 — невоспроизведённый** (зафиксирована на
+шаге A3 по телеметрии A1/A2; **ПЕРЕСМОТРЕНА на D2 красным приёмочной
+серии — см. раздел «Красный приёмочной серии (п.13)» ниже**).
 
 Критерии веток, проверенные по телеметрии обеих ступеней:
 
@@ -102,7 +104,79 @@ AC10 — зелёный в обеих ступенях. Ветки D1–D3 ис�
 | 4 | 24.10, ~22:26 | `dotnet run --project src/tests/PgWorker.E2ePrepare -c Release` | `e2e-prepare-a2.log` | Готово: образы e2e собраны, readiness stamp, 25 с |
 | 5 | 24.10, 22:27–23:27 | серия solutionx (та же команда, что в баге) | `series-1.log` | AC10 ЗЕЛЁНЫЙ; серия красная по чужим (PgWorker 17, Valkey 1, KafkaWorker-TopicLifecycle 1); SERIES_EXIT:1 |
 | 6 | 24.10, после серии | зачистка `pgw-*`/`kfw-*` + сеть | `cleanup-series-1.log`, `evidence-series-1-leftover-*.log` | 0 остатков, `kfw-net`/`pgw-net` отсутствуют |
+| 7 | 24.10, ~23:37 | `dotnet build` (A4) | `build-a4.log` | 0 / 0 |
+| 8 | 24.10, ~23:40 | изолят AC10 (A4-механика) | `isolate-2.log` | Зелёный: 1/1, 56 с |
+| 9 | 24.10, ~23:5x | свежая сборка приёмки | `accept-build.log` | 0 / 0 |
+| 10 | 25.10, ~00:0x | юниты KafkaWorker.UnitTests | `accept-units.log` | Зелёные: 359/359 |
+| 11 | 25.10, ~00:1x | изолят RotationTimeoutTests (3 кейса) | `accept-isolate.log` | Зелёный: 3/3, 1 м 30 с |
+| 12 | 25.10, ~00:2x | полный KafkaWorker.IntegrationTests | `accept-full.log` | AC10 зелёный; 73/74 (фейл `Api.MetricsTests.Metrics_WorkerSeries_AfterFirstTick_SingleInstrumentation`, вне области — см. `evidence-metrics-fail.log`); маркеры «found 2»/«Broker handle destroyed»/SIGABRT = 0 |
+| 13 | 25.10, ~00:3x–01:3x | приёмочная серия solutionx (D4) | `accept-series.log` | КРАСНАЯ — см. «Красный приёмочной серии (п.13)» |
+
+## Красный приёмочной серии (п.13) — воспроизведение AC10 с телеметрией
+
+Приёмочная серия запущена с ошибкой подготовки PgWorker-части: штамп
+E2ePrepare (22:27:55) устарел относительно правок A4 (23:38:03) → 55
+PgWorker E2E мгновенных fail-fast «sources are newer than the preparation»
+(штатный гейт t09; контейнеры не создавались). KafkaWorker-часть от штампа
+не зависит (свежая сборка) — её исходы валидны.
+
+**AC10 — КРАСНЫЙ (4 м 53 с), телеметрия A0 сработала:**
+
+```
+phase H: backstop 260 s exhausted ...; work={"op":"rotate","phase":"waiting-cluster",
+"instance":"135fc12e21b7","updated_unix":1792799826}; rotations=<none>;
+ca_rotations={...}; outcome=<none>; snapshot: endpoints=True app_password=True
+admin_password=True ca_pem=True; describe probe=ok: brokers=1; createdClients=5;
+phase ticks: rotate:phase-a=1,rotate:waiting-cluster=195,rotate:rotated-commit=1
+```
+
+Разбор по коду (`src/KafkaWorker.Provisioning/Processes/PasswordRotator.cs`):
+
+1. Ротация H прошла A и B: `phase-a=1`, `rotated-commit=1` (маркер ставится
+   В НАЧАЛЕ фазы C, строка 217), заявка удалена фазой B (`rotations=<none>`),
+   исход ещё не записан (`outcome=<none>`).
+2. В afterCommit-хвосте фазы C случился транзиент describe (брокер
+   пересоздаётся rolling C) — джоб ушёл в преф-чек-точку (строки 159–162):
+   `WaitOrExpireAsync(ticket: null, "waiting-cluster", mutationLive: true)`.
+3. **ДЕФЕКТ**: `WaitOrExpireAsync` (строка 306) перезаписывает журнал на
+   `waiting-cluster`, затирая `rotated-commit`. Детектор `afterCommit`
+   (строки 117–119) признаёт ТОЛЬКО `rotated-commit`/`phase-c` → следующий
+   тик: `ticket is null && !afterCommit` → `Success(false)` (строка 121–122)
+   — вечный no-op. Фаза C НЕВОЗОБНОВИМА: финал (исход done, journal done)
+   недостижим никогда.
+4. Телеметрия сходится полностью: РОВНО ОДНА запись waiting-cluster
+   (`updated_unix` не меняется — джоб больше не пишет журнал), 195 тиков —
+   чтения тестом неизменного журнала, `describe probe=ok: brokers=1`
+   (брокер жив; слепоты НЕТ — джоб в no-op вообще не доходит до describe),
+   `createdClients=5` (один транзиент → пара Unhealthy-пересозданий, без
+   шторма).
+
+**Диагноз меняется: D4 → D2 (систематика, прод-дефект подтверждён кодом).**
+Маркер матрицы §5.4-D2 присутствует («describe-проба тестом УСПЕШНА при
+waiting-джобе»); корень сформулирован: затирание afterCommit-хвоста
+waiting-фазой делает хвост C невосстановимым. Ожидаемое по канону §5 H:
+«журнал роли показывает незавершённую мутацию (phase-a/rotated-commit/
+phase-c …) → чистый waiting без экспирации» — журнал не должен терять
+маркер мутации, по которому возобновляется C. Оба прошлых зелёных прогона
+AC10 (изолят, серия A2) — прогоны, где транзиент describe в хвосте C не
+выпадал (в изоляте нагрузка минимальна).
+
+Сопутствующий красный той же серии: `ReassignmentTests.Drain_RemovesNonEmpty
+Broker_ReducesRF` — «Bind for 0.0.0.0:21643 failed: port is already
+allocated» (3 повторных старта брокера, docker 500) — порт-коллизия среды,
+вне области t01.
+
+Улики: `/tmp/pgw-kfw-t01-evidence-accept-series-ac10-fail.log` (блок падения
+с телеметрией), `…-pgw-fail.log` (fail-fast штампа), `…-ctrs.log`/`…-nets.log`
+(docker-улики после серии: контейнеров 0 — фикстуры демонтировали; 1 сеть
+`pgw-net-c2eca3ca`), `/tmp/pgw-kfw-t01-accept-series.log` (полный лог).
 
 ## Закрытие
 
-(дополняется в фазе A6)
+НЕ исполнено — задача НЕ закрывается: воспроизведение с телеметрией
+опровергло D4. Решение об объёме (D2-ветка: arch-first правка arch/16 +
+прод-фикс PasswordRotator + юниты + E2E-гейт + переприёмка) — за
+пользователем; пункты `bugs.md` по внеобластным красным приёмки
+(MetricsTests, ReassignmentTests-порт, PgWorker E2E fail-fast при устаревшем
+штампе — процедурный, повторная подготовка перед прогоном) — при
+возобновлении.
