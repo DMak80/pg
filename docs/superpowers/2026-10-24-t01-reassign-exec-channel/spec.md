@@ -424,7 +424,7 @@ drain/balance/идемпотентность через новый канал.
    Thresholds. Упоминания — только appsettings/Options/Program/арх, внешних
    потребителей нет.
 8. **Двухуровневые таймауты**: per-endpoint `NetworkSubmitTimeout` 30 с
-   (internal const адаптера; connect+TLS+SASL+round-trip) и внешний бюджет
+   (internal static readonly адаптера; connect+TLS+SASL+round-trip) и внешний бюджет
    процесса `SubmitSec` через linked CTS (бывший `execCts`-паттерн;
    покрывает все endpoint-попытки). Подача не ждёт физический перенос
    данных — реквестный `timeout_ms=60000` это таймаут обработки заявки, не
