@@ -133,10 +133,11 @@ public static class E2eContour
 
         // Блокирующий run: exit code контейнера = исход факта. RunProcessAsync
         // при exit≠0 раннера бросает ApplicationException («… → N: …») — это
-        // УПАВШИЙ ТЕСТ (контейнер завершился сам, не трогаем — stop-режим
-        // teardown оставит его для разбора). Прочие исключения (бюджет,
-        // daemon) — раннер мог остаться жив: добиваем rm -f.
+        // УПАВШИЙ ТЕСТ (контейнер завершился сам, не трогаем — логи снимаются
+        // ниже, затем rm). Прочие исключения (бюджет, daemon) — раннер мог
+        // остаться жив: логи ДО сноса, затем добиваем rm -f.
         Exception? failure = null;
+        string? runnerLog = null;
         try
         {
             var runArgs = new List<string>
@@ -164,6 +165,10 @@ public static class E2eContour
         catch (Exception e)
         {
             failure = e;
+            // Телеметрия ДО сноса: при бюджете/сбое транспорта docker run
+            // контейнер мог остаться — rm до снятия логов оставлял исход
+            // недоступным («runner logs unavailable: No such container»).
+            runnerLog = await SnapshotRunnerLogAsync(runnerName, contour.ArtifactsDir);
             try
             {
                 await E2eFixture.RunDockerAsync(["rm", "-f", runnerName], CancellationToken.None);
@@ -175,17 +180,8 @@ public static class E2eContour
         }
 
         // Лог раннера — в артефакты (полный тестовый журнал прогона) ДО
-        // teardown'а (стоп-режим сохраняет контейнер, но лог надёжнее в файлах).
-        string runnerLog;
-        try
-        {
-            runnerLog = await E2eFixture.RunDockerLogsAsync([runnerName], CancellationToken.None);
-            await File.WriteAllTextAsync(Path.Combine(contour.ArtifactsDir, "runner.log"), runnerLog);
-        }
-        catch (Exception e)
-        {
-            runnerLog = $"<runner logs unavailable: {e.Message}>";
-        }
+        // teardown'а; в catch-ветке выше уже снят (повторно не снимаем).
+        runnerLog ??= await SnapshotRunnerLogAsync(runnerName, contour.ArtifactsDir);
 
         // Раннер — УДАЛЯЕМ сразу после сохранения журнала: кладбище
         // Exited-раннеров копилось от прогона к прогону (11 штук за 40 минут,
@@ -219,6 +215,36 @@ public static class E2eContour
         LastContourArtifactsDir = contour.ArtifactsDir;
         E2eTiming.Step(classSw, "class-done");
         E2eTiming.FinishClass(classSw, fqn);
+    }
+
+    // Снимок docker-логов раннера в артефакты — вызывается ДО любого сноса
+    // контейнера (канон телеметрии e2e-launch: по логам отвечают «что
+    // произошло» без перезапуска тестов). «No such container» — контейнер
+    // снесён внешним актором/не создан демоном: фиксируем факт плейсхолдером
+    // (и в runner.log, и в возврате — хвост попадёт в исключение класса),
+    // оркестрацию не роняем.
+    private static async Task<string> SnapshotRunnerLogAsync(string runnerName, string artifactsDir)
+    {
+        string log;
+        try
+        {
+            log = await E2eFixture.RunDockerLogsAsync([runnerName], CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            log = $"<runner logs unavailable: {e.Message}>";
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(artifactsDir, "runner.log"), log);
+        }
+        catch
+        {
+            // телеметрия — «лучшими усилиями»
+        }
+
+        return log;
     }
 
     // Последние строки журнала — для исключения (полный — в runner.log).

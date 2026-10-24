@@ -3,7 +3,8 @@
 # Образ SUT-воркера PgWorker для E2E-контура (канон E2E-образов AGENTS.md):
 # сборка НА ХОСТЕ (dotnet publish PgWorker.App → artifacts/e2e/app), в образ —
 # ТОЛЬКО готовый publish-вывод; sdk-стадий и COPY исходников нет.
-# Тег: pgworker:e2e (локально собираемый, в registry не кладётся).
+# Тег: pgworker:e2e-<worktree> (суффикс задаёт E2eEnvironment; локально
+# собираемый, в registry не кладётся).
 # Контекст сборки — каталог publish-вывода (artifacts/e2e/app).
 # Воркер в E2E-контуре: docker.sock монтируется рантаймом (провижининг нод),
 # порты не публикуются — API слушает внутрисетевой :8443 (mTLS).

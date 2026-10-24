@@ -93,27 +93,3 @@
   Точечный фикс в задаче t02: база обоих Dockerfile — `dotnet/aspnet:10.0`.
   Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
   (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
-- **`t06-scale-runner-container-vanished`** — единичный инфраструктурный фейл
-  кейс-маркера: `PgWorker.IntegrationTests.E2e.E2eScaleScenarios.Scale_AddEmptyShard_BlockedRemoveThenAutoDismantle_NameReused`,
-  2026-10-23, ветка `feat-t02-pool-failover-selfheal` (HEAD `1bc949ca`;
-  в трёх предыдущих прогонах того же дня — зелёный). Команда: `DOTNET_CLI_UI_LANGUAGE=en
-  PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build --filter
-  FullyQualifiedName~Scale_AddEmptyShard`. Ошибка: «the runner finished with an
-  error … runner logs unavailable: docker logs pgw-er-20997ab50f57 → Error
-  response from daemon: No such container» — раннер-контейнер исчез до снятия
-  docker-логов (в артефакте два run-каталога NameReused-фазы, runner.log
-  отсутствует, teardown.txt первого контура failed=False — штатный). Ожидаемое:
-  раннер исполняет факт, лог сохраняется. Наблюдаемое: контейнер удалён
-  внешним актором до снятия логов — исход недоступен. Логи:
-  `arch/roadmap/bugs/t06-scale-runner-container-vanished/`. Гипотезы: конкуренция
-  внешнего docker-prune/очистки с живым контуром; внутрираннерный crash без
-  передачи exit-кода. Разобрать телеметрию pgw-er-* (telemetry-флаг на снимок
-  логов раннера ДО его сноса). ПОВТОР (тот же день, после анализа): второй фейл
-  2/2 — ДРУГАЯ точка: `EnableSyncModeAsync` (E2eScaleScenarios.cs:490) — «master
-  shard3 must have a sync-standby after the PATCH, but found False» (гейт
-  Patroni synchronous_mode в scale-механике, вне области t02); в stack trace
-  пути сборки `worktrees/fix-t01-kafka-rotation-timeout` — docker-тег
-  `pgw-e2e-runner:e2e` ОБЩИЙ на хосте: параллельный агент перезаписал образ
-  между prepare и прогоном (интерференция параллельных агентов). Разобрать:
-  per-worktree тег раннера (guid/ветка в имени) + гейт sync-standby (механика
-  PATCH/retry).
