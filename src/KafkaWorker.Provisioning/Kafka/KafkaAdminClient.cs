@@ -1,6 +1,7 @@
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using KafkaWorker.Core;
+using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging;
 using System.IO;
 
@@ -643,6 +644,22 @@ public sealed class KafkaAdminClient(
                     new DeleteAclsOptions { RequestTimeout = requestTimeout });
             return Result.Success();
         }, ct);
+
+    // ===== Reassignment (t01, arch/16 §2.4): подача AlterReassignments =====
+
+    // Per-endpoint бюджет подач (connect+TLS+SASL+round-trip): подача
+    // регистрируется контроллером и отвечает быстро — это НЕ ожидание
+    // физического переноса данных (реквестный timeout_ms=60000 — таймаут
+    // обработки заявки). Внешний бюджет процесса — ReassignSubmitSec.
+    internal static readonly TimeSpan NetworkSubmitTimeout = TimeSpan.FromSeconds(30);
+
+    // Клиент протокола per-call: соединение короткоживущее, кэшировать нечего
+    // (нативного клиента нет — churn-проблемы t05 не применимы). Каркас RunAsync
+    // как у остальных операций: счётчик, unhealthy-пометка при ошибке, отмена
+    // host'а не фейлит.
+    public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
+        => RunAsync(async _ => await new KafkaProtocolClient().AlterReassignmentsAsync(
+            bootstrap, user, password, caPem, moves, NetworkSubmitTimeout, ct), ct);
 
     // Фильтр «любой ACL»: не заполненные поля — Any (семантика «все»).
     private static AclBindingFilter AnyAclFilter()

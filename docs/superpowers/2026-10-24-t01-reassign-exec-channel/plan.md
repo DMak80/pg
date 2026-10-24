@@ -70,6 +70,8 @@ AdminPanel-контракт — без изменений.
 
 ## Шаг 1. Кодек KafkaProtocolCodec + юнит-тесты golden bytes
 
+- [x] выполнен (golden-байты client_id «kfw-reassign» скорректированы: длина 12 байт = 0x000C, кадры 0x16/0x1D/0x23 — в тексте плана была длина 11)
+
 **Вход:** worktree чист; спецификации примитивов — spec §4.1 и Приложение A.
 
 **Действие:** создать два файла по подпунктам 1.1 и 1.2 (полный код дан в
@@ -515,6 +517,8 @@ public sealed class KafkaProtocolCodecTests
 
 ## Шаг 2. Перегрузка `TlsChain.ValidateChain` для CA-bundle + ссылка на проект
 
+- [x] выполнен
+
 **Вход:** шаг 1 завершён (сборка юнит-цепочки зелёная).
 
 **Действие:** подпункты 2.1 (перегрузка в `src/Shared.Tls/TlsChain.cs`) и 2.2
@@ -583,6 +587,8 @@ public static class TlsChain
 ---
 
 ## Шаг 3. Миниклиент `KafkaProtocolClient` + тесты парсеров
+
+- [x] выполнен (правки отладки: `new X509Certificate2(byte[])` → `X509CertificateLoader.LoadCertificate` — SYSLIB0057 при TreatWarningsAsErrors; golden client_id 12 байт)
 
 **Вход:** шаги 1–2 завершены (кодек и `TlsChain.ValidateChain(…, anchors)` доступны).
 
@@ -1131,6 +1137,8 @@ compact-строка nullable — `topic` может прийти null (broker �
 ---
 
 ## Шаг 4. Seam: `IKafkaAdminClient.AlterReassignmentsAsync` + адаптер + фейки
+
+- [x] выполнен
 
 **Вход:** шаг 3 завершён; `ReassignMove` (namespace
 `KafkaWorker.Provisioning.Processes`, файл
