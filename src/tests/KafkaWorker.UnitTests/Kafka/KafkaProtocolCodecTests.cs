@@ -473,4 +473,26 @@ public sealed class KafkaProtocolCodecTests
             .And.Contain("localhost:1")
             .And.Contain("localhost:2");
     }
+
+    [Fact]
+    public async Task AlterReassignments_InvalidCaPemBlock_Fails_WithoutNetwork()
+    {
+        // Arrange: валидный первый блок (реальный CA) + битый второй — загрузка
+        // второго якоря падает посреди bundle. Конфигурационная ошибка обязана
+        // вернуть Result.Failed до endpoint-попыток (ParseCertificates стоит
+        // после guards, до цикла) — без исключения в каркас адаптера, чтобы
+        // unhealthy-пометка не срабатывала (spec §4.4).
+        var caPem = ClusterPki.GenerateCa("unit-badpem").CaPem
+                    + "\n-----BEGIN CERTIFICATE-----\n!!!not-base64!!!\n-----END CERTIFICATE-----";
+        var client = new KafkaProtocolClient();
+
+        // Act
+        var result = await client.AlterReassignmentsAsync(
+            "localhost:1", "u", "p", caPem, [new ReassignMove("t", 0, [1])],
+            TimeSpan.FromSeconds(2), CancellationToken.None);
+
+        // Assert: fail-fast «ca_pem invalid» — симметрично guard'у «ca_pem missing».
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("ca_pem invalid");
+    }
 }

@@ -51,7 +51,19 @@ internal sealed class KafkaProtocolClient
 
         // Якоря доверия (bundle OLD+NEW окна ротации) парсятся ОДИН раз на
         // вызов и диспозятся по его завершении — не на каждую endpoint-попытку.
-        var anchors = ParseCertificates(caPem);
+        // Битый CERTIFICATE-блок — конфигурационная ошибка: fail-fast до сети,
+        // симметрично guard'у «ca_pem missing» (Result.Failed, а не исключение
+        // в каркас адаптера — unhealthy-пометка не срабатывает, spec §4.4).
+        IReadOnlyList<X509Certificate2> anchors;
+        try
+        {
+            anchors = ParseCertificates(caPem);
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(new ApplicationException($"kfw-reassign: ca_pem invalid: {ex.Message}", ex));
+        }
+
         try
         {
             // Failover по списку CLIENT endpoints (spec §7.6): первый полный
@@ -345,32 +357,44 @@ internal sealed class KafkaProtocolClient
     }
 
     // Все CERTIFICATE-блоки PEM (bundle окна ротации OLD+NEW → 2 якоря).
+    // Битый блок посреди bundle (например, не-base64 тело): уже созданные
+    // якоря диспозятся, исходное исключение пробрасывается — вызывающий
+    // оформляет fail-fast «ca_pem invalid».
     internal static IReadOnlyList<X509Certificate2> ParseCertificates(string caPem)
     {
         var anchors = new List<X509Certificate2>();
-        var lines = caPem.Split('\n');
-        var block = new List<string>();
-        foreach (var raw in lines)
+        try
         {
-            var line = raw.Trim();
-            if (line.StartsWith("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal))
+            var lines = caPem.Split('\n');
+            var block = new List<string>();
+            foreach (var raw in lines)
             {
-                block.Clear();
-                block.Add(line);
+                var line = raw.Trim();
+                if (line.StartsWith("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal))
+                {
+                    block.Clear();
+                    block.Add(line);
+                }
+                else if (line.StartsWith("-----END CERTIFICATE-----", StringComparison.Ordinal) && block.Count > 0)
+                {
+                    block.Add(line);
+                    // SYSLIB0057: в .NET 10 загрузка серта из байтов — через
+                    // X509CertificateLoader (конструктор устарел).
+                    anchors.Add(X509CertificateLoader.LoadCertificate(
+                        Encoding.UTF8.GetBytes(string.Join('\n', block))));
+                    block.Clear();
+                }
+                else if (block.Count > 0)
+                {
+                    block.Add(line);
+                }
             }
-            else if (line.StartsWith("-----END CERTIFICATE-----", StringComparison.Ordinal) && block.Count > 0)
-            {
-                block.Add(line);
-                // SYSLIB0057: в .NET 10 загрузка серта из байтов — через
-                // X509CertificateLoader (конструктор устарел).
-                anchors.Add(X509CertificateLoader.LoadCertificate(
-                    Encoding.UTF8.GetBytes(string.Join('\n', block))));
-                block.Clear();
-            }
-            else if (block.Count > 0)
-            {
-                block.Add(line);
-            }
+        }
+        catch
+        {
+            foreach (var anchor in anchors)
+                anchor.Dispose();
+            throw;
         }
 
         return anchors;
