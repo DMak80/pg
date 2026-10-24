@@ -472,30 +472,169 @@ public class E2eScaleScenarios
     }
 
     // Включение synchronous_mode у Patroni мастера шарда (P8-префлайт move).
+    // PATCH /config ретрится (транспорт/таймаут/5xx/409 Patroni под нагрузкой
+    // серии — transient, мастер перечитывается перед попыткой; 4xx — не
+    // transient, падаем сразу). Гейт sync-standby читает АКТУАЛЬНОГО мастера
+    // на каждом такте: лидерсмен между PATCH и чтением уводит
+    // synchronous_standby_names на бывшего мастера (реплика несёт пустое
+    // значение), чтение с фиксированной ноды давало ложный фейл. При неудаче
+    // гейта — дамп DCS-config, Patroni /cluster и pg_stat_replication в
+    // diag.log (телеметрия e2e-launch: «что произошло» — из лога прогона).
     private async Task EnableSyncModeAsync(string cluster, string shard, CancellationToken ct)
     {
-        var master = await MasterInfoAsync(cluster, shard, ct);
-        // t22: мутация Patroni — https с доверием CA контура + basic-auth
-        // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/rest_password", ct))
             .Value!.Value;
-        var http = Fx.NewPatroniHttpClient();
-        using var response = await http.SendAsync(
-            E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
-                restPassword, """{"synchronous_mode":true}"""),
-            ct);
-        response.IsSuccessStatusCode.Should().BeTrue(
-            $"Patroni {shard} must accept the PATCH /config (got HTTP {(int)response.StatusCode})");
+        var patched = false;
+        string patchError = "not attempted";
+        for (var attempt = 1; attempt <= 3 && !patched; attempt++)
+        {
+            // t22: мутация Patroni — https с доверием CA контура + basic-auth
+            // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
+            var master = await MasterInfoAsync(cluster, shard, ct);
+            try
+            {
+                using var http = Fx.NewPatroniHttpClient();
+                using var response = await http.SendAsync(
+                    E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
+                        restPassword, """{"synchronous_mode":true}"""),
+                    ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    patched = true;
+                    break;
+                }
+
+                patchError = $"HTTP {(int)response.StatusCode}";
+                if ((int)response.StatusCode < 500 && (int)response.StatusCode != 409)
+                    break; // 4xx — не transient: ретрай бессмыслен
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+            {
+                patchError = e.Message; // транспорт/таймаут клиента (3 с) — transient
+            }
+
+            await Task.Delay(2000, ct);
+        }
+
+        patched.Should().BeTrue(
+            $"Patroni {shard} must accept the PATCH /config (last error: {patchError})");
 
         var synced = await E2eFixture.WaitForAsync(async () =>
         {
-            var names = await SqlScalarAsync(master.Dsn,
-                "SELECT setting FROM pg_settings WHERE name = 'synchronous_standby_names'", ct);
-            var count = await SqlScalarAsync(master.Dsn,
-                "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')", ct);
-            return !string.IsNullOrWhiteSpace(names) && long.Parse(count) >= 1;
+            var current = await PrimaryOrNullAsync(cluster, shard, ct);
+            if (current is null)
+                return false; // лидерсмен/рестарт Patroni — такт повторит
+            try
+            {
+                var names = await SqlScalarAsync(current.Dsn,
+                    "SELECT setting FROM pg_settings WHERE name = 'synchronous_standby_names'", ct);
+                var count = await SqlScalarAsync(current.Dsn,
+                    "SELECT count(*) FROM pg_stat_replication WHERE sync_state IN ('sync','quorum')", ct);
+                return !string.IsNullOrWhiteSpace(names) && long.Parse(count) >= 1;
+            }
+            catch (NpgsqlException)
+            {
+                return false; // перезапуск/перенос мастера — такт повторит
+            }
         }, TimeSpan.FromSeconds(60), ct);
+        if (!synced)
+            await DumpSyncGateDiagnosticsAsync(cluster, shard, restPassword, ct);
         synced.Should().BeTrue($"the master {shard} must have a sync-standby after the PATCH");
+    }
+
+    // АКТУАЛЬНЫЙ мастер шарда на пробу (легковесно, без ожидания master-ключа):
+    // /primary на patroni-портах нод из portalloc; null — ни одна не отвечает
+    // как primary (транзит лидерсмена — такт гейта повторит).
+    private async Task<MasterInfo?> PrimaryOrNullAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var addresses = await PortallocAsync(cluster);
+        foreach (var (nodeKey, _) in addresses
+                     .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                     .OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            var node = nodeKey.Split('/')[1];
+            var host = $"pgw-{cluster}-{shard}-{node}";
+            try
+            {
+                // Изолированный клиент на пробу (диагностика общего
+                // PatroniHttp: ObjectDisposedException в §8-3).
+                using var http = Fx.NewPatroniHttpClient();
+                using var response = await http.GetAsync($"https://{host}:8008/primary", ct);
+                if (!response.IsSuccessStatusCode)
+                    continue;
+                return new MasterInfo(node, host,
+                    $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+            }
+            catch (Exception)
+            {
+                // сетевой сбой пробы (рестарт/ещё не готова) — не primary
+            }
+        }
+
+        return null;
+    }
+
+    // Телеметрия фейла гейта sync-standby (без перезапуска прогона): DCS-config
+    // Patroni (значение synchronous_mode в DCS), /cluster каждой ноды (роли,
+    // sync_standby) и pg_stat_replication с обоих узлов — в diag.log.
+    private async Task DumpSyncGateDiagnosticsAsync(
+        string cluster, string shard, string restPassword, CancellationToken ct)
+    {
+        var lines = new StringBuilder();
+        try
+        {
+            var dcs = await GetOrNullAsync($"/service/{cluster}-{shard}/config");
+            lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: DCS config = {dcs?.Value ?? "absent"}");
+            var addresses = await PortallocAsync(cluster);
+            foreach (var (nodeKey, _) in addresses
+                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                         .OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                var node = nodeKey.Split('/')[1];
+                var host = $"pgw-{cluster}-{shard}-{node}";
+                try
+                {
+                    using var http = Fx.NewPatroniHttpClient();
+                    using var request = new HttpRequestMessage(
+                        HttpMethod.Get, $"https://{host}:8008/cluster");
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                        "Basic", Convert.ToBase64String(
+                            Encoding.UTF8.GetBytes($"patroni:{restPassword}")));
+                    using var response = await http.SendAsync(request, ct);
+                    var body = (await response.Content.ReadAsStringAsync(ct)).Trim();
+                    lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: /cluster {node} → "
+                                     + $"HTTP {(int)response.StatusCode}: {body}");
+                }
+                catch (Exception e)
+                {
+                    lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: /cluster {node}: EXC {e.Message}");
+                }
+
+                try
+                {
+                    var dsn = $"Host={host};Port=5432;Database={cluster};" +
+                              $"Username=postgres;Password={E2eFixture.SuPassword}";
+                    var names = await SqlScalarAsync(dsn,
+                        "SELECT setting FROM pg_settings WHERE name = 'synchronous_standby_names'", ct);
+                    var repl = await SqlScalarAsync(dsn,
+                        "SELECT coalesce(string_agg(application_name || ':' || state || ':' || sync_state, '; '), 'none') "
+                        + "FROM pg_stat_replication", ct);
+                    lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: SQL {node}: "
+                                     + $"sync_names='{names}'; repl=[{repl}]");
+                }
+                catch (Exception e)
+                {
+                    lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: SQL {node}: EXC {e.Message}");
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: dump failed: {e}");
+        }
+
+        // Файловый канал: Console.Error раннер проглатывает (xUnit v3).
+        await File.AppendAllTextAsync(Path.Combine(Fx.ArtifactsDir, "diag.log"), lines.ToString(), ct);
     }
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)

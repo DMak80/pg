@@ -6,7 +6,8 @@
 # Контекст сборки — каталог артефактов (узкий, без «тихой» передачи корня):
 #   dotnet publish src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj \
 #     -c Release -o artifacts/e2e/wal
-#   docker build -f docker/PgWorker.Wal.E2E.Dockerfile -t pgworker-wal:e2e \
+#   docker build -f docker/PgWorker.Wal.E2E.Dockerfile \
+#     -t pgworker-wal:e2e-<worktree> \
 #     artifacts/e2e/wal
 # База aspnet (не runtime): WalReceiver транзитивно (Backups → Shared.Metrics)
 # объявляет FrameworkReference Microsoft.AspNetCore.App — runtimeconfig требует

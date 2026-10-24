@@ -42,14 +42,70 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
 
+    // ===== Теги pg-собираемых e2e-образов: per-worktree =====
+
+    // Суффикс тега (ветка + хэш пути worktree): параллельные агенты одного
+    // docker-хоста не перезаписывают образы друг друга между prepare и
+    // прогоном — фиксированный общий тег отдавал раннеру ЧУЖИЕ бинари (стеки
+    // упавшего прогона указывали на чужой worktree при своём исходе).
+    // Слои docker-кэша контентно-адресные и общие — пересборка тега соседнего
+    // worktree инкрементальна.
+    private const string TagSuffixEnv = "PGW_E2E_TAG";
+
+    private static readonly string ImageTagSuffix = ComputeImageTagSuffix();
+
+    private static string ComputeImageTagSuffix()
+    {
+        // Раннер: суффикс выдал хост-оркестратор env'ом (FindRoot в контейнере
+        // невозможен — docker/node/Dockerfile туда не копируется).
+        if (IsInnerRunner)
+            return Environment.GetEnvironmentVariable(TagSuffixEnv)
+                ?? throw new ApplicationException(
+                    $"{TagSuffixEnv} is not set — e2e image tags cannot be resolved");
+        var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(root))).ToLowerInvariant()[..8];
+        var branch = TryGitBranch(root);
+        return branch.Length == 0 ? hash : $"{branch}-{hash}";
+    }
+
+    // Ветка worktree — читаемость тега в `docker images`; git недоступен или
+    // репозитория нет — пустая строка (уникальность держит хэш пути).
+    private static string TryGitBranch(string root)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --abbrev-ref HEAD")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = root,
+            };
+            using var process = System.Diagnostics.Process.Start(psi);
+            if (process is null || !process.WaitForExit(5000) || process.ExitCode != 0)
+                return "";
+            var chars = process.StandardOutput.ReadToEnd().Trim().ToLowerInvariant()
+                .Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-')
+                .ToArray();
+            var branch = new string(chars).TrimEnd('-');
+            return branch.Length > 32 ? branch[..32].TrimEnd('-') : branch;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
     /// <summary>Образ SUT-воркера (контур «Вариант A»): publish PgWorker.App НА
     /// ХОСТЕ → образ publish-COPY (docker/PgWorker.E2E.Dockerfile); локальная
     /// сборка, в registry не кладётся.</summary>
-    public const string WorkerImage = "pgworker:e2e";
+    public static string WorkerImage => $"pgworker:e2e-{ImageTagSuffix}";
 
     /// <summary>Образ тестового раннера (фаза 2): publish тестовой сборки НА
     /// ХОСТЕ → docker/E2eRunner.Dockerfile (runtime + docker CLI + артефакты).</summary>
-    public const string RunnerImage = "pgw-e2e-runner:e2e";
+    public static string RunnerImage => $"pgw-e2e-runner:e2e-{ImageTagSuffix}";
 
     // Нода пула — ВНЕШНИЙ образ owns3:dev (репозиторий ../OwnS3, сборка —
     // deploy/build-image.sh там; в registry не кладётся; pg его не собирает).
@@ -62,18 +118,18 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     // Образ узла (задача 25): без DOORMAN_URL — узел без пулера, PgWorker
     // запускается с EnableDoorman=false (Д4, R1).
-    public const string NodeImage = "pgworker-node:e2e";
+    public static string NodeImage => $"pgworker-node:e2e-{ImageTagSuffix}";
 
-    public const string JobImage = "pgworker-backup:e2e";
+    public static string JobImage => $"pgworker-backup:e2e-{ImageTagSuffix}";
 
     /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3): собирается рядом с
-    /// джобовым (та же ветка withS3Node) — pgworker-wal:e2e.</summary>
-    public const string WalImage = "pgworker-wal:e2e";
+    /// джобовым (та же ветка withS3Node).</summary>
+    public static string WalImage => $"pgworker-wal:e2e-{ImageTagSuffix}";
 
     /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
     /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
     /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
-    public const string SdImage = "sdgenerator:e2e";
+    public static string SdImage => $"sdgenerator:e2e-{ImageTagSuffix}";
 
     // Креды ownS3-ноды E2E: root-пара (mc/сид/чтение теста) и read-write ключ
     // ноды — им соответствует ключ «backups» per-cluster secrets-ключа пула
@@ -808,12 +864,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
         // Раннер получает ТОЛЬКО периметр класса: сеть, CA, окно портов
         // (per-класс, выдано хостом — см. CreateClassNetworkAsync) и host-пути
         // bind-источников (bind-пути резолвит демон хоста, а не раннер).
-        // etcd/ownS3/mc — per-факт внутри.
+        // etcd/ownS3/mc — per-факт внутри. PGW_E2E_TAG — суффикс тегов
+        // e2e-образов этого worktree (раннер резолвит те же образы, что
+        // собрал хост-оркестратор; в контейнере FindRoot невозможен).
         var env = new Dictionary<string, string>
         {
             ["PGW_TEST_DOCKER"] = "1",
             // Inner-режим раннера: StartAsync факта поднимает per-факт контур.
             ["PGW_E2E_INNER"] = "1",
+            ["PGW_E2E_TAG"] = ImageTagSuffix,
             ["PGW_E2E_NET"] = netName,
             ["PGW_E2E_CA_PEM"] = caPem,
             ["PGW_E2E_CA_KEY_PEM"] = caKeyPem,

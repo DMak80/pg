@@ -4,7 +4,8 @@
 # комплект, что PgWorker.Backup.Dockerfile, но контекст сборки — каталог docker/
 # (узкий, без «тихой» передачи корня репозитория). Слои base/mc общие с
 # dev-образом — docker-cache делает повторные сборки мгновенными.
-#   docker build -f docker/PgWorker.Backup.E2E.Dockerfile -t pgworker-backup:e2e docker/
+#   docker build -f docker/PgWorker.Backup.E2E.Dockerfile \
+#     -t pgworker-backup:e2e-<worktree> docker/
 FROM postgres:18
 
 ARG MC_VERSION=RELEASE.2025-08-13T08-35-41Z
