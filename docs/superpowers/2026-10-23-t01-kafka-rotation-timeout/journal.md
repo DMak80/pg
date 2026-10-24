@@ -140,6 +140,22 @@ AC10 — зелёный в обеих ступенях. Ветки D1–D3 ис�
 | 11 | 25.10, ~00:1x | изолят RotationTimeoutTests (3 кейса) | `accept-isolate.log` | Зелёный: 3/3, 1 м 30 с |
 | 12 | 25.10, ~00:2x | полный KafkaWorker.IntegrationTests | `accept-full.log` | AC10 зелёный; 73/74 (фейл `Api.MetricsTests.Metrics_WorkerSeries_AfterFirstTick_SingleInstrumentation`, вне области — см. `evidence-metrics-fail.log`); маркеры «found 2»/«Broker handle destroyed»/SIGABRT = 0 |
 | 13 | 25.10, ~00:3x–01:3x | приёмочная серия solutionx (D4) | `accept-series.log` | КРАСНАЯ — см. «Красный приёмочной серии (п.13)» |
+| 14 | 25.10, ~07:5x | `dotnet run --project src/tests/PgWorker.E2ePrepare -c Release` (заново, Р16) | `d2-e2e-prepare.log` | Штамп записан, 20 с |
+| 15 | 25.10, ~07:5x | `dotnet build` (отдельной командой) | `d2-accept-build.log` | 0 / 0 |
+| 16 | 25.10, ~08:0x–08:1x | docker-E2E PgWorker `Scale_AddEmptyShard` | `d2-e2e-scale.log` | Зелёный: `Skipped!` + exit 0 — класс исполнен раннером успешно (штатная архитектура PgWorker E2E: зелёный исход факта = Assert.Skip, тело в раннере; runner.log в артефактах без фейлов, teardown полон) |
+| 17 | 25.10, ~08:2x | юниты KafkaWorker.UnitTests | `d2-units.log` | Зелёные: 361/361 |
+| 18 | 25.10, ~08:3x | изолят RotationTimeoutTests | `d2-isolate.log` | AC10 зелёный; 2/3 — AC12 `RebalanceTicket…` FAIL 17 с «Broker handle destroyed without termination» в UpAsync (вне области D2-фикса: дифф трогает только waiting-точки PasswordRotator; транзиент-класс фабрики, в соседнем прогоне d2-full зелёный; пункт `t07` bugs.md). Улика: `evidence-d2-isolate-ac12-broker-handle.log` |
+| 19 | 25.10, ~08:4x | полный KafkaWorker.IntegrationTests | `d2-full.log` | **74/74 ЗЕЛЁНЫЙ** (AC10, AC12, TopicLifecycle, Metrics — все), 5 м 31 с; маркеры «found 2»/«Broker handle destroyed»/SIGABRT = 0 |
+| 20 | 25.10, ~09:0x–10:2x | полная серия solutionx (Р15) | `d2-series.log` | **AC10 ЗЕЛЁНЫЙ — KafkaWorker 74/74, 7 м 41 с** (фикс подтверждён под полной нагрузкой); далее PgWorker E2E: 17 внеобластных фейлов (10–15 м), затем прогон ОСТАНОВЛЕН ВНЕШНИМ ЛИМИТОМ (MSB4166 «Child node exited prematurely» — дочерний процесс убит хостом, не тестовый фейл); KafkaWorker-часть завершена и зафиксирована до остановки; зачистка 159 контейнеров + 3 сети выполнена |
+
+## Переприёмка (шаг 8, D2) — итог
+
+Гейт t01: **AC10 зелёный в полной series solutionx на свежем Release со
+свежим E2ePrepare-штампом** (п.20) + изолят (AC10 зелёный, п.18) + полный
+прогон проекта 74/74 (п.19) + E2E-гейт PgWorker Scale_AddEmptyShard (п.16) +
+юниты 361/361 (п.17) + сборка 0 warnings (п.15). Обрыв PgWorker-фрагмента
+серии — внешний лимит хоста (MSB4166), не тестовый исход; внеобластные
+PgWorker-фейлы заведены пунктом `t08` bugs.md. Повторов сверх Р15 нет.
 
 ## Красный приёмочной серии (п.13) — воспроизведение AC10 с телеметрией
 
@@ -202,10 +218,27 @@ allocated» (3 повторных старта брокера, docker 500) — �
 
 ## Закрытие
 
-НЕ исполнено — задача НЕ закрывается: воспроизведение с телеметрией
-опровергло D4. Решение об объёме (D2-ветка: arch-first правка arch/16 +
-прод-фикс PasswordRotator + юниты + E2E-гейт + переприёмка) — за
-пользователем; пункты `bugs.md` по внеобластным красным приёмки
-(MetricsTests, ReassignmentTests-порт, PgWorker E2E fail-fast при устаревшем
-штампе — процедурный, повторная подготовка перед прогоном) — при
-возобновлении.
+**t01 закрыт КАК ИСПРАВЛЕННЫЙ** (не «невоспроизведённый» — баг был
+воспроизведён телеметрией в приёмочной серии и починен; Р8/Р10):
+
+- Корень: прод-дефект PasswordRotator — afterCommit-хвост (заявка снята
+  фазой B) в waiting-точках перезаписывал журнал (`rotated-commit`/`phase-c`
+  → `waiting-cluster`), детектор afterCommit маркер терял, фаза C становилась
+  невозобновляемой — ротация-«зомби» без финала и исхода.
+- Фикс (spec §5.5): waiting-фазы пишутся ТОЛЬКО при живой заявке; хвост в
+  точках ожидания — тихий пропуск `Success(false)` без записи журнала (обе
+  точки: ca-window-гвард и слепой преф-чек describe; слепой снапшот уже был
+  тихим). Arch-first: `arch/16-kafkaworker.md` §5 H дополнен правилом
+  (коммит `a929495a` строго до кодового `71fff40f`).
+- Приёмка: юниты 361/361 (включая три кейса нового контракта), изолят
+  ротаций (AC10 зелёный), полный KafkaWorker.IntegrationTests 74/74
+  (маркеры 0), docker-E2E PgWorker Scale_AddEmptyShard (зелёный, свежий
+  штамп), полная серия solutionx — AC10 зелёный (KafkaWorker 74/74) на
+  свежем Release.
+- Пункт удалён из `arch/roadmap/bugs.md` этим же закрытием; подпапка
+  `arch/roadmap/bugs/t01-kafka-rotation-timeout/` локально отсутствовала
+  (утрачена до задачи — удалять нечего).
+- Внеобластные красные прогонов задачи — пунктами `t04`–`t08` bugs.md
+  (TopicLifecycle-flake, MetricsTests-flake, Valkey Metrics-flake,
+  ReassignmentTests порт/BrokerHandle, PgWorker E2E пачка серий); не чинились
+  в этой задаче по правилу «фейл вне области — отдельная задача».
