@@ -45,25 +45,6 @@
   Гипотезы: стабильный 2/2 фейл под параллельной нагрузкой полной серии —
   проверить вне серии на main-базе; разбор гейтов готовности кластера
   (`waiting-cluster`) и тайкетов rotate.
-- **`t02-pool-failover-selfheal`** — E2E-самолечение пула после исчерпания не
-  сходится в бюджет: `PgWorker.IntegrationTests.E2e.PoolFailoverExhaustionScenarios.Pool_FailoverList_And_Exhaustion_SelfHeal`
-  — FAIL 11 м 19 с (серия `FullyQualifiedName~IntegrationTests`, 2026-10-23,
-  ветка `feat-t24-walreceiver-tli-jump`, HEAD `4f80809e`, база main
-  `91358f63`); сценарий `pool-ac4`, run `98792608d19c4b2896411e73bcc5c8a0`.
-  Ошибка: `Expected boolean to be True because raising the node — self-healing
-  back to ACTIVE (retry loop), but found False` (`E2eBackupPoolScenarios.cs:610`).
-  Ожидаемое: после исчерпания пула (exhaustion) и подъёма ноды воркер возвращает
-  кластер в ACTIVE в бюджете гейта (retry loop). Наблюдаемое: за 11 м 19 с
-  кластер в ACTIVE не вернулся; в timing прогона — хвостовые ожидания чтения
-  writer 185,6 с и 300,4 с. Артефакты (63 МБ, целиком):
-  `arch/roadmap/bugs/t02-pool-failover-selfheal/e2e-artifacts-6adb2309774347f699932468c20e45c8/`
-  (docker-логи/inspect всех 13 контейнеров `pgw-*pac498792608*`, `pgw-ew-*`
-  воркеров, `timing.log`, `snapshots/`, `README-cleanup.txt` — контур был
-  СТОПНУТ и не удалён для разбора, зачищен после фиксации артефактов);
-  фрагмент журнала серии — `series2-pool-failover-fail.log`. Гипотезы:
-  воркер не выходит из деградации после подъёма ноды (пересоздание
-  агентов/джобов при исчерпанном пуле) — разбирать по docker-логам
-  `pgw-ew-pac4b` и `host.log` в артефактах.
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`
@@ -82,3 +63,57 @@
   серий). Гипотезы: жёсткий `HttpClient.Timeout` docker-клиента против
   медленного pull под нагрузкой — разобрать таймаут/ретрай операции pull
   (или предтягивание образа в фикстуре), канон §7.2 не ослабляя.
+- **`t04-tligap-writeifchanged-flaky`** — флаки юнит-теста на границе секунд:
+  `PgWorker.IntegrationTests.Backups.WalStreamProcessTests.TliGap_WriteIfChanged_Idempotent`,
+  2026-10-23, ветка `feat-t02-pool-failover-selfheal` (HEAD `c8204e83`; тот же
+  код на `14191d92` — 54/54 зелёным). Команда:
+  `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --no-build
+  --filter "FullyQualifiedName~WalStreamProcessTests"`. Ошибка: `Expected
+  journalUnix1 to be 1792766055L, but found 1792766054L (difference of -1)`
+  (`WalStreamProcessTests.cs:1750`). Ожидаемое: второй тик не переписывает
+  journal-ключ `/pgworker/work/<C>` (updated_unix идемпотентен). Наблюдаемое:
+  updated_unix изменился на +1 между чтениями — запись журнала тика 1 легла в
+  одну реальную секунду, а повторная запись (между тиками/во втором тике)
+  — в следующую; ассерт на реальных часах нестабилен. Логи:
+  `arch/roadmap/bugs/t04-tligap-writeifchanged-flaky/` (лог упавшей серии).
+  Гипотезы: секундная гранулярность `DateTimeOffset.UtcNow` в
+  `WorkJournal.WritePhaseAsync` + журнальная запись, выполняющаяся при
+  удержании gap/между тиками; воспроизводимость ~редкая (1 из прогонов).
+  Разобрать писателя второй записи и стабилизировать ассерт (фейковые часы
+  журнала либо сравнение payload без updated_unix).
+- **`t05-wal-image-aspnet-base`** — образы `pgworker-wal` (dev и e2e) падали на
+  старте агента: `Framework 'Microsoft.AspNetCore.App' version '10.0.0' … No
+  frameworks were found`. Причина: транзитивный FrameworkReference
+  (WalReceiver → PgWorker.Backups → Shared.Metrics) объявляет ASP.NET Core в
+  runtimeconfig, а база образов — `dotnet/runtime:10.0` (без ASP.NET Core).
+  Вскрылось docker-E2E AC4 (`Pool_FailoverList_And_Exhaustion_SelfHeal`,
+  2026-10-23, ветка `feat-t02-pool-failover-selfheal`, артефакты
+  `arch/roadmap/bugs/t05-wal-image-aspnet-base/`) — гейт Arrange
+  «agents before the node failure» ждал 480 с (агенты в restart-лупе).
+  Точечный фикс в задаче t02: база обоих Dockerfile — `dotnet/aspnet:10.0`.
+  Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
+  (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
+- **`t06-scale-runner-container-vanished`** — единичный инфраструктурный фейл
+  кейс-маркера: `PgWorker.IntegrationTests.E2e.E2eScaleScenarios.Scale_AddEmptyShard_BlockedRemoveThenAutoDismantle_NameReused`,
+  2026-10-23, ветка `feat-t02-pool-failover-selfheal` (HEAD `1bc949ca`;
+  в трёх предыдущих прогонах того же дня — зелёный). Команда: `DOTNET_CLI_UI_LANGUAGE=en
+  PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build --filter
+  FullyQualifiedName~Scale_AddEmptyShard`. Ошибка: «the runner finished with an
+  error … runner logs unavailable: docker logs pgw-er-20997ab50f57 → Error
+  response from daemon: No such container» — раннер-контейнер исчез до снятия
+  docker-логов (в артефакте два run-каталога NameReused-фазы, runner.log
+  отсутствует, teardown.txt первого контура failed=False — штатный). Ожидаемое:
+  раннер исполняет факт, лог сохраняется. Наблюдаемое: контейнер удалён
+  внешним актором до снятия логов — исход недоступен. Логи:
+  `arch/roadmap/bugs/t06-scale-runner-container-vanished/`. Гипотезы: конкуренция
+  внешнего docker-prune/очистки с живым контуром; внутрираннерный crash без
+  передачи exit-кода. Разобрать телеметрию pgw-er-* (telemetry-флаг на снимок
+  логов раннера ДО его сноса). ПОВТОР (тот же день, после анализа): второй фейл
+  2/2 — ДРУГАЯ точка: `EnableSyncModeAsync` (E2eScaleScenarios.cs:490) — «master
+  shard3 must have a sync-standby after the PATCH, but found False» (гейт
+  Patroni synchronous_mode в scale-механике, вне области t02); в stack trace
+  пути сборки `worktrees/fix-t01-kafka-rotation-timeout` — docker-тег
+  `pgw-e2e-runner:e2e` ОБЩИЙ на хосте: параллельный агент перезаписал образ
+  между prepare и прогоном (интерференция параллельных агентов). Разобрать:
+  per-worktree тег раннера (guid/ветка в имени) + гейт sync-standby (механика
+  PATCH/retry).

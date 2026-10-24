@@ -110,7 +110,7 @@ public sealed class BackupVerifyProcess(
     private async Task TickShardAsync(
         string cluster, string shard, ShardBackups shardBackups,
         IReadOnlyDictionary<string, NodeAddress> addresses, long intervalSec, long nowUnix,
-        BackupPoolContext pool, IBackupS3 s3, CancellationToken ct)
+        BackupPoolContext pool, PoolBackupS3 s3, CancellationToken ct)
     {
         var fulls = shardBackups.Full;
 
@@ -182,14 +182,17 @@ public sealed class BackupVerifyProcess(
 
         // (4) Цепочка: list wal/ + list набора + строгие TLI-переходы (по содержимому
         //     history при наличии). Transient list/GET → шард-skip, статус не трогаем.
-        var walList = await S3Pulse.CallAsync(progress, token => s3.ListAsync(cluster, shard, "wal/", ct: token), ct, WatchdogWindow / 2);
+        //     Листинги — UNION по всем нодам пула (t02, arch/19 §5 «где данные
+        //     есть»): полный заливается на первую живую ноду момента заливки —
+        //     соло-лист другой ноды даёт ложный gap и ложное «пусто» в наборе.
+        var walList = await S3Pulse.CallAsync(progress, token => s3.ListWalUnionAsync(cluster, shard, ct: token), ct, WatchdogWindow / 2);
         if (!walList.IsSuccess)
         {
             observe(cluster, shard, "transient");
             return;
         }
 
-        var setList = await S3Pulse.CallAsync(progress, token => s3.ListAsync(cluster, shard, $"full/{id}/pg_wal/", ct: token), ct, WatchdogWindow / 2);
+        var setList = await S3Pulse.CallAsync(progress, token => s3.ListUnionAsync(cluster, shard, $"full/{id}/pg_wal/", ct: token), ct, WatchdogWindow / 2);
         if (!setList.IsSuccess)
         {
             observe(cluster, shard, "transient");
@@ -358,6 +361,7 @@ public sealed class BackupVerifyProcess(
                 return; // transient — статус не сменился, снесём джоб следующим тиком
             await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
                 claims.InstanceId, null, ct);
+            logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
             observe(cluster, shard, "ok");
             await CleanupJobAsync(engine, containerName, ct);
             return;
@@ -373,6 +377,7 @@ public sealed class BackupVerifyProcess(
                 return;
             await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{id}",
                 claims.InstanceId, err, ct);
+            logger.LogError("{Op} {cluster}/{shard}: verify {id} FAILED: {Error}", Op, cluster, shard, id, err);
             observe(cluster, shard, "failed");
             await CleanupJobAsync(engine, containerName, ct);
             return;
@@ -430,6 +435,7 @@ public sealed class BackupVerifyProcess(
 
         await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{full.Id}",
             claims.InstanceId, error, ct);
+        logger.LogError("{Op} {cluster}/{shard}: verify {full.Id} FAILED: {Error}", Op, cluster, shard, full.Id, error);
         observe(cluster, shard, "failed");
     }
 

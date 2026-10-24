@@ -73,8 +73,14 @@ public sealed class StubScaleDriver : IClusterDriver
     // (сценарии маркера tli_jump — контроль воркера читает лог мастер-агента).
     public string BackupAgentLogTail = "";
 
+    // t02: транспорт-фейл docker-чтения лога агента (transient — контроль не
+    // должен падать тиком и деградировать фантомно).
+    public bool FailBackupAgentLogs;
+
     public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(BackupAgentLogTail));
+        => FailBackupAgentLogs
+            ? Task.FromResult(Result<string>.Failed(new ApplicationException("agent logs unavailable")))
+            : Task.FromResult(Result<string>.Success(BackupAgentLogTail));
 
     public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
         string cluster, CancellationToken ct)

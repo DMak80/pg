@@ -65,7 +65,8 @@ public sealed class WalStreamProcess(
     private static readonly TimeSpan AgentCreateBudget = TimeSpan.FromSeconds(120);
 
     // Расписание контроля (list S3 — не каждый тик): ключ cluster/shard → unix последнего прохода.
-    // При BROKEN-ключе шарда расписание НЕ действует — контроль каждый тик (t07).
+    // При BROKEN-ключе шарда или exhaustion-DEGRADED расписание НЕ действует —
+    // контроль каждый тик (t07/t02).
     private readonly ConcurrentDictionary<string, long> _lastVerifyUnix = [];
 
     // Кэш пула-клиентов per-pool (t36): клиент переиспользуется между шардами
@@ -686,9 +687,11 @@ public sealed class WalStreamProcess(
     {
         var key = $"{cluster}/{shard}";
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
-        // Расписание — пропуск только для НЕ-BROKEN (t07: BROKEN контролирует
-        // каждый тик — заживление одним тиком после пересъёма полного).
+        // Расписание — пропуск только для НЕ-BROKEN (t07) и НЕ-exhaustion-DEGRADED
+        // (t02: заживление подъёмом ноды пула — контроль каждый тик, симметрично
+        // BROKEN; union-листинг — один класс вызовов).
         if (wal is not { State: WalStreamStatus.Broken }
+            && !IsExhaustionDegraded(wal)
             && _lastVerifyUnix.TryGetValue(key, out var last)
             && now - last < options.WalVerifyIntervalSec)
             return new ControlOutcome(wal);
@@ -863,35 +866,43 @@ public sealed class WalStreamProcess(
             error = $"upload silence {now - lastUploadedUnix} s (threshold {options.WalStaleSec})";
         }
 
-        // t36 (arch/19 §3): исчерпание write-списка мастер-агента — контроль
-        // КАЖДЫЙ тик верификации, НЕЗАВИСИМО от lag/тишины: «тишина» считается
-        // по последнему объекту пула (ReadAll) и маскируется прогрессом
-        // sync-источника (write_replica на живой ноде) — разбор AC4: мастер-агент
-        // в ретрай-цикле исчерпания, wal-статус оставался Active. Хвост лога
-        // мастер-агента содержит маркер pool_exhausted приёмника → DEGRADED с
-        // s3-pool-exhausted (алерт backup-pool-unreachable); docker-вызов — по
-        // интервалу верификации, не ежетиковый.
-        if (state == WalStreamStatus.Active)
+        // t36/t02 (arch/19 §3): хвост лога мастер-агента — ОДИН docker-вызов за
+        // контрольный проход: читается при первой необходимости (блоки ниже),
+        // переиспользуется вторым блоком (чтение tli_jump-маркера выше —
+        // отдельное, не консолидируется). Чтение упало — tail остаётся null:
+        // блоки пропускаются (transient, не деградация).
+        string? poolLogTail = null;
+        if (state == WalStreamStatus.Active
+            || (state == WalStreamStatus.Degraded && wal is not { State: WalStreamStatus.Degraded }))
         {
             var agentLogs = await driver.BackupAgentLogsAsync(cluster,
                 BackupAgentNames.Container(cluster, shard, masterRef), AgentLogTail, ct);
-            if (agentLogs.IsSuccess && agentLogs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
-            {
-                state = WalStreamStatus.Degraded;
-                error = $"{S3PoolMarkers.Exhausted}: write list exhausted by master agent (receiver retry loop)";
-            }
+            if (agentLogs.IsSuccess)
+                poolLogTail = agentLogs.Value;
         }
 
-        // t36 (arch/19 §3): переход в DEGRADED — хвост лога мастер-агента: маркер
-        // pool_exhausted приёмника (ретрай-цикл исчерпания списка пула) → error
-        // несёт s3-pool-exhausted (алерт backup-pool-unreachable). Только на
-        // переходе (не каждый тик — docker-вызов дёшев, но не ежетиковый).
-        if (state == WalStreamStatus.Degraded && wal is not { State: WalStreamStatus.Degraded })
+        // t36/t02 (arch/19 §3): исчерпание write-списка мастер-агента — контроль
+        // КАЖДЫЙ тик верификации, НЕЗАВИСИМО от lag/тишины: «тишина» считается
+        // по последнему объекту пула (ReadAll) и маскируется прогрессом
+        // sync-источника (write_replica на живой ноде). Детект t02 —
+        // АКТУАЛЬНОСТЬ маркера: старые строки pool_exhausted в хвосте не
+        // деградируют восстановившийся поток — heartbeat после маркера снимает
+        // (self-heal одним проходом); алерт backup-pool-unreachable.
+        if (state == WalStreamStatus.Active && poolLogTail is not null
+            && IsPoolExhaustionActive(poolLogTail))
         {
-            var logs = await driver.BackupAgentLogsAsync(cluster,
-                BackupAgentNames.Container(cluster, shard, masterRef), AgentLogTail, ct);
-            if (logs.IsSuccess && logs.Value.Contains("pool_exhausted", StringComparison.Ordinal))
-                error = $"{S3PoolMarkers.Exhausted}: {error}";
+            state = WalStreamStatus.Degraded;
+            error = $"{S3PoolMarkers.Exhausted}: write list exhausted by master agent (receiver retry loop)";
+        }
+
+        // t36/t02 (arch/19 §3): переход в DEGRADED — АКТУАЛЬНЫЙ маркер
+        // исчерпания → error несёт префикс s3-pool-exhausted (алерт
+        // backup-pool-unreachable). Только на переходе (не каждый тик —
+        // docker-вызов дёшев, но не ежетиковый).
+        if (state == WalStreamStatus.Degraded && wal is not { State: WalStreamStatus.Degraded }
+            && poolLogTail is not null && IsPoolExhaustionActive(poolLogTail))
+        {
+            error = $"{S3PoolMarkers.Exhausted}: {error}";
         }
 
         // Диагностика (t36-разбор): смена стейта — в host.log (etcd сносит teardown).
@@ -1114,6 +1125,41 @@ public sealed class WalStreamProcess(
             return null; // чужая/битая строка — не маркер
         }
     }
+
+    // t02 (arch/19 §3): актуальность исчерпания write-списка мастер-агента —
+    // позиционный детектор по хвосту лога: маркер активен ⇔ найдена строка
+    // pool_exhausted и ПОСЛЕДНЯЯ такая строка стоит ПОСЛЕ последней строки
+    // heartbeat (heartbeat — единственный знак успешной доставки: подтверждение
+    // слота после успешного put приёмника; успешная доставка после исчерпания
+    // снимает маркер). Подстрочный матч по строке: единственный источник
+    // подстроки pool_exhausted — stdout-маркер приёмника
+    // {"pool_exhausted":true}; дефисная форма s3-pool-exhausted (тексты
+    // ошибок, result-JSON) не матчится — посторонние строки; фазы
+    // starting/streaming/delivering успехом НЕ считаются. Без таймеров и
+    // порогов свежести — только позиции строк.
+    internal static bool IsPoolExhaustionActive(string logTail)
+    {
+        var lastMarker = -1;
+        var lastHeartbeat = -1;
+        var lines = logTail.Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Contains("pool_exhausted", StringComparison.Ordinal))
+                lastMarker = i;
+            else if (lines[i].Contains("heartbeat", StringComparison.Ordinal))
+                lastHeartbeat = i;
+        }
+
+        return lastMarker >= 0 && lastMarker > lastHeartbeat;
+    }
+
+    // t02 (arch/19 §3): exhaustion-DEGRADED — DEGRADED-ключ с маркером
+    // s3-pool-exhausted в error (исчерпание write-списка приёмника) — контроль
+    // КАЖДЫЙ тик, симметрично BROKEN (скорость заживления; union-листинг —
+    // один класс вызовов).
+    private static bool IsExhaustionDegraded(WalStreamState? wal)
+        => wal is { State: WalStreamStatus.Degraded }
+            && wal.Error?.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) == true;
 
     // TLI из 24-hex имени сегмента (первые 8 символов); битое имя — 0 (текст
     // tli-gap строится только из валидированных имён).

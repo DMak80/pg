@@ -21,7 +21,7 @@ FAIL() {
 
 LOG '{"phase":"basebackup"}'
 rm -rf "$STAGING/full"
-pg_basebackup -d "$PGW_BK_DSN" -D "$STAGING/full" -X stream --checkpoint=spread --manifest-checksums=SHA256 \
+pg_basebackup -d "$PGW_BK_DSN" -D "$STAGING/full" -X stream --checkpoint=fast --manifest-checksums=SHA256 \
   || FAIL "pg_basebackup failed"
 
 # wal_start_segment из backup_label: "START WAL LOCATION: ... (file <seg>)"
@@ -59,9 +59,22 @@ done
 # (переливка идемпотентна: имена объектов детерминированы; маркер исчерпания —
 # s3-pool-exhausted → FAILED в статусе воркера, алерт backup-pool-unreachable).
 # Источник — локальный staging (одинаков для всех алиасов), цель per-алиас.
-upload() { # $1 — локальный источник; $2 — ключ цели в bucket
+upload() { # $1 — локальный источник (КАТАЛОГ, хвост "/"); $2 — префикс цели в bucket
   for a in $S3_ALIASES; do
     timeout 300 mc cp --recursive "$1" "$a/$PGW_BK_S3_BUCKET/$2" \
+      && return 0
+  done
+  return 1
+}
+
+# Файловая загрузка 1:1 — ключ цели БЕЗ добавок (mc cp --recursive на файловом
+# источнике добавляет basename источника к цели: дубль сегмента ложился как
+# wal/<seg>/<seg> и становился невидим union-листингу — WalChain не видел
+# wal_start-сегмент полного, drill/verify давали вечный gap, планировщик
+# штормил пересъёмами).
+upload_file() { # $1 — локальный файл; $2 — ПОЛНЫЙ ключ цели в bucket
+  for a in $S3_ALIASES; do
+    timeout 300 mc cp "$1" "$a/$PGW_BK_S3_BUCKET/$2" \
       && return 0
   done
   return 1
@@ -74,11 +87,12 @@ upload "$STAGING/full/" "$PGW_BK_PREFIX/full/$PGW_BK_ID/" \
   || FAIL "s3-pool-exhausted: upload full failed on all pool endpoints"
 
 # закрытые сегменты набора -X stream → общий wal/-префикс (дублирование
-# канона §5; идемпотентная перезапись; .partial/.history — домен t03)
+# канона §5; идемпотентная перезапись; .partial/.history — домен t03).
+# Ключ цели — wal/<seg> ровно: файловая загрузка (см. upload_file).
 for seg in "$STAGING"/full/pg_wal/*; do
   [ -f "$seg" ] || continue
   case "$(basename "$seg")" in *.partial|*.history) continue ;; esac
-  upload "$seg" "$PGW_BK_PREFIX/wal/$(basename "$seg")" \
+  upload_file "$seg" "$PGW_BK_PREFIX/wal/$(basename "$seg")" \
     || FAIL "s3-pool-exhausted: upload wal failed on all pool endpoints"
 done
 
