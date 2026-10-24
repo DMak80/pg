@@ -206,18 +206,22 @@ public sealed class KafkaProtocolCodecTests
         // Act
         var frame = KafkaProtocolClient.BuildAlterReassignmentsRequest(moves, correlationId: 4);
 
-        // Assert: header v2 + timeout 60000 + compact-структуры по Приложению A.4.
+        // Assert: header v2 + timeout 60000 + compact-структуры по апстрим-схеме
+        // AlterPartitionReassignmentsRequest.json (tagged-секции — в конце
+        // каждой структуры: партиции, топики, тело).
         frame.Should().Equal(Convert.FromHexString(string.Concat(
             "00000052",                                               // длина кадра: 82
             "002D" + "0000" + "00000004",                             // api 45, v0, corr 4
-            "000C" + "6B66772D726561737369676E" + "00",               // client_id (12 байт) + tagged
+            "000C" + "6B66772D726561737369676E" + "00",               // client_id (12 байт) + tagged header
             "0000EA60",                                               // timeout_ms 60000
             "03",                                                     // 2 топика
-            "06" + "616C706861" + "00" + "03",                        // "alpha", tagged, 2 партиции
-            "00000000" + "04" + "00000001" + "00000002" + "00000003" + "00", // p0 [1,2,3]
-            "00000001" + "02" + "00000002" + "00",                    // p1 [2]
-            "05" + "62657461" + "00" + "02",                          // "beta", tagged, 1 партиция
-            "00000000" + "02" + "00000002" + "00",                    // p0 [2]
+            "06" + "616C706861" + "03",                               // "alpha", 2 партиции
+            "00000000" + "04" + "00000001" + "00000002" + "00000003" + "00", // p0 [1,2,3] + tagged
+            "00000001" + "02" + "00000002" + "00",                    // p1 [2] + tagged
+            "00",                                                     // tagged топика "alpha"
+            "05" + "62657461" + "02",                                 // "beta", 1 партиция
+            "00000000" + "02" + "00000002" + "00",                    // p0 [2] + tagged
+            "00",                                                     // tagged топика "beta"
             "00")));                                                  // tagged тела
     }
 
@@ -225,13 +229,16 @@ public sealed class KafkaProtocolCodecTests
     public void ParseAlterReassignmentsResponse_Success()
     {
         // Arrange: throttle 0, ошибок нет; "alpha" p0 error 0, сообщения null.
+        // Tagged-секции — в конце структур (партиция, топик, тело).
         var body = Convert.FromHexString(string.Concat(
             "00000000",                          // throttle_time_ms
             "0000",                              // error_code
             "00",                                // error_message null
             "02",                                // responses: 1 топик
-            "06" + "616C706861" + "00" + "02",   // "alpha", tagged, 1 партиция
-            "00000000" + "0000" + "00" + "00")); // p0, error 0, msg null, tagged
+            "06" + "616C706861" + "02",          // "alpha", 1 партиция
+            "00000000" + "0000" + "00" + "00",   // p0, error 0, msg null, tagged партиции
+            "00",                                // tagged топика
+            "00"));                              // tagged тела
 
         // Act
         var result = KafkaProtocolClient.ParseAlterReassignmentsResponse(body);
@@ -245,11 +252,14 @@ public sealed class KafkaProtocolCodecTests
     {
         // Arrange: error 35 + сообщение; responses = null (compact 0).
         // "no reassignment" — 15 символов → compact-строка uvarint(15+1)=0x10.
+        // Tagged-секция тела — в конце тела ВСЕГДА (в т.ч. при null-responses):
+        // апстрим AlterPartitionReassignmentsResponse.json — flexible 0+.
         var body = Convert.FromHexString(string.Concat(
             "00000000",                                        // throttle
             "0023",                                            // error 35
             "10" + "6E6F20726561737369676E6D656E74",           // "no reassignment" (len+1=16)
-            "00"));                                            // responses null
+            "00",                                              // responses null
+            "00"));                                            // tagged тела
 
         // Act
         var result = KafkaProtocolClient.ParseAlterReassignmentsResponse(body);
@@ -268,9 +278,11 @@ public sealed class KafkaProtocolCodecTests
             "0000",
             "00",
             "02",                                            // responses: 1 топик
-            "06" + "616C706861" + "00" + "03",               // "alpha", tagged, 2 партиции
-            "00000000" + "002A" + "00" + "00",               // p0 error 42
-            "00000001" + "0000" + "00" + "00"));             // p1 error 0
+            "06" + "616C706861" + "03",                      // "alpha", 2 партиции
+            "00000000" + "002A" + "00" + "00",               // p0 error 42 + tagged
+            "00000001" + "0000" + "00" + "00",               // p1 error 0 + tagged
+            "00",                                            // tagged топика
+            "00"));                                          // tagged тела
 
         // Act
         var result = KafkaProtocolClient.ParseAlterReassignmentsResponse(body);

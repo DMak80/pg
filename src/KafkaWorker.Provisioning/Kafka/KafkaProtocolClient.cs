@@ -217,7 +217,6 @@ internal sealed class KafkaProtocolClient
         foreach (var topic in topics)
         {
             w.WriteCompactString(topic.Key);
-            w.WriteTaggedSection();
             var partitions = topic.OrderBy(m => m.Partition).ToList();
             w.WriteCompactArrayHeader(partitions.Count);
             foreach (var move in partitions)
@@ -226,10 +225,14 @@ internal sealed class KafkaProtocolClient
                 w.WriteCompactArrayHeader(move.Replicas.Count); // НЕ null — отмена не используется
                 foreach (var replica in move.Replicas)
                     w.WriteInt32(replica);
-                w.WriteTaggedSection();
+                w.WriteTaggedSection(); // tagged партиции — после её полей
             }
+            // tagged топика — ПОСЛЕ всех его полей (name, partitions): апстрим
+            // AlterPartitionReassignmentsRequest.json — tagged-секция структурного
+            // объекта одна и всегда в конце.
+            w.WriteTaggedSection();
         }
-        w.WriteTaggedSection();
+        w.WriteTaggedSection(); // tagged тела
         return w.ToFrame();
     }
 
@@ -251,19 +254,24 @@ internal sealed class KafkaProtocolClient
         for (var t = 0; t < topicsCount; t++)
         {
             var topic = r.ReadCompactString();
-            r.SkipTaggedSection();
+            // tagged-секция топика — ПОСЛЕ его полей (name, partitions):
+            // апстрим AlterPartitionReassignmentsResponse.json.
             var partitionsCount = r.ReadCompactArrayHeader();
             for (var p = 0; p < partitionsCount; p++)
             {
                 var partition = r.ReadInt32();
                 var partitionError = r.ReadInt16();
                 var partitionMessage = r.ReadCompactString();
-                r.SkipTaggedSection();
+                r.SkipTaggedSection(); // tagged партиции — после её полей
                 if (partitionError != 0)
                     failures.Add($"{topic}[{partition}]: {partitionError}"
                         + (partitionMessage is null ? "" : $" ({partitionMessage})"));
             }
+
+            r.SkipTaggedSection(); // tagged топика
         }
+
+        r.SkipTaggedSection(); // tagged тела
 
         return failures.Count == 0
             ? Result.Success()
