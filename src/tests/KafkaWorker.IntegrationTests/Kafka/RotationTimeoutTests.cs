@@ -75,9 +75,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             new DeprovisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null),
             new PartitionReassignerProcess(
-                fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
+                fixture.Gateway, [fixture.Endpoint], claims, journal,
                 fixture.AdminFactory,
-                new ReassignOptions(IntervalSec: 0, BatchPartitions: ReassignBatchPartitions, ExecSec: 180, RetrySubmitSec: 120),
+                new ReassignOptions(IntervalSec: 0, BatchPartitions: ReassignBatchPartitions, SubmitSec: 60, RetrySubmitSec: 120),
                 TimeProvider.System));
     }
 
@@ -205,7 +205,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     // (arch/16 §5 I); подряд FailedTickLimit неудачных — исключение с
     // ПОЛНЫМ контекстом (DiagContextAsync + хвост ошибок тиков). Backstop
     // на хелпер не заводится: тик завершается сам (≤30 с etcd-транзиент,
-    // ≤ExecSec=180 exec), три подряд провала — быстрое красное. Возвращает
+    // ≤SubmitSec=60 подачи), три подряд провала — быстрое красное. Возвращает
     // длительность успешной попытки — скользящий замер темпа для backstop
     // финала (spec §5.3).
     private async Task<TimeSpan> TickAsync(
@@ -702,7 +702,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             //    сходимость» (первый тик увидел пустой pending и дошёл до
             //    финальной ветки БЕЗ подачи). Валидный исход §2 п.3.
             // Транзиент-толерантные тики; стагнация — 3 подряд неудачных
-            // (хелпер). Backstop 600 с = 3 × ExecSec (540 с на три подряд
+            // (хелпер). Backstop 600 с = 3 × SubmitSec (180 с на три подряд
             // exec-провала) + 60 с хвоста — предохранитель. Опрос — сразу
             // после каждого тика и каждые PollMs между тиками; подача — не
             // чаще TickIntervalMs (§5.6: завершённая работа не ждёт пустых

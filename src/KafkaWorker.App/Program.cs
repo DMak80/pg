@@ -295,13 +295,12 @@ builder.Services.AddSingleton(sp =>
     return new PartitionReassignerProcess(
         sp.GetRequiredService<IEtcdGateway>(),
         opts.Etcd.Endpoints,
-        sp.GetRequiredService<IClusterDriver>(),
         sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         new ReassignOptions(
             opts.Loops.ReassignIntervalSec, opts.Loops.ReassignBatchPartitions,
-            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec,
+            opts.Thresholds.ReassignSubmitSec, opts.Thresholds.ReassignRetrySubmitSec,
             opts.Thresholds.RotationTicketTimeoutSec),
         sp.GetRequiredService<TimeProvider>());
 });

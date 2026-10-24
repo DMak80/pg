@@ -32,17 +32,17 @@ public sealed record ProvisioningOptions(
 
 /// <summary>
 /// Параметры процесса reassign I (arch/16 §8): интервал тиков, размер батча
-/// подач, бюджет exec CLI и окно дедупа переподачи одного батча.
-/// RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия (t10).
+/// подач, бюджет reassign-подачи батча (§2.4) и окно дедупа переподачи одного
+/// батча. RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия (t10).
 /// </summary>
 public sealed record ReassignOptions(
     int IntervalSec,
     int BatchPartitions,
-    int ExecSec,
+    int SubmitSec,
     int RetrySubmitSec,
     int RotationTicketTimeoutSec = 3600)
 {
-    public static ReassignOptions Default { get; } = new(15, 10, 180, 120, 3600);
+    public static ReassignOptions Default { get; } = new(15, 10, 60, 120, 3600);
 }
 
 /// <summary>

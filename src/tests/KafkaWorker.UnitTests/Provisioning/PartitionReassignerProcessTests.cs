@@ -20,7 +20,6 @@ public class PartitionReassignerProcessTests
 
     private sealed record Rig(
         Fakes.FakeEtcd Etcd,
-        Fakes.FakeKafkaDriver Driver,
         FakeKafkaAdminClient Admin,
         ClaimStore Claims,
         WorkJournal Journal,
@@ -59,15 +58,13 @@ public class PartitionReassignerProcessTests
         var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
         var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
-        var driver = new Fakes.FakeKafkaDriver();
-        driver.NodeObjects.AddRange(Enumerable.Range(1, 4).Select(k => $"kfw-events-broker{k}"));
         var admin = new FakeKafkaAdminClient();
         var time = new FixedTimeProvider();
         var process = new PartitionReassignerProcess(
-            etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
-            new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, ExecSec: 180, RetrySubmitSec: retrySubmitSec),
+            etcd, [Ep], claims, journal, new FakeAdminFactory(admin),
+            new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, SubmitSec: 60, RetrySubmitSec: retrySubmitSec),
             time);
-        return new Rig(etcd, driver, admin, claims, journal, process, time);
+        return new Rig(etcd, admin, claims, journal, process, time);
     }
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
@@ -83,7 +80,7 @@ public class PartitionReassignerProcessTests
     [Fact]
     public async Task Drain_Submits_Batch_And_Writes_Progress()
     {
-        // Arrange: broker4 TO_REMOVE, реплики юзер-топика на нём; exec успешен.
+        // Arrange: broker4 TO_REMOVE, реплики юзер-топика на нём; подача успешна.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
@@ -91,11 +88,15 @@ public class PartitionReassignerProcessTests
         // Act
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: один exec с --execute; прогресс-ключ жив с mode=drain и
+        // Assert: батч подан через seam; прогресс-ключ жив с mode=drain и
         // остатком партиций.
         result.IsSuccess.Should().BeTrue();
-        var exec = Assert.Single(rig.Driver.Execs);
-        string.Join(' ', exec.Cmd).Should().Contain("--execute");
+        // Обе партиции уезжают с broker4: батч ≤ BatchPartitions, у каждого
+        // мува 3 реплики без drain-брокера.
+        var moves = rig.Admin.SubmittedMoves;
+        moves.Should().HaveCount(2);
+        moves.Should().OnlyContain(m => m.Topic == "orders"
+            && !m.Replicas.Contains(4) && m.Replicas.Count == 3);
         rig.Etcd.Store.Keys.Should().Contain(ProgressKey);
         var progress = ReadProgress(rig.Etcd);
         progress.Mode.Should().Be("drain");
@@ -118,10 +119,10 @@ public class PartitionReassignerProcessTests
         // Act
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: exec нет, прогресс удалён, journal done — завершение внутри
+        // Assert: подач нет, прогресс удалён, journal done — завершение внутри
         // drain-ветки (кандидат отобран по state, не по факту).
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().BeEmpty();
+        rig.Admin.SubmittedMoves.Should().BeEmpty();
         rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Op.Should().Be("reassign");
@@ -145,7 +146,7 @@ public class PartitionReassignerProcessTests
         // Assert: подач нет; прогресс жив с человекочитаемой причиной;
         // тик успешен (перманентное ожидание, не ошибка).
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().BeEmpty();
+        rig.Admin.SubmittedMoves.Should().BeEmpty();
         var progress = ReadProgress(rig.Etcd);
         progress.LastError.Should().Contain("min.insync.replicas");
     }
@@ -163,7 +164,7 @@ public class PartitionReassignerProcessTests
 
         // Assert: демонтажной семантики нет — ждём полной синхронизации.
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().BeEmpty();
+        rig.Admin.SubmittedMoves.Should().BeEmpty();
         rig.Etcd.Store.Keys.Should().Contain(ProgressKey);
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("waiting-sync");
@@ -183,69 +184,35 @@ public class PartitionReassignerProcessTests
             .IsSuccess.Should().BeTrue();
         (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().HaveCount(1);
+        rig.Admin.SubmittedMoves.Should().HaveCount(2); // первый батч — 2 мува
 
         // Assert: после RetrySubmitSec третья подача разрешена.
         rig.Time.Utc += TimeSpan.FromSeconds(120);
         (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().HaveCount(2);
-    }
-
-    [Fact]
-    public async Task Drain_Exec_To_Drain_Container_Failed_Resubmit_Via_RUNNING()
-    {
-        // Arrange: broker4 TO_REMOVE с репликами; контейнер drain-брокера
-        // мёртв (docker-хост умер/выведен, снесён) — exec в него Failed,
-        // живые узлы отвечают (code-review Фазы 7: надзор TO_REMOVE не
-        // восстанавливает, fallback обязателен — иначе вечный Failed тика).
-        var rig = await NewRig();
-        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
-        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
-        rig.Driver.ExecHandler = (node, _) => node == "broker4"
-            ? Result<string>.Failed(new ApplicationException("no running container kfw-events-broker4"))
-            : Result<string>.Success("");
-
-        // Act
-        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
-
-        // Assert: тик успешен — после отказа в drain-контейнер тот же батч
-        // переподан через первый RUNNING-узел (broker1 по имени), прогресс
-        // записан: drain не застревает на мёртвой exec-цели.
-        result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().HaveCount(2);
-        rig.Driver.Execs[0].Node.Should().Be("broker4");
-        rig.Driver.Execs[1].Node.Should().Be("broker1");
-        string.Join(' ', rig.Driver.Execs[1].Cmd).Should().Contain("--execute");
-        var progress = ReadProgress(rig.Etcd);
-        progress.Mode.Should().Be("drain");
-        progress.PartitionsRemaining.Should().Be(2);
+        rig.Admin.SubmittedMoves.Should().HaveCount(4); // два полных батча
     }
 
     [Fact]
     public async Task Drain_Converges_Without_Drain_Broker_Container()
     {
-        // Arrange: broker4 TO_REMOVE, его контейнера нет вовсе (exec в broker4
-        // всегда Failed); поданный батч Kafka применяется между тиками.
+        // Arrange: broker4 TO_REMOVE с репликами; поданный батч Kafka
+        // применяет между тиками.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
-        rig.Driver.ExecHandler = (node, _) => node == "broker4"
-            ? Result<string>.Failed(new ApplicationException("container not found"))
-            : Result<string>.Success("");
 
-        // Act: тик 1 — отказ в drain-контейнер, переподача через RUNNING;
-        // факт «доиграл» поданный батч (реплик broker4 нет, ISR полный).
+        // Act: тик 1 подаёт батч; факт «доиграл» поданный батч (реплик broker4
+        // нет, ISR полный) — тик 2 завершает drain по факту.
         (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .IsSuccess.Should().BeTrue();
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2], [2, 1]], [[1, 2], [2, 1]])];
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: drain завершён по факту — прогресс удалён, journal done;
-        // попыток exec ровно две (тик 1: broker4 → fallback broker1), тик 2
-        // без подач — сходимость не зависит от drain-контейнера.
+        // подача ровно одна (тик 2 без подач) — канал сетевой, цели-контейнера нет.
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().HaveCount(2);
+        rig.Admin.SubmittedMoves.Should().HaveCount(2);
         rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Op.Should().Be("reassign");
@@ -263,7 +230,7 @@ public class PartitionReassignerProcessTests
         // Act: первый тик подаёт батч добора.
         (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
             .IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().HaveCount(1);
+        rig.Admin.SubmittedMoves.Should().HaveCount(2); // добор обеих партиций до RF=3
 
         // Кластер «доехал» до плана — второй тик снимает заявку и прогресс.
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 3], [2, 1, 3]])];
@@ -291,10 +258,10 @@ public class PartitionReassignerProcessTests
         // Act
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: подача только drain (контейнер broker4), заявка ждёт.
+        // Assert: подача только drain (сеть к CLIENT endpoints), заявка ждёт.
         result.IsSuccess.Should().BeTrue();
-        var exec = Assert.Single(rig.Driver.Execs);
-        exec.Node.Should().Be("broker4");
+        rig.Admin.SubmittedMoves.Should().NotBeEmpty();
+        rig.Admin.SubmittedMoves.Should().OnlyContain(m => !m.Replicas.Contains(4));
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("waiting-drain");
         rig.Etcd.Store.Keys.Should().Contain(TicketKey);
@@ -315,7 +282,7 @@ public class PartitionReassignerProcessTests
 
         // Assert: прогресс удалён, подач нет (in-flight Kafka доиграет сам).
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().BeEmpty();
+        rig.Admin.SubmittedMoves.Should().BeEmpty();
         rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("cancelled");
@@ -337,7 +304,7 @@ public class PartitionReassignerProcessTests
 
         // Assert: ноль подач, прошлый прогресс сохранён, тик успешен.
         result.IsSuccess.Should().BeTrue();
-        rig.Driver.Execs.Should().BeEmpty();
+        rig.Admin.SubmittedMoves.Should().BeEmpty();
         rig.Etcd.Store[ProgressKey].Value.Should().Be(seeded);
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("waiting-cluster");
@@ -351,7 +318,7 @@ public class PartitionReassignerProcessTests
         SeedActive(etcd);
         var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         var process = new PartitionReassignerProcess(
-            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
+            etcd, [Ep], claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(new FakeKafkaAdminClient()), ReassignOptions.Default, new FixedTimeProvider());
 
         // Act
@@ -475,7 +442,7 @@ public class PartitionReassignerProcessTests
         rig.Etcd.Store.Keys.Should().Contain(TicketKey);
         rig.Etcd.Store.Keys.Should().NotContain(OutcomeKey);
         ReadProgress(rig.Etcd).Mode.Should().Be("balance");
-        rig.Driver.Execs.Should().HaveCount(1);
+        rig.Admin.SubmittedMoves.Should().HaveCount(2);
     }
 
     [Fact]
@@ -543,5 +510,38 @@ public class PartitionReassignerProcessTests
         outcome.Should().Contain("\"kind\":\"rebalance\"")
             .And.Contain("\"outcome\":\"done\"")
             .And.Contain("\"requested_unix\":1756500123");
+    }
+
+    [Fact]
+    public async Task Submit_Fails_TickFails_ProgressNotWritten_NextTickResubmits()
+    {
+        // Arrange: broker4 TO_REMOVE с репликами; подача падает (FailSubmits).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
+        rig.Admin.FailSubmits = true;
+
+        // Act: тик с падающей подачей.
+        var failed = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: тик Failed с фазой submitting-batch, прогресс-ключ НЕ писан;
+        // вызов подачи зафиксирован.
+        failed.IsSuccess.Should().BeFalse();
+        failed.Error!.Message.Should().Contain("kafka: submit failed");
+        rig.Admin.SubmittedMoves.Should().HaveCount(2);
+        rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Op.Should().Be("reassign");
+        state.Value.Phase.Should().Be("submitting-batch");
+
+        // Act 2: сеть починилась — следующий тик переподаёт и пишет прогресс.
+        rig.Admin.FailSubmits = false;
+        var ok = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert
+        ok.IsSuccess.Should().BeTrue();
+        rig.Admin.SubmittedMoves.Should().HaveCount(4);
+        rig.Etcd.Store.Keys.Should().Contain(ProgressKey);
+        ReadProgress(rig.Etcd).Mode.Should().Be("drain");
     }
 }

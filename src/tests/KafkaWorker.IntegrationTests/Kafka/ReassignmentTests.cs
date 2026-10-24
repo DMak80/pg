@@ -60,8 +60,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             new DeprovisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null),
             new PartitionReassignerProcess(
-                fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
-                fixture.AdminFactory, new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, ExecSec: 180, RetrySubmitSec: 120),
+                fixture.Gateway, [fixture.Endpoint], claims, journal,
+                fixture.AdminFactory, new ReassignOptions(IntervalSec: 0, BatchPartitions: 10, SubmitSec: 60, RetrySubmitSec: 120),
                 TimeProvider.System),
             new RemoveBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
@@ -347,22 +347,20 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             (await rig.Reassigner.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue(
                 "a repeat reassigner tick on the converged fact succeeds");
 
-            // Act 2: повторная CLI-подача того же assignment (факт == план) —
-            // Kafka обязана принять идемпотентно (KIP-455).
+            // Act 2: двойная подача того же assignment seam-методом (факт ==
+            // план) — Kafka обязана принять идемпотентно (KIP-455, §2.4).
             var before = await DescribeAllAsync(creds);
             var moves = before
                 .SelectMany(t => t.ReplicasPerPartition.Select((_, p) => new ReassignMove(t.Topic, p, [.. t.ReplicasPerPartition[p]])))
                 .ToList();
-            var bootstrap = ReassignCli.Bootstrap(["broker1", "broker2", "broker3"]);
-            // CLI-канон t03: SASL_SSL command-config с admin-кредами и per-cluster
-            // CA из etcd (литералы "adminpw"/"CAPEM" — легаси PLAINTEXT-эпохи).
             var adminUser = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user");
             var adminPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password");
-            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, adminUser!, adminPassword!, creds.CaPem);
+            await using var submitAdmin = fixture.AdminFactory.Create(
+                creds.Bootstrap, adminUser!, adminPassword!, creds.CaPem);
             for (var i = 0; i < 2; i++)
             {
-                var exec = await fixture.Driver.ExecNodeAsync(cluster, "broker1", cmd, ct);
-                exec.IsSuccess.Should().BeTrue($"resubmission #{i + 1} must not fail: {exec.Error?.Message}");
+                var submit = await submitAdmin.AlterReassignmentsAsync(moves, ct);
+                submit.IsSuccess.Should().BeTrue($"resubmission #{i + 1} must not fail: {submit.Error?.Message}");
             }
 
             // Assert: describe до/после идентичен по assignment всех партиций.
