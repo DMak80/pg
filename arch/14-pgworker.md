@@ -1141,7 +1141,9 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
   transient) → статус `SYNCING/ddl` + снапшот `move-<bucket>-start`
   **обязателен** (сбой → фаза waiting-snapshot, ретрай); M1 DDL-перенос
   (`pg_dump --schema-only` через docker exec → применение → гранты app →
-  сверка инвентаря P5); M2 `CREATE PUBLICATION pub_<b>` на источнике +
+  сверка инвентаря P5; docker exec — отклонение от
+  [25](25-component-communications.md) №23, переход: pgworker
+  `t03-orchestration-exec-transition`); M2 `CREATE PUBLICATION pub_<b>` на источнике +
   `CREATE SUBSCRIPTION sub_<b>` на приёмнике (`copy_data = true`,
   `failover` (PG17+, конфиг `FailoverSlots`), `synchronous_commit =
   remote_apply` — P3/P8); M3 copy-wait (поллинг готовности таблиц, каждый

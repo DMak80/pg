@@ -12,6 +12,15 @@
   arch/19 §7; слито 2026-09-06, merge 5bcd467). Решение пользователя
   (2026-09-06): etcd остаётся единственным хранилищем per-cluster секретов
   до этой интеграции.
+- **`t03-orchestration-exec-transition`** — переход exec-сценариев PgWorker с
+  docker-exec на стандартные каналы либо отдельный апрув владельца на каждый
+  (отклонение от [../25-component-communications.md](../25-component-communications.md)
+  №23): `pg_dump --schema-only` в ноду при DDL-переезде бакета (`MoveDdl`,
+  arch/14 §Move M1); правка `pg_hba` перед pg_basebackup (`BackupProcess`);
+  управление wal-слотом/TIMELINE_HISTORY докладом через мастер-ноду
+  (`WalStreamProcess`, arch/19 §3 fallback). Варианты каналов: SQL/libpq
+  (многие exec — SQL-вызовы), джоба с env-задачей (как backup-джобы),
+  mover-роль с сетевым pg_dump; решение по каждому сценарию — в spec задачи.
 - **`t90-etcd-recipe-env-file`** — закрыть pre-existing дефект инструкции
   запуска Patroni-etcd-рецепта arch/04 (применение (а) §0): §4 «Запуск»,
   §5 «после первого старта» и §7 чек-лист инструктируют `docker compose up -d`

@@ -6,3 +6,15 @@
 [../16-kafkaworker.md](../16-kafkaworker.md) (воркер)).
 
 ## Задачи
+
+- **`t01-reassign-exec-channel`** — переделать docker-взаимодействия reassign
+  на единый механизм Kafka-протокола: `PartitionReassignerProcess` сейчас
+  исполняет kafka-команды reassign через `ExecNodeAsync` внутрь
+  kafka-контейнеров — отклонение от
+  [../25-component-communications.md](../25-component-communications.md) №24.
+  Решение: подавать reassign-план прямо из KafkaWorker через AdminClient —
+  тот же Kafka-протокол, операция `AlterReassignments` (KIP-455,
+  идемпотентность подачи сохраняется). Тогда exec исчезает полностью:
+  и чтение метаданных, и подача плана — одним протоколом; docker-exec
+  (`ExecNodeAsync` в kafka-контейнеры) из процесса убирается, etcd-прогресс
+  `/kafkaworker/reassignments/<C>` не меняется.
