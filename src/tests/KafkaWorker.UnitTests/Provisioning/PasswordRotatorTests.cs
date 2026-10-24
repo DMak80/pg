@@ -476,25 +476,100 @@ public class PasswordRotatorTests
     }
 
     [Fact]
-    public async Task Run_AfterCommitTailAndOpenCaWindow_WaitingWithoutExpiry()
+    public async Task Run_AfterCommitTailAndOpenCaWindow_TailKeptAndResumed()
     {
-        // Arrange: afterCommit-хвост (заявки нет) + живой staging ca_next_*.
+        // Arrange: afterCommit-хвост — заявки НЕТ (del фазой B), журнал
+        // rotate/rotated-commit (сидирован), пароль в etcd уже NEW; окно K
+        // открыто (живой staging ca_next_*).
         var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/app_password", "NewPassword0123456789abcdef");
         (await rig.Journal.WritePhaseAsync(
-            "events", "rotate", "phase-c", rig.Claims.InstanceId, null, CancellationToken.None))
+            "events", "rotate", "rotated-commit", rig.Claims.InstanceId, null, CancellationToken.None))
             .IsSuccess.Should().BeTrue();
         rig.Etcd.Seed("/kafka/clusters/events/ca_next_key", "next-key");
         rig.Etcd.Seed("/kafka/clusters/events/ca_next_pem", "next-pem");
         ReadyCluster(rig.Admin, 2);
 
+        // Act: тик при открытом окне K.
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: Success; журнал НЕ перезаписан waiting-ca-window — маркер
+        // хвоста цел (waiting-фазы — только при живой заявке); исхода нет.
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("rotated-commit");
+        rig.Etcd.Store.Should().NotContainKey(TicketOutcomes.Key("/kafkaworker", "events"));
+
+        // Act-2: окно K закрылось (staging снят) — хвост доигрывается.
+        rig.Etcd.Store.Remove("/kafka/clusters/events/ca_next_key");
+        rig.Etcd.Store.Remove("/kafka/clusters/events/ca_next_pem");
+        var resumed = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert-2: фаза C доведена, journal done, исход password-app/done.
+        resumed.IsSuccess.Should().BeTrue();
+        var done = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        done.Value!.Phase.Should().Be("done");
+        var outcome = rig.Etcd.Store[TicketOutcomes.Key("/kafkaworker", "events")].Value;
+        outcome.Should().Contain("\"kind\":\"password-app\"").And.Contain("\"outcome\":\"done\"");
+    }
+
+    [Fact]
+    public async Task Run_AfterCommitTailDescribeTransient_TailKeptAndResumed()
+    {
+        // Arrange: afterCommit-хвост — заявки НЕТ (del фазой B), журнал
+        // rotate/rotated-commit (сидирован), пароль в etcd уже NEW; endpoints
+        // жив, DescribeCluster слеп (одиночный транзиент преф-чека).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/app_password", "NewPassword0123456789abcdef");
+        (await rig.Journal.WritePhaseAsync(
+            "events", "rotate", "rotated-commit", rig.Claims.InstanceId, null, CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        rig.Admin.ClusterError = new ApplicationException("describe transient");
+
+        // Act: тик в слепом преф-чеке.
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: Success; журнал НЕ перезаписан waiting-cluster — маркер
+        // хвоста цел (корень t01: затирание делало ротацию вечным no-op).
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("rotated-commit");
+        rig.Etcd.Store.Should().NotContainKey(TicketOutcomes.Key("/kafkaworker", "events"));
+
+        // Act-2: describe ожил — хвост доигрывается до финала.
+        rig.Admin.ClusterError = null;
+        ReadyCluster(rig.Admin, 2);
+        var resumed = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert-2: фаза C доведена, journal done, исход password-app/done.
+        resumed.IsSuccess.Should().BeTrue();
+        var done = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        done.Value!.Phase.Should().Be("done");
+        var outcome = rig.Etcd.Store[TicketOutcomes.Key("/kafkaworker", "events")].Value;
+        outcome.Should().Contain("\"kind\":\"password-app\"").And.Contain("\"outcome\":\"done\"");
+    }
+
+    [Fact]
+    public async Task Run_LiveTicketDescribeFail_WaitsWaitingClusterAsBefore()
+    {
+        // Arrange: живая СВЕЖАЯ заявка (возраст меньше порога экспирации),
+        // endpoints жив, DescribeCluster слеп (отказ преф-чека).
+        var rig = await NewRig();
+        var freshUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10;
+        rig.Etcd.Seed("/kafkaworker/rotations/events",
+            $$"""{"requested_unix":{{freshUnix}},"requested_by":"it"}""");
+        rig.Admin.ClusterError = new ApplicationException("describe fail");
+
         // Act: тик PasswordRotator.
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: journal-фаза waiting-ca-window (Kv?-ветка — экспирации нет);
-        // ticket_outcomes не создаётся.
+        // Assert: контроль канона — при ЖИВОЙ заявке waiting-cluster пишется
+        // как раньше (ожидания с заявкой фиксом не тронуты); заявка жива,
+        // исхода нет.
         result.IsSuccess.Should().BeTrue();
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.Phase.Should().Be("waiting-ca-window");
+        state.Value!.Phase.Should().Be("waiting-cluster");
+        rig.Etcd.Store.Should().ContainKey("/kafkaworker/rotations/events");
         rig.Etcd.Store.Should().NotContainKey(TicketOutcomes.Key("/kafkaworker", "events"));
     }
 

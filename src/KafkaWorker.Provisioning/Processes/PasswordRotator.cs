@@ -135,8 +135,16 @@ public sealed class PasswordRotator(
         if (!nextPem.IsSuccess)
             return Result<bool>.Failed(nextPem.Error!);
         if (nextKey.Value is not null || nextPem.Value is not null)
+        {
+            // afterCommit-хвост (заявка снята фазой B) журнал не перезаписывает:
+            // waiting-фазы пишутся только при живой заявке — затирание маркера
+            // rotated-commit/phase-c делало бы финал недостижимым
+            // (ротация-«зомби»); тихая передержка тика (arch/16 §5 H).
+            if (ticket.Value is null)
+                return Result<bool>.Success(false);
             return await WaitOrExpireAsync(
                 snap, role, ticket.Value, "waiting-ca-window", mutationLive: true, ct);
+        }
 
         if (snap.Endpoints is null || snap.AppPassword is null || snap.AdminPassword is null)
         {
@@ -158,8 +166,15 @@ public sealed class PasswordRotator(
         // недоступного кластера бессмысленна — ждём, брокеры не трогаем).
         var alive = await WaitForBrokersAsync(snap, 1, ct);
         if (!alive.Value)
+        {
+            // afterCommit-хвост журнал не перезаписывает (arch/16 §5 H):
+            // waiting-фазы — только при живой заявке; хвост доигрывается
+            // следующим тиком по journal-маркеру.
+            if (ticket.Value is null)
+                return Result<bool>.Success(false);
             return await WaitOrExpireAsync(snap, role, ticket.Value, "waiting-cluster",
                 RoleMutationLive(journalState.Value, role), ct);
+        }
 
         if (ticket.Value is not null)
         {
