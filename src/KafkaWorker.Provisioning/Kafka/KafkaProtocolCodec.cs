@@ -118,7 +118,8 @@ internal sealed class KafkaProtocolReader(byte[] payload)
 
     public short ReadInt16() => (short)((ReadByte() << 8) | ReadByte());
     public int ReadInt32() => (ReadInt16() << 16) | (ushort)ReadInt16();
-    public long ReadInt64() => ((long)ReadInt32() << 32) | (uint)ReadInt32();
+    // Int64-читателя нет: потребителей нет; WriteInt64 оставлен — симметрия
+    // для golden-тестов.
 
     public ulong ReadUVarint()
     {
@@ -204,7 +205,11 @@ internal sealed class KafkaProtocolReader(byte[] payload)
 
     private byte[] ReadRaw(int length)
     {
-        if (length < 0 || _position + length > payload.Length)
+        // Сравнение БЕЗ сложения: _position + length в unchecked-контексте при
+        // length ≈ int.MaxValue переполнилось бы в отрицательное и проходило
+        // бы проверку (попытка аллокации ~2 ГБ из битого ответа брокера);
+        // payload.Length - _position ≥ 0 всегда — инвариант _position ≤ length.
+        if (length < 0 || length > payload.Length - _position)
             throw new ApplicationException("Kafka protocol: unexpected end of payload");
         var result = new byte[length];
         Array.Copy(payload, _position, result, 0, length);

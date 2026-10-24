@@ -194,7 +194,7 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
-    public async Task Drain_Converges_Without_Drain_Broker_Container()
+    public async Task Drain_Completes_By_Fact_When_Kafka_Applied_Batch()
     {
         // Arrange: broker4 TO_REMOVE с репликами; поданный батч Kafka
         // применяет между тиками.

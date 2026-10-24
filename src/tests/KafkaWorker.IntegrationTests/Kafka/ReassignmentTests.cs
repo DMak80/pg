@@ -239,7 +239,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 "all messages are readable before drain");
 
             // Act: broker4 TO_REMOVE → тики reassigner+remove+topicsync до демонтажа.
-            // Транзиентные отказы тика (exec CLI, коннекты) — не провал: реальный
+            // Транзиентные отказы тика (подача, коннекты) — не провал: реальный
             // ReconcileLoop ретраит следующим тиком; здесь проверяется сходимость.
             await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/state",
                 "TO_REMOVE", lease: null, ct);

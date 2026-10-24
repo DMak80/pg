@@ -367,4 +367,110 @@ public sealed class KafkaProtocolCodecTests
         var thrown = await act.Should().ThrowAsync<ApplicationException>();
         thrown.Which.Message.Should().Contain("invalid frame length");
     }
+
+    // ===== Отказные пути ReadRaw без переполнения int (ревью №1) =====
+
+    [Fact]
+    public void Reader_ReadBytes_Int32Length_AtIntMax_DoesNotAllocate()
+    {
+        // Arrange: int32-длина int.MaxValue в payload (например, битый
+        // SaslAuthenticate-ответ): прежняя проверка `_position + length >
+        // payload.Length` переполнялась в unchecked-контексте и пропускала
+        // попытку аллокации ~2 ГБ.
+        var w = new KafkaProtocolWriter();
+        w.WriteInt32(int.MaxValue);
+        var r = new KafkaProtocolReader(w.ToPayload());
+
+        // Act
+        var act = () => r.ReadBytes();
+
+        // Assert: сравнение без сложения отсекает переполнение — ApplicationException.
+        act.Should().Throw<ApplicationException>()
+            .WithMessage("*unexpected end of payload*");
+    }
+
+    [Fact]
+    public void Reader_CompactString_UVarint_2Pow31_Wraps_ToException()
+    {
+        // Arrange: uvarint 2^31 (байты 80 80 80 80 08) кастится в int.MinValue;
+        // length - 1 заворачивается в int.MaxValue — ReadRaw обязан отсечь
+        // сравнением без сложения, аллокации быть не должно.
+        var r = new KafkaProtocolReader(Convert.FromHexString("8080808008"));
+
+        // Act
+        var act = () => r.ReadCompactString();
+
+        // Assert
+        act.Should().Throw<ApplicationException>()
+            .WithMessage("*unexpected end of payload*");
+    }
+
+    [Fact]
+    public void Reader_SkipTaggedSection_Size_AtIntMax_Throws()
+    {
+        // Arrange: tagged-поле с size=int.MaxValue (uvarint FF FF FF FF 07) —
+        // скип обязан упасть до аллокации size-байтов.
+        var r = new KafkaProtocolReader(Convert.FromHexString("01" + "00" + "FFFFFF07"));
+
+        // Act
+        var act = () => r.SkipTaggedSection();
+
+        // Assert
+        act.Should().Throw<ApplicationException>()
+            .WithMessage("*unexpected end of payload*");
+    }
+
+    // ===== Отказные пути клиента (ревью №4) =====
+
+    [Fact]
+    public async Task AlterReassignments_EmptyBatch_Fails_WithoutNetwork()
+    {
+        // Arrange: guard пустого батча срабатывает до сети — мгновенно.
+        var client = new KafkaProtocolClient();
+
+        // Act
+        var result = await client.AlterReassignmentsAsync(
+            "h:1", "u", "p", "ca", [], TimeSpan.FromSeconds(2), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("empty reassignment batch");
+    }
+
+    [Fact]
+    public void ParseEndpoints_Parses_Trims_Skips_Garbage()
+    {
+        // Arrange/Act: кейсы — пустая строка, пробелы вокруг, мусор без порта, IPv4.
+
+        // Assert
+        KafkaProtocolClient.ParseEndpoints("").Should().BeEmpty();
+        KafkaProtocolClient.ParseEndpoints("h:1, h:2")
+            .Should().Equal([("h", 1), ("h", 2)]);   // TrimEntries по элементам
+        KafkaProtocolClient.ParseEndpoints("host")
+            .Should().BeEmpty();                     // без порта — скип
+        KafkaProtocolClient.ParseEndpoints("1.2.3.4:9092")
+            .Should().Equal([("1.2.3.4", 9092)]);    // IPv4 host
+    }
+
+    [Fact]
+    public async Task AlterReassignments_AllEndpointsTransportFail_AggregatesBoth()
+    {
+        // Arrange: реальный CA (guard ca_pem отсечён); оба endpoint — закрытые
+        // порты localhost (connection refused мгновенный) — транспортные
+        // отказы, фейловер обязан пройти ОБА и агрегировать причины. Бюджет
+        // 2 с — тест не висит.
+        var caPem = ClusterPki.GenerateCa("unit-failover").CaPem;
+        var client = new KafkaProtocolClient();
+
+        // Act
+        var result = await client.AlterReassignmentsAsync(
+            "localhost:1,localhost:2", "u", "p", caPem, [new ReassignMove("t", 0, [1])],
+            TimeSpan.FromSeconds(2), CancellationToken.None);
+
+        // Assert: единый Failed со сводкой по обоим endpoint.
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("all bootstrap endpoints failed")
+            .And.Contain("localhost:1")
+            .And.Contain("localhost:2");
+    }
 }

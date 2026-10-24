@@ -402,7 +402,17 @@ public sealed class PartitionReassignerProcess(
         submitCts.CancelAfter(TimeSpan.FromSeconds(options.SubmitSec));
         var submit = await admin.AlterReassignmentsAsync(batch, submitCts.Token);
         if (!submit.IsSuccess)
-            return Fail(cluster, submit.Error!, "submitting-batch"); // следующий тик переподает
+        {
+            // Исчерпание ВНЕШНЕГО бюджета подачи (submitCts) оборачиваем с
+            // внятной причиной — сырой OCE в журнале фазы выглядит как «The
+            // operation was canceled», неотличимо от остановки host'а. Отмена
+            // host'а (ct) остаётся как есть. Фаза та же; следующий тик переподает.
+            var submitError = submitCts.IsCancellationRequested && !ct.IsCancellationRequested
+                ? new ApplicationException(
+                    $"reassign submit budget {options.SubmitSec} s exhausted: {submit.Error!.Message}", submit.Error)
+                : submit.Error!;
+            return Fail(cluster, submitError, "submitting-batch");
+        }
 
         submittedUnix = now;
         _lastSubmit[cluster] = (signature, now);

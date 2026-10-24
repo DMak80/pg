@@ -50,8 +50,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     // ===== Механика стабильности AC12 (spec 2026-10-17-kfw-rotation-timeout-flake §5) =====
 
     // Риг AC12: батч подач 50 партиций (§5.4) — сходимость 100 партиций это
-    // 2 подачи + финальный тик вместо 10+1: меньше exec-JVM-подач — меньше
-    // время и вероятность транзиента. Единая константа для рига и расчёта
+    // 2 подачи + финальный тик вместо 10+1: подача — сетевой round-trip, не
+    // JVM-старт, экономия подач — меньше время и вероятность транзиента.
+    // Единая константа для рига и расчёта
     // backstop финала (§5.3) — риг и расчёт не разъезжаются.
     private const int ReassignBatchPartitions = 50;
 
@@ -129,8 +130,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
     // Периоды опроса и подачи (spec §5.6; фазы H/K AC10 — вычисляемый
     // backstop + PollMs-опрос + TickInterval-подача): завершённая работа
     // обнаруживается мгновенно — опрос состояния дешёв (etcd-GET,
-    // миллисекунды), тик с exec дорог (JVM-старт CLI, секунды); интервал
-    // тика страхует от спама дешёвых waiting-тиков и ретраев хелпера.
+    // миллисекунды), тик с подачей дороже (сетевой round-trip AlterReassignments,
+    // не JVM-старт); интервал тика страхует от спама дешёвых waiting-тиков
+    // и ретраев хелпера.
     // Поллинг AC11 и UpAsync (3000 мс) — вне области правки.
     private const int PollMs = 250;
 
@@ -641,9 +643,9 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // min(3, цели) и снижение config RF их не двигает; 100 партиций
             // дают план ровно на 2 батча по 50. Окно идущей balance держится
             // живым прогресс-ключом mode=balance (гвард экспирации), а не
-            // темпом сходимости; крупные батчи — меньше exec-JVM-подач,
-            // меньше тайминговая поверхность (spec 2026-10-17-...-flake §5.4;
-            // прецедент ReassignmentTests).
+            // темпом сходимости; крупные батчи — экономия подач (подача —
+            // сетевой round-trip), меньше тайминговая поверхность
+            // (spec 2026-10-17-...-flake §5.4; прецедент ReassignmentTests).
             var topic = $"rebrto-{fixture.RunTag}";
             using (var admin = (await fixture.DiscoveryAdminBuilderAsync(cluster, "admin")).Build())
                 await admin.CreateTopicsAsync(
@@ -660,7 +662,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // хелпера; полный хвост печатается в сообщениях падения.
             var diag = new Queue<string>();
             // Expired-тик детерминирован (вечный drain + заявка старше порога);
-            // etcd/exec-транзиент одиночного тика покрывается хелпером (§5.5).
+            // сетевой/etcd-транзиент одиночного тика покрывается хелпером (§5.5).
             await TickAsync("act1-expired", cluster,
                 async () => await rig.Reassigner.RunAsync((await fixture.SnapshotAsync(cluster))!, ct), diag);
 
@@ -702,11 +704,11 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             //    сходимость» (первый тик увидел пустой pending и дошёл до
             //    финальной ветки БЕЗ подачи). Валидный исход §2 п.3.
             // Транзиент-толерантные тики; стагнация — 3 подряд неудачных
-            // (хелпер). Backstop 600 с = 3 × SubmitSec (180 с на три подряд
-            // exec-провала) + 60 с хвоста — предохранитель. Опрос — сразу
-            // после каждого тика и каждые PollMs между тиками; подача — не
-            // чаще TickIntervalMs (§5.6: завершённая работа не ждёт пустых
-            // пауз).
+            // (хелпер). Тик с подачей ≤ SubmitSec (60 с) — сетевой round-trip;
+            // три подряд неудачных ≤ 240 с; backstop 600 с — предохранитель
+            // с запасом. Опрос — сразу после каждого тика и каждые PollMs
+            // между тиками; подача — не чаще TickIntervalMs (§5.6:
+            // завершённая работа не ждёт пустых пауз).
             var remaining = new List<int>();
             var balanceDeadline = DateTimeOffset.UtcNow.AddSeconds(600);
             var nextTickAt = DateTimeOffset.UtcNow; // первый тик — немедленно

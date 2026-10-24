@@ -164,7 +164,7 @@ public sealed class ThresholdsOptions
     /// <summary>Молчание брокера дольше порога → UNREACHABLE + пересоздание (C).</summary>
     public int NodeDeadSec { get; set; } = 90;
 
-    /// <summary>Бюджет reassign-подачи батча (§2.4): connect+TLS+SASL+
+    /// <summary>Бюджет reassign-подачи батча (arch/16 §2.4): connect+TLS+SASL+
     /// AlterReassignments round-trip по всем endpoint-попыткам.</summary>
     public int ReassignSubmitSec { get; set; } = 60;
 

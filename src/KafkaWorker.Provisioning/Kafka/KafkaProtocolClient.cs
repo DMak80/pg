@@ -2,7 +2,6 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
@@ -38,33 +37,64 @@ internal sealed class KafkaProtocolClient
         if (moves.Count == 0)
             return Result.Failed(new ApplicationException("kfw-reassign: empty reassignment batch"));
 
+        // Fail-fast: TLS-валидация брокера требует per-cluster CA; пустое
+        // значение — конфигурационная ошибка, а не повод ходить в канал без
+        // доверия (admin-пароль по SASL/PLAIN). Пустой/мусорный PEM (0 якорей)
+        // и так fail-closed на рукопожатии — здесь закрываем только null.
+        if (string.IsNullOrWhiteSpace(caPem))
+            return Result.Failed(new ApplicationException(
+                "kfw-reassign: ca_pem missing — TLS validation requires the cluster CA"));
+
         var endpoints = ParseEndpoints(bootstrap);
         if (endpoints.Count == 0)
             return Result.Failed(new ApplicationException($"kfw-reassign: invalid bootstrap '{bootstrap}'"));
 
-        // Failover по списку CLIENT endpoints (spec §7.6): первый полный успех
-        // выигрывает; AlterPartitionReassignments форвардируется на контроллер —
-        // годится любой брокер.
-        var attemptErrors = new List<string>();
-        foreach (var (host, port) in endpoints)
+        // Якоря доверия (bundle OLD+NEW окна ротации) парсятся ОДИН раз на
+        // вызов и диспозятся по его завершении — не на каждую endpoint-попытку.
+        var anchors = ParseCertificates(caPem);
+        try
         {
-            var attempt = await TryEndpointAsync(
-                host, port, user, password, caPem, moves, connectAndCommandTimeout, ct);
-            if (attempt.IsSuccess)
-                return Result.Success();
+            // Failover по списку CLIENT endpoints (spec §7.6): первый полный
+            // успех выигрывает; AlterPartitionReassignments форвардится на
+            // контроллер — годится любой брокер. Протокольный ответ брокера с
+            // ошибкой (top-level/per-partition) НЕ фейловерится: логическая
+            // ошибка Kafka одинакова для всех брокеров (запрос форвардится на
+            // контроллер) — повтор на следующем endpoint дал бы ту же самую
+            // подачу и тот же ответ; Immediate Failed — ровно как один брокер.
+            var attemptErrors = new List<string>();
+            foreach (var (host, port) in endpoints)
+            {
+                var attempt = await TryEndpointAsync(
+                    host, port, user, password, anchors, moves, connectAndCommandTimeout, ct);
+                if (attempt.Outcome.IsSuccess)
+                    return Result.Success();
 
-            attemptErrors.Add(attempt.Error!.Message);
+                if (attempt.ProtocolAnswered)
+                    return attempt.Outcome;
+
+                attemptErrors.Add(attempt.Outcome.Error!.Message);
+            }
+
+            return Result.Failed(new ApplicationException(
+                $"kfw-reassign: all bootstrap endpoints failed: {string.Join("; ", attemptErrors)}"));
         }
-
-        return Result.Failed(new ApplicationException(
-            $"kfw-reassign: all bootstrap endpoints failed: {string.Join("; ", attemptErrors)}"));
+        finally
+        {
+            foreach (var anchor in anchors)
+                anchor.Dispose();
+        }
     }
 
     // Одна endpoint-попытка: connect + TLS + SASL + round-trip под единым
-    // бюджетом (linked CTS). Любой отказ — Result.Failed (без паники); отмена
+    // бюджетом (linked CTS). Исход — (Result, ProtocolAnswered): получен ли
+    // валидный протокольный ответ брокера на любой из запросов диалога
+    // (ошибка ApiVersions/SaslHandshake/SaslAuthenticate, итог
+    // AlterReassignments). Транспортные отказы (connect/TLS/чтение кадра/битые
+    // данные/correlation mismatch/таймаут) — ProtocolAnswered=false. Отмена
     // host'а пробрасывается (адаптер не помечает клиента unhealthy).
-    private static async Task<Result> TryEndpointAsync(
-        string host, int port, string user, string password, string? caPem,
+    private static async Task<(Result Outcome, bool ProtocolAnswered)> TryEndpointAsync(
+        string host, int port, string user, string password,
+        IReadOnlyList<X509Certificate2> anchors,
         IReadOnlyList<ReassignMove> moves, TimeSpan timeout, CancellationToken ct)
     {
         try
@@ -78,13 +108,11 @@ internal sealed class KafkaProtocolClient
 
             // TLS: доверие — ВСЕ CERTIFICATE-блоки caPem (bundle OLD+NEW окна
             // ротации) + SAN хоста endpoint (SAN-правило arch/16 §2.3); caPem
-            // null — без валидации (тесты/fake, семантика фабрики адаптеров).
-            IReadOnlyList<X509Certificate2> anchors = caPem is null ? [] : ParseCertificates(caPem);
+            // null отсечён guard'ом выше — валидация всегда включена.
             bool Validate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
-                => caPem is null
-                   || (certificate is not null
-                       && Shared.Tls.TlsChain.ValidateChain(certificate, anchors)
-                       && SanMatchesHost(certificate, host));
+                => certificate is not null
+                   && Shared.Tls.TlsChain.ValidateChain(certificate, anchors)
+                   && SanMatchesHost(certificate, host);
 
             using var ssl = new SslStream(tcp.GetStream(), false, Validate);
             await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
@@ -96,7 +124,8 @@ internal sealed class KafkaProtocolClient
             var correlation = 0;
 
             // ApiVersions v0 до аутентификации (SASL-листенер отвечает pre-auth):
-            // fail-fast по поддержке apiKey 45.
+            // fail-fast по поддержке apiKey 45. Далее все возвраты — после
+            // валидного ответа брокера (ProtocolAnswered=true).
             correlation++;
             var versions = new KafkaProtocolWriter();
             versions.WriteRequestHeaderV1(ApiVersionsKey, 0, correlation, ClientId);
@@ -104,8 +133,8 @@ internal sealed class KafkaProtocolClient
                 ssl, versions.ToFrame(), headerV1: false, correlation, "api-versions", token);
             var (supported, versionsError) = ParseApiVersions(versionsBody);
             if (!supported)
-                return Result.Failed(new ApplicationException(
-                    $"kfw-reassign {host}:{port} api-versions: {versionsError}"));
+                return (Result.Failed(new ApplicationException(
+                    $"kfw-reassign {host}:{port} api-versions: {versionsError}")), ProtocolAnswered: true);
 
             // SaslHandshake v1: механизм PLAIN (задан конфигом кластера; список
             // механизмов ответа читаем, но не сверяем жёстко).
@@ -119,8 +148,8 @@ internal sealed class KafkaProtocolClient
             var handshakeError = handshakeReader.ReadInt16();
             _ = handshakeReader.ReadArrayHeader(); // механизмы — не сверяем
             if (handshakeError != 0)
-                return Result.Failed(new ApplicationException(
-                    $"kfw-reassign {host}:{port} sasl-handshake: error {handshakeError}"));
+                return (Result.Failed(new ApplicationException(
+                    $"kfw-reassign {host}:{port} sasl-handshake: error {handshakeError}")), ProtocolAnswered: true);
 
             // SaslAuthenticate v0: PLAIN-токен \0user\0password (пустой authzid).
             correlation++;
@@ -134,8 +163,8 @@ internal sealed class KafkaProtocolClient
             var authMessage = authReader.ReadString(); // nullable old-style
             _ = authReader.ReadBytes(); // auth_bytes — читаем и игнорируем
             if (authError != 0)
-                return Result.Failed(new ApplicationException(
-                    $"kfw-reassign {host}:{port} sasl-authenticate: {authMessage ?? $"error {authError}"}"));
+                return (Result.Failed(new ApplicationException(
+                    $"kfw-reassign {host}:{port} sasl-authenticate: {authMessage ?? $"error {authError}"}")), ProtocolAnswered: true);
 
             // AlterPartitionReassignments v0 (flexible, header v2). Идемпотентна
             // (KIP-455): повторная подача того же assignment замещает текущий.
@@ -143,7 +172,7 @@ internal sealed class KafkaProtocolClient
             var request = BuildAlterReassignmentsRequest(moves, correlation);
             var body = await RoundTripAsync(
                 ssl, request, headerV1: true, correlation, "alter-reassignments", token);
-            return ParseAlterReassignmentsResponse(body);
+            return (ParseAlterReassignmentsResponse(body), ProtocolAnswered: true);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -151,18 +180,18 @@ internal sealed class KafkaProtocolClient
         }
         catch (OperationCanceledException ex)
         {
-            return Result.Failed(new TimeoutException(
-                $"kfw-reassign {host}:{port}: endpoint budget {timeout.TotalSeconds:F0} s exhausted", ex));
+            return (Result.Failed(new TimeoutException(
+                $"kfw-reassign {host}:{port}: endpoint budget {timeout.TotalSeconds:F0} s exhausted", ex)), ProtocolAnswered: false);
         }
         catch (System.Security.Authentication.AuthenticationException ex)
         {
-            return Result.Failed(new ApplicationException(
-                $"kfw-reassign {host}:{port} tls: {ex.Message}", ex));
+            return (Result.Failed(new ApplicationException(
+                $"kfw-reassign {host}:{port} tls: {ex.Message}", ex)), ProtocolAnswered: false);
         }
         catch (Exception ex)
         {
-            return Result.Failed(new ApplicationException(
-                $"kfw-reassign {host}:{port}: {ex.Message}", ex));
+            return (Result.Failed(new ApplicationException(
+                $"kfw-reassign {host}:{port}: {ex.Message}", ex)), ProtocolAnswered: false);
         }
     }
 
@@ -348,10 +377,13 @@ internal sealed class KafkaProtocolClient
     }
 
     // SAN-хост (arch/16 §2.3): advertised DNS либо IP; сверяем весь список SAN.
+    // Владение: сертификат SslStream — чужой (диспозится SslStream, повторный
+    // dispose чужого недопустим) — using только для заново созданной копии.
     private static bool SanMatchesHost(X509Certificate certificate, string host)
     {
-        var cert = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
-        using var _ = cert;
+        var cert2 = certificate as X509Certificate2;
+        using var owned = cert2 is null ? new X509Certificate2(certificate) : null;
+        var cert = cert2 ?? owned!;
         var san = cert.Extensions.OfType<X509SubjectAlternativeNameExtension>().FirstOrDefault();
         if (san is null)
             return false;
@@ -360,8 +392,9 @@ internal sealed class KafkaProtocolClient
         return san.EnumerateDnsNames().Contains(host, StringComparer.OrdinalIgnoreCase);
     }
 
-    // bootstrap "host:port[,host:port…]" → endpoints.
-    private static List<(string Host, int Port)> ParseEndpoints(string bootstrap)
+    // bootstrap "host:port[,host:port…]" → endpoints. Порция без порта или с
+    // некорректным числом — скипается (валидные соседи живут).
+    internal static List<(string Host, int Port)> ParseEndpoints(string bootstrap)
     {
         var endpoints = new List<(string Host, int Port)>();
         foreach (var raw in bootstrap.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))

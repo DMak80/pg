@@ -1,7 +1,6 @@
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using KafkaWorker.Core;
-using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging;
 using System.IO;
 
@@ -550,6 +549,32 @@ public sealed class KafkaAdminClient(
         }
     }
 
+    // Каркас для операций БЕЗ нативного клиента (протокольный миниклиент
+    // reassign-подачи): та же структура — TryBeginOperation/EndOperation
+    // (дрейн-dispose честен и для протокольных операций), catch → IsHostCancellation
+    // + Result.Failed с префиксом адаптера, — но EnsureClient не зовётся:
+    // rd_kafka-инстанс для операции не строится.
+    private async Task<Result> RunLocalAsync(Func<Task<Result>> action, CancellationToken ct)
+    {
+        if (!TryBeginOperation())
+            return Result.Failed(ClientDisposingError());
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            return await action();
+        }
+        catch (Exception e)
+        {
+            if (!IsHostCancellation(e, ct))
+                NotifyFailed();
+            return Result.Failed(new ApplicationException($"Kafka AdminClient ({bootstrap}): {e.Message}", e));
+        }
+        finally
+        {
+            EndOperation();
+        }
+    }
+
     // Вход операции: под _clientGate вместе с dispose-решением
     // (TryDisposeNative) — атомарность «операция началась ДО dispose» /
     // «dispose закрыл вход». Инкремент и декремент по-прежнему симметричны
@@ -654,11 +679,14 @@ public sealed class KafkaAdminClient(
     internal static readonly TimeSpan NetworkSubmitTimeout = TimeSpan.FromSeconds(30);
 
     // Клиент протокола per-call: соединение короткоживущее, кэшировать нечего
-    // (нативного клиента нет — churn-проблемы t05 не применимы). Каркас RunAsync
-    // как у остальных операций: счётчик, unhealthy-пометка при ошибке, отмена
-    // host'а не фейлит.
+    // (нативного клиента нет — churn-проблемы t05 не применимы). Каркас
+    // RunLocalAsync — без EnsureClient: протокольная операция нативный клиент
+    // не использует, строить rd_kafka-инстанс впустую не нужно. unhealthy-
+    // пометка для протокольных операций не срабатывает — миниклиент конвертирует
+    // любые отказы в Result.Failed (per-call клиенту нечего лечить); отмена
+    // host'а не фейлит (проброс из миниклиента и IsHostCancellation).
     public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
-        => RunAsync(async _ => await new KafkaProtocolClient().AlterReassignmentsAsync(
+        => RunLocalAsync(async () => await new KafkaProtocolClient().AlterReassignmentsAsync(
             bootstrap, user, password, caPem, moves, NetworkSubmitTimeout, ct), ct);
 
     // Фильтр «любой ACL»: не заполненные поля — Any (семантика «все»).

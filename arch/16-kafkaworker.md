@@ -345,9 +345,11 @@ exec c `kafka-reassign-partitions.sh` не применяется (канал 25
   план принят (идемпотентность повторной подачи — семантика KIP-455).
   Подача регистрирует переезд, не дожидаясь физического переноса данных —
   прогресс наблюдается describe-ом (процесс I, критерий завершения по факту).
-- **Бюджет** всего вызова (connect+TLS+SASL+round-trip) —
-  `Thresholds:ReassignSubmitSec`; ошибки транспорта/протокола — `Result.Failed`
-  (как у всех seam-операций, паники процессов нет).
+- **Бюджет** двухуровневый: внешний — весь вызов со всеми endpoint-попытками
+  (connect+TLS+SASL+round-trip) — `Thresholds:ReassignSubmitSec`; per-endpoint
+  — 30 с (NetworkSubmitTimeout адаптера: connect+TLS+SASL+round-trip одной
+  попытки). Ошибки транспорта/протокола — `Result.Failed` (как у всех
+  seam-операций, паники процессов нет).
 
 ### 2.5. Режимы Plain / Swarm
 
