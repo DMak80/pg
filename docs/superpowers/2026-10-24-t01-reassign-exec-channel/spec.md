@@ -131,10 +131,10 @@ Task<Result> AlterReassignmentsAsync(
    (`SslClientAuthenticationOptions.RemoteCertificateValidationCallback`,
    `TargetHost = host`): доверие — ВСЕ `CERTIFICATE`-блоки `caPem` в
    `CustomRootTrust` (окно ротации CA даёт bundle OLD+NEW — доверяем обоим;
-   парсер всех блоков PEM — рядом, в этом же файле) + SAN хоста endpoint
-   (DNS/IP — SAN-правило arch/16 §2.3 строит SAN по advertised-хосту).
-   `caPem == null` — без TLS-валидации (тесты/fake, семантика фабрики
-   адаптеров).
+   парсер всех блоков PEM — `internal static KafkaProtocolClient.
+   ParseCertificates`, см. §4.3) + SAN хоста endpoint (DNS/IP — SAN-правило
+   arch/16 §2.3 строит SAN по advertised-хосту). `caPem == null` — без
+   TLS-валидации (тесты/fake, семантика фабрики адаптеров).
 4. Диалог по одному соединению (correlation id — локальный счётчик 1..N,
    сверяется в каждом ответе, несовпадение → `Result.Failed`):
    - **ApiVersions v0** (api key 18, header v1, ПУСТОЕ тело; до
@@ -182,8 +182,13 @@ KIP-455 (замещает/подтверждает текущий reassignment),
 `ValidateChain(X509Certificate?, IReadOnlyList<X509Certificate2> anchors)` —
 `CustomRootTrust` со ВСЕМИ якорями (существующая односертовая перегрузка
 делегирует новой с одним элементом; существующие вызовы ValkeyWorker не
-меняются). Парсер всех CERTIFICATE-блоков PEM — приватный в
-`KafkaProtocolClient` (близость использования; ValkeyPki не трогаем).
+меняются). Парсер всех CERTIFICATE-блоков PEM — `internal static
+KafkaProtocolClient.ParseCertificates(string pem) → IReadOnlyList<
+X509Certificate2>` (тот же файл, близость использования; ValkeyPki не
+трогаем): visible-internal через `InternalsVisibleTo
+"KafkaWorker.UnitTests"` (уже объявлен в
+`KafkaWorker.Provisioning.csproj`) ради прямого юнит-теста bundle-расщепления
+(§4.8) — поведенчески эквивалентно приватному, тестируемость лучше.
 
 ### 4.4. Seam: `IKafkaAdminClient.AlterReassignmentsAsync`
 
@@ -211,9 +216,10 @@ NetworkSubmitTimeout, ct)`, где `NetworkSubmitTimeout` — internal const
 `src/KafkaWorker.Provisioning/Processes/PartitionReassignerProcess.cs`:
 
 1. Из конструктора УДАЛЯЕТСЯ параметр `IClusterDriver driver` (после ухода
-   exec процесс не работает с docker вовсе). Правки вызовов: `Program.cs`,
-   интеграционная фикстура `KafkaClusterFixture` (сборки рига процессов) и
-   юнит-риг `Fakes`.
+   exec процесс не работает с docker вовсе). Все 6 call-site'ов конструктора
+   правятся: `Program.cs`; тесты — `PartitionReassignerProcessTests` (два
+   места), `ReassignmentTests`, `RotationTimeoutTests`, `KafkaActiveGateTests`
+   (`KafkaClusterFixture` конструкторов процесса не содержит и не правится).
 2. `RunAsync` создаёт адаптер как сейчас (`await using var admin =
    adminFactory.Create(...)`); адаптер передаётся параметром в
    `RunDrainAsync` / `RunBalanceAsync` / `SubmitBatchAsync`.
@@ -293,7 +299,10 @@ if (!submit.IsSuccess)
 - ResponseHeader v1 — пропуск tagged-полей ответа (unknown tag со Size —
   скип не падает);
 - old-style против compact-строк/массивов (int16 против uvarint) —
-  изоляция примитивов.
+  изоляция примитивов;
+- прямой юнит-тест парсера CA-bundle: `ParseCertificates_Splits_Bundle` —
+  PEM из двух CERTIFICATE-блоков (bundle OLD+NEW окна ротации) → ровно два
+  сертификата (метод internal — виден через InternalsVisibleTo, §4.3).
 
 Юнит-тесты процесса (`PartitionReassignerProcessTests`):
 
@@ -428,8 +437,12 @@ drain/balance/идемпотентность через новый канал.
     (процесс). Семантика «следующий тик переподаст» сохранена.
 12. **Валидация TLS — все CERTIFICATE-блоки `ca_pem`** (bundle OLD+NEW окна
     ротации CaRotator) + SAN хоста endpoint; перегрузка `TlsChain` в
-    Shared.Tls (общая, с сохранением старой сигнатуры), парсер блоков —
-    приватный в клиенте (ValkeyPki не трогаем — вне области задачи).
+    Shared.Tls (общая, с сохранением старой сигнатуры); парсер блоков —
+    `internal static KafkaProtocolClient.ParseCertificates` (не private):
+    прямой юнит-тест `ParseCertificates_Splits_Bundle` через уже
+    объявленный `InternalsVisibleTo "KafkaWorker.UnitTests"`
+    (KafkaWorker.Provisioning.csproj); поведенчески эквивалентно приватному,
+    тестируемость лучше. ValkeyPki не трогаем — вне области задачи.
 13. **Ответ AlterPartitionReassignments**: top-level error ≠ 0 ИЛИ любой
     per-partition error ≠ 0 → единый `Result.Failed` со сводкой; процесс
     трактует как «переподать следующим тиком» (прежняя семантика exec-фейла).
@@ -449,9 +462,9 @@ drain/balance/идемпотентность через новый канал.
 
 1. `grep -rn "ExecNodeAsync" src/KafkaWorker.*` — пусто; `grep -rn "ReassignCli\|kafka-reassign-partitions" src/KafkaWorker.* src/tests/KafkaWorker.*` — пусто.
 2. `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — без ошибок и предупреждений (TreatWarningsAsErrors).
-3. Юнит-серия KafkaWorker зелёная, включая новые `KafkaProtocolCodecTests` (golden bytes) и обновлённые `PartitionReassignerProcessTests`.
+3. Юнит-серия KafkaWorker зелёная, включая новые `KafkaProtocolCodecTests` (golden bytes, `ParseCertificates_Splits_Bundle`) и обновлённые `PartitionReassignerProcessTests`.
 4. Docker-интеграции `ReassignmentTests` (все 3 теста) зелёные на свежем Release (`--no-build` после отдельной сборки), включая идемпотентность двойной seam-подачи; фикстура зачищает свой контур (существующая механика), сети/контейнеры после серии не остаются.
-5. Поведенческие инвариенты (арх-контракт): drain непустого брокера завершается демонтажем со снижением RF и сохранностью данных (интеграционный тест T7.1 без изменений ассертов); баланс восстанавливает RF с сохранением лидеров; повторная подача того же assignment не меняет placement; слепая проба — без подач; прогресс-ключ пишется/удаляется в прежние моменты.
+5. Поведенческие инварианты (арх-контракт): drain непустого брокера завершается демонтажем со снижением RF и сохранностью данных (интеграционный тест T7.1 без изменений ассертов); баланс восстанавливает RF с сохранением лидеров; повторная подача того же assignment не меняет placement; слепая проба — без подач; прогресс-ключ пишется/удаляется в прежние моменты.
 6. arch/16 и arch/25 отражают новое состояние (правки из §2 уже в ветке); roadmap-пункт удалён мерж-гейтом.
 
 ## Приложение A. Точные схемы протокола (apache/kafka 4.0.0, message/*.json)
@@ -549,7 +562,9 @@ uvarint responses_count_1 = N+1
 - `src/tests/KafkaWorker.UnitTests/Provisioning/Fakes.cs`,
   `…/PartitionReassignerProcessTests.cs`
 - `src/tests/KafkaWorker.IntegrationTests/Kafka/ReassignmentTests.cs`,
-  `…/KafkaClusterFixture.cs` (риг), `…/PortAllocHealingTests.cs`
+  `…/RotationTimeoutTests.cs`, `…/KafkaActiveGateTests.cs` (call-site'ы
+  конструктора процесса: риги без driver)
+- `src/tests/KafkaWorker.IntegrationTests/Kafka/PortAllocHealingTests.cs`
 
 Удаления:
 - `src/KafkaWorker.Provisioning/Processes/ReassignCli.cs`
