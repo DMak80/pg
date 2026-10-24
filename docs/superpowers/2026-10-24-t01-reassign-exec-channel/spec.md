@@ -122,37 +122,55 @@ Task<Result> AlterReassignmentsAsync(
 
 Поведение (паттерн `ValkeyConnection.ExecuteAsync`):
 
-1. Пустой `moves` → `Result.Failed` ("empty reassignment batch") без сети
-   (защитный guard; процесс такие не подаёт).
+1. Guards без сети: пустой `moves` → `Result.Failed` ("empty reassignment
+   batch"; процесс такие не подаёт); null/пустой `caPem` →
+   `Result.Failed` ("ca_pem missing — TLS validation requires the cluster
+   CA") — валидация TLS брокера обязательна (admin-креды идут по
+   SASL/PLAIN, ходить в канал без доверия нельзя); пустой/мусорный PEM
+   (0 якорей) — fail-closed на рукопожатии.
 2. `bootstrap` — строка `host:port[,host:port…]` (CLIENT endpoints из etcd);
-   endpoints перебираются по очереди до первого полного успеха; все
-   отказали → `Result.Failed` с перечнем причин.
-3. Один endpoint: `TcpClient.ConnectAsync` → `SslStream`
+   перебор endpoints — ТОЛЬКО по транспортным отказам (connect/TLS/чтение
+   кадра/битые данные/таймаут бюджета): первый полный успех выигрывает.
+   Полученный протокольный ответ брокера — ошибка ApiVersions-fail-fast,
+   SASL-ошибка, top-level/per-partition ошибки AlterReassignments, успех —
+   немедленный исход вызова БЕЗ перебора: логическая ошибка одинакова для
+   всех брокеров (запрос форвардится на контроллер — повтор на следующем
+   endpoint дал бы ту же подачу и тот же ответ). Транспортные отказы
+   агрегируются: все endpoints отказали → `Result.Failed` ("all bootstrap
+   endpoints failed: <причины всех попыток>").
+3. Один endpoint (`TryEndpointAsync`): `TcpClient.ConnectAsync` →
+   `SslStream`
    (`SslClientAuthenticationOptions.RemoteCertificateValidationCallback`,
    `TargetHost = host`): доверие — ВСЕ `CERTIFICATE`-блоки `caPem` в
    `CustomRootTrust` (окно ротации CA даёт bundle OLD+NEW — доверяем обоим;
    парсер всех блоков PEM — `internal static KafkaProtocolClient.
    ParseCertificates`, см. §4.3) + SAN хоста endpoint (DNS/IP — SAN-правило
-   arch/16 §2.3 строит SAN по advertised-хосту). `caPem == null` — без
-   TLS-валидации (тесты/fake, семантика фабрики адаптеров).
+   arch/16 §2.3 строит SAN по advertised-хосту). Валидация TLS включена
+   ВСЕГДА: null/пустой `caPem` отсечён guard'ом (п.1), пустой/мусорный PEM
+   (0 якорей) — fail-closed на рукопожатии. Якоря доверия парсятся ОДИН
+   раз на вызов (в `AlterReassignmentsAsync`, до цикла endpoints) и
+   диспозятся по завершении вызова (try/finally); `TryEndpointAsync`
+   получает их параметром.
 4. Диалог по одному соединению (correlation id — локальный счётчик 1..N,
-   сверяется в каждом ответе, несовпадение → `Result.Failed`):
+   сверяется в каждом ответе; несовпадение — битые данные: транспортный
+   отказ endpoint'а, перебор по п.2):
    - **ApiVersions v0** (api key 18, header v1, ПУСТОЕ тело; до
      аутентификации — брокер отвечает на SASL-листенере pre-auth).
-     Ответ v0 (header v0): `int16 error_code` (≠0 → fail endpoint), массив
+     Ответ v0 (header v0): `int16 error_code` (≠0 → немедленный
+     `Result.Failed` без перебора — протокольный ответ брокера), массив
      old-style `int32 count` × {`int16 api_key`, `int16 min`, `int16 max`}.
      Требование: ключ 45 присутствует (min ≤ 0 ≤ max) — иначе
      `Result.Failed("broker does not support AlterPartitionReassignments")`
      — fail-fast с внятной диагностикой.
    - **SaslHandshake v1** (api key 17, header v1): тело — old-style строка
-     `"PLAIN"`. Ответ v1: `int16 error_code` (≠0 → fail), old-style массив
-     механизмов (читаем, не сверяем жёстко — механизм задан конфигом
-     кластера).
+     `"PLAIN"`. Ответ v1: `int16 error_code` (≠0 → немедленный
+     `Result.Failed` без перебора), old-style массив механизмов (читаем, не
+     сверяем жёстко — механизм задан конфигом кластера).
    - **SaslAuthenticate v0** (api key 36, header v1): тело — байты
      `\0user\0password` (UTF-8, SASL PLAIN: пустой authzid + NUL + authcid +
      NUL + passwd). Ответ v0: `int16 error_code`, old-style nullable строка
-     `error_message`, байты `auth_bytes` (читаем и игнорируем); error_code ≠ 0
-     → `Result.Failed` с `error_message`.
+     `error_message`, байты `auth_bytes` (читаем и игнорируем); error_code
+     ≠ 0 → `Result.Failed` с `error_message`.
    - **AlterPartitionReassignments v0** (api key 45, header v2 — flexible):
      тело: `int32 timeout_ms = 60000` (апстрим-дефолт); compact-массив
      топиков: для каждого — compact-строка имени, compact-массив партиций,
@@ -172,10 +190,13 @@ Task<Result> AlterReassignmentsAsync(
      error_code ≠ 0 → `Result.Failed` со сводкой вида `topic[p]: <code>
      (<message>)` по всем ненулевым; все нули → `Result.Success` (план
      принят).
-5. Бюджет: linked CTS `connectAndCommandTimeout` на весь endpoint-попытка
-   (connect + TLS + SASL + round-trip); любые исключения транспорта/протокола
-   → `Result.Failed(new ApplicationException($"kfw-reassign {host}:{port}
-   <этап>: <причина>", inner))` — паники нет.
+5. Бюджет: linked CTS `connectAndCommandTimeout` на всю endpoint-попытка
+   (connect + TLS + SASL + round-trip); исключения транспорта и парсинга
+   (connect/TLS/чтение кадра/битые данные/correlation mismatch) и истечение
+   бюджета — транспортный отказ endpoint'а: `Result.Failed(new
+   ApplicationException($"kfw-reassign {host}:{port} <этап>: <причина>",
+   inner))` — паники нет; отмена host'а пробрасывается (не «endpoint
+   молчит»).
 6. Соединение закрывается после ответа (per-call; `using`).
 
 Идемпотентность: повторная подача того же assignment — штатная семантика
@@ -206,13 +227,19 @@ X509Certificate2>` (тот же файл, близость использова�
 Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct);
 ```
 
-Реализация в `KafkaAdminClient` (адаптер, `KafkaAdminClient.cs`): тот же
-каркас `RunAsync` (счётчик операций кэша, unhealthy-пометка при ошибке,
-отмена host'а не фейлит), действие — `new KafkaProtocolClient().
-AlterReassignmentsAsync(bootstrap, user, password, caPem, moves,
-NetworkSubmitTimeout, ct)`, где `NetworkSubmitTimeout` — internal static
-readonly `TimeSpan NetworkSubmitTimeout = TimeSpan.FromSeconds(30)`
-(per-endpoint бюджет connect+TLS+SASL+round-trip;
+Реализация в `KafkaAdminClient` (адаптер, `KafkaAdminClient.cs`): private-каркас
+`RunLocalAsync` — та же структура, что `RunAsync` (TryBeginOperation/
+EndOperation: счётчик операций и dispose-гейт честны и для протокольной
+операции; catch → `Result.Failed` с префиксом адаптера), но БЕЗ построения
+нативного Confluent-клиента — `EnsureClient` не зовётся: операция его не
+использует, rd_kafka-инстанс впустую не строится. unhealthy-пометка для
+протокольной операции не срабатывает: миниклиент конвертирует любые отказы
+в `Result.Failed` — per-call клиенту нечего лечить. Отмена host'а не
+фейлит (проброс из миниклиента + `IsHostCancellation`). Действие — `new
+KafkaProtocolClient().AlterReassignmentsAsync(bootstrap, user, password,
+caPem, moves, NetworkSubmitTimeout, ct)`, где `NetworkSubmitTimeout` —
+internal static readonly `TimeSpan NetworkSubmitTimeout =
+TimeSpan.FromSeconds(30)` (per-endpoint бюджет connect+TLS+SASL+round-trip;
 подача регистрируется контроллером и отвечает быстро — это не ожидание
 физического переноса данных). Клиент протокола создаётся per-call: соединение
 короткоживущее, кэшировать нечего (нативного клиента нет — churn-проблемы t05
@@ -243,11 +270,15 @@ if (!submit.IsSuccess)
     return Fail(cluster, submit.Error!, "submitting-batch"); // следующий тик переподает
 ```
 
-   Внешний бюджет `options.SubmitSec` (бывший `ExecSec`) покрывает все
-   endpoint-попытки клиента (per-endpoint — внутренние 30 с). Fallback-ветки
-   «exec в drain-контейнер недоступен → первый RUNNING» исчезают вместе с
-   exec: подача идёт по сети к CLIENT endpoints, контейнер-цель не нужна;
-   идемпотентность KIP-455 сохраняет безопасность переподач тем же тиком.
+   При исчерпании бюджета `submitCts` (отмена без отмены host'а) ошибка
+   оборачивается `"reassign submit budget N s exhausted: …"` — фаза
+   `submitting-batch` прежняя (сырой OCE в журнале неотличим от остановки
+   host'а). Внешний бюджет `options.SubmitSec` (бывший `ExecSec`) покрывает
+   все endpoint-попытки клиента (per-endpoint — внутренние 30 с).
+   Fallback-ветки «exec в drain-контейнер недоступен → первый RUNNING»
+   исчезают вместе с exec: подача идёт по сети к CLIENT endpoints,
+   контейнер-цель не нужна; идемпотентность KIP-455 сохраняет безопасность
+   переподач тем же тиком.
 4. XML-док класса: формулировки про «docker-exec» заменить на «подача
    AlterReassignments (KIP-455) протокольным миниклиентом arch/16 §2.4».
 5. ВСЁ остальное (drain/balance-сценарии, minISR-guard, USR-критерий,
@@ -309,7 +340,21 @@ if (!submit.IsSuccess)
   изоляция примитивов;
 - прямой юнит-тест парсера CA-bundle: `ParseCertificates_Splits_Bundle` —
   PEM из двух CERTIFICATE-блоков (bundle OLD+NEW окна ротации) → ровно два
-  сертификата (метод internal — виден через InternalsVisibleTo, §4.3).
+  сертификата (метод internal — виден через InternalsVisibleTo, §4.3);
+- отказные пути `ReadRaw` без переполнения int (сравнение БЕЗ сложения —
+  `_position + length` при `length ≈ int.MaxValue` переполняется в
+  unchecked и пропускал бы аллокацию ~2 ГБ): int32-длина `int.MaxValue`
+  (`ReadBytes`); uvarint 2^31 → int-каст в int.MinValue → `length − 1`
+  заворачивается в `int.MaxValue` (`ReadCompactString`); tagged-поле
+  size=`int.MaxValue` (`SkipTaggedSection`) — каждый падает
+  `ApplicationException` ДО аллокации;
+- отказные пути клиента: guard пустого батча — `Result.Failed` без сети;
+  `ParseEndpoints` (internal static) — пустая строка, пробелы вокруг
+  элементов (TrimEntries), мусор без порта (скипается, валидные соседи
+  живут), IPv4-host; failover-агрегация транспортных отказов — endpoints
+  `localhost:1,localhost:2` (закрытые порты — connection refused), caPem
+  из `ClusterPki.GenerateCa`, бюджет 2 с → единый `Result.Failed`
+  ("all bootstrap endpoints failed") с причинами обеих endpoint-попыток.
 
 Юнит-тесты процесса (`PartitionReassignerProcessTests`):
 
@@ -416,8 +461,13 @@ drain/balance/идемпотентность через новый канал.
    существуют с Kafka 2.4 — переговоры версий не нужны, ApiVersions читаем
    только для fail-fast проверки apiKey 45.
 6. **Failover по списку endpoints внутри одного вызова** (как PutAsync у
-   процесса): первый живой endpoint выигрывает; AlterPartitionReassignments
-   — форвардируемый брокером на контроллер API, любой брокер годится.
+   процесса): перебор — ТОЛЬКО по транспортным отказам (connect/TLS/чтение
+   кадра/битые данные/таймаут), первый полный успех выигрывает; полученный
+   протокольный ответ брокера (ошибка ApiVersions-fail-fast, SASL-ошибка,
+   top-level/per-partition ошибки AlterReassignments, успех) — немедленный
+   исход вызова без перебора: логическая ошибка одинакова для всех брокеров
+   (AlterPartitionReassignments форвардится на контроллер API — любой брокер
+   годится, повтор на соседнем дал бы ту же подачу и тот же ответ).
 7. **Опция переименована `ReassignExecSec` → `ReassignSubmitSec`, default
    60** (не «оставить имя» и не «удалить опцию»): exec-семантика исчезла —
    имя не должно врать; бюджет остаётся конфигурируемым по паттерну
@@ -443,10 +493,12 @@ drain/balance/идемпотентность через новый канал.
     списку CLIENT endpoints (клиент) + идемпотентной переподачей тика
     (процесс). Семантика «следующий тик переподаст» сохранена.
 12. **Валидация TLS — все CERTIFICATE-блоки `ca_pem`** (bundle OLD+NEW окна
-    ротации CaRotator) + SAN хоста endpoint; перегрузка `TlsChain` в
-    Shared.Tls (общая, с сохранением старой сигнатуры); парсер блоков —
-    `internal static KafkaProtocolClient.ParseCertificates` (не private):
-    прямой юнит-тест `ParseCertificates_Splits_Bundle` через уже
+    ротации CaRotator) + SAN хоста endpoint; null/пустой `caPem` — fail-fast
+    guard без сети (валидация TLS обязательна; admin-креды SASL/PLAIN), а
+    пустой/мусорный PEM (0 якорей) — fail-closed на рукопожатии. Перегрузка
+    `TlsChain` в Shared.Tls (общая, с сохранением старой сигнатуры); парсер
+    блоков — `internal static KafkaProtocolClient.ParseCertificates` (не
+    private): прямой юнит-тест `ParseCertificates_Splits_Bundle` через уже
     объявленный `InternalsVisibleTo "KafkaWorker.UnitTests"`
     (KafkaWorker.Provisioning.csproj); поведенчески эквивалентно приватному,
     тестируемость лучше. ValkeyPki не трогаем — вне области задачи.
@@ -559,19 +611,28 @@ uvarint 0                                        // tagged-секция тела
 Новые:
 - `src/KafkaWorker.Provisioning/Kafka/KafkaProtocolCodec.cs`
 - `src/KafkaWorker.Provisioning/Kafka/KafkaProtocolClient.cs`
+- `src/KafkaWorker.Provisioning/Kafka/ReassignMove.cs` (тип перенесён из
+  `ReassignPlanner.cs`: seam-тип подач живёт в Kafka-namespace)
 - `src/tests/KafkaWorker.UnitTests/Kafka/KafkaProtocolCodecTests.cs`
 
 Правки:
 - `src/KafkaWorker.Provisioning/Kafka/IKafkaAdminClient.cs` (+метод seam)
 - `src/KafkaWorker.Provisioning/Kafka/KafkaAdminClient.cs` (реализация)
+- `src/KafkaWorker.Provisioning/KafkaWorker.Provisioning.csproj`
+  (+ProjectReference `Shared.Tls`)
 - `src/KafkaWorker.Provisioning/Processes/PartitionReassignerProcess.cs`
 - `src/KafkaWorker.Provisioning/Processes/ProcessCommon.cs` (ReassignOptions)
+- `src/KafkaWorker.Provisioning/Processes/ReassignPlanner.cs`
+  (−`ReassignMove`: перенесён в Kafka-namespace)
 - `src/Shared.Tls/TlsChain.cs` (перегрузка anchors)
 - `src/KafkaWorker.App/Options.cs`, `src/KafkaWorker.App/Program.cs`,
   `src/KafkaWorker.App/appsettings.json`
 - `src/KafkaWorker.Docker/Drivers/ClusterDriver.cs` (−ExecNodeAsync)
 - `src/tests/KafkaWorker.UnitTests/Provisioning/Fakes.cs`,
+  `…/FakeKafkaAdminClient.cs` (SubmittedMoves/FailSubmits + seam-метод),
   `…/PartitionReassignerProcessTests.cs`
+- `src/tests/KafkaWorker.UnitTests/App/KafkaMetricsCollectorTests.cs`
+  (заглушка seam-метода локального фейка коллектора)
 - `src/tests/KafkaWorker.IntegrationTests/Kafka/ReassignmentTests.cs`,
   `…/RotationTimeoutTests.cs`, `…/KafkaActiveGateTests.cs` (call-site'ы
   конструктора процесса: риги без driver)
