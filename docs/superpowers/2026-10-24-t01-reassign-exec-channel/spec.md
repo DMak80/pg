@@ -155,17 +155,23 @@ Task<Result> AlterReassignmentsAsync(
      → `Result.Failed` с `error_message`.
    - **AlterPartitionReassignments v0** (api key 45, header v2 — flexible):
      тело: `int32 timeout_ms = 60000` (апстрим-дефолт); compact-массив
-     топиков: для каждого — compact-строка имени, пустая tagged-секция,
-     compact-массив партиций: `int32 partition_index`, компакт-массив
-     `int32`-реплик (НЕ null — отмену переезда не используем), пустая
-     tagged-секция; закрывающая пустая tagged-секция тела.
+     топиков: для каждого — compact-строка имени, compact-массив партиций,
+     затем tagged-секция топика (у нас пустая; tagged-секция структуры —
+     одна и всегда после ВСЕХ её полей); партиция: `int32 partition_index`,
+     компакт-массив `int32`-реплик (НЕ null — отмену переезда не используем),
+     затем tagged-секция партиции (пустая); закрывающая tagged-секция тела
+     (пустая).
      Ответ v0 (flexible, header v1): `int32 throttle_time_ms`,
      `int16 error_code`, compact nullable `error_message`, compact-массив
-     `responses[] { name, partitions[] { partition_index, error_code,
-     error_message } }` (+ пустые tagged-секции). Top-level error_code ≠ 0 →
-     `Result.Failed` с error_message; иначе любой per-partition error_code ≠ 0
-     → `Result.Failed` со сводкой вида `topic[p]: <code> (<message>)` по всем
-     ненулевым; все нули → `Result.Success` (план принят).
+     (nullable: 0 = null при top-level ошибке) `responses[] { name,
+     partitions[] { partition_index, error_code, error_message compact
+     nullable, tagged }, tagged }` — tagged-секция каждой структуры в конце,
+     после всех полей; закрывающая tagged-секция тела присутствует ВСЕГДА,
+     в т.ч. при top-level ошибке с responses=null. Top-level error_code ≠ 0
+     → `Result.Failed` с error_message; иначе любой per-partition
+     error_code ≠ 0 → `Result.Failed` со сводкой вида `topic[p]: <code>
+     (<message>)` по всем ненулевым; все нули → `Result.Success` (план
+     принят).
 5. Бюджет: linked CTS `connectAndCommandTimeout` на весь endpoint-попытка
    (connect + TLS + SASL + round-trip); любые исключения транспорта/протокола
    → `Result.Failed(new ApplicationException($"kfw-reassign {host}:{port}
@@ -464,7 +470,7 @@ drain/balance/идемпотентность через новый канал.
 2. `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release --nologo` — без ошибок и предупреждений (TreatWarningsAsErrors).
 3. Юнит-серия KafkaWorker зелёная, включая новые `KafkaProtocolCodecTests` (golden bytes, `ParseCertificates_Splits_Bundle`) и обновлённые `PartitionReassignerProcessTests`.
 4. Docker-интеграции `ReassignmentTests` (все 3 теста) зелёные на свежем Release (`--no-build` после отдельной сборки), включая идемпотентность двойной seam-подачи; фикстура зачищает свой контур (существующая механика), сети/контейнеры после серии не остаются.
-5. Поведенческие инварианты (арх-контракт): drain непустого брокера завершается демонтажем со снижением RF и сохранностью данных (интеграционный тест T7.1 без изменений ассертов); баланс восстанавливает RF с сохранением лидеров; повторная подача того же assignment не меняет placement; слепая проба — без подач; прогресс-ключ пишется/удаляется в прежние моменты.
+5. Поведенческие инварианты (арх-контракт): drain непустого брокера завершается демонтажем со снижением RF и сохранностью данных (интеграционный тест T7.1 без изменений ассертов); баланс восстанавливает RF с сохранностью лидеров; повторная подача того же assignment не меняет placement; слепая проба — без подач; прогресс-ключ пишется/удаляется в прежние моменты.
 6. arch/16 и arch/25 отражают новое состояние (правки из §2 уже в ветке); roadmap-пункт удалён мерж-гейтом.
 
 ## Приложение A. Точные схемы протокола (apache/kafka 4.0.0, message/*.json)
@@ -498,6 +504,9 @@ continuation). Запрос/ответ = `int32 длина` + header + body. Cor
 
 ### A.4. AlterPartitionReassignments (api key 45; ТОЛЬКО v0; flexible 0+)
 
+Tagged-секция структурного объекта — ОДНА и всегда В КОНЦЕ объекта, после
+ВСЕХ его полей (правило flexible-версий KIP-482).
+
 - Request v0 (header v2 — flexible: после client_id пустая tagged-секция
   `uvarint 0`; client_id — ВСЕГДА old-style int16-строка):
 
@@ -506,13 +515,13 @@ int32  timeout_ms = 60000
 uvarint topics_count_1 = N+1                    // compact-массив топиков; 0 = null
 повторять N раз:
     compact-строка name                          // uvarint len+1 + UTF-8
-    uvarint 0                                    // tagged-секция топика (пустая)
     uvarint partitions_count_1 = M+1             // compact-массив партиций
     повторять M раз:
         int32 partition_index
         uvarint replicas_count_1 = K+1           // 0 = null (отмена; не используем)
         K × int32 replica_id
         uvarint 0                                // tagged-секция партиции (пустая)
+    uvarint 0                                    // tagged-секция топика (пустая)
 uvarint 0                                        // tagged-секция тела (пустая)
 ```
 
@@ -522,16 +531,17 @@ uvarint 0                                        // tagged-секция тела
 int32   throttle_time_ms
 int16   error_code
 compact-строка error_message                     // nullable: uvarint 0 = null
-uvarint responses_count_1 = N+1
+uvarint responses_count_1 = N+1                  // compact-массив; 0 = null (top-level ошибка)
 повторять N раз:
     compact-строка name
-    uvarint 0                                    // tagged топика
     uvarint partitions_count_1 = M+1
     повторять M раз:
         int32 partition_index
         int16 error_code
         compact-строка error_message             // nullable
-        uvarint 0                                // tagged партиции
+        uvarint 0                                // tagged-секция партиции (пустая)
+    uvarint 0                                    // tagged-секция топика (пустая)
+uvarint 0                                        // tagged-секция тела — ВСЕГДА (и при responses=null)
 ```
 
 ### A.5. Заголовки
