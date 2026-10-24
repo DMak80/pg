@@ -348,4 +348,23 @@ public sealed class KafkaProtocolCodecTests
         // Assert: каждый блок — отдельный якорь доверия.
         anchors.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task ReadFrame_Length_Over_Max_Throws()
+    {
+        // Arrange: заголовок кадра объявляет длину выше санитарной границы
+        // (MaxFrameLength + 1) — битый/враждебный поток; аллокации быть не
+        // должно, чтение падает до выделения буфера.
+        var header = new byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(
+            header, KafkaProtocolClient.MaxFrameLength + 1);
+        var stream = new MemoryStream(header);
+
+        // Act
+        var act = async () => await KafkaProtocolClient.ReadFrameAsync(stream, CancellationToken.None);
+
+        // Assert: недопустимая длина кадра — ApplicationException с диагностикой.
+        var thrown = await act.Should().ThrowAsync<ApplicationException>();
+        thrown.Which.Message.Should().Contain("invalid frame length");
+    }
 }

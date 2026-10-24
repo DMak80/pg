@@ -16,6 +16,15 @@ internal sealed class KafkaProtocolClient
 {
     internal const string ClientId = "kfw-reassign";
 
+    // Верхняя санитарная граница кадра: 16 МБ — огромный запас поверх
+    // фактических ответов воркера (батч ≤ 10 партиций даёт килобайтные
+    // ответы); битая/враждебная длина не должна давать большую аллокацию
+    // до отказа чтения.
+    internal const int MaxFrameLength = 16 * 1024 * 1024;
+
+    // Минимальный кадр ответа — ResponseHeader v0 (int32 correlation id).
+    private const int MinFrameLength = 4;
+
     private const short ApiVersionsKey = 18;
     private const short SaslHandshakeKey = 17;
     private const short SaslAuthenticateKey = 36;
@@ -173,14 +182,16 @@ internal sealed class KafkaProtocolClient
         return payload[(payload.Length - reader.Remaining)..];
     }
 
-    // Кадр ответа: int32 длина + ровно length байт payload.
-    private static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken ct)
+    // Кадр ответа: int32 длина + ровно length байт payload. Длина сверяется
+    // с санитарной границей ДО аллокации (см. MaxFrameLength/MinFrameLength).
+    // internal — прямой юнит-тест границы (InternalsVisibleTo, класс internal).
+    internal static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken ct)
     {
         var header = new byte[4];
         await ReadExactlyAsync(stream, header, ct);
         var length = (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
-        if (length < 0)
-            throw new ApplicationException($"Kafka protocol: negative frame length {length}");
+        if (length < MinFrameLength || length > MaxFrameLength)
+            throw new ApplicationException($"Kafka protocol: invalid frame length {length}");
         var payload = new byte[length];
         await ReadExactlyAsync(stream, payload, ct);
         return payload;

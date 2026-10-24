@@ -283,7 +283,7 @@ public sealed class PlainClusterDriver(
         return Result<bool>.Success(false);
     }
 
-    // Перебор хостов: первый хост с контейнером отдаёт факт (симметрия Exec).
+    // Перебор хостов: первый хост, где контейнер ноды найден, отдаёт лимиты.
     public async Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
     {
         var name = NodeName(cluster, nodeName);
