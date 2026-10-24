@@ -210,8 +210,9 @@ Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, Cancella
 каркас `RunAsync` (счётчик операций кэша, unhealthy-пометка при ошибке,
 отмена host'а не фейлит), действие — `new KafkaProtocolClient().
 AlterReassignmentsAsync(bootstrap, user, password, caPem, moves,
-NetworkSubmitTimeout, ct)`, где `NetworkSubmitTimeout` — internal const
-`TimeSpan.FromSeconds(30)` (per-endpoint бюджет connect+TLS+SASL+round-trip;
+NetworkSubmitTimeout, ct)`, где `NetworkSubmitTimeout` — internal static
+readonly `TimeSpan NetworkSubmitTimeout = TimeSpan.FromSeconds(30)`
+(per-endpoint бюджет connect+TLS+SASL+round-trip;
 подача регистрируется контроллером и отвечает быстро — это не ожидание
 физического переноса данных). Клиент протокола создаётся per-call: соединение
 короткоживущее, кэшировать нечего (нативного клиента нет — churn-проблемы t05
