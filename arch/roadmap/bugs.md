@@ -75,36 +75,10 @@
   Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
   (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
 
-- **`t06-kfw-topiclifecycle-deleteticket-flake`** — del-заявка не удаляет
-  топик за гейт: `KafkaWorker.IntegrationTests.Kafka.TopicLifecycleTests.DeleteTicket_RemovesTopicAndKeys`
-  — FAIL 38 с (серия `FullyQualifiedName~IntegrationTests`, 2026-10-24,
-  HEAD `7448fdd1` — прод-код KafkaWorker идентичен базе). Команда серии:
-  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
-  -c Release --no-build --filter "FullyQualifiedName~IntegrationTests"`.
-  Ошибка: `Expected (TopicExistsAsync(fixture, cluster, topic, ct)) to be
-  False, but found True` (`TopicLifecycleTests.cs:185`).
-  Ожидаемое: после del-тикета топик удалён. Наблюдаемое: топик жив.
-  Логи: `arch/roadmap/bugs/t04-kfw-topiclifecycle-deleteticket-flake/`
-  (выжимка из series-1). Гипотезы: delete-тик не успел за гейт под
-  параллельной нагрузкой / TopicSync-сходимость медленнее окна — разобрать
-  гейт ожидания удаления.
-- **`t07-kfw-metrics-workerseries-flake`** — серия метрик без loop=reconcile:
-  `KafkaWorker.IntegrationTests.Api.MetricsTests.Metrics_WorkerSeries_
-  AfterFirstTick_SingleInstrumentation` — FAIL 178 мс (полный прогон
-  `KafkaWorker.IntegrationTests`, 2026-10-24, HEAD `86953df0`). Команда:
-  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test
-  src/tests/KafkaWorker.IntegrationTests -c Release --no-build`.
-  Ошибка: `Expected matches to contain a single item matching
-  l.Contains("loop=\"reconcile\"") …, but no such item was found`
-  (`MetricsTests.cs:56`; в срезе только `loop="keepalive"`).
-  Ожидаемое: после первого тика в метриках есть серия loop=reconcile.
-  Наблюдаемое: reconcile-серии нет (тик не успел к срезу). В соседнем
-  прогоне (d2-full) тест зелёный — тайминг-флейк. Логи:
-  `arch/roadmap/bugs/t05-kfw-metrics-workerseries-flake/` (выжимка).
-  Гипотезы: срез метрик до первого reconcile-тика под параллельным стартом
-  — разобрать синхронизацию среза/тика.
 - **`t10-pgw-e2e-series-fails`** — пачка красных PgWorker.IntegrationTests
-  E2E в полных сериях solutionx (2026-10-24, команда — та же, см. t06):
+  E2E в полных сериях solutionx (2026-10-24, команда:
+  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
+  -c Release --no-build --filter "FullyQualifiedName~IntegrationTests"`):
   серия A2 (HEAD `7448fdd1`) — 17
   фейлов (Restore/Drill/WalStream/Pool…, 8–16 м, артефакты контуров —
   `$TMPDIR/pgw-e2e-artifacts-<guid>/`); приёмочная серия — 55 мгновенных

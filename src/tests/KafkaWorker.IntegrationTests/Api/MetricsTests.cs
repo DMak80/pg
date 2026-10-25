@@ -35,12 +35,17 @@ public sealed class MetricsTests(KafkaMetricsFixture fx)
         // ScanIntervalSec=5)
         using var client = fx.Factory.CreateClient();
 
-        // Act: ждём появления воркер-серии в экспорте (retry-цикл до 15 с)
-        string body = "";
+        // Act: ждём именно целевую reconcile-серию, а не любую воркер-серию:
+        // циклы стартуют независимо, при параллельной загрузке раньше может
+        // появиться keepalive — это не признак первого reconcile-тика.
+        var matches = new List<string>();
         for (var i = 0; i < 30; i++)
         {
-            body = await client.GetStringAsync("/metrics", TestContext.Current.CancellationToken);
-            if (body.Contains("worker_loop_last_success_timestamp_seconds"))
+            var body = await client.GetStringAsync("/metrics", TestContext.Current.CancellationToken);
+            matches = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(l => l.StartsWith("worker_loop_last_success_timestamp_seconds{"))
+                .ToList();
+            if (matches.Any(l => l.Contains("loop=\"reconcile\"") && l.Contains("otel_scope_name=\"KafkaWorker\"")))
                 break;
             await Task.Delay(500, TestContext.Current.CancellationToken);
         }
@@ -50,9 +55,6 @@ public sealed class MetricsTests(KafkaMetricsFixture fx)
         // второй WorkerMetricsInstrumentation перекрывал первый, журнал
         // подписывался в одного, циклы тикали в другого). Ровно ОДНА серия
         // reconcile-цикла с scope воркера — двойной MeterProvider дал бы две.
-        var matches = body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            .Where(l => l.StartsWith("worker_loop_last_success_timestamp_seconds{"))
-            .ToList();
         matches.Should().ContainSingle(
             l => l.Contains("loop=\"reconcile\"") && l.Contains("otel_scope_name=\"KafkaWorker\""),
             "the loops and the journal must write to the same metrics object: {0}", string.Join(" | ", matches));
