@@ -52,7 +52,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // worktree инкрементальна.
     private const string TagSuffixEnv = "PGW_E2E_TAG";
 
-    private static readonly string ImageTagSuffix = ComputeImageTagSuffix();
+    internal static readonly string ImageTagSuffix = ComputeImageTagSuffix();
 
     private static string ComputeImageTagSuffix()
     {

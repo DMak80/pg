@@ -31,6 +31,7 @@ public static class HasyncCommand
         var interval = cli.Double("interval", 2);
         var missingGrace = cli.Int("missing-grace", 3);
         var resyncCycles = cli.Int("resync-cycles", 30);
+        ValidateRuntimeArgs(backend, servers, serverPort);
 
         var state = new Dictionary<string, string>(StringComparer.Ordinal);
         var missing = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -72,7 +73,21 @@ public static class HasyncCommand
                 if (address == state.GetValueOrDefault(server))
                     continue;
 
-                var whoami = await WhoamiAsync(http, address, whoamiPort);
+                // per-server изоляция отказов (P9): transient-сбой whoami не
+                // рвёт цикл (python-семантика) — адрес просто не применяется,
+                // ретрай следующим циклом.
+                string whoami;
+                try
+                {
+                    whoami = await WhoamiAsync(http, address, whoamiPort);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(
+                        $"{server}: {address} does not answer /whoami ({e.Message}) — not applying the address");
+                    continue;
+                }
+
                 if (whoami != server)
                 {
                     Console.WriteLine(
@@ -80,12 +95,37 @@ public static class HasyncCommand
                     continue;
                 }
 
-                if (!ApplyAddress(state, backend, server, address, serverPort, socketPath))
-                    continue;
+                try
+                {
+                    if (!ApplyAddress(state, backend, server, address, serverPort, socketPath))
+                        continue;
+                }
+                catch (Exception e)
+                {
+                    // HAProxy runtime недоступен (перезапуск): состояние runtime
+                    // сброшено — форс-ресинк всех адресов (python-семантика).
+                    Console.WriteLine(
+                        $"{server}: HAProxy runtime unreachable ({e.Message}) — clearing state for resync");
+                    state.Clear();
+                    break;
+                }
             }
 
             await Task.Delay(TimeSpan.FromSeconds(interval), CancellationToken.None);
         }
+    }
+
+    // CLI-значения попадают в runtime-команду HAProxy: строгая форма —
+    // инъекция в `set server <backend>/<server> …` исключена.
+    private static void ValidateRuntimeArgs(string backend, IReadOnlyList<string> servers, string serverPort)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(backend, "^[A-Za-z0-9_-]+$"))
+            throw new ArgumentException("--backend must match [A-Za-z0-9_-]+");
+        foreach (var server in servers)
+            if (!System.Text.RegularExpressions.Regex.IsMatch(server, "^[A-Za-z0-9_-]+$"))
+                throw new ArgumentException($"--servers entry '{server}' must match [A-Za-z0-9_-]+");
+        if (!int.TryParse(serverPort, out var port) || port is < 1 or > 65535)
+            throw new ArgumentException("--server-port must be a TCP port number");
     }
 
     private static async Task<string> WhoamiAsync(HttpClient http, string address, int port)

@@ -11,8 +11,9 @@ public sealed class EnvFileSource : IDisposable
             foreach (var line in File.ReadLines(path))
             {
                 var name = line.Split('=', 2);
-                if (name.Length == 2 && !string.IsNullOrWhiteSpace(name[0]))
-                    Environment.SetEnvironmentVariable(name[0], name[1]);
+                if (name.Length == 2 && !string.IsNullOrWhiteSpace(name[0])
+                    && string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name[0])))
+                    Environment.SetEnvironmentVariable(name[0], name[1]); // setdefault: живой env сильнее
             }
         }
         catch (FileNotFoundException)

@@ -473,6 +473,104 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().Contain("upload silence");
     }
 
+    // ── t25-ревью п.16: компактные покрытия живых контрактов контроля ──
+
+    // AAA (факт поверх записи, ревью Ф4-2 №2): прогресс не наблюдаем (S3 пуст —
+    // list ничего не вернул, chain_start от verify-OK полного) —
+    // last_uploaded_unix НЕ перезаписывается now(): носится из прошлой записи.
+    // now()-фолбэк маскировал бы мёртвый стрим свежим фактом.
+    [Fact]
+    public async Task UnobservedProgress_KeepsLastUploadedFactFromPreviousKey()
+    {
+        // Arrange — full COMPLETED (wal_start ..0001, verify Ok), wal-ключ ACTIVE
+        // с фактом 1757500000 (давно), S3 пуст, слот жив
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cf1");
+        (await _claims.TryClaimClusterAsync("cf1", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn[SourceDsn(16001, "cf1")] = ["pgw_bkp_cf1_shard1"];
+        var s3 = new FakeBackupS3();
+        var process = BuildProcess(Options(), sql, s3, new StubScaleDriver());
+        var walSeed = new WalStreamState(
+            WalStreamStatus.Active, "pgw_bkp_cf1_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000001",
+            "000000010000000000000001", 1757500000, null, null);
+        var backups = new ClusterBackups("cf1", null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = FullShard("000000010000000000000001", wal: walSeed),
+            });
+
+        // Act
+        (await process.TickAsync(BuildSnap("cf1"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — факт прошлой записи сохранён (не now(), не chain_start)
+        var wal = await ReadWal("cf1");
+        wal!.LastUploadedUnix.Should().Be(1757500000,
+            "the fact is carried from the previous record — now() would mask a dead stream");
+        wal.LastUploadedSegment.Should().Be("000000010000000000000001");
+    }
+
+    // AAA (lag-DEGRADED, AC5a): зонд pg_current_wal_lsn мастера ушёл вперёд
+    // хвоста S3 больше порога — DEGRADED «WAL stream lag N segments».
+    [Fact]
+    public async Task LagBeyondThreshold_Degraded()
+    {
+        // Arrange — цепочка 1..2 жива, мастер на сегменте 9 (лаг 7 > порог 3)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cl1");
+        (await _claims.TryClaimClusterAsync("cl1", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/9000000", 1) };
+        sql.SlotsByDsn[SourceDsn(16001, "cl1")] = ["pgw_bkp_cl1_shard1"];
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cl1", 1, 2);
+        var process = BuildProcess(Options(lag: 3), sql, s3, new StubScaleDriver());
+        var backups = new ClusterBackups("cl1", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act
+        (await process.TickAsync(BuildSnap("cl1"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert
+        var wal = await ReadWal("cl1");
+        wal!.State.Should().Be(WalStreamStatus.Degraded);
+        wal.Error.Should().Contain("WAL stream lag 7 segments (threshold 3)");
+    }
+
+    // AAA (t18, интеграционный путь): chain_start от verify-OK полного с
+    // ratchet — кандидат НИЖЕ записанной границы точку не понижает.
+    [Fact]
+    public async Task ChainStart_DoesNotLowerBelowRecorded()
+    {
+        // Arrange — wal-ключ с recorded chain_start ..0005; verify-OK full ниже
+        // (..0001); S3: сегменты 5,6 (цепь от 0005 сплошная)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cr1");
+        (await _claims.TryClaimClusterAsync("cr1", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn[SourceDsn(16001, "cr1")] = ["pgw_bkp_cr1_shard1"];
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cr1", 5, 6);
+        var process = BuildProcess(Options(), sql, s3, new StubScaleDriver());
+        var walSeed = new WalStreamState(
+            WalStreamStatus.Active, "pgw_bkp_cr1_shard1", "shard1a",
+            "000000010000000000000005", "000000010000000000000006",
+            "000000010000000000000005", DateTimeOffset.UtcNow.ToUnixTimeSeconds(), null, null);
+        var backups = new ClusterBackups("cr1", null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = FullShard("000000010000000000000001", wal: walSeed),
+            });
+
+        // Act
+        (await process.TickAsync(BuildSnap("cr1"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ratchet: точка осталась ..0005, ACTIVE
+        var wal = await ReadWal("cr1");
+        wal!.ChainStartSegment.Should().Be("000000010000000000000005");
+        wal.State.Should().Be(WalStreamStatus.Active);
+    }
+
     // ── t25: факты приёмников из статус-ключей etcd (arch/19 §4) ──
 
     // AAA: сид agent-ключей → контроль пишет agents wal-ключа по нодам portalloc

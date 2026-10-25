@@ -128,7 +128,7 @@ public static class SpiloEnvBuilder
             ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
-            // Идентичность приёмника WAL (t25, arch/19 §3/§14 §2.1): СТРОГО
+            // Идентичность приёмника WAL (t25, arch/19 §3 + arch/14 §2.1): СТРОГО
             // всегда, независимо от Backups:Enabled — приёмник гейтится
             // etcd-стоп-ключами; включение подсистемы не требует пересоздания нод.
             ["PGW_BACKUP_CLUSTER"] = topology.Cluster,

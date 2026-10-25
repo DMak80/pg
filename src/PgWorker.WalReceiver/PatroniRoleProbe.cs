@@ -126,23 +126,37 @@ public sealed class PatroniRoleProbe
     private static readonly object TransitionGate = new();
     private static WalReceiverRole _lastRole = WalReceiverRole.None;
 
+    // Дедуп CA-диагностики (проба каждые ~5 c): лог ТОЛЬКО на переходе
+    // CA-ok/CA-бит — построчный лог деградации даёт десятки тысяч строк/сутки.
+    private static bool? _lastCaState;
+
+    private static void LogCaState(bool ok, string message)
+    {
+        lock (TransitionGate)
+        {
+            if (_lastCaState == ok)
+                return;
+            _lastCaState = ok;
+        }
+        _ = System.Console.Error.WriteLineAsync($"walreceiver role probe: {message}");
+    }
+
     public static async Task<WalReceiverRole> ProbeAsync(string caPem, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(caPem))
         {
             // CA REST-Api не задан — проба невозможна (env ноды дрейфовал?).
-            await System.Console.Error.WriteLineAsync(
-                "walreceiver role probe: env SSL_RESTAPI_CA is not set — role stays none");
+            LogCaState(false, "env SSL_RESTAPI_CA is not set — role stays none");
             return WalReceiverRole.None;
         }
 
         var ca = await GetCaAsync(caPem, ct);
         if (ca is null)
         {
-            await System.Console.Error.WriteLineAsync(
-                "walreceiver role probe: CA material failed — role stays none");
+            LogCaState(false, "CA material failed — role stays none");
             return WalReceiverRole.None; // ФС/PEM недоступны — роли нет (ожидание)
         }
+        LogCaState(true, "CA restored — role probing resumes");
 
         var client = GetProbeClient();
         var primary = await TryGetAsync(client, "primary", ct);
@@ -195,9 +209,10 @@ public sealed class PatroniRoleProbe
         }
     }
 
-    // SAN-пиннинг: IP 127.0.0.1 (IPv4) или ::1 (IPv6) среди iPAddress-имён
-    // расширения subjectAltName (OID 2.5.29.17). Мини-разбор DER: SEQUENCE {
-    // GeneralName* }, [7] IMPLICIT OCTET STRING — iPAddress (4/16 байт).
+    // SAN-пиннинг: ТОЧНО IP 127.0.0.1 (цель пробы) среди iPAddress-имён
+    // расширения subjectAltName (OID 2.5.29.17) — соседние loopback-адреса
+    // (127.0.0.2, ::1) валидным пиннингом не считаются. Мини-разбор DER:
+    // SEQUENCE { GeneralName* }, [7] IMPLICIT OCTET STRING — iPAddress.
     private static bool SanContainsLoopback(
         System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
@@ -217,23 +232,10 @@ public sealed class PatroniRoleProbe
                 var size = DerLength(data, ref i);
                 if (i + size > data.Length)
                     break;
-                if (tag == 0x87) // iPAddress
+                if (tag == 0x87 && size == 4 // iPAddress — ТОЧНО 127.0.0.1 (цель пробы)
+                    && data[i] == 127 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1)
                 {
-                    if (size == 4
-                        && data[i] == 127 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1)
-                        return true;
-                    if (size == 16)
-                    {
-                        var loopback = true;
-                        for (var k = 0; k < 15; k++)
-                            if (data[i + k] != 0)
-                            {
-                                loopback = false;
-                                break;
-                            }
-                        if (loopback && data[i + 15] == 1)
-                            return true;
-                    }
+                    return true;
                 }
                 i += size;
             }

@@ -139,9 +139,13 @@ public sealed class WalReceiverCore
         IBackupS3 s3,
         WalSessionEvents events,
         CancellationToken ct,
-        TimeSpan? retryDelay = null)
+        TimeSpan? retryDelay = null,
+        TimeSpan? roleProbePeriod = null)
     {
         var retry = retryDelay ?? DefaultRetry;
+        // Период проб роли/стоп-гейта из стрима (прод — 5 c; тесты ужимают —
+        // тайминговые тесты не держат реальные 5-с окна).
+        var probePeriod = roleProbePeriod ?? RoleProbePeriod;
         string? lastDelivered = null;
         var confirmedLsn = 0UL;
         var lastStreamLsn = 0UL;
@@ -165,7 +169,7 @@ public sealed class WalReceiverCore
                 {
                     try
                     {
-                        await Task.Delay(RoleProbePeriod, roleCts.Token);
+                        await Task.Delay(probePeriod, roleCts.Token);
                         if (await gateProbe(roleCts.Token))
                         {
                             gateTriggered = true;
@@ -193,7 +197,7 @@ public sealed class WalReceiverCore
                 {
                     try
                     {
-                        await Task.Delay(RoleProbePeriod, roleCts.Token);
+                        await Task.Delay(probePeriod, roleCts.Token);
                         if (await probe(roleCts.Token))
                         {
                             roleTriggered = true;
@@ -267,8 +271,15 @@ public sealed class WalReceiverCore
                     var restart = await slots.ReadRestartLsnAsync(o.Slot, sct);
                     if (!restart.IsSuccess)
                     {
-                        // Слота нет/lost: воркер ensure'ит/recreate'ит — ожидание.
-                        return Outcome(WalSessionKind.WaitingSlot);
+                        // Слота нет/lost (SQLSTATE 42704) — waiting_slot: воркер
+                        // ensure'ит/recreate'ит (arch/19 §3). Иной отказ (PG
+                        // недоступен/SQL-сбой) — transient: диагностика + ретрай,
+                        // состояние не маскируем waiting_slot.
+                        if (restart.Error is WalSlotMissing)
+                            return Outcome(WalSessionKind.WaitingSlot);
+                        Diagnostic(events, $"slot probe failed: {restart.Error!.Message.Split('\n')[0]}");
+                        await Task.Delay(retry, sct);
+                        continue;
                     }
 
                     startAt = restart.Value;
@@ -283,6 +294,11 @@ public sealed class WalReceiverCore
                 var started = await source.StartReplicationAsync(o.Slot, startAt, null, sct);
                 if (!started.IsSuccess)
                 {
+                    // Lost-слот при непустом хвосте (SQLSTATE 42704): waiting_slot,
+                    // а не generic-retry в streaming (arch/19 §3 — lost-слот тоже
+                    // waiting_slot; ensure/recreate делает воркер).
+                    if (started.Error is WalSlotMissing)
+                        return Outcome(WalSessionKind.WaitingSlot);
                     var (procedureResult, jump, historyMissing) =
                         started.Error is WalStartRefused && tailSegment is not null
                             ? await TliProcedureAsync(o, source, s3, events, startAt, tailSegment, retry, sct)
@@ -386,8 +402,9 @@ public sealed class WalReceiverCore
                                 {
                                     // Подтверждение не прошло (транспорт): слот не двинулся,
                                     // следующий сегмент повторит статус с той же LSN;
-                                    // диагностика + счётчик ошибок — застой не молчит.
-                                    events.PutError?.Invoke();
+                                    // диагностика — застой не молчит. Это НЕ put-ошибка
+                                    // (словарь arch/18 §2.8) — walreceiver_put_errors_total
+                                    // не растёт.
                                     Diagnostic(events,
                                         $"confirm failed: {confirmed.Error!.Message.Split('\n')[0]}");
                                 }

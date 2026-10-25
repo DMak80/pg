@@ -177,6 +177,13 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
             _pendingFirst = await enumerator.MoveNextAsync() ? enumerator.Current : null;
             return Result.Success();
         }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "42704")
+        {
+            // Слота нет (SQLSTATE 42704, «replication slot … does not exist») —
+            // типизированный маркер: ядро уходит в WaitingSlot (воркер ensure'ит).
+            await KillReplicationAsync();
+            return Result.Failed(new WalSlotMissing(slot));
+        }
         catch (Npgsql.PostgresException e) when (e.SqlState == "58P01")
         {
             // Отказ старта по 58P01: типизированный маркер наружу (матч по SqlState,

@@ -122,8 +122,9 @@ public sealed class WalStreamProcess(
 
         var options = runtime();
 
-        // Стоп-семантика Enabled=false: агенты вниз + финальный STOPPED при живом
-        // ключе; неактивная подсистема дальше не идёт.
+        // Стоп-семантика Enabled=false: приёмники замирают по /pgworker/backups-disabled
+        // (стоп-гейт приёмника), wal-ключ — финальный STOPPED; неактивная подсистема
+        // дальше не идёт.
         if (options is null)
             return await StopAllAsync(cluster, snap, backups, ct);
 
@@ -348,8 +349,10 @@ public sealed class WalStreamProcess(
             .Select(k => k.Split('/')[1])
             .ToList();
         var agentFacts = await ReadAgentFactsAsync(cluster, shard.Name, ct);
+        // etcd-транспорт недоступен (agentFacts null) — факты НЕНАБЛЮДАЕМЫ:
+        // agents не трогаем (сохраняем прежние из ключа), «неизвестно» ≠ «absent».
         var agentStates = wal is not null
-            ? BuildAgentFacts(shardNodes, agentFacts)
+            ? (agentFacts is null ? wal.Agents : BuildAgentFacts(shardNodes, agentFacts))
             : null; // факты — ДОБАВКА к живому ключу (ключ создаёт контроль, spec п.8)
 
         // (6–7) Контроль: BROKEN-исход — ключ BROKEN (слот recreate при «слот

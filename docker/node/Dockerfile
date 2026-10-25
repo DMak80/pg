@@ -3,7 +3,7 @@
 # Образ узла кластера pgworker-node (Д4, spec §5.1, arch/14 §2.1):
 # Spilo (PG18+Patroni; R1/Д11 закрыт: failover-слоты поддерживаются с PG17)
 # + haproxy (P2 write-фронтенд) + pg_doorman (P13–P17,
-# опционально) + supervisord + lease-скрипт мастер-ключа (P11).
+# опционально) + supervisord + pgwnodetool master-lease (P11).
 # Сборка: docker build -f docker/node/Dockerfile -t pgworker-node:dev .
 #   --build-arg DOORMAN_URL=<url-бинарника-релиза>  — включает пулер (версия
 #   пинится в самом URL); без него узел без doorman (R1: EnableDoorman=false).
@@ -19,7 +19,7 @@ RUN apt-get update \
         && chmod +x /usr/local/bin/pg_doorman; \
     fi
 
-# Приёмник WAL (t25, arch/19 §3/§14 §2.1) и служебная CLI pgwnodetool:
+# Приёмник WAL (t25, arch/19 §3 + arch/14 §2.1) и служебная CLI pgwnodetool:
 # self-contained publish НА ХОСТЕ (RID хоста сборки, без trimming — рефлексия
 # Npgsql/AWSSDK/OTel), в образ — ТОЛЬКО publish-вывод (канон «publish на
 # хосте, в контейнер — артефакты»):

@@ -20,7 +20,9 @@ namespace PgWorker.IntegrationTests.Backups;
 //    (автозапуски не повторяются — состояние FATAL/EXITED стабильно).
 public class NodeWalReceiverTests
 {
-    private const string NodeImage = "pgworker-node:dev";
+    // Per-worktree тег (канон E2eEnvironment): чужой/устаревший образ другой
+    // ветки в серию не попадает; свежесть гарантирует сборка на прогон (ниже).
+    private static readonly string NodeImage = $"pgworker-node:sanity-{E2eEnvironment.ImageTagSuffix}";
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private static readonly TimeSpan Budget = TimeSpan.FromSeconds(90);
 
@@ -28,14 +30,15 @@ public class NodeWalReceiverTests
 
     public NodeWalReceiverTests(ITestOutputHelper output) => _output = output;
 
-    // 9.5 (t25-ревью): серия не должна быть красной на чистом хосте — образ
-    // pgworker-node:dev при отсутствии собирается ДВУХШАГОВО (канон
+    // 9.5 (t25-ревью): серия зелёная на чистом хосте и всегда на свежем бинаре —
+    // образ собирается ДВУХШАГОВО на КАЖДЫЙ прогон серии (один раз за ран, канон
     // «publish на хосте, в контейнер — только артефакты»): (1) self-contained
-    // publish WalReceiver/NodeTools (RID хоста, без trimming) в artifacts/node-wal-dev
-    // и artifacts/node-tools-dev; (2) docker build ноды с publish-аргументами.
+    // publish WalReceiver/NodeTools (RID хоста, без trimming; инкрементальный)
+    // в artifacts/node-wal-dev и artifacts/node-tools-dev; (2) docker build ноды
+    // с publish-аргументами (docker-кэш слоёв делает ребилд быстрым).
+    // inspect-гейта нет: `docker image inspect` отсутствующего образа даёт
+    // exit 1 → RunProcessAsync бросает — fallback-ветка была недостижима.
     // Фазы — [PHASE]-метки и тайминг (канон e2e-launch); логи процессов — в файлы.
-
-    // и тайминг (канон e2e-launch); логи процессов — полностью в файлы /tmp.
     private static readonly SemaphoreSlim ImageGate = new(1, 1);
     private static bool _nodeImageReady;
 
@@ -49,39 +52,35 @@ public class NodeWalReceiverTests
             if (_nodeImageReady)
                 return;
 
-            var inspect = await E2eFixture.RunProcessAsync("docker", ["image", "inspect", NodeImage], ct);
-            if (inspect.Contains("Error") || inspect.Contains("No such object"))
-            {
-                var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
-                var walDir = Path.Combine(root, "artifacts", "node-wal-dev");
-                var toolsDir = Path.Combine(root, "artifacts", "node-tools-dev");
-                var rid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
-                    == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
-                Console.WriteLine($"[PHASE] node-image: {NodeImage} missing — host publish WalReceiver ({rid})…");
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                await E2eFixture.RunProcessAsync("dotnet",
-                [
-                    "publish", $"{root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
-                    "-c", "Release", "-r", rid, "--self-contained", "-o", walDir, "--nologo",
-                ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                    logFile: "/tmp/pgw-node-wal-dev-publish.log");
-                Console.WriteLine($"[PHASE] node-image: dotnet publish NodeTools self-contained ({rid})…");
-                await E2eFixture.RunProcessAsync("dotnet",
-                [
-                    "publish", $"{root}/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj",
-                    "-c", "Release", "-r", rid, "--self-contained", "-o", toolsDir, "--nologo",
-                ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                    logFile: "/tmp/pgw-node-tools-dev-publish.log");
-                Console.WriteLine($"[PHASE] node-image: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
-                await E2eFixture.RunProcessAsync("docker",
-                [
-                    "build", "-q", "-f", $"{root}/docker/node/Dockerfile",
-                    "--build-arg", "WAL_PUBLISH_DIR=artifacts/node-wal-dev",
-                    "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev", "-t", NodeImage, root,
-                ], ct, timeout: TimeSpan.FromMinutes(10),
-                    logFile: "/tmp/pgw-node-wal-dev-docker.log");
-                Console.WriteLine($"[PHASE] node-image: {NodeImage} ready in {sw.Elapsed.TotalSeconds:F0} s");
-            }
+            var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+            var walDir = Path.Combine(root, "artifacts", "node-wal-dev");
+            var toolsDir = Path.Combine(root, "artifacts", "node-tools-dev");
+            var rid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
+            Console.WriteLine($"[PHASE] node-image: host publish WalReceiver ({rid})…");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
+                "-c", "Release", "-r", rid, "--self-contained", "-o", walDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-node-wal-dev-publish.log");
+            Console.WriteLine("[PHASE] node-image: dotnet publish NodeTools self-contained…");
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{root}/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj",
+                "-c", "Release", "-r", rid, "--self-contained", "-o", toolsDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-node-tools-dev-publish.log");
+            Console.WriteLine($"[PHASE] node-image: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
+            await E2eFixture.RunProcessAsync("docker",
+            [
+                "build", "-q", "-f", $"{root}/docker/node/Dockerfile",
+                "--build-arg", "WAL_PUBLISH_DIR=artifacts/node-wal-dev",
+                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools-dev", "-t", NodeImage, root,
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: "/tmp/pgw-node-wal-dev-docker.log");
+            Console.WriteLine($"[PHASE] node-image: {NodeImage} ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             _nodeImageReady = true;
         }

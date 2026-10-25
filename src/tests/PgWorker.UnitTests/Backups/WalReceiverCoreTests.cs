@@ -201,7 +201,7 @@ public class WalReceiverCoreTests
         public Task<Result<ulong>> ReadRestartLsnAsync(string slot, CancellationToken ct)
             => Task.FromResult(restartLsn is { } lsn
                 ? Result<ulong>.Success(lsn)
-                : Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing")));
+                : Result<ulong>.Failed(new WalSlotMissing(slot))); // типизированный «слота нет» — waiting_slot
     }
 
     /// <summary>Прогон одной сессии ядра: исход + diagnostic-журнал (колбэк

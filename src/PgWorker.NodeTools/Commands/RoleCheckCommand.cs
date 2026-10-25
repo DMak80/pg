@@ -24,7 +24,11 @@ public static class RoleCheckCommand
         var pgPort = cli.Int("pg-port", 5432);
         var pgUser = cli.Value("pg-user") ?? "postgres";
         var pgDatabase = cli.Value("pg-database") ?? "postgres";
-        var pgPassword = cli.Value("pg-password");
+        // Пароль — из --pg-password-file (не в argv/process list); CLI-параметр
+        // оставлен для стенда без пароля (trust) — латентного риска нет.
+        var pgPassword = cli.Value("pg-password-file") is { } pwFile
+            ? File.ReadAllText(pwFile).Trim()
+            : cli.Value("pg-password");
         var listenPort = cli.Int("listen-port", 8008);
 
         var registration = Task.Run(

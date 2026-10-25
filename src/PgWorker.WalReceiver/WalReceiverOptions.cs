@@ -5,7 +5,8 @@ namespace PgWorker.WalReceiver;
 /// user backup_exec, dbname postgres — НЕ env), слот, координаты шарда и S3-цели
 /// пула — write-список роли источника (порядок = приоритет) + read-список (все
 /// ноды). Секреты — из etcd-резолва цикла (WalReceiverTargets), в логи не
-/// попадают.</summary>
+/// попадают. CA https S3 — вне сессии: цикл материализует PEM в temp-файл и
+/// передаёт S3-клиенту путём (CaBundlePath), PEM в options не дублируется.</summary>
 public sealed record WalReceiverOptions(
     string PgHost,
     int PgPort,
@@ -21,7 +22,4 @@ public sealed record WalReceiverOptions(
     IReadOnlyList<string> S3ReadEndpoints,
     string S3Bucket,
     string S3AccessKey,
-    string S3SecretKey,
-    // PEM CA https S3-endpoint (arch/19 §7): цикл материализует в файл →
-    // CaBundlePath; null — http-endpoint.
-    string? S3CaPem = null);
+    string S3SecretKey);

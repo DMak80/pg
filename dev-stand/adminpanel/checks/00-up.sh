@@ -74,7 +74,7 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   || { echo "❌ SdGenerator publish failed"; exit 1; }
 echo ">>> [PHASE] SdGenerator publish ready ($(date +%H:%M:%S))"
 
-# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/19 §3/§14 §2.1):
+# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/19 §3 + arch/14 §2.1):
 # publish НА ХОСТЕ self-contained (RID хоста сборки, без trimming) → docker
 # build пакует выводы (канон «publish на хосте, в контейнер — артефакты»;
 # сборка не «тихая» — [PHASE] и тайминг; оба процесса живут ВНУТРИ контейнера).

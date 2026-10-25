@@ -27,7 +27,7 @@ public static class MasterLeaseNodeTools
                 "publish", $"{root}/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj",
                 "-c", "Release", "-r", rid, "--self-contained", "-o", dir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(5), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-node-tools-musl-publish.log");
+                logFile: "/tmp/pgw-node-tools-glibc-publish.log");
             _dir = dir;
             _ready = true;
             return dir;

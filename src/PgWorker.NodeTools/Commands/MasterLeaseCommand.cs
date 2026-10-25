@@ -61,6 +61,10 @@ public static class MasterLeaseCommand
         };
         etcd.Dispose();
 
+        // Сериализация callback'ов (on_start/on_role_change могут перекрыться):
+        // lock-файл держится на весь stop+start+pid-запись — двойного демона и
+        // перезаписи PID не бывает.
+        using var processLock = AcquireProcessLock(pidFile + ".lock");
         StopRunningDaemon(pidFile);
         if (!isMaster)
         {
@@ -86,7 +90,7 @@ public static class MasterLeaseCommand
 
         using var child = Process.Start(start)
             ?? throw new InvalidOperationException("failed to start master-lease daemon");
-        await File.WriteAllTextAsync(pidFile, child.Id.ToString(CultureInfo.InvariantCulture));
+        WritePidFileAtomic(pidFile, child.Id);
         Console.WriteLine($"master-lease: {key} = {nodeHost}:{doormanPort} (ttl={LeaseTtlSec}s)");
         return 0;
     }
@@ -139,16 +143,30 @@ public static class MasterLeaseCommand
         }
     }
 
+    // Пин ТОЧНО 127.0.0.1 (цель probe): соседние loopback-адреса не считаются.
     private static bool ServerCertificateHasLoopbackSan(X509Certificate2 certificate)
     {
         foreach (var extension in certificate.Extensions.OfType<X509SubjectAlternativeNameExtension>())
         {
             foreach (var name in extension.EnumerateIPAddresses())
-                if (IPAddress.IsLoopback(name))
+                if (name.Equals(IPAddress.Loopback))
                     return true;
         }
 
         return false;
+    }
+
+    // Эксклюзивная блокировка stop+start (FileShare.None — POSIX-адекватный
+    // mutex между callback-процессами того же контейнера).
+    private static FileStream AcquireProcessLock(string path)
+        => new(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+
+    // Атомарная запись PID: temp + rename — читатель никогда не видит полуфайл.
+    private static void WritePidFileAtomic(string pidFile, int pid)
+    {
+        var temp = pidFile + ".tmp";
+        File.WriteAllText(temp, pid.ToString(CultureInfo.InvariantCulture));
+        File.Move(temp, pidFile, overwrite: true);
     }
 
     private static void StopRunningDaemon(string pidFile)
@@ -157,7 +175,10 @@ public static class MasterLeaseCommand
         {
             var pid = int.Parse(File.ReadAllText(pidFile).Trim(), CultureInfo.InvariantCulture);
             using var process = Process.GetProcessById(pid);
-            if (!process.HasExited)
+            // Идентификация перед kill: переиспользованный PID чужого процесса
+            // (не pgwnodetool) не убивается.
+            if (!process.HasExited
+                && process.ProcessName.Contains("pgwnodetool", StringComparison.OrdinalIgnoreCase))
             {
                 process.Kill(entireProcessTree: true);
                 process.WaitForExit(2_000);

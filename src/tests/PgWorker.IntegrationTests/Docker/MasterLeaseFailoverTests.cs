@@ -11,8 +11,9 @@ namespace PgWorker.IntegrationTests.Docker;
 // Перебор endpoints lease-скриптом мастер-ключа (t09, spec §6): PGW_ETCD —
 // СПИСОК URL; при отказе активного endpoint pgwnodetool продолжает писать/
 // продлевать мастер-ключ через следующий живой. CLI запускается ПРОЦЕССОМ в
-// контейнере python:3.12-alpine (тестовый Alpine-раннер; fork-демон жив, пока
-// жив PID1-сессия sleep) с bind-mount self-contained publish-вывода NodeTools.
+// контейнере mcr.microsoft.com/dotnet/runtime:10.0 (тестовый glibc-раннер;
+// fork-демон жив, пока жив PID1-сессия sleep) с bind-mount self-contained
+// publish-вывода NodeTools.
 // Два ОДИНОЧНЫХ etcd-контейнера (не кластер): lease-скрипту безразличен кворум,
 // важен перебор transport-отказов. Гейт PGW_TEST_DOCKER=1 (DockerTrait).
 [Collection(NonE2eCollection.Name)]

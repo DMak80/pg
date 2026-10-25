@@ -34,6 +34,7 @@ public sealed class WalReceiverLoop : BackgroundService
     private readonly Func<WalReceiverOptions, IBackupS3>? _s3Factory;
     private readonly TimeSpan _retryDelay;
     private readonly TimeSpan? _statusKeepalive;
+    private readonly TimeSpan? _roleProbePeriod;
     private readonly string _pgWalDir;
 
     private WalReceiverIdentity? _identity;
@@ -85,7 +86,8 @@ public sealed class WalReceiverLoop : BackgroundService
         TimeSpan? retryDelay = null,
         Func<WalReceiverOptions, IBackupS3>? s3Factory = null,
         TimeSpan? statusKeepalive = null,
-        string? pgWalDir = null)
+        string? pgWalDir = null,
+        TimeSpan? roleProbePeriod = null)
     {
         _env = env;
         _etcd = etcd;
@@ -97,6 +99,7 @@ public sealed class WalReceiverLoop : BackgroundService
         _retryDelay = retryDelay ?? IdlePause;
         _s3Factory = s3Factory;
         _statusKeepalive = statusKeepalive;
+        _roleProbePeriod = roleProbePeriod;
         _pgWalDir = pgWalDir ?? WalReceiverCore.DefaultPgWalDir;
     }
 
@@ -141,7 +144,22 @@ public sealed class WalReceiverLoop : BackgroundService
         if (identity.S3CaPem is { Length: > 0 } caPem)
         {
             s3CaBundlePath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
-            await File.WriteAllTextAsync(s3CaBundlePath, caPem + "\n", ct);
+            // 0600 (UnixCreateMode; платформенный guard CA1416): в /tmp пишет
+            // только владелец-процесс. Прод — Linux-контейнер ноды.
+            var caOptions = OperatingSystem.IsWindows()
+                ? new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None }
+                : new FileStreamOptions
+                {
+                    Mode = FileMode.Create,
+                    Access = FileAccess.Write,
+                    Share = FileShare.None,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                };
+            await using (var caStream = new FileStream(s3CaBundlePath, caOptions))
+            using (var writer = new StreamWriter(caStream))
+            {
+                await writer.WriteAsync(caPem + "\n");
+            }
         }
 
         // Первичная попытка статус-сессии (вне цикла состояний — ключ starting
@@ -246,7 +264,7 @@ public sealed class WalReceiverLoop : BackgroundService
                     "127.0.0.1", 5432, "backup_exec", targets.Password!,
                     "postgres", targets.Slot!, identity.Cluster, identity.Shard,
                     writeTargets, pool.ReadAll, bucket,
-                    pool.AccessKey, pool.SecretKey, identity.S3CaPem);
+                    pool.AccessKey, pool.SecretKey);
                 IBackupS3 s3 = _s3Factory is { } factory
                     ? factory(options)
                     : new PoolBackupS3(
@@ -254,6 +272,14 @@ public sealed class WalReceiverLoop : BackgroundService
                         options.S3AccessKey, options.S3SecretKey,
                         options.S3Bucket, s3CaBundlePath,
                         requestTimeout: WalReceiverCore.PutAttemptTimeout);
+                if (s3CaBundlePath is not null && !_s3CaHttpWarned
+                    && writeTargets.Concat(pool.ReadAll)
+                        .Any(u => !u.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+                {
+                    _s3CaHttpWarned = true;
+                    await Console.Error.WriteLineAsync(
+                        "walreceiver: PGW_BACKUP_S3_CA_PEM is set but S3 pool endpoints are http — CA/TLS is not applied");
+                }
                 await using var s3Disposable = s3 as IAsyncDisposable;
                 var source = _sourceFactory(options);
                 await using var sourceDisposable = source;
@@ -313,7 +339,8 @@ public sealed class WalReceiverLoop : BackgroundService
                 };
 
                 var outcome = await WalReceiverCore.RunSessionAsync(
-                    options, source, slotReader, s3, events, ct, _retryDelay);
+                    options, source, slotReader, s3, events, ct, _retryDelay,
+                    roleProbePeriod: _roleProbePeriod);
 
                 // Reconnect — короткая пауза до новой попытки: состояние/серию
                 // не трогаем (стрим фактически продолжается; публикация
@@ -411,6 +438,16 @@ public sealed class WalReceiverLoop : BackgroundService
         }
     }
 
+    // Сериализация публикаций (Update+Flush) — пара «факт→put» атомарна:
+    // параллельные fire-and-forget публикации и публикация исхода сессии не
+    // перекрываются (RMW LiveFacts без CAS вёл бы к потере факта, п.7 ревью).
+    private readonly SemaphoreSlim _publishGate = new(1, 1);
+
+    // Одноразовая диагностика «CA задан, но пул http» (п.9 ревью): резолвер
+    // пула строит http-URI (канон arch/23) — CA-fabрика S3 при этом нечему
+    // применять; оператор должен видеть расхождение конфига и схемы.
+    private bool _s3CaHttpWarned;
+
     // Подозрение смены роли из живого стрима (debounce, #12б): null — последняя
     // проба подтвердила роль старта; значение — первая проба с иной ролью
     // (рвём сессию только при ВТОРОЙ последовательной с той же).
@@ -449,10 +486,18 @@ public sealed class WalReceiverLoop : BackgroundService
         {
             var next = PublishFacts(jump, exhausted, lastDelivered: null,
                 lastDeliveredUnix: null, historyMissing: historyMissing);
-            status.Update(new WalReceiverAgentStatus(
-                role, state, next.LastDelivered, next.LastDeliveredUnix,
-                next.PoolExhausted, next.Jump, next.HistoryMissingTli, null, NowUnix()));
-            await status.FlushAsync(ct);
+            await _publishGate.WaitAsync(ct);
+            try
+            {
+                status.Update(new WalReceiverAgentStatus(
+                    role, state, next.LastDelivered, next.LastDeliveredUnix,
+                    next.PoolExhausted, next.Jump, next.HistoryMissingTli, null, NowUnix()));
+                await status.FlushAsync(ct);
+            }
+            finally
+            {
+                _publishGate.Release();
+            }
         }
         catch (Exception)
         {
@@ -478,10 +523,18 @@ public sealed class WalReceiverLoop : BackgroundService
     {
         var next = PublishFacts(tliJump, poolExhausted, lastDelivered, lastDeliveredUnix,
             historyMissingTli);
-        status.Update(new WalReceiverAgentStatus(
-            role, state, next.LastDelivered, next.LastDeliveredUnix,
-            next.PoolExhausted, next.Jump, next.HistoryMissingTli, error, NowUnix()));
-        await status.FlushAsync(ct);
+        await _publishGate.WaitAsync(ct);
+        try
+        {
+            status.Update(new WalReceiverAgentStatus(
+                role, state, next.LastDelivered, next.LastDeliveredUnix,
+                next.PoolExhausted, next.Jump, next.HistoryMissingTli, error, NowUnix()));
+            await status.FlushAsync(ct);
+        }
+        finally
+        {
+            _publishGate.Release();
+        }
     }
 
     // MERGE фактов: не-null аргументы обновляют текущую структуру (атомарная

@@ -194,8 +194,11 @@ CA-сертификат registry должен быть доверен Docker и 
 
     dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
       --self-contained -o artifacts/node-wal        # rid: linux-arm64 | linux-x64
+    dotnet publish src/PgWorker.NodeTools -c Release -r <rid> \
+      --self-contained -o artifacts/node-tools
     docker build -f docker/node/Dockerfile \
-      --build-arg WAL_PUBLISH_DIR=artifacts/node-wal -t pgworker-node:dev .
+      --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
+      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
 
 Полный стенд собирает образ скриптом `dev-stand/adminpanel/checks/00-up.sh`
 (RID определяется по `uname -m` автоматически).

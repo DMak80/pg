@@ -211,7 +211,7 @@ public class WalReceiverLoopTests
         public Task<Result<ulong>> ReadRestartLsnAsync(string slot, CancellationToken ct)
             => Task.FromResult(restartLsn is { } lsn
                 ? Result<ulong>.Success(lsn)
-                : Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing")));
+                : Result<ulong>.Failed(new WalSlotMissing(slot))); // типизированный «слота нет» — waiting_slot
     }
 
     // Посев «полного пути»: пароль + policy c секцией s3 (пул p1, нода s3a).
@@ -259,7 +259,8 @@ public class WalReceiverLoopTests
         FakeS3? s3 = null,
         Dictionary<string, string?>? env = null,
         string? pgWalDir = null,
-        Func<WalReceiverRole>? roleScript = null)
+        Func<WalReceiverRole>? roleScript = null,
+        TimeSpan? probePeriod = null)
     {
         var s3Fake = s3 ?? new FakeS3();
         var sources = new List<FakeXLogSource>();
@@ -279,7 +280,8 @@ public class WalReceiverLoopTests
             FastStep,
             _ => s3Fake,
             FastKeepalive,
-            pgWalDir);
+            pgWalDir,
+            roleProbePeriod: probePeriod);
         var cts = new CancellationTokenSource();
         loop.StartAsync(CancellationToken.None);
         return (loop, cts, sources);
@@ -522,7 +524,8 @@ public class WalReceiverLoopTests
     // сессии A (ровно ОДНА проба с иной ролью), НЕ рвёт первую пробу сессии
     // B — роль подтверждается свежей пробей вне сессии (4.2), подозрение
     // гаснет; разрыв новой сессии — только вторая ПОСЛЕДОВАТЕЛЬНАЯ проба с
-    // той же иной ролью (период проб 5 c — бюджет теста ~45 c).
+    // той же иной ролью. Период проб инжектируется (1 c — окна ~0.5 c с
+    // запасом, тест не держит продовые 5-с интервалы; бюджет ~15 c).
     [Fact]
     public async Task RoleFlapSuspicion_FromPreviousSession_DoesNotBreakNewSession()
     {
@@ -542,7 +545,8 @@ public class WalReceiverLoopTests
         });
         var (loop, cts, sources) = StartLoop(
             etcd, WalReceiverRole.Master, () => new FakeXLogSource(),
-            roleScript: () => script.Count > 0 ? script.Dequeue() : WalReceiverRole.Master);
+            roleScript: () => script.Count > 0 ? script.Dequeue() : WalReceiverRole.Master,
+            probePeriod: TimeSpan.FromSeconds(1));
 
         try
         {
@@ -550,10 +554,10 @@ public class WalReceiverLoopTests
             await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Streaming, "streaming A");
             sources.Count.Should().Be(1);
 
-            // Act — выжидаем первую 5-с пробу (моргание sync в A: suspicion
+            // Act — выжидаем первую пробу (моргание sync в A: suspicion
             // записан, сессия жива), затем рвём A стоп-гейтом (в окне ДО
             // второй пробы): пауза → подозрение переносится через границу
-            await Task.Delay(TimeSpan.FromSeconds(6), TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(1.5), TestContext.Current.CancellationToken);
             sources.Count.Should().Be(1, "a single flapped probe must not break the live session A");
             etcd.Kvs[WalKey] = $$"""{"cluster":"{{Cluster}}","shard":"{{Shard}}","state":"STOPPED"}""";
             await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Paused, "paused (session A torn by the stop gate)");
@@ -563,7 +567,7 @@ public class WalReceiverLoopTests
             etcd.Kvs.Remove(WalKey);
             await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Streaming, "streaming B");
             var sessionBStarted = DateTime.UtcNow;
-            await Task.Delay(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(1.5), TestContext.Current.CancellationToken);
             sources.Count.Should().Be(2, "session B started (new source)");
             sources.Count.Should().Be(2, "the FIRST flapped probe of session B must not break it (suspicion reset at the session boundary)");
             sessionBStarted.Should().BeBefore(DateTime.UtcNow);
