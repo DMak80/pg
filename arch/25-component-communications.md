@@ -75,7 +75,6 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 10 | HAProxy → Patroni | HTTP-пробы `:8008` | канон |
 | 11 | WalReceiver → PostgreSQL | протокол репликации (`START_REPLICATION PHYSICAL`, слоты; источник — `127.0.0.1:5432` своей ноды, приёмник живёт в её контейнере, arch/19 §3) | канон |
 | 12 | WalReceiver → S3-пул | S3 API | канон |
-| 13 | Backup-джобы (full/verify/drill/restore) → S3-пул | S3 API (`mc`, `pg_basebackup`) | канон |
 | 14 | KafkaWorker → Kafka | Kafka-протокол | канон |
 | 15 | KafkaWorker-джобы → KafkaWorker | etcd-журнал (`/pgworker/work/<C>`, WorkJournal) | канон |
 | 16 | S3Worker → ownS3-инстансы | S3 API (mesh, бакеты, deny-list) | канон |
@@ -84,20 +83,15 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 19 | PgWorker → docker (ноды, джобы) | create/start/stop/kill/remove, сети, тома; list/inspect (состояние, exit-код, порты, env/cmd, лейблы, StartedAt) | канон (§2) |
 | 20 | S3Worker → docker/swarm (ownS3) | сервисы/placement, тома; list/inspect | канон (§2) |
 | 21 | WalReceiver → PgWorker | etcd-ключ приёмника `/pgworker/backups/<C>/<X>/agent/<N>` (lease-живость, фазы, `tli_jump`, `pool_exhausted` — arch/19 §3/§4); воркер читает, приёмник пишет только свой ключ | канон |
-| 22 | PgWorker → backup-джобы (full/verify/drill/restore) | docker logs (result-JSON) | отклонение → backup `t24-job-status-channel` |
+| 22 | PgWorker → WalReceiver (операции бэкапов) | HTTP API приёмника `alias:8080` по имени ноды/tool-контейнера в общей сети воркера и нод, без публикации на хост (docker и swarm); нодовый режим — API полного бэкапа (`/api/backup/full*`), tool-режим — API verify/restore/cancel (`/api/ops/*`); статусы — GET того же API (arch/19 §2/§3.5/§3.6/§5) | канон |
 | 23 | PgWorker → PostgreSQL-ноды | docker exec: `pg_dump --schema-only` (DDL-переезда), правка `pg_hba` перед бэкапом, управление wal-слотом | отклонение → pgworker `t03-orchestration-exec-transition` |
 | 24 | KafkaWorker → Kafka (reassignment партиций) | Kafka-протокол: Describe — AdminClient, подача — AlterReassignments/KIP-455 (миниклиент, arch/16 §2.4) | канон |
 
 ## 5. Отклонения и переход
 
-Отклонения №22–24 — исторические механизмы, канонизированные до этого
-Отклонения №21–23 — исторические механизмы, канонизированные до этого
+Отклонения — исторические механизмы, канонизированные до этого
 документа; их перевод на штатные каналы оформлен в `arch/roadmap/`:
 
-- **№22** — `backup.md` `t24-job-status-channel`: backup-джобы (full/
-  verify/drill/restore) пишут фазы/результат/маркеры в etcd-журнал (по
-  образцу WorkJournal, №15), воркер читает из etcd; stdout остаётся
-  диагностике.
 - **№23** — `pgworker.md` `t03-orchestration-exec-transition`: каждый
   exec-сценарий переходит на сетевой канал (SQL/HTTP/джоба) либо получает
   отдельный апрув владельца.
