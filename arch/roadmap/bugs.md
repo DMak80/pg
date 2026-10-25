@@ -113,21 +113,7 @@
   (d2-series) тест зелёный — флейк. Логи:
   `arch/roadmap/bugs/t06-valkey-metricsdomain-flake/` (выжимка). Гипотезы:
   тайминг-зависимый срез под нагрузкой серии.
-- **`t09-kfw-reassignment-port-brokerhandle-flake`** — два эпизода одного
-  теста `KafkaWorker.IntegrationTests.Kafka.ReassignmentTests.Drain_
-  RemovesNonEmptyBroker_ReducesRF`:
-  (а) серия 2026-10-24 (HEAD `7448fdd1`) — 3 подряд Failed provisioning-тика
-  `docker POST /containers/kfw-re11a5aae36-broker4/start responded 500:
-  Bind for 0.0.0.0:21643 failed: port is already allocated` (`Reassignment
-  Tests.cs:119`) — порт-коллизия portalloc-диапазона с чем-то на хосте в
-  момент серии; (б) изолят 2026-10-24 (HEAD `71fff40f`) — FAIL 17 с:
-  provisioning-тик Failed `Local: Broker handle destroyed without
-  termination` (класс фабрики AdminClient — кандидат 351abbec; в
-  соседнем прогоне d2-full тест зелёный — транзиент). Логи:
-  `arch/roadmap/bugs/t07-kfw-reassignment-port-brokerhandle-flake/`
-  (обе выжимки). Гипотезы: (а) коллизия портов серии с внешними слушателями —
-  проверить зонд/диапазон; (б) гонка дрейна-замены клиента фабрики —
-  разобрать по arch/16 §6.
+
 - **`t10-pgw-e2e-series-fails`** — пачка красных PgWorker.IntegrationTests
   E2E в полных сериях solutionx (2026-10-24, команда — та же, см. t06):
   серия A2 (HEAD `7448fdd1`) — 17
