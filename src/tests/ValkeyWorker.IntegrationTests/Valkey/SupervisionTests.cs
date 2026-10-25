@@ -75,9 +75,13 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         var supervisor = fx.NewSupervisor(claims, fx.NewJournal(),
             fx.NewHealer(claims, fx.NewJournal(), portLock, portIndex), nodeDeadSec: 5);
 
-        var stop = new System.Diagnostics.ProcessStartInfo("docker",
-            $"stop vwk-{cluster}-node1") { RedirectStandardOutput = true };
-        using var proc = System.Diagnostics.Process.Start(stop)!;
+        // Список аргументов без shell: имя контейнера не попадает в строку команды.
+        var stop = new System.Diagnostics.ProcessStartInfo("docker")
+        { RedirectStandardOutput = true };
+        stop.ArgumentList.Add("stop");
+        stop.ArgumentList.Add($"vwk-{cluster}-node1");
+        using var proc = new System.Diagnostics.Process { StartInfo = stop };
+        proc.Start();
         await proc.WaitForExitAsync(TestContext.Current.CancellationToken);
 
         // Act: тики с паузами 2 с — суммарно > NodeDeadSec (5 с); фиксируем
@@ -115,16 +119,21 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 after recreation");
     }
 
-    // docker inspect -f {{.Id}} (пусто — объекта нет).
+    // docker inspect -f {{.Id}} (пусто — объекта нет); аргументы списком
+    // без shell: имя контейнера не попадает в строку команды.
     private static string DockerInspectId(string name)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo(
-            "docker", $"inspect --format {{{{.Id}}}} {name}")
+        var psi = new System.Diagnostics.ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.Id}}");
+        psi.ArgumentList.Add(name);
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
+        proc.Start();
         var id = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
         return proc.ExitCode == 0 ? id : string.Empty;

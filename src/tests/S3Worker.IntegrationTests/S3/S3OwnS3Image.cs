@@ -22,14 +22,19 @@ internal static class S3OwnS3Image
         {
             if (_ready)
                 return;
-            var inspect = new ProcessStartInfo("docker", $"image inspect {Tag}")
+            // Список аргументов без shell: имя образа не попадает в строку команды.
+            var inspect = new ProcessStartInfo("docker")
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            using var process = Process.Start(inspect)!;
+            inspect.ArgumentList.Add("image");
+            inspect.ArgumentList.Add("inspect");
+            inspect.ArgumentList.Add(Tag);
+            using var process = new Process { StartInfo = inspect };
+            process.Start();
             await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0)
                 throw new InvalidOperationException(

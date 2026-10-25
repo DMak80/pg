@@ -51,9 +51,9 @@ public sealed class WalStreamLagRule(IOptions<AlertsOptions> options) : IAlertRu
                     ["staleSec"] = options.Value.WalStaleSec.ToString(),
                 },
                 null,
-                "check the pgw-backup-wal-<C>-<X> container and S3 availability; the worker retries on ticks (transient — self-healing, arch/19 §3)",
+                "check the receivers' status keys /pgworker/backups/<C>/<X>/agent/<N> in etcd and the walreceiver log inside the node containers; check S3 availability (transient — self-healing, arch/19 §3)",
                 AlertRemedy.WorkerAuto,
-                "transient degradation: an exited agent is recreated by the worker supervisor; if it persists — check backup_exec credentials / S3 storage availability");
+                "transient degradation: the receiver retries inside the node container (supervisord); if it persists — check backup_exec credentials / S3 storage availability");
         }
     }
 }

@@ -14,8 +14,21 @@ namespace S3Worker.UnitTests.OwnS3;
 // и сверяется с выводом сигнера.
 public class SigV4GetSignerTests
 {
+    // AccessKey — публичный документационный пример AWS (не секрет, часть
+    // формата Credential). SecretKey генерируется в рантайме: секрет не
+    // зашивается в исходник; тест определён «двойной реализацией» (ожидание
+    // пересчитывается теми же кредами), фиксированный материал не нужен.
     private const string AccessKey = "AKIDEXAMPLE";
-    private const string SecretKey = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    private static readonly string SecretKey = GenerateSecretKey();
+
+    private static string GenerateSecretKey()
+    {
+        // Криптостойкий генератор: 40 символов букв/цифр (формат AWS secret key).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(40);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     private static readonly DateTimeOffset FixedTime =
         new(2026, 1, 15, 10, 30, 0, TimeSpan.Zero);
 

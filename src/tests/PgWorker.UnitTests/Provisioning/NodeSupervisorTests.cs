@@ -25,6 +25,22 @@ public class NodeSupervisorTests
     private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly ThresholdsOptions Thresholds = new(NodeDeadSec: 90, ShardDeadSec: 300);
 
+    // REST-пароли генерируются в рантайме: секреты не зашиваются в исходник;
+    // поля фикстуры переиспользуются всеми обращениями тестов (старое/новое
+    // значения — сценарий ротации).
+    private static readonly string RestPassword = GenerateTestPassword();
+    private static readonly string OldRestPassword = GenerateTestPassword();
+    private static readonly string NewRestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (без спецсимволов —
+        // безопасно для DSN/env/YAML-квотинга).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     // Patroni-проба: 200/500 по порту ноды (два Patroni-порта на хостах h1/h2).
     private static ShardProbe Probe(Func<int, HttpResponseMessage> respondByPort)
         => new(new HttpClient(new FakeHandler(r => respondByPort(r.RequestUri!.Port))));
@@ -53,7 +69,7 @@ public class NodeSupervisorTests
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard1");
         // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
-        etcd.Seed("/clusters/shop/rest_password", "Rest0Pass0000000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", RestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
         etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
@@ -1180,7 +1196,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         var probe = Probe(_ => Ok());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1207,7 +1223,7 @@ public class NodeSupervisorTests
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_0", "shard1");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
         // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
-        etcd.Seed($"/clusters/{cluster}/rest_password", "Rest0Pass0000000000000000000000A");
+        etcd.Seed($"/clusters/{cluster}/rest_password", RestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed($"/service/{cluster}-shard1/request_cpu", "2");
         etcd.Seed($"/service/{cluster}-shard1/request_mem", "8Gi");
@@ -1291,7 +1307,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         // /primary: только shard1a (порт 18000) отвечает 200
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
@@ -1323,7 +1339,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1358,7 +1374,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1388,7 +1404,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         var reconciler = new MasterKeyReconciler(etcd, [Ep], Probe(port => port == 18000 ? Ok() : Down()));
 
         // Act — сверка (put под lease), затем два прохода продления
@@ -1417,7 +1433,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: RestPassword);
         var alive = true;
         var reconciler = new MasterKeyReconciler(
             etcd, [Ep], Probe(port => port == 18000 && alive ? Ok() : Down()));
@@ -1900,21 +1916,21 @@ public class NodeSupervisorTests
         // Arrange: окно ротации (rest_pending NEW); shard1a несёт hash OLD.
         var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+            CancellationToken.None, restPending: NewRestPassword);
         rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-a",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Old0Pass00000000000000000000000A"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(OldRestPassword),
         };
         rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-b",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
         };
         rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-c",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
         };
         rig.Driver.Engine = new Fakes.FakeContainerEngine();
 
@@ -1923,7 +1939,7 @@ public class NodeSupervisorTests
 
         // Assert: shard1a пересоздан с pending-парой; shard1b (hash NEW) не тронут.
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
-        rig.Driver.EnsuredRestPasswords["shard1/shard1a"].Should().Be("New0Pass00000000000000000000000B");
+        rig.Driver.EnsuredRestPasswords["shard1/shard1a"].Should().Be(NewRestPassword);
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b");
     }
@@ -1949,7 +1965,7 @@ public class NodeSupervisorTests
                 return Ok();
             });
         await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+            CancellationToken.None, restPending: NewRestPassword);
         rig.Etcd.Seed("/service/shop-shard1/config",
             """{"ttl":5,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""");
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
@@ -1957,17 +1973,17 @@ public class NodeSupervisorTests
         rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-a",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
         };
         rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-b",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
         };
         rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string>
         {
             [RestRotation.EnvCert] = "cert-c",
-            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
         };
         rig.Driver.Engine = new Fakes.FakeContainerEngine();
 
@@ -2000,7 +2016,7 @@ public class NodeSupervisorTests
                 return Ok();
             });
         await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+            CancellationToken.None, restPending: NewRestPassword);
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
         rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
         {
@@ -2011,7 +2027,7 @@ public class NodeSupervisorTests
             rig.Driver.NodeEnvs[$"shard1/{node}"] = new Dictionary<string, string>
             {
                 [RestRotation.EnvCert] = $"cert-{node[^1]}",
-                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
             };
         rig.Driver.Engine = new Fakes.FakeContainerEngine();
 
@@ -2036,7 +2052,7 @@ public class NodeSupervisorTests
 
         // Assert-2: EnsureNode — пара НОВОГО поколения (pending).
         rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
-            .Should().Be("New0Pass00000000000000000000000B", "the new generation env is pending");
+            .Should().Be(NewRestPassword, "the new generation env is pending");
     }
 
     // AAA (t22 рев.3, П1): 401-отказ switchover в окне НЕ роняет окно навсегда —
@@ -2060,7 +2076,7 @@ public class NodeSupervisorTests
                 return Ok();
             });
         await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
-            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+            CancellationToken.None, restPending: NewRestPassword);
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
         rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
         {
@@ -2071,7 +2087,7 @@ public class NodeSupervisorTests
             rig.Driver.NodeEnvs[$"shard1/{node}"] = new Dictionary<string, string>
             {
                 [RestRotation.EnvCert] = $"cert-{node[^1]}",
-                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(NewRestPassword),
             };
         rig.Driver.Engine = new Fakes.FakeContainerEngine();
 
@@ -2080,7 +2096,7 @@ public class NodeSupervisorTests
         result1.IsSuccess.Should().BeFalse("401 — a transient tick failure, the loop retries");
         rig.Driver.EnsuredNodes.Should().BeEmpty("no removal happened");
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
-            .Should().Be("New0Pass00000000000000000000000B", "the window was not reset by the failure");
+            .Should().Be(NewRestPassword, "the window was not reset by the failure");
 
         // Act-2: повторный тик — switchover проходит, окно продолжает закрываться.
         var result2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);

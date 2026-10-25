@@ -263,17 +263,20 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         string? workingDirectory = null, string? logFile = null,
         bool mergeStderrOnSuccess = false)
     {
-        var psi = new ProcessStartInfo(file, args)
+        // Список аргументов без shell: данные не попадают в строку команды.
+        var psi = new ProcessStartInfo(file)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
         if (workingDirectory is not null)
             psi.WorkingDirectory = workingDirectory;
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы

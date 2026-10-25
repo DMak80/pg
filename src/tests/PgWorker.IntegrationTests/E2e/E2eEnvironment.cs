@@ -75,7 +75,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     {
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --abbrev-ref HEAD")
+            var psi = new System.Diagnostics.ProcessStartInfo("git")
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -83,8 +83,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 CreateNoWindow = true,
                 WorkingDirectory = root,
             };
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process is null || !process.WaitForExit(5000) || process.ExitCode != 0)
+            psi.ArgumentList.Add("rev-parse");
+            psi.ArgumentList.Add("--abbrev-ref");
+            psi.ArgumentList.Add("HEAD");
+            using var process = new System.Diagnostics.Process { StartInfo = psi };
+            process.Start();
+            if (!process.WaitForExit(5000) || process.ExitCode != 0)
                 return "";
             var chars = process.StandardOutput.ReadToEnd().Trim().ToLowerInvariant()
                 .Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-')
@@ -122,10 +126,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     public static string JobImage => $"pgworker-backup:e2e-{ImageTagSuffix}";
 
-    /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3): собирается рядом с
-    /// джобовым (та же ветка withS3Node).</summary>
-    public static string WalImage => $"pgworker-wal:e2e-{ImageTagSuffix}";
-
     /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
     /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
     /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
@@ -134,10 +134,20 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // Креды ownS3-ноды E2E: root-пара (mc/сид/чтение теста) и read-write ключ
     // ноды — им соответствует ключ «backups» per-cluster secrets-ключа пула
     // (arch/19 §7: PgWorker читает /s3/clusters/<C>/secrets, env-профилей нет).
+    // Секреты генерируются в рантайме (криптостойкий RNG) — не зашиваются в
+    // исходник; инициализация раз на процесс, переиспользуются всеми сериями.
     public const string S3RootUser = "owns3-e2e-root";
-    public const string S3RootPassword = "owns3-e2e-root-pwd";
+    public static readonly string S3RootPassword = $"owns3-e2e-root-pwd-{ShortToken()}-{ShortToken()}";
     public const string S3WriterKey = "pgw-e2e-writer";
-    public const string S3WriterSecret = "pgw-e2e-writer-pwd";
+    public static readonly string S3WriterSecret = $"pgw-e2e-writer-pwd-{ShortToken()}-{ShortToken()}";
+
+    private static string ShortToken()
+    {
+        // Криптостойкий генератор: 20 символов букв/цифр (формат ownS3-кредов).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
     private const string BucketName = "pgworker-backups";
 
     // Пул S3 E2E — bucket per-install (единый на всех нодах пула, arch/19 §5;
@@ -231,6 +241,81 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public string NetName { get; }
 
     public EtcdGateway Gateway { get; }
+
+    /// <summary>Факт одного приёмника WAL из статус-ключа agent/&lt;N&gt; (t25,
+    /// arch/19 §4): сценарии сверяют доставку по ключам etcd и объектам S3,
+    /// а не по docker ps wal-контейнеров (их больше нет). State/Role — строковые
+    /// значения ключа ("streaming"/"waiting_role"/...; "master"/"sync"/"none").</summary>
+    public sealed record WalAgentFact(
+        string Node, string? State, string? Role, bool PoolExhausted,
+        string? JumpFrom, string? JumpTo, uint? JumpTli, string? Error);
+
+    /// <summary>Чтение фактов приёмников шарда (t25): Range
+    /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/agent/ — толерантный парсинг
+    /// arch/19 §4 (битые/чужие значения пропускаются); отсутствующие ключи
+    /// (lease истёк) в списке не появляются — «ключ жив = приёмник жив».</summary>
+    public async Task<IReadOnlyList<WalAgentFact>> ReadWalAgentFactsAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var range = await Gateway.RangeAsync(
+            EtcdEndpoint, $"/pgworker/backups/{cluster}/{shard}/agent/", ct);
+        if (!range.IsSuccess)
+            throw new ApplicationException($"range agent facts {cluster}/{shard}: {range.Error!.Message}");
+        var facts = new List<WalAgentFact>();
+        foreach (var kv in range.Value)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                    || !root.TryGetProperty("node", out var node)
+                    || !root.TryGetProperty("state", out var state)
+                    || node.ValueKind != System.Text.Json.JsonValueKind.String
+                    || state.ValueKind != System.Text.Json.JsonValueKind.String)
+                    continue;
+                static string? Str(in System.Text.Json.JsonElement root, string name)
+                    => root.TryGetProperty(name, out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String
+                        ? e.GetString() : null;
+                var jumpFrom = (string?)null;
+                var jumpTo = (string?)null;
+                uint? jumpTli = null;
+                if (root.TryGetProperty("tli_jump", out var jump)
+                    && jump.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    jumpFrom = Str(jump, "from");
+                    jumpTo = Str(jump, "to");
+                    if (jump.TryGetProperty("tli", out var tli) && tli.TryGetUInt32(out var tliValue))
+                        jumpTli = tliValue;
+                }
+                facts.Add(new WalAgentFact(
+                    node.GetString()!, state.GetString(), Str(root, "role"),
+                    root.TryGetProperty("pool_exhausted", out var pe) && pe.ValueKind == System.Text.Json.JsonValueKind.True,
+                    jumpFrom, jumpTo, jumpTli, Str(root, "error")));
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // битое/чужое значение — не факт (толерантность arch/19 §4)
+            }
+        }
+        return facts;
+    }
+
+    /// <summary>Имена контейнеров нод шарда из portalloc (t25: приёмник —
+    /// supervisord-программа контейнера ноды; docker exec supervisorctl).
+    /// Именование — pgw-&lt;C&gt;-&lt;X&gt;-&lt;N&gt; (канон provisioning).</summary>
+    public async Task<IReadOnlyList<string>> ShardNodeContainerNamesAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await Gateway.GetAsync(EtcdEndpoint, $"/pgworker/portalloc/{cluster}", ct);
+        if (kv.Value is not { } entry)
+            throw new ApplicationException($"portalloc {cluster} is missing");
+        var entries = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(entry.Value)!
+            .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+            .Select(p => p.Key.Split('/')[1])
+            .ToList();
+        return [.. entries.Select(node => $"pgw-{cluster}-{shard}-{node}")];
+    }
 
     /// <summary>S3-endpoint окружения: внутрисетевой URL ownS3 (алиас сети).
     /// Пустая строка, если окружение поднято без ownS3.</summary>
@@ -1552,7 +1637,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static string _root = "";
     private static bool _owns3ImageReady;
     private static bool _jobImageReady;
-    private static bool _walImageReady;
     private static bool _sdImageReady;
 
     private static string AppPublishDir => Path.Combine(_root, "artifacts", "e2e", "app");
@@ -1583,7 +1667,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
             await EnsureStaticAsync(ct);
             await EnsureOwnS3ImageAsync(ct);
             await EnsureJobImageAsync(ct);
-            await EnsureWalImageAsync(ct);
             await EnsureSdImageAsync(ct);
             var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
             await File.WriteAllTextAsync(
@@ -1759,17 +1842,35 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 logFile: "/tmp/pgw-e2e-static-process-runner-e2e.log");
             E2eFixture.StaticPhase($"e2e-image {RunnerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
-            // Образ узла (задача 25): docker-cache делает повторные сборки
-            // инкрементальными. ПЕРЕДАЧА КОНТЕКСТА (COPY src) — самая «тихая»
-            // фаза: метки до/после обязательны (канон e2e-launch).
+            // Образ узла (задача 25): двухшаговая сборка (t25, arch/19 §3) —
+            // (1) publish приёмника WAL self-contained НА ХОСТЕ (RID хоста,
+            // без trimming) → artifacts/e2e/node-wal; (2) docker build ноды с
+            // --build-arg WAL_PUBLISH_DIR (в образ — только publish-вывод,
+            // канон «publish на хосте, в контейнер — артефакты»). docker-cache
+            // делает повторные сборки инкрементальными; фазы — с [PHASE]-меткой
+            // и таймингом (канон e2e-launch).
+            var walDir = Path.Combine(_root, "artifacts", "e2e", "node-wal");
+            var walRid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+                == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
             sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase("e2e-image pgworker-node:e2e: docker build (context root)…");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish WalReceiver self-contained {walRid} (host)…");
+            // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
+            // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
+            // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
+                "-c", "Release", "-r", walRid, "--self-contained", "-o", walDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-e2e-static-process-node-wal-publish.log");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: WalReceiver publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
             await E2eFixture.RunProcessAsync("docker",
             [
-                "build", "-q", "-f", $"{_root}/docker/node/Dockerfile", "-t", NodeImage, _root,
+                "build", "-q", "-f", $"{_root}/docker/node/Dockerfile",
+                "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-node-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver inside)");
 
             _staticReady = true;
         }
@@ -1849,57 +1950,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // Образ wal-агента-приёмника (t27, arch/19 §3): приёмник — .NET: publish НА
-    // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
-    // (docker/PgWorker.Wal.E2E.Dockerfile, runtime-слой; канон AGENTS.md).
-    private static async Task EnsureWalImageAsync(CancellationToken ct)
-    {
-        // Раннер: образ гарантированно собран фазой 1 (host-сборка — не задача
-        // раннера, SDK в контейнере нет).
-        if (IsInnerRunner)
-            return;
-        if (_walImageReady)
-            return;
-        await StaticGate.WaitAsync(ct);
-        try
-        {
-            if (_walImageReady)
-                return;
-            // Тест не строит образ: сборка — фаза подготовки (один процесс).
-            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
-            {
-                if (!await DockerImageExistsAsync(WalImage, ct))
-                    throw new ApplicationException($"image {WalImage} is missing in docker. {PrepareHint}");
-                _walImageReady = true;
-                return;
-            }
-            var outDir = Path.Combine(_root, "artifacts", "e2e", "wal");
-            var sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {WalImage}: dotnet publish WalReceiver (host)…");
-            // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
-            // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
-            // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
-            await E2eFixture.RunProcessAsync("dotnet",
-            [
-                "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
-                "-c", "Release", "-o", outDir, "--nologo",
-            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
-                logFile: "/tmp/pgw-e2e-static-process-wal-e2e-publish.log");
-            E2eFixture.StaticPhase($"e2e-image {WalImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context artifacts/e2e/wal)…");
-            await E2eFixture.RunProcessAsync("docker",
-            [
-                "build", "-f", $"{_root}/docker/PgWorker.Wal.E2E.Dockerfile", "-t", WalImage, outDir,
-            ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-wal-e2e-build.log");
-            E2eFixture.StaticPhase($"e2e-image {WalImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (publish+build)");
-            _walImageReady = true;
-        }
-        finally
-        {
-            StaticGate.Release();
-        }
-    }
-
     // Образ file_sd-генератора (t15, arch/18 §5.4): .NET-сервис — publish НА
     // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
     // (docker/Metrics.SdGenerator.Dockerfile, runtime-слой; канон AGENTS.md).
@@ -1925,7 +1975,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var outDir = Path.Combine(_root, "artifacts", "e2e", "sdgenerator");
             var sw = E2eFixture.StaticSw();
             E2eFixture.StaticPhase($"e2e-image {SdImage}: dotnet publish SdGenerator (host)…");
-            // NoMsBuildReuseEnv + бюджет — канон EnsureWalImageAsync (пайп stdout).
+            // NoMsBuildReuseEnv + бюджет — канон publish-фаз (пайп stdout).
             await E2eFixture.RunProcessAsync("dotnet",
             [
                 "publish", $"{_root}/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj",

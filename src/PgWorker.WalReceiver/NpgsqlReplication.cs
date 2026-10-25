@@ -217,6 +217,15 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
 
     public IAsyncEnumerable<XLogChunk> Stream => ReadChunksAsync();
 
+    // Вычитка тела XLogData одним массивом ТОЧНОГО размера: MemoryStream+
+    // ToArray давали двойную аллокацию и лишнюю копию каждого куска hot-path.
+    private static async Task<byte[]> ReadAllBytesAsync(System.IO.Stream data)
+    {
+        var buffer = new byte[data.Length];
+        await data.ReadExactlyAsync(buffer);
+        return buffer;
+    }
+
     private async IAsyncEnumerable<XLogChunk> ReadChunksAsync()
     {
         var enumerator = _stream ?? throw new InvalidOperationException("StartReplicationAsync not called");
@@ -225,16 +234,15 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
             _pendingFirst = null;
             // Data — поток, валиден только до следующего сообщения: вычитываем целиком
             // (буфер сегмента в памяти — кэш без durability, MULTI-HOST).
-            using var firstBuffer = new MemoryStream();
-            await first.Data.CopyToAsync(firstBuffer);
-            yield return new XLogChunk((ulong)first.WalStart, firstBuffer.ToArray());
+            yield return new XLogChunk(
+                (ulong)first.WalStart, (ulong)first.WalEnd, await ReadAllBytesAsync(first.Data));
         }
 
         while (await enumerator.MoveNextAsync())
         {
-            using var buffer = new MemoryStream();
-            await enumerator.Current.Data.CopyToAsync(buffer);
-            yield return new XLogChunk((ulong)enumerator.Current.WalStart, buffer.ToArray());
+            yield return new XLogChunk(
+                (ulong)enumerator.Current.WalStart, (ulong)enumerator.Current.WalEnd,
+                await ReadAllBytesAsync(enumerator.Current.Data));
         }
     }
 
@@ -250,7 +258,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         catch (Exception e)
         {
             return Result.Failed(new ApplicationException(
-                $"status update {WalReceiverMarkers.LsnText(confirmedLsn)}: {e.Message}", e));
+                $"status update {WalLsn.Text(confirmedLsn)}: {e.Message}", e));
         }
     }
 

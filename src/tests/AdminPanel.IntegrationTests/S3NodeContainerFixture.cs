@@ -25,9 +25,19 @@ namespace AdminPanel.IntegrationTests;
 public sealed class S3NodeContainerFixture : IAsyncLifetime
 {
     // Root-пара ownS3-ноды (fail-fast старта ownS3) — ею же сеет тест и читает
-    // панель (AdminPanel__Backups:S3:* в BackupsWebFactory).
-    public const string AccessKey = "apm-owns3-root";
-    public const string SecretKey = "apm-owns3-root-pwd";
+    // панель (AdminPanel__Backups:S3:* в BackupsWebFactory). Генерируется в
+    // рантайме: секреты не зашиваются в исходник; одна пара на процесс —
+    // переиспользуется всеми обращениями.
+    public static readonly string AccessKey = $"apm-owns3-{ShortToken()}";
+    public static readonly string SecretKey = $"apm-owns3-root-{ShortToken()}-{ShortToken()}";
+
+    private static string ShortToken()
+    {
+        // Криптостойкий генератор: 20 символов букв/цифр (формат ownS3-кредов).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     public const string Image = "owns3:dev";
 
@@ -86,14 +96,19 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         {
             if (_imageReady)
                 return;
-            var inspect = new ProcessStartInfo("docker", $"image inspect {Image}")
+            // Список аргументов без shell: имя образа не попадает в строку команды.
+            var inspect = new ProcessStartInfo("docker")
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            using var process = Process.Start(inspect)!;
+            inspect.ArgumentList.Add("image");
+            inspect.ArgumentList.Add("inspect");
+            inspect.ArgumentList.Add(Image);
+            using var process = new Process { StartInfo = inspect };
+            process.Start();
             await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0)
                 throw new ApplicationException(
@@ -172,7 +187,8 @@ public sealed class S3NodeContainerFixture : IAsyncLifetime
         psi.ArgumentList.Add("{{.Names}}");
         psi.ArgumentList.Add("--filter");
         psi.ArgumentList.Add($"name={nameFilter}");
-        using var process = Process.Start(psi)!;
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return output.Trim();

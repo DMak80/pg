@@ -161,7 +161,7 @@ public class RestoreJobCommandTests
         // t36: env чтения — списки/креды (MC_HOST строит скрипт из S3_ENDPOINTS).
         RestoreJobCommand.EnvS3Endpoints.Should().Be("S3_ENDPOINTS");
         RestoreJobCommand.EnvS3AccessKey.Should().Be("S3_ACCESS_KEY");
-        RestoreJobCommand.EnvS3SecretKey.Should().Be("S3_SECRET_KEY");
+        RestoreJobCommand.EnvS3Credentials.Should().Be("S3_SECRET_KEY");
         RestoreJobCommand.EnvBucket.Should().Be("S3_BUCKET");
         RestoreJobCommand.EnvSrcPrefix.Should().Be("SRC_PREFIX");
         RestoreJobCommand.EnvBackupId.Should().Be("BACKUP_ID");

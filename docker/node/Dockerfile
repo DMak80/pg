@@ -19,6 +19,17 @@ RUN apt-get update \
         && chmod +x /usr/local/bin/pg_doorman; \
     fi
 
+# Приёмник WAL (t25, arch/19 §3/§14 §2.1): self-contained publish НА ХОСТЕ
+# (RID хоста сборки, без trimming — рефлексия Npgsql/AWSSDK/OTel), в образ —
+# ТОЛЬКО publish-вывод (канон «publish на хосте, в контейнер — артефакты»):
+#   dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
+#     --self-contained -o artifacts/node-wal
+#   docker build -f docker/node/Dockerfile \
+#     --build-arg WAL_PUBLISH_DIR=artifacts/node-wal -t pgworker-node:dev .
+ARG WAL_PUBLISH_DIR=artifacts/node-wal
+COPY ${WAL_PUBLISH_DIR} /opt/pgw-wal/
+RUN chmod +x /opt/pgw-wal/walreceiver
+
 # Lease-скрипт мастер-ключа — путь совпадает с callback on_role_change
 # в SPILO_CONFIGURATION (NodeConfigBuilders, задача 9). Контекст сборки —
 # корень репозитория: docker build -f docker/node/Dockerfile -t pgworker-node:dev .

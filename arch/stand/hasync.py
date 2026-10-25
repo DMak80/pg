@@ -13,13 +13,36 @@
 #                  контрол-плейна не должен выламывать дата-плейн).
 # Живость ноды решает health-check HAProxy (сайдкар /primary) — не etcd.
 import base64
+import ipaddress
 import json
 import os
 import socket
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 ETCD = os.getenv("ETCD_ENDPOINTS", "http://etcd:2379").rstrip("/")
+
+# Границы исходящих запросов (CWE-918): адресат — allowlist протокола и хоста
+# (контур etcd из env), для литерального IP — только loopback/private.
+ALLOWED_SCHEMES = {"http", "https"}
+ETCD_HOSTS = {urlparse(ETCD).hostname or ""}
+
+
+def _checked_url(url, allowed_hosts):
+    parts = urlparse(url)
+    if parts.scheme not in ALLOWED_SCHEMES or parts.username or parts.fragment:
+        raise ValueError(f"blocked url scheme/form: {url}")
+    host = parts.hostname or ""
+    if host not in allowed_hosts:
+        raise ValueError(f"blocked url host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return url  # DNS-имя контура — host уже в allowlist
+    if not (addr.is_loopback or addr.is_private):
+        raise ValueError(f"blocked non-private ip: {host}")
+    return url
 BACKEND = os.environ["BACKEND"]                 # напр. bk_master
 SERVERS = os.environ["SERVERS"].split(",")      # отслеживаемые бэкенды
 SOCK = os.getenv("HAPROXY_SOCKET", "/run/haproxy/admin.sock")
@@ -39,7 +62,7 @@ def b64(s):
 
 def etcd_get(key):
     req = urllib.request.Request(
-        ETCD + "/v3/kv/range",
+        _checked_url(ETCD, ETCD_HOSTS) + "/v3/kv/range",
         data=json.dumps({"key": b64(key)}).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as r:

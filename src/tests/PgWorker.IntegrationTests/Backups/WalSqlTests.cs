@@ -13,7 +13,17 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(NonE2eCollection.Name)]
 public class WalSqlTests
 {
-    private const string Password = "pgw-test-su";
+    // Пароль superuser генерируется в рантайме: секрет не зашивается в исходник.
+    private static readonly string Password =
+        $"pgw-test-su-{GenerateToken()}-{GenerateToken()}";
+
+    private static string GenerateToken()
+    {
+        // Криптостойкий генератор: 20 символов букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     [Fact]
     public async Task ProbeEnsureAliveRecreateIdempotentOnLiveAndMissingSlot()

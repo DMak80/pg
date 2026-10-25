@@ -58,10 +58,7 @@ public sealed record BackupsRuntimeOptions(
     // started_unix → FAILED drill-timeout.
     int DrillIntervalDays = 1,
     int DrillTimeoutSec = 21600,
-    // t27 (arch/19 §3/§9): образ wal-агента-приёмника (per-node long-running
-    // контейнеры pgw-backup-wal-*); дефолт — локальная сборка стенда.
-    string WalAgentImage = "pgworker-wal:dev",
-    // t41 (arch/14 §2.1): сеть контура поставки — задана → ноды/wal-агенты/
-    // ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не
-    // используется, extra_hosts спек не применяются); null — прод-режим.
+    // t41 (arch/14 §2.1): сеть контура поставки — задана → ноды/ephemeral-джобы
+    // бэкапов создаются в ней одной (pgw-net-<C> не используется, extra_hosts
+    // спек не применяются); null — прод-режим.
     string? ContourNetwork = null);

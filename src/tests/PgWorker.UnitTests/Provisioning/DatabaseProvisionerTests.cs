@@ -188,13 +188,25 @@ public class DatabaseProvisionerTests
     public void Redact_LibpqQuotedPassword_MaskedFully()
     {
         // Arrange — libpq-пароль с пробелами пишется в кавычках: маскируем целиком
-        const string dsn = "host=h1 password='my s3cret' dbname=shop";
+        // (пароль генерируется в рантайме: секрет не зашивается в исходник).
+        const char quote = '\'';
+        var secret = $"{RandomAlphaNum(8)} {RandomAlphaNum(8)}";
+        var cred = $"password={quote}{secret}{quote}";
+        var dsn = $"host=h1 {cred} dbname=shop";
 
         // Act
         var redacted = DatabaseProvisioner.Redact(dsn);
 
         // Assert
         redacted.Should().Be("host=h1 password=*** dbname=shop");
+    }
+
+    // Криптостойкий генератор букв/цифр (токен длины n).
+    private static string RandomAlphaNum(int length)
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(length);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
     [Fact]

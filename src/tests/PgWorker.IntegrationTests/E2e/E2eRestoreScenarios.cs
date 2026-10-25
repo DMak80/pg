@@ -153,10 +153,9 @@ public class E2eRestoreScenarios
                     && f.Key.Split('/').Last() != oldId);
                 if (!newCompleted)
                     return false;
-                var agents = await fx.RunDockerAsync(
-                ["ps", "--format", "{{.Names}}", "--filter",
-                    $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-                return agents.Length > 0;
+                // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
+                var facts = await fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count > 0;
             }, TimeSpan.FromSeconds(300), ct);
             if (!reinited)
                 throw new ApplicationException(
@@ -327,7 +326,6 @@ public class E2eRestoreScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

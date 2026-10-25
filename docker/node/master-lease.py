@@ -6,12 +6,14 @@
 #   role=replica/standby_leader → погасить демон (ключ исчезнет по TTL сам).
 # Адаптация arch/stand/sidecar/rolecheck.py (etcd-примитивы идентичны).
 import base64
+import ipaddress
 import json
 import os
 import ssl
 import sys
 import time
 import urllib.request
+from urllib.parse import urlparse
 
 # Patroni-callback стартует с обрезанным runit'ом env: параметры дублируются
 # entrypoint'ом в файл (env-переменные имеют приоритет над файлом).
@@ -20,6 +22,32 @@ ENV_FILE = "/home/postgres/pgw-node.env"
 # Patroni 3.x называет мастера по-разному в зависимости от контекста.
 MASTER_ROLES = {"master", "leader", "primary"}
 REPLICA_ROLES = {"replica", "standby_leader"}
+
+# Границы исходящих запросов (CWE-918): адресат любого запроса скрипта обязан
+# пройти allowlist протокола + хоста (+ IP-границу для литеральных адресов).
+ALLOWED_SCHEMES = {"http", "https"}
+PATRONI_SCHEME = "https"
+PATRONI_HOST = "127.0.0.1"  # REST локального Patroni (SAN серта, arch/14 §2.4)
+ALLOWED_WRITE_ROOTS = ["/tmp"]  # pid-файл демона — только контролируемый корень
+
+
+def _checked_url(url, allowed_hosts):
+    """Allowlist-валидация адресата (CWE-918): протокол, хост и, для
+    литерального IP-адреса, принадлежность контуру (loopback/private).
+    Посторонний адрес — исключение ДО запроса."""
+    parts = urlparse(url)
+    if parts.scheme not in ALLOWED_SCHEMES or parts.username or parts.fragment:
+        raise ValueError(f"blocked url scheme/form: {url}")
+    host = parts.hostname or ""
+    if host not in allowed_hosts:
+        raise ValueError(f"blocked url host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return url  # DNS-имя контура — host уже в allowlist
+    if not (addr.is_loopback or addr.is_private):
+        raise ValueError(f"blocked non-private ip: {host}")
+    return url
 
 
 def load_env_file():
@@ -36,14 +64,16 @@ def load_env_file():
 def local_role():
     """Фактическая роль этой ноды: GET /primary локального Patroni по https
     (верификация серта по ca-файлу ноды; 127.0.0.1 — в SAN, t22) — для
-    on_start Patroni не передаёт роль аргументами."""
+    on_start Patroni не передаёт роль аргументами. Адресат — allowlist
+    (PATRONI_HOST), проверен до запроса (CWE-918)."""
     ca = os.getenv("PGW_NODE_CA", "")
     if not ca:
         print("master-lease: PGW_NODE_CA is not set - https /primary unavailable", flush=True)
         return None
     try:
         ctx = ssl.create_default_context(cafile=ca)
-        req = urllib.request.Request("https://127.0.0.1:8008/primary")
+        req = urllib.request.Request(
+            _checked_url(f"{PATRONI_SCHEME}://{PATRONI_HOST}:8008/primary", {PATRONI_HOST}))
         with urllib.request.urlopen(req, timeout=3, context=ctx) as r:
             return "master" if r.status == 200 else "replica"
     except Exception:
@@ -56,6 +86,9 @@ load_env_file()
 # передаёт все узлы контура); активный endpoint кешируется, транспортная
 # ошибка/5xx → перебор до первого живого. Один URL — частный случай.
 ETCD_LIST = [u.strip().rstrip("/") for u in os.getenv("PGW_ETCD", "http://etcd:2379").split(",") if u.strip()]
+# Адресаты etcd — доверенная конфигурация контура, но и она проходит allowlist
+# (CWE-918): scheme/host-граница до любого запроса.
+ETCD_HOSTS = {urlparse(u).hostname or "" for u in ETCD_LIST}
 _active = {"url": ETCD_LIST[0] if ETCD_LIST else ""}
 KEY = os.getenv("PGW_MASTER_KEY", "")
 HOST = os.getenv("PGW_NODE_HOST", "")
@@ -69,12 +102,13 @@ MASTER_ROLES = {"master", "primary", "master}", "primary}"}
 def etcd_post(path, payload):
     # Активный endpoint (кеш) первым; исключение/5xx — сброс и следующий из
     # списка; успех на новом адресе обновляет кеш (переключение — в лог).
+    # Адресат каждого запроса — allowlist-проверен (ETCD_HOSTS, CWE-918).
     order = [_active["url"]] + [u for u in ETCD_LIST if u != _active["url"]]
     last_error = None
     for url in order:
         try:
             req = urllib.request.Request(
-                url + path, data=json.dumps(payload).encode(),
+                _checked_url(url, ETCD_HOSTS) + path, data=json.dumps(payload).encode(),
                 headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=5) as r:
                 if url != _active["url"]:
@@ -173,7 +207,13 @@ def main():
 
     pid = os.fork()
     if pid > 0:
-        with open(PID_FILE, "w") as f:
+        # Запись pid: путь нормализован и ограничен ALLOWED_WRITE_ROOTS
+        # (CWE-22), открытие — os.open с явными флагами.
+        full = os.path.normpath(PID_FILE)
+        if not any(full == root or full.startswith(root + os.sep) for root in ALLOWED_WRITE_ROOTS):
+            raise ValueError(f"pid path outside allowed roots: {full}")
+        fd = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "w") as f:
             f.write(str(pid))
         return
 

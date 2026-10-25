@@ -162,7 +162,6 @@ public class E2eSupervisorOrphanRegistryScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "3600",
@@ -181,7 +180,6 @@ public class E2eSupervisorOrphanRegistryScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
             ["PgWorker__Backups__Supervisor__OrphanTtlSec"] = "120",

@@ -138,16 +138,21 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         prefix.Value.Should().BeEmpty();
     }
 
-    // docker inspect -f {{.Id}} (пусто — объекта нет).
+    // docker inspect -f {{.Id}} (пусто — объекта нет); аргументы списком
+    // без shell: имя контейнера не попадает в строку команды.
     private static string ContainerId(string name)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo(
-            "docker", $"inspect --format {{{{.Id}}}} {name}")
+        var psi = new System.Diagnostics.ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var proc = System.Diagnostics.Process.Start(psi)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.Id}}");
+        psi.ArgumentList.Add(name);
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
+        proc.Start();
         var id = proc.StandardOutput.ReadToEnd().Trim();
         proc.WaitForExit(5000);
         return proc.ExitCode == 0 ? id : string.Empty;

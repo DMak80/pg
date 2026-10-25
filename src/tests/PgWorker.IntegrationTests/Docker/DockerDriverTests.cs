@@ -42,6 +42,18 @@ public class DockerDriverTests
 
     private static readonly EtcdEndpoints Etcd = new(["http://localhost:2379"]);
 
+    // Пароль REST-API генерируется в рантайме: секрет не зашивается в исходник;
+    // одно поле фикстуры переиспользуется всеми обращениями.
+    private static readonly string RestTestPassword = GenerateRestPassword();
+
+    private static string GenerateRestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для env/YAML).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     private static string ContainerName(string cluster) => $"pgw-{cluster}-s1-n1";
 
     // Pull образа один раз на прогон (только при включённой серии): create не тянет образ сам.
@@ -112,8 +124,8 @@ public class DockerDriverTests
         var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
 
         // Act — повторный Ensure с тем же именем
-        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
-        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
+        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
         await using var engine = NewEngine();
         var list = await engine.ListContainersAsync(ContainerName(cluster), all: true, CancellationToken.None);
 
@@ -136,7 +148,7 @@ public class DockerDriverTests
         await CleanupAsync(cluster);
         var driver = NewDriver();
         var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
-        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
         var removed = await driver.RemoveNodeAsync(cluster, "s1", "n1", CancellationToken.None);

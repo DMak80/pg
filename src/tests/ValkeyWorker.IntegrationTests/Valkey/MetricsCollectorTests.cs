@@ -53,11 +53,15 @@ public sealed class MetricsCollectorTests(ValkeyClusterFixture fx)
 
     private static void DockerStop(string container)
     {
-        var psi = new ProcessStartInfo("docker", $"stop {container}")
+        // Аргументы списком без shell: имя контейнера не попадает в строку команды.
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
         };
-        using var proc = Process.Start(psi)!;
+        psi.ArgumentList.Add("stop");
+        psi.ArgumentList.Add(container);
+        using var proc = new Process { StartInfo = psi };
+        proc.Start();
         proc.WaitForExit();
     }
 

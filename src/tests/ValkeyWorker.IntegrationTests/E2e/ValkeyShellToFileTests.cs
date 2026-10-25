@@ -16,9 +16,9 @@ public sealed class ValkeyShellToFileTests
 
         try
         {
-            // Act: съём вывода в файл.
+            // Act: съём вывода в файл (скрипт — константа, аргументы списком).
             await ValkeyE2eEnvironment.ShellToFileAsync(
-                "/bin/sh", "-c \"echo stdout-marker; echo stderr-marker >&2\"", path);
+                "/bin/sh", ["-c", "echo stdout-marker; echo stderr-marker >&2"], path);
             var content = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
 
             // Assert: файл содержит оба маркера.

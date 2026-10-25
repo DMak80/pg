@@ -16,7 +16,8 @@ public class SdGeneratorIntegrationTests
 
     // Harness цикла: реальный EtcdGateway, temp-файл, свой Meter (ctor-канон), NullLogger.
     private sealed record LoopHarness(
-        SdGeneratorLoop Loop, SdGeneratorMetrics Metrics, string Path, Meter Meter) : IAsyncDisposable
+        SdGeneratorLoop Loop, SdGeneratorMetrics Metrics, string Path, string WalPath, Meter Meter)
+        : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
@@ -29,12 +30,14 @@ public class SdGeneratorIntegrationTests
         var dir = Path.Combine(Path.GetTempPath(), "sd-it-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "sd.json");
+        var walPath = Path.Combine(dir, "walreceiver-nodes.json");
         var meter = new Meter("sd-it");
         var metrics = new SdGeneratorMetrics(meter, TimeProvider.System);
         var loop = new SdGeneratorLoop(
-            new EtcdGateway(new HttpClient()), [endpoint], new SdFileWriter(path), metrics,
+            new EtcdGateway(new HttpClient()), [endpoint],
+            new SdFileWriter(path), new SdFileWriter(walPath), metrics,
             NullLogger<SdGeneratorLoop>.Instance);
-        return new LoopHarness(loop, metrics, path, meter);
+        return new LoopHarness(loop, metrics, path, walPath, meter);
     }
 
     private static async Task<bool> LoopAsync(LoopHarness harness, CancellationToken ct)
@@ -73,6 +76,11 @@ public class SdGeneratorIntegrationTests
         file.Should().Contain("\"cluster\":\"c1\"");
         file.Should().Contain("\"shard\":\"shard1\"");
         file.Should().Contain("\"node\":\"shard1a\"");
+        // t25 (arch/18 §5.4): второй file_sd симметричен — те же лейблы, порт 8080
+        var walFile = await File.ReadAllTextAsync(harness.WalPath, ct);
+        walFile.Should().Contain("h1:8080");
+        walFile.Should().Contain("\"cluster\":\"c1\"");
+        walFile.Should().Contain("\"node\":\"shard1a\"");
         harness.Metrics.LastSuccessUnix.Should().NotBeNull();
     }
 

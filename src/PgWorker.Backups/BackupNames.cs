@@ -61,9 +61,9 @@ public static class BackupNames
     public static string DrillJobContainerPrefix(string cluster)
         => $"pgw-backup-drill-{cluster}-";
 
-    /// <summary>Слот WAL-агента шарда (t03, arch/19 §3): pgw_bkp_&lt;C&gt;_&lt;X&gt;;
+    /// <summary>Слот приёмника WAL шарда (t03, arch/19 §3): pgw_bkp_&lt;C&gt;_&lt;X&gt;;
     /// длиннее NAMEDATALEN(63) → pgw_bkp_ + sha1("&lt;C&gt;/&lt;X&gt;")[:16] (усечение без
-    /// коллизий на практике; имена контейнера/volume агента — BackupAgentNames).</summary>
+    /// коллизий на практике; ensure слота — воркер, стрим — приёмник).</summary>
     public static string Slot(string cluster, string shard)
     {
         var full = $"pgw_bkp_{cluster}_{shard}";

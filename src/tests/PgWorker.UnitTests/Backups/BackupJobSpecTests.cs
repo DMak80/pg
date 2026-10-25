@@ -115,7 +115,7 @@ public class BackupJobSpecTests
         // t36: env чтения — список нод пула + креды профиля.
         spec.Env![VerifyJobCommand.EnvS3Endpoints].Should().Be("http://s3a:9000");
         spec.Env![VerifyJobCommand.EnvS3AccessKey].Should().Be("ak");
-        spec.Env![VerifyJobCommand.EnvS3SecretKey].Should().Be("sk");
+        spec.Env![VerifyJobCommand.EnvS3Credentials].Should().Be("sk");
         spec.Env![VerifyJobCommand.EnvS3Bucket].Should().Be("bkt");
         spec.Env!["PGW_BK_PREFIX"].Should().Be("c1/shard1");
         spec.Env!["PGW_BK_ID"].Should().Be("20260911120000Z");

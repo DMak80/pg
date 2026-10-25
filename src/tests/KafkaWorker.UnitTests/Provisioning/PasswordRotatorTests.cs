@@ -14,7 +14,18 @@ namespace KafkaWorker.UnitTests.Provisioning;
 public class PasswordRotatorTests
 {
     private const string Ep = "http://etcd:2379";
-    private const string OldPassword = "OldPassword0123456789abcdef";
+
+    // Старый пароль генерируется в рантайме: секрет не зашивается в исходник;
+    // поле переиспользуется всеми обращениями (сид etcd, JAAS-сравнения).
+    private static readonly string OldPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (формат JAAS-кредов).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     private sealed record Rig(
         Fakes.FakeEtcd Etcd,

@@ -51,16 +51,13 @@ public class E2eWalStreamTliScenarios
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
+        var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("both agents before the failover");
+        bothStreaming.Should().BeTrue("both receivers streaming before the failover");
         await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
 
         // Сегменты TLI 1 в S3 — непустой хвост ниже будущей точки форка
@@ -210,17 +207,27 @@ public class E2eWalStreamTliScenarios
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
+        var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("both agents before the failover");
+        bothStreaming.Should().BeTrue("both receivers streaming before the failover");
         await GenerateWalAsync(adminDsn, ct); // база цепочки TLI 1
+
+        // Якорь TLI 1 в S3 — обязательный вход tli-процедуры: без него (гонка
+        // «индукция раньше первой доставки TLI 1») хвоста ниже точки форка нет —
+        // приёмники стартуют от свежих слотов без 58P01, прыжка/tli_jump не
+        // возникает; якорь делает факт tli_jump в agent-ключе (ассерт ниже)
+        // детерминированным (канон входа — wal-t24a «wal-tail-anchored»).
+        var anchored = await E2ePhase.WaitAsync(Fx, "wal-tail-anchored", async () =>
+        {
+            var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            return listed.IsSuccess && listed.Value.Count(o =>
+                o.Name.Length == 24 && o.Name.StartsWith("00000001", StringComparison.Ordinal)) >= 2;
+        }, TimeSpan.FromSeconds(300), ct);
+        anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
 
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -250,6 +257,12 @@ public class E2eWalStreamTliScenarios
             var newMasterDsn = DatabaseProvisioner.BuildAdminDsn(newMasterHost, newMasterPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             var slot = PgWorker.Backups.BackupNames.Slot(cluster, "shard1");
+            // t25: слот активен, пока приёмник новой мастер-ноды стримит — на время
+            // индукции среза удержания приёмник останавливается (supervisord-программа
+            // ноды) и возвращается после пересоздания слота воркером (waiting_slot).
+            var newMasterContainer = $"pgw-{cluster}-shard1-{newMasterNode}";
+            await Fx.RunDockerAsync(
+                ["exec", newMasterContainer, "supervisorctl", "stop", "walreceiver"], ct);
             await using (var conn = new NpgsqlConnection(newMasterDsn))
             {
                 await conn.OpenAsync(ct);
@@ -260,6 +273,8 @@ public class E2eWalStreamTliScenarios
             Console.WriteLine($"[PHASE] wal-t24b: slot {slot} dropped, 160 recorded switches start");
             await SwitchWithRecordsAsync(newMasterDsn, 160, ct);
             Console.WriteLine("[PHASE] wal-t24b: 160 recorded switches done (old-tli segments recycled)");
+            await Fx.RunDockerAsync(
+                ["exec", newMasterContainer, "supervisorctl", "start", "walreceiver"], ct);
 
             // Индукция завершена — метка «свежести» полного (инвариант 4)
             var inductionDoneUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -373,6 +388,30 @@ public class E2eWalStreamTliScenarios
             string.CompareOrdinal(chainLastSegment, controlSegment.Name)
                 .Should().BeGreaterThanOrEqualTo(0,
                     "delivery caught up: last chain segment ≥ control-insert segment (§3.7 inv.5)");
+
+            // 9.4 (t25-ревью): факт tli-прыжка — в agent-ключе ПРИЁМНИКА нового
+            // мастера (живая публикация из стрима, arch/19 §4): from — хвостовой
+            // сегмент старого TLI в S3, to — сегмент прыжка, tli — новый таймлайн.
+            // Факт персистентен в живом процессе приёмника (до следующего
+            // прыжка) — читаем поллингом после сходимости.
+            var agentKeyPath = $"/pgworker/backups/{cluster}/shard1/agent/{newMasterNode}";
+            var jumpSeen = await E2eFixture.WaitForAsync(async () =>
+            {
+                var read = await G.GetAsync(Endpoint, agentKeyPath, ct);
+                return read.Value is { } kv
+                       && kv.Value.Contains("\"tli_jump\":", StringComparison.Ordinal);
+            }, TimeSpan.FromSeconds(60), ct);
+            jumpSeen.Should().BeTrue(
+                "the tli_jump fact must be observable in the master receiver agent key");
+            var agentRaw = (await G.GetAsync(Endpoint, agentKeyPath, ct)).Value!.Value;
+            using var jumpDoc = System.Text.Json.JsonDocument.Parse(agentRaw);
+            var jump = jumpDoc.RootElement.GetProperty("tli_jump");
+            jump.GetProperty("from").GetString().Should().StartWith("00000001",
+                "jump From is the old-TLI (TLI 1) tail segment in S3");
+            jump.GetProperty("to").GetString().Should().NotBeNullOrEmpty(
+                "jump To segment is set (the fallback start boundary)");
+            jump.GetProperty("tli").GetUInt32().Should().BeGreaterThanOrEqualTo(2u,
+                "jump Tli is the promoted timeline");
         }
         catch (Exception ex)
         {
@@ -480,9 +519,11 @@ public class E2eWalStreamTliScenarios
     {
         try
         {
-            var agentsPs = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}} {{.State}}",
-                 "--filter", $"name=pgw-backup-wal-{cluster}-"], TestContext.Current.CancellationToken);
+            // t25: факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
+                TestContext.Current.CancellationToken);
+            var receiversDump = string.Join("; ", agentFacts.Select(f =>
+                $"{f.Node}: {f.State}{(f.Error is null ? "" : $" err={f.Error}")}"));
             var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var claimKv = await GetOrNullAsync($"/pgworker/claims/{cluster}");
@@ -531,19 +572,10 @@ public class E2eWalStreamTliScenarios
                     hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
-            var agentLogs = "";
-            foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var name = line.Split(' ')[0];
-                var logs = await E2eFixture.RunDockerLogsAsync(["--tail", "60", name],
-                    TestContext.Current.CancellationToken);
-                agentLogs += $"\n== {name}:\n{logs}";
-            }
-
             var dump =
-                $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
+                $"reason={reason}\nreceivers=[{receiversDump}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
-                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
+                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
             // Дамп — в каталог телеметрии прогона (t29 §3.4): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
@@ -588,7 +620,7 @@ public class E2eWalStreamTliScenarios
     }
 
     /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
-    /// воркер (Backups:Enabled + Wal:AgentImage), ожидание provisioning, DSN мастера.
+    /// воркер (Backups:Enabled), ожидание provisioning, DSN мастера.
     /// Владение окружением и воркером — у Fact (DisposeAsync при любом исходе).</summary>
     private async Task<(E2eEnvironment Env, HostInstance App, string Cluster, string AdminDsn, string MasterNode)>
         StartWalScenarioAsync(string slug, string clusterPrefix, CancellationToken ct)
@@ -624,7 +656,6 @@ public class E2eWalStreamTliScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

@@ -595,7 +595,6 @@ public sealed class TliSwitchContext : IAsyncLifetime
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
 
     // Воркер t28: ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
-    // разнесён — StartRestoreHostAsync не задаёт Wal:AgentImage,
     // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; t28 нужны и
     // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. S3 — один пул из policy.s3,
     // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
@@ -615,7 +614,6 @@ public sealed class TliSwitchContext : IAsyncLifetime
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -1141,10 +1139,9 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 if (!fulls.Any(f => f.Value.Contains("COMPLETED")
                         && f.Key.Split('/').Last() != Ctx.OldBackupId))
                     return false;
-                var agents = await Ctx.Fx.RunDockerAsync(
-                    ["ps", "--format", "{{.Names}}", "--filter",
-                        $"name=pgw-backup-wal-{Ctx.Cluster}-shard1"], ct);
-                return agents.Length > 0;
+                // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
+                var facts = await Ctx.Fx.ReadWalAgentFactsAsync(Ctx.Cluster, "shard1", ct);
+                return facts.Count > 0;
             }, TimeSpan.FromSeconds(300), ct);
             reinited.Should().BeTrue("the post-restore invariant (wal-reinit): "
                 + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));

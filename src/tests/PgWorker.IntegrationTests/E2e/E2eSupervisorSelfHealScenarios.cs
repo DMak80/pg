@@ -179,15 +179,15 @@ public class E2eSupervisorSelfHealScenarios
         replicasPast.Should().BeTrue(
             $"the shard1 replicas must catch up with the gap {hole} (LSN {replayTarget}) — " +
             "otherwise the environment is unhealthy (a stuck replica) and the t07 logic is not exercised");
-        // Останавливаем ВСЕ агенты шарда до порчи (их по два, t07): живой агент
-        // переснимает сегмент раньше контрольного тика (5 c) — дыра заживает до
-        // BROKEN (прогон 2026-10-15: цепь осталась непрерывной). Пересъём —
-        // часть механики self-heal: супервизор на BROKEN пересоздаёт агентов.
-        var selfHealAgents = await Fx.RunDockerAsync(
-            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
-        foreach (var agentName in selfHealAgents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                     .Select(n => n.Trim()))
-            await Fx.RunDockerAsync(["stop", agentName], ct);
+        // Останавливаем walreceiver ВСЕХ нод шарда до порчи (t25: приёмник —
+        // supervisord-программа ноды; admin-stop): живой приёмник переснимает
+        // сегмент раньше контрольного тика (5 c) — дыра заживает до BROKEN.
+        // Пересъём — часть механики self-heal: на BROKEN воркер переснимает полный,
+        // приёмники замирают по BROKEN-гейту (t25) и возобновляются после ACTIVE.
+        var nodeNames = await Fx.ShardNodeContainerNamesAsync(cluster, "shard1", ct);
+        nodeNames.Should().NotBeEmpty("the shard1 nodes are provisioned — a stop precondition");
+        foreach (var nodeName in nodeNames)
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
         // Act 1 — порча + ожидание BROKEN (контроль 1 c). Окно дыры мало:
         // супервизор пересоздаёт остановленных агентов за ScanInterval (1 c) и
         // пересъём заживает дыру за секунды — если первый заход не дошёл до
@@ -268,6 +268,11 @@ public class E2eSupervisorSelfHealScenarios
             doomed.Select(d => d.Canon).ToArray(), "GapError names the gap boundary");
         brokenDoc["chain_start_segment"].GetString().Should().NotBeNullOrEmpty("the gap boundary in chain_start");
 
+        // t25: приёмники возвращаются (программа ноды); по BROKEN-гейту они стоят
+        // в paused — пересъём идёт воркером, приёмники возобновятся после ACTIVE.
+        foreach (var nodeName in nodeNames)
+            await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "start", "walreceiver"], ct);
+
         // Act 2 — новый полный с id ≠ старого (планировщик реагирует на BROKEN),
         // затем COMPLETED (pg_basebackup со spread-чекпоинтом)
         var newFull = default(string);
@@ -321,10 +326,14 @@ public class E2eSupervisorSelfHealScenarios
         // 24-hex имя при ordinal-сравнении = порядок (TLI, log, seg) — ratchet
         string.CompareOrdinal(chainStart, newWalStart).Should()
             .BeGreaterThanOrEqualTo(0, "verify starts from a point not below the wal_start of the new full");
-        var agent = await RunDockerAsync(
-            ["ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1", "--format", "{{.Names}} {{.Status}}"]);
-        agent.Should().Contain($"pgw-backup-wal-{cluster}-shard1").And.Contain("Up",
-            "the agent is raised by the healing tick (BROKEN lifted)");
+        // Assert 2b — приёмники нод снова стримят (гейт BROKEN снят ACTIVE-ключом,
+        // t25: paused → streaming без docker-операций воркера)
+        var receiversBack = await E2eFixture.WaitForAsync(async () =>
+        {
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 1;
+        }, TimeSpan.FromSeconds(120), ct);
+        receiversBack.Should().BeTrue("receivers resume streaming after BROKEN lifts (waiting → streaming)");
         }, ct);
     }
 
@@ -395,7 +404,6 @@ public class E2eSupervisorSelfHealScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "3600",

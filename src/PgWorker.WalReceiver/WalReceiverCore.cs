@@ -4,89 +4,255 @@ using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
-/// <summary>Главный цикл WAL-приёмника (t27, arch/19 §3, spec §3.1): подключение с
-/// сверкой wal_segment_size, резолв старта от хвоста S3 (пустой префикс — от
-/// restart_lsn слота), приём XLogData → сборка сегментов → put в S3 →
-/// подтверждение слота ТОЛЬКО после успешного put (инвариант RPO: write=flush=
-/// applied = конец последнего доставленного сегмента, никогда дальше).
-/// Backpressure: при невозможности put чтение потока не двигается — сервер ждёт
-/// подтверждения, слот удерживает WAL. Обрывы источника — transient
-/// (переподключение с повторным резолвом хвоста); permanent — коды выхода:
-/// 3 = segment-size mismatch, 4 = слот отсутствует, 6 = разрыв LSN протокола,
-/// 5 (в Program) = невалидный env; 0 = чистая отмена.</summary>
+/// <summary>Исход одной стрим-сессии приёмника (t25, arch/19 §3): одна сессия =
+/// «открытие → резолв хвоста → START_REPLICATION → приём до обрыва/смены роли».
+/// Reconnect — обрыв источника/transient (переподключение с повторным резолвом
+/// хвоста); WaitingSlot — слота нет на пустом префиксе S3 (transient-ожидание,
+/// ensure делает воркер); FailedPermanent — несъёмное условие (segment-size
+/// mismatch ИЛИ разрыв LSN протокола) с текстом; RoleChanged — цикл оборвал
+/// сессию сам (проба роли в стриме). Факты сессии: TliJump (58P01-прыжок,
+/// живёт до следующего прыжка), HistoryMissingTli (`.history` не добыта ни из
+/// рантайма, ни из ФС ноды), PoolExhausted (флаг исчерпания write-списка),
+/// LastDeliveredSegment/ConfirmedLsn/LastStreamLsn (прогресс).</summary>
+public sealed record WalSessionOutcome(
+    WalSessionKind Kind,
+    string? Error = null,
+    WalReceiverTliJump? TliJump = null,
+    uint? HistoryMissingTli = null,
+    bool PoolExhausted = false,
+    string? LastDeliveredSegment = null,
+    ulong ConfirmedLsn = 0,
+    ulong LastStreamLsn = 0);
+
+public enum WalSessionKind { Reconnect, WaitingSlot, FailedPermanent, RoleChanged }
+
+/// <summary>Флаг исчерпания write-списка пула внутри сессии (ref в async
+/// недопустим — состояние вынесено в объект; переходы отдаются колбэком
+/// PoolExhaustedChanged, факт живёт в исходе сессии).</summary>
+public sealed class PoolExhaustionFlag
+{
+    public bool IsSet;
+}
+
+/// <summary>Колбэки сессии (метрики приёмника + внешние пробы): все —
+/// опциональные, сессия работает и без них (юниты ядра). RoleChangedProbe —
+/// периодическая (5 c) проба роли ИЗ стрима: true — роль сменилась, сессия
+/// завершается чисто (RoleChanged). HistoryFilePath — переопределение пути
+/// `.history` на ФС ноды (прод-путь — pg_wal PGDATA; юниты — tmpdir).</summary>
+public sealed class WalSessionEvents
+{
+    /// <summary>Успешный put: снимает pool_exhausted (первый после исчерпания).</summary>
+    public Action? PutSuccess;
+
+    /// <summary>Неудачная попытка put (вкл. ретраи) — counter walreceiver_put_errors_total.</summary>
+    public Action? PutError;
+
+    /// <summary>Повторная попытка put (перебор целей пула) — counter walreceiver_put_retries_total.</summary>
+    public Action? PutRetry;
+
+    /// <summary>Доставлен закрытый сегмент (байты) — counters delivered.</summary>
+    public Action<long>? SegmentDelivered;
+
+    /// <summary>Переподключение к источнику — counter walreceiver_reconnects_total.</summary>
+    public Action? Reconnect;
+
+    /// <summary>Прогресс позиции потока — serverWalEnd сервера (arch/18 §2.8:
+    /// backlog = позиция записи сервера − подтверждённый хвост).</summary>
+    public Action<ulong>? StreamProgress;
+
+    /// <summary>Подтверждение слота принято сервером (write=flush=applied=endLsn):
+    /// база backlog-гейджа цикла (confirmedBase) обновляется по факту.</summary>
+    public Action<ulong>? Confirmed;
+
+    /// <summary>Доставлена `.history` (байты) — counter bytes_delivered
+    /// (arch/18 §2.8: счётчик байт включает history-объекты).</summary>
+    public Action<long>? HistoryDelivered;
+
+    /// <summary>Факт отсутствия `.history` TLI (ни из рантайма, ни из ФС ноды) —
+    /// живая публикация history_missing_tli в статус-ключ (arch/19 §4):
+    /// факт обязан быть наблюдаем до завершения сессии.</summary>
+    public Action<uint>? HistoryMissing;
+
+    /// <summary>Смена флага исчерпания write-списка (true — ставится, false — снят).
+    /// Живая публикация: сессия при исчерпании не завершается (put-ретрай-цикл),
+    /// факт обязан попасть в статус-ключ сразу — иначе воркер не увидит
+    /// pool_exhausted до конца сессии.</summary>
+    public Action<bool>? PoolExhaustedChanged;
+
+    /// <summary>Факт tli-прыжка (58P01 fallback, arch/19 §3): живая публикация в
+    /// статус-ключ — сессия после прыжка продолжает стрим, исход-факт доехал бы
+    /// только при её завершении (прыжок живёт в статусе до следующего).</summary>
+    public Action<WalReceiverTliJump>? TliJump;
+
+    /// <summary>Проба роли из стрима (5 c): true — роль сменилась, сессия прерывается.</summary>
+    public Func<CancellationToken, Task<bool>>? RoleChangedProbe;
+
+    /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, t25/arch/19 §3): true —
+    /// глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ шарда в
+    /// STOPPED/BROKEN — сессия чисто завершается (Reconnect): цикл
+    /// перепроверит гейты и уйдёт в waiting_disabled/paused; живой стрим
+    /// обязан замирать по стоп-гейтам, а не ждать обрыва транспорта.</summary>
+    public Func<CancellationToken, Task<bool>>? StopGateProbe;
+
+    /// <summary>Путь `.history` на ФС ноды (null → pg_wal PGDATA-дефолт).</summary>
+    public Func<uint, string?>? HistoryFilePath;
+
+    /// <summary>Диагностика в stderr контейнера (не протокол — только наблюдаемость).</summary>
+    public Action<string>? Diagnostic;
+}
+
+/// <summary>Ядро WAL-приёмника как управляемая сессия (t27 → t25, arch/19 §3):
+/// подключение со сверкой wal_segment_size, резолв старта от хвоста S3 (пустой
+/// префикс — от restart_lsn слота), приём XLogData → сборка сегментов → put в
+/// S3 → подтверждение слота ТОЛЬКО после успешного put (инвариант RPO:
+/// write=flush=applied = конец последнего доставленного сегмента, никогда
+/// дальше). Backpressure: при невозможности put чтение потока не двигается —
+/// сервер ждёт подтверждения, слот удерживает WAL. Выходных кодов процесса
+/// больше нет (t25): permanent-условия — исход FailedPermanent (состояние
+/// статус-ключа), ожидания — Reconnect/WaitingSlot (цикл ретраит), смену роли
+/// детектирует проба (RoleChanged).</summary>
 public sealed class WalReceiverCore
 {
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
 
     // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная/перегруженная
     // нода пула «молча принимает» TCP и не отвечает — ПЕР-ЦЕЛЬНЫЙ бюджет: это
-    // значение уходит requestTimeout'ом в КАЖДУЮ цель PoolBackupS3 (Program),
+    // значение уходит requestTimeout'ом в КАЖДУЮ цель PoolBackupS3 (цикл),
     // чтобы висящая первая цель НЕ съедала бюджет перебора и фейловер доезжал
     // до следующей ноды списка (прецедент AC4: put к ноде под mesh-нагрузкой
     // висел до отмены попытки — вторая цель не получала ни одной попытки).
     internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan StreamMarkerPeriod = TimeSpan.FromSeconds(5);
 
-    public static async Task<int> RunAsync(
+    // Период пробы роли из стрима (arch/19 §3: смена ролей подхватывается
+    // приёмником без участия воркера).
+    private static readonly TimeSpan RoleProbePeriod = TimeSpan.FromSeconds(5);
+
+    // pg_wal PGDATA ноды (arch/14 §2.1): fallback-чтение `.history` приёмником
+    // из ФС своей ноды (приёмник живёт в контейнере ноды, user=postgres).
+    public const string DefaultPgWalDir = "/home/postgres/pgdata/pgroot/data/pg_wal";
+
+    /// <summary>Одна сессия стрима (описание исходов — WalSessionOutcome).</summary>
+    public static async Task<WalSessionOutcome> RunSessionAsync(
         WalReceiverOptions o,
         IXLogReplicationSource source,
         ISlotPositionReader slots,
         IBackupS3 s3,
-        TextWriter stdout,
+        WalSessionEvents events,
         CancellationToken ct,
         TimeSpan? retryDelay = null)
     {
         var retry = retryDelay ?? DefaultRetry;
         string? lastDelivered = null;
-        var lastStreamMarker = DateTime.MinValue;
+        var confirmedLsn = 0UL;
+        var lastStreamLsn = 0UL;
+        WalReceiverTliJump? tliJump = null;
+        uint? historyMissingTli = null;
+        var exhaustion = new PoolExhaustionFlag();
 
-        async Task Emit(string marker)
+        // Проба роли из стрима: фоновая задача (5 c); true → roleCts.Cancel —
+        // обрыв Stream трактуется сессией как чистая смена роли (RoleChanged).
+        var roleTriggered = false;
+        // Проба ПОЛНОГО стоп-гейта из стрима (5 c, t25): true → тот же Cancel —
+        // исход Reconnect: цикл перепроверит гейты (waiting_disabled/paused) немедленно.
+        var gateTriggered = false;
+        using var roleCts = new CancellationTokenSource();
+        Task? roleProbeTask = null;
+        if (events.StopGateProbe is { } gateProbe)
         {
-            await stdout.WriteLineAsync(marker);
+            _ = Task.Run(async () =>
+            {
+                while (!roleCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(RoleProbePeriod, roleCts.Token);
+                        if (await gateProbe(roleCts.Token))
+                        {
+                            gateTriggered = true;
+                            roleCts.Cancel();
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                        // Проба не удалась (etcd-моргание) — гейт не трогаем:
+                        // стрим не рвём, перепроверка следующим периодом.
+                    }
+                }
+            }, CancellationToken.None);
         }
+        if (events.RoleChangedProbe is { } probe)
+        {
+            roleProbeTask = Task.Run(async () =>
+            {
+                while (!roleCts.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(RoleProbePeriod, roleCts.Token);
+                        if (await probe(roleCts.Token))
+                        {
+                            roleTriggered = true;
+                            roleCts.Cancel();
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                        // Проба не удалась (транспорт/ФС) — роли нет: стрим не рвём.
+                    }
+                }
+            }, CancellationToken.None);
+        }
+
+        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct, roleCts.Token);
+        var sct = sessionCts.Token;
 
         try
         {
-            await Emit(WalReceiverMarkers.Starting());
             while (true)
             {
-                // 1. Подключение + сверка wal_segment_size: расхождение — permanent (математика
-                //    имён сегментов не должна молча врать), прочие сбои — transient.
-                var opened = await source.OpenAsync(ct);
+                // 1. Подключение + сверка wal_segment_size: расхождение — permanent
+                //    (математика имён сегментов не должна молча врать), прочие сбои
+                //    — transient (переподключение).
+                var opened = await source.OpenAsync(sct);
                 if (!opened.IsSuccess)
                 {
                     if (opened.Error!.Message.Contains("wal_segment_size"))
-                    {
-                        await Emit(WalReceiverMarkers.Result(false, opened.Error.Message, lastDelivered));
-                        return 3;
-                    }
+                        return Outcome(WalSessionKind.FailedPermanent, opened.Error.Message);
 
                     // Диагностика transient-цикла подключения: причина обязана быть
-                    // видимой в логе контейнера без перезапуска (R3 «не молчание»);
-                    // stdout — протокол воркера, ошибка идёт в stderr.
-                    await Console.Error.WriteLineAsync(
-                        $"open_failed: {opened.Error.Message.Split('\n')[0]}");
-                    await Task.Delay(retry, ct);
+                    // видимой в логе контейнера без перезапуска (R3 «не молчание»).
+                    events.Reconnect?.Invoke();
+                    Diagnostic(events, $"open_failed: {opened.Error.Message.Split('\n')[0]}");
+                    await Task.Delay(retry, sct);
                     continue;
                 }
 
                 // 2. Стартовая позиция: хвост S3 (позиция + имя хвостового сегмента —
                 //    вход tli-процедуры при 58P01); транспортный сбой резолва — ретрай;
-                //    пустой префикс — restart_lsn слота; слота нет — permanent (код 4).
+                //    пустой префикс — restart_lsn слота; слота нет — transient-ожидание
+                //    (ensure делает воркер, arch/19 §3 — НЕ permanent).
                 WalTail? walTail = null;
                 while (walTail is null)
                 {
-                    var resolved = await S3TailResolver.ResolveTailAsync(s3, o.Cluster, o.Shard, ct);
-                    if (resolved.IsSuccess && resolved.Value is { } position)
+                    var resolved = await S3TailResolver.ResolveTailAsync(s3, o.Cluster, o.Shard, sct);
+                    if (resolved.IsSuccess)
                     {
-                        walTail = position;
+                        walTail = resolved.Value; // позиция или null (пустой префикс)
                         break;
                     }
 
-                    if (resolved.IsSuccess)
-                        break; // пустой префикс — старт от слота
-
-                    await Task.Delay(retry, ct);
+                    Diagnostic(events, $"tail resolve failed: {resolved.Error!.Message.Split('\n')[0]}");
+                    await Task.Delay(retry, sct);
                 }
 
                 ulong startAt;
@@ -98,11 +264,11 @@ public sealed class WalReceiverCore
                 }
                 else
                 {
-                    var restart = await slots.ReadRestartLsnAsync(o.Slot, ct);
+                    var restart = await slots.ReadRestartLsnAsync(o.Slot, sct);
                     if (!restart.IsSuccess)
                     {
-                        await Emit(WalReceiverMarkers.Result(false, restart.Error!.Message, lastDelivered));
-                        return 4;
+                        // Слота нет/lost: воркер ensure'ит/recreate'ит — ожидание.
+                        return Outcome(WalSessionKind.WaitingSlot);
                     }
 
                     startAt = restart.Value;
@@ -114,23 +280,28 @@ public sealed class WalReceiverCore
                 //    стартовала — приём продолжается от её позиции; не стартовала — обычный
                 //    transient-цикл. tailSegment == null (пустой префикс — старт от
                 //    restart_lsn слота) — процедура неприменима (вход не определён): retry-цикл.
-                //    Диагностика любой неуспешной ветки старта — start_failed в stderr (R3
-                //    «не молчание»: текст WalStartRefused несёт исходную ошибку сервера).
-                var started = await source.StartReplicationAsync(o.Slot, startAt, null, ct);
+                var started = await source.StartReplicationAsync(o.Slot, startAt, null, sct);
                 if (!started.IsSuccess)
                 {
-                    var resumed = started.Error is WalStartRefused && tailSegment is not null
-                        ? await TliProcedureAsync(o, source, s3, stdout, startAt, tailSegment, retry, ct)
-                        : Result<ulong?>.Success(null);
-                    if (resumed is { IsSuccess: true, Value: { } procedureStart })
+                    var (procedureResult, jump, historyMissing) =
+                        started.Error is WalStartRefused && tailSegment is not null
+                            ? await TliProcedureAsync(o, source, s3, events, startAt, tailSegment, retry, sct)
+                            : (Result<ulong?>.Success(null), (WalReceiverTliJump?)null, (uint?)null);
+                    if (jump is { } j)
                     {
-                        startAt = procedureStart;
+                        tliJump = j;
+                        events.TliJump?.Invoke(j); // живая публикация факта прыжка
+                    }
+                    if (historyMissing is { } missingTli)
+                        historyMissingTli = missingTli;
+                    if (procedureResult is { IsSuccess: true, Value: { } procedurePos })
+                    {
+                        startAt = procedurePos;
                     }
                     else
                     {
-                        await Console.Error.WriteLineAsync(
-                            $"start_failed: {started.Error!.Message.Split('\n')[0]}");
-                        await Task.Delay(retry, ct);
+                        Diagnostic(events, $"start_failed: {started.Error!.Message.Split('\n')[0]}");
+                        await Task.Delay(retry, sct);
                         continue;
                     }
                 }
@@ -141,7 +312,7 @@ public sealed class WalReceiverCore
                 uint prevTli = 0;
                 try
                 {
-                    await foreach (var chunk in source.Stream.WithCancellation(ct))
+                    await foreach (var chunk in source.Stream.WithCancellation(sct))
                     {
                         IReadOnlyList<ClosedSegment> closedSegments;
                         try
@@ -151,113 +322,199 @@ public sealed class WalReceiverCore
                         catch (ApplicationException e)
                         {
                             // Разрыв LSN — протокол физической репликации дыр не даёт:
-                            // это баг транспорта, не transient — невосстановимо (код 6).
-                            await Emit(WalReceiverMarkers.Result(false, e.Message, lastDelivered));
-                            return 6;
+                            // это баг транспорта, не transient — невосстановимо.
+                            return Outcome(WalSessionKind.FailedPermanent, e.Message);
                         }
+
+                        // Позиция потока для наблюдаемости — serverWalEnd
+                        // (arch/18 §2.8), не позиция принятых байт: backlog =
+                        // позиция записи сервера − подтверждённый хвост.
+                        lastStreamLsn = Math.Max(lastStreamLsn, assembler.ServerWalEnd);
+                        events.StreamProgress?.Invoke(assembler.ServerWalEnd);
 
                         foreach (var segment in closedSegments)
                         {
-                            // 5. TLI-переход (смена TLI относительно доставленного; первый
-                            //    сегмент цепочки — инициализация, истории для tli=1 не
-                            //    существует): .history загружается обязательно (PITR через
-                            //    смену timeline); рантайм без TIMELINE_HISTORY — маркер
-                            //    history_missing, fallback — контроль воркера.
-                            if (prevTli != 0 && segment.Tli != prevTli)
+                            try
                             {
-                                var history = await source.ReadTimelineHistoryAsync(segment.Tli, ct);
-                                if (history is { IsSuccess: true } && history.Value is not null)
+                                // 5. TLI-переход (смена TLI относительно доставленного; первый
+                                //    сегмент цепочки — инициализация, истории для tli=1 не
+                                //    существует): .history загружается обязательно (PITR через
+                                //    смену timeline); рантайм без TIMELINE_HISTORY — чтение
+                                //    файла ФС ноды (fallback); нет и файла — факт
+                                //    history_missing в исходе сессии.
+                                if (prevTli != 0 && segment.Tli != prevTli)
                                 {
-                                    await PutWithRetryAsync(
-                                        s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
-                                        history.Value,
-                                        Convert.ToHexString(SHA256.HashData(history.Value)), retry, ct);
+                                    var history = await ReadHistoryWithFallbackAsync(
+                                        source, events, segment.Tli, sct);
+                                    if (history.Value is { } content)
+                                    {
+                                        await PutWithRetryAsync(
+                                            s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Tli:x8}.history",
+                                            content,
+                                            Convert.ToHexString(SHA256.HashData(content)), retry, sct,
+                                            exhaustion);
+                                        events.HistoryDelivered?.Invoke(content.Length);
+                                    }
+                                    else
+                                    {
+                                        historyMissingTli = segment.Tli;
+                                        events.HistoryMissing?.Invoke(segment.Tli);
+                                        Diagnostic(events,
+                                            $"history_missing tli={segment.Tli} (runtime + filesystem)");
+                                    }
+                                }
+
+                                prevTli = segment.Tli;
+
+                                // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
+                                //    (один расчёт: маркер и put используют один хэш).
+                                var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
+                                await PutWithRetryAsync(
+                                    s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
+                                    segment.Data, sha256, retry, sct, exhaustion);
+                                events.SegmentDelivered?.Invoke(segment.Data.Length);
+
+                                // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
+                                var confirmed = await source.SetConfirmedAsync(segment.EndLsn, sct);
+                                if (confirmed.IsSuccess)
+                                {
+                                    lastDelivered = segment.Name;
+                                    confirmedLsn = segment.EndLsn;
+                                    events.Confirmed?.Invoke(segment.EndLsn);
                                 }
                                 else
                                 {
-                                    await Emit(WalReceiverMarkers.HistoryMissing(segment.Tli));
+                                    // Подтверждение не прошло (транспорт): слот не двинулся,
+                                    // следующий сегмент повторит статус с той же LSN;
+                                    // диагностика + счётчик ошибок — застой не молчит.
+                                    events.PutError?.Invoke();
+                                    Diagnostic(events,
+                                        $"confirm failed: {confirmed.Error!.Message.Split('\n')[0]}");
                                 }
                             }
-
-                            prevTli = segment.Tli;
-
-                            // 6. Доставка сегмента: sha256-hex — серверная сверка целостности
-                            //    (один расчёт: маркер и put используют один хэш).
-                            await Emit(WalReceiverMarkers.Delivering(segment.Name));
-                            var sha256 = Convert.ToHexString(SHA256.HashData(segment.Data));
-                            await PutWithRetryAsync(
-                                s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{segment.Name}",
-                                segment.Data, sha256, retry, ct);
-
-                            // 7. ЕДИНСТВЕННОЕ место подтверждения слота — после успешного put.
-                            var confirmed = await source.SetConfirmedAsync(segment.EndLsn, ct);
-                            if (confirmed.IsSuccess)
+                            finally
                             {
-                                lastDelivered = segment.Name;
-                                await Emit(WalReceiverMarkers.Heartbeat(segment.EndLsn));
+                                // Сегментный буфер (пул LOH, t25 hot-path) возвращается
+                                // после обработки сегмента: put/подтверждение завершены
+                                // (или сессия прервана отменой) — байты никому не нужны.
+                                SegmentBufferPool.Return(segment.Data);
                             }
-                        }
-
-                        // Прогресс-маркер — не чаще 1/5 c.
-                        if (DateTime.UtcNow - lastStreamMarker >= StreamMarkerPeriod)
-                        {
-                            lastStreamMarker = DateTime.UtcNow;
-                            await Emit(WalReceiverMarkers.Streaming(assembler.LastAppendedLsn));
                         }
                     }
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
-                    // Обрыв источника (исключение из Stream) — поглощается ниже.
-                    // Диагностика причины обрыва — в stderr (тихий обрыв делал цикл
-                    // ненаблюдаемым: только «starting» без причины, R3 «не молчание»).
-                    await Console.Error.WriteLineAsync(
-                        $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+                    // Обрыв источника (исключение из Stream) — transient:
+                    // переподключение заново (резолв хвоста, START_REPLICATION от хвоста S3).
+                    events.Reconnect?.Invoke();
+                    Diagnostic(events, $"stream_broken: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
                 }
 
-                // Поток кончился/оборвался (сервер закрыл, транспортный сбой) — transient:
-                // переподключение заново (резолв хвоста, START_REPLICATION от хвоста S3).
-                await Emit(WalReceiverMarkers.Starting());
-                await Task.Delay(retry, ct);
+                if (gateTriggered)
+                    return Outcome(WalSessionKind.Reconnect); // цикл: гейты → waiting_disabled
+                if (roleTriggered)
+                    return Outcome(WalSessionKind.RoleChanged);
+
+                // Поток кончился/оборвался (сервер закрыл, транспортный сбой) — transient.
+                await Task.Delay(retry, sct);
             }
         }
         catch (OperationCanceledException)
         {
-            // Чистая отмена (SIGTERM супервиза, стоп воркера): недоставленное
-            // удерживается слотом — перезаказывается у источника при следующем старте.
-            await Emit(WalReceiverMarkers.Result(true, null, lastDelivered));
-            return 0;
+            // Отмена: внешняя (ct — SIGTERM супервиза) или проба роли. Чистая
+            // смена роли — различимый исход; SIGTERM — наружу (graceful-завершение
+            // делает цикл: недоставленное удерживается слотом, перезаказывается
+            // при следующем старте).
+            if (gateTriggered)
+                return Outcome(WalSessionKind.Reconnect);
+            if (roleTriggered)
+                return Outcome(WalSessionKind.RoleChanged);
+            throw;
         }
+        finally
+        {
+            if (roleCts.IsCancellationRequested is false)
+                await roleCts.CancelAsync();
+            if (roleProbeTask is { } task)
+            {
+                try
+                {
+                    await task.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                }
+                catch
+                {
+                    // Пробник уже мёртв/не успел за бюджетом — сессия всё равно завершена.
+                }
+            }
+        }
+
+        WalSessionOutcome Outcome(WalSessionKind kind, string? error = null) => new(
+            kind, error, tliJump, historyMissingTli, exhaustion.IsSet,
+            lastDelivered, confirmedLsn, lastStreamLsn);
+    }
+
+    private static void Diagnostic(WalSessionEvents events, string message)
+    {
+        if (events.Diagnostic is { } sink)
+            sink(message);
+        else
+            Console.Error.WriteLine(message);
+    }
+
+    /// <summary>`.history` нового TLI: сначала рантайм репликации
+    /// (TIMELINE_HISTORY); рантайм не отдал — чтение файла ФС ноды
+    /// pg_wal/<tli:x8>.history (приёмник живёт в контейнере с PGDATA); нет и
+    /// файла — Success(null) (факт history_missing у вызывающего).</summary>
+    private static async Task<Result<byte[]?>> ReadHistoryWithFallbackAsync(
+        IXLogReplicationSource source, WalSessionEvents events, uint tli, CancellationToken ct)
+    {
+        var runtime = await source.ReadTimelineHistoryAsync(tli, ct);
+        if (runtime is { IsSuccess: true } && runtime.Value is not null)
+            return runtime;
+
+        // Fallback: файл ФС ноды (user=postgres — доступ к pg_wal PGDATA).
+        var path = events.HistoryFilePath?.Invoke(tli) ?? $"{DefaultPgWalDir}/{tli:x8}.history";
+        try
+        {
+            if (File.Exists(path))
+                return Result<byte[]?>.Success(await File.ReadAllBytesAsync(path, ct));
+        }
+        catch (Exception e)
+        {
+            Diagnostic(events, $"history file read failed tli={tli}: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+        }
+
+        return Result<byte[]?>.Success(null);
     }
 
     /// <summary>Tli-процедура (58P01, arch/19 §3): досыпка старого таймлайна от
     /// хвоста S3 до точки переключения (CopyDone → переподключение от выросшего
     /// хвоста — зазора нет, RPO=0) или прыжок-fallback на текущий таймлайн от
     /// границы сегмента xlogpos (сегменты (tail .. старт] в S3 не появятся —
-    /// осознанный RPO-зазор, маркер tli_jump). Возвращает Success(стартовая LSN) —
-    /// старт выполнен, приём продолжается штатным контуром (assembler → put →
-    /// confirm; подтверждение слота ТОЛЬКО после успешного put — инвариант RPO не
-    /// меняется); Success(null) — процедура не стартовала (transient: обычный
-    /// retry-цикл). КАЖДЫЙ старт процедуры выполняется на СВЕЖЕМ replication-
-    /// соединении: отказ 58P01 гасит прежнее (транспорт), поэтому перед досыпкой
-    /// и перед прыжком — OpenAsync. Идемпотентна: гонки повторного промоута
-    /// конвергентны — каждая итерация начинается IDENTIFY_SYSTEM, счётчиков
-    /// попыток нет; старт с историческим TIMELINE безопасен (сервер отдаёт его
-    /// до конца ветки).</summary>
-    private static async Task<Result<ulong?>> TliProcedureAsync(
-        WalReceiverOptions o, IXLogReplicationSource source, IBackupS3 s3, TextWriter stdout,
-        ulong tail, string tailSegment, TimeSpan retry, CancellationToken ct)
+    /// осознанный RPO-зазор, факт tli_jump наружу — цикл кладёт его в статус-ключ,
+    /// живёт до следующего прыжка). Возврат: (стартовая LSN — приём продолжается
+    /// штатным контуром; null — процедура не стартовала (transient: обычный
+    /// retry-цикл); факт прыжка; tli истории без источника). КАЖДЫЙ старт
+    /// процедуры выполняется на СВЕЖЕМ replication-соединении: отказ 58P01 гасит
+    /// прежнее (транспорт), поэтому перед досыпкой и перед прыжком — OpenAsync.
+    /// Идемпотентна: гонки повторного промоута конвергентны — каждая итерация
+    /// начинается IDENTIFY_SYSTEM, счётчиков попыток нет; старт с историческим
+    /// TIMELINE безопасен (сервер отдаёт его до конца ветки).</summary>
+    private static async Task<(Result<ulong?> Start, WalReceiverTliJump? Jump, uint? HistoryMissing)>
+        TliProcedureAsync(
+            WalReceiverOptions o, IXLogReplicationSource source, IBackupS3 s3, WalSessionEvents events,
+            ulong tail, string tailSegment, TimeSpan retry, CancellationToken ct)
     {
+        uint? historyMissing = null;
         if (WalFileName.TryParse(tailSegment) is not { } tailFile)
-            return Result<ulong?>.Success(null); // имя не парсится — retry (защитно)
+            return (Result<ulong?>.Success(null), null, null); // имя не парсится — retry (защитно)
 
         // 1. IDENTIFY_SYSTEM: сбой — transient (retry-цикл).
         var identity = await source.IdentifySystemAsync(ct);
         if (!identity.IsSuccess)
         {
-            await Console.Error.WriteLineAsync(
-                $"tli_procedure: identify failed: {identity.Error!.Message.Split('\n')[0]}");
-            return Result<ulong?>.Success(null);
+            Diagnostic(events, $"tli_procedure: identify failed: {identity.Error!.Message.Split('\n')[0]}");
+            return (Result<ulong?>.Success(null), null, null);
         }
         var (serverTli, xlogPos) = identity.Value;
 
@@ -266,18 +523,22 @@ public sealed class WalReceiverCore
         //    заново первым сегментом). TLI 1 истории не имеет — не запрашивается.
         if (serverTli > tailFile.Tli)
         {
-            var history = await source.ReadTimelineHistoryAsync(serverTli, ct);
-            if (history is { IsSuccess: true } && history.Value is not null)
+            var history = await ReadHistoryWithFallbackAsync(source, events, serverTli, ct);
+            if (history.Value is { } content)
             {
+                var procedureExhaustion = new PoolExhaustionFlag();
                 await PutWithRetryAsync(
-                    s3, stdout, o, $"{o.Cluster}/{o.Shard}/wal/{serverTli:x8}.history",
-                    history.Value,
-                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(history.Value)),
-                    retry, ct);
+                    s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{serverTli:x8}.history",
+                    content,
+                    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)),
+                    retry, ct, procedureExhaustion);
+                events.HistoryDelivered?.Invoke(content.Length);
             }
             else
             {
-                await stdout.WriteLineAsync(WalReceiverMarkers.HistoryMissing(serverTli));
+                historyMissing = serverTli;
+                events.HistoryMissing?.Invoke(serverTli);
+                Diagnostic(events, $"history_missing tli={serverTli} (runtime + filesystem)");
             }
         }
 
@@ -286,31 +547,29 @@ public sealed class WalReceiverCore
         //    повторный 58P01 (удержание потеряно) — прыжок ниже.
         if (serverTli > tailFile.Tli)
         {
-            await stdout.WriteLineAsync(WalReceiverMarkers.TliBackfill(tailSegment, serverTli));
-            await Console.Error.WriteLineAsync(
+            Diagnostic(events,
                 $"tli_procedure: backfill segment {tailSegment} (tli {tailFile.Tli}) up to tli {serverTli} switch point");
             var openedBackfill = await source.OpenAsync(ct);
             if (!openedBackfill.IsSuccess)
             {
                 // Отказ 58P01 погасил стрим-соединение — процедуре нужно свежее;
                 // неудача открытия — transient (retry-цикл).
-                await Console.Error.WriteLineAsync(
+                Diagnostic(events,
                     $"tli_procedure: open failed: {openedBackfill.Error!.Message.Split('\n')[0]}");
-                return Result<ulong?>.Success(null);
+                return (Result<ulong?>.Success(null), null, historyMissing);
             }
 
             var backfill = await source.StartReplicationAsync(o.Slot, tail, tailFile.Tli, ct);
             if (backfill.IsSuccess)
-                return Result<ulong?>.Success(tail);
+                return (Result<ulong?>.Success(tail), null, historyMissing);
             if (backfill.Error is not WalStartRefused)
             {
-                await Console.Error.WriteLineAsync(
+                Diagnostic(events,
                     $"tli_procedure: backfill start failed: {backfill.Error!.Message.Split('\n')[0]}");
-                return Result<ulong?>.Success(null); // transient
+                return (Result<ulong?>.Success(null), null, historyMissing); // transient
             }
 
-            await Console.Error.WriteLineAsync(
-                $"tli_procedure: backfill refused (58P01) — old-tli segments recycled, jumping");
+            Diagnostic(events, "tli_procedure: backfill refused (58P01) — old-tli segments recycled, jumping");
         }
 
         // 4. Прыжок-fallback (и единственный путь при T == TLI хвоста — зазор
@@ -323,57 +582,147 @@ public sealed class WalReceiverCore
         var segId = (uint)(segmentStart / (ulong)WalFileName.SegmentBytes);
         var toSegment = new WalFileName(
             serverTli, segId / WalFileName.SegsPerLog, segId % WalFileName.SegsPerLog).Name;
-        await stdout.WriteLineAsync(
-            WalReceiverMarkers.TliJump(tailSegment, tailFile.Tli, serverTli, toSegment));
-        await Console.Error.WriteLineAsync(
+        var jump = new WalReceiverTliJump(tailSegment, toSegment, serverTli);
+        Diagnostic(events,
             $"tli_procedure: jump {tailSegment} (tli {tailFile.Tli}) -> {toSegment} (tli {serverTli})");
         var openedJump = await source.OpenAsync(ct);
         if (!openedJump.IsSuccess)
         {
-            await Console.Error.WriteLineAsync(
+            Diagnostic(events,
                 $"tli_procedure: open failed: {openedJump.Error!.Message.Split('\n')[0]}");
-            return Result<ulong?>.Success(null); // transient
+            return (Result<ulong?>.Success(null), jump, historyMissing); // transient, факт прыжка уже случился
         }
 
-        var jump = await source.StartReplicationAsync(o.Slot, segmentStart, serverTli, ct);
-        if (jump.IsSuccess)
-            return Result<ulong?>.Success(segmentStart);
+        var jumpStart = await source.StartReplicationAsync(o.Slot, segmentStart, serverTli, ct);
+        if (jumpStart.IsSuccess)
+            return (Result<ulong?>.Success(segmentStart), jump, historyMissing);
 
-        await Console.Error.WriteLineAsync(
-            $"tli_procedure: jump start failed: {jump.Error!.Message.Split('\n')[0]}");
-        return Result<ulong?>.Success(null); // включая повторный 58P01 — новая итерация процедуры
+        Diagnostic(events,
+            $"tli_procedure: jump start failed: {jumpStart.Error!.Message.Split('\n')[0]}");
+        return (Result<ulong?>.Success(null), jump, historyMissing); // включая повторный 58P01 — новая итерация процедуры
     }
 
     /// <summary>Put с ретраем (transient-отказ S3): на время ретраев чтение потока
     /// остановлено — backpressure, ничего не теряется, слот удерживает WAL.
-    /// Хэш передаёт вызывающий: сегмент уже хэширован для маркера Delivering —
-    /// повторный SHA256 16 МиБ на каждый put не считается. t36: исчерпание
-    /// списка пула (маркер s3-pool-exhausted в ошибке) — маркер
-    /// в stdout перед ретраем (контроль воркера читает хвост лога агента —
-    /// алерт backup-pool-unreachable; ретрай-цикл — стрим стоит, слот держит).
-    /// R3 «быстрый отказ, не молчание»: пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout —
-    /// requestTimeout каждой цели в PoolBackupS3) + бюджет ВЫЗОВА
-    /// (цели записи + 1) × таймаут цели: висящая первая цель не отменяет
-    /// перебор — фейловер доезжает до живой ноды (прецедент AC4).</summary>
+    /// Хэш передаёт вызывающий: сегмент уже хэширован — повторный SHA256 16 МиБ
+    /// на каждый put не считается. Исчерпание списка пула (маркер
+    /// S3PoolMarkers.Exhausted в ошибке) — флаг poolExhausted=true (факт
+    /// статус-ключа через PoolExhaustedChanged; снимается первым успешным put);
+    /// ретрай-цикл — стрим стоит, слот держит. R3 «быстрый отказ, не молчание»:
+    /// пер-ЦЕЛЬНЫЙ таймаут (PutAttemptTimeout — requestTimeout каждой цели в
+    /// PoolBackupS3) + бюджет ВЫЗОВА (цели записи + 1) × таймаут цели: висящая
+    /// первая цель не отменяет перебор — фейловер доезжает до живой ноды.</summary>
     private static async Task PutWithRetryAsync(
-        IBackupS3 s3, TextWriter stdout, WalReceiverOptions o,
-        string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct)
+        IBackupS3 s3, WalSessionEvents events, WalReceiverOptions o,
+        string key, byte[] data, string sha256, TimeSpan retry, CancellationToken ct,
+        PoolExhaustionFlag exhaustion)
     {
         var callBudget = TimeSpan.FromTicks(PutAttemptTimeout.Ticks * (o.S3Endpoints.Count + 1));
+        var attempt = 0;
         while (true)
         {
+            attempt++;
             Result put;
-            using (var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            using (var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
-                attempt.CancelAfter(callBudget);
-                put = await s3.PutObjectAsync(key, data, sha256, attempt.Token);
+                attemptCts.CancelAfter(callBudget);
+                put = await s3.PutObjectAsync(key, data, sha256, attemptCts.Token);
             }
 
             if (put.IsSuccess)
+            {
+                events.PutSuccess?.Invoke();
+                if (exhaustion.IsSet)
+                {
+                    // Первый успешный put снимает флаг исчерпания (arch/19 §3).
+                    exhaustion.IsSet = false;
+                    events.PoolExhaustedChanged?.Invoke(false);
+                }
                 return;
-            if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal))
-                await stdout.WriteLineAsync(WalReceiverMarkers.PoolExhausted());
+            }
+
+            events.PutError?.Invoke();
+            if (attempt > 1)
+                events.PutRetry?.Invoke();
+            if (put.Error!.Message.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) && !exhaustion.IsSet)
+            {
+                exhaustion.IsSet = true;
+                events.PoolExhaustedChanged?.Invoke(true);
+            }
             await Task.Delay(retry, ct);
+        }
+    }
+
+    /// <summary>Ре-доклад инвентаря .history (t25, arch/19 §3): перечисляет
+    /// .history-файлы pg_wal своей ноды и кладёт в S3 wal/ отсутствующие —
+    /// страховка TLI-переходов вне окна стрима (промоут, пока приёмник не
+    /// стримил: после промоута файл лежит в pg_wal нового мастера, после
+    /// restore — в pgdata восстановленной ноды). Вне hot-path: один list
+    /// (перебор целей до успешного) + точечные одиночные put с SHA256;
+    /// идемпотентно (put только отсутствующих по list); любой отказ —
+    /// diagnostic-log, доставит следующий цикл подключения; фактов в
+    /// статус-ключ не пишет. delivered — опц. колбэк байт доставленных
+    /// history-объектов (counter bytes_delivered, arch/18 §2.8).</summary>
+    public static async Task RedeliverHistoryInventoryAsync(
+        IBackupS3 s3, string cluster, string shard, string pgWalDir,
+        Action<string>? diagnostic, CancellationToken ct,
+        Action<long>? delivered = null)
+    {
+        List<string> local;
+        try
+        {
+            // PG пишет .history как "<tli:x8>.history" (8 hex-цифр).
+            local = Directory.EnumerateFiles(pgWalDir, "*.history")
+                .Select(Path.GetFileName)
+                .OfType<string>()
+                .Where(n => n.Length == 16
+                    && uint.TryParse(n.AsSpan(0, 8),
+                        System.Globalization.NumberStyles.HexNumber, null, out _))
+                .ToList();
+        }
+        catch (Exception e)
+        {
+            // pg_wal недоступен — инвентаря нет, не ошибка приёмника.
+            diagnostic?.Invoke(
+                $"history inventory: enumerate {pgWalDir} failed: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+            return;
+        }
+
+        if (local.Count == 0)
+            return;
+
+        var listing = await s3.ListWalAsync(cluster, shard, ct: ct);
+        if (!listing.IsSuccess)
+        {
+            // list не прошёл — ре-доклад отложен до следующего цикла.
+            diagnostic?.Invoke(
+                $"history inventory: list wal/ failed: {listing.Error!.Message.Split('\n')[0]}");
+            return;
+        }
+
+        var remote = listing.Value.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
+        foreach (var name in local)
+        {
+            if (remote.Contains(name))
+                continue; // уже в архиве — дубль-put не нужен (идемпотентность)
+
+            try
+            {
+                var content = await File.ReadAllBytesAsync(Path.Combine(pgWalDir, name), ct);
+                var put = await s3.PutObjectAsync(
+                    $"{cluster}/{shard}/wal/{name}", content,
+                    Convert.ToHexString(SHA256.HashData(content)), ct);
+                if (put.IsSuccess)
+                    delivered?.Invoke(content.Length);
+                else
+                    diagnostic?.Invoke(
+                        $"history inventory: put {name} failed: {put.Error!.Message.Split('\n')[0]}");
+            }
+            catch (Exception e)
+            {
+                diagnostic?.Invoke(
+                    $"history inventory: put {name} failed: {e.GetType().Name}: {e.Message.Split('\n')[0]}");
+            }
         }
     }
 }

@@ -190,17 +190,8 @@ public class BackupVerifyProcessTests
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
                 (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0)]));
-        public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
-            => Task.FromResult(Result.Success());
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
 
         private static NotSupportedException NotSupported() => new("not used in the verify tests");
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();

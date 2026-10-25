@@ -15,8 +15,7 @@ namespace PgWorker.Backups.Process;
 
 // RestoreProcess (t05, arch/19 §3.5): машина восстановления шарда из бэкапа.
 // Поддерживается ТОЛЬКО в Mode=Plain (подсистема бэкапов plain-only с t02/t03;
-// swarm-драйвер джобы бэкапов не исполняет — прецедент
-// SwarmClusterDriver.EnsureBackupAgentAsync). Тик под клэймом <C>: активная
+// swarm-драйвер джобы бэкапов не исполняет). Тик под клэймом <C>: активная
 // заявка (максимум одна на шард) проводится по фазам
 // PLANNED (валидация: усыновление/полный/manifest/цепочка) →
 // RUNNING (демонтаж + ephemeral restore-джоб, Task 9) →

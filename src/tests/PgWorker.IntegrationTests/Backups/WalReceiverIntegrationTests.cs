@@ -10,11 +10,11 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции WAL-приёмника против живого PG + ownS3-ноды (t27 Ф2, docker, динамические
+// Интеграции WAL-приёмника против живого PG + ownS3-ноды (t25, docker, динамические
 // порты, guid-окружение OwnPostgres/OwnS3, полный teardown при любом исходе).
 // AC1: restart_lsn ≤ доставленного в S3 хвоста; AC6: обрыв S3 → backpressure →
 // восстановление без дыр; рестарт — дозасылка от хвоста; segment-size mismatch —
-// permanent (код 3).
+// исход FailedPermanent (состояние, не exit).
 // ВЕРДИКТ TIMELINE_HISTORY: Npgsql 10.0.3 ЭКСПОНИРУЕТ публичный API
 // ReplicationConnection.TimelineHistory(tli) (XML-doc + рефлексия пакета) —
 // NpgsqlXLogSource реализует ReadTimelineHistoryAsync через него; условный
@@ -78,7 +78,10 @@ public class WalReceiverIntegrationTests
 
     private static BackupS3 HostS3(OwnS3 s3Node) => new(s3Node.S3());
 
-    /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты).</summary>
+    /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты). Сессия
+    /// (t25): выход — только отмена (код 0, SIGTERM-семантика); внезапный исход
+    /// сессии — код 1 (фейл ассерта .Be(0) — неожиданное завершение ядра).
+    /// Диагностика ядра — в живой лог теста (TeeWriter).</summary>
     private async Task<(CancellationTokenSource Cts, Task<int> Run)> StartCoreAsync(
         OwnPostgres postgres, OwnS3 s3Node, string cluster, string shard)
     {
@@ -89,7 +92,23 @@ public class WalReceiverIntegrationTests
         var slots = new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options);
         var cts = new CancellationTokenSource();
         var stdout = new TeeWriter(_output);
-        var run = PgWorker.WalReceiver.WalReceiverCore.RunAsync(options, source, slots, s3, stdout, cts.Token);
+        var events = new PgWorker.WalReceiver.WalSessionEvents
+        {
+            Diagnostic = stdout.WriteLine,
+        };
+        var run = Task.Run<int>(async () =>
+        {
+            try
+            {
+                await PgWorker.WalReceiver.WalReceiverCore.RunSessionAsync(
+                    options, source, slots, s3, events, cts.Token);
+                return 1; // исход сессии до отмены — тесты трактуют как фейл
+            }
+            catch (OperationCanceledException)
+            {
+                return 0; // чистая отмена — прежний код 0
+            }
+        });
         return (cts, run);
     }
 
@@ -388,22 +407,22 @@ public class WalReceiverIntegrationTests
         var cluster = $"c{postgres.RunId[..8]}";
         var shard = "shard1";
 
-        // Act — запуск приёмника: сверка wal_segment_size → permanent-выход
+        // Act — запуск приёмника: сверка wal_segment_size → исход FailedPermanent
+        // (состояние, НЕ exit процесса — t25)
         var options = postgres.ReceiverOptions(
             s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         await using var s3 = HostS3(s3Node);
-        var stdout = new StringWriter();
-        var code = await PgWorker.WalReceiver.WalReceiverCore.RunAsync(
+        var diagnostics = new StringWriter();
+        var outcome = await PgWorker.WalReceiver.WalReceiverCore.RunSessionAsync(
             options,
             new PgWorker.WalReceiver.NpgsqlXLogSource(options),
             new PgWorker.WalReceiver.NpgsqlSlotPositionReader(options),
             s3,
-            stdout,
+            new PgWorker.WalReceiver.WalSessionEvents { Diagnostic = diagnostics.WriteLine },
             new CancellationTokenSource(TimeSpan.FromSeconds(30)).Token);
 
-        // Assert — код 3, result-маркер называет wal_segment_size
-        code.Should().Be(3);
-        stdout.ToString().Should().Contain("wal_segment_size");
-        stdout.ToString().Should().Contain("\"ok\":false");
+        // Assert — FailedPermanent, текст ошибки называет wal_segment_size
+        outcome.Kind.Should().Be(PgWorker.WalReceiver.WalSessionKind.FailedPermanent);
+        outcome.Error.Should().Contain("wal_segment_size");
     }
 }

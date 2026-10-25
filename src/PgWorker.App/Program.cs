@@ -305,13 +305,25 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         throw new ApplicationException(
             "PgWorker:Docker:ContourNetwork is not supported in Mode=Swarm — contour network mode is implemented for plain containers");
 
+    // Бэкап-цели приёмника WAL (t25, arch/19 §7): per-install bucket/CA — env
+    // ноды (NodeBackupEnv). Нечитаемый CA-файл при заданном пути — исключение
+    // при старте воркера = fail-fast (прецедент TLS-материалов, BackupCaPem).
+    // Осознанно НЕ зависит от Backups:Enabled: путь задан конфигом установки —
+    // битый файл это дефект инсталляции, а не «выключенной подсистемы»
+    // (выключенная подсистема с корректным путём читает файл без последствий);
+    // связка с Enabled прятала бы причину падения за режимом.
+    var nodeBackupEnv = new NodeBackupEnv(
+        Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
+        CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath));
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm requires PgWorker:Docker:SwarmManager");
         return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
             pgtuneExclude: pgtuneExclude,
-            restCertificates: sp.GetRequiredService<RestCertificateCache>());
+            restCertificates: sp.GetRequiredService<RestCertificateCache>(),
+            nodeBackupEnv: nodeBackupEnv);
     }
 
     var hosts = docker.Hosts
@@ -322,7 +334,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
         pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
         contourNetwork: docker.ContourNetwork is { Length: > 0 } ? docker.ContourNetwork : null,
-        restCertificates: sp.GetRequiredService<RestCertificateCache>());
+        restCertificates: sp.GetRequiredService<RestCertificateCache>(),
+        nodeBackupEnv: nodeBackupEnv);
 });
 
 
@@ -783,7 +796,9 @@ builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLo
     sp.GetRequiredService<PgWorker.Backups.Supervisor.BackupOrphanSweeper>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
     sp.GetRequiredService<HealthState>(),
-    sp.GetRequiredService<ILogger<PgWorker.App.Loops.BackupOrphanSweeperLoop>>()));
+    sp.GetRequiredService<ILogger<PgWorker.App.Loops.BackupOrphanSweeperLoop>>(),
+    sp.GetRequiredService<IEtcdGateway>(),
+    etcdEndpoints));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.

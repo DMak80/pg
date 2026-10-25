@@ -13,6 +13,7 @@
 # и протухший ключ мёртвой ноды «накрыл» бы чужую ноду (hasync валидирует
 # идентичность через GET /whoami — см. hasync.py).
 import base64
+import ipaddress
 import json
 import os
 import socket
@@ -32,6 +33,27 @@ PG = dict(
 )
 
 ETCD = os.getenv("ETCD_ENDPOINTS", "http://etcd:2379").rstrip("/")
+
+# Границы исходящих запросов (CWE-918): адресат — allowlist протокола и хоста
+# (контур etcd из env), для литерального IP — только loopback/private.
+ALLOWED_SCHEMES = {"http", "https"}
+ETCD_HOSTS = {urlparse(ETCD).hostname or ""}
+
+
+def _checked_url(url, allowed_hosts):
+    parts = urlparse(url)
+    if parts.scheme not in ALLOWED_SCHEMES or parts.username or parts.fragment:
+        raise ValueError(f"blocked url scheme/form: {url}")
+    host = parts.hostname or ""
+    if host not in allowed_hosts:
+        raise ValueError(f"blocked url host: {host}")
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return url  # DNS-имя контура — host уже в allowlist
+    if not (addr.is_loopback or addr.is_private):
+        raise ValueError(f"blocked non-private ip: {host}")
+    return url
 NODE_NAME = os.getenv("NODE_NAME", "")  # пусто = сайдкар без регистрации
 LEASE_TTL = 5         # ключ гаснет ≤5с после смерти ноды (P11: как в проде)
 KEEPALIVE_SEC = 1     # продлеваем lease в 5 раз чаще TTL — переживает 2–3 потери
@@ -49,7 +71,7 @@ def node_ip():
 
 def etcd_post(path, payload):
     req = urllib.request.Request(
-        ETCD + path, data=json.dumps(payload).encode(),
+        _checked_url(ETCD, ETCD_HOSTS) + path, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=5) as r:
         return json.load(r)

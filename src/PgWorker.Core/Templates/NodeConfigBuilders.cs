@@ -54,6 +54,13 @@ public static class InstallSecretsGuard
 /// </summary>
 public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, string RestPassword);
 
+/// <summary>Env бэкап-целей ноды для приёмника WAL (t25, arch/19 §7):
+/// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
+/// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
+/// env не ставится — приёмник старт-фейлится (подсистема выключена
+/// валидацией старта: Enabled=true ⇒ Bucket непустой).</summary>
+public sealed record NodeBackupEnv(string? Bucket, string? CaPem);
+
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
 /// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
@@ -119,6 +126,13 @@ public static class SpiloEnvBuilder
             ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
+            // Идентичность приёмника WAL (t25, arch/19 §3/§14 §2.1): СТРОГО
+            // всегда, независимо от Backups:Enabled — приёмник гейтится
+            // etcd-стоп-ключами; включение подсистемы не требует пересоздания нод.
+            ["PGW_BACKUP_CLUSTER"] = topology.Cluster,
+            ["PGW_BACKUP_SHARD"] = topology.Shard,
+            ["PGW_BACKUP_NODE"] = nodeName,
+
             // ENV lease-скрипта мастер-ключа (callback on_role_change, P11).
             ["PGW_ETCD"] = etcdUrls,
             ["PGW_MASTER_KEY"] = masterKey,
@@ -142,7 +156,9 @@ public static class SpiloEnvBuilder
                   connect_address: "{{nodeFullName}}:8008"
                   authentication:
                     username: {{RestRotation.RestUsername}}
-                    password: "{{rest.RestPassword}}"
+                    # значение БЕЗ кавычек: пароль — алфанумерик генератора
+                    # секретов (AppSecretGenerator, [A-Za-z0-9]{32}) — YAML-safe
+                    password: {{rest.RestPassword}}
                 bootstrap:
                   dcs:
                     ttl: {{PatroniTimings.Ttl}}

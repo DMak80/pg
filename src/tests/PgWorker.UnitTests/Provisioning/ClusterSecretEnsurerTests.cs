@@ -15,6 +15,18 @@ public class ClusterSecretEnsurerTests
     private static readonly ClusterConfig Config =
         new("shop", 4, "shop", null, ClusterState.Active, null, null);
 
+    // Пароль из config генерируется в рантайме: секрет не зашивается в исходник;
+    // поле переиспользуется всеми обращениями (сид config и сравнения).
+    private static readonly string FromConfigPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр.
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     private static ClusterSecretEnsurer Sut(Fakes.FakeEtcd etcd) => new(etcd, [Ep]);
 
     [Fact]
@@ -130,7 +142,7 @@ public class ClusterSecretEnsurerTests
         var config = Config with
         {
             BucketAdminUser = "ba_user",
-            BucketAdminPassword = "FromConfigPass0000000000000000000A",
+            BucketAdminPassword = FromConfigPassword,
         };
 
         // Act
@@ -139,9 +151,9 @@ public class ClusterSecretEnsurerTests
         // Assert — bucket_admin-ключи из config (не сгенерированы)
         result.IsSuccess.Should().BeTrue();
         etcd.Store["/clusters/shop/bucket_admin_user"].Value.Should().Be("ba_user");
-        etcd.Store["/clusters/shop/bucket_admin_password"].Value.Should().Be("FromConfigPass0000000000000000000A");
+        etcd.Store["/clusters/shop/bucket_admin_password"].Value.Should().Be(FromConfigPassword);
         result.Value.BucketAdmin.User.Should().Be("ba_user");
-        result.Value.BucketAdmin.Password.Should().Be("FromConfigPass0000000000000000000A");
+        result.Value.BucketAdmin.Password.Should().Be(FromConfigPassword);
     }
 
     [Fact]

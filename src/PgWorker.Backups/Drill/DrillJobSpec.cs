@@ -25,7 +25,7 @@ public static class DrillJobSpec
         {
             [Restore.RestoreJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
             [Restore.RestoreJobCommand.EnvS3AccessKey] = s3AccessKey,
-            [Restore.RestoreJobCommand.EnvS3SecretKey] = s3SecretKey,
+            [Restore.RestoreJobCommand.EnvS3Credentials] = s3SecretKey,
             [Restore.RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [Restore.RestoreJobCommand.EnvSrcPrefix] = $"{cluster}/{shard}",
             [Restore.RestoreJobCommand.EnvBackupId] = backupId,
