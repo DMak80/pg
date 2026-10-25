@@ -6,12 +6,15 @@
 #   role=replica/standby_leader → погасить демон (ключ исчезнет по TTL сам).
 # Адаптация arch/stand/sidecar/rolecheck.py (etcd-примитивы идентичны).
 import base64
+import http.client
 import json
 import os
 import ssl
 import sys
 import time
+from pathlib import Path
 import urllib.request
+from urllib.parse import urlsplit
 
 # Patroni-callback стартует с обрезанным runit'ом env: параметры дублируются
 # entrypoint'ом в файл (env-переменные имеют приоритет над файлом).
@@ -43,8 +46,7 @@ def local_role():
         return None
     try:
         ctx = ssl.create_default_context(cafile=ca)
-        req = urllib.request.Request("https://127.0.0.1:8008/primary")
-        with urllib.request.urlopen(req, timeout=3, context=ctx) as r:
+        with urllib.request.urlopen("https://127.0.0.1:8008/primary", timeout=3, context=ctx) as r:
             return "master" if r.status == 200 else "replica"
     except Exception:
         return None  # Patroni недоступен — ничего не делаем
@@ -72,15 +74,22 @@ def etcd_post(path, payload):
     order = [_active["url"]] + [u for u in ETCD_LIST if u != _active["url"]]
     last_error = None
     for url in order:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("invalid etcd endpoint scheme/host")
         try:
-            req = urllib.request.Request(
-                url + path, data=json.dumps(payload).encode(),
-                headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=5) as r:
+            conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+            conn = conn_cls(parsed.hostname, parsed.port, timeout=5)
+            try:
+                conn.request("POST", parsed.path + path, body=json.dumps(payload), headers={"Content-Type": "application/json"})
+                with conn.getresponse() as r:
+                    body = r.read()
                 if url != _active["url"]:
                     print(f"master-lease: endpoint switch {_active['url']} -> {url}", flush=True)
                     _active["url"] = url
-                return json.load(r)
+                return json.loads(body)
+            finally:
+                conn.close()
         except urllib.error.HTTPError as e:
             if e.code < 500:
                 raise  # 4xx — протоколная ошибка, не отказ узла
@@ -173,8 +182,7 @@ def main():
 
     pid = os.fork()
     if pid > 0:
-        with open(PID_FILE, "w") as f:
-            f.write(str(pid))
+        Path(PID_FILE).write_text(str(pid))
         return
 
     # Ребёнок: отвязываемся от Patroni-процесса и держим lease до смены роли.

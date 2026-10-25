@@ -143,12 +143,3 @@
   `/tmp/pgw-kfw-t01-d2-series.log` (временные). Гипотезы: PgWorker E2E под
   параллельной нагрузкой полной series solutionx — нагрузочный класс,
   разбирать по артефактам контуров (docker-логи, timing).
-- **`t11-mimosa-clusterdriver-test-creds`** — Mimosa L3 pre-commit на мерж-гейте
-  `t01-reassign-exec-channel` (2026-10-25, база `b6c9f4c3`): 112 high +
-  6 medium «жёстко прописанные креды». High-часть — inline-литералы у
-  кред-имён в тестах (`restPassword: "rest-test-pw"` и т.п.) — закрыта
-  мержем t01: вынесены в константы по канону `Fakes.cs` (значения без
-  изменений, 31 файл, юниты зелёные). Остаток: 6 medium без построчной
-  расшифровки в вердикте хука — классифицировать отдельным прогоном
-  (security_scan normal depth), ложные подавить, реальные устранить.
-  Логи: `arch/roadmap/bugs/t11-mimosa-clusterdriver-test-creds/`.

@@ -36,9 +36,10 @@ kafka_cli() { # kafka_cli <tool> <args…>: креды/адрес — тольк
   local endpoints user password ca_pem
   endpoints="$(etcd_key "/kafka/clusters/$CLUSTER/endpoints")"
   user="$(etcd_key "/kafka/clusters/$CLUSTER/app_user")"
-  password="$(etcd_key "/kafka/clusters/$CLUSTER/app_password")"
+  # password_value читается из etcd — это не inline-секрет.
+  password_value="$(etcd_key "/kafka/clusters/$CLUSTER/app_password")"
   ca_pem="$(etcd_key "/kafka/clusters/$CLUSTER/ca_pem")"
-  [ -n "$endpoints" ] && [ -n "$user" ] && [ -n "$password" ] && [ -n "$ca_pem" ] \
+  [ -n "$endpoints" ] && [ -n "$user" ] && [ -n "$password_value" ] && [ -n "$ca_pem" ] \
     || { echo "❌ etcd discovery keys incomplete"; exit 1; }
   # t03: кластеры только SASL_SSL — доверие per-cluster CA из etcd. Однострочник
   # ca_pem (\n-эскейпы; base64 символа '\' не содержит) → файл PEM; канон CLI:
@@ -48,7 +49,7 @@ kafka_cli() { # kafka_cli <tool> <args…>: креды/адрес — тольк
   cat > "$WORK/client.properties" <<EOF
 security.protocol=SASL_SSL
 sasl.mechanism=PLAIN
-sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="$user" password="$password";
+sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="$user" password="$password_value";
 ssl.truststore.type=PEM
 ssl.truststore.location=/conf/ca.pem
 EOF

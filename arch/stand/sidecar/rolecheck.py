@@ -15,10 +15,11 @@
 import base64
 import json
 import os
+import http.client
 import socket
 import threading
 import time
-import urllib.request
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -48,11 +49,17 @@ def node_ip():
 
 
 def etcd_post(path, payload):
-    req = urllib.request.Request(
-        ETCD + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.load(r)
+    parsed = urlsplit(ETCD)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("invalid etcd endpoint scheme/host")
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(parsed.hostname, parsed.port, timeout=5)
+    try:
+        conn.request("POST", parsed.path + path, body=json.dumps(payload), headers={"Content-Type": "application/json"})
+        with conn.getresponse() as r:
+            return json.load(r)
+    finally:
+        conn.close()
 
 
 def etcd_put_leased(key, value, lease_id):

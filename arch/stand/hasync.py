@@ -15,9 +15,11 @@
 import base64
 import json
 import os
+import ipaddress
+import http.client
 import socket
 import time
-import urllib.request
+from urllib.parse import urlsplit
 
 ETCD = os.getenv("ETCD_ENDPOINTS", "http://etcd:2379").rstrip("/")
 BACKEND = os.environ["BACKEND"]                 # напр. bk_master
@@ -38,12 +40,17 @@ def b64(s):
 
 
 def etcd_get(key):
-    req = urllib.request.Request(
-        ETCD + "/v3/kv/range",
-        data=json.dumps({"key": b64(key)}).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        kvs = json.load(r).get("kvs") or []
+    parsed = urlsplit(ETCD)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("invalid etcd endpoint scheme/host")
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(parsed.hostname, parsed.port, timeout=5)
+    try:
+        conn.request("POST", parsed.path + "/v3/kv/range", body=json.dumps({"key": b64(key)}), headers={"Content-Type": "application/json"})
+        with conn.getresponse() as r:
+            kvs = json.load(r).get("kvs") or []
+    finally:
+        conn.close()
     return base64.b64decode(kvs[0]["value"]).decode() if kvs else None
 
 
@@ -59,8 +66,14 @@ def hap(cmd):
 
 
 def whoami(ip):
-    with urllib.request.urlopen(f"http://{ip}:{WHOAMI_PORT}/whoami", timeout=3) as r:
-        return r.read().decode().strip()
+    ipaddress.ip_address(ip)  # только IP-литерал из etcd
+    conn = http.client.HTTPConnection(ip, WHOAMI_PORT, timeout=3)
+    try:
+        conn.request("GET", "/whoami")
+        with conn.getresponse() as r:
+            return r.read().decode().strip()
+    finally:
+        conn.close()
 
 
 def apply_addr(srv, ip, why=""):
