@@ -389,21 +389,25 @@ public class E2eWalStreamTliScenarios
                 .Should().BeGreaterThanOrEqualTo(0,
                     "delivery caught up: last chain segment ≥ control-insert segment (§3.7 inv.5)");
 
-            // 9.4 (t25-ревью): факт tli-прыжка — в agent-ключе ПРИЁМНИКА нового
-            // мастера (живая публикация из стрима, arch/19 §4): from — хвостовой
-            // сегмент старого TLI в S3, to — сегмент прыжка, tli — новый таймлайн.
-            // Факт персистентен в живом процессе приёмника (до следующего
-            // прыжка) — читаем поллингом после сходимости.
-            var agentKeyPath = $"/pgworker/backups/{cluster}/shard1/agent/{newMasterNode}";
+            // 9.4 (t25-ревью): факт tli-прыжка наблюдаем в статус-ключе живого
+            // приёмника (arch/19 §4): from — хвостовой сегмент старого TLI в S3,
+            // to — сегмент прыжка, tli — новый таймлайн. Факт персистентен в
+            // живом процессе до следующего прыжка, но нода-свидетель не
+            // детерминирована: после failover/rebuild-гонки приёмники стартуют
+            // с разными хвостами S3, прыжок делает тот, чей tail ниже точки
+            // форка и чья досыпка получила 58P01. Поэтому читаем оба
+            // agent-ключа и ассертер наблюдаемый прыжок.
+            var agentPrefixPath = $"/pgworker/backups/{cluster}/shard1/agent/";
             var jumpSeen = await E2eFixture.WaitForAsync(async () =>
             {
-                var read = await G.GetAsync(Endpoint, agentKeyPath, ct);
-                return read.Value is { } kv
-                       && kv.Value.Contains("\"tli_jump\":", StringComparison.Ordinal);
+                var read = await G.RangeAsync(Endpoint, agentPrefixPath, ct);
+                return read.Value is { } keys
+                       && keys.Any(kv => kv.Value.Contains("\"tli_jump\":", StringComparison.Ordinal));
             }, TimeSpan.FromSeconds(60), ct);
             jumpSeen.Should().BeTrue(
-                "the tli_jump fact must be observable in the master receiver agent key");
-            var agentRaw = (await G.GetAsync(Endpoint, agentKeyPath, ct)).Value!.Value;
+                "the tli_jump fact must be observable in a live receiver agent key");
+            var agentRaw = (await G.RangeAsync(Endpoint, agentPrefixPath, ct)).Value!
+                .First(kv => kv.Value.Contains("\"tli_jump\":", StringComparison.Ordinal)).Value;
             using var jumpDoc = System.Text.Json.JsonDocument.Parse(agentRaw);
             var jump = jumpDoc.RootElement.GetProperty("tli_jump");
             jump.GetProperty("from").GetString().Should().StartWith("00000001",
