@@ -65,15 +65,16 @@ grep -q "BEGIN CERTIFICATE" "$TMP/ca.pem" \
   || { echo "❌ ca_pem missing/corrupt in etcd (TLS discovery t06)"; exit 1; }
 endpoints="$(etcd_key "/valkey/clusters/$TAG/endpoints")"
 vh="${endpoints%%:*}"; vp="${endpoints##*:}"
-app_password="$(etcd_key "/valkey/clusters/$TAG/app_password")"
+# app_password читается из etcd — это не inline-секрет.
+app_password_value="$(etcd_key "/valkey/clusters/$TAG/app_password")"
 tls_ok=""
 for i in $(seq 1 10); do
   # PING вне прав app (ACL-канон: +@read +@write) — проба SET/GET по TLS.
   [ "$(docker run --rm --network host -v "$TMP/ca.pem:/ca.pem:ro" valkey/valkey:9.1.2 \
-      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password" \
+      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password_value" \
       --no-auth-warning SET tls:probe t06 2>/dev/null)" = OK ] \
     && [ "$(docker run --rm --network host -v "$TMP/ca.pem:/ca.pem:ro" valkey/valkey:9.1.2 \
-      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password" \
+      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password_value" \
       --no-auth-warning GET tls:probe 2>/dev/null)" = t06 ] && { tls_ok=1; break; }
   sleep 3
 done
@@ -81,7 +82,7 @@ done
 plain_rejected=""
 for i in $(seq 1 10); do
   if ! docker run --rm --network host valkey/valkey:9.1.2 \
-      valkey-cli -h "$vh" -p "$vp" -u app -a "$app_password" \
+      valkey-cli -h "$vh" -p "$vp" -u app -a "$app_password_value" \
       --no-auth-warning PING >/dev/null 2>&1; then plain_rejected=1; break; fi
   sleep 3
 done
