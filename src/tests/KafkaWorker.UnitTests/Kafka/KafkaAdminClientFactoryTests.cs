@@ -239,18 +239,45 @@ public class KafkaAdminClientFactoryTests
         client.ActiveOperations.Should().Be(0);
     }
 
-    // AAA: бюджет дрейна — по исчерпании принудительный dispose (не ждать
-    // вечно), операция при этом остаётся при своём исходе.
+    // AAA: замена/вытеснение — бюджет дрейна НЕ превращается в dispose под
+    // операцией: предупреждение, затем ожидание фактического нуля.
     [Fact]
-    public async Task DisposeWhenIdle_BudgetExhausted_ForcesDispose()
+    public async Task DisposeWhenIdle_ReplacementBudgetExhausted_DoesNotForceDispose()
     {
         // Arrange: операция висит дольше бюджета.
         var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
         var gate = new TaskCompletionSource<Result>();
         var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
 
-        // Act: дрейн с коротким бюджетом.
-        var drain = client.DisposeWhenIdleAsync(TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+        // Act: дрейн замены с коротким бюджетом.
+        var drain = client.DisposeWhenIdleAsync(
+            TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken, forceOnBudgetExhausted: false);
+        await Task.Delay(400, TestContext.Current.CancellationToken);
+
+        // Assert: dispose не исполнился — операция жива и не сорвана ERR__DESTROYED.
+        drain.IsCompleted.Should().BeFalse("replacement drain waits for the actual idle fact");
+        client.DisposeNativeCount.Should().Be(0, "native handle must not be destroyed under a pending operation");
+
+        // Cleanup: операция завершается — дрейн диспозит по факту нуля.
+        gate.TrySetResult(Result.Success());
+        await operation;
+        await drain;
+        client.DisposeNativeCount.Should().Be(1);
+    }
+
+    // AAA: бюджет дрейна остановки host'а — по исчерпании принудительный dispose
+    // (детерминированный shutdown), операция при этом остаётся при своём исходе.
+    [Fact]
+    public async Task DisposeWhenIdle_ShutdownBudgetExhausted_ForcesDispose()
+    {
+        // Arrange: операция висит дольше бюджета.
+        var client = new KafkaAdminClient("h:9092", "app", "pw", caPem: null, TimeSpan.FromSeconds(3));
+        var gate = new TaskCompletionSource<Result>();
+        var operation = client.RunUnderOperationAsync(_ => gate.Task, TestContext.Current.CancellationToken);
+
+        // Act: дрейн остановки с коротким бюджетом.
+        var drain = client.DisposeWhenIdleAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken, forceOnBudgetExhausted: true);
         await drain;
 
         // Assert: принудительный dispose по бюджету; операция не сорвана
@@ -375,5 +402,26 @@ public class KafkaAdminClientFactoryTests
             $"{(late.IsSuccess ? "success" : late.Error!.Message)}");
         client.DisposeNativeCount.Should().Be(1, "client still gets disposed after the gap");
         client.ActiveOperations.Should().Be(0, "no pending operations left");
+    }
+
+    // AAA: отказ протокольной операции (без нативного клиента) не инвалидирует
+    // кэш — short-lived соединение не является отказом кэшируемого rd_kafka.
+    [Fact]
+    public async Task LocalOperationFailure_DoesNotInvalidateCachedClient()
+    {
+        // Arrange: клиент в кэше.
+        var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
+        var first = (KafkaAdminClient)factory.Create("h:9092", "app", "pw", caPem: null);
+
+        // Act: протокольный каркас завершается исключением.
+        var failed = await first.RunLocalUnderOperationAsync(
+            () => throw new ApplicationException("protocol submit failed"), TestContext.Current.CancellationToken);
+        var second = factory.Create("h:9092", "app", "pw", caPem: null);
+
+        // Assert: операция Failed, но запись кэша остаётся здоровой.
+        failed.IsSuccess.Should().BeFalse("the local operation failure is still reported");
+        failed.Error!.Message.Should().Contain("protocol submit failed");
+        second.Should().BeSameAs(first, "a protocol-only failure must not recreate the cached native client");
+        factory.CreatedClients.Should().Be(1);
     }
 }

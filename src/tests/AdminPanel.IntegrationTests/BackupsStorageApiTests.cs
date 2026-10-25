@@ -20,13 +20,16 @@ public sealed class BackupsCollection;
 // на класс не более 5 логинов (LoginRateLimiter.MaxAttempts).
 internal static class BackupsLogin
 {
+    // Тестовый пароль админа хоста фабрики (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     public static async Task<HttpClient> LoginAsync(BackupsWebFactory factory)
     {
         factory.EnsureBuilt();
         var client = factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
         return client;

@@ -3,9 +3,6 @@ using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-/// <summary>Целевой assignment одной партиции (элемент reassignment.json).</summary>
-public sealed record ReassignMove(string Topic, int Partition, IReadOnlyList<int> Replicas);
-
 /// <summary>
 /// Чистые функции планов reassignment (arch/16 §5 I; spec t02 §3.3/§3.4):
 /// drain (замещение реплик drain-брокера с minISR-guard'ом и автоматическим

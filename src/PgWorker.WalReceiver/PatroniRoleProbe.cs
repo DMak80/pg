@@ -4,7 +4,7 @@ namespace PgWorker.WalReceiver;
 /// GET https://127.0.0.1:8008/primary → 200 ⇒ master; /sync → 200 ⇒ sync;
 /// любой не-200/ошибка ⇒ none (переходное окно/async). Доверие — CA REST-Api
 /// ноды (env SSL_RESTAPI_CA, PEM материализуется во временный файл ОДИН раз за
-/// процесс и удаляется после загрузки сертификата — прецедент master-lease.py;
+/// процесс и удаляется после загрузки сертификата — прецедент pgwnodetool;
 /// 127.0.0.1 в SAN серта — arch/14 §2.4 п.6). Long-running демон: CA и
 /// HttpClient кешируются на процесс — проба не создаёт файлы/транспорты.</summary>
 public sealed class PatroniRoleProbe
@@ -67,7 +67,7 @@ public sealed class PatroniRoleProbe
     /// <summary>HttpClient пробы: ОДИН на процесс (handler доверяет текущему
     /// CA-сертификату через замыкание на кеш — смена PEM подхватывается).
     /// Живёт до завершения процесса (дemon-lifetime, явного dispose не требует).
-    /// SAN-пиннинг loopback (arch/14 §2.4 п.6, прецедент master-lease.py):
+    /// SAN-пиннинг loopback (arch/14 §2.4 п.6, прецедент pgwnodetool):
     /// цепочка валидна И сертификат несёт IP 127.0.0.1 в SAN — валидная
     /// цепочка чужого серта не принимается.</summary>
     private static HttpClient GetProbeClient()

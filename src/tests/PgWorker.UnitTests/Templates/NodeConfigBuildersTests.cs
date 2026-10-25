@@ -131,17 +131,17 @@ public class NodeConfigBuildersTests
 
         // Assert: секция restapi верхнего уровня — connect_address DNS-именем
         // ноды (SAN серта; перекрывает шаблонный IP), authentication — пара
-        // per-cluster (пароль БЕЗ кавычек: значение алфанумерик — YAML-safe);
+        // per-cluster (пароль в двойных кавычках — YAML-safe);
         // listen НЕ переопределён (шаблонный :8008 корректен).
         spilo.Should().Contain("restapi:");
         spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
         spilo.Should().Contain("authentication:");
         spilo.Should().Contain("username: patroni");
-        spilo.Should().Contain($"password: {rest.RestPassword}");
+        spilo.Should().Contain($"password: \"{rest.RestPassword}\"");
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
-        spilo.Should().Contain("on_role_change: /home/postgres/master-lease.py");
+        spilo.Should().Contain("on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
     }
 
     [Fact]

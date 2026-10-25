@@ -86,11 +86,12 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 21 | WalReceiver → PgWorker | etcd-ключ приёмника `/pgworker/backups/<C>/<X>/agent/<N>` (lease-живость, фазы, `tli_jump`, `pool_exhausted` — arch/19 §3/§4); воркер читает, приёмник пишет только свой ключ | канон |
 | 22 | PgWorker → backup-джобы (full/verify/drill/restore) | docker logs (result-JSON) | отклонение → backup `t24-job-status-channel` |
 | 23 | PgWorker → PostgreSQL-ноды | docker exec: `pg_dump --schema-only` (DDL-переезда), правка `pg_hba` перед бэкапом, управление wal-слотом | отклонение → pgworker `t03-orchestration-exec-transition` |
-| 24 | KafkaWorker → Kafka-контейнеры | docker exec (kafka-команды reassign) | отклонение → kafkaworker `t01-reassign-exec-channel` |
+| 24 | KafkaWorker → Kafka (reassignment партиций) | Kafka-протокол: Describe — AdminClient, подача — AlterReassignments/KIP-455 (миниклиент, arch/16 §2.4) | канон |
 
 ## 5. Отклонения и переход
 
 Отклонения №22–24 — исторические механизмы, канонизированные до этого
+Отклонения №21–23 — исторические механизмы, канонизированные до этого
 документа; их перевод на штатные каналы оформлен в `arch/roadmap/`:
 
 - **№22** — `backup.md` `t24-job-status-channel`: backup-джобы (full/
@@ -100,8 +101,6 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 - **№23** — `pgworker.md` `t03-orchestration-exec-transition`: каждый
   exec-сценарий переходит на сетевой канал (SQL/HTTP/джоба) либо получает
   отдельный апрув владельца.
-- **№24** — `kafkaworker.md` `t01-reassign-exec-channel`: kafka-команды
-  reassign — через Kafka-протокол/админ-клиент вместо exec.
 
 Новые отклонения не вводятся без явного апрува владельца проекта (§2).
 Расхождение кода с этим реестром — блокирующее замечание ревью.

@@ -1,5 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Provisioning.Kafka;
+using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -38,6 +39,11 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
     // Lifecycle-журнал вызовов (t01): создание/удаление + транзиенты.
     public List<(string Topic, int Partitions, short ReplicationFactor, IReadOnlyDictionary<string, string>? Configs)> CreatedTopics = [];
     public List<string> DeletedTopics = [];
+
+    // Reassignment (t01): журнал подач + переключатель отказа (юзает
+    // PartitionReassignerProcessTests).
+    public List<ReassignMove> SubmittedMoves = [];
+    public bool FailSubmits;
     public int CreateTopicFailCount { get; set; }
     public int DeleteTopicFailCount { get; set; }
     private int _createFails, _deleteFails;
@@ -190,6 +196,14 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         DeletedAcls.Add(acls);
         Acls = Acls.Where(a => !acls.Contains(a)).ToList();
         return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct)
+    {
+        SubmittedMoves.AddRange(moves);
+        return Task.FromResult(FailSubmits
+            ? Result.Failed(new ApplicationException("kafka: submit failed"))
+            : Result.Success());
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

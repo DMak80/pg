@@ -11,7 +11,7 @@ Docker-стенд для проверки решений реестра риск
   s1a  postgres:18 мастер                      s2a  postgres:18 мастер
   s1b  postgres:18 реплика (phys. слот)        s2b  postgres:18 реплика (phys. слот)
   hc1a/hc1b  сайдкары: эмуляция Patroni REST /primary   hc2a/hc2b — симметрично
-  (python+pg8000, netns нод — HAProxy          + регистрация адреса ноды в etcd
+  (pgwnodetool, netns нод — HAProxy           + регистрация адреса ноды в etcd
    видит их как порты 8008 нод)
   hap1  HAProxy :5432 → текущий мастер         hap2 — симметрично
   (option httpchk GET /primary)

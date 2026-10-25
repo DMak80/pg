@@ -74,23 +74,28 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   || { echo "❌ SdGenerator publish failed"; exit 1; }
 echo ">>> [PHASE] SdGenerator publish ready ($(date +%H:%M:%S))"
 
-# Образ PG-ноды с приёмником WAL (t25, arch/19 §3/§14 §2.1): publish НА ХОСТЕ
-# self-contained (RID хоста сборки, без trimming) → docker build пакует вывод
-# в /opt/pgw-wal (канон «publish на хосте, в контейнер — артефакты»; сборка не
-# «тихая» — [PHASE] и тайминг; приёмник живёт ВНУТРИ контейнера ноды).
+# Образ PG-ноды с приёмником WAL и служебной CLI (t25, arch/19 §3/§14 §2.1):
+# publish НА ХОСТЕ self-contained (RID хоста сборки, без trimming) → docker
+# build пакует выводы (канон «publish на хосте, в контейнер — артефакты»;
+# сборка не «тихая» — [PHASE] и тайминг; оба процесса живут ВНУТРИ контейнера).
 case "$(uname -m)" in
-  arm64|aarch64) WAL_RID=linux-arm64 ;;
-  *)             WAL_RID=linux-x64 ;;
+  arm64|aarch64) NODE_RID=linux-arm64 ;;
+  *)             NODE_RID=linux-x64 ;;
 esac
-echo ">>> [PHASE] publish PgWorker.WalReceiver self-contained $WAL_RID ($(date +%H:%M:%S))"
+echo ">>> [PHASE] publish PgWorker.WalReceiver self-contained $NODE_RID ($(date +%H:%M:%S))"
 dotnet publish "$ROOT/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" \
-  -c Release -r "$WAL_RID" --self-contained -o "$ROOT/artifacts/node-wal" --nologo \
+  -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-wal" --nologo \
   || { echo "❌ WalReceiver publish failed"; exit 1; }
-echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal) ($(date +%H:%M:%S))"
+echo ">>> [PHASE] publish PgWorker.NodeTools self-contained $NODE_RID ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj" \
+  -c Release -r "$NODE_RID" --self-contained -o "$ROOT/artifacts/node-tools" --nologo \
+  || { echo "❌ NodeTools publish failed"; exit 1; }
+echo ">>> [PHASE] pgworker-node:dev build (WAL_PUBLISH_DIR=artifacts/node-wal, NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools) ($(date +%H:%M:%S))"
 docker build -q -f "$ROOT/docker/node/Dockerfile" \
-  --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" -t pgworker-node:dev "$ROOT" \
+  --build-arg "WAL_PUBLISH_DIR=artifacts/node-wal" \
+  --build-arg "NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools" -t pgworker-node:dev "$ROOT" \
   || { echo "❌ image pgworker-node:dev build failed"; exit 1; }
-echo "  image pgworker-node:dev ready (walreceiver inside)"
+echo "  image pgworker-node:dev ready (walreceiver + pgwnodetool inside)"
 
 # S3Worker (arch/24): publish НА ХОСТЕ → образ publish-COPY (канон
 # E2E-образов; сборка не «тихая» — [PHASE] и тайминг).

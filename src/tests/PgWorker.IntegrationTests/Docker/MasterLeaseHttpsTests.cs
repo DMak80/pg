@@ -7,12 +7,12 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// master-lease.py: local_role() по https /primary с верификацией серта по
-// ca-файлу ноды (t22, arch/14 §2.1: REST :8008 — TLS-only, IP 127.0.0.1 —
-// в SAN). Контейнер python:3.12-alpine: мини-https-сервер на 127.0.0.1:8008
-// (серт тестового CA), скрипт запускается БЕЗ аргументов (ветка on_start →
-// local_role); etcd мёртв — демон не может писать ключ, факт распознавания
-// роли — pid-файл демона (master) либо тихий выход (replica/no-ca).
+// pgwnodetool master-lease: local_role() по https /primary с верификацией
+// серта по ca-файлу ноды (t22, arch/14 §2.1: REST :8008 — TLS-only, IP
+// 127.0.0.1 — в SAN). Alpine-раннер содержит мини-https-сервер на
+// 127.0.0.1:8008; CLI запускается без роли (ветка on_start → local_role);
+// etcd мёртв — демон не может писать ключ, факт распознавания роли —
+// pid-файл демона (master) либо тихий выход (replica/no-ca).
 // Гейт PGW_TEST_DOCKER=1 (DockerTrait).
 [Collection(NonE2eCollection.Name)]
 public class MasterLeaseHttpsTests
@@ -56,13 +56,12 @@ public class MasterLeaseHttpsTests
 
     private static async Task<IContainer> StartRunnerAsync(string tag, string dir)
     {
-        var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
+        var toolsDir = await MasterLeaseNodeTools.EnsureAsync(TestContext.Current.CancellationToken);
         var runner = new ContainerBuilder(PythonImage)
             .WithName($"pgw-it-mlhttps-{tag}")
             .WithCommand("sleep", "600")
             .WithBindMount(dir, "/tmp/pki", AccessMode.ReadOnly)
-            .WithBindMount(Path.Combine(root, "docker", "node", "master-lease.py"),
-                "/tmp/master-lease.py", AccessMode.ReadOnly)
+            .WithBindMount(toolsDir, "/tmp/pgw-tools", AccessMode.ReadOnly)
             .WithEnvironment("PGW_ETCD", "http://host.docker.internal:1")
             .WithEnvironment("PGW_MASTER_KEY", $"/pgw-it/mlhttps-{tag}/master")
             .WithEnvironment("PGW_NODE_HOST", "node1a")
@@ -110,9 +109,11 @@ public class MasterLeaseHttpsTests
         await E2eFixture.RunProcessAsync("docker",
             ["exec", runner.Name, "touch", "/tmp/primary-flag"], ct);
 
-        // Act: on_start без аргументов — local_role по https с ca-файлом ноды.
+        // Act: on_start без роли — local_role по https с ca-файлом из env-file.
         await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
-            "PGW_NODE_CA=/tmp/pki/ca.pem python3 -u /tmp/master-lease.py >/tmp/lease.log 2>&1"], ct);
+            "printf 'PGW_NODE_CA=/tmp/pki/ca.pem\\n' >/tmp/pgw-node.env && "
+            + "/tmp/pgw-tools/pgwnodetool master-lease --env-file /tmp/pgw-node.env "
+            + ">/tmp/lease.log 2>&1"], ct);
 
         // Assert: роль master распознана — демон стартовал (pid-файл существует;
         // ключ не пишется — etcd мёртв, это ожидаемо).
@@ -139,9 +140,11 @@ public class MasterLeaseHttpsTests
         await using var runner = await StartRunnerAsync(tag, dir);
         await StartServerAsync(runner);
 
-        // Act: on_start без аргументов.
+        // Act: on_start без роли.
         await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
-            "PGW_NODE_CA=/tmp/pki/ca.pem python3 -u /tmp/master-lease.py >/tmp/lease.log 2>&1"], ct);
+            "printf 'PGW_NODE_CA=/tmp/pki/ca.pem\n' >/tmp/pgw-node.env && "
+            + "/tmp/pgw-tools/pgwnodetool master-lease --env-file /tmp/pgw-node.env "
+            + ">/tmp/lease.log 2>&1"], ct);
 
         // Assert: роль replica — демона нет (pid-файл не появился).
         await Task.Delay(1500, ct);
@@ -162,9 +165,10 @@ public class MasterLeaseHttpsTests
         using var __ = new DirCleanup(dir);
         await using var runner = await StartRunnerAsync(tag, dir);
 
-        // Act: on_start без аргументов и без ca-файла.
+        // Act: on_start без роли и без ca-файла.
         await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
-            "python3 -u /tmp/master-lease.py >/tmp/lease.log 2>&1"], ct);
+            ": >/tmp/pgw-node.env && /tmp/pgw-tools/pgwnodetool master-lease "
+            + "--env-file /tmp/pgw-node.env >/tmp/lease.log 2>&1"], ct);
 
         // Assert: local_role → None (http-запроса нет) — лог-ошибка и выход.
         var log = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);

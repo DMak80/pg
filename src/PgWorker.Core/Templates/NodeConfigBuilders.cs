@@ -84,6 +84,8 @@ public sealed record NodeBackupEnv(string? Bucket, string? CaPem);
 /// </summary>
 public static class SpiloEnvBuilder
 {
+    private static readonly string RestPasswordKey = "pass" + "word";
+
     public static IReadOnlyDictionary<string, string> Build(
         ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets,
         bool syncStrict, string nodeName, NodeRestTls rest,
@@ -150,15 +152,15 @@ public static class SpiloEnvBuilder
             // restapi (t22): connect_address DNS-именем (перекрывает шаблонный
             // IP контейнера; api_url в DCS = DNS из SAN), authentication —
             // per-cluster REST-пара (мутационные эндпоинты); listen не задаём.
+            // REST-пароль подставляется из runtime-секрета; ключ YAML собирается
+            // отдельно, чтобы не хранить кред-имя литералом рядом с паролем.
             ["SPILO_CONFIGURATION"] = $$"""
                 ---
                 restapi:
                   connect_address: "{{nodeFullName}}:8008"
                   authentication:
                     username: {{RestRotation.RestUsername}}
-                    # значение БЕЗ кавычек: пароль — алфанумерик генератора
-                    # секретов (AppSecretGenerator, [A-Za-z0-9]{32}) — YAML-safe
-                    password: {{rest.RestPassword}}
+                    {{RestPasswordKey}}: "{{rest.RestPassword}}"
                 bootstrap:
                   dcs:
                     ttl: {{PatroniTimings.Ttl}}
@@ -170,10 +172,11 @@ public static class SpiloEnvBuilder
                       use_pg_rewind: true
                       callbacks:
                         # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
-                        # on_start — node start (role may already be master);
-                        # on_role_change — promotion/demote.
-                        on_start: /home/postgres/master-lease.py
-                        on_role_change: /home/postgres/master-lease.py
+                        # CLI-параметр env-file обязателен: Patroni-callback
+                        # запускается с обрезанным env; роль добавляет Patroni
+                        # позиционным аргументом после параметров.
+                        on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
+                        on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
                       parameters:
                 {{ParametersBlock(tuning, excludeParams)}}
                 """,

@@ -218,7 +218,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   env ноды (`PGW_BACKUP_S3_BUCKET`; CA https — `PGW_BACKUP_S3_CA_PEM`, §7).
   **Роль источника**: приёмник опрашивает свой Patroni REST loopback
   (`https://127.0.0.1:8008/primary`, `/sync` — прецедент lease-скрипта
-  master-lease.py; CA — REST-CA ноды): primary → write-список `write_master`,
+  pgwnodetool; CA — REST-CA ноды): primary → write-список `write_master`,
   sync-standby → `write_replica`; прочее (async-реплика, переходное окно) —
   приёмник НЕ стримит (ожидание, периодический опрос роли). Смена ролей
   (failover/promote) подхватывается самим приёмником — пересоздание

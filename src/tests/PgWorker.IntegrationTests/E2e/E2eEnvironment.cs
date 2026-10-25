@@ -1843,34 +1843,41 @@ public sealed class E2eEnvironment : IAsyncDisposable
             E2eFixture.StaticPhase($"e2e-image {RunnerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             // Образ узла (задача 25): двухшаговая сборка (t25, arch/19 §3) —
-            // (1) publish приёмника WAL self-contained НА ХОСТЕ (RID хоста,
-            // без trimming) → artifacts/e2e/node-wal; (2) docker build ноды с
-            // --build-arg WAL_PUBLISH_DIR (в образ — только publish-вывод,
-            // канон «publish на хосте, в контейнер — артефакты»). docker-cache
-            // делает повторные сборки инкрементальными; фазы — с [PHASE]-меткой
-            // и таймингом (канон e2e-launch).
-            var walDir = Path.Combine(_root, "artifacts", "e2e", "node-wal");
-            var walRid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
+            // (1) publish приёмника WAL и NodeTools self-contained НА ХОСТЕ
+            // (RID хоста, без trimming) → artifacts/e2e/node-wal|node-tools;
+            // (2) docker build ноды с publish-аргументами (в образ — только
+            // publish-вывод, канон «publish на хосте, в контейнер — артефакты»).
+            var nodeRid = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture
                 == System.Runtime.InteropServices.Architecture.Arm64 ? "linux-arm64" : "linux-x64";
+            var walDir = Path.Combine(_root, "artifacts", "e2e", "node-wal");
+            var toolsDir = Path.Combine(_root, "artifacts", "e2e", "node-tools");
             sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish WalReceiver self-contained {walRid} (host)…");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish WalReceiver self-contained {nodeRid} (host)…");
             // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
             // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
             // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
             await E2eFixture.RunProcessAsync("dotnet",
             [
                 "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
-                "-c", "Release", "-r", walRid, "--self-contained", "-o", walDir, "--nologo",
+                "-c", "Release", "-r", nodeRid, "--self-contained", "-o", walDir, "--nologo",
             ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
                 logFile: "/tmp/pgw-e2e-static-process-node-wal-publish.log");
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: WalReceiver publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish NodeTools self-contained {nodeRid} (host)…");
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{_root}/src/PgWorker.NodeTools/PgWorker.NodeTools.csproj",
+                "-c", "Release", "-r", nodeRid, "--self-contained", "-o", toolsDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-e2e-static-process-node-tools-publish.log");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: publish ready in {sw.Elapsed.TotalSeconds:F0} s — docker build (context root)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile",
-                "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal", "-t", NodeImage, _root,
+                "--build-arg", "WAL_PUBLISH_DIR=artifacts/e2e/node-wal",
+                "--build-arg", "NODE_TOOLS_PUBLISH_DIR=artifacts/e2e/node-tools", "-t", NodeImage, _root,
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: "/tmp/pgw-e2e-static-process-node-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver inside)");
+            E2eFixture.StaticPhase($"e2e-image {NodeImage}: ready in {sw.Elapsed.TotalSeconds:F0} s (walreceiver and pgwnodetool inside)");
 
             _staticReady = true;
         }

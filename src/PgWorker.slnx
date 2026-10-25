@@ -6,6 +6,7 @@
         <Project Path="Shared.Core/Shared.Core.csproj" />
         <Project Path="Shared.Etcd/Shared.Etcd.csproj" />
         <Project Path="Shared.Tls/Shared.Tls.csproj" />
+        <Project Path="PgWorker.NodeTools/PgWorker.NodeTools.csproj" />
         <Project Path="Shared.Docker/Shared.Docker.csproj" />
         <Project Path="Metrics.SdGenerator/Metrics.SdGenerator.csproj" />
     </Folder>

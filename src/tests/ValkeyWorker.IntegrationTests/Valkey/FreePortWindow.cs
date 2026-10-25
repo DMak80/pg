@@ -3,16 +3,16 @@ using System.Net.Sockets;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// Рантайм-выбор свободного окна хост-портов для публикации valkey-нод (копия
-// kfw; AGENTS.md «порты docker-контейнеров в тестах — динамические»): окно
+// Рантайм-выбор свободного окна хост-портов для публикации valkey-нод
+// (AGENTS.md «порты docker-контейнеров в тестах — динамические»): окно
 // зондится TcpListener'ом на старте фикстуры — никаких литералов вида 17000 и
 // никакой зависимости от поднятого dev-стенда (стендовая зона valkey-копии
-// 15000–18000: 15xxx pg / 16xxx kfw / 17xxx valkey-стенды) и от параллельных
-// прогонов тестов.
+// 15000–18000) и от параллельных прогонов тестов. Зоны тестов не пересекаются
+// между сборками: kafka — 21–26xxx, valkey — 26–31xxx, S3 — 31–41xxx.
 internal static class FreePortWindow
 {
-    // Поиск выше порт-зоны dev-стенда: 21000+.
-    private const int SearchFrom = 21000;
+    // Valkey-зона тестов: 26000–31000. Ниже — 21000–26000 у kafka-тестов.
+    private const int SearchFrom = 26000;
 
     private const int SearchTo = 31000;
 

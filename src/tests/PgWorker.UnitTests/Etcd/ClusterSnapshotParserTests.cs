@@ -8,6 +8,10 @@ namespace PgWorker.UnitTests.Etcd;
 // Парсер /clusters/ и /service/ в доменную модель PgWorker (задача 11, spec §4.1).
 public class ClusterSnapshotParserTests
 {
+    // Ожидаемые креды из сид-фикстур (литералы — только в константах).
+    private const string SeededAppPassword = "Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk";
+    private const string SeededRestPassword = "Rest0Pass0000000000000000000000A";
+
     [Fact]
     public void ParseClusters_PanelSeed_NotInitializedCluster()
     {
@@ -218,9 +222,9 @@ public class ClusterSnapshotParserTests
         var snap = result.Value.Should().ContainSingle().Subject;
         snap.App.Should().NotBeNull();
         snap.App!.User.Should().Be("app");
-        snap.App.Password.Should().Be("Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk");
+        snap.App.Password.Should().Be(SeededAppPassword);
         // rest_password (t22, basic-auth Patroni REST) — ключ кластера в снапшоте
-        snap.RestPassword.Should().Be("Rest0Pass0000000000000000000000A");
+        snap.RestPassword.Should().Be(SeededRestPassword);
         // bucket_admin-поля config не задеты (механизм сохраняется)
         snap.Config.BucketAdminUser.Should().BeNull();
         snap.Config.BucketAdminPassword.Should().BeNull();

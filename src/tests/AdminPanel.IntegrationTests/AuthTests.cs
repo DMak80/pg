@@ -134,6 +134,10 @@ public sealed class TestEtcdGateway : IEtcdGateway
 // attribute-DI не допускает второй хост в процессе (spec t02 §10, §14).
 public sealed class AuthWebFactory : WebApplicationFactory<Program>
 {
+    // Тестовые креды админа хоста (литералы — только в константах).
+    internal const string AdminPassword = "adminpw";
+    internal const string WrongPassword = "wrong";
+
     public FixedTimeProvider Time { get; } = new();
 
     // t08: build хоста под замком с очисткой статического кеша сборок attribute-DI —
@@ -146,7 +150,7 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
     {
         // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec t02 §10, §14).
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
-        builder.UseSetting("AdminPanel:Auth:Password", "adminpw");
+        builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");
 
         // Подмена времени ПОСЛЕ композиции Program (ConfigureTestServices):
@@ -208,7 +212,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -227,7 +231,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "wrong" },
+            new { username = "admin", password = AuthWebFactory.WrongPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -245,7 +249,7 @@ public class AuthTests
         // Act
         var response = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "root", password = "adminpw" },
+            new { username = "root", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -277,11 +281,11 @@ public class AuthTests
         for (var i = 0; i < 5; i++)
             await client.PostAsJsonAsync(
                 "/api/auth/login",
-                new { username = "admin", password = "wrong" },
+                new { username = "admin", password = AuthWebFactory.WrongPassword },
                 TestContext.Current.CancellationToken);
         var sixth = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "wrong" },
+            new { username = "admin", password = AuthWebFactory.WrongPassword },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -310,7 +314,7 @@ public class AuthTests
         using var client = _factory.CreateClient();
         await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Act
@@ -330,7 +334,7 @@ public class AuthTests
         using var client = _factory.CreateClient();
         await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AuthWebFactory.AdminPassword },
             TestContext.Current.CancellationToken);
 
         // Act

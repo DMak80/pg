@@ -19,6 +19,9 @@ namespace AdminPanel.IntegrationTests;
 [Collection("workers-cert")]
 public class WorkersApiTests(WorkersCertFixture fx)
 {
+    // Тестовый пароль админа хоста фабрики (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     private readonly string _etcd = fx.Etcd.Endpoint;
 
     // Свежий клиент + логин (rate-limiter окно двигаем, cookie в клиенте).
@@ -28,7 +31,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
         var client = fx.Factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
         return client;

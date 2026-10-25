@@ -227,9 +227,9 @@ F (§5).
 [19-backups.md](19-backups.md) §3: физическая репликация `127.0.0.1:5432`
 своей ноды → S3-пул; self-contained .NET-бинарь в образе, отдельного
 контейнера/образа нет) +
-`supervisord` + python-скрипт мастер-lease (эталон —
-[stand/sidecar/rolecheck.py](stand/sidecar/rolecheck.py): `/v3/lease/grant` +
-keepalive цикл 1 с, TTL 5 с). Внутри контейнера всё общается через localhost —
+`supervisord` + .NET CLI `pgwnodetool master-lease` (параметр
+`--env-file /home/postgres/pgw-node.env`): `/v3/lease/grant` +
+keepalive цикл 1 с, TTL 5 с. Внутри контейнера всё общается через localhost —
 работает и в plain, и в swarm (у swarm нет host-network и «подов»; sidecar'ы
 отдельными сервисами громоздки). Приёмник WAL идентичность получает env'ом
 ноды (`PGW_BACKUP_CLUSTER/SHARD/NODE` + per-install `PGW_BACKUP_S3_BUCKET`,
@@ -1695,7 +1695,7 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 |---|---|---|
 | R1 | Образ `pgworker-node` зависит от бинарников pg_doorman (молодой проект, P16) | версия — пин; при недоступности — `EnableDoorman=false` (узел без пулера) |
 | R2 | Swarm `publish mode=host` + уникальные порты — нестандартный путь; коллизии при ручных контейнерах | portalloc проверяет фактическую занятость перед созданием; коллизия → сдвиг порта + перегенерация DSN |
-| R3 | Spilo callback (master-lease) — сторонний скрипт; отказ = протухший master-ключ | P11-сверка MasterKeyReconciler восстанавливает ключ по Patroni REST — двойной контур |
+| R3 | Spilo callback (master-lease) — отдельный процесс; отказ = протухший master-ключ | P11-сверка MasterKeyReconciler восстанавливает ключ по Patroni REST — двойной контур |
 | R4 | Эвакуация «пустыми схемами» теряет записи умершего с момента смерти | осознанное аварийное поведение; фиксируется в journal; слияние после возврата — только ручной runbook, автоматизация отвергнута (решение 2026-09-28: воркер не знает семантику схем `bucket_%`, конфликт двух живых веток записей неразрешим автоматически; данные до момента смерти доступны на дисках карантина и в бэкапах — arch/19) |
 | R5 | Ноды одного шарда на одном хосте (hosts < replicas) — пониженная отказоустойчивость | требование «если топология позволяет»; факт отражается в плане и виден оператору |
 | R6 | Гонка «панель пишет TO_REMOVE посреди provisioning» | перечитывание config перед фазой; смена state → перепланирование, контейнеры подчистит deprovisioning |
