@@ -74,8 +74,8 @@ public static class MasterLeaseCommand
         {
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
         };
         start.ArgumentList.Add("master-lease");
         start.ArgumentList.Add("--env-file");
@@ -132,8 +132,9 @@ public static class MasterLeaseCommand
                 $"https://{PatroniHost}:8008/primary", CancellationToken.None);
             return response.StatusCode == HttpStatusCode.OK;
         }
-        catch
+        catch (Exception e)
         {
+            Console.Error.WriteLine($"master-lease: probe failed — {e.GetType().Name}: {e.Message}");
             return false;
         }
     }

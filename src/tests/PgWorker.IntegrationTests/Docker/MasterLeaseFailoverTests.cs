@@ -19,7 +19,7 @@ namespace PgWorker.IntegrationTests.Docker;
 public class MasterLeaseFailoverTests
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    private const string PythonImage = "python:3.12-alpine";
+    private const string NodeToolsImage = "mcr.microsoft.com/dotnet/runtime:10.0";
     private const int LeaseTtlSec = 5;
 
     [Fact]
@@ -47,7 +47,7 @@ public class MasterLeaseFailoverTests
             .Build();
         var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
         var toolsDir = await MasterLeaseNodeTools.EnsureAsync(ct);
-        var runner = new ContainerBuilder(PythonImage)
+        var runner = new ContainerBuilder(NodeToolsImage)
             .WithName($"pgw-it-mlrun-{tag}")
             .WithCommand("sleep", "600")
             .WithBindMount(toolsDir, "/tmp/pgw-tools", AccessMode.ReadOnly)

@@ -4,6 +4,7 @@ using DotNet.Testcontainers.Containers;
 using PgWorker.Core.Templates;
 using PgWorker.IntegrationTests.E2e;
 using Xunit;
+using HostConfig = global::Docker.DotNet.Models.HostConfig;
 
 namespace PgWorker.IntegrationTests.Docker;
 
@@ -17,6 +18,7 @@ namespace PgWorker.IntegrationTests.Docker;
 [Collection(NonE2eCollection.Name)]
 public class MasterLeaseHttpsTests
 {
+    private const string NodeToolsImage = "mcr.microsoft.com/dotnet/runtime:10.0";
     private const string PythonImage = "python:3.12-alpine";
 
     // Проба готовности: код /primary (503 — тоже живой ответ; urllib кидает
@@ -54,35 +56,49 @@ public class MasterLeaseHttpsTests
         srv.serve_forever()
         """;
 
-    private static async Task<IContainer> StartRunnerAsync(string tag, string dir)
+    private sealed record HttpsRunners(IContainer Runner, IContainer Python);
+
+    private static async Task<HttpsRunners> StartRunnersAsync(string tag, string dir)
     {
-        var toolsDir = await MasterLeaseNodeTools.EnsureAsync(TestContext.Current.CancellationToken);
-        var runner = new ContainerBuilder(PythonImage)
+        var ct = TestContext.Current.CancellationToken;
+        var toolsDir = await MasterLeaseNodeTools.EnsureAsync(ct);
+        var runner = new ContainerBuilder(NodeToolsImage)
             .WithName($"pgw-it-mlhttps-{tag}")
             .WithCommand("sleep", "600")
-            .WithBindMount(dir, "/tmp/pki", AccessMode.ReadOnly)
             .WithBindMount(toolsDir, "/tmp/pgw-tools", AccessMode.ReadOnly)
+            .WithBindMount(dir, "/tmp/pki", AccessMode.ReadOnly)
             .WithEnvironment("PGW_ETCD", "http://host.docker.internal:1")
             .WithEnvironment("PGW_MASTER_KEY", $"/pgw-it/mlhttps-{tag}/master")
             .WithEnvironment("PGW_NODE_HOST", "node1a")
             .WithEnvironment("PGW_DOORMAN_PORT", "6432")
             .Build();
-        await runner.StartAsync(TestContext.Current.CancellationToken);
-        return runner;
+        await runner.StartAsync(ct);
+
+        // Python-sidecar в netns runner'а: https-сервер слушает 127.0.0.1:8008,
+        // pgwnodetool из runner'а видит тот же loopback.
+        var python = new ContainerBuilder(PythonImage)
+            .WithName($"pgw-it-mlhttps-srv-{tag}")
+            .WithCommand("sleep", "600")
+            .WithCreateParameterModifier(p =>
+                (p.HostConfig ??= new HostConfig()).NetworkMode = $"container:{runner.Name}")
+            .WithBindMount(dir, "/tmp/pki", AccessMode.ReadOnly)
+            .Build();
+        await python.StartAsync(ct);
+        return new HttpsRunners(runner, python);
     }
 
-    private static async Task StartServerAsync(IContainer runner)
+    private static async Task StartServerAsync(IContainer python)
     {
         var ct = TestContext.Current.CancellationToken;
         // exec -d: сервер — долгоживущий процесс контейнера (detached).
         await E2eFixture.RunProcessAsync("docker",
-            ["exec", "-d", runner.Name, "python3", "-u", "/tmp/pki/srv.py"], ct);
+            ["exec", "-d", python.Name, "python3", "-u", "/tmp/pki/srv.py"], ct);
         var up = await E2eFixture.WaitForAsync(async () =>
         {
             try
             {
                 var probe = await E2eFixture.RunProcessAsync("docker",
-                    ["exec", runner.Name, "python3", "/tmp/pki/probe.py"], ct);
+                    ["exec", python.Name, "python3", "/tmp/pki/probe.py"], ct);
                 return probe.Trim() is "200" or "503";
             }
             catch (ApplicationException)
@@ -104,10 +120,14 @@ public class MasterLeaseHttpsTests
         // отвечает 200 (нода — мастер).
         var dir = await MaterializePkiAsync(tag, "pgw-it-mlhttps-a", ct);
         using var __ = new DirCleanup(dir);
-        await using var runner = await StartRunnerAsync(tag, dir);
-        await StartServerAsync(runner);
-        await E2eFixture.RunProcessAsync("docker",
-            ["exec", runner.Name, "touch", "/tmp/primary-flag"], ct);
+        var (runner, python) = await StartRunnersAsync(tag, dir);
+        try
+        {
+            await StartServerAsync(python);
+            // Флаг виден python-серверу только в его собственном FS
+            // (sidecar делит с runner'ом сеть, но не файловую систему).
+            await E2eFixture.RunProcessAsync("docker",
+                ["exec", python.Name, "touch", "/tmp/primary-flag"], ct);
 
         // Act: on_start без роли — local_role по https с ca-файлом из env-file.
         await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
@@ -123,8 +143,14 @@ public class MasterLeaseHttpsTests
                 "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
             return outp.Trim() == "yes";
         }, TimeSpan.FromSeconds(10), ct);
-        started.Should().BeTrue("local_role must return master on https /primary 200 " +
-            "(logs: docker exec … cat /tmp/lease.log)");
+            started.Should().BeTrue("local_role must return master on https /primary 200 " +
+                "(logs: docker exec … cat /tmp/lease.log)");
+        }
+        finally
+        {
+            await python.DisposeAsync();
+            await runner.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -137,11 +163,13 @@ public class MasterLeaseHttpsTests
         // Arrange: сервер без флага → /primary 503 (нода — реплика).
         var dir = await MaterializePkiAsync(tag, "pgw-it-mlhttps-b", ct);
         using var __ = new DirCleanup(dir);
-        await using var runner = await StartRunnerAsync(tag, dir);
-        await StartServerAsync(runner);
+        var (runner, python) = await StartRunnersAsync(tag, dir);
+        try
+        {
+            await StartServerAsync(python);
 
-        // Act: on_start без роли.
-        await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
+            // Act: on_start без роли.
+            await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
             "printf 'PGW_NODE_CA=/tmp/pki/ca.pem\n' >/tmp/pgw-node.env && "
             + "/tmp/pgw-tools/pgwnodetool master-lease --env-file /tmp/pgw-node.env "
             + ">/tmp/lease.log 2>&1"], ct);
@@ -150,7 +178,13 @@ public class MasterLeaseHttpsTests
         await Task.Delay(1500, ct);
         var pid = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
             "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
-        pid.Trim().Should().Be("no", "the replica does not start the master-key daemon");
+            pid.Trim().Should().Be("no", "the replica does not start the master-key daemon");
+        }
+        finally
+        {
+            await python.DisposeAsync();
+            await runner.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -163,19 +197,26 @@ public class MasterLeaseHttpsTests
         // Arrange: контейнер без https-сервера; PGW_NODE_CA не задан.
         var dir = await MaterializePkiAsync(tag, "pgw-it-mlhttps-c", ct);
         using var __ = new DirCleanup(dir);
-        await using var runner = await StartRunnerAsync(tag, dir);
+        var (runner, python) = await StartRunnersAsync(tag, dir);
+        try
+        {
+            // Act: on_start без роли и без ca-файла.
+            await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
+                ": >/tmp/pgw-node.env && /tmp/pgw-tools/pgwnodetool master-lease "
+                + "--env-file /tmp/pgw-node.env >/tmp/lease.log 2>&1"], ct);
 
-        // Act: on_start без роли и без ca-файла.
-        await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
-            ": >/tmp/pgw-node.env && /tmp/pgw-tools/pgwnodetool master-lease "
-            + "--env-file /tmp/pgw-node.env >/tmp/lease.log 2>&1"], ct);
-
-        // Assert: local_role → None (http-запроса нет) — лог-ошибка и выход.
-        var log = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);
-        log.Should().Contain("PGW_NODE_CA is not set");
-        var pid = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
-            "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
-        pid.Trim().Should().Be("no");
+            // Assert: local_role → None (http-запроса нет) — лог-ошибка и выход.
+            var log = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);
+            log.Should().Contain("PGW_NODE_CA is not set");
+            var pid = await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c",
+                "test -f /tmp/master-lease.pid && echo yes || echo no"], ct);
+            pid.Trim().Should().Be("no");
+        }
+        finally
+        {
+            await python.DisposeAsync();
+            await runner.DisposeAsync();
+        }
     }
 
     // Материализация PKI: CA + серт ноды (SAN 127.0.0.1) + скрипт сервера.
