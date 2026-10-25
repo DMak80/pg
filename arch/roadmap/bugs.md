@@ -103,17 +103,6 @@
   `arch/roadmap/bugs/t05-kfw-metrics-workerseries-flake/` (выжимка).
   Гипотезы: срез метрик до первого reconcile-тика под параллельным стартом
   — разобрать синхронизацию среза/тика.
-- **`t08-valkey-metricsdomain-flake`** — живой кластер Valkey без словарей:
-  `ValkeyWorker.IntegrationTests.Api.MetricsDomainTests.Metrics_
-  LiveCluster_All15DictionaryNames` — FAIL 1 м 44 с (серия
-  `FullyQualifiedName~IntegrationTests`, 2026-10-24, HEAD `7448fdd1`).
-  Команда серии — та же (см. t06). Ожидаемое: 15 словарей в метриках живого
-  кластера. Наблюдаемое:
-  фейл ассерта словарей (текст — в логе серии); в следующей полной серии
-  (d2-series) тест зелёный — флейк. Логи:
-  `arch/roadmap/bugs/t06-valkey-metricsdomain-flake/` (выжимка). Гипотезы:
-  тайминг-зависимый срез под нагрузкой серии.
-
 - **`t10-pgw-e2e-series-fails`** — пачка красных PgWorker.IntegrationTests
   E2E в полных сериях solutionx (2026-10-24, команда — та же, см. t06):
   серия A2 (HEAD `7448fdd1`) — 17
