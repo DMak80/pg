@@ -28,6 +28,10 @@ public sealed class SecurityMigrationCollection : ICollectionFixture<KafkaCluste
 [Collection(SecurityMigrationCollection.Name)]
 public class SecurityMigrationTests(KafkaClusterFixture fixture)
 {
+    // Легаси-креды премиграционного кластера (литералы — только в константах).
+    private const string LegacyAppPassword = "LegacyAppPassword0123456789";
+    private const string LegacyInterPassword = "LegacyInterPassword0123456789AB";
+
     [Fact]
     public async Task Migration_PlainToTls_EndpointsDataLive_AppWorksAfter()
     {
@@ -42,7 +46,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
             "controller", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/app_user", "app", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/app_password",
-            "LegacyAppPassword0123456789", null, ct);
+            LegacyAppPassword, null, ct);
         var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
         var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
@@ -78,7 +82,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
             SecurityProtocol = SecurityProtocol.SaslPlaintext,
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = "app",
-            SaslPassword = "LegacyAppPassword0123456789",
+            SaslPassword = LegacyAppPassword,
         };
         var deadline = DateTimeOffset.UtcNow.AddSeconds(120);
         using (var plainAdmin = new AdminClientBuilder(plainConfig).Build())
@@ -111,7 +115,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
             SecurityProtocol = SecurityProtocol.SaslPlaintext,
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = "app",
-            SaslPassword = "LegacyAppPassword0123456789",
+            SaslPassword = LegacyAppPassword,
         };
         using (var producer = new ProducerBuilder<Null, string>(legacyProducerConfig).Build())
             (await producer.ProduceAsync(topic, new Message<Null, string> { Value = legacyMessage }, ct)).Status
@@ -213,7 +217,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
     private static IReadOnlyDictionary<string, string> LegacyPlainEnv(
         string cluster, string broker, int clientPort)
     {
-        var interPassword = "LegacyInterPassword0123456789AB";
+        var interPassword = LegacyInterPassword;
         return new Dictionary<string, string>
         {
             ["CLUSTER_ID"] = KafkaWorker.Core.Templates.NodeEnvBuilder.ClusterId(cluster),
@@ -230,10 +234,10 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
             ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN",
             ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] =
                 "org.apache.kafka.common.security.plain.PlainLoginModule required "
-                + $"username=\"inter\" password=\"{interPassword}\" user_inter=\"{interPassword}\" user_app=\"LegacyAppPassword0123456789\";",
+                + $"username=\"inter\" password=\"{interPassword}\" user_inter=\"{interPassword}\" user_app=\"{LegacyAppPassword}\";",
             ["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"] =
                 "org.apache.kafka.common.security.plain.PlainLoginModule required "
-                + "user_app=\"LegacyAppPassword0123456789\";",
+                + $"user_app=\"{LegacyAppPassword}\";",
             ["KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR"] = "1",
             ["KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR"] = "1",
             ["KAFKA_TRANSACTION_STATE_LOG_MIN_ISR"] = "1",

@@ -11,6 +11,9 @@ namespace AdminPanel.IntegrationTests;
 [Collection("api")]
 public class SpaHostingTests
 {
+    // Тестовый пароль админа (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     private readonly AuthWebFactory _factory;
 
     public SpaHostingTests(AuthWebFactory factory) => _factory = factory;
@@ -40,7 +43,7 @@ public class SpaHostingTests
         using var client = _factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
 

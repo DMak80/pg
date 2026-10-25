@@ -14,6 +14,9 @@ namespace KafkaWorker.UnitTests.App;
 // самонаблюдение LastSuccess, пропуск неподнятых и не-Active кластеров.
 public sealed class KafkaMetricsCollectorTests
 {
+    // Тестовый кред снапшота (литералы — только в константах).
+    private const string TestPassword = "secret";
+
     // Настраиваемый фейк IKafkaAdminClient: ответы по группе, ошибки по флагу.
     private sealed class FakeAdmin : IKafkaAdminClient
     {
@@ -135,7 +138,7 @@ public sealed class KafkaMetricsCollectorTests
 
     private static KafkaClusterSnapshot Snapshot(
         string cluster, string? state = null, string? endpoints = "kafka:9092",
-        string? user = "app", string? password = "secret")
+        string? user = "app", string? password = TestPassword)
         => new(
             cluster,
             new KafkaClusterConfig(3, 3, 2, 6, 604800000, null, state),

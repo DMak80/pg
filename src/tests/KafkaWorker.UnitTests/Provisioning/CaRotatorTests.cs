@@ -14,6 +14,8 @@ public class CaRotatorTests
 {
     private const string Ep = "http://etcd:2379";
     private const string Cluster = "events";
+    private const string TestAppPassword = "app-pw";
+    private const string TestAdminPassword = "admin-pw";
 
     private static readonly ProvisioningOptions Options =
         new(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0");
@@ -39,8 +41,8 @@ public class CaRotatorTests
         ],
         [], [], 0,
         Endpoints: "h1:16001,h1:16002",
-        AppUser: "app", AppPassword: "app-pw",
-        AdminUser: "admin", AdminPassword: "admin-pw",
+        AppUser: "app", AppPassword: TestAppPassword,
+        AdminUser: "admin", AdminPassword: TestAdminPassword,
         CaPem: caPem, CaKey: caKey);
 
     private static FakeKafkaAdminClient ReadyAdmin(int brokers = 2) => new()

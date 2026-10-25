@@ -57,6 +57,9 @@ internal static class PanelHostBuilder
 // закрепляет байндинг).
 public sealed class BackupsWebFactory : WebApplicationFactory<Program>
 {
+    // Тестовый пароль админа хоста (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     /// <summary>Endpoint etcd-контейнера сценария: тест-класс ставит в своём
     /// конструкторе (фикстуры уже инициализированы) — хост строится лениво
     /// при первом EnsureBuilt/LoginAsync.</summary>
@@ -98,7 +101,7 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     {
         // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec t02 §10).
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
-        builder.UseSetting("AdminPanel:Auth:Password", "adminpw");
+        builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");
 
         // EtcdOptions.Endpoints — массив: лист "0" биндится в string[].

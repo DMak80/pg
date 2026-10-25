@@ -11,6 +11,10 @@ namespace AdminPanel.UnitTests;
 // Тесты constant-time проверки учётных данных админа (spec t02 §9.1).
 public class AdminAuthenticatorTests
 {
+    // Тестовые креды (литералы — только в константах).
+    private const string TestPassword = "s3cret";
+    private const string PlainPassword = "plain";
+
     private static AdminAuthenticator Make(AuthOptions options)
         => new(Options.Create(options), NullLogger<AdminAuthenticator>.Instance);
 
@@ -26,10 +30,10 @@ public class AdminAuthenticatorTests
     public void PlainPassword_ValidCredentials_ReturnsTrue()
     {
         // Arrange
-        var authenticator = Make(new AuthOptions { Username = "admin", Password = "s3cret" });
+        var authenticator = Make(new AuthOptions { Username = "admin", Password = TestPassword });
 
         // Act
-        var ok = authenticator.Authenticate("admin", "s3cret");
+        var ok = authenticator.Authenticate("admin", TestPassword);
 
         // Assert
         ok.Should().BeTrue();
@@ -39,7 +43,7 @@ public class AdminAuthenticatorTests
     public void PlainPassword_WrongPassword_ReturnsFalse()
     {
         // Arrange
-        var authenticator = Make(new AuthOptions { Username = "admin", Password = "s3cret" });
+        var authenticator = Make(new AuthOptions { Username = "admin", Password = TestPassword });
 
         // Act
         var ok = authenticator.Authenticate("admin", "wrong");
@@ -52,10 +56,10 @@ public class AdminAuthenticatorTests
     public void WrongUsername_ReturnsFalse()
     {
         // Arrange
-        var authenticator = Make(new AuthOptions { Username = "admin", Password = "s3cret" });
+        var authenticator = Make(new AuthOptions { Username = "admin", Password = TestPassword });
 
         // Act
-        var ok = authenticator.Authenticate("root", "s3cret");
+        var ok = authenticator.Authenticate("root", TestPassword);
 
         // Assert
         ok.Should().BeFalse();
@@ -68,13 +72,13 @@ public class AdminAuthenticatorTests
         var authenticator = Make(new AuthOptions
         {
             Username = "admin",
-            Password = "plain",
+            Password = PlainPassword,
             PasswordHash = MakeHash("hashed", [1, 2, 3], 1000),
         });
 
         // Act / Assert
         authenticator.Authenticate("admin", "hashed").Should().BeTrue();
-        authenticator.Authenticate("admin", "plain").Should().BeFalse();
+        authenticator.Authenticate("admin", PlainPassword).Should().BeFalse();
     }
 
     [Fact]
@@ -84,11 +88,11 @@ public class AdminAuthenticatorTests
         var authenticator = Make(new AuthOptions
         {
             Username = "admin",
-            PasswordHash = MakeHash("s3cret", [9, 8, 7, 6, 5], 2000),
+            PasswordHash = MakeHash(TestPassword, [9, 8, 7, 6, 5], 2000),
         });
 
         // Act / Assert
-        authenticator.Authenticate("admin", "s3cret").Should().BeTrue();
+        authenticator.Authenticate("admin", TestPassword).Should().BeTrue();
         authenticator.Authenticate("admin", "other").Should().BeFalse();
     }
 
@@ -126,7 +130,7 @@ public class AdminAuthenticatorTests
     public void EmptyUsernameAndPassword_Input_ReturnsFalse()
     {
         // Arrange
-        var authenticator = Make(new AuthOptions { Username = "admin", Password = "s3cret" });
+        var authenticator = Make(new AuthOptions { Username = "admin", Password = TestPassword });
 
         // Act / Assert: пустые входы не совпадают с конфигом.
         authenticator.Authenticate(null, null).Should().BeFalse();

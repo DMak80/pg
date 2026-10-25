@@ -21,6 +21,9 @@ namespace AdminPanel.IntegrationTests;
 // сняты) → стаб IWorkerApiGateway (коды/тела/ProblemDetails API воркера 1:1).
 public sealed class S3ApiFactory : WebApplicationFactory<Program>
 {
+    // Тестовый пароль админа хоста (литералы — только в константах).
+    internal const string AdminPassword = "adminpw";
+
     public string EtcdEndpoint { get; set; } = "";
 
     public FixedTimeProvider Time { get; } = new();
@@ -43,7 +46,7 @@ public sealed class S3ApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
-        builder.UseSetting("AdminPanel:Auth:Password", "adminpw");
+        builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");
         if (EtcdEndpoint.Length > 0)
             builder.UseSetting("AdminPanel:Etcd:Endpoints:0", EtcdEndpoint);
@@ -150,7 +153,7 @@ public class S3ApiTests(S3ApiFixture fx)
         var client = fx.Factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = S3ApiFactory.AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
         return client;
@@ -280,7 +283,7 @@ public class S3ApiTests(S3ApiFixture fx)
                 factory.Time.Utc += TimeSpan.FromSeconds(61);
                 var client = factory.CreateClient();
                 await client.PostAsJsonAsync("/api/auth/login",
-                    new { username = "admin", password = "adminpw" }, ct);
+                    new { username = "admin", password = S3ApiFactory.AdminPassword }, ct);
 
                 // Act: мутация при пустом WorkerEndpoints снапшота.
                 var response = await client.DeleteAsync(

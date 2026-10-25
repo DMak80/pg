@@ -10,6 +10,9 @@ namespace AdminPanel.UnitTests;
 // пароль из настроек, read-only + TargetSessionAttributes, толерантность к null-полям.
 public class SqlConnectionFactoryTests
 {
+    // Тестовый кред (литералы — только в константах).
+    private const string TestPassword = "secret";
+
     private static ShardInfo Shard() => new(
         "s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
         ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", [], null);
@@ -34,7 +37,7 @@ public class SqlConnectionFactoryTests
     public void Build_MergesPassword()
     {
         // Arrange
-        var withPassword = new ProbesOptions { Password = "secret" };
+        var withPassword = new ProbesOptions { Password = TestPassword };
         var withoutPassword = new ProbesOptions { Password = "" };
 
         // Act
@@ -42,7 +45,7 @@ public class SqlConnectionFactoryTests
         var absent = SqlProbe.BuildConnectionString(Shard(), withoutPassword);
 
         // Assert: пустой пароль — ключа нет (стенд trust, spec §3.6).
-        present.Password.Should().Be("secret");
+        present.Password.Should().Be(TestPassword);
         absent.Password.Should().BeNullOrEmpty();
     }
 

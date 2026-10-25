@@ -29,6 +29,9 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
+    // REST-пароль key-0 восстанавливаемого кластера (литералы — только в константах).
+    private const string LegacyRestPassword = "Key0Pass00000000000000000000000A";
+
     // ── Хелперы Arrange ──
 
     // Активный кластер c1/shard1 с канонической нодой shard1a.
@@ -36,7 +39,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
         [new ShardSpec(shard, 1, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running)])],
-        [], RestPassword: "Key0Pass00000000000000000000000A");
+        [], RestPassword: LegacyRestPassword);
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
@@ -435,7 +438,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         [new ShardSpec(shard, 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running),
              new NodeSpec(shard, "shard1b", NodeState.Running)])],
-        [], RestPassword: "Key0Pass00000000000000000000000A");
+        [], RestPassword: LegacyRestPassword);
 
     private async Task SeedTwoNodeAllocAsync()
     {
@@ -840,7 +843,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
         // t22: без окна ротации — ключ кластера (эффективная пара restore-пути)
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("Key0Pass00000000000000000000000A");
+        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(LegacyRestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
     }

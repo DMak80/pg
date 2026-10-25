@@ -15,6 +15,10 @@ namespace ValkeyWorker.UnitTests.App;
 // без portalloc, advertised-приоритет хоста, консервативные null-поля, дефолт <=0.
 public sealed class ValkeyMetricsCollectorTests
 {
+    // Тестовые креды снапшота (литералы — только в константах).
+    private const string TestAdminPassword = "secret";
+    private const string TestAppPassword = "app-secret";
+
     // Фейк RESP-клиента: INFO-ответы по (host, port) + журнал вызовов.
     private sealed class FakeValkey : IValkeyConnection
     {
@@ -47,11 +51,11 @@ public sealed class ValkeyMetricsCollectorTests
 
     // Снапшот Active-кластера c1/node1 (RUNNING) с admin-кредами.
     private static ValkeyClusterSnapshot Snap(string cluster = "c1", string? state = null,
-        string? adminUser = "admin", string? adminPassword = "secret")
+        string? adminUser = "admin", string? adminPassword = TestAdminPassword)
         => new(cluster,
             new ValkeyClusterConfig(1, 536870912, "allkeys-lru", 1756500000, state),
             new Dictionary<string, ValkeyNodeSnapshot> { ["node1"] = new("node1", "RUNNING", null) },
-            Endpoints: "dockhost:17001", AppUser: "app", AppPassword: "app-secret",
+            Endpoints: "dockhost:17001", AppUser: "app", AppPassword: TestAppPassword,
             AdminUser: adminUser, AdminPassword: adminPassword,
             CaPem: null, CaKey: null, UnknownKeys: [], ParseErrors: []);
 

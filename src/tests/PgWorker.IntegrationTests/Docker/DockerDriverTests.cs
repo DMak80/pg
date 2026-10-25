@@ -14,6 +14,9 @@ public class DockerDriverTests
 
     private const string Host = "local";
 
+    // Тестовый REST-пароль ноды (литералы — только в константах).
+    private const string RestTestPassword = "rest-test-pw";
+
     private static readonly DockerEngineFactory Factory = new();
 
     // Уникальный суффикс прогона: параллельные запуски не конфликтуют по именам.
@@ -112,8 +115,8 @@ public class DockerDriverTests
         var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
 
         // Act — повторный Ensure с тем же именем
-        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
-        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
+        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
         await using var engine = NewEngine();
         var list = await engine.ListContainersAsync(ContainerName(cluster), all: true, CancellationToken.None);
 
@@ -136,7 +139,7 @@ public class DockerDriverTests
         await CleanupAsync(cluster);
         var driver = NewDriver();
         var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
-        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: RestTestPassword, ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
         var removed = await driver.RemoveNodeAsync(cluster, "s1", "n1", CancellationToken.None);

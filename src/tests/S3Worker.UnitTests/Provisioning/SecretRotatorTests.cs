@@ -18,6 +18,7 @@ public class SecretRotatorTests
     private const string Prefix = "/s3worker";
     private const string OldUser = "old-root";
     private const string NewUser = "new-root";
+    private const string RootPassword = "root-password-fixed";
 
     // getenv-профиль store'а: спец-ключ etcd-backup (тестами не используется).
     private static readonly Dictionary<string, string?> Env = [];
@@ -60,7 +61,7 @@ public class SecretRotatorTests
         public async Task SeedAsync(
             string node1State = S3NodeStates.Running, string node2State = S3NodeStates.Running,
             bool withTicket = true, string envUser = OldUser,
-            bool withSecrets = true, string rootPassword = "root-password-fixed")
+            bool withSecrets = true, string rootPassword = RootPassword)
         {
             Etcd.Seed("/s3/clusters/demo/config",
                 """{"platform":"owns3","nodes":2,"created_unix":1760156800}""");
