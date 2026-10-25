@@ -53,6 +53,13 @@ public class PoolBackupS3Tests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(["id1"]));
 
+// t26: файловые методы интерфейса в этом тесте не используются —
+        // заглушка (фейк нужен только перечисленным выше операциям).
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
+
+        public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
         public Task<Result<string>> DownloadTextAsync(
             string cluster, string shard, string objectKey, CancellationToken ct = default)
             => get?.Invoke(objectKey) ?? Task.FromResult(Result<string>.Success("text"));

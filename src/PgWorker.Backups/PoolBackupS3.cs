@@ -254,6 +254,40 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             uri => Target(uri).DownloadTextAsync(cluster, shard, objectKey, ct),
             $"get {objectKey}");
 
+    // Запись файла: write-семантика put (перебор write-списка); исчерпание → маркер.
+    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _writeTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri).PutFileAsync(key, filePath, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return Result.Failed(new ApplicationException(
+            $"{S3PoolMarkers.Exhausted}: put-file {key} — all list nodes are unavailable: {last.Error!.Message}"));
+    }
+
+    // Файловый GET: перебор read-списка до найденного (как GetObjectAsync);
+    // исчерпание — последняя исходная ошибка (не маркер — причина важнее).
+    public async Task<Result> GetObjectToFileAsync(
+        string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+    {
+        Result last = default;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri)
+                .GetObjectToFileAsync(cluster, shard, key, destFilePath, ct));
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last;
+    }
+
     // Листинги: первая доступная read-цель (успех = пустой список тоже успех);
     // исчерпание — маркер (алертная грань «пул недоступен»).
     private async Task<Result<T>> FirstAliveAsync<T>(

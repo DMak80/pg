@@ -69,6 +69,17 @@ public interface IBackupS3
     /// Failed (не исключение наружу — валидация restore разведает transien/permanent).</summary>
     Task<Result<string>> DownloadTextAsync(
         string cluster, string shard, string objectKey, CancellationToken ct = default);
+
+    /// <summary>t26: put файла 1:1 объектом (upload полного — arch/19 §2);
+    /// key — ПОЛНЫЙ ключ в bucket (&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;/…). Содержимое —
+    /// FileStream (файл не читается в память целиком — наборы бывают большими).</summary>
+    Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
+
+    /// <summary>t26: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — в FileStream
+    /// (dest перезаписывается: File.Create усекает — ретраи идемпотентны).</summary>
+    Task<Result> GetObjectToFileAsync(
+        string cluster, string shard, string key, string destFilePath, CancellationToken ct = default);
 }
 
 public sealed class BackupS3 : IBackupS3, IAsyncDisposable
@@ -323,6 +334,47 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         {
             return Result<string>.Failed(new ApplicationException(
                 $"S3 get {cluster}/{shard}/{objectKey}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+    {
+        try
+        {
+            await using var input = new FileStream(
+                filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await _client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = _bucket,
+                Key = key,
+                InputStream = input,
+            }, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"S3 put-file {key}: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> GetObjectToFileAsync(
+        string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{key}",
+            }, ct);
+            await using var output = File.Create(destFilePath);
+            await response.ResponseStream.CopyToAsync(output, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException(
+                $"S3 get-to-file {cluster}/{shard}/{key}: {e.Message}", e));
         }
     }
 

@@ -13,6 +13,9 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+        <!-- WebApplicationFactory<Program> API-тестов маршрутов (шаг 9):
+             доступ к internal-Program (прецедент KafkaWorker.App.csproj). -->
+        <InternalsVisibleTo Include="PgWorker.IntegrationTests"/>
     </ItemGroup>
 
     <ItemGroup>
