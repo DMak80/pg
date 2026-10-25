@@ -65,7 +65,7 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 |---|---|---|---|
 | 1 | AdminPanel → PgWorker | HTTP API воркера `:8080` (`/api/…`), дискавери — etcd-ключ `/pgworker/api/<id>` | канон |
 | 2 | AdminPanel → KafkaWorker/S3Worker/ValkeyWorker | HTTP API воркера | канон |
-| 3 | AdminPanel, все воркеры, Patroni-ноды → etcd | etcd-протокол (единый кластер, arch/17 S1) | канон |
+| 3 | AdminPanel, все воркеры, Patroni-ноды, приёмники WAL (внутри PG-нод) → etcd | etcd-протокол (единый кластер, arch/17 S1) | канон |
 | 4 | AdminPanel → Patroni | HTTP REST `:8008` (`GET /cluster`, live-пробы) | канон |
 | 5 | AdminPanel → PostgreSQL | SQL (Npgsql) | канон |
 | 6 | PgWorker → PostgreSQL-ноды | SQL (Npgsql) | канон |
@@ -73,29 +73,31 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 8 | Patroni → etcd | etcd DCS | канон |
 | 9 | Patroni → PostgreSQL | streaming-репликация | канон |
 | 10 | HAProxy → Patroni | HTTP-пробы `:8008` | канон |
-| 11 | WalReceiver → PostgreSQL | протокол репликации (`START_REPLICATION PHYSICAL`, слоты) | канон |
+| 11 | WalReceiver → PostgreSQL | протокол репликации (`START_REPLICATION PHYSICAL`, слоты; источник — `127.0.0.1:5432` своей ноды, приёмник живёт в её контейнере, arch/19 §3) | канон |
 | 12 | WalReceiver → S3-пул | S3 API | канон |
 | 13 | Backup-джобы (full/verify/drill/restore) → S3-пул | S3 API (`mc`, `pg_basebackup`) | канон |
 | 14 | KafkaWorker → Kafka | Kafka-протокол | канон |
 | 15 | KafkaWorker-джобы → KafkaWorker | etcd-журнал (`/pgworker/work/<C>`, WorkJournal) | канон |
 | 16 | S3Worker → ownS3-инстансы | S3 API (mesh, бакеты, deny-list) | канон |
 | 17 | ValkeyWorker → Valkey-ноды | RESP | канон |
-| 18 | Prometheus → панель, воркеры, шлюзы | HTTP scrape `/metrics` (Kestrel `:8080`) | канон |
-| 19 | PgWorker → docker (ноды, джобы, агенты) | create/start/stop/kill/remove, сети, тома; list/inspect (состояние, exit-код, порты, env/cmd, лейблы, StartedAt) | канон (§2) |
+| 18 | Prometheus → панель, воркеры, шлюзы, приёмники WAL (внутри PG-нод) | HTTP scrape `/metrics` (воркеры — Kestrel `:8080`; приёмники — `:8080` внутри контейнера ноды, arch/18 §2.8) | канон |
+| 19 | PgWorker → docker (ноды, джобы) | create/start/stop/kill/remove, сети, тома; list/inspect (состояние, exit-код, порты, env/cmd, лейблы, StartedAt) | канон (§2) |
 | 20 | S3Worker → docker/swarm (ownS3) | сервисы/placement, тома; list/inspect | канон (§2) |
-| 21 | PgWorker → wal-агенты `pgw-backup-wal-*` | docker logs (фазы, `tli_jump`-маркер) | отклонение → backup `t24-job-status-channel` |
+| 21 | WalReceiver → PgWorker | etcd-ключ приёмника `/pgworker/backups/<C>/<X>/agent/<N>` (lease-живость, фазы, `tli_jump`, `pool_exhausted` — arch/19 §3/§4); воркер читает, приёмник пишет только свой ключ | канон |
 | 22 | PgWorker → backup-джобы (full/verify/drill/restore) | docker logs (result-JSON) | отклонение → backup `t24-job-status-channel` |
 | 23 | PgWorker → PostgreSQL-ноды | docker exec: `pg_dump --schema-only` (DDL-переезда), правка `pg_hba` перед бэкапом, управление wal-слотом | отклонение → pgworker `t03-orchestration-exec-transition` |
 | 24 | KafkaWorker → Kafka (reassignment партиций) | Kafka-протокол: Describe — AdminClient, подача — AlterReassignments/KIP-455 (миниклиент, arch/16 §2.4) | канон |
 
 ## 5. Отклонения и переход
 
+Отклонения №22–24 — исторические механизмы, канонизированные до этого
 Отклонения №21–23 — исторические механизмы, канонизированные до этого
 документа; их перевод на штатные каналы оформлен в `arch/roadmap/`:
 
-- **№21–22** — `backup.md` `t24-job-status-channel`: джобы и wal-агент пишут
-  фазы/результат/маркеры в etcd-журнал (по образцу WorkJournal, №15),
-  воркер читает из etcd; stdout остаётся диагностике.
+- **№22** — `backup.md` `t24-job-status-channel`: backup-джобы (full/
+  verify/drill/restore) пишут фазы/результат/маркеры в etcd-журнал (по
+  образцу WorkJournal, №15), воркер читает из etcd; stdout остаётся
+  диагностике.
 - **№23** — `pgworker.md` `t03-orchestration-exec-transition`: каждый
   exec-сценарий переходит на сетевой канал (SQL/HTTP/джоба) либо получает
   отдельный апрув владельца.

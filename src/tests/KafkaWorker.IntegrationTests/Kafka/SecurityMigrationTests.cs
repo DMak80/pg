@@ -28,9 +28,19 @@ public sealed class SecurityMigrationCollection : ICollectionFixture<KafkaCluste
 [Collection(SecurityMigrationCollection.Name)]
 public class SecurityMigrationTests(KafkaClusterFixture fixture)
 {
-    // Легаси-креды премиграционного кластера (литералы — только в константах).
-    private const string LegacyAppPassword = "LegacyAppPassword0123456789";
-    private const string LegacyInterPassword = "LegacyInterPassword0123456789AB";
+    // Пароли «legacy»-кластера генерируются в рантайме: секреты не зашиваются
+    // в исходник; поля фикстуры переиспользуются всеми обращениями (сид etcd,
+    // конфиги клиентов, env-таблица премиграционной ноды).
+    private static readonly string LegacyAppPassword = GenerateTestPassword();
+    private static readonly string LegacyInterPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для env/ACL-строк).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     [Fact]
     public async Task Migration_PlainToTls_EndpointsDataLive_AppWorksAfter()

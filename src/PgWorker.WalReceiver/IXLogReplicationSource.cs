@@ -12,6 +12,12 @@ namespace PgWorker.WalReceiver;
 public sealed class WalStartRefused(string serverError)
     : ApplicationException($"START_REPLICATION refused (58P01): {serverError}");
 
+/// <summary>Слот репликации отсутствует (SQLSTATE 42704 — «replication slot …
+/// does not exist»; проверки слота SQL'ом — пустой результат). Канон arch/19
+/// §3: transient-ожидание (waiting_slot) — ensure/recreate делает воркер.</summary>
+public sealed class WalSlotMissing(string slot)
+    : ApplicationException($"replication slot is missing: {slot}");
+
 /// <summary>Идентификация сервера репликации (IDENTIFY_SYSTEM): текущий
 /// таймлайн сервера и позиция записи WAL.</summary>
 public sealed record ServerIdentity(uint Tli, ulong XLogPos);

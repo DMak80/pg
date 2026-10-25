@@ -76,7 +76,6 @@ public abstract class E2eBackupPoolScenarios
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -168,15 +167,13 @@ public abstract class E2eBackupPoolScenarios
             return keys.Count > 0;
         }, TimeSpan.FromSeconds(480), ct);
 
+    // t25: «оба агента живы» = статус-ключи agent/<N> обеих нод шарда с
+    // state=streaming (lease жив = приёмник жив; docker-контейнеров агентов нет).
     protected async Task<bool> WaitBothWalAgentsAsync(string cluster, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
         {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(480), ct);
 
     protected Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
@@ -590,9 +587,10 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
                 "the stream continued on node2 (walking the write list, RPO: the slot is confirmed after the put)");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
-            // Act B — список [node1]: рестарт воркера (агенты пересоздаются с новым
-            // env — детерминизм без надежды на recreate по смене policy на лету),
-            // стоп node1 → исчерпание: DEGRADED + маркер; подъём → ACTIVE.
+            // Act B — список [node1]: рестарт воркера (policy перечитывается стартом —
+            // детерминизм без надежды на revise на лету; приёмники сами меняют цель
+            // по etcd-policy, t25), стоп node1 → исчерпание: DEGRADED + маркер;
+            // подъём → ACTIVE.
             await app.DisposeAsync();
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
             var app2 = await StartPoolHostAsync("pac4b", ct);

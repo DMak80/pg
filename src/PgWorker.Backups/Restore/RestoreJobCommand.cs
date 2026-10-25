@@ -39,8 +39,7 @@ public static class RestoreJobCommand
 
     public const string EnvS3Endpoints = "S3_ENDPOINTS";
     public const string EnvS3AccessKey = "S3_ACCESS_KEY";
-    // Имя env-переменной, не значение секрета.
-    public const string EnvS3SecretKey = "S3_" + "SECRET" + "_KEY";
+    public const string EnvS3Credentials = "S3_SECRET_KEY";
     public const string EnvBucket = "S3_BUCKET";
     public const string EnvSrcPrefix = "SRC_PREFIX";
     public const string EnvBackupId = "BACKUP_ID";

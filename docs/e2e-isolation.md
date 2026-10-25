@@ -115,8 +115,8 @@ E2E-образах запрещены).
 
 - `/var/run/docker.sock` смонтирован — воркер провижинит ноды в сеть
   контура (`PgWorker__Docker__ContourNetwork=pgw-en-{guid}`, arch/14 §2.1:
-  ноды, wal-агенты и ephemeral-джобы бэкапов создаются в одной сети;
-  `pgw-net-<C>` не создаётся).
+  ноды (с приёмниками WAL внутри) и ephemeral-джобы бэкапов создаются в
+  одной сети; `pgw-net-<C>` не создаётся).
 - env воркера — внутрисетевые адреса: etcd по алиасам `e2e-etcd{N}:2379`
   (и AdvertisedEndpoints — те же: Patroni-ноды тоже в контуре); API воркера
   слушает `https://0.0.0.0:8443`, advertise — `https://pgw-ew-{name}:8443`.
@@ -192,10 +192,10 @@ CLI-инструменты (mc) — ОДИН контейнер на окруж�
 ## 9. Общие только статические ассеты
 
 Собираемый один раз на процесс — не мутабельный рантайм-стейт: PKI-шаблоны
-(per-run CA генерируется фазой 1), docker-образы (`pgworker-node:e2e-*`,
-`pgworker-backup:e2e-*`, `pgworker-wal:e2e-*`, `owns3:dev`, `pgworker:e2e-*`,
-`pgw-e2e-runner:e2e-*`, `sdgenerator:e2e-*`; суффикс `*` — per-worktree
-`ветка-хэш пути`), publish-выводы app/тестов.
+(per-run CA генерируется фазой 1), docker-образы (`pgworker-node:e2e-*`
+(включая приёмник WAL внутри), `pgworker-backup:e2e-*`, `owns3:dev`,
+`pgworker:e2e-*`, `pgw-e2e-runner:e2e-*`, `sdgenerator:e2e-*`; суффикс `*` —
+per-worktree `ветка-хэш пути`), publish-выводы app/тестов.
 Всё, что сценарий меняет в рантайме, — только внутри своего окружения.
 Образы локально собираемые — в registry не кладутся.
 

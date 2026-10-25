@@ -20,8 +20,18 @@ public class AddShardProcessTests
     private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly EtcdEndpoints EtcdEndp = new(["http://etcd:2379"]);
     private const string Ep = "http://etcd:2379";
-    // App-пароль, записанный ротацией до SQL-фазы (литералы — только в константах).
-    private const string RotatedAppPassword = "Rotated00000000000000000000000Z";
+
+    // Ротированный пароль генерируется в рантайме: секрет не зашивается в
+    // исходник; поле переиспользуется всеми обращениями.
+    private static readonly string RotatedPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     // Сид Active-кластера: config без state, shard1/shard2 подняты (dsn +
     // service initialize/leader), routing 0..5, portalloc живых нод.
@@ -394,7 +404,7 @@ public class AddShardProcessTests
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
         await new ClusterSecretEnsurer(rig.Etcd, [Ep]).EnsureAsync("shop", (await Snapshot(rig.Etcd)).Config, CancellationToken.None);
-        var newPassword = RotatedAppPassword;
+        var newPassword = RotatedPassword;
         await rig.Etcd.PutAsync(Ep, "/clusters/shop/app_password", newPassword, null, CancellationToken.None);
 
         // Act

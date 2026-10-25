@@ -11,9 +11,6 @@ namespace PgWorker.UnitTests.Templates;
 
 public class NodeConfigBuildersTests
 {
-    // REST-пароль тестовой пары (литералы — только в константах).
-    private const string DefaultRestPassword = "Rest0Pass0000000000000000000000A";
-
     private static readonly ShardTopology Topology = new(
         "shop", "shard1", "shop-shard1",
         new Dictionary<string, NodeAddress>
@@ -33,12 +30,40 @@ public class NodeConfigBuildersTests
 
     // Фабрика тестового REST-TLS-материала ноды (t22): PEM-заглушки + пара.
     // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
-    public static NodeRestTls TestRestTls(string password = DefaultRestPassword)
+    // Пароль генерируется в рантайме: секрет не зашивается в исходник; поле
+    // переиспользуется всеми обращениями.
+    private static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для env/YAML).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
+    public static NodeRestTls TestRestTls(string? password = null)
         => new(
             "-----BEGIN CERTIFICATE-----\nMIIBtest-node\n-----END CERTIFICATE-----\n",
             "-----BEGIN PRIVATE KEY-----\nMIIBtest-key\n-----END PRIVATE KEY-----\n",
             "-----BEGIN CERTIFICATE-----\nMIIBtest-ca\n-----END CERTIFICATE-----\n",
-            password);
+            password ?? RestPassword);
+
+    [Fact]
+    public void SpiloEnv_CarriesReceiverIdentityEnv()
+    {
+        // Arrange: топология шарда из 2 нод и адреса etcd.
+
+        // Act: генерируем env контейнера ноды.
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+
+        // Assert: идентичность приёмника WAL (t25, arch/19 §3/§14 §2.1) — СТРОГО
+        // всегда, независимо от Backups:Enabled (гейтится etcd-стоп-ключами):
+        // координаты из topology/nodeName.
+        env["PGW_BACKUP_CLUSTER"].Should().Be(Topology.Cluster);
+        env["PGW_BACKUP_SHARD"].Should().Be(Topology.Shard);
+        env["PGW_BACKUP_NODE"].Should().Be("shard1a");
+    }
 
     [Fact]
     public void SpiloEnv_ContainsPatroniAndPgParameters()
@@ -82,13 +107,15 @@ public class NodeConfigBuildersTests
     [Fact]
     public void SpiloEnv_RestPasswordHashIsSha256Hex()
     {
-        // Arrange: пара rest (эффективная) — "Rest0Pass…".
+        // Arrange: пара rest (эффективная) — пароль фикстуры (рантайм-генерация).
+        var rest = TestRestTls();
+
         // Act: сборка env.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
 
         // Assert: PGW_REST_PASSWORD_HASH = короткий sha256-hex пары (hex-lower) —
         // факт «контейнер несёт эту пару» для инспекции rolling-ротации.
-        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash(DefaultRestPassword));
+        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash(rest.RestPassword));
         env["PGW_REST_PASSWORD_HASH"].Should().MatchRegex("^[0-9a-f]{64}$");
     }
 
@@ -96,22 +123,25 @@ public class NodeConfigBuildersTests
     public void SpiloEnv_SpiloConfigurationContainsRestapiSection()
     {
         // Arrange: материал + имя ноды shard1a (cluster=shop, shard=shard1).
+        var rest = TestRestTls();
+
         // Act: сборка env.
         var spilo = SpiloEnvBuilder.Build(
-            Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
+            Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest)["SPILO_CONFIGURATION"];
 
         // Assert: секция restapi верхнего уровня — connect_address DNS-именем
         // ноды (SAN серта; перекрывает шаблонный IP), authentication — пара
-        // per-cluster; listen НЕ переопределён (шаблонный :8008 корректен).
+        // per-cluster (пароль в двойных кавычках — YAML-safe);
+        // listen НЕ переопределён (шаблонный :8008 корректен).
         spilo.Should().Contain("restapi:");
         spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
         spilo.Should().Contain("authentication:");
         spilo.Should().Contain("username: patroni");
-        spilo.Should().Contain($"password: \"{DefaultRestPassword}\"");
+        spilo.Should().Contain($"password: \"{rest.RestPassword}\"");
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
-        spilo.Should().Contain("on_role_change: /home/postgres/master-lease.py");
+        spilo.Should().Contain("on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
     }
 
     [Fact]

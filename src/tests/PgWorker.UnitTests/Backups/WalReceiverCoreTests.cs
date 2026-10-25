@@ -8,10 +8,12 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Главный цикл приёмника (t27, arch/19 §3, spec §3.1): инвариант подтверждения —
-// SetConfirmed ТОЛЬКО после успешного S3-put (feedback-инвариант AC1), backpressure
-// при отказе S3 (AC6-ядро), рестарт от хвоста S3, TLI/.history, permanent-коды
-// (3 = segment-size, 4 = слот отсутствует, 6 = разрыв LSN), transient-reconnect.
+// Ядро приёмника как управляемая сессия (t25, arch/19 §3, spec §3.1 п.6):
+// инвариант подтверждения — SetConfirmed ТОЛЬКО после успешного S3-put
+// (feedback-инвариант AC1), backpressure при отказе S3 (AC6-ядро), рестарт от
+// хвоста S3, TLI/.history-fallback ФС ноды, исходы сессии (WaitingSlot /
+// FailedPermanent / RoleChanged) вместо exit-кодов, факты tli_jump /
+// history_missing — события/исход вместо stdout-маркеров.
 public class WalReceiverCoreTests
 {
     private const int SegmentBytes = 16 * 1024 * 1024;
@@ -37,7 +39,7 @@ public class WalReceiverCoreTests
     }
 
     private static XLogChunk Chunk(ulong boundary, uint tli = 1)
-        => new(boundary, SegmentData(tli, boundary));
+        => new(boundary, boundary + SegmentBytes, SegmentData(tli, boundary));
 
     private static ulong EndLsn(uint segId) => (segId + 1UL) << 24;
 
@@ -52,7 +54,10 @@ public class WalReceiverCoreTests
         {
             if (!FailKeys.Contains(key))
             {
-                Objects[key] = data;
+                // Сегментные буферы берутся из пула и возвращаются после put:
+                // фейк копирует байты, как реальный S3 (после Result данные
+                // владельцем могут быть переиспользованы).
+                Objects[key] = data.ToArray();
                 return Task.FromResult(Result.Success());
             }
 
@@ -196,16 +201,37 @@ public class WalReceiverCoreTests
         public Task<Result<ulong>> ReadRestartLsnAsync(string slot, CancellationToken ct)
             => Task.FromResult(restartLsn is { } lsn
                 ? Result<ulong>.Success(lsn)
-                : Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing")));
+                : Result<ulong>.Failed(new WalSlotMissing(slot))); // типизированный «слота нет» — waiting_slot
     }
 
-    private static async Task<(int Code, string Output)> RunAsync(
+    /// <summary>Прогон одной сессии ядра: исход + diagnostic-журнал (колбэк
+    /// Diagnostic вместо stdout) + собранные факты tli-прыжков (живые события
+    /// TliJump — факт публикуется сразу при прыжке, до исхода сессии). Отмена —
+    /// нормальный финал теста (SIGTERM-семантика): Outcome=null, факты/журнал
+    /// сохранены.</summary>
+    private static async Task<(WalSessionOutcome? Outcome, string Output, List<WalReceiverTliJump> Jumps)> RunSession(
         FakeXLogSource source, FakeS3 s3, FakeSlots slots, WalReceiverOptions options,
         CancellationToken ct)
     {
-        var stdout = new StringWriter();
-        var code = await WalReceiverCore.RunAsync(options, source, slots, s3, stdout, ct, FastRetry);
-        return (code, stdout.ToString());
+        // Arrange —Diagnostic-журнал + подписка на факты прыжков
+        var output = new StringWriter();
+        var jumps = new List<WalReceiverTliJump>();
+        var events = new WalSessionEvents
+        {
+            Diagnostic = output.WriteLine,
+            TliJump = jumps.Add,
+        };
+
+        // Act — сессия до исхода или до отмены теста
+        try
+        {
+            var outcome = await WalReceiverCore.RunSessionAsync(options, source, slots, s3, events, ct, FastRetry);
+            return (outcome, output.ToString(), jumps);
+        }
+        catch (OperationCanceledException)
+        {
+            return (null, output.ToString(), jumps);
+        }
     }
 
     /// <summary>Ожидание условия с бюджетом (таймауты тестов короткие).</summary>
@@ -233,16 +259,16 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000010000000000000002"),
             TimeSpan.FromSeconds(10),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} start={source.StartCalls} " +
                   $"moveNext={source.MoveNextCalls} confirmed={source.ConfirmedLsn} journal=[{string.Join(",", source.ConfirmJournal)}]");
         cts.Cancel();
-        var (code, _) = await run;
+        var (outcome, _, _) = await run;
 
-        // Assert — код чистой отмены; подтверждение = конец сегмента ...000002
-        code.Should().Be(0);
+        // Assert — чистая отмена (outcome не случился); подтверждение = конец сегмента ...000002
+        outcome.Should().BeNull("graceful cancellation is the normal end of a session");
         source.ConfirmedLsn.Should().Be(EndLsn(2));
         source.FirstStartLsn.Should().Be(0); // пустой префикс → старт от restart_lsn=0
 
@@ -265,7 +291,7 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
 
         // Assert — до сбоя: сегмент ...000000 доставлен и подтверждён
         await WaitUntilAsync(() => source.ConfirmedLsn == EndLsn(0), TimeSpan.FromSeconds(10));
@@ -282,10 +308,10 @@ public class WalReceiverCoreTests
         s3.FailKeys.Clear();
         await WaitUntilAsync(() => source.ConfirmedLsn == EndLsn(2), TimeSpan.FromSeconds(10));
         cts.Cancel();
-        var (code, _) = await run;
+        var (outcome, _, _) = await run;
 
-        // Assert
-        code.Should().Be(0);
+        // Assert — сессия прервана отменой теста; сегмент доставлен
+        outcome.Should().BeNull();
         s3.Objects.Should().ContainKey(stuckKey);
     }
 
@@ -301,20 +327,20 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000010000000000000002"),
             TimeSpan.FromSeconds(10));
         cts.Cancel();
-        var (code, _) = await run;
+        var (outcome, _, _) = await run;
 
         // Assert — старт НЕ от слота (0), а от конца непрерывного хвоста S3
         // (первая START_REPLICATION: reconnect после отмены не участвует)
-        code.Should().Be(0);
+        outcome.Should().BeNull();
         source.FirstStartLsn.Should().Be(EndLsn(1));
     }
 
     [Fact]
-    public async Task TliSwitch_HistoryPut_AndHistoryMissing()
+    public async Task TliSwitch_HistoryPut()
     {
         // Arrange — сегмент ...000000 (TLI 1), сегмент ...000001 с header TLI 2, история доступна
         var source = new FakeXLogSource();
@@ -325,21 +351,22 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000001"),
             TimeSpan.FromSeconds(10));
         cts.Cancel();
-        var (code, _) = await run;
+        var (outcome, _, _) = await run;
 
         // Assert — .history загружен в префикс
-        code.Should().Be(0);
+        outcome.Should().BeNull();
         s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
     }
 
     [Fact]
-    public async Task TliSwitch_WithoutHistory_Marker_AndNoPut()
+    public async Task TliSwitch_WithoutHistory_Fact_AndNoPut()
     {
-        // Arrange — история рантаймом не экспонируется (null)
+        // Arrange — история рантаймом не экспонируется (null); ФС ноды файла не
+        // имеет (HistoryFilePath не задан — прод-дефолт pg_wal тоже пуст)
         var source = new FakeXLogSource();
         source.Chunks.Enqueue(Chunk(0, tli: 1));
         source.Chunks.Enqueue(Chunk(SegmentBytes, tli: 2));
@@ -347,20 +374,67 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000001"),
             TimeSpan.FromSeconds(10));
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, _) = await run;
 
-        // Assert — put истории не было; маркер history_missing в stdout
-        code.Should().Be(0);
+        // Assert — put истории не было; факт history_missing в диагностике сессии
+        // (текст уходит в error статус-ключа, spec §3.1 п.6)
+        outcome.Should().BeNull();
         s3.Objects.Keys.Should().NotContain("c1/shard1/wal/00000002.history");
-        output.Should().Contain("\"history_missing\":\"2\"");
+        output.Should().Contain("history_missing tli=2");
     }
 
     [Fact]
-    public async Task Permanent_SegmentSizeMismatch_Code3()
+    public async Task HistoryFallback_Filesystem()
+    {
+        // Arrange — рантайм истории не отдаёт; файл pg_wal ноды существует
+        // (HistoryFilePath — подмена прод-пути pg_wal на tmpdir теста)
+        var source = new FakeXLogSource();
+        source.Chunks.Enqueue(Chunk(0, tli: 1));
+        source.Chunks.Enqueue(Chunk(SegmentBytes, tli: 2));
+        var s3 = new FakeS3();
+        var slots = new FakeSlots(0);
+        var historyPath = Path.Combine(Path.GetTempPath(), $"pgw-hist-{Guid.NewGuid():N}", "00000002.history");
+        Directory.CreateDirectory(Path.GetDirectoryName(historyPath)!);
+        await File.WriteAllTextAsync(historyPath, "1/0 2/100\n", TestContext.Current.CancellationToken);
+        using var cts = new CancellationTokenSource();
+
+        var output = new StringWriter();
+        var events = new WalSessionEvents
+        {
+            Diagnostic = output.WriteLine,
+            HistoryFilePath = tli => tli == 2 ? historyPath : null,
+        };
+        var session = WalReceiverCore.RunSessionAsync(
+            Options(), source, slots, s3, events, cts.Token, FastRetry);
+        try
+        {
+            await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000001"),
+                TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            cts.Cancel(); // чистая отмена при любом исходе ожидания
+        }
+
+        try
+        {
+            await session;
+        }
+        catch (OperationCanceledException)
+        {
+            // чистая отмена — нормальный финал
+        }
+
+        // Assert — история взята из ФС ноды и положена в S3 (fallback §3.1 п.6)
+        s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
+    }
+
+    [Fact]
+    public async Task Permanent_SegmentSizeMismatch_FailedPermanent()
     {
         // Arrange
         var source = new FakeXLogSource { SegmentSizeMismatch = true };
@@ -369,16 +443,18 @@ public class WalReceiverCoreTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         // Act
-        var (code, output) = await RunAsync(source, s3, slots, Options(), cts.Token);
+        var (outcome, output, _) = await RunSession(source, s3, slots, Options(), cts.Token);
 
-        // Assert
-        code.Should().Be(3);
-        output.Should().Contain("wal_segment_size");
+        // Assert — исход FailedPermanent (НЕ exit процесса), текст ошибки —
+        // в исходе сессии (состояние статус-ключа, spec §3.1 п.6)
+        outcome.Should().NotBeNull();
+        outcome!.Kind.Should().Be(WalSessionKind.FailedPermanent);
+        outcome.Error.Should().Contain("wal_segment_size");
         source.OpenCalls.Should().Be(1, "permanent — no retries");
     }
 
     [Fact]
-    public async Task Permanent_SlotMissing_Code4()
+    public async Task SlotMissing_WaitingSlot_Transient()
     {
         // Arrange — пустой S3 и слота нет
         var source = new FakeXLogSource();
@@ -387,11 +463,12 @@ public class WalReceiverCoreTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         // Act
-        var (code, output) = await RunAsync(source, s3, slots, Options(), cts.Token);
+        var (outcome, _, _) = await RunSession(source, s3, slots, Options(), cts.Token);
 
-        // Assert
-        code.Should().Be(4);
-        output.Should().Contain("pgw_bkp_c1_shard1");
+        // Assert — слота нет: transient-ожидание (ensure делает воркер),
+        // НЕ permanent; старт репликации не начинался
+        outcome.Should().NotBeNull();
+        outcome!.Kind.Should().Be(WalSessionKind.WaitingSlot);
         source.StartCalls.Should().Be(0);
     }
 
@@ -407,7 +484,7 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
 
         // Act — сегмент ...000001 подкладывается: он может быть доставлен только после
         // повторного OpenAsync (tail от хвоста S3 = конец сегмента ...000000)
@@ -416,31 +493,31 @@ public class WalReceiverCoreTests
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000010000000000000001"),
             TimeSpan.FromSeconds(10));
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, _) = await run;
 
         // Assert
-        code.Should().Be(0);
+        outcome.Should().BeNull();
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
-        output.Should().Contain("000000010000000000000001");
     }
 
     [Fact]
-    public async Task StreamLsnGap_Permanent_Code6()
+    public async Task StreamLsnGap_Permanent()
     {
         // Arrange — чанки с дырой в WalStart
         var source = new FakeXLogSource();
         source.Chunks.Enqueue(Chunk(0));
-        source.Chunks.Enqueue(new XLogChunk(99UL * Mib, new byte[Mib]));
+        source.Chunks.Enqueue(new XLogChunk(99UL * Mib, 100UL * Mib, new byte[Mib]));
         var s3 = new FakeS3();
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         // Act
-        var (code, output) = await RunAsync(source, s3, slots, Options(), cts.Token);
+        var (outcome, output, _) = await RunSession(source, s3, slots, Options(), cts.Token);
 
-        // Assert
-        code.Should().Be(6);
-        output.Should().Contain("gap");
+        // Assert — разрыв LSN протокола: FailedPermanent с текстом ошибки
+        outcome.Should().NotBeNull();
+        outcome!.Kind.Should().Be(WalSessionKind.FailedPermanent);
+        outcome.Error.Should().Contain("gap");
     }
 
     [Fact]
@@ -462,20 +539,22 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000003"),
             TimeSpan.FromSeconds(10),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
                   $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — досыпка закрыла зазор: маркер tli_backfill, .history в S3,
-        // tli_jump нет; OpenCalls >= 2 (стартовый open цикла + процедурный open
-        // перед досыпкой — процедура НЕ стартует на погашенном соединении).
-        code.Should().Be(0);
-        output.Should().Contain("\"phase\":\"tli_backfill\"");
-        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        // Assert — досыпка закрыла зазор: диагностический лог backfill в журнале,
+        // .history в S3, факта прыжка НЕТ (прыжок-факт — только при fallback);
+        // OpenCalls >= 2 (стартовый open цикла + процедурный open перед досыпкой —
+        // процедура НЕ стартует на погашенном соединении).
+        outcome.Should().BeNull();
+        output.Should().Contain("tli_procedure: backfill");
+        output.Should().NotContain("tli_procedure: jump");
+        jumps.Should().BeEmpty();
         s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
 
@@ -499,22 +578,22 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => source.StartLog.Any(e => e.Timeline == 2),
             TimeSpan.FromSeconds(10),
             () => $"open={source.OpenCalls} start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — оба маркера; прыжок ровно от границы сегмента xlogpos
-        // (3*SegmentBytes) с timeline:2; OpenCalls >= 3 (стартовый + open перед
-        // досыпкой + open перед прыжком — отказ досыпки гасит соединение).
-        code.Should().Be(0);
-        output.Should().Contain("\"phase\":\"tli_backfill\"");
-        output.Should().Contain("\"phase\":\"tli_jump\"");
-        output.Should().Contain("\"to_segment\":\"000000020000000000000003\"");
-        output.Should().Contain("\"from_tli\":1");
-        output.Should().Contain("\"to_tli\":2");
+        // Assert — факт прыжка опубликован событием (живая публикация, до исхода
+        // сессии): прыжок ровно от границы сегмента xlogpos (3*SegmentBytes) с
+        // timeline:2; диагностический журнал несёт обе ветки (backfill → jump);
+        // OpenCalls >= 3 (стартовый + open перед досыпкой + open перед прыжком —
+        // отказ досыпки гасит соединение).
+        outcome.Should().BeNull();
+        jumps.Should().Contain(j => j.To == "000000020000000000000003" && j.Tli == 2 && j.From == "000000010000000000000001");
+        output.Should().Contain("tli_procedure: backfill");
+        output.Should().Contain("tli_procedure: jump");
         source.StartLog.Should().Contain(e => e.Lsn == 3UL * SegmentBytes && e.Timeline == 2);
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(3);
     }
@@ -531,21 +610,19 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => source.StartLog.Any(e => e.Timeline == 1),
             TimeSpan.FromSeconds(10),
             () => $"open={source.OpenCalls} start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — сразу прыжок (timeline:1 от границы): нет tli_backfill,
+        // Assert — сразу прыжок (timeline:1 от границы): нет досыпки,
         // нет put .history (TLI 1 истории не имеет — не запрашивается);
-        // маркер tli_jump с from_tli == to_tli == 1.
-        code.Should().Be(0);
-        output.Should().Contain("\"phase\":\"tli_jump\"");
-        output.Should().Contain("\"from_tli\":1");
-        output.Should().Contain("\"to_tli\":1");
-        output.Should().NotContain("\"phase\":\"tli_backfill\"");
+        // факт прыжка с from_tli == to_tli == 1.
+        outcome.Should().BeNull();
+        jumps.Should().Contain(j => j.Tli == 1 && j.From == "000000010000000000000001");
+        output.Should().NotContain("tli_procedure: backfill");
         s3.Objects.Keys.Should().NotContain("c1/shard1/wal/00000001.history");
     }
 
@@ -561,24 +638,25 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => source.OpenCalls >= 2, TimeSpan.FromSeconds(10),
             () => $"open={source.OpenCalls} start={source.StartCalls}");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — ретраи transient-цикла; ни одного tli_* маркера (identify
-        // падает до любых веток процедуры); чистая отмена.
-        code.Should().Be(0);
+        // Assert — ретраи transient-цикла; ни одной ветки процедуры (identify
+        // падает до любых веток), факта прыжка нет.
+        outcome.Should().BeNull();
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
-        output.Should().NotContain("\"phase\":\"tli_backfill\"");
-        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        output.Should().NotContain("tli_procedure: backfill");
+        output.Should().NotContain("tli_procedure: jump");
+        jumps.Should().BeEmpty();
     }
 
     [Fact]
     public async Task TliProcedure_HistoryMissing_StillBackfills()
     {
-        // Arrange — история нового TLI рантаймом не отдаётся (null)
+        // Arrange — история нового TLI рантаймом не отдаётся (null); файла ФС нет
         var source = new FakeXLogSource();
         SeedChain(out var s3, new[] { 0U, 1U }, tli: 1);
         var refusalsRemaining = 1;
@@ -592,18 +670,19 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000020000000000000003"),
             TimeSpan.FromSeconds(10),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls}");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — маркер history_missing + досыпка продолжается штатно
-        code.Should().Be(0);
-        output.Should().Contain("\"history_missing\":\"2\"");
-        output.Should().Contain("\"phase\":\"tli_backfill\"");
-        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        // Assert — факт history_missing в диагностике + досыпка продолжается штатно
+        outcome.Should().BeNull();
+        output.Should().Contain("history_missing tli=2");
+        output.Should().Contain("tli_procedure: backfill");
+        output.Should().NotContain("tli_procedure: jump");
+        jumps.Should().BeEmpty();
         s3.Objects.Should().ContainKey("c1/shard1/wal/000000020000000000000003");
     }
 
@@ -628,20 +707,21 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000010000000000000002"),
             TimeSpan.FromSeconds(10),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
                   $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — код 0 по отмене; OpenCalls >= 2 (стартовый + отказавший
-        // процедурный); прыжка нет; стартов с явным TIMELINE нет (отказ open
-        // досыпки предотвратил и досыпку, и прыжок этой итерации).
-        code.Should().Be(0);
+        // Assert — OpenCalls >= 2 (стартовый + отказавший процедурный); прыжка
+        // нет; стартов с явным TIMELINE нет (отказ open досыпки предотвратил и
+        // досыпку, и прыжок этой итерации).
+        outcome.Should().BeNull();
         source.OpenCalls.Should().BeGreaterThanOrEqualTo(2);
-        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        output.Should().NotContain("tli_procedure: jump");
+        jumps.Should().BeEmpty();
         source.StartLog.Should().OnlyContain(e => e.Timeline == null);
     }
 
@@ -680,25 +760,26 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(0);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => s3.Objects.ContainsKey("c1/shard1/wal/000000030000000000000003"),
             TimeSpan.FromSeconds(10),
             () => $"keys=[{string.Join(",", s3.Objects.Keys)}] open={source.OpenCalls} " +
                   $"start=[{string.Join(";", source.StartLog.Select(e => $"{e.Lsn}/{e.Timeline}"))}]");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — две итерации процедуры (два tli_backfill), маркер tli_jump
-        // первого цикла (to_tli:2); конвергенция без счётчиков попыток: оба
+        // Assert — две итерации процедуры (два старта досыпки в журнале; паттерн
+        // «backfill segment» — именно старт досыпки, отказ досыпки пишет строку
+        // «backfill refused» — в счёт не попадает), факт прыжка первого цикла
+        // (to_tli:2); конвергенция без счётчиков попыток: оба
         // .history в S3, досыпка доставила TLI1 №2, доставка продолжилась TLI3
         // №3; каждый старт процедуры — на свежем соединении (OpenCalls >= 5:
         // стартовый цикл + open досыпки + open прыжка + стартовый + open
         // досыпки 2-го цикла).
-        code.Should().Be(0);
-        Regex.Matches(output, "\"phase\":\"tli_backfill\"")
+        outcome.Should().BeNull();
+        Regex.Matches(output, "tli_procedure: backfill segment")
             .Should().HaveCount(2, "two procedure iterations (T=2 refused, T=3 backfilled)");
-        output.Should().Contain("\"phase\":\"tli_jump\"");
-        output.Should().Contain("\"to_tli\":2");
+        jumps.Should().Contain(j => j.Tli == 2 && j.To == "000000020000000000000003");
         s3.Objects.Should().ContainKey("c1/shard1/wal/00000002.history");
         s3.Objects.Should().ContainKey("c1/shard1/wal/00000003.history");
         s3.Objects.Should().ContainKey("c1/shard1/wal/000000010000000000000002");
@@ -719,17 +800,18 @@ public class WalReceiverCoreTests
         var slots = new FakeSlots(5 << 24);
         using var cts = new CancellationTokenSource();
 
-        var run = RunAsync(source, s3, slots, Options(), cts.Token);
+        var run = RunSession(source, s3, slots, Options(), cts.Token);
         await WaitUntilAsync(() => source.StartCalls >= 2, TimeSpan.FromSeconds(10),
             () => $"open={source.OpenCalls} start={source.StartCalls}");
         cts.Cancel();
-        var (code, output) = await run;
+        var (outcome, output, jumps) = await run;
 
-        // Assert — ретраи БЕЗ tli-маркеров (transient retry-цикл).
-        code.Should().Be(0);
+        // Assert — ретраи БЕЗ tli-веток (transient retry-цикл).
+        outcome.Should().BeNull();
         source.StartCalls.Should().BeGreaterThanOrEqualTo(2);
-        output.Should().NotContain("\"phase\":\"tli_backfill\"");
-        output.Should().NotContain("\"phase\":\"tli_jump\"");
+        output.Should().NotContain("tli_procedure: backfill");
+        output.Should().NotContain("tli_procedure: jump");
+        jumps.Should().BeEmpty();
     }
 
     /// <summary>Посев непрерывной цепочки сегментов TLI 1 в мини-S3 фейка.</summary>

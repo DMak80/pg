@@ -397,9 +397,14 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // ассет ../OwnS3; s3worker в NOBUILD — ручной тег).
     private static async Task EnsureImageAsync(string image, string buildCommand)
     {
-        var inspect = new ProcessStartInfo("docker", $"image inspect {image}")
+        // Список аргументов без shell: имя образа не попадает в строку команды.
+        var psi = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true, RedirectStandardError = true };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("image");
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add(image);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         await process.WaitForExitAsync();
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"image {image} is missing — build it: {buildCommand}");
@@ -408,7 +413,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private static async Task RunHostAsync(
         string workingDir, string file, string[] args, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(file, string.Join(' ', args))
+        var psi = new ProcessStartInfo(file)
         {
             WorkingDirectory = workingDir,
             UseShellExecute = false,
@@ -416,8 +421,10 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromMinutes(5));
         var outTask = process.StandardOutput.ReadToEndAsync();
@@ -461,15 +468,17 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     private static async Task<string> RunProcessAsync(
         string file, string[] args, CancellationToken ct, TimeSpan timeout)
     {
-        var psi = new ProcessStartInfo(file, args)
+        var psi = new ProcessStartInfo(file)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -553,11 +562,16 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // docker-факт: имя живого контейнера окружения (префикс/тег прогона).
     public async Task<bool> ContainerAliveAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker", $"inspect --format {{{{.State.Running}}}} {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.State.Running}}");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 && output.Trim() == "true";
@@ -567,12 +581,17 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // объекта нет — пустая строка.
     public async Task<string> ContainerIdAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker", $"inspect --format {{{{.Id}}}} {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.Id}}");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
@@ -582,13 +601,17 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // (ротация): сравнение В КОДЕ теста, значения в лог не печатаются.
     public async Task<string> ContainerEnvJsonAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker",
-            $"inspect --format \"{{{{json .Config.Env}}}}\" {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{json .Config.Env}}");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
@@ -598,12 +621,15 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // секретов; снимок живёт только в памяти теста, без печати.
     public async Task<string> ContainerLogsAsync(string name)
     {
-        var info = new ProcessStartInfo("docker", $"logs {name}")
+        var info = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(info)!;
+        info.ArgumentList.Add("logs");
+        info.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = info };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         var errors = await process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
@@ -613,12 +639,16 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // Факт существования named volume (точное имя/префикс filter).
     public async Task<bool> VolumeExistsAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker", $"volume inspect {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("volume");
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0;
@@ -632,28 +662,34 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     {
         foreach (var name in _workerNames.Append($"s3w-ee-{_runId}"))
         {
-            await ShellToFileAsync("docker", $"logs --tail 2000 {name}",
+            await ShellToFileAsync("docker", ["logs", "--tail", "2000", name],
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.log"));
-            await ShellToFileAsync("docker", $"inspect {name}",
+            await ShellToFileAsync("docker", ["inspect", name],
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.json"));
         }
 
-        await ShellToFileAsync("docker", "ps -a --format '{{.Names}}\t{{.Status}}'",
+        await ShellToFileAsync("docker", ["ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
             Path.Combine(ArtifactsDir, $"docker-ps-{mark}.txt"));
-        await ShellToFileAsync("docker", "volume ls --format '{{.Name}}'",
+        await ShellToFileAsync("docker", ["volume", "ls", "--format", "{{.Name}}"],
             Path.Combine(ArtifactsDir, $"docker-volumes-{mark}.txt"));
 
         // Ноды кластеров сценария (s3w-<C>-*) — по тегу прогона.
-        var ps = new ProcessStartInfo("docker",
-            $"ps -a --format {{{{.Names}}}} --filter name={ClusterTag}")
+        var ps = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true };
-        using var listing = Process.Start(ps)!;
+        ps.ArgumentList.Add("ps");
+        ps.ArgumentList.Add("-a");
+        ps.ArgumentList.Add("--format");
+        ps.ArgumentList.Add("{{.Names}}");
+        ps.ArgumentList.Add("--filter");
+        ps.ArgumentList.Add($"name={ClusterTag}");
+        using var listing = new Process { StartInfo = ps };
+        listing.Start();
         var names = (await listing.StandardOutput.ReadToEndAsync())
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         await listing.WaitForExitAsync();
         await File.WriteAllLinesAsync(Path.Combine(ArtifactsDir, $"nodes-{mark}.txt"), names);
         foreach (var name in names)
-            await ShellToFileAsync("docker", $"logs --tail 2000 {name}",
+            await ShellToFileAsync("docker", ["logs", "--tail", "2000", name],
                 Path.Combine(ArtifactsDir, $"node-{name}-{mark}.log"));
 
         // etcd-факты домена (разбор «почему не сошлось» БЕЗ перезапуска):
@@ -748,9 +784,12 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         // при живом кластере демонтаж — обязанность воркера, остаток = брак).
         foreach (var name in _workerNames.Append($"s3w-ee-{_runId}"))
         {
-            var inspect = new ProcessStartInfo("docker", $"inspect {name}")
+            var inspect = new ProcessStartInfo("docker")
             { RedirectStandardOutput = true, RedirectStandardError = true };
-            using var process = Process.Start(inspect)!;
+            inspect.ArgumentList.Add("inspect");
+            inspect.ArgumentList.Add(name);
+            using var process = new Process { StartInfo = inspect };
+            process.Start();
             await process.WaitForExitAsync();
             process.ExitCode.Should().NotBe(0, $"container {name} removed by teardown");
         }
@@ -758,9 +797,13 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         await AssertNoObjectsAsync($"name={ClusterTag}", "containers/volumes of the scenario tag");
         await AssertNoObjectsAsync($"name=s3w-{_runId}", $"containers/volumes of run {ClusterTag}");
 
-        var networkInspect = new ProcessStartInfo("docker", $"network inspect {NetName}")
+        var networkInspect = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true, RedirectStandardError = true };
-        using var networkProcess = Process.Start(networkInspect)!;
+        networkInspect.ArgumentList.Add("network");
+        networkInspect.ArgumentList.Add("inspect");
+        networkInspect.ArgumentList.Add(NetName);
+        using var networkProcess = new Process { StartInfo = networkInspect };
+        networkProcess.Start();
         await networkProcess.WaitForExitAsync();
         networkProcess.ExitCode.Should().NotBe(0, $"network {NetName} removed by teardown");
     }
@@ -768,18 +811,27 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // Нет ни контейнеров, ни томов по filter — иначе ассерт чистоты падает.
     private static async Task AssertNoObjectsAsync(string filter, string what)
     {
-        var ps = new ProcessStartInfo("docker",
-            $"ps -aq --filter {filter}")
+        var ps = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true };
-        using var containers = Process.Start(ps)!;
+        ps.ArgumentList.Add("ps");
+        ps.ArgumentList.Add("-aq");
+        ps.ArgumentList.Add("--filter");
+        ps.ArgumentList.Add(filter);
+        using var containers = new Process { StartInfo = ps };
+        containers.Start();
         var containerOutput = (await containers.StandardOutput.ReadToEndAsync()).Trim();
         await containers.WaitForExitAsync();
         containerOutput.Should().BeEmpty($"no {what} left after teardown");
 
-        var volumePs = new ProcessStartInfo("docker",
-            $"volume ls -q --filter {filter}")
+        var volumePs = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true };
-        using var volumes = Process.Start(volumePs)!;
+        volumePs.ArgumentList.Add("volume");
+        volumePs.ArgumentList.Add("ls");
+        volumePs.ArgumentList.Add("-q");
+        volumePs.ArgumentList.Add("--filter");
+        volumePs.ArgumentList.Add(filter);
+        using var volumes = new Process { StartInfo = volumePs };
+        volumes.Start();
         var volumeOutput = (await volumes.StandardOutput.ReadToEndAsync()).Trim();
         await volumes.WaitForExitAsync();
         volumeOutput.Should().BeEmpty($"no {what} left after teardown");
@@ -819,20 +871,23 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
     // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не
     // пробрасываются. Статический доступ — для факта той же сборки
-    // (инстанс окружения создаётся только фабрикой E2E).
-    internal static async Task ShellToFileAsync(string program, string args, string path)
+    // (инстанс окружения создаётся только фабрикой E2E). Аргументы — списком
+    // без shell: данные не попадают в строку команды.
+    internal static async Task ShellToFileAsync(string program, string[] args, string path)
     {
         try
         {
-            var startInfo = new ProcessStartInfo(program, args)
+            var startInfo = new ProcessStartInfo(program)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            using var process = Process.Start(startInfo)
-                ?? throw new ApplicationException($"failed to start {program}");
+            foreach (var arg in args)
+                startInfo.ArgumentList.Add(arg);
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             // Оба потока — параллельно и БЕЗ токена бюджета: при kill пайпы
             // закрываются, накопленный вывод доступен (канон E2eFixture).

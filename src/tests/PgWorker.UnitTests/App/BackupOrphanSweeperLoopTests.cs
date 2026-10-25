@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.App;
 using PgWorker.App.Loops;
+using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
 using PgWorker.UnitTests.Provisioning;
 using Shared.Core.Hosting;
@@ -35,7 +36,8 @@ public sealed class BackupOrphanSweeperLoopTests
         var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
             new Meter("TestOrphanSweep"), TimeProvider.System);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
-            NullLogger<BackupOrphanSweeperLoop>.Instance);
+            NullLogger<BackupOrphanSweeperLoop>.Instance,
+            etcd, options.CurrentValue.Etcd.Endpoints);
         return (loop, health, new CancellationTokenSource());
     }
 
@@ -137,7 +139,8 @@ public sealed class BackupOrphanSweeperLoopTests
         var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
             new Meter("TestOrphanSweep"), TimeProvider.System);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
-            NullLogger<BackupOrphanSweeperLoop>.Instance);
+            NullLogger<BackupOrphanSweeperLoop>.Instance,
+            etcd, options.CurrentValue.Etcd.Endpoints);
         using var cts = new CancellationTokenSource();
 
         // Act: цикл идёт; ждём активности пульса новее тика (период 1 c; ≤~6 с).
@@ -204,7 +207,8 @@ public sealed class BackupOrphanSweeperLoopTests
             () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
             NullLogger<BackupOrphanSweeper>.Instance);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
-            NullLogger<BackupOrphanSweeperLoop>.Instance);
+            NullLogger<BackupOrphanSweeperLoop>.Instance,
+            etcd, options.CurrentValue.Etcd.Endpoints);
         using var cts = new CancellationTokenSource();
 
         // Act: цикл идёт; ждём первого завершённого прохода лидера (поллинг ≤5 с).
@@ -260,7 +264,8 @@ public sealed class BackupOrphanSweeperLoopTests
             () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
             NullLogger<BackupOrphanSweeper>.Instance);
         var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
-            NullLogger<BackupOrphanSweeperLoop>.Instance);
+            NullLogger<BackupOrphanSweeperLoop>.Instance,
+            etcd, options.CurrentValue.Etcd.Endpoints);
         using var cts = new CancellationTokenSource();
 
         // Act: цикл идёт; ждём первого завершённого (провального) прохода лидера
@@ -272,6 +277,136 @@ public sealed class BackupOrphanSweeperLoopTests
 
         // Assert: провальный проход отметил тик цикла orphan-sweep с ok=false.
         seen.Should().Contain(s => s.Loop == "orphan-sweep" && !s.Ok);
+    }
+
+    // ── t25: лидерская поддержка/стирание стоп-ключа /pgworker/backups-disabled ──
+
+    // Сборка цикла с управляемыми режимом/лидерством (FakeEtcd-Store — истина).
+    private static (BackupOrphanSweeperLoop Loop, Fakes.FakeEtcd Etcd, CancellationTokenSource Cts) CreateGateLoop(
+        bool enabled, string? seedLeader = null, bool seedDisabledKey = false)
+    {
+        var etcd = new Fakes.FakeEtcd();
+        if (seedLeader is not null)
+            etcd.Store["/pgworker/leader"] = new Fakes.FakeEtcd.Entry(seedLeader, 1, 1);
+        if (seedDisabledKey)
+            etcd.Store[BackupsDisabledGate.Key] = new Fakes.FakeEtcd.Entry("""{"updated_unix":1}""", 2, 1);
+        var options = new FixedOptionsMonitor(new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 0 },
+            Backups = new BackupsOptions { Enabled = enabled },
+        });
+        var health = new HealthState(TimeProvider.System);
+        var claims = new ClaimStore(
+            "/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System);
+        var sweeper = new BackupOrphanSweeper(
+            etcd, options.CurrentValue.Etcd.Endpoints,
+            UnitPoolFactory.Disabled(), UnitPoolFactory.Store(), claims,
+            () => options.CurrentValue.Backups.ToRuntime(), TimeProvider.System,
+            NullLogger<BackupOrphanSweeper>.Instance);
+        var metrics = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+            new Meter("TestOrphanSweep"), TimeProvider.System);
+        var loop = new BackupOrphanSweeperLoop(options, claims, sweeper, metrics, health,
+            NullLogger<BackupOrphanSweeperLoop>.Instance,
+            etcd, options.CurrentValue.Etcd.Endpoints);
+        return (loop, etcd, new CancellationTokenSource());
+    }
+
+    private static async Task<string?> DisabledKeyRaw(Fakes.FakeEtcd etcd)
+        => etcd.Store.TryGetValue(BackupsDisabledGate.Key, out var e) ? e.Value : null;
+
+    // AAA (t25, arch/19 §4): лидер при Backups:Enabled=false поддерживает
+    // /pgworker/backups-disabled на КАЖДОМ тике лидера — updated_unix ключа
+    // растёт между тиками (не разовая запись).
+    [Fact]
+    public async Task LeaderDisabled_PutsBackupsDisabled_EveryTick()
+    {
+        // Arrange: Enabled=false, лидерство возьмёт свободный txn (ScanIntervalSec=0 —
+        // итерации без паузы)
+        var (loop, etcd, cts) = CreateGateLoop(enabled: false);
+
+        // Act: цикл идёт — ждём появления ключа, затем РОСТА updated_unix (второй тик)
+        await loop.StartAsync(cts.Token);
+        string? first = null;
+        for (var i = 0; i < 200 && first is null; i++)
+        {
+            first = await DisabledKeyRaw(etcd);
+            if (first is null)
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+        }
+        string? second = first;
+        for (var i = 0; i < 200 && second == first; i++)
+        {
+            second = await DisabledKeyRaw(etcd);
+            if (second == first)
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+        }
+        cts.Cancel();
+
+        // Assert: ключ жив и перезаписывается каждым тиком лидера
+        first.Should().NotBeNull("the leader with Enabled=false must put the disabled key");
+        second.Should().NotBeNull().And.NotBe(first, "each leader tick refreshes updated_unix");
+    }
+
+    // AAA (t25, arch/19 §4): лидер при Backups:Enabled=true стирает
+    // /pgworker/backups-disabled идемпотентно в каждом тике — stale-ключ от
+    // прежнего лидера/режима не выживает takeover/reload.
+    [Fact]
+    public async Task LeaderEnabled_DeletesBackupsDisabled_EachTick()
+    {
+        // Arrange: Enabled=true, стоп-ключ уже стоит (stale от прежнего режима)
+        var (loop, etcd, cts) = CreateGateLoop(enabled: true, seedDisabledKey: true);
+
+        // Act: цикл идёт — лидерская del-ветка снимает ключ
+        await loop.StartAsync(cts.Token);
+        for (var i = 0; i < 200 && await DisabledKeyRaw(etcd) is not null; i++)
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        cts.Cancel();
+
+        // Assert: ключ снят (del идемпотентен — отсутствие ключа тоже успех)
+        (await DisabledKeyRaw(etcd)).Should().BeNull(
+            "the leader with Enabled=true must idempotently delete the stale disabled key");
+    }
+
+    // AAA (t25, arch/19 §4): не-лидер стоп-ключ НЕ пишет и НЕ стирает —
+    // единственный писатель/стирающий глобального ключа — держатель лидера.
+    [Fact]
+    public async Task NonLeader_DoesNotTouchBackupsDisabled()
+    {
+        // Arrange: лидер занят другим инстансом (txn NotExists провалится);
+        // стоп-ключ отсутствует
+        var (loop, etcd, cts) = CreateGateLoop(enabled: false, seedLeader: """{"instance":"other"}""");
+
+        // Act: цикл идёт несколько тиков (живость — отметками HealthState)
+        await loop.StartAsync(cts.Token);
+        for (var i = 0; i < 20; i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        cts.Cancel();
+
+        // Assert: ключа нет — не-лидер не пишет (и не мешает чужому лидерству)
+        (await DisabledKeyRaw(etcd)).Should().BeNull("a non-leader must not put the disabled key");
+        etcd.Store["/pgworker/leader"].Value.Should().Be("""{"instance":"other"}""",
+            "a non-leader must not take over the occupied leadership");
+    }
+
+    // AAA (t25, решение spec §7 №7): инстанс при СТАРТЕ с Enabled=true снимает
+    // /pgworker/backups-disabled сразу (до захвата лидерства) — включение
+    // подсистемы не ждёт тика лидера.
+    [Fact]
+    public async Task StartupEnabled_DeletesBackupsDisabled_BeforeLeadership()
+    {
+        // Arrange: Enabled=true, стоп-ключ стоит, лидерство НЕ наше (занято)
+        var (loop, etcd, cts) = CreateGateLoop(enabled: true, seedLeader: """{"instance":"other"}""", seedDisabledKey: true);
+
+        // Act: старт цикла — стартовый del выполняется до первого тика
+        await loop.StartAsync(cts.Token);
+        for (var i = 0; i < 200 && await DisabledKeyRaw(etcd) is not null; i++)
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        cts.Cancel();
+
+        // Assert: ключ снят стартовым del даже без лидерства этого инстанса
+        (await DisabledKeyRaw(etcd)).Should().BeNull(
+            "an instance starting with Enabled=true must delete the disabled key at startup");
     }
 
     // S3-стаб с мгновенными пустыми list-ответами: проход sweeper'а завершается

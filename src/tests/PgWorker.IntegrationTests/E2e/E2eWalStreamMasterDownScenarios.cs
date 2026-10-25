@@ -48,16 +48,13 @@ public class E2eWalStreamMasterDownScenarios
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-ac4-agents-up", async () =>
+        var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-ac4-receivers-up", async () =>
         {
-            var ps = await Fx.RunDockerAsync(
-            [
-                "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
-                "--format", "{{.Names}} {{.State}}",
-            ], ct);
-            return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
+            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+            return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
-        bothAgents.Should().BeTrue("both agents before the master dies");
+        bothStreaming.Should().BeTrue("both receivers streaming before the master dies");
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
         var beforeList = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -144,18 +141,15 @@ public class E2eWalStreamMasterDownScenarios
                 list.Value!.Select(o => o.Name));
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "the chain is stitched through the TLI");
 
-            // После promote воркер пересоздаёт агентов на новых ролях: running-агент
-            // новой мастер-ноды ≤ 300 c (смена источника — пересоздание).
-            // Живость агентов — в failed/slow-phase-сбор, docker ps в тиках
-            // запрещён (t29 §4.1).
-            var newAgent = await E2ePhase.WaitAsync(Fx, "wal-ac4-new-agent", async () =>
+            // После promote приёмник новой мастер-ноды берёт роль мастера сам
+            // (REST-проба, t25): streaming-ключ новой мастер-ноды ≤ 300 c
+            // (смена роли — собственный цикл приёмника, воркер не пересоздаёт).
+            var newReceiver = await E2ePhase.WaitAsync(Fx, "wal-ac4-new-receiver", async () =>
             {
-                var ps = await Fx.RunDockerAsync(
-                    ["ps", "--format", "{{.Names}} {{.State}}",
-                     "--filter", $"name=pgw-backup-wal-{cluster}-shard1-{newMasterNode}"], ct);
-                return ps.Contains("running");
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Any(f => f.Node == newMasterNode && f.State == "streaming");
             }, TimeSpan.FromSeconds(300), ct);
-            newAgent.Should().BeTrue($"the agent of the new master node {newMasterNode} running");
+            newReceiver.Should().BeTrue($"the receiver of the new master node {newMasterNode} streams");
         }
         catch (Exception ex)
         {
@@ -272,9 +266,11 @@ public class E2eWalStreamMasterDownScenarios
     {
         try
         {
-            var agentsPs = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}} {{.State}}",
-                 "--filter", $"name=pgw-backup-wal-{cluster}-"], TestContext.Current.CancellationToken);
+            // t25: факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
+                TestContext.Current.CancellationToken);
+            var receiversDump = string.Join("; ", agentFacts.Select(f =>
+                $"{f.Node}: {f.State}{(f.Error is null ? "" : $" err={f.Error}")}"));
             var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var claimKv = await GetOrNullAsync($"/pgworker/claims/{cluster}");
@@ -323,19 +319,10 @@ public class E2eWalStreamMasterDownScenarios
                     hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
-            var agentLogs = "";
-            foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var name = line.Split(' ')[0];
-                var logs = await E2eFixture.RunDockerLogsAsync(["--tail", "60", name],
-                    TestContext.Current.CancellationToken);
-                agentLogs += $"\n== {name}:\n{logs}";
-            }
-
             var dump =
-                $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
+                $"reason={reason}\nreceivers=[{receiversDump}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
-                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
+                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
             // Дамп — в каталог телеметрии прогона (t29 §3.9): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
@@ -380,7 +367,7 @@ public class E2eWalStreamMasterDownScenarios
     }
 
     /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
-    /// воркер (Backups:Enabled + Wal:AgentImage), ожидание provisioning, DSN мастера.
+    /// воркер (Backups:Enabled), ожидание provisioning, DSN мастера.
     /// </summary>
     // Владение окружением и воркером — у Fact (DisposeAsync при любом исходе);
 
@@ -421,7 +408,6 @@ public class E2eWalStreamMasterDownScenarios
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
-            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

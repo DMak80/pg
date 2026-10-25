@@ -94,10 +94,10 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
         // сразу, а не когда кончатся подсети. Фильтр по единому runId покрывает
         // оба объекта; чужие не включаются.
         var leftContainers = await RunDockerAsync(
-            $"ps -a --filter name={_runId} --format {{{{.Names}}}}");
+            "ps", "-a", "--filter", $"name={_runId}", "--format", "{{.Names}}");
         leftContainers.Should().BeEmpty("the environment teardown is incomplete: a container is left");
         var leftNetworks = await RunDockerAsync(
-            $"network ls --filter name={_runId} --format {{{{.Names}}}}");
+            "network", "ls", "--filter", $"name={_runId}", "--format", "{{.Names}}");
         leftNetworks.Should().BeEmpty("the environment teardown is incomplete: a network is left");
     }
 
@@ -160,16 +160,20 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
         throw new InvalidOperationException($"etcd at {Endpoint} did not come up within 30 s");
     }
 
-    // docker CLI (опознание СВОИХ артефактов в ассерте чистоты).
-    private static async Task<List<string>> RunDockerAsync(string arguments)
+    // docker CLI (опознание СВОИХ артефактов в ассерте чистоты); аргументы —
+    // списком без shell: данные не попадают в строку команды.
+    private static async Task<List<string>> RunDockerAsync(params string[] args)
     {
-        var psi = new ProcessStartInfo("docker", arguments)
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        using var process = Process.Start(psi)!;
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var stdout = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return [.. stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];

@@ -185,6 +185,33 @@ CA-сертификат registry должен быть доверен Docker и 
 запрещены**: реестр — зеркало воспроизводимых внешних зависимостей, а не хранилище
 сборок. `mirror-image.sh` для таких имён не запускать, в `images.txt` не вносить.
 
+### Образ PG-ноды с приёмником WAL (двухшаговая сборка)
+
+Приёмник WAL бэкапов исполняется процессом ВНУТРИ контейнера PG-ноды
+(supervisord-программа `walreceiver`, `/opt/pgw-wal`). Отдельного образа
+`pgworker-wal` и контейнеров `pgw-backup-wal-*` больше нет; сборка ноды —
+двухшаговая (publish на хосте, в контейнер — только артефакты):
+
+    dotnet publish src/PgWorker.WalReceiver -c Release -r <rid> \
+      --self-contained -o artifacts/node-wal        # rid: linux-arm64 | linux-x64
+    dotnet publish src/PgWorker.NodeTools -c Release -r <rid> \
+      --self-contained -o artifacts/node-tools
+    docker build -f docker/node/Dockerfile \
+      --build-arg WAL_PUBLISH_DIR=artifacts/node-wal \
+      --build-arg NODE_TOOLS_PUBLISH_DIR=artifacts/node-tools -t pgworker-node:dev .
+
+Полный стенд собирает образ скриптом `dev-stand/adminpanel/checks/00-up.sh`
+(RID определяется по `uname -m` автоматически).
+
+Обновление живых кластеров на новый образ ноды: надзор НЕ пересоздаёт живые
+ноды — приёмники появятся после пересоздания нод штатным механизмом (recreate
+через панель/API либо `docker rm -f pgw-…` на docker-хосте — надзор поднимет
+контейнер с новым образом; данные в volume сохраняются). До пересоздания
+контроль воркера показывает DEGRADED «источник без живого приёмника» с именем
+ноды. Остатки старых wal-контейнеров `pgw-backup-wal-*` сносятся воркером
+автоматически (санитарный вызов в тике WalStreamProcess), руками чистить не
+нужно.
+
 ### Добавить новый внешний образ / обновить версию
 
 1. Добавить строку `<образ>` в [`dev-stand/images/images.txt`](../dev-stand/images/images.txt)
@@ -213,7 +240,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
 | `mcr.microsoft.com/dotnet/aspnet:10.0` | runtime-стадии тех же Dockerfile'ов |
-| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | WAL-агенты и бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
+| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | джобы полного/verify/restore бэкапов, бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
 | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд — переходный read-only-архив `as-minio` (снос — ../OwnS3/docs/owns3-migration.md §6) |
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |

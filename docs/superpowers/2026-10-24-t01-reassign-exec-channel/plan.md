@@ -1788,7 +1788,7 @@ AGENTS.base §13, не ожидание):**
    `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj -c Release --no-build --filter "FullyQualifiedName~PortAllocHealingTests"`
    Затем зачистка по п.4.
 6. Smoke правки RotationTimeoutTests (риг без driver + бюджет SubmitSec —
-   шаг 7.2): 
+   шаг 7.2):
    `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj -c Release --no-build --filter "FullyQualifiedName~RotationTimeoutTests"`
    Затем зачистка по п.4.
 7. Smoke правки KafkaActiveGateTests (риг без driver — шаг 7.3):

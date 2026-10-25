@@ -82,8 +82,8 @@ x-pgworker-env: &pgworker-env
   # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4). Пусто —
   # деградационный контур без сетевой идентичности (advertised-таргеты).
   PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
-  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/wal-агенты/
-  # ephemeral-джобы бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
+  # Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/ephemeral-джобы
+  # бэкапов создаются в ней одной (pgw-net-<C> не создаётся,
   # extra_hosts спек не применяются); пусто — прод-режим (канон arch/14).
   PgWorker__Docker__ContourNetwork: ${PGW_CONTOUR_NETWORK:-}
 
@@ -453,18 +453,6 @@ services:
       context: ..
       dockerfile: docker/PgWorker.Backup.Dockerfile
     image: pgworker-backup:dev
-    profiles: ["build"]
-    entrypoint: ["true"]
-
-  # Образ wal-агента (t27/t41, arch/19 §3): publish НА ХОСТЕ (00-up.sh,
-  # [PHASE]) → compose build пакует только вывод (канон E2E-образов).
-  pgworker-wal:
-    build:
-      context: ..
-      dockerfile: docker/PgWorker.Wal.Dockerfile
-      args:
-        WAL_PUBLISH_DIR: artifacts/wal/publish
-    image: pgworker-wal:dev
     profiles: ["build"]
     entrypoint: ["true"]
 

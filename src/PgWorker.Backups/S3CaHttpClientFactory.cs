@@ -41,7 +41,12 @@ public sealed class S3CaHttpClientFactory : HttpClientFactory
     /// <summary>Валидация цепочки сервера против per-install CA: корень обязан
     /// нести отпечаток CA. CA — в ExtraStore: без доверенного стора (macOS)
     /// цепочка строится одним элементом (leaf) и сверка корня не срабатывает
-    /// (эмпирический факт E2E t42) — с ExtraStore цепочка [leaf, ca].</summary>
+    /// (эмпирический факт E2E t42) — с ExtraStore цепочка [leaf, ca].
+    /// Hostname/SAN цели НЕ пиннится (осознанно, п.10 ревью t25): ownS3-leaf
+    /// несёт SAN канона owns3/03 §6 (DNS owns3/owns3-ec/localhost), а ноды
+    /// адресуют ownS3 по алиасам контура, в SAN не входящим — hostname-чек
+    /// сломал бы штатный https-контур; граница доверия — per-install CA
+    /// (класс цепочки [leaf, install-CA], чужой CA отвергается тестом).</summary>
     public bool ValidateCertificate(X509Certificate certificate, X509Chain chain)
     {
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;

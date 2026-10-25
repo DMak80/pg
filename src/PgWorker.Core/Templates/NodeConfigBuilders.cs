@@ -54,6 +54,13 @@ public static class InstallSecretsGuard
 /// </summary>
 public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, string RestPassword);
 
+/// <summary>Env бэкап-целей ноды для приёмника WAL (t25, arch/19 §7):
+/// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
+/// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
+/// env не ставится — приёмник старт-фейлится (подсистема выключена
+/// валидацией старта: Enabled=true ⇒ Bucket непустой).</summary>
+public sealed record NodeBackupEnv(string? Bucket, string? CaPem);
+
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
 /// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
@@ -121,6 +128,13 @@ public static class SpiloEnvBuilder
             ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
+            // Идентичность приёмника WAL (t25, arch/19 §3 + arch/14 §2.1): СТРОГО
+            // всегда, независимо от Backups:Enabled — приёмник гейтится
+            // etcd-стоп-ключами; включение подсистемы не требует пересоздания нод.
+            ["PGW_BACKUP_CLUSTER"] = topology.Cluster,
+            ["PGW_BACKUP_SHARD"] = topology.Shard,
+            ["PGW_BACKUP_NODE"] = nodeName,
+
             // ENV lease-скрипта мастер-ключа (callback on_role_change, P11).
             ["PGW_ETCD"] = etcdUrls,
             ["PGW_MASTER_KEY"] = masterKey,
@@ -158,10 +172,11 @@ public static class SpiloEnvBuilder
                       use_pg_rewind: true
                       callbacks:
                         # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
-                        # on_start — node start (role may already be master);
-                        # on_role_change — promotion/demote.
-                        on_start: /home/postgres/master-lease.py
-                        on_role_change: /home/postgres/master-lease.py
+                        # CLI-параметр env-file обязателен: Patroni-callback
+                        # запускается с обрезанным env; роль добавляет Patroni
+                        # позиционным аргументом после параметров.
+                        on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
+                        on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
                       parameters:
                 {{ParametersBlock(tuning, excludeParams)}}
                 """,

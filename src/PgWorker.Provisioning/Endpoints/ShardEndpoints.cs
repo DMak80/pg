@@ -216,9 +216,10 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             dsn = HostRegex().Replace(dsn, m =>
                 (m.Value.StartsWith(' ') ? " " : "") + "host=" +
                 string.Join(",", m.Value[(m.Value.IndexOf('=') + 1)..].Split(',').Select(_ => advertisedHost)));
-        // Пароль приходит параметром и не может быть inline-литералом.
-        var passwordOption = "pass" + "word" + "=" + moverPassword;
-        return dsn + " " + passwordOption + " sslmode=require target_session_attrs=read-write";
+        // Клауза креда — отдельным выражением (пароль приходит параметром из
+        // per-cluster secrets etcd — в исходнике не живёт).
+        var moverCredential = $"password={moverPassword}";
+        return $"{dsn} {moverCredential} sslmode=require target_session_attrs=read-write";
     }
 
     // host=… пары key=value conninfo (замена хостов издателя на advertised).

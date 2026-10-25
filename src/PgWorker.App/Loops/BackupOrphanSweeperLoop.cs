@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
 using Shared.Core.Hosting;
+using Shared.Etcd.Client;
 using System.Diagnostics;
 
 namespace PgWorker.App.Loops;
@@ -13,17 +15,36 @@ namespace PgWorker.App.Loops;
 /// раз в Supervisor:IntervalSec; не-лидер периодически пытается захватить
 /// лидерство (takeover ≤ TTL 15 с + тик) и ждёт Loops:ScanIntervalSec.
 /// Backups:Enabled=false — лидерство поддерживается, сверки не выполняются
-/// (no-op).</summary>
+/// (no-op), лидер каждый тик поддерживает стоп-ключ /pgworker/backups-disabled
+/// (t25, arch/19 §4); при Enabled=true лидер зеркально стирает ключ в каждом
+/// тике (идемпотентный del), каждый инстанс при старте с Enabled=true тоже
+/// снимает ключ (решение spec §7 №7).</summary>
 internal sealed class BackupOrphanSweeperLoop(
     IOptionsMonitor<PgWorkerOptions> options,
     ClaimStore claims,
     BackupOrphanSweeper sweeper,
     Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
     HealthState health,
-    ILogger<BackupOrphanSweeperLoop> logger) : BackgroundService
+    ILogger<BackupOrphanSweeperLoop> logger,
+    IEtcdGateway etcd,
+    string[] etcdEndpoints) : BackgroundService
 {
+    // t25 (arch/19 §4): писатель/стирающий глобального стоп-ключа приёмников.
+    private readonly BackupsDisabledGate _disabledGate = new(etcd);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Старт с Enabled=true — инстанс снимает /pgworker/backups-disabled
+        // (plain-ключ; отсутствие ключа — успех по семантике движка): включение
+        // подсистемы гарантирует снятие. Отказ — лог (ключ мог поддерживаться
+        // прежним лидером; пере-захват лидерства повторит del при смене режима).
+        if (options.CurrentValue.Backups.Enabled)
+        {
+            var deleted = await _disabledGate.DeleteAsync(etcdEndpoints, stoppingToken);
+            if (!deleted.IsSuccess)
+                logger.LogWarning("backups-disabled delete at startup: {Error}", deleted.Error?.Message);
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -37,6 +58,29 @@ internal sealed class BackupOrphanSweeperLoop(
                     if (became.IsSuccess && became.Value)
                         logger.LogInformation(
                             "leadership acquired (orphan-sweeper): {InstanceId}", claims.InstanceId);
+                }
+
+                // t25 (arch/19 §4): держатель глобального лидера при
+                // Backups:Enabled=false поддерживает /pgworker/backups-disabled
+                // на КАЖДОМ тике лидера (plain-ключ — TTL нет, период тика
+                // достаточен); при Enabled=true лидер ЗЕРКАЛЬНО стирает ключ в
+                // каждом тике (идемпотентный del — отсутствие ключа успех):
+                // stale-ключ от прежнего лидера/режима не выживает — приёмники
+                // не стоят в waiting_disabled при включённой подсистеме.
+                // Приёмники читают ключ сами — воркер больше ничего с ним не
+                // делает. Отказ put/del — лог, следующий тик повторит.
+                if (claims.IsLeader && !options.CurrentValue.Backups.Enabled)
+                {
+                    var put = await _disabledGate.PutDisabledAsync(
+                        etcdEndpoints, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), stoppingToken);
+                    if (!put.IsSuccess)
+                        logger.LogWarning("backups-disabled put: {Error}", put.Error?.Message);
+                }
+                else if (claims.IsLeader)
+                {
+                    var deleted = await _disabledGate.DeleteAsync(etcdEndpoints, stoppingToken);
+                    if (!deleted.IsSuccess)
+                        logger.LogWarning("backups-disabled delete: {Error}", deleted.Error?.Message);
                 }
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)

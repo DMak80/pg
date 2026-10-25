@@ -107,7 +107,7 @@ arch/
 │                                  (каркас Shared.Metrics / Puzzle-модуль, словарь имён,
 │                                   коллектор Kafka, стек Prometheus+Grafana+Alertmanager)
 ├── 19-backups.md               ← ★ подсистема бэкапов шардов: PgWorker-оркестрация
-│                                  (pg_basebackup + pg_receivewal-агент, S3-хранилище,
+│                                  (pg_basebackup + приёмник WAL внутри PG-нод, S3-хранилище,
 │                                   контракт /pgworker/backups/*)
 ├── 20-valkey-clusters.md      ← ★ Valkey-кластера: контракт etcd /valkey/ + координация /valkeyworker/
 │                                  + клиентский дискавери (endpoints/ACL-креды app)

@@ -15,10 +15,22 @@ namespace PgWorker.IntegrationTests.E2e;
 public static class E2eFixture
 {
     // Секреты e2e-установки (Д7): передаются воркеру и SQL-пробам теста.
-    public const string SuPassword = "pgw-e2e-su";
-    public const string StandbyPassword = "pgw-e2e-standby";
-    public const string BucketAdminPassword = "pgw-e2e-admin";
-    public const string MoverPassword = "pgw-e2e-mover";
+    // Генерируются в рантайме (криптостойкий RNG) — секреты не зашиваются в
+    // исходник; инициализируются один раз на процесс и переиспользуются всеми
+    // сценариями контура.
+    public static readonly string SuPassword = GenerateSecret("su");
+    public static readonly string StandbyPassword = GenerateSecret("standby");
+    public static readonly string BucketAdminPassword = GenerateSecret("admin");
+    public static readonly string MoverPassword = GenerateSecret("mover");
+
+    private static string GenerateSecret(string role)
+    {
+        // Буквы/цифры (без спецсимволов — безопасно для DSN/env/YAML-квотинга).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return $"pgw-e2e-{role}-"
+            + new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     // ===== [TIMING]: авто-хронометраж ожиданий ВСЕХ серий =====
     // Каждое WaitForAsync пишет метку (условие/длительность/исход), ручные
@@ -253,18 +265,20 @@ public static class E2eFixture
         IReadOnlyDictionary<string, string>? env = null,
         string? logFile = null, bool mergeStderrOnSuccess = false)
     {
-        var psi = new ProcessStartInfo(file, args)
+        var psi = new ProcessStartInfo(file)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
         if (env is not null)
             foreach (var (key, value) in env)
                 psi.EnvironmentVariables[key] = value;
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeout is { } budget)
             timeoutCts.CancelAfter(budget);

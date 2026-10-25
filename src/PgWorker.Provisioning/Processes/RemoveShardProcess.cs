@@ -78,9 +78,11 @@ public sealed class RemoveShardProcess(
         if (!cancelled.IsSuccess)
             return await FailAsync(cluster, cancelled.Error!, "cancelling-restore", ct);
 
-        // S1.5 (t03, arch/19 §3 «Стоп-семантика»): агент WAL шарда — вниз ДО нод
-        // (идемпотентно по имени); ключ wal /pgworker/backups/<C>/<X>/ удаляет
-        // CleanKeysAsync (шаг 4) вместе с демонтажом etcd-ключей шарда.
+        // S1.5 (t03/t25, arch/19 §3 «Стоп-семантика»): санитарный снос legacy
+        // wal-контейнеров шарда ДО нод (идемпотентно; приёмники WAL живут в
+        // контейнерах нод — гаснут вместе с нодами на S2); ключ wal
+        // /pgworker/backups/<C>/<X>/ удаляет CleanKeysAsync (шаг 4) вместе с
+        // демонтажом etcd-ключей шарда.
         var agent = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
         if (!agent.IsSuccess)
             return await FailAsync(cluster, agent.Error!, "removing-agent", ct);

@@ -31,11 +31,19 @@ public static class EtcdEndpointFailover
             return Result<T>.Failed(new EtcdUnreachableException("etcd endpoints are not set"));
 
         Exception? last = null;
+        string? previous = null;
         for (var i = 0; i < endpoints.Count; i++)
         {
-            var result = await call(endpoints[(startIndex + i) % endpoints.Count], ct);
+            var endpoint = endpoints[(startIndex + i) % endpoints.Count];
+            var result = await call(endpoint, ct);
             if (result.IsSuccess)
+            {
+                if (previous is not null)
+                    Console.WriteLine($"etcd: endpoint switch {previous} -> {endpoint}");
                 return result;
+            }
+
+            previous = endpoint;
             last = result.Error;
         }
 
@@ -52,11 +60,19 @@ public static class EtcdEndpointFailover
             return Result.Failed(new EtcdUnreachableException("etcd endpoints are not set"));
 
         Exception? last = null;
+        string? previous = null;
         for (var i = 0; i < endpoints.Count; i++)
         {
-            var result = await call(endpoints[(startIndex + i) % endpoints.Count], ct);
+            var endpoint = endpoints[(startIndex + i) % endpoints.Count];
+            var result = await call(endpoint, ct);
             if (result.IsSuccess)
+            {
+                if (previous is not null)
+                    Console.WriteLine($"etcd: endpoint switch {previous} -> {endpoint}");
                 return result;
+            }
+
+            previous = endpoint;
             last = result.Error;
         }
 

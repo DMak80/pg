@@ -9,17 +9,18 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Docker;
 
 // Перебор endpoints lease-скриптом мастер-ключа (t09, spec §6): PGW_ETCD —
-// СПИСОК URL; при отказе активного endpoint скрипт продолжает писать/продлевать
-// мастер-ключ через следующий живой. Скрипт запускается ПРОЦЕССОМ в контейнере
-// python:3.12-alpine (тот же stdlib-набор, что в образе ноды; fork-демон жив,
-// пока жив PID1-сессия sleep) с bind-mount файла docker/node/master-lease.py.
+// СПИСОК URL; при отказе активного endpoint pgwnodetool продолжает писать/
+// продлевать мастер-ключ через следующий живой. CLI запускается ПРОЦЕССОМ в
+// контейнере mcr.microsoft.com/dotnet/runtime:10.0 (тестовый glibc-раннер;
+// fork-демон жив, пока жив PID1-сессия sleep) с bind-mount self-contained
+// publish-вывода NodeTools.
 // Два ОДИНОЧНЫХ etcd-контейнера (не кластер): lease-скрипту безразличен кворум,
 // важен перебор transport-отказов. Гейт PGW_TEST_DOCKER=1 (DockerTrait).
 [Collection(NonE2eCollection.Name)]
 public class MasterLeaseFailoverTests
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    private const string PythonImage = "python:3.12-alpine";
+    private const string NodeToolsImage = "mcr.microsoft.com/dotnet/runtime:10.0";
     private const int LeaseTtlSec = 5;
 
     [Fact]
@@ -46,11 +47,11 @@ public class MasterLeaseFailoverTests
             .WithPortBinding(2379, assignRandomHostPort: true)
             .Build();
         var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
-        var runner = new ContainerBuilder(PythonImage)
+        var toolsDir = await MasterLeaseNodeTools.EnsureAsync(ct);
+        var runner = new ContainerBuilder(NodeToolsImage)
             .WithName($"pgw-it-mlrun-{tag}")
             .WithCommand("sleep", "600")
-            .WithBindMount(Path.Combine(root, "docker", "node", "master-lease.py"),
-                "/tmp/master-lease.py", AccessMode.ReadOnly)
+            .WithBindMount(toolsDir, "/tmp/pgw-tools", AccessMode.ReadOnly)
             .WithExtraHost("host.docker.internal", "host-gateway")
             .Build();
         await etcd1.StartAsync(ct);
@@ -68,7 +69,8 @@ public class MasterLeaseFailoverTests
         {
             var startScript = $"PGW_ETCD='{ep1},{ep2}' PGW_MASTER_KEY='{key}' "
                 + "PGW_NODE_HOST='node1a' PGW_DOORMAN_PORT='6432' "
-                + "python3 -u /tmp/master-lease.py master >/tmp/lease.log 2>&1";
+                + "/tmp/pgw-tools/pgwnodetool master-lease --env-file /tmp/pgw-node.env master "
+                + ">/tmp/lease.log 2>&1";
             await E2eFixture.RunProcessAsync("docker", ["exec", runner.Name, "sh", "-c", startScript], ct);
 
             // до отказа скрипт пишет на АКТИВНОМ endpoint — первом элементе
@@ -98,7 +100,7 @@ public class MasterLeaseFailoverTests
             var log = await E2eFixture.RunProcessAsync(
                 "docker", ["exec", runner.Name, "cat", "/tmp/lease.log"], ct);
             log.Should().Contain("endpoint switch",
-                "the script log must report which endpoint it writes through (diagnostics)");
+                "the CLI log must report which endpoint it writes through (diagnostics)");
         }
         finally
         {

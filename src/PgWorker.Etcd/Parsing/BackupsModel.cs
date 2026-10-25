@@ -100,8 +100,10 @@ public sealed record FullBackupState(
     string? Error,
     BackupVerify? Verify);
 
-/// <summary>Факт супервиза wal-агента на ноде (t27, arch/19 §4): running — жив,
-/// exited — завершился сам (permanent-выход приёмника), absent — контейнера нет.</summary>
+/// <summary>Факт приёмника WAL на ноде (t25, arch/19 §4): running — живой
+/// lease-ключ статус-приёмника; absent — ключа нет (процесс мёртв/нода вниз);
+/// exited — только legacy-значение панельного парсера (контейнерного агента
+/// больше нет, новым писателем не пишется).</summary>
 public enum WalAgentPresence { Running, Exited, Absent }
 
 /// <summary>Состояние wal-агента одной ноды-источника (t27): per-node супервиз-факт

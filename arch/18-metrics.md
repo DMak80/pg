@@ -234,6 +234,39 @@ Prometheus-алерты группы `backups` (rules.yml; severity — зерк
 `BackupRestoreFailed`, `BackupDrillFailed` (critical; `increase(total{result=
 "failed"}[15m]) > 0`).
 
+### 2.8. Приёмник WAL бэкапов (экспонирует сам приёмник, arch/19 §3)
+
+Приёмник WAL — процесс внутри контейнера PG-ноды (arch/14 §2.1) — несёт
+СОБСТВЕННУЮ телеметрию своей работы (в отличие от §2.7 — серий воркера):
+экспозиция — Kestrel `:8080` ВНУТРИ контейнера ноды, `/metrics`
+(`Shared.Metrics`, Meter `PgWorker.WalReceiver`; порт наружу хоста НЕ
+публикуется). Скрейп — Prometheus по `alias:8080` через
+`Docker:ScrapeNetwork` (та же сеть/та же file_sd-запись, что patroni-нод
+§2.5 — порт другой), джоба `walreceiver-nodes` — http (закрытая сеть
+скрейпа контура; прецедент — джоба `adminpanel`). Скрейп-сети нет —
+теле­метрия приёмника недоступна снаружи (локальная диагностика curl'ом
+внутри контейнера), дашборд показывает пусто; состояние доставки при этом
+полностью наблюдаемо сериями §2.7 и etcd-статусами (arch/19 §4). Лейблы
+конечны: `cluster`, `shard`, `node`, `role` (только у `walreceiver_role`).
+
+| Имя | Тип | Лейблы | Смысл |
+|---|---|---|---|
+| `walreceiver_role` | gauge | cluster, shard, node, role | роль источника приёмника (REST-проба своей ноды, arch/19 §3), `role` ∈ {master,sync,none} — 1 в активной серии |
+| `walreceiver_streaming` | gauge | cluster, shard, node | 1 = replication-стрим активен (приём/доставка), 0 = ожидание (роль/условия/стоп-семантика) |
+| `walreceiver_segments_delivered_total` | counter | cluster, shard, node | доставлено закрытых сегментов в S3 (сброс при рестарте процесса — counter от старта) |
+| `walreceiver_bytes_delivered_total` | counter | cluster, shard, node | доставлено байт сегментов/`.history` |
+| `walreceiver_backlog_bytes` | gauge | cluster, shard, node | размер WAL-хвоста к отправке: позиция записи сервера (walEnd потока) − последний подтверждённый хвост |
+| `walreceiver_put_retries_total` | counter | cluster, shard, node | повторные попытки put (перебор целей пула) |
+| `walreceiver_put_errors_total` | counter | cluster, shard, node | неудачные попытки put (вкл. исчерпание списка пула) |
+| `walreceiver_reconnects_total` | counter | cluster, shard, node | переподключения к источнику (обрывы/смены роли) |
+| `walreceiver_last_success_timestamp_seconds` | gauge | cluster, shard, node | unix-время последнего успешного put (знак живости доставки из первых рук) |
+
+Отдельных Prometheus-алертов на серии приёмника НЕ заводится: здоровье
+доставки закрывают алерты группы `backups` по сериям воркера §2.7
+(BackupWalLagHigh/BackupWalStale — истина по объектам S3), серии приёмника —
+дашборд и разбор инцидентов (who/where: какая нода стримит, где копится
+хвост). Дашборд — `dashboards/backups.json` (панель per-node приёмников).
+
 ## 3. Экспозиция и безопасность
 
 - Воркеры: `/metrics` на том же Kestrel `:8080`, что `/healthz`;
@@ -307,6 +340,7 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
+| `walreceiver-nodes` | file_sd `/etc/prometheus/sd/walreceiver-nodes.json` (источник — тот же генератор §5.4, те же записи portalloc, порт 8080; http — закрытая сеть скрейпа) | §2.8 серии приёмника WAL |
 | `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
 Джоба `patroni-nodes` — `scheme: https` +
@@ -352,7 +386,10 @@ single-хост-контур «дома»).
 `src/Metrics.SdGenerator`): тиком читает `/pgworker/portalloc/`
 (read-only, `RangeAsync`, без клэймов) и пишет `sd/patroni-nodes.json` в
 volume Prometheus; таргет ноды — per-node правило §2.5 (`alias:8008`
-штатно, `host:patroni` деградационно). Механика file_sd/единой сети —
+штатно, `host:patroni` деградационно). Тем же проходом пишется
+`sd/walreceiver-nodes.json` — те же записи per-node, порт `:8080`
+(теле­метрия приёмника WAL §2.8; джоба http — без TLS-конфига).
+Механика file_sd/единой сети —
 без изменений; фиксируется: REST-скрейп нод — по TLS одного
 per-install CA (§5.2). Сеть `pgw-metrics` генератору не
 нужна: etcd читает по compose-DNS сети стенда, таргеты резолвит
@@ -423,6 +460,7 @@ ValkeyWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4
 SdGenerator:Etcd:Endpoints[]           # узлы HA-контура
 SdGenerator:RefreshIntervalSec=15      # <=0 → 15 + warning
 SdGenerator:OutputPath=/sd/patroni-nodes.json
+SdGenerator:WalOutputPath=/sd/walreceiver-nodes.json   # §2.8: те же ноды, порт 8080
 SdGenerator:Metrics { Enabled=true, Path="/metrics" }
 # стенд (env-override compose):
 METRICS_PROMETHEUS_PORT=9090, METRICS_GRAFANA_PORT=3000,

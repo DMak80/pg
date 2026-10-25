@@ -92,3 +92,103 @@
   `/tmp/pgw-kfw-t01-d2-series.log` (временные). Гипотезы: PgWorker E2E под
   параллельной нагрузкой полной series solutionx — нагрузочный класс,
   разбирать по артефактам контуров (docker-логи, timing).
+- **`t11-walreceiver-restapi-ca-probe`** — PatroniRoleProbe в приёмнике WAL
+  не поднимает роль из CA-материала: `X509Certificate2.CreateFromPemFile`
+  требует пару cert+key, а env `SSL_RESTAPI_CA` (RestCertificateCache.CaPem —
+  `caCertPem`) несёт ТОЛЬКО сертификат → CryptographicException «The key
+  contents do not contain a PEM…» → роль навсегда none → приёмник замирает в
+  `waiting_role`, доставка WAL не идёт. Найдено в мерж-гейте t25
+  (2026-10-24, ветка `feat-t25-wal-receiver-in-pgnode`, Worktree-прогон
+  wal/pool/tli): 10/10 фейлов серий `E2eWalStream|E2eTliSwitch|E2eBackupPool`
+  (8–18 мин, каскады «both receivers must stream»), офлайн-контур
+  pgworker-node:dev воспроизвёл и подтвердил (логи в подпапке). Исправление
+  сделано в t25 (`X509CertificateLoader.LoadCertificateFromFile` —
+  сертификат-онли); пункт закрывает собой объяснение пачки фейлов t08
+  (WalStream/Pool/TliSwitch — те же ассерты «both agents/receivers …»):
+  при разборе t08 проверить её серии на этот корень и закрыть пункт t08
+  как дубликат, если подтверждается. Дополнительный угол t25-серии (логи в
+  подпапке): двойной промоут 2→3→4 в `E2eTliSwitchScenarios` —
+  `00000003.history` отсутствует в S3 (transition не наблюдён приёмником —
+  по spec §3.1 п.6 это легитимный `history_missing`-факт), restore
+  `target_time` честно FAILED «TLI transition 2→3 without 00000003.history»;
+  гарантия доставки .history при ПРОПУСКЕ перехода (промоут-гонка) — вне
+  контракта t25, лечение (периодический ре-доклад истории приёмником или
+  иной канал) — отдельная задача.
+  Логи: `arch/roadmap/bugs/t11-walreceiver-restapi-ca-probe/`
+  (выжимка серии walpool2: 10 фейлов, [PHASE]-хвосты, `[TIMING]`,
+  diag-фрагменты; повторные прогоны после фикса — там же).
+- **`t12-pool-failover-exhaustion-marker-missing`** —
+  `PoolFailoverExhaustionScenarios.Pool_FailoverList_And_Exhaustion_SelfHeal`
+  (E2E, docker): Act B «policy [node1] + стоп node1» — DEGRADED с маркером
+  `s3-pool-exhausted` в wal-ключе НЕ появляется за 300 c (ассерт
+  E2eBackupPoolScenarios.cs:600); приёмник мастера при этом жив (supervisord
+  RUNNING, роль master по REST-пробе, ключ agent/&lt;N&gt; жив). Юнит-контур
+  «флаг pool_exhausted в agent-ключе → DEGRADED с маркером» покрыт и зелёный
+  (WalStreamProcessTests.ExhaustionFlagDegraded_ThenFlagClearedHealsActive,
+  t25). Разбор невозможен: teardown Pool-контура при MarkFailed НЕ сохранил
+  docker-логи нод (в артефактах только etcd/mc/owns3/worker — канон
+  docs/e2e-launch.md требует «docker-логи/inspect ВСЕХ контейнеров») —
+  телеметрия Pool-контуров подлежит починке. Прогон 2026-10-24, ветка
+  `feat-t25-wal-receiver-in-pgnode` (Шаг 12 t25, серия pool2); лог серии:
+  `arch/roadmap/bugs/t12-pool-failover-exhaustion-marker-missing/`
+  (pool2-лог + runner.log выжимка). Гипотезы: (а) приёмник в Act B стоит в
+  ожидании (waiting_policy/slot) — флаг не ставится; (б) put-маркер
+  PoolBackupS3 теряется между приёмником и статус-put; (в) гонка рестарта
+  воркера и policy-обновления. Повтор прогонки — с починенной телеметрией.
+- **`t13-restore-pitr-recovery-short-of-archive`** — E2E restore PITR
+  (`E2eRestoreScenarios.Restore_TargetTime_PitrRollback`,
+  `Restore_Latest_RebuildsDestroyedShard`, 2026-10-25, ветка
+  `feat-t25-wal-receiver-in-pgnode`, серия right1 Шага 12 t25): оба факта —
+  «Expected "10"… but "5"» — recovery применил только T0-порцию (до полного),
+  восстановлено 5 контрольных строк из 10; архив ПЕРЕД заявкой полон
+  (сценарные гейты WalArchivedAsync ws+5/ws+8 и WalChainContinuous прошли,
+  restore COMPLETED, восстановленный LSN — внутри сегмента), т.е. recovery
+  НЕ докатился по FULL архиву. Restore-джобы и архивация t25 не менялись;
+  restore-джоб-логи невозможно разобрать: демонтаж сносит джоб-контейнеры
+  ДО телеметрии teardown (docker logs недоступны; etcd-journal сносит
+  teardown) — телеметрия restore-сценариев подлежит починке (лог джоба в
+  артефакты до сноса). Прогон/логи:
+  `arch/roadmap/bugs/t13-restore-pitr-recovery-short-of-archive/`
+  (right1-лог, runner.log, host.log воркеров rs-time/rs-latest). Гипотезы:
+  (а) restore-джоб скачивает WAL-список снимком на старте и не докачивает
+  поздние сегменты (restore_command retry-цикл); (б) recovery_target_time
+  останавливается на конце скачанного архива (promote без target);
+  (в) гонка «архивация приёмником ↔ PLANNED-заявка». Разобрать по
+  телеметрии джоба.
+- **`t92-tlijump-full-retake-mc-stall`** — E2E
+  `PgWorker.IntegrationTests.E2e.E2eWalStreamTliScenarios.WalStream_TliJump_GapMarked_FullRetaken`
+  не сходится после честной tli-индукции: переснятие полного бэкапа не
+  завершается. Прогон 2026-10-25, ветка `feat-t25-wal-receiver-in-pgnode`
+  (рабочее дерево MR-фиксов t25; сборка 0/0). Команда:
+  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build --filter "FullyQualifiedName~E2eWalStreamTliScenarios"`
+  (перед серией — `dotnet run --project src/tests/PgWorker.E2ePrepare -c Release`).
+  Два прогона, разные причины:
+  (1) без гарантии TLI1-якоря (исходное состояние ветки) — входа в
+  tli-процедуру нет (гонка «индукция раньше первой доставки TLI 1»): в S3
+  0 объектов TLI 1, приёмники стартуют от свежих слотов без 58P01,
+  tli_jump не возникает, сходимость формально достигается (104 c); в ветке
+  фиксов t25 в сценарий добавлен wait «wal-tail-anchored» (якорь ≥ 2
+  TLI 1-сегментов до индукции, по образцу WalStream_TliBackfill) — вход
+  стал детерминированным;
+  (2) с якорём — индукция честная (прыжок, зазор, ключ ACTIVE), но
+  финальный инвариант 4 (свежий COMPLETED-полный) недостижим за бюджет
+  900 c: full-джоб 09:59:51 (2,6+ GiB pg_wal staging после 160 записных
+  переключений) — mc-передача виснет с 10:00:25 (контейнер running,
+  последний mc-вывод 10:00:25, тишина 14 мин) при живом ownS3 (200 на
+  ListObjectsV2), параллельно приёмники доставляют (294 объекта) —
+  «upload silence 768–794 s»; воркер ретраит полные каждые 4–5 c
+  (тестовый `Backups:Retry Base=2/Max=4`) — 71+ попыток, 0 COMPLETED;
+  в конце контура «No space left on device» (init file нод) и «57P03
+  database system is in recovery mode».
+  Ожидаемое: полный с большим pg_wal завершается (mc не виснет под
+  параллельной WAL-нагрузкой ownS3 / ownS3 переживает двойную нагрузку),
+  ретрай-цикл полных не штормит при живом джобе.
+  Гипотезы: (а) ownS3 деградирует под смесью ListObjectsV2/PUT
+  (VolumeCleanupService ~2 c) — mc-PUT зависает; (б) BackupProcess
+  помечает живой джоб FAILED (шторм ретраев при running-контейнере —
+  статус джоба читается неточно); (в) ресурсный потолок docker-VM
+  (диск) на тяжёлой индукции.
+  Логи: `arch/roadmap/bugs/t92-tlijump-full-retake-mc-stall/`
+  (e2e-tli*.log; artifacts-run1-no-anchor/ — прогон без якоря;
+  artifacts-run2-anchored/ — прогон с якорем: runner.log, docker-логи
+  нод/воркера/ownS3, json-инспекты, wal-diag-дампы).

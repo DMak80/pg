@@ -29,6 +29,12 @@
 # нод решает health-check /primary, отказ etcd (P9) — не дело дата-плейна.
 name: pgstand
 
+x-node-tools-build: &node-tools-build
+  context: ../../
+  dockerfile: arch/stand/sidecar/Dockerfile
+  args:
+    NODE_TOOLS_PUBLISH_DIR: artifacts/node-tools
+
 services:
   s1a:
     image: postgres:18
@@ -79,12 +85,10 @@ services:
     depends_on: [s1a]
 
   hc1a:
-    build: ./sidecar
+    build: *node-tools-build
     container_name: hc1a
     network_mode: "service:s1a"
-    environment:
-      NODE_NAME: s1a
-      ETCD_ENDPOINTS: http://etcd:2379
+    command: ["rolecheck", "--node-name", "s1a", "--etcd-endpoints", "http://etcd:2379", "--pg-host", "127.0.0.1", "--pg-port", "5432", "--listen-port", "8008"]
     depends_on: [s1a]
     # БЕЗ restart-политики: старт контейнера с network_mode container:X
     # автоматически поднимает X — рестарт сайдкара реанимировал бы
@@ -92,12 +96,10 @@ services:
     # для HAProxy). После старта ноды сайдкар стартуют чеки/руки.
 
   hc1b:
-    build: ./sidecar
+    build: *node-tools-build
     container_name: hc1b
     network_mode: "service:s1b"
-    environment:
-      NODE_NAME: s1b
-      ETCD_ENDPOINTS: http://etcd:2379
+    command: ["rolecheck", "--node-name", "s1b", "--etcd-endpoints", "http://etcd:2379", "--pg-host", "127.0.0.1", "--pg-port", "5432", "--listen-port", "8008"]
     depends_on: [s1b]
 
   hap1:
@@ -114,16 +116,10 @@ services:
 
   # Синкер топологии: /cluster/nodes/* из etcd → HAProxy runtime API
   hasync1:
-    image: python:3.12-alpine
+    build: *node-tools-build
     container_name: hasync1
-    command: ["python", "/hasync.py"]
-    environment:
-      ETCD_ENDPOINTS: http://etcd:2379
-      HAPROXY_SOCKET: /run/haproxy/admin.sock
-      BACKEND: bk_master
-      SERVERS: s1a,s1b
+    command: ["hasync", "--etcd-endpoints", "http://etcd:2379", "--backend", "bk_master", "--servers", "s1a,s1b", "--socket", "/run/haproxy/admin.sock"]
     volumes:
-      - ./hasync.py:/hasync.py:ro
       - hapsock1:/run/haproxy
     networks: [pgnet]
     depends_on: [hap1, etcd]
@@ -199,21 +195,17 @@ services:
     depends_on: [s2a]
 
   hc2a:
-    build: ./sidecar
+    build: *node-tools-build
     container_name: hc2a
     network_mode: "service:s2a"
-    environment:
-      NODE_NAME: s2a
-      ETCD_ENDPOINTS: http://etcd:2379
+    command: ["rolecheck", "--node-name", "s2a", "--etcd-endpoints", "http://etcd:2379", "--pg-host", "127.0.0.1", "--pg-port", "5432", "--listen-port", "8008"]
     depends_on: [s2a]
 
   hc2b:
-    build: ./sidecar
+    build: *node-tools-build
     container_name: hc2b
     network_mode: "service:s2b"
-    environment:
-      NODE_NAME: s2b
-      ETCD_ENDPOINTS: http://etcd:2379
+    command: ["rolecheck", "--node-name", "s2b", "--etcd-endpoints", "http://etcd:2379", "--pg-host", "127.0.0.1", "--pg-port", "5432", "--listen-port", "8008"]
     depends_on: [s2b]
 
   hap2:
@@ -228,16 +220,10 @@ services:
 
   # Синкер топологии: /cluster/nodes/* из etcd → HAProxy runtime API
   hasync2:
-    image: python:3.12-alpine
+    build: *node-tools-build
     container_name: hasync2
-    command: ["python", "/hasync.py"]
-    environment:
-      ETCD_ENDPOINTS: http://etcd:2379
-      HAPROXY_SOCKET: /run/haproxy/admin.sock
-      BACKEND: bk_master
-      SERVERS: s2a,s2b
+    command: ["hasync", "--etcd-endpoints", "http://etcd:2379", "--backend", "bk_master", "--servers", "s2a,s2b", "--socket", "/run/haproxy/admin.sock"]
     volumes:
-      - ./hasync.py:/hasync.py:ro
       - hapsock2:/run/haproxy
     networks: [pgnet]
     depends_on: [hap2, etcd]

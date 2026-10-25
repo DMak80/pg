@@ -163,20 +163,26 @@ public class CaRotationTests(KafkaClusterFixture fixture)
     private static string Certs(string? pem)
         => pem is null ? "-" : (pem.Split("-----BEGIN CERTIFICATE-----").Length - 1).ToString();
 
-    // Хвост логов брокера в diagnose-сообщение (root-cause застрявшей ротации).
+    // Хвост логов брокера в diagnose-сообщение (root-cause застрявшей ротации);
+    // аргументы — списком без shell: имя кластера не попадает в строку команды
+    // (оба потока объединяются в памяти вместо shell-перенаправления 2>&1).
     private static string BrokerLogTail(string cluster)
     {
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo(
-                "/bin/sh", $"-c \"docker logs --tail 25 kfw-{cluster}-broker1 2>&1\"")
+            var psi = new System.Diagnostics.ProcessStartInfo("docker")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
-            using var proc = System.Diagnostics.Process.Start(psi)!;
-            var output = proc.StandardOutput.ReadToEnd();
+            psi.ArgumentList.Add("logs");
+            psi.ArgumentList.Add("--tail");
+            psi.ArgumentList.Add("25");
+            psi.ArgumentList.Add($"kfw-{cluster}-broker1");
+            using var proc = new System.Diagnostics.Process { StartInfo = psi };
+            proc.Start();
+            var output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
             proc.WaitForExit(5000);
             return output.Length > 2600 ? output[^2600..] : output;
         }

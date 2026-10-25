@@ -272,15 +272,9 @@ public class BackupProcessTests
 
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
 
-        // WAL-агенты (t03): в тестах джобов не используются.
-        public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct) => throw NotSupported();
-        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct) => throw NotSupported();
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+        // WAL-агенты (t25): в тестах джобов не используются; remove — no-op.
+        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
     }
 
     // G1-двойник: пароль backup_exec фиксированный, вызовы считаются (G0-кейс).

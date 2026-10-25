@@ -29,8 +29,18 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
-    // REST-пароль key-0 восстанавливаемого кластера (литералы — только в константах).
-    private const string LegacyRestPassword = "Key0Pass00000000000000000000000A";
+    // REST-пароль генерируется в рантайме: секрет не зашивается в исходник;
+    // одно поле фикстуры переиспользуется всеми обращениями (сид снапшотов
+    // и сравнение ensured-значений).
+    private static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     // ── Хелперы Arrange ──
 
@@ -39,7 +49,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
         [new ShardSpec(shard, 1, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running)])],
-        [], RestPassword: LegacyRestPassword);
+        [], RestPassword: RestPassword);
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
@@ -421,13 +431,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
 
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
-        public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
 
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
         public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
         public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);
     }
@@ -438,7 +443,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         [new ShardSpec(shard, 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running),
              new NodeSpec(shard, "shard1b", NodeState.Running)])],
-        [], RestPassword: LegacyRestPassword);
+        [], RestPassword: RestPassword);
 
     private async Task SeedTwoNodeAllocAsync()
     {
@@ -843,7 +848,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
         // t22: без окна ротации — ключ кластера (эффективная пара restore-пути)
-        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(LegacyRestPassword);
+        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(RestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
     }

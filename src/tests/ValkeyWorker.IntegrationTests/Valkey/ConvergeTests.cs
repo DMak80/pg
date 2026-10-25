@@ -48,11 +48,17 @@ public class ConvergeTests(ValkeyClusterFixture fx)
 
     private static string ContainerId(string name)
     {
-        var startInfo = new System.Diagnostics.ProcessStartInfo("docker", $"inspect --format {{{{.Id}}}} {name}")
+        // Аргументы списком без shell: имя контейнера не попадает в строку команды.
+        var startInfo = new System.Diagnostics.ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
         };
-        using var process = System.Diagnostics.Process.Start(startInfo)!;
+        startInfo.ArgumentList.Add("inspect");
+        startInfo.ArgumentList.Add("--format");
+        startInfo.ArgumentList.Add("{{.Id}}");
+        startInfo.ArgumentList.Add(name);
+        using var process = new System.Diagnostics.Process { StartInfo = startInfo };
+        process.Start();
         var id = process.StandardOutput.ReadToEnd().Trim();
         process.WaitForExit();
         return id;

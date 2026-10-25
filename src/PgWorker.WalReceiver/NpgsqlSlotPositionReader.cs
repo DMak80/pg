@@ -22,7 +22,7 @@ public sealed class NpgsqlSlotPositionReader(WalReceiverOptions o) : ISlotPositi
             command.Parameters.AddWithValue(slot);
             var raw = await command.ExecuteScalarAsync(ct);
             if (raw is not string lsnText)
-                return Result<ulong>.Failed(new ApplicationException($"slot {slot} is missing"));
+                return Result<ulong>.Failed(new WalSlotMissing(slot)); // слота нет — waiting_slot (ensure воркера)
 
             return Result<ulong>.Success(ParseLsn(lsnText));
         }

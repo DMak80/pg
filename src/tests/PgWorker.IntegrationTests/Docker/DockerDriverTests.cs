@@ -14,9 +14,6 @@ public class DockerDriverTests
 
     private const string Host = "local";
 
-    // Тестовый REST-пароль ноды (литералы — только в константах).
-    private const string RestTestPassword = "rest-test-pw";
-
     private static readonly DockerEngineFactory Factory = new();
 
     // Уникальный суффикс прогона: параллельные запуски не конфликтуют по именам.
@@ -44,6 +41,18 @@ public class DockerDriverTests
     private static readonly InstallSecrets Secrets = new("su", "sb", "ba", "mv");
 
     private static readonly EtcdEndpoints Etcd = new(["http://localhost:2379"]);
+
+    // Пароль REST-API генерируется в рантайме: секрет не зашивается в исходник;
+    // одно поле фикстуры переиспользуется всеми обращениями.
+    private static readonly string RestTestPassword = GenerateRestPassword();
+
+    private static string GenerateRestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для env/YAML).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     private static string ContainerName(string cluster) => $"pgw-{cluster}-s1-n1";
 

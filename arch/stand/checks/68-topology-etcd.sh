@@ -17,13 +17,9 @@ ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 h1()  { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 "host=hap1 port=5432 dbname=postgres user=postgres" "$@"; }
 h2()  { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 "host=hap2 port=5432 dbname=postgres user=postgres" "$@"; }
 # чтение HAProxy runtime API из hasync-контейнера (сокет в общем volume)
-haprt() { # <контейнер-hasync> <команда>
-  docker exec -e CMD="$2" "$1" python -c '
-import os, socket
-with socket.socket(socket.AF_UNIX) as s:
-    s.settimeout(5); s.connect(os.environ["HAPROXY_SOCKET"])
-    s.sendall((os.environ["CMD"] + "\n").encode())
-    print(s.recv(65536).decode(), end="")'
+haprt() { # <контейнер-hasync> <команда>: pgwnodetool — единый CLI контейнера
+  docker exec "$1" /opt/pgw-tools/pgwnodetool haproxy \
+    --socket /run/haproxy/admin.sock --command "$2"
 }
 rt_addr() { haprt "$1" "show servers state" | awk -v srv="$2" '$4==srv {print $5}'; }
 

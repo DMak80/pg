@@ -18,7 +18,7 @@ public static class VerifyJobSpec
             [VerifyJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
             [VerifyJobCommand.EnvS3Bucket] = opts.S3Bucket,
             [VerifyJobCommand.EnvS3AccessKey] = s3AccessKey,
-            [VerifyJobCommand.EnvS3SecretKey] = s3SecretKey,
+            [VerifyJobCommand.EnvS3Credentials] = s3SecretKey,
             [VerifyJobCommand.EnvPrefix] = $"{cluster}/{shard}",
             [VerifyJobCommand.EnvId] = id,
             [VerifyJobCommand.EnvStagingDir] = opts.StagingDir,

@@ -20,10 +20,20 @@ namespace PgWorker.IntegrationTests.Backups;
 /// </summary>
 public sealed class OwnPostgres : IAsyncDisposable
 {
-    public const string Password = "pgw-test-su";
+    // Пароль superuser генерируется в рантайме: секрет не зашивается в исходник;
+    // одно поле на процесс переиспользуется всеми обращениями.
+    public static readonly string Password = $"pgw-test-su-{GenerateToken()}-{GenerateToken()}";
     public const string Slot = "pgw_bkp_it";
 
     private const string Image = "postgres:18-alpine";
+
+    private static string GenerateToken()
+    {
+        // Криптостойкий генератор: 20 символов букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     private readonly IContainer _container;
     private readonly string _certsDir;

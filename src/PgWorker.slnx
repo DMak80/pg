@@ -6,6 +6,7 @@
         <Project Path="Shared.Core/Shared.Core.csproj" />
         <Project Path="Shared.Etcd/Shared.Etcd.csproj" />
         <Project Path="Shared.Tls/Shared.Tls.csproj" />
+        <Project Path="PgWorker.NodeTools/PgWorker.NodeTools.csproj" />
         <Project Path="Shared.Docker/Shared.Docker.csproj" />
         <Project Path="Metrics.SdGenerator/Metrics.SdGenerator.csproj" />
     </Folder>
@@ -64,6 +65,7 @@
         <Project Path="tests/Metrics.SdGenerator.IntegrationTests/Metrics.SdGenerator.IntegrationTests.csproj" />
         <Project Path="tests/Shared.Core.UnitTests/Shared.Core.UnitTests.csproj" />
         <Project Path="tests/Shared.Etcd.UnitTests/Shared.Etcd.UnitTests.csproj" />
+        <Project Path="tests/PgWorker.NodeTools.UnitTests/PgWorker.NodeTools.UnitTests.csproj" />
         <Project Path="tests/Shared.Docker.UnitTests/Shared.Docker.UnitTests.csproj" />
         <Project Path="tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj" />
         <Project Path="tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj" />

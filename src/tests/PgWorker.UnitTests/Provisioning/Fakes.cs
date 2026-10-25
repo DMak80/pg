@@ -222,7 +222,17 @@ internal static class Fakes
 // из РЕЗУЛЬТАТА ensure (легаси-кластер без ключа в снапшоте).
 internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
 {
-    public const string RestPassword = "EnsuredRest0Pass0000000000000000A";
+    // Пароль генерируется в рантайме: секрет не зашивается в исходник; одно
+    // поле переиспользуется всеми обращениями (результат ensure и сравнения).
+    public static readonly string RestPassword = GenerateTestPassword();
+
+    private static string GenerateTestPassword()
+    {
+        // Криптостойкий генератор: 24 символа букв/цифр (безопасно для DSN/env).
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var bytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(24);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
 
     public Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
@@ -335,30 +345,20 @@ internal sealed class FakeDriver : IClusterDriver
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
-        // t03: контейнеры WAL-агентов — фиксация ensure/remove + мутабельная карта.
-        public readonly List<string> EnsuredBackupAgents = [];
+        // t25: legacy wal-контейнеры pgw-backup-wal-* — карта живых объектов для
+        // санитарного сноса + журнал удалённых имён; ensure/list/logs упразднены.
         public readonly List<string> RemovedBackupAgents = [];
         public List<DockerContainer> BackupAgentObjects = [];
 
-        public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                var name = BackupAgentNames.Container(cluster, shard, node);
-                EnsuredBackupAgents.Add(name);
-                if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
-                    BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
-            }
-
-            return Task.FromResult(Result.Success());
-        }
+        // t25: число вызовов санитарного сноса (тик WalStreamProcess).
+        public int RemoveBackupAgentsCalls;
 
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
         {
             lock (_gate)
             {
-                var prefix = BackupAgentNames.Prefix(cluster);
+                RemoveBackupAgentsCalls++;
+                var prefix = $"pgw-backup-wal-{cluster}-";
                 var names = BackupAgentObjects
                     .SelectMany(c => c.Names)
                     .Select(n => n.TrimStart('/'))
@@ -374,23 +374,6 @@ internal sealed class FakeDriver : IClusterDriver
             }
 
             return Task.FromResult(Result.Success());
-        }
-
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
-
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
-            string cluster, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                var prefix = BackupAgentNames.Prefix(cluster);
-                IReadOnlyList<DockerContainer> result = BackupAgentObjects
-                    .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(prefix, StringComparison.Ordinal)))
-                    .ToList();
-                return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(result));
-            }
         }
 
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)

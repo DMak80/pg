@@ -15,8 +15,7 @@ public static class VerifyJobCommand
     public const string EnvS3Endpoints = "S3_ENDPOINTS";
     public const string EnvS3Bucket = "S3_BUCKET";
     public const string EnvS3AccessKey = "S3_ACCESS_KEY";
-    // Имя env-переменной, не значение секрета.
-    public const string EnvS3SecretKey = "S3_" + "SECRET" + "_KEY";
+    public const string EnvS3Credentials = "S3_SECRET_KEY";
     public const string EnvPrefix = "PGW_BK_PREFIX";
     public const string EnvId = "PGW_BK_ID";
     public const string EnvStagingDir = "PGW_BK_STAGING_DIR";

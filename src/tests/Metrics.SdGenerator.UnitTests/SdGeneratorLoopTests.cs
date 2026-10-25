@@ -57,22 +57,24 @@ public class SdGeneratorLoopTests : IDisposable
     private readonly List<IDisposable> _disposables = [];
     private readonly List<string> _dirs = [];
 
-    private (SdGeneratorLoop Loop, SdGeneratorMetrics Metrics, string Path, FakeEtcdGateway Etcd) NewLoop(
+    private (SdGeneratorLoop Loop, SdGeneratorMetrics Metrics, string Path, string WalPath, FakeEtcdGateway Etcd) NewLoop(
         params string[] endpoints)
     {
-        // Arrange: harness цикла — temp-файл, свой Meter (standalone), фейк etcd.
+        // Arrange: harness цикла — temp-файлы (оба file_sd), свой Meter
+        // (standalone), фейк etcd.
         var dir = Path.Combine(Path.GetTempPath(), "sd-loop-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         _dirs.Add(dir);
         var path = Path.Combine(dir, "sd.json");
+        var walPath = Path.Combine(dir, "walreceiver-nodes.json");
         var etcd = new FakeEtcdGateway();
         var meter = new System.Diagnostics.Metrics.Meter("sd-unit");
         _disposables.Add(meter);
         var metrics = new SdGeneratorMetrics(meter, TimeProvider.System);
         var loop = new SdGeneratorLoop(
-            etcd, endpoints, new SdFileWriter(path), metrics,
+            etcd, endpoints, new SdFileWriter(path), new SdFileWriter(walPath), metrics,
             NullLogger<SdGeneratorLoop>.Instance);
-        return (loop, metrics, path, etcd);
+        return (loop, metrics, path, walPath, etcd);
     }
 
     public void Dispose()
@@ -87,7 +89,7 @@ public class SdGeneratorLoopTests : IDisposable
     public async Task Tick_Success_WritesFileAndMetric()
     {
         // Arrange
-        var (loop, metrics, path, etcd) = NewLoop("ep1");
+        var (loop, metrics, path, walPath, etcd) = NewLoop("ep1");
         var kv = new Kv("/pgworker/portalloc/c1", KvValue, ModRevision: 1);
         etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Success([kv]));
         var before = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
@@ -102,11 +104,39 @@ public class SdGeneratorLoopTests : IDisposable
         metrics.LastSuccessUnix.Should().NotBeNull().And.BeGreaterThanOrEqualTo(before);
     }
 
+    // AAA (t25, arch/18 §5.4/§8): второй file_sd — те же записи per-node одним
+    // тиком, таргет приёмника WAL — контейнерный :8080 (http): сетевая часть
+    // (alias/advertised host) сохраняется, порт Patroni заменяется на :8080.
+    [Fact]
+    public async Task Tick_WritesWalReceiverFile_Port8080()
+    {
+        // Arrange — две записи portalloc: с alias (сетевой таргет) и без
+        // (advertised host:patroni-порт)
+        var (loop, _, _, walPath, etcd) = NewLoop("ep1");
+        etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Success(
+        [
+            new Kv("/pgworker/portalloc/c1", KvValue, ModRevision: 1),
+            new Kv("/pgworker/portalloc/c2",
+                """{"s1/s1a":{"host":"h9","pg":15432,"patroni":18008,"doorman":16432,"alias":"pgw-c2-s1-s1a"}}""",
+                ModRevision: 2),
+        ]));
+
+        // Act
+        var ok = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — wal-файл: те же группы, порт 8080 у обеих веток таргета
+        ok.Should().BeTrue();
+        File.ReadAllText(walPath).Should().Contain("\"h1:8080\"")
+            .And.Contain("\"pgw-c2-s1-s1a:8080\"");
+        File.ReadAllText(walPath).Should().Contain("\"cluster\":\"c1\"");
+        File.ReadAllText(walPath).Should().Contain("\"cluster\":\"c2\"");
+    }
+
     [Fact]
     public async Task Tick_EmptyPrefix_IsSuccessWithEmptyArray()
     {
         // Arrange: кластеров нет — пустой file_sd, тик валиден
-        var (loop, metrics, path, etcd) = NewLoop("ep1");
+        var (loop, metrics, path, walPath, etcd) = NewLoop("ep1");
         etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Success([]));
 
         // Act
@@ -122,7 +152,7 @@ public class SdGeneratorLoopTests : IDisposable
     public async Task Tick_EtcdError_KeepsFileAndMetricUntouched()
     {
         // Arrange: файл pre-written «X», успехов ещё не было (метрика null)
-        var (loop, metrics, path, etcd) = NewLoop("ep1", "ep2");
+        var (loop, metrics, path, walPath, etcd) = NewLoop("ep1", "ep2");
         await File.WriteAllTextAsync(path, "X", TestContext.Current.CancellationToken);
         etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 unreachable")));
         etcd.SetRange("ep2", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep2 unreachable")));
@@ -141,7 +171,7 @@ public class SdGeneratorLoopTests : IDisposable
     public async Task Tick_Failover_FallsBackToSecondEndpoint()
     {
         // Arrange: ep1 недоступен, ep2 отвечает
-        var (loop, _, path, etcd) = NewLoop("ep1", "ep2");
+        var (loop, _, path, walPath, etcd) = NewLoop("ep1", "ep2");
         etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("ep1 unreachable")));
         etcd.SetRange("ep2", Result<IReadOnlyList<Kv>>.Success(
             [new Kv("/pgworker/portalloc/c1", KvValue, ModRevision: 1)]));
@@ -158,7 +188,7 @@ public class SdGeneratorLoopTests : IDisposable
     public async Task Tick_SameContent_DoesNotTouchFile()
     {
         // Arrange: одинаковый range на два тика
-        var (loop, _, path, etcd) = NewLoop("ep1");
+        var (loop, _, path, walPath, etcd) = NewLoop("ep1");
         etcd.SetRange("ep1", Result<IReadOnlyList<Kv>>.Success(
             [new Kv("/pgworker/portalloc/c1", KvValue, ModRevision: 1)]));
 

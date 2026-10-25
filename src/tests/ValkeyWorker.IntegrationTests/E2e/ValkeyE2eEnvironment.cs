@@ -333,14 +333,21 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
             return;
         var root = FindRepoRoot();
-        var build = new ProcessStartInfo("docker",
-            $"build -f docker/ValkeyWorker.Dockerfile -t {WorkerImage} .")
+        // Список аргументов без shell: тег образа не попадает в строку команды.
+        var build = new ProcessStartInfo("docker")
         {
             WorkingDirectory = root,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(build)!;
+        build.ArgumentList.Add("build");
+        build.ArgumentList.Add("-f");
+        build.ArgumentList.Add("docker/ValkeyWorker.Dockerfile");
+        build.ArgumentList.Add("-t");
+        build.ArgumentList.Add(WorkerImage);
+        build.ArgumentList.Add(".");
+        using var process = new Process { StartInfo = build };
+        process.Start();
         await process.WaitForExitAsync();
         if (process.ExitCode != 0)
             throw new InvalidOperationException(
@@ -368,15 +375,17 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         string file, string[] args, CancellationToken ct, TimeSpan timeout,
         bool mergeStderrOnSuccess = false)
     {
-        var psi = new ProcessStartInfo(file, args)
+        var psi = new ProcessStartInfo(file)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        using var process = Process.Start(psi)
-            ?? throw new ApplicationException($"failed to start {file}");
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
         // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
@@ -487,11 +496,16 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     // docker-факт: имя живого контейнера окружения (префикс/тег прогона).
     public async Task<bool> ContainerAliveAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker", $"inspect --format {{{{.State.Running}}}} {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{.State.Running}}");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 && output.Trim() == "true";
@@ -499,16 +513,19 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     // Args контейнера как compact-JSON ({{json .Args}}) — маркер TLS t06:
     // в args ноды обязаны быть --tls-port 6379/--port 0; пусто = объекта нет.
-    // Шаблон В КАВЫЧКАХ: в нём пробел, а .NET режет Arguments по пробелам.
     public async Task<string> ContainerArgsJsonAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker",
-            $"inspect --format \"{{{{json .Args}}}}\" {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add("--format");
+        psi.ArgumentList.Add("{{json .Args}}");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         var output = await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
@@ -518,12 +535,16 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     // как проверка ОТСУТСТВИЯ тома (per-cluster TLS-тома не создаётся).
     public async Task<bool> VolumeExistsAsync(string name)
     {
-        var inspect = new ProcessStartInfo("docker", $"volume inspect {name}")
+        var psi = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        using var process = Process.Start(inspect)!;
+        psi.ArgumentList.Add("volume");
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add(name);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
         await process.StandardOutput.ReadToEndAsync();
         await process.WaitForExitAsync();
         return process.ExitCode == 0;
@@ -536,23 +557,29 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     {
         foreach (var name in _workerNames.Append($"vwk-ee-{_runId}"))
         {
-            await ShellToFileAsync("docker", $"logs --tail 2000 {name}",
+            await ShellToFileAsync("docker", ["logs", "--tail", "2000", name],
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.log"));
-            await ShellToFileAsync("docker", $"inspect {name}",
+            await ShellToFileAsync("docker", ["inspect", name],
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.json"));
         }
 
         // Ноды кластера сценария (vwk-<C>-*) — по тегу прогона.
-        var ps = new ProcessStartInfo("docker",
-            $"ps -a --format {{{{.Names}}}} --filter name=vwk-{ClusterTag}")
+        var ps = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true };
-        using var listing = Process.Start(ps)!;
+        ps.ArgumentList.Add("ps");
+        ps.ArgumentList.Add("-a");
+        ps.ArgumentList.Add("--format");
+        ps.ArgumentList.Add("{{.Names}}");
+        ps.ArgumentList.Add("--filter");
+        ps.ArgumentList.Add($"name=vwk-{ClusterTag}");
+        using var listing = new Process { StartInfo = ps };
+        listing.Start();
         var names = (await listing.StandardOutput.ReadToEndAsync())
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         await listing.WaitForExitAsync();
         await File.WriteAllLinesAsync(Path.Combine(ArtifactsDir, $"nodes-{mark}.txt"), names);
         foreach (var name in names)
-            await ShellToFileAsync("docker", $"logs --tail 2000 {name}",
+            await ShellToFileAsync("docker", ["logs", "--tail", "2000", name],
                 Path.Combine(ArtifactsDir, $"node-{name}-{mark}.log"));
     }
 
@@ -615,17 +642,26 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         // создаётся); двухинстансный контур проверяет ОБА имени воркеров.
         foreach (var name in _workerNames.Append($"vwk-ee-{_runId}"))
         {
-            var inspect = new ProcessStartInfo("docker", $"inspect {name}")
+            var inspect = new ProcessStartInfo("docker")
             { RedirectStandardOutput = true, RedirectStandardError = true };
-            using var process = Process.Start(inspect)!;
+            inspect.ArgumentList.Add("inspect");
+            inspect.ArgumentList.Add(name);
+            using var process = new Process { StartInfo = inspect };
+            process.Start();
             await process.WaitForExitAsync();
             process.ExitCode.Should().NotBe(0, $"container {name} was removed by teardown");
         }
 
-        var volumeList = new ProcessStartInfo("docker",
-            $"volume ls --format {{{{.Name}}}} --filter name=vwk-{ClusterTag}")
+        var volumeList = new ProcessStartInfo("docker")
         { RedirectStandardOutput = true };
-        using var volumeListing = Process.Start(volumeList)!;
+        volumeList.ArgumentList.Add("volume");
+        volumeList.ArgumentList.Add("ls");
+        volumeList.ArgumentList.Add("--format");
+        volumeList.ArgumentList.Add("{{.Name}}");
+        volumeList.ArgumentList.Add("--filter");
+        volumeList.ArgumentList.Add($"name=vwk-{ClusterTag}");
+        using var volumeListing = new Process { StartInfo = volumeList };
+        volumeListing.Start();
         var volumeNames = await volumeListing.StandardOutput.ReadToEndAsync();
         await volumeListing.WaitForExitAsync();
         volumeNames.Trim().Should().BeEmpty($"no volumes with tag {ClusterTag} remain after teardown");
@@ -665,20 +701,23 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     // бюджет 60 с: по истечении дерево убивается, доступный вывод дренажится
     // и пишется. Телеметрия — «лучшими усилиями»: исключения наружу не
     // пробрасываются. Статический доступ — для факта той же сборки
-    // (инстанс окружения создаётся только фабрикой E2E).
-    internal static async Task ShellToFileAsync(string program, string args, string path)
+    // (инстанс окружения создаётся только фабрикой E2E). Аргументы — списком
+    // без shell: данные не попадают в строку команды.
+    internal static async Task ShellToFileAsync(string program, string[] args, string path)
     {
         try
         {
-            var startInfo = new ProcessStartInfo(program, args)
+            var startInfo = new ProcessStartInfo(program)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
             };
-            using var process = Process.Start(startInfo)
-                ?? throw new ApplicationException($"failed to start {program}");
+            foreach (var arg in args)
+                startInfo.ArgumentList.Add(arg);
+            using var process = new Process { StartInfo = startInfo };
+            process.Start();
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             // Оба потока — параллельно и БЕЗ токена бюджета: при kill пайпы
             // закрываются, накопленный вывод доступен (канон E2eFixture).

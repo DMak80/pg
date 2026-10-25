@@ -22,6 +22,10 @@ public static class TargetMapping
     /// (arch/14 §2.1), не host-порт: сетевой таргет едины сети контура.</summary>
     public const int PatroniRestPort = 8008;
 
+    /// <summary>Контейнерный порт /metrics приёмника WAL (t25, arch/14 §2.1):
+    /// тот же per-node таргет вторым file_sd (arch/18 §5.4), http.</summary>
+    public const int WalReceiverMetricsPort = 8080;
+
     // DTO записи portalloc (формат — PgWorker.Core PortallocEntry, без ссылки на Core:
     // генератор независим от воркеров; незнакомые поля — игнор).
     private sealed record PortallocEntry(
@@ -62,6 +66,19 @@ public static class TargetMapping
         => JsonSerializer.Serialize(groups.Select(g => new
         {
             targets = new[] { g.Target },
+            labels = new { cluster = g.Cluster, shard = g.Shard, node = g.Node },
+        }));
+
+    // Второй file_sd (t25, arch/18 §5.4): ТЕ ЖЕ записи per-node, таргет приёмника
+    // WAL — <alias>:8080 (http; ScrapeNetwork приёмника), у записи без alias —
+    // advertised <host>:8080 (скрейп без ScrapeNetwork недоступен — записи
+    // пишутся единообразно, arch/18 §5.4). Порт Target (Patroni 8008 / advertised)
+    // заменяется контейнерным :8080 — сетевая идентичность (alias/host) та же.
+    public static string SerializeWal(IReadOnlyList<SdTargetGroup> groups)
+        => JsonSerializer.Serialize(groups.Select(g => new
+        {
+            targets = new[] { string.Create(CultureInfo.InvariantCulture,
+                $"{g.Target[..g.Target.LastIndexOf(':')]}:{WalReceiverMetricsPort}") },
             labels = new { cluster = g.Cluster, shard = g.Shard, node = g.Node },
         }));
 

@@ -23,7 +23,7 @@ public static class RestoreJobSpec
         {
             [RestoreJobCommand.EnvS3Endpoints] = string.Join(",", s3Endpoints),
             [RestoreJobCommand.EnvS3AccessKey] = s3AccessKey,
-            [RestoreJobCommand.EnvS3SecretKey] = s3SecretKey,
+            [RestoreJobCommand.EnvS3Credentials] = s3SecretKey,
             [RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [RestoreJobCommand.EnvSrcPrefix] = $"{srcCluster}/{srcShard}",
             [RestoreJobCommand.EnvBackupId] = id,

@@ -59,6 +59,11 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             $"host=shard1a port=5432 dbname={cluster} user=bucket_admin password=x", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/shards/shard1/master",
             "shard1a:17001", null, ct);
+        // t25: приёмник мастера «жив» (статус-ключ lease) — контроль не
+        // деградирует not-running; конкретные тесты удаляют/сидируют факты.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/pgworker/backups/{cluster}/shard1/agent/shard1a",
+            """{"node":"shard1a","state":"streaming","pool_exhausted":false}""", null, ct);
     }
 
     private WalStreamProcess BuildWalProcess(
@@ -184,11 +189,12 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         var walProcess2 = BuildWalProcess(Options(), sql, s3, driver);
         (await walProcess2.TickAsync(BuildSnap("sh1"), backups2, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — wal.state=ACTIVE, chain_start от нового полного, агент поднят
+        // Assert — wal.state=ACTIVE, chain_start от нового полного (агентов
+        // больше нет — t25: приёмник живёт в контейнере ноды, ensure-агента
+        // в тике нет)
         var healed = await ReadWalAsync("sh1");
         healed!.State.Should().Be(WalStreamStatus.Active);
         healed.ChainStartSegment.Should().Be("000000010000000000000005");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-sh1-shard1-shard1a");
     }
 
     // Драйвер-композит (паттерн RestoreProcessTests.TestDriver): агентные вызовы —
@@ -210,13 +216,8 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
 
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
-        public Task<Result> EnsureBackupAgentAsync(string c, string sh, string n, ContainerSpec spec, string host, CancellationToken ct) => inner.EnsureBackupAgentAsync(c, sh, n, spec, host, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
-    // t36: заглушка хвоста лога агента (интерфейсный член; сценарию не нужен).
-    public Task<Result<string>> BackupAgentLogsAsync(string cluster, string containerName, int tailLines, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(""));
 
-        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string c, CancellationToken ct) => inner.ListBackupAgentsAsync(c, ct);
         public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
         public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);
     }
