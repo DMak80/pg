@@ -11,6 +11,8 @@ namespace PgWorker.UnitTests.Provisioning;
 public class ClusterSecretEnsurerTests
 {
     private const string Ep = "http://etcd:2379";
+    // Bucket-admin-пароль из config (литералы — только в константах).
+    private const string FromConfigBucketAdminPassword = "FromConfigPass0000000000000000000A";
 
     private static readonly ClusterConfig Config =
         new("shop", 4, "shop", null, ClusterState.Active, null, null);
@@ -130,7 +132,7 @@ public class ClusterSecretEnsurerTests
         var config = Config with
         {
             BucketAdminUser = "ba_user",
-            BucketAdminPassword = "FromConfigPass0000000000000000000A",
+            BucketAdminPassword = FromConfigBucketAdminPassword,
         };
 
         // Act
@@ -139,9 +141,9 @@ public class ClusterSecretEnsurerTests
         // Assert — bucket_admin-ключи из config (не сгенерированы)
         result.IsSuccess.Should().BeTrue();
         etcd.Store["/clusters/shop/bucket_admin_user"].Value.Should().Be("ba_user");
-        etcd.Store["/clusters/shop/bucket_admin_password"].Value.Should().Be("FromConfigPass0000000000000000000A");
+        etcd.Store["/clusters/shop/bucket_admin_password"].Value.Should().Be(FromConfigBucketAdminPassword);
         result.Value.BucketAdmin.User.Should().Be("ba_user");
-        result.Value.BucketAdmin.Password.Should().Be("FromConfigPass0000000000000000000A");
+        result.Value.BucketAdmin.Password.Should().Be(FromConfigBucketAdminPassword);
     }
 
     [Fact]

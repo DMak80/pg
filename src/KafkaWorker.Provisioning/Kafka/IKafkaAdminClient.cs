@@ -100,6 +100,10 @@ public interface IKafkaAdminClient : IAsyncDisposable
 
     // Удаление лишних ACL роли app (DeleteAcls exact-match, t03).
     Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
+
+    // Подача reassignment-батча (KIP-455, arch/16 §2.4): план принят либо
+    // Result.Failed (top-level/per-partition ошибки Kafka). Идемпотентна.
+    Task<Result> AlterReassignmentsAsync(IReadOnlyList<ReassignMove> moves, CancellationToken ct);
 }
 
 // Свои ACL-типы (seam: без Confluent-типов в сигнатурах, arch/16 §2.3/E).

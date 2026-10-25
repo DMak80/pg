@@ -28,9 +28,11 @@ swarm). Это исполнительная сторона декларатив�
 8. **PasswordRotator** (H, фазы A/B/C) — ротация per-cluster паролей
    (app / admin) без окна недоступности;
 9. **PartitionReassigner** (I) — reassignment партиций: drain брокера с
-   репликами (разблокирует G) и ребалансировка по заявке панели (через
-   kafka-reassign CLI в контейнере брокера — AdminClient API reassignment
-   в Confluent.Kafka нет);
+   репликами (разблокирует G) и ребалансировка по заявке панели (чтение
+   метаданных и подача плана — единый Kafka-протокол: Describe через
+   AdminClient, подача — операция AlterReassignments/KIP-455 протокольным
+   миниклиентом из процесса воркера, §2.4; Confluent.Kafka операцию не
+   экспонирует);
 10. **NodeRegenerator** (J) — rolling-перегенерация брокеров: автоконверге
     лимитов контейнера (cpu/mem) к `brokers/<b>/resources` — пересоздание
     контейнера по одному за тик (том сохраняется), env пересобирается из
@@ -303,36 +305,51 @@ SASL_SSL-listener'а одним сертификатом. Срок 10 лет, ke
 
 | Принципал | Роль | Права |
 |---|---|---|
-| `User:admin` (кред `admin_user`/`admin_password`, etcd, ensure + ротация H) | администратор | `super.users` — полный доступ без ACL-перечисления; воркер (AdminClient+CLI), панель (пробы), сид |
+| `User:admin` (кред `admin_user`/`admin_password`, etcd, ensure + ротация H) | администратор | `super.users` — полный доступ без ACL-перечисления; воркер (AdminClient + миниклиент §2.4), панель (пробы), сид |
 | `User:inter` | inter-broker | `super.users` — репликация и internal-топики не зависят от ACL |
 | `User:app` (кред `app_user`/`app_password`, etcd) | приложения | ACL (converge E, идемпотентно DescribeAcls→diff→Create/DeleteAcls): TOPIC `*` {READ,WRITE,DESCRIBE}, GROUP `*` {READ,DESCRIBE}, TRANSACTIONAL_ID `*` {WRITE,DESCRIBE}; `__`-топики app-креду не нужны (internal-имена зарезервированы каноном 15 §1) |
 
 `allow.everyone.if.no.acl.found=false` — доступ по умолчанию запрещён.
 ACL живут в KRaft-метаданных (тома) — переживают пересоздания контейнеров.
 
-**Клиентские подключения воркера**: AdminClient воркера — `admin` + `ca_pem`
-по CLIENT endpoints из etcd (SASL_SSL, 15 §5; INTERNAL advertised — docker-DNS,
-недостижим из процесса воркера вне сети `kfw-net-<C>`). reassign-CLI — `admin`
-по INTERNAL (docker exec в контейнере брокера, §2.4). Пробы панели — `admin` +
+**Клиентские подключения воркера**: все Kafka-контакты процесса воркера —
+`admin` + `ca_pem` по CLIENT endpoints из etcd (SASL_SSL, 15 §5; INTERNAL
+advertised — docker-DNS, недостижим из процесса воркера вне сети
+`kfw-net-<C>`): AdminClient (describe/converge) и протокольный миниклиент
+reassign-подач (§2.4) — один канал и одни креды. Пробы панели — `admin` +
 `ca_pem` по CLIENT. Приложения — `app` + `ca_pem` по CLIENT (15 §5).
 
-### 2.4. Kafka-CLI в контейнере брокера (транспорт процессов)
+### 2.4. Протокольный миниклиент AlterReassignments (транспорт reassign-подач)
 
-Образ `apache/kafka` несёт CLI-инструменты `/opt/kafka/bin/*.sh`
-(kafka-topics, kafka-reassign-partitions, kafka-console-*); воркер выполняет
-их **docker exec в контейнере живого брокера** (порт PgWorker `ExecNodeAsync`:
-plain — running-контейнер по имени `kfw-<C>-<b>`, swarm — running-таск
-сервиса). Транспорт подключения CLI — **INTERNAL-listener `broker<k>:9092`
-SASL_SSL** (закрытая сеть `kfw-net-<C>` кластера; креды роли admin,
-`--command-config`: `security.protocol=SASL_SSL` + `sasl.mechanism=PLAIN` +
-JAAS admin + PEM-truststore `ca_pem`, записанный рядом однострочной
-printf-обёрткой как файл `/tmp/kfw-ca.pem` — Java-клиент принимает
-`ssl.truststore.type=PEM` + `ssl.truststore.location=<файл>`;
-advertised INTERNAL = docker-DNS имена — резолвятся внутри сети; от
-клиентского advertised-правила §2.1 и host-портов не зависит). Ограничение JVM
-CLI: env `KAFKA_HEAP_OPTS=-Xmx256m` — не конкурировать с брокером за
-memory-лимит контейнера. Операции CLI — идемпотентные submit-вызовы (повтор
-безопасен).
+Подача reassignment-плана процессом I — операция Kafka-протокола
+`AlterPartitionReassignments` (KIP-455, apiKey 45, версия 0) из самого
+процесса воркера: Confluent.Kafka/librdkafka операцию не экспонирует, docker
+exec c `kafka-reassign-partitions.sh` не применяется (канал 25 §1 — только
+сетевые протоколы). Мини-клиент — внутренний компонент адаптера AdminClient
+(вызов seam `AlterReassignmentsAsync`):
+
+- **Транспорт**: короткоживущее TCP-соединение (одна подача = одно
+  соединение, паттерн RESP-миниклиента ValkeyWorker) к CLIENT endpoint из
+  `endpoints` (попытка по очереди до первого успеха — failover по списку);
+  TLS (`SslStream`) с доверием per-cluster CA `ca_pem` (все CERTIFICATE-блоки
+  значения — окно ротации K даёт bundle OLD+NEW, доверяем обоим) и SAN-проверкой
+  хоста endpoint; SASL/PLAIN (admin-креды) поверх TLS — тот же контракт
+  дискавери 15 §5, что у AdminClient.
+- **Диалог** (версии фиксированы, брокер — `apache/kafka:4.0.0`): ApiVersions
+  v0 до аутентификации (проверка наличия apiKey 45 — fail-fast с внятной
+  ошибкой) → SaslHandshake v1 (PLAIN) → SaslAuthenticate v0 (PLAIN-токен
+  `NUL user NUL password`) → AlterPartitionReassignments v0 (тело: timeout_ms
+  + список топик/партиция/реплики; реплики `null` = отмена — не используется).
+- **Ответ**: top-level error + per-partition коды; любой ненулевой код —
+  `Result.Failed` со сводкой (процесс переподаст следующим тиком), успех —
+  план принят (идемпотентность повторной подачи — семантика KIP-455).
+  Подача регистрирует переезд, не дожидаясь физического переноса данных —
+  прогресс наблюдается describe-ом (процесс I, критерий завершения по факту).
+- **Бюджет** двухуровневый: внешний — весь вызов со всеми endpoint-попытками
+  (connect+TLS+SASL+round-trip) — `Thresholds:ReassignSubmitSec`; per-endpoint
+  — 30 с (NetworkSubmitTimeout адаптера: connect+TLS+SASL+round-trip одной
+  попытки). Ошибки транспорта/протокола — `Result.Failed` (как у всех
+  seam-операций, паники процессов нет).
 
 ### 2.5. Режимы Plain / Swarm
 
@@ -656,12 +673,13 @@ waiting-фазой делало бы финал недостижимым (рот
 
 Reassignment партиций: (а) **drain** — опустошение брокеров `TO_REMOVE` с
 репликами (разблокирует G); (б) **balance** — ребалансировка размещения по
-заявке панели `/kafkaworker/rebalances/<C>`. AdminClient API reassignment в
-Confluent.Kafka нет — исполнение через `kafka-reassign-partitions.sh`
-в контейнере брокера (§2.4). Тик `ReassignIntervalSec`, только под клэймом;
-describe-all (метаданные всех топиков **включая `__`**) → decide (чистые
-функции плана) → act (submit батча ≤ `ReassignBatchPartitions` партиций) →
-прогресс-ключ `/kafkaworker/reassignments/<C>` (15 §4).
+заявке панели `/kafkaworker/rebalances/<C>`. Чтение метаданных и подача
+плана — единый Kafka-протокол по CLIENT/admin: describe — AdminClient,
+подача батча — AlterReassignments (KIP-455) протокольным миниклиентом §2.4
+(Confluent.Kafka операцию не экспонирует). Тик `ReassignIntervalSec`, только
+под клэймом; describe-all (метаданные всех топиков **включая `__`**) → decide
+(чистые функции плана) → act (submit батча ≤ `ReassignBatchPartitions`
+партиций) → прогресс-ключ `/kafkaworker/reassignments/<C>` (15 §4).
 
 - **Drain-план** (per партиция с репликой на drain-брокере):
   newReplicas = старые реплики без drain (порядок сохранён — лидер меняется
@@ -698,7 +716,7 @@ describe-all (метаданные всех топиков **включая `__`
   план от факта); смерть контроллера — takeover, in-flight reassignment
   живёт в Kafka; сбой между фактом и del заявки — повтор тика доигрывает.
   Дедуп подач: тот же батч не переподаётся чаще раза в
-  `ReassignRetrySubmitSec` (защита от потерянного submit без спама CLI).
+  `ReassignRetrySubmitSec` (защита от потерянного submit без спама подач).
 - Батчи партиций (`ReassignBatchPartitions`) — самоограничение нагрузки
   (bandwidth-throttle — roadmap); новый батч — только после завершения
   предыдущего (по критерию выше).
@@ -953,8 +971,10 @@ KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                     # формуле НЕ участвует; Enabled=false — компонент не
                     # регистрируется; ScanIntervalSec/KeepaliveSec < порога
                     # сноса — fail-fast старта
-KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
+KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignSubmitSec=60,
                          ReassignRetrySubmitSec=120, RotationTicketTimeoutSec=3600 }
+                         # ReassignSubmitSec: бюджет reassign-подачи батча
+                         # (connect+TLS+SASL+AlterReassignments round-trip, §2.4);
                          # RotationTicketTimeoutSec: возраст не-начатой
                          # заявки (ротации app/admin/CA, ребалансировка), после
                          # которого воркер снимает её в waiting-точке (§5)
@@ -984,7 +1004,7 @@ KafkaWorker:Api { AdvertiseUrl (https://…), EnableSeedEndpoint=false,
 | R2 | Порт-коллизии 16000–16999 с ручными контейнерами | portalloc проверяет фактическую занятость перед созданием; коллизия → сдвиг порта |
 | R3 | SASL-JAAS env регенерируется при каждом пересоздании контейнера (идемпотентность env) | env детерминирован от (заявка, portalloc, креды); окно ротации держит оба креда |
 | R4 | RF=1: потеря тома = потеря данных | warning-журнал (документированное поведение); RF>1 — self-healing репликацией |
-| R5 | JVM CLI в контейнере брокера конкурирует с брокером за memory-лимит (OOM-kill) | `KAFKA_HEAP_OPTS=-Xmx256m` (§2.4); exec одноразовый, не параллелится |
+| R5 | Собственный протокольный миниклиент §2.4: расхождение с фактическими схемами протокола брокера (эволюция api) | версии схем фиксированы и пин образа `apache/kafka:4.0.0` (R1); поддержка api проверяется ApiVersions-fail-fast до подачи; поведение против реального брокера — docker-интеграционная серия reassignment |
 | R6 | Долгий drain на больших объёмах данных (минуты–часы) | батчи партиций + прогресс-ключ (UI видит остаток); bandwidth-throttle — roadmap |
 | R7 | Уменьшение mem/cpu в мутации №15 ниже рабочего набора брокера → OOM-килл / деградация (валидация §10.3 границы не отсекает) | ответственность оператора (UI-предупреждение в модалке); OOM-рестарт подхватит надзор C (том жив — данные не теряются) |
 | R8 | SAN сертификата ноды не покрывает фактический advertised-хост (смена `AdvertisedClientHost` после подъёма) → TLS-отказ клиентов на CLIENT | SAN строится по тому же advertised-правилу §2.1 при каждой пересборке env; смена host-настройки требует пересоздания брокеров (NodeRegenerator-событие или пере-ensure: снапшот-детект env vs декларация — M-механика); ротация CA (§5 K) пересобирает серты с тем же SAN-правилом |

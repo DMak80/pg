@@ -15,6 +15,7 @@ namespace KafkaWorker.UnitTests.Provisioning;
 public class SecurityMigratorTests
 {
     private const string Ep = "http://etcd:2379";
+    private const string TestAdminPassword = "AdminPassword0123456789abcdef";
 
     private sealed record Rig(
         Fakes.FakeEtcd Etcd,
@@ -107,7 +108,7 @@ public class SecurityMigratorTests
         // SASL_PLAINTEXT (нет KAFKA_SSL_TRUSTSTORE_TYPE).
         var snap = new KafkaClusterSnapshot(
             "events", new KafkaClusterConfig(1, 1, 1, 12, 604800000, null, null), [], [], [], 0,
-            AdminUser: "admin", AdminPassword: "AdminPassword0123456789abcdef",
+            AdminUser: "admin", AdminPassword: TestAdminPassword,
             CaPem: "PEM", CaKey: "KEY");
         var envs = new Dictionary<string, IReadOnlyDictionary<string, string>>
         {
@@ -128,7 +129,7 @@ public class SecurityMigratorTests
         // Arrange: ключи есть + env SSL.
         var snap = new KafkaClusterSnapshot(
             "events", new KafkaClusterConfig(1, 1, 1, 12, 604800000, null, null), [], [], [], 0,
-            AdminUser: "admin", AdminPassword: "AdminPassword0123456789abcdef",
+            AdminUser: "admin", AdminPassword: TestAdminPassword,
             CaPem: "PEM", CaKey: "KEY");
         var envs = new Dictionary<string, IReadOnlyDictionary<string, string>>
         {

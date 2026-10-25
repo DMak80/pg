@@ -21,13 +21,16 @@ public sealed class TestSnapshotStore : ISnapshotStore
 // Логин в общем хосте фабрики: свежее окно rate-limiter'а + cookie в клиенте.
 internal static class ApiTestLogin
 {
+    // Тестовый пароль админа общего хоста (литералы — только в константах).
+    private const string AdminPassword = "adminpw";
+
     public static async Task<HttpClient> LoginAsync(AuthWebFactory factory)
     {
         factory.Time.Utc += TimeSpan.FromSeconds(61);
         var client = factory.CreateClient();
         var login = await client.PostAsJsonAsync(
             "/api/auth/login",
-            new { username = "admin", password = "adminpw" },
+            new { username = "admin", password = AdminPassword },
             TestContext.Current.CancellationToken);
         login.StatusCode.Should().Be(HttpStatusCode.NoContent);
         return client;

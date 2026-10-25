@@ -11,6 +11,8 @@ namespace KafkaWorker.UnitTests.Provisioning;
 public class BrokerEnvBuilderTests
 {
     private const string Cluster = "events";
+    private const string TestAppPassword = "app-pw";
+    private const string TestAdminPassword = "admin-pw";
 
     private static readonly ProvisioningOptions Options =
         new(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0");
@@ -24,8 +26,8 @@ public class BrokerEnvBuilderTests
         ],
         [], [], 0,
         Endpoints: "h1:16001,h1:16002",
-        AppUser: "app", AppPassword: "app-pw",
-        AdminUser: "admin", AdminPassword: "admin-pw",
+        AppUser: "app", AppPassword: TestAppPassword,
+        AdminUser: "admin", AdminPassword: TestAdminPassword,
         CaPem: caPem, CaKey: caKey);
 
     private static NodeAddress Addr() => new("h1", 16001);
@@ -40,7 +42,7 @@ public class BrokerEnvBuilderTests
 
         // Act
         var env = BrokerEnvBuilder.Build(
-            snap, "broker1", Addr(), ["app-pw"], ["admin-pw"], Options, cache);
+            snap, "broker1", Addr(), [TestAppPassword], [TestAdminPassword], Options, cache);
 
         // Assert — truststore == CA снапшота; серт == кеш-выпуск от того же CA
         var expected = cache.GetOrCreate(Cluster, "broker1", caPem, caKey, "h1:16001");
@@ -60,7 +62,7 @@ public class BrokerEnvBuilderTests
 
         // Act
         var env = BrokerEnvBuilder.Build(
-            snap, "broker1", Addr(), ["app-pw"], ["admin-pw"], Options, cache,
+            snap, "broker1", Addr(), [TestAppPassword], [TestAdminPassword], Options, cache,
             signingCaPem: newPem, signingCaKey: newKey, trustCaPem: bundle);
 
         // Assert — keystore от NEW (серт другой), truststore == bundle

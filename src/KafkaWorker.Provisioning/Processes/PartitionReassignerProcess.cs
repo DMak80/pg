@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
 using KafkaWorker.Provisioning.Kafka;
 
@@ -29,9 +28,9 @@ public sealed record ReassignProgress(
 /// партиций между брокерами. Drain (приоритет): опустошение брокера
 /// state=TO_REMOVE — каждым тиком план пересчитывается из свежих метаданных
 /// describe-all (включая __-топики), подаются идемпотентные батчи ≤
-/// BatchPartitions через kafka-reassign-partitions CLI docker-exec'ом в
-/// контейнер брокера; завершение по факту (drain-брокер вне Replicas и нет
-/// USR). Balance: converge к декларации по заявке /kafkaworker/rebalances/&lt;C&gt;
+/// BatchPartitions операцией AlterReassignments (KIP-455) протокольным
+/// миниклиентом (arch/16 §2.4); завершение по факту (drain-брокер вне
+/// Replicas и нет USR). Balance: converge к декларации по заявке /kafkaworker/rebalances/&lt;C&gt;
 /// (панель), заявка снимается по сходимости. Слепая проба — никаких подач
 /// (собственная слепота воркера не повод трогать партиции), прошлый
 /// прогресс-ключ не трогается. Прогресс-ключ пишет только держатель клэйма.
@@ -45,7 +44,6 @@ public sealed record ReassignProgress(
 public sealed class PartitionReassignerProcess(
     IEtcdGateway etcd,
     string[] endpoints,
-    IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
@@ -183,7 +181,7 @@ public sealed class PartitionReassignerProcess(
                     return waiting;
             }
 
-            return await RunDrainAsync(snap, all, drainCandidate.Name, previous, now, ct);
+            return await RunDrainAsync(snap, admin, all, drainCandidate.Name, previous, now, ct);
         }
 
         // B1: заявки нет, drain-кандидатов нет — живой прогресс-ключ = мусор
@@ -202,7 +200,7 @@ public sealed class PartitionReassignerProcess(
                 "rebalance ticket disappeared — no more submissions, Kafka will finish the submitted batches on its own", ct);
         }
 
-        return await RunBalanceAsync(snap, all, previous, now, ct);
+        return await RunBalanceAsync(snap, admin, all, previous, now, ct);
     }
 
     // Экспирация заявки rebalances под тройным гвардом §3.1 (t10): заявка старее
@@ -234,6 +232,7 @@ public sealed class PartitionReassignerProcess(
     // D3–D6: drain-сценарий.
     private async Task<Result> RunDrainAsync(
         KafkaClusterSnapshot snap,
+        IKafkaAdminClient admin,
         IReadOnlyList<KafkaTopicView> all,
         string drainBroker,
         ReassignProgress? previous,
@@ -307,12 +306,13 @@ public sealed class PartitionReassignerProcess(
                 plan.Error.Message, ct);
         }
 
-        return await SubmitBatchAsync(snap, all, plan.Value, "drain", drainBroker, previous, now, ct);
+        return await SubmitBatchAsync(snap, admin, all, plan.Value, "drain", drainBroker, previous, now, ct);
     }
 
     // B2–B3: balance-сценарий (converge к декларации, spec §3.4).
     private async Task<Result> RunBalanceAsync(
         KafkaClusterSnapshot snap,
+        IKafkaAdminClient admin,
         IReadOnlyList<KafkaTopicView> all,
         ReassignProgress? previous,
         long now,
@@ -355,12 +355,13 @@ public sealed class PartitionReassignerProcess(
                 "actual state matches the rebalance plan — ticket fulfilled", ct);
         }
 
-        return await SubmitBatchAsync(snap, all, plan, "balance", null, previous, now, ct);
+        return await SubmitBatchAsync(snap, admin, all, plan, "balance", null, previous, now, ct);
     }
 
-    // D5–D6: батч Pending-партиций + дедуп переподачи + exec + прогресс.
+    // D5–D6: батч Pending-партиций + дедуп переподачи + подача + прогресс.
     private async Task<Result> SubmitBatchAsync(
         KafkaClusterSnapshot snap,
+        IKafkaAdminClient admin,
         IReadOnlyList<KafkaTopicView> all,
         IReadOnlyList<ReassignMove> plan,
         string mode,
@@ -393,42 +394,25 @@ public sealed class PartitionReassignerProcess(
             return Result.Success();
         }
 
-        // Bootstrap: INTERNAL-имена живых брокеров (RUNNING + drain при drain:
-        // его контейнер ещё жив и резолвится в kfw-net-<C>).
-        var liveBrokerNames = snap.Brokers
-            .Where(b => b.State == "RUNNING" || (mode == "drain" && b.Name == drainBroker))
-            .OrderBy(b => b.Name, StringComparer.Ordinal)
-            .Select(b => b.Name)
-            .ToList();
-
-        // Exec-цель: контейнер drain-брокера (drain) или первый RUNNING.
-        var firstRunning = snap.Brokers
-            .Where(b => b.State == "RUNNING")
-            .OrderBy(b => b.Name, StringComparer.Ordinal)
-            .Select(b => b.Name)
-            .FirstOrDefault();
-        var execNode = mode == "drain" && drainBroker is not null ? drainBroker : firstRunning;
-
-        using var execCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        execCts.CancelAfter(TimeSpan.FromSeconds(options.ExecSec));
-        // CLI — admin по INTERNAL (docker exec в контейнере брокера, arch/16 §2.4).
-        var cmd = ReassignCli.BuildExecCommand(
-            batch, ReassignCli.Bootstrap(liveBrokerNames), snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem!);
-        var exec = await driver.ExecNodeAsync(cluster, execNode!, cmd, execCts.Token);
-
-        // Fallback (spec §5.4 «выберет другой живой контейнер»; code-review
-        // Фазы 7): контейнер drain-брокера может быть недоступен (docker-хост
-        // умер/выведен, контейнер снесён; надзор TO_REMOVE не восстанавливает,
-        // маркер one-way) — иначе вечный Failed тика блокировал бы конвейер
-        // (G/F/H/D). Подача идемпотентна (KIP-455), bootstrap — список живых
-        // адресов (мёртвый контакт клиент перебирает), копирование новых
-        // реплик идёт с лидера, мёртвая исходная реплика не нужна —
-        // переподаём через первый RUNNING-контейнер.
-        if (!exec.IsSuccess && mode == "drain" && drainBroker is not null && firstRunning is not null)
-            exec = await driver.ExecNodeAsync(cluster, firstRunning, cmd, execCts.Token);
-
-        if (!exec.IsSuccess)
-            return Fail(cluster, exec.Error!, "submitting-batch"); // следующий тик переподаст
+        // Подача AlterReassignments (KIP-455, arch/16 §2.4) протокольным
+        // миниклиентом по CLIENT endpoints — контейнер-цель не нужна; бюджет
+        // SubmitSec покрывает все endpoint-попытки клиента (per-endpoint —
+        // внутренние 30 с NetworkSubmitTimeout адаптера).
+        using var submitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        submitCts.CancelAfter(TimeSpan.FromSeconds(options.SubmitSec));
+        var submit = await admin.AlterReassignmentsAsync(batch, submitCts.Token);
+        if (!submit.IsSuccess)
+        {
+            // Исчерпание ВНЕШНЕГО бюджета подачи (submitCts) оборачиваем с
+            // внятной причиной — сырой OCE в журнале фазы выглядит как «The
+            // operation was canceled», неотличимо от остановки host'а. Отмена
+            // host'а (ct) остаётся как есть. Фаза та же; следующий тик переподает.
+            var submitError = submitCts.IsCancellationRequested && !ct.IsCancellationRequested
+                ? new ApplicationException(
+                    $"reassign submit budget {options.SubmitSec} s exhausted: {submit.Error!.Message}", submit.Error)
+                : submit.Error!;
+            return Fail(cluster, submitError, "submitting-batch");
+        }
 
         submittedUnix = now;
         _lastSubmit[cluster] = (signature, now);

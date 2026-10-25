@@ -22,6 +22,8 @@ namespace PgWorker.UnitTests.Provisioning;
 public class NodeSupervisorTests
 {
     private const string Ep = "http://etcd:2379";
+    // REST-пароль легаси-кластера в etcd (литералы — только в константах).
+    private const string SeededRestPassword = "Rest0Pass0000000000000000000000A";
     private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly ThresholdsOptions Thresholds = new(NodeDeadSec: 90, ShardDeadSec: 300);
 
@@ -53,7 +55,7 @@ public class NodeSupervisorTests
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard1");
         // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
-        etcd.Seed("/clusters/shop/rest_password", "Rest0Pass0000000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", SeededRestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
         etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
@@ -1180,7 +1182,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         var probe = Probe(_ => Ok());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1207,7 +1209,7 @@ public class NodeSupervisorTests
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_0", "shard1");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
         // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
-        etcd.Seed($"/clusters/{cluster}/rest_password", "Rest0Pass0000000000000000000000A");
+        etcd.Seed($"/clusters/{cluster}/rest_password", SeededRestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed($"/service/{cluster}-shard1/request_cpu", "2");
         etcd.Seed($"/service/{cluster}-shard1/request_mem", "8Gi");
@@ -1291,7 +1293,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         // /primary: только shard1a (порт 18000) отвечает 200
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
@@ -1323,7 +1325,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1358,7 +1360,7 @@ public class NodeSupervisorTests
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         var probe = Probe(port => port == 18000 ? Ok() : Down());
         var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
         var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
@@ -1388,7 +1390,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         var reconciler = new MasterKeyReconciler(etcd, [Ep], Probe(port => port == 18000 ? Ok() : Down()));
 
         // Act — сверка (put под lease), затем два прохода продления
@@ -1417,7 +1419,7 @@ public class NodeSupervisorTests
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
             ])],
-            [], RestPassword: "Rest0Pass0000000000000000000000A");
+            [], RestPassword: SeededRestPassword);
         var alive = true;
         var reconciler = new MasterKeyReconciler(
             etcd, [Ep], Probe(port => port == 18000 && alive ? Ok() : Down()));

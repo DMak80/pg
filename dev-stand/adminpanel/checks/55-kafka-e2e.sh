@@ -41,8 +41,9 @@ kafka_cli() { # kafka_cli <tool> <args…>: креды/адрес — тольк
   [ -n "$endpoints" ] && [ -n "$user" ] && [ -n "$password" ] && [ -n "$ca_pem" ] \
     || { echo "❌ etcd discovery keys incomplete"; exit 1; }
   # t03: кластеры только SASL_SSL — доверие per-cluster CA из etcd. Однострочник
-  # ca_pem (\n-эскейпы; base64 символа '\' не содержит) → файл PEM; канон CLI —
-  # как ReassignCli (ssl.truststore.type=PEM + location), путь внутри контейнера.
+  # ca_pem (\n-эскейпы; base64 символа '\' не содержит) → файл PEM; канон CLI:
+  # ssl.truststore.type=PEM + ssl.truststore.location файла CA, путь внутри
+  # контейнера.
   printf '%b' "$ca_pem" > "$WORK/ca.pem"
   cat > "$WORK/client.properties" <<EOF
 security.protocol=SASL_SSL

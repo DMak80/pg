@@ -11,6 +11,9 @@ namespace PgWorker.UnitTests.Templates;
 
 public class NodeConfigBuildersTests
 {
+    // REST-пароль тестовой пары (литералы — только в константах).
+    private const string DefaultRestPassword = "Rest0Pass0000000000000000000000A";
+
     private static readonly ShardTopology Topology = new(
         "shop", "shard1", "shop-shard1",
         new Dictionary<string, NodeAddress>
@@ -30,7 +33,7 @@ public class NodeConfigBuildersTests
 
     // Фабрика тестового REST-TLS-материала ноды (t22): PEM-заглушки + пара.
     // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
-    public static NodeRestTls TestRestTls(string password = "Rest0Pass0000000000000000000000A")
+    public static NodeRestTls TestRestTls(string password = DefaultRestPassword)
         => new(
             "-----BEGIN CERTIFICATE-----\nMIIBtest-node\n-----END CERTIFICATE-----\n",
             "-----BEGIN PRIVATE KEY-----\nMIIBtest-key\n-----END PRIVATE KEY-----\n",
@@ -85,7 +88,7 @@ public class NodeConfigBuildersTests
 
         // Assert: PGW_REST_PASSWORD_HASH = короткий sha256-hex пары (hex-lower) —
         // факт «контейнер несёт эту пару» для инспекции rolling-ротации.
-        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash("Rest0Pass0000000000000000000000A"));
+        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash(DefaultRestPassword));
         env["PGW_REST_PASSWORD_HASH"].Should().MatchRegex("^[0-9a-f]{64}$");
     }
 
@@ -104,7 +107,7 @@ public class NodeConfigBuildersTests
         spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
         spilo.Should().Contain("authentication:");
         spilo.Should().Contain("username: patroni");
-        spilo.Should().Contain("password: \"Rest0Pass0000000000000000000000A\"");
+        spilo.Should().Contain($"password: \"{DefaultRestPassword}\"");
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
