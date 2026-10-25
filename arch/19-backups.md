@@ -10,11 +10,13 @@ S3-совместимое объектное (dev-стенд ownS3, прод —
 
 Ключевые свойства:
 
-- **Единый оркестратор** — PgWorker: ephemeral-джобы бэкапов — его docker-
-  контейнеры (их жизнь супервизируется воркером), приёмник WAL — процесс
-  внутри контейнера PG-ноды (управляется нодой, воркер общается с ним
-  только через etcd, §3); ноды остаются сторонними серверами для клиентов
-  `pg_basebackup` (§6).
+- **Единый оркестратор** — PgWorker: операцию полного исполняет приёмник
+  WalReceiver выбранной ноды по её HTTP API (§2), verify/drill/restore —
+  tool-контейнеры образа ноды в tool-режиме (§3.5/§3.6/§5); их жизнь
+  супервизируется воркером через API приёмника; приёмники WAL — процессы
+  внутри контейнеров PG-нод (управляются нодой, воркер общается с ними
+  через etcd, §3, и через HTTP API операций бэкапов, §2); ноды остаются
+  сторонними серверами для клиентов `pg_basebackup` (§6).
 - **Контракт в etcd** — состояния пишутся под `/pgworker/backups/*`; пишет
   префикс PgWorker (держатель клэйма `<C>`), приёмники — свои статус-ключи
   (§4), панель читает (§4).
@@ -45,16 +47,19 @@ docker-хоста (решение — S3).
 AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 ───────────────              ──────────────────────────────
 читает снапшот ──читает──►   /pgworker/backups/<C>/…   (etcd)
-(алерты панели)                ──создаёт/супервизирует──► docker-контейнеры
-                               ephemeral-джобов: pg_basebackup,
-                               restore/drill/verify (§3.5/§3.6)
+(алерты панели)                ──командует/супервизирует──► HTTP API WalReceiver
+                               (`alias:8080`): полный — приёмник
+                               выбранной ноды (§2); verify/drill/
+                               restore — tool-контейнеры образа
+                               ноды (§3.5/§3.6/§5)
                                  │                       │
                                  ▼                       ▼
                                PG-ноды шарда           S3 (ownS3 на
                                (приёмник WAL —         стенде): bucket
                                процесс внутри ноды,    per-install
                                стримят мастер +
-                               sync-реплика, §3; ⟷ etcd)
+                               sync-реплика, §3; ⟷ etcd;
+                               pg_basebackup/upload — §2)
 ```
 
 - **Принципы**: arch-first (этот документ — источник правды подсистемы);
@@ -74,60 +79,64 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   wal_start — вечный FAILED → бесконечные пересъёмы без валидного полного;
   fast делает checkpoint на момент старта — wal_start-сегмент входит в набор
   и дублируется, verify-цепь сходится.
-- **Исполнитель**: ephemeral docker-контейнер джоба
-  `pgw-backup-full-<C>-<X>-<id>`, запускает PgWorker; образ — лёгкий
-  `pgworker-backup` (отдельный Dockerfile в `docker/` —
-  `PgWorker.Backup.Dockerfile` + `docker/backup/entrypoint.sh`
-  **Контракт образа** (общий для полных, verify и
-  restore-джобов): образ содержит ТОЛЬКО инструменты — postgres-клиентские
-  утилиты (`pg_basebackup`, libpq), серверные бинари того же мажора PG
-  (`pg_ctl`/`postgres`/`pg_controldata` — база образа `postgres:18`
-  несёт их; нужны restore-джобе для локального наката WAL без сети),
-  `mc` (S3-клиент; работает с любым S3) и `bash`; S3-шиппер НЕ
-  встраивается в образ — механику запуска (bash-скрипт: pg_*-утилита + цикл
-  доставки в S3 через `mc`) воркер версионирует кодом: джоб полного —
-  ENTRYPOINT-скрипт образа с env-параметрами, restore-джоб — inline-команда при
-  создании контейнера (§3.5 — recovery-механика меняется чаще образа).
-  **WAL-приёмник (§3) — процесс ВНУТРИ контейнера PG-ноды** (программа
-  `walreceiver` supervisord'а образа `pgworker-node`; .NET-бинарь
-  self-contained publish'а, отдельного образа/контейнера нет): S3-клиент,
-  репликация и etcd-контракт — .NET; `mc` и bash-утилиты ему не нужны.
-  Параметры — только env контейнера ноды (§3). Джоб не публикует портов
-  (клиент) и запускается на docker-хосте источника (адрес ноды достижим по
-  advertised-правилу ниже; оттуда же достижимы ноды пула S3 — §5/§7).
+- **Исполнитель**: приёмник WalReceiver выбранной ноды — тот же процесс,
+  что стримит WAL (§3; программа `walreceiver` supervisord'а образа
+  `pgworker-node`, .NET-бинарь self-contained publish'а). PgWorker подаёт
+  команду `POST /api/backup/full` `{"id"}` на `http://<имя ноды>:8080`
+  (канал `alias:8080` по имени ноды в общей сети воркера и нод; порт
+  наружу хоста НЕ публикуется — [14-pgworker.md](14-pgworker.md) §2.1/§2.4),
+  статус — `GET /api/backup/full` (404 = операция исчезла — vanished),
+  отмена — `POST /api/backup/full/cancel` (best-effort). `pg_basebackup`
+  исполняется ЛОКАЛЬНО в контейнере ноды — подключение `127.0.0.1:5432`
+  под ролью `backup_exec` (пароль — env `PGPASSWORD` child-процесса, в
+  argv НЕ передаётся); серверные бинари PG (нужны restore/verify
+  tool-контейнерам, §3.5/§5) несёт образ `pgworker-node`.
+  Статус операции — IMMUTABLE-снимок в памяти приёмника (фазы
+  `basebackup|uploading`, `wal_start_segment`, `size_bytes`,
+  однострочный `error`); `wal_start_segment` — из `backup_label`,
+  `size_bytes` — сумма файлов набора. Staging — каталог
+  `<Staging:Dir>/<id>/` в data-volume ноды (дефолт
+  `/home/postgres/pgdata/backup-staging`; ENOSPC — реактивный FAILED;
+  приёмник чистит staging после исхода и при старте новой операции).
+  Upload — .NET `IBackupS3`/`PoolBackupS3` приёмника по write-списку
+  СВОЕЙ фактической роли (REST-проба, симметрия стриму §3;
+  write-список фиксируется на старте операции — смена роли посреди
+  полного её не рвёт). Выбор ноды-источника и node/role-факты
+  etcd-статуса — воркер (`ResolveBackupSourceAsync`: sync-standby
+  fallback мастер, ниже). Секреты (пароль `backup_exec`, креды пула S3)
+  приёмник резолвит сам из etcd — как для стрима (§7); команда несёт
+  только `id`. 503 стоп-гейтов приёмника (стоп-семантика §3) — операция
+  не начинается; рестарт приёмника/ноды посреди операции → GET 404 →
+  воркер FAILED `operation-vanished` → переснятие новым id (резюмов
+  нет). Контейнера полного больше нет — cleanup только cancel API
+  (воркер чужой процесс убить не может); **etcd пишет ТОЛЬКО воркер**
+  (§4), приёмник etcd-контракта полного не знает.
 - **Источник**: реплика шарда (sync-standby из Patroni `GET /cluster`:
   member с `state=running`, `role=replica`, sync-статусом);
   реплика недоступна/отстала → fallback на мастер (резолв мастера —
   существующий `ShardEndpoints`, [14-pgworker.md](14-pgworker.md) §5 F).
   Источник фиксируется в etcd-статусе (`node`, `role`).
-- **Пайплайн джоба**: staging-каталог (ephemeral volume) →
-  `pg_basebackup -D <staging>` → загрузка в S3 (`mc cp` файлами 1:1
-  объектами, включая `backup_manifest` и `pg_wal/`) → результат в stdout.
-  **Загрузка в пул S3**: env джоба несёт СПИСОК endpoints по роли
-  источника (реплика → `write_replica`, fallback-мастер → `write_master`,
-  §4) — `PGW_BK_S3_ENDPOINTS` (запятая, порядок = приоритет); entrypoint ДО
-  загрузки выбирает первый доступный ноду короткой mc-пробой (`mc ls`,
-  per-попыточный таймаут coreutils `timeout` — висящая нода НЕ вешает
-  попытку) и грузит на неё; падение загрузки → следующий endpoint списка
-  (каждая попытка — per-попыточный таймаут; «быстрый отказ/успех, не
-  молчание» — R3, arch/23 §7; переливка идемпотентна — имена объектов
-  детерминированы); исчерпание списка → FAILED с маркером
+- **Пайплайн операции** (фоновая Task процесса приёмника, параллельно
+  стриму; резюмов нет — FAILED → переснятие новым id): чистка staging →
+  `pg_basebackup -D <staging>/<id>/full` (подключение `127.0.0.1:5432`,
+  `-X stream --checkpoint=fast --manifest-checksums=SHA256`) →
+  `wal_start_segment` из `backup_label` → загрузка в S3 .NET-клиентом
+  файлами 1:1 (включая `backup_manifest` и `pg_wal/`).
+  **Загрузка в пул S3**: write-список endpoints приёмник резолвит по СВОЕЙ
+  фактической роли (REST-проба Patroni loopback, §3: реплика →
+  `write_replica`, мастер → `write_master`, §4); перебор списка —
+  per-попыточный таймаут, circuit-breaker 45 с (§5); «быстрый отказ/успех,
+  не молчание» — R3, arch/23 §7; переливка идемпотентна — имена объектов
+  детерминированы; исчерпание списка → FAILED с маркером
   `s3-pool-exhausted` в `error` (алерт панели `backup-pool-unreachable`,
-  обычный бэкофф переснятия).
-  Прогресс и результат джоб публикует структурированными JSON-строками в
-  stdout (`{"phase":"basebackup"}`, `{"phase":"uploading"}`, финальный
-  result `{"ok":true,"wal_start_segment":…,"size_bytes":…}` или
-  `{"ok":false,"error":…}`); воркер поллит логи контейнера тиками
-  (`GET /containers/<id>/logs`), отражает фазы в etcd-статусе и по exit-коду
-  + result-JSON фиксирует итог — **etcd пишет ТОЛЬКО воркер** (§4), джоб
-  контракта etcd не знает. `wal_start_segment` — из `backup_label`
-  (START WAL LOCATION). После фиксации итога воркер удаляет контейнер и
-  staging-volume джоба. Конфигурация джоба — только env контейнера от
-  воркера: подключение к источнику, S3-комплект (§7: bucket + списки
-  endpoints пула по роли источника + read-write креды из secrets-ключа
-  пула), префикс `<C>/<X>`,
-  путь staging `PGW_BK_STAGING_DIR` (опция `Staging.Dir`, дефолт
-  `/backup-staging` — точка монтирования staging-volume в джобе).
+  обычный бэкофф переснятия). Фазы операции приёмник отдаёт GET-статусом
+  (`running/basebackup` → `uploading/uploading` → `succeeded`/`failed` +
+  однострочный `error`); воркер поллит GET тиками, отражает фазы в
+  etcd-статусе и по итогу операции фиксирует исход — **etcd пишет
+  ТОЛЬКО воркер** (§4). Отмена (cancel API) — приёмник гасит дерево
+  текущего child-процесса, операция завершается `failed` с причиной
+  `cancelled`, staging чистится; гейт-команда на СТАРТЕ (503) идущую
+  операцию не рвёт — отменяют только cancel и бюджет воркера.
 - **WAL набора `-X stream`**: файлы бэкапа грузятся строго 1:1 в
   `full/<id>/` ВКЛЮЧАЯ `pg_wal/` (база `pg_verifybackup`, manifest
   перечисляет и WAL-файлы); ЗАТЕМ закрытые сегменты этого набора
@@ -137,14 +146,14 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 - **Идентификатор**: `id = YYYYMMDDHHMMSSZ` (UTC старта, сортируемый);
   коллизия в пределах шарда — суффикс `-2`, `-3`…; детерминизм имён — как у
   `pgw-<C>-<X>-<n>` ([14-pgworker.md](14-pgworker.md) §6).
-- **Подключение**: адресация из portalloc (pg-порты нод) в том же namespace
-  адресов, что панель (advertised-правило
-  [14-pgworker.md](14-pgworker.md) §2.4 п.5); БД-роль — §7. В режиме сети
-  контура (`PgWorker:Docker:ContourNetwork`, arch/14 §2.1) джоб создаётся в
-  сети контура (extra_hosts не применяются), адрес источника для
-  канонических нод — имя ноды сети контура `:5432` (симметрично §3
-  `ResolveNodeRef`); в прод-режиме — advertised `host:pg-port` из portalloc,
-  как выше.
+- **Подключение**: `pg_basebackup` — всегда `127.0.0.1:5432` своей ноды
+  (приёмник живёт в контейнере ноды — сеть источника не нужна; БД-роль —
+  §7). Канал команды/статуса — `alias:8080` по имени ноды в общей сети
+  воркера и нод (инвариант поставки: контейнеры воркера и нод всегда в
+  одной сети — контур или per-cluster сеть развёртывания,
+  [14-pgworker.md](14-pgworker.md) §2.4; недостижимость alias — transient
+  тика воркера с journal-фактом адреса, НЕ краш тика); адресация S3
+  приёмника — та же, что у стрима (§5/§7).
 - **Планировщик (rolling)**: воркер тиками под клэймом `<C>` для
   каждого шарда Active-кластера с `dsn`: возраст последнего ВАЛИДНОГО
   COMPLETED-полного (`verify.state ≠ FAILED` — OK, PENDING «идёт»
@@ -173,18 +182,19 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   пересъём безусловно, симметрично BROKEN-правилу покрытия: покрывший
   COMPLETED-полный ждёт снятия метки контролем; непокрывший — пересъём
   снова; инвариант одного активного и бэкофф FAILED работают как всегда) →
-  создать `full/<id>` (PLANNED → запуск джоба → RUNNING); инвариант —
+  создать `full/<id>` (PLANNED → API-запуск на приёмнике → RUNNING); инвариант —
   максимум один активный (PLANNED/RUNNING/UPLOADING) полный на шард
   одновременно. FAILED →
   переснятие НОВЫМ id (`pg_basebackup` не резюмится; FAILED-записи —
   история) с бэкоффом `min(Retry.BaseSec·2^(n−1), Retry.MaxSec)`, где n —
   число неудач с момента последнего валидного COMPLETED шарда: FAILED
-  джоба + verify-FAILED — вычислимо из истории ключей, дополнительных
+  операции + verify-FAILED — вычислимо из истории ключей, дополнительных
   полей контракта не требуется. Лимита попыток
   нет: порог «долго без валидного» — суточный алерт панели (§4). Takeover:
-  статус в etcd + детерминированное имя контейнера — новый инстанс
-  продолжает супервизить; RUNNING-статус без контейнера/логов → FAILED
-  (переснятие по общему правилу).
+  всё состояние в etcd, адрес приёмника детерминирован (`alias:8080` по
+  имени ноды) — новый инстанс продолжает супервизить; RUNNING-статус при
+  GET 404 → FAILED `operation-vanished` (рестарт приёмника/ноды;
+  переснятие по общему правилу).
 - **Наблюдаемость итога verify**: итог проверки каждого полного — OK/FAILED +
   причина (`verify.error`, §4/§5) — воркер фиксирует и строкой собственного
   журнала (host-лог), в дополнение к verify-статусу etcd-ключа: исходы verify
@@ -476,43 +486,62 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   (повтор при активной → 409). Потеря ОДНОЙ ноды живого шарда restore'ом НЕ
   чинится (Patroni rebuild быстрее — runbook отсылает к
   recreate-эндпоинту).
-- **Restore-джоб**: ephemeral контейнер `pgw-backup-restore-<C>-<X>-<id>`
-  (id заявки — как у полных, §2), образ `pgworker-backup` (§2, с серверными
-  бинари PG того же мажора), inline-команда от воркера (env-параметры;
-  секреты — env, §7). Джоб монтирует data-volume ПЕРВОЙ ноды шарда
-  `pgw-<C>-<X>-<n1>-data` (volume создаёт воркер) и: (1) скачивает
-  `full/<id>/` файлами 1:1 в PGDATA-каталог Spilo-layout
-  (`pgdata/pgroot/data`; владелец — uid:gid `101:101` Spilo- postgres,
-  численно), (2) кладёт скрипт `restore_command` (скачивает сегмент/`.history`
-  из `wal/` префикса S3 прямо в запрошенный путь; объекта нет → ненулевой
-  exit — конец WAL; имя из `%f` postgres передаёт ВЕРХНИМ hex, а приёмник
-  кладёт объекты `wal/` строчными — скрипт нормализует регистр, иначе первый
-  буквенный сегмент даёт ложный 404 и обрывает recovery до цели) и
-  `postgresql.auto.conf` c `restore_command` +
+- **Tool-контейнер restore**: контейнер `pgw-backup-restore-<C>-<X>-<id>`
+  (id заявки — как у полных, §2) образа `pgworker-node` в tool-режиме
+  (`PGW_NODE_TOOL=1`; без Patroni/supervisord-программ — WalReceiver
+  главный процесс контейнера (PID-1), без identity: не стримит,
+  agent-ключей не пишет, etcd ему не нужен; весь S3-контекст приходит
+  POST-командой — секреты только в POST, §7). Старт БЕЗ команд — все
+  операции через API: `POST /api/ops/restore` (тело: `backup_id`,
+  `target_time`? RFC3339, `recovery_timeout_sec`, S3-контекст) и
+  `GET /api/ops/restore` (фазы `downloading|recovering`,
+  `restored_to_lsn`?, `system_id`?, `error`?). Контейнер монтирует
+  data-volume ПЕРВОЙ ноды шарда `pgw-<C>-<X>-<n1>-data` (volume создаёт
+  воркер) в `/home/postgres/pgdata` (PGDATA =
+  `/home/postgres/pgdata/pgroot/data`, Spilo-layout; владелец —
+  uid:gid `101:101` Spilo-postgres, численно). Механика восстановления —
+  WalReceiver (.NET, child-процессы PG-утилит `Process.Start`):
+  (1) скачивание `full/<id>/` файлами 1:1 .NET S3-клиентом в PGDATA;
+  (2) `restore_command = '/opt/pgw-wal/walreceiver fetch-wal %f %p'` —
+  sub-режим того же бинаря (S3-контекст — env процесса postgres,
+  секреты не в argv): скачивает сегмент/`.history` из `wal/` префикса S3
+  прямо в запрошенный путь; объекта нет → ненулевой exit — конец WAL;
+  имя из `%f` postgres передаёт ВЕРХНИМ hex, а объекты `wal/` строчные —
+  fetch-wal нормализует регистр, иначе первый буквенный сегмент даёт
+  ложный 404 и обрывает recovery до цели; + `postgresql.auto.conf`
+  override-строки: `data_directory`/`hba_file`/`ident_file`,
+  `wal_level=replica`, `summarize_wal=off`,
+  `shared_preload_libraries=''`, `ssl=off`, `logging_collector=off`,
   recovery-параметры (`recovery_target_time` при цели time,
   `recovery_target_action=promote`; цель latest — БЕЗ target: конец WAL =
-  promote), (3) локально стартает postgres (`pg_ctl`, unix-socket,
-  `listen_addresses=''` — сеть не слушает, кредов PG не нужно) и ждёт
-  выхода из recovery (поллинг `pg_is_in_recovery()`; бюджет
-  `Restore:RecoveryTimeoutSec`); перед стартом из PGDATA УДАЛЯЕТСЯ
-  `standby.signal`: pristine-набор снят `pg_basebackup`-ом со standby-источника
-  (§2: приоритет sync-реплики) и несёт его `standby.signal` — не убрав,
-  postgres стартует standby-режимом и бесконечно ждёт WAL из restore_command,
-  не входя в recovery; (4) `pg_ctl stop -m fast`, убирает
-  recovery-остатки из `auto.conf`. При возврате pristine `auto.conf` из него
-  вычищаются управляющие Patroni параметры архивации
-  (`archive_mode`/`archive_command`): pristine снят `pg_basebackup`-ом с
-  ноды-источника и несёт её `archive_mode`, а Patroni нового HA-scope
-  навязывает свой → reload для `archive_mode` недостаточен → «Pending
-  restart» → отложенный рестарт postmaster рвёт соединения клиентов сразу
-  после restore. WAL-архивация системы — приёмник WAL внутри нод,
-  `archive_mode` постгреса не используется. Прогресс — stdout-маркеры
-  (`{"phase":"downloading"|"recovering"}`, result-JSON с
-  `{"ok":true,"restored_to_lsn"?…}` / `{"ok":false,"error"…}`) — супервиз
-  по образцу полной джобы (поллинг логов, exit-код — истина итога; чтение
-  docker-логов джоба — отклонение от [25](25-component-communications.md),
-  переход: roadmap backup `t24-job-status-channel`). Накат большого
-  объёма — одним проходом, резюмов нет (осознанная плата plain-механики).
+  promote); pristine `auto.conf` приберегается в `.orig` и возвращается
+  после promote, из него вычищаются управляющие Patroni параметры
+  архивации (`archive_mode`/`archive_command`): pristine снят
+  `pg_basebackup`-ом с ноды-источника и несёт её `archive_mode`, а
+  Patroni нового HA-scope навязывает свой → reload для `archive_mode`
+  недостаточен → «Pending restart» → отложенный рестарт postmaster рвёт
+  соединения клиентов сразу после restore; WAL-архивация системы —
+  приёмник WAL внутри нод, `archive_mode` постгреса не используется;
+  (3) инцидентные правки: `standby.signal` удаляется → создаётся пустой
+  `recovery.signal` (pristine-набор снят `pg_basebackup`-ом со
+  standby-источника — §2: приоритет sync-реплики — и несёт его
+  `standby.signal`; не убрав, postgres стартует standby-режимом и
+  бесконечно ждёт WAL из restore_command, не входя в recovery),
+  канонический набор каталогов initdb, trust-строка pg_hba на время
+  поллинга, владелец/права ПОСЛЕ модификаций (chown 101:101, chmod 700),
+  PG-процессы под uid/gid 101 (обёртка setpriv), `HOME=/tmp`; (4)
+  локальный postgres (`pg_ctl` под setpriv, unix-socket,
+  `listen_addresses=''` — сеть не слушает, кредов PG не нужно), поллинг
+  `pg_is_in_recovery()` с бюджетом `Restore:RecoveryTimeoutSec` из
+  команды (promote-окно рестарта postmaster ретраится до бюджета),
+  снятие `pg_current_wal_lsn()`, `pg_ctl stop -m fast`, чистка
+  recovery-остатков (возврат pristine `auto.conf`, снятие trust-строки),
+  `system_id` из `pg_controldata`. Фазы/итог — статус API (GET): воркер
+  поллит GET тиками; exit-кодов/docker-логов нет. Адрес API: контур —
+  `alias:8080` имени контейнера в сети контура; прод —
+  `host:<динамический порт>` (публикация :8080 при create, порт — зонд
+  свободных портов). Накат большого объёма — одним проходом, резюмов
+  нет (осознанная плата plain-механики).
 - **RestoreProcess** (машина тика под клэймом `<C>`, паттерны arch/17):
   `PLANNED` → валидация (кластер Active, шард заявлен, шард без
   усыновлённых object-нод (чужой PGDATA-контур — permanent-отказ «ручной
@@ -526,8 +555,8 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   контейнеры/volumes ВСЕХ нод шарда снесены (приёмники WAL уходят с нодами),
   HA-scope `/service/<C>-<X>/` вычищен (P2.2-Д3-образец: initialize/leader/
   members/…; request_* — декларации панели — НЕ трогаем), ноды
-  `state=REBUILDING`, portalloc/dsn НЕ меняются) → запуск restore-джоба
-  (фазы downloading/recovering — из логов) → `REJOINING` (EnsureNode первой
+  `state=REBUILDING`, portalloc/dsn НЕ меняются) → запуск restore-операции
+  tool-контейнера (фазы downloading/recovering — GET /api/ops/restore) → `REJOINING` (EnsureNode первой
   ноды на восстановленном volume — Patroni поднимает существующие данные,
   bootstrap с непустым PGDATA при чистом DCS; ожидание идентифицирующей
   пробы P2.2-образцом; остальные ноды — чистые EnsureNode, реплики
@@ -553,8 +582,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   recovery-бюджет исчерпан, target не достигнут — конец цепочки раньше
   `target_time`) → `FAILED` + `error`; повтор — НОВАЯ заявка оператора.
   Takeover: статус + детерминированные имена — новый инстанс продолжает.
-- **Стоп-семантика**: deprovisioning (D1) убивает restore-джобы вместе с
-  джобами полных (префикс `pgw-backup-*`), D2 чистит префикс
+- **Стоп-семантика**: deprovisioning (D1) убивает tool-контейнер restore
+  (префикс `pgw-backup-restore-<C>-`; контейнеров полных больше нет — §2),
+  D2 чистит префикс
   `/pgworker/backups/<C>/` (вкл. restore-ключи); remove-shard с активным
   restore → заявка FAILED `cancelled-by-remove`. S3-объекты restore не
   удаляет никогда (только читает).
@@ -574,9 +604,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   непрерывна), что у реального DR-restore — дрилл доказывает ровно тот
   путь, который сработает при аварии. Прод-шард не трогается вовсе; S3 —
   только чтение (list + скачивание). Контроль — «старт + выход из
-  recovery»: postgres джоба стартовал на восстановленном PGDATA и вышел из
-  recovery (`pg_is_in_recovery() = false`), `restored_to_lsn` фиксируется
-  в статус и result-джоба; SQL-проверок данных НЕТ (целостность файлов —
+  recovery»: postgres tool-контейнера стартовал на восстановленном PGDATA
+  и вышел из recovery (`pg_is_in_recovery() = false`), `restored_to_lsn`
+  фиксируется в статус; SQL-проверок данных НЕТ (целостность файлов —
   verify §5; сверка счётчиков с продом не имеет смысла — прод уходит
   вперёд точки бэкапа).
 - **RestoreDrillProcess** — тиковая машина под клэймом `<C>` (Op
@@ -585,36 +615,39 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   сноса, затем отбор кандидата, валидация, запуск. Бюджет активного
   дрилла — `Drill:TimeoutSec` от `started_unix` → FAILED
   `drill-timeout: <age> с > TimeoutSec` (kill+rm — в сносе); бюджет
-  наката WAL внутри джоба — общий `Restore:RecoveryTimeoutSec`
-  (REJOINING-фаз у дрилла нет — после джоба сразу терминальный исход).
+  наката WAL внутри операции — общий `Restore:RecoveryTimeoutSec`
+  (REJOINING-фаз у дрилла нет — после операции сразу терминальный исход).
   Takeover: всё состояние — в etcd-ключе (§4) + детерминированные имена
   контейнера/volume — новый инстанс продолжает супервиз до исхода;
   RUNNING-ключ без контейнера при успешном list: пока возраст < бюджета —
-  идемпотентная досоздача джоба по имени (create/start прошедшего тика не
+  идемпотентная досоздача tool-контейнера по имени (create/start прошедшего тика не
   дошёл — transient), старше — FAILED `drill-vanished` (снос: volume).
-  Мульти-хост: при недоступном portalloc (хост джоба неизвестен) супервиз
-  ищет джоб по имени на хостах таблицы `Docker:Hosts`
-  ([14-pgworker.md](14-pgworker.md)) — супервиз/вердикт/логи ведутся на
-  хосте НАЙДЕННОГО джоба; джоб найден ⇒ досоздача не выполняется
+  Мульти-хост: при недоступном portalloc (хост tool-контейнера неизвестен) супервиз
+  ищет tool-контейнер по имени на хостах таблицы `Docker:Hosts`
+  ([14-pgworker.md](14-pgworker.md)) — супервиз/вердикт ведутся на
+  хосте НАЙДЕННОГО контейнера; контейнер найден ⇒ досоздача не выполняется
   (дубликат на чужом хосте исключён).
-- **Drill-джоб**: ephemeral контейнер `pgw-backup-drill-<C>-<X>-<id>`
-  (id — как у полных, §2), образ `pgworker-backup` (§2), inline-команда
-  от воркера — механика restore-джоба §3.5 ЦЕЛИКОМ (один bash-скрипт
-  `RestoreJobCommand` на restore и дрилл: скачивание `full/<id>/` в свой
-  volume, restore_command через mc, recovery latest — БЕЗ target,
-  локальный postgres unix-socket `listen_addresses=''`, поллинг
-  `pg_is_in_recovery()`, снятие `pg_current_wal_lsn()`, stop,
-  result-JSON `{"ok":true,"restored_to_lsn":"…"}` / `{"ok":false,"error":…}`
+- **Tool-контейнер drill**: контейнер `pgw-backup-drill-<C>-<X>-<id>`
+  (id — как у полных, §2; контейнер и volume — одно имя, D1 жив) образа
+  `pgworker-node` в tool-режиме (`PGW_NODE_TOOL=1`, §3.5) — механика
+  restore §3.5 ЦЕЛИКОМ через ту же команду `POST /api/ops/restore`
+  (recovery latest — БЕЗ target: скачивание `full/<id>/` в свой
+  volume, fetch-wal, локальный postgres unix-socket
+  `listen_addresses=''`, поллинг
+  `pg_is_in_recovery()`, снятие `pg_current_wal_lsn()`, stop
   — инцидентные правки restore-механики автоматически достаются дриллу;
-  лишнее джобу поле `system_id` результата воркер дрилла игнорирует).
-  Фазы джоба — `downloading|recovering` (stdout-маркеры §3.5). Изоляция
+  лишнее дриллу поле `system_id` результата воркер дрилла игнорирует).
+  Фазы — `downloading|recovering` (GET /api/ops/restore). Изоляция
   ПО ПОСТРОЕНИЮ: СВОЙ ephemeral volume `pgw-backup-drill-<C>-<X>-<id>`
-  (точка монтирования `/drill`, PGDATA `/drill/pgroot/data`), `Ports: []`,
-  `Network: null` (unix-socket), рестарт `no`, лимиты `Agent { Cpu, Mem }`
-  (§6), `ExtraHosts` advertised-S3; docker-хост — первая нода шарда из
-  portalloc (как restore-джоб). Нод в кластере дрилл НЕ создаёт,
+  (точка монтирования `/home/postgres/pgdata`, PGDATA
+  `/home/postgres/pgdata/pgroot/data`), сеть: контур — сеть контура
+  (адрес API — alias имени контейнера `:8080`), прод — публикация
+  динамического API-порта при create + `ExtraHosts` advertised-S3,
+  рестарт `no`, лимиты `Agent { Cpu, Mem }`
+  (§6); docker-хост — первая нода шарда из
+  portalloc (как restore). Нод в кластере дрилл НЕ создаёт,
   HA-scope и synchronous-режим мастера (Patroni) не затрагивает,
-  per-cluster сети не входит.
+  per-cluster сети не входят.
 - **Отбор кандидата** — чистая функция: один шард за проход кластера —
   наименее свежий по последнему терминальному дриллу (MIN
   `finished_unix`; «никогда» = 0 — обслуживается первым; tie-break по
@@ -636,7 +669,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   дрилл периодически вскрывает незакрытый зазор оператору; verify полных
   вне диапазона зазора не затрагивается); S3-отказ —
   transient (статус не трогаем, тик повторит). Отказ валидации
-  (манифеста нет / дыра цепочки) → FAILED-дрилл БЕЗ запуска джоба:
+  (манифеста нет / дыра цепочки) → FAILED-дрилл БЕЗ запуска tool-контейнера:
   `started_unix`/`finished_unix` поставлены, `error` — причина (границы
   дыры от WalChain); контейнера не было — снос не нужен, ключ сразу
   чистый терминальный итог — честный исход «восстановимость не
@@ -666,7 +699,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   доводится (`cleaning` до подтверждённого удаления — иначе выключение
   оставляло бы осиротевший exited-контейнер).
 - **Deprovisioning**: D1 — префикс `pgw-backup-drill-<C>-` в чистке
-  джобов бэкапов (контейнер и volume — одно имя, сносятся тем же
+  tool-контейнеров бэкапов (контейнер и volume — одно имя, сносятся тем же
   проходом); D2 — ключ `drill` уходит с per-cluster префиксом
   `/pgworker/backups/<C>/`. Идущий дрилл не ломается демонтажом шарда
   (дрилл без нод — S3 + docker-хост + свой volume); remove-shard при
@@ -684,7 +717,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 | Ключ | Значение |
 |---|---|
 | `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":1,"weeks":1,"months":1},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":N}}` (§3.6: `interval_days` — период дрилов шардов кластера в сутках, `N=0` — дрилл кластера выключен; поле отсутствует → дефолт конфига `PgWorker:Backups:Drill:IntervalDays`); секция `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` (ниже); пишет воркер (приём через API); отсутствует → дефолт `PgWorker:Backups:Policy` |
-| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
+| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` операции приёмника; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED\|BROKEN","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?,"agents"?":[{"node":"<n>","state":"running\|exited\|absent"}],"gap"?}`; `agents` — факты приёмников по ВСЕМ нодам шарда с приёмником (приёмник живёт в контейнере каждой ноды, §3; состав шире нод-источников двойной архивации — наблюдаемость: async-реплика с живым приёмником видна как `running`, не-стримящие ноды — в тех же фактах): `running` = живой статус-ключ приёмника ноды (lease), `absent` = ключа нет (приёмник не жив/нода без приёмника), `exited` —legacy-значение, новыми записями не пишется (парсеры панели толерантны); поле опционально; `gap` — опциональное поле `{"from":"<seg>","to":"<seg>","tli":<N>}` — границы RPO-зазора tli-прыжка приёмника (58P01, §3); пишет контроль по факту `tli_jump` статус-ключа мастер-приёмника, снимает покрытием — COMPLETED-полный с `wal_start_segment` ≥ `to` (сравнение имён), либо исчезновением профиля зазора из листинга — ретенция срезала нижележащие TLI; `error` при живом `gap` несёт префикс `tli-gap:`; парсеры панели читают известные поля, старые ключи без `gap` — без ошибок |
 | `/pgworker/backups/<C>/<X>/agent/<N>` | статус приёмника WAL ноды `<N>` (§3): lease TTL 15 с (ключ жив = приёмник жив), пишет САМ приёмник; `{"node":"<N>","role":"master\|sync\|none","state":"starting\|waiting_role\|waiting_password\|waiting_policy\|waiting_slot\|waiting_disabled\|streaming\|paused\|failed_permanent","last_delivered_segment"?,"last_delivered_unix"?,"pool_exhausted":bool,"tli_jump"?,"history_missing_tli"?,"error"?,"updated_unix"}`; `history_missing_tli` — TLI-число факта «`.history` перехода не добыта ни из рантайма репликации, ни из ФС ноды» (§3 «`.history` при TLI-переходе»; диагностика PITR-защищённости перехода, воркер ничего не докладывает); `waiting_*` — ожидание условий (роль/креды/policy/слот/стоп-ключ), `paused` — стоп-семантика приёмника (wal-ключ STOPPED/BROKEN / `/pgworker/backups-disabled`), `failed_permanent` — несъёмное условие (segment-size mismatch, разрыв LSN протокола), причина в `error`; воркер читает для agents-фактов, маркеров `s3-pool-exhausted`/`tli_jump` и диагностики (метрики работы приёмника — Prometheus, arch/18 §2.8); панель ключ не читает (парсер толерантен) |
 | `/pgworker/backups-disabled` | глобальный ключ-стоп WAL-архивации: пишет/стирает PgWorker: держатель глобального лидера при `Enabled=false` — периодический put `{"updated_unix":T}` на каждом тике лидера, при `Enabled=true` — идемпотентный del в КАЖДОМ тике лидера (stale-ключ от прежнего лидера/режима не выживает takeover/reload); вдобавок любой живой инстанс при старте с `Enabled=true` снимает ключ (del); ключ есть ⇒ приёмники всех кластеров замирают (стоп-семантика приёмника §3); ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается: появление/удаление ключа не меняет «пустоту» префикса кластера — панельные правила «подсистема не включена» не затрагиваются); смерть всех инстансов воркера при `Enabled=false` ключ оставляет (стрим стоит — конфиг так велит), при `Enabled=true` ключа нет с первого старта инстанса |
@@ -693,8 +726,8 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 | `/pgworker/backups/orphan-holds/<C>/<X>` | hold-флаг сироты: `{"set_unix":T,"set_by":"operator\|panel"}`; ключ ГЛОБАЛЬНЫЙ per-префиксный (D2-чистки не касается); ставит/снимает API воркера (`POST`/`DELETE /api/backups/orphans/{C}/{X}/hold`, arch/14 §1.1) — атомарные put/del одного ключа, без read-modify-write (нет гонок ни между инстансами API, ни с лидер-проходом sweeper'а — реестр тот не пишет); гварды API: префикс — OBSERVED-сирота реестра (нет → 404; DELETING → 409 — доводку уже начатого удаления не спасти); повторный hold идемпотентен (put поверх); снятие hold (unhold) → сирота возвращается под общие правила (TTL уже истёк и защиты нет → удаление ближайшим проходом; unhold — гварды реестра не применяются: идемпотентен, только 503). Sweeper читает при TTL-отборе (hold → не кандидат), повторно перед удалением TTL-кандидата (hold появился после отбора → удаление откладывается до следующего прохода) и гасит ключи несирот (владелец воскрес / префикс исчез) — санитар прохода; DELETING-записи hold не защищают |
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | заявка явного удаления сироты: `{"requested_unix":T,"requested_by":"operator\|panel"}`; пишет API воркера по confirm-команде оператора (`POST /api/backups/orphans/{C}/{X}/delete`, body `{"confirm":"<C>/<X>"}` — мисматч → 400; сироты в реестре нет → 404; уже DELETING → 409; повторная заявка идемпотентна — put поверх); исполняет sweeper ближайшим проходом: DELETING (фаза orphan-journal) → batch-delete → del записи реестра + del заявки; заявка гасится и когда сирота к проходу исчезла/воскресла; заявка — осознанная команда оператора: минует и hold, и автоправило «последнего полного» (единственный путь удалить защищённый DR-источник) |
 | `/pgworker/backups/orphan-journal` | журнал фаз лидер-прохода свипера сирот: `{"op":"backup-orphan-sweeper","phase":"orphan-…/<C>/<X>","instance":"<id>","updated_unix":T,"last_error"?}` (фазы: orphan-key-cleaned/orphan-cancelled/orphan-delete-requested/orphan-deleting/orphan-deleted — каждая с «/<C>/<X>»); ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ТОЛЬКО глобальный лидер /pgworker/leader (единственный писатель — гонок нет; plain put без read-modify-write); «последняя фаза побеждает» — ключ перезаписывается каждым проходом, чистка не нужна; панель ключ НЕ читает (состояние сирот наблюдаемо через /pgworker/backups/orphans + orphan-holds + orphan-deletes) |
-| `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (§3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фаза джоба/процесса (`downloading\|recovering`); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
-| `/pgworker/backups/<C>/<X>/drill` | состояние последнего/текущего дрилла шарда (§3.6): `{"state":"RUNNING\|SUCCEEDED\|FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура после терминального исхода); снятый `phase` у терминального ключа = контейнер и volume подтверждённо удалены — чистый итог; ключ перезаписывается каждым новым дриллом (история — фазы журнала `backup-drill/<X>/<id>`); ключ один на шард — «максимум один активный дрилл» следует из формата; пишет воркер (держатель клэйма `<C>`) |
+| `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (§3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фаза tool-операции приёмника (`downloading\|recovering`); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
+| `/pgworker/backups/<C>/<X>/drill` | состояние последнего/текущего дрилла шарда (§3.6): `{"state":"RUNNING\|SUCCEEDED\|FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); `phase` — `downloading\|recovering` (фазы tool-операции) \| `cleaning` (идёт снос тестового контура после терминального исхода); снятый `phase` у терминального ключа = контейнер и volume подтверждённо удалены — чистый итог; ключ перезаписывается каждым новым дриллом (история — фазы журнала `backup-drill/<X>/<id>`); ключ один на шард — «максимум один активный дрилл» следует из формата; пишет воркер (держатель клэйма `<C>`) |
 
 - **Секция `s3` policy**: `"s3":{"pool":"<C пула>","write_master":["<I>",…],"write_replica":["<I>",…]}` — выбор пула S3 кластера (архитектура пула — [23-s3-clusters.md](23-s3-clusters.md)); `pool` — имя кластера `/s3/clusters/`; `write_master`/`write_replica` — упорядоченные (по приоритету записи) имена инстансов пула — ССЫЛКИ, не адреса: резолв `имя → host:port` воркер выполняет чтением `endpoints`-ключа пула и `/s3worker/portalloc/<C>` (arch/23 §7); поля названы по роли ИСТОЧНИКА записи (мастер-потоки/репличные), не по роли ноды. Пересечение списков и неполный охват нод пула допустимы. Отсутствие секции — пул не выбран: подсистема бэкапов кластера НЕ пишет и НЕ читает (алерт `backup-pool-missing` панели); никаких env-дефолтов. Приём секции — замещение целиком (как drill); сброс — отправкой policy без `s3`.
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками;
@@ -804,8 +837,10 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   (тихая порча/утеря объектов S3).
 - **Deprovisioning кластера** (D2, [14-pgworker.md](14-pgworker.md) §5 B)
   чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix` (и
-  убивает бегущие джоб-контейнеры семейства `pgw-backup-<C>-*`: полные
-  `full-`, verify, restore, дриллы `drill-` — у drill-джобов контейнер и
+  убивает бегущие tool-контейнеры бэкапов: verify, restore, дриллы
+  `drill-` — префиксы `pgw-backup-verify-<C>-`/`pgw-backup-restore-<C>-`/
+  `pgw-backup-drill-<C>-`; контейнера полного больше нет — §2; у
+  drill-контейнеров контейнер и
   volume одно имя `pgw-backup-drill-<C>-<X>-<id>`, volume сносится тем же
   проходом D1 по префиксу `pgw-backup-drill-<C>-`); объекты
   S3 этим путём НЕ удаляются (данные дороже места; осознанное удаление —
@@ -894,32 +929,42 @@ s3://<bucket>/<C>/<X>/
   всё выше/новее — НЕ трогаются.
 - **Verify полного (§4)**: две независимые проверки, итог —
   verify-статус полного:
-  1. **Checksums** — ephemeral джоб-контейнер
-     `pgw-backup-verify-<C>-<X>-<id>` (образ `pgworker-backup`, контракт
-     §2, inline-команда от воркера): `mc cp` `full/<id>/` 1:1 в staging →
+  1. **Checksums** — tool-контейнер
+     `pgw-backup-verify-<C>-<X>-<id>` (образ `pgworker-node` в
+     tool-режиме, §3.5; свой ephemeral staging-volume, точка
+     монтирования `/staging`): команда
+     `POST /api/ops/verify` от воркера (S3-контекст read-списка —
+     секреты только в POST, §7) → скачивание `full/<id>/` 1:1
+     .NET S3-клиентом в staging →
      `pg_verifybackup` (manifest SHA256, вкл. `pg_wal/` набора) →
-     результат stdout result-JSON + exit-код (протокол джоба); воркер
-     супервизит по детерминированному имени, staging-volume удаляет после
-     итога (как у полных). Сбой скачивания (S3/сеть/staging) — transient:
-     статус остаётся PENDING, ретраи тиками; `pg_verifybackup` ≠ 0 —
+     статус `GET /api/ops/verify` (фазы `downloading|verifying`); воркер
+     супервизит по детерминированному имени (адрес API: контур — alias
+     сети контура, прод — `host:<динамический порт>`), контейнер+volume
+     удаляет после
+     итога (таймаут — kill+rm, §6). Сбой скачивания (S3/сеть/staging) —
+     transient (статус операции `failed` с фазой `downloading`):
+     PENDING остаётся, ретраи тиками (контейнер+volume сносятся, следующий
+     тик создаёт заново); `pg_verifybackup` ≠ 0 (фаза `verifying`) —
      permanent (данные плохие).
   2. **Полнота WAL-цепочки до точки бэкапа** — воркер без скачивания
-     сегментов и до запуска джоба: list `wal/` + list `full/<id>/pg_wal/`
+     сегментов и до запуска tool-контейнера: list `wal/` + list `full/<id>/pg_wal/`
      (последний сегмент набора `-X stream` = точка бэкапа) →
      непрерывность от `wal_start_segment` до точки бэкапа (подмножество
      общего gap-детектора §3) + строгий LSN-разбор `.history` при
      TLI-переходах в диапазоне (§3; GET history-объектов — они
-     крошечные). Дыра → permanent FAILED c границами, джоб checksums не
+     крошечные). Дыра → permanent FAILED c границами, checksums-операция не
      запускается (вердикт уже определён).
   Обе зелёные → `verify.state=OK` + `checked_unix`; любая красная →
-  `FAILED` + `error`; verify идемпотентен — vanished-джоб перезапускается
+  `FAILED` + `error`; verify идемпотентен — vanished-операция
+  перезапускается
   (PENDING), переснятие полного не требуется.
 - **Панель читает bucket read-only**: live-инвентарь/health/сверка в
   грани «Хранилище бэкапов»
   ([adminpanel/02](adminpanel/02-etcd-contract.md) §2.5); пишущие/удаляющие
   операции S3 — ТОЛЬКО воркер (ретенция §4, супервизор).
-- **Клиент S3 воркера** (AWSSDK в процессе воркера; полные бэкапы кладут
-  джобы `mc` — не этот клиент): пер-попыточный таймаут короче окна
+- **Клиент S3 воркера** (AWSSDK в процессе воркера; операции бэкапов
+  исполняют приёмники/tool-контейнеры своими .NET-клиентами — не этот
+  клиент): пер-попыточный таймаут короче окна
   проверки watchdog (`AmazonS3Config.Timeout` = полокна, 10 с при
   дефолтах — симметрия таймаутов etcd/patroni/SQL, arch/14 §6) +
   пульс активности на время каждого вызова (`S3Pulse`, arch/14 §6
@@ -933,51 +978,50 @@ s3://<bucket>/<C>/<X>/
 
 - **Реплика-источник**: штатно полный бэкап не трогает мастер; fallback на
   мастер — журнал-факт (`role=master`) + I/O одной операции (не потоковой).
-  Смерть источника посреди бэкапа → джоб убивается, статус FAILED,
-  переснятие (бэкофф §2).
+  Смерть источника посреди бэкапа → `pg_basebackup` теряет соединение,
+  операция завершается FAILED (приёмник чистит staging), переснятие
+  (бэкофф §2).
 - **Слот на источнике**: WAL копится, пока приёмник не подтвердил доставку;
   потолок — `max_slot_wal_keep_size` (уже в каноне нод,
   [14-pgworker.md](14-pgworker.md) §2.1 P3/P4): смерть обоих приёмников → WAL в
   пределах лимита → по исчерпании слот инвалидируется PG → цепочка рвётся →
   алерт панели + переснятие полного. Диск источника переполнить нельзя.
   Слоты per-instance (§3): инвалидация одного не касается второго.
-- **Лимиты джоба**: `PgWorker:Backups:Agent { Cpu, Mem }` →
-  `HostConfig.NanoCPUs/Memory` ephemeral-джобов (образец: request_* нод,
-  [14-pgworker.md](14-pgworker.md) §2.4 п.4); staging
-  volume ДЖОБОВ (полные/verify) — ephemeral с
-  квотой `Staging:QuotaBytes` (guard «нет места» → FAILED + алерт):
-  квота задана → tmpfs `size=` (жёсткий предел от ядра, ENOSPC
-  гарантирован; память хоста — осознанная плата, для больших баз квоту не
-  задавать); не задана → named volume на диске docker-хоста (ENOSPC
-  ловится реактивно по падению `pg_basebackup`/`mc` → FAILED). Приёмник WAL
+- **Лимиты tool-контейнеров**: `PgWorker:Backups:Agent { Cpu, Mem }` →
+  `HostConfig.NanoCPUs/Memory` tool-контейнеров verify/restore/drill
+  (образец: request_* нод,
+  [14-pgworker.md](14-pgworker.md) §2.4 п.4); staging-тома джобов
+  упразднены: staging полного — каталог в data-volume ноды
+  (`Staging:Dir`, §2; ENOSPC — реактивный FAILED), staging verify —
+  ephemeral-volume tool-контейнера (§5). Приёмник WAL
   отдельного контейнера/лимитов не имеет — он делит контейнер своей ноды
   (бюджет памяти: буфер сегмента `wal_segment_size` — обычно 16 МиБ, при
   S3-отказе стрим остановлен backpressure'ом — роста сверх буфера нет, и
-  рантайм приёмника; Mem ноды обязан это покрывать,
-  [14-pgworker.md](14-pgworker.md) §2.1); staging-том приёмника отсутствует
-  (§3) — Staging-опции к нему не применяются.
-- **Бюджеты зависших джобов**: активный полный (PLANNED/RUNNING/
+  рантайм приёмника и фоновая операция полного; Mem ноды обязан это покрывать,
+  [14-pgworker.md](14-pgworker.md) §2.1).
+- **Бюджеты зависших операций**: активный полный (PLANNED/RUNNING/
   UPLOADING) с возрастом (`now − started_unix`) > `Job:FullTimeoutSec`
-  (default 6 ч) → docker kill+rm контейнера и staging-volume → `FAILED`
+  (default 6 ч) → `POST /api/backup/full/cancel` best-effort (приёмник
+  гасит дерево текущего child-процесса и чистит staging; недостижимый
+  приёмник — journal-пометка «cancel пропущен» в той же записи
+  `job-timeout/<X>/<id>`) → `FAILED`
   `error="job-timeout: <age> с > FullTimeoutSec"` → переснятие по общему
   бэкоффу. Возрастной бюджет — ПЕРВЫЙ гвард супервизии активного:
   вердикт `FAILED` по возрасту — самостоятельный факт etcd (`started_unix` +
-  часы воркера), docker-доступ не требуется; transient-пропуск источника
-  (portalloc/engine/list) бюджет НЕ откладывает (джобу с возрастом >
-  6 ч нечем оправдаться). Kill+rm — best-effort при доступном хосте
-  источника, при недоступном — journal-пометка «cleanup пропущен» в той
-  же записи `job-timeout/<X>/<id>` (осиротевший контейнер с
-  детерминированным именем ничего не блокирует: id уникален, `FAILED`
-  уже в etcd; PLANNED без контейнера — FAILED без kill, как раньше).
-  Verify-джоб running дольше `Job:VerifyTimeoutSec` (default 6 ч;
+  часы воркера), docker/API-доступ не требуется; transient-пропуск источника
+  (portalloc/engine/receiver) бюджет НЕ откладывает (операции с возрастом >
+  6 ч нечем оправдаться); PLANNED без запуска — FAILED без cancel, как
+  раньше. Verify-tool-контейнер running дольше `Job:VerifyTimeoutSec` (default 6 ч;
   возраст — docker-факт StartedAt инспекта: в etcd-статусе кандидата
   времени запуска нет) → kill+rm, кандидат остаётся PENDING с
   `checked_unix = now` (попытка зачтена, лив-лок немедленных перезапусков
   исключён; вердикт FAILED по таймауту НЕ ставится — данные не виноваты).
-  Restore-джоб (фаза RUNNING заявки) старше `Job:RestoreTimeoutSec`
+  Restore-фаза (RUNNING заявки) старше `Job:RestoreTimeoutSec`
   (default 24 ч — канон §10 допускает «часами», сутки — явный завис) →
-  kill+rm + `FAILED` `restore-job-timeout` с чисткой щита initialize;
+  kill+rm tool-контейнера + `FAILED` `restore-job-timeout` с чисткой щита initialize;
   REJOINING не таймаутится (бюджеты Patroni-проб — свои, arch/14).
+  Бюджет наката WAL внутри restore/drill-операции —
+  `Restore:RecoveryTimeoutSec` из команды (§3.5).
 - **Patroni/HA не затрагивается**: бэкапы — сторонние клиенты нод; изменений
   в конфиги нод/HA-контура подсистема не вносит.
 
@@ -1000,13 +1044,17 @@ s3://<bucket>/<C>/<X>/
   обязательна при `Snapshots:Export:Enabled=true` (fail-fast старта,
   [14-pgworker.md](14-pgworker.md) §8); `PGW_BACKUP_S3_*` для слепков НЕ
   переиспользуется: источник правды о DR-слепках не живёт в
-  восстанавливаемом etcd. Передача джобам — env контейнера (
-  bucket + списки endpoints по роли + креды read-write из secrets пула).
-  Приёмник WAL целей/кредов в env НЕ получает — резолвит сам из etcd
+  восстанавливаемом etcd. Приёмник WAL целей/кредов в env НЕ получает —
+  резолвит сам из etcd
   живым резолвом (§3 «Агент»: policy.s3 → пул → secrets; пароль
-  `backup_exec` из `/clusters/<C>/backup_password`); env контейнера ноды
-  несёт только per-install bucket (`PGW_BACKUP_S3_BUCKET`) и опциональный
-  CA (ниже). Bucket в env ноды отсутствует (пустой `S3:Bucket` —
+  `backup_exec` из `/clusters/<C>/backup_password`) — тем же резолвом
+  пользуется операция полного (§2; команда `POST /api/backup/full` несёт
+  только `id`). Tool-операции (verify/restore/drill) — полный
+  S3-контекст read-списка в POST-команде запуска от воркера (endpoints/
+  креды/bucket/префикс; секреты ТОЛЬКО в POST — не в GET-статусах, не в
+  логах). env контейнера ноды
+  несёт только per-install bucket (`PGW_BACKUP_S3_BUCKET`), путь staging
+  полного (`PGW_BACKUP_STAGING_DIR`) и опциональный CA (ниже). Bucket в env ноды отсутствует (пустой `S3:Bucket` —
   инконсистентность инсталляции, валидация старта воркера §9 её
   исключает) ⇒ приёмник стоит в `waiting_policy` с диагностикой в
   `error` — старт-отказа живого процесса нет: приёмник восстановится
@@ -1028,14 +1076,14 @@ s3://<bucket>/<C>/<X>/
   per-install пакет на ВСЕ цели (ноды всех пулов и слепочная пара;
   per-пул CA не вводится); путь не
   задан (http-endpoint) — фабрика не ставится, поведение прежнее;
-  нечитаемый/пустой файл CA — отказ с диагностикой. Джобы и приёмник
+  нечитаемый/пустой файл CA — отказ с диагностикой. Приёмник
   (контейнер на любом docker-хосте — файл хоста воркера в нём недоступен):
-  CA передаётся значением PEM в env контейнера (джобы — `S3_CA_PEM`;
-  приёмник — `PGW_BACKUP_S3_CA_PEM` env ноды — его ставит EnsureNode из
+  CA передаётся значением PEM в env ноды
+  (`PGW_BACKUP_S3_CA_PEM` — его ставит EnsureNode из
   `CaBundlePath` воркера); приёмник материализует
   PEM во временный файл и передаёт его тем же `CaBundlePath` (та же
-  фабрика доверия); mc-джобы (полный бэкап, verify, restore) материализуют
-  PEM в файл и выставляют `SSL_CERT_FILE` (mc — Go-рантайм).
+  фабрика доверия) — и стриму, и операции полного (§2). Tool-операции:
+  PEM в POST-команде (`ca_pem`), приёмник материализует тем же порядком.
   http-endpoint — переменные не заданы, поведение прежнее.
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
   per-cluster `/clusters/<C>/backup_password` — по образцу прочих per-cluster секретов
@@ -1053,12 +1101,12 @@ s3://<bucket>/<C>/<X>/
 
 | Разделы | Содержимое |
 |---|---|
-| §2, §7 | джоб полного бэкапа, планировщик, статусы/ретраи, суточный алерт, роль/ensure `backup_exec` |
+| §2, §7 | операция полного на приёмнике ноды (API), планировщик, статусы/ретраи, суточный алерт, роль/ensure `backup_exec` |
 | §3, §4 | приёмник WAL, слот, загрузка сегментов, контроль непрерывности, алерты — статус воркера в etcd + панельные правила разрыва/отставания цепочки |
-| §3–§5 | `pg_verifybackup` + полнота WAL-цепочки до точки бэкапа, статусы/периодическая перепроверка verify, алерт `backup-verify-failed`, валидность в планировщике/stale |
-| §3.5, §4, §5 | восстановление полного+WAL (PITR latest/target_time, source-override для DR), restore-джоб/процесс, runbook |
+| §3–§5 | `pg_verifybackup` (tool-контейнер) + полнота WAL-цепочки до точки бэкапа, статусы/периодическая перепроверка verify, алерт `backup-verify-failed`, валидность в планировщике/stale |
+| §3.5, §4, §5 | восстановление полного+WAL (PITR latest/target_time, source-override для DR), tool-контейнер restore/процесс, runbook |
 | §4, §5, §9 | GFS-ретенция (календарь UTC), чистка WAL ниже cutoff последнего verify-OK полного, гигиена FAILED, ключ хранилища/квоты + панельные алерты, guard последнего валидного, API приёма policy |
-| §4, §6 | reconcile S3↔etcd, сироты (реестр+TTL), BROKEN-самолечение цепочки, бюджеты зависших джобов, рестарт-устойчивость |
+| §4, §6 | reconcile S3↔etcd, сироты (реестр+TTL), BROKEN-самолечение цепочки, бюджеты зависших операций, рестарт-устойчивость |
 
 ## 9. Конфигурация
 
@@ -1071,14 +1119,18 @@ s3://<bucket>/<C>/<X>/
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
-  кластера перекрывает), `Staging { Dir=/backup-staging, QuotaBytes }`,
-  `Agent { Cpu, Mem }` (лимиты ephemeral-джобов, §6), `Job { Image="pgworker-backup:dev",
+  кластера перекрывает), `Staging { Dir=/home/postgres/pgdata/backup-staging }`
+  (каталог staging полного в data-volume ноды, §2;
+  `Staging:QuotaBytes` упразднён — ENOSPC реактивный, §6),
+  `Agent { Cpu, Mem }` (лимиты tool-контейнеров, §6), `Job {
   FullTimeoutSec=21600, VerifyTimeoutSec=21600, RestoreTimeoutSec=86400 }`
-  (общий образ джобов, §2; бюджеты зависших
-  джобов), `Retry { BaseSec=300, MaxSec=3600 }`
+  (бюджеты зависших операций, §6;
+  `Job:Image` упразднён — tool-контейнеры используют образ нод
+  `NodeImage`), `Retry { BaseSec=300, MaxSec=3600 }`
   (бэкофф переснятия FAILED) (`S3 { AdvertisedEndpoint }` ушёл —
-  адреса нод пула воркер резолвит сам и передаёт джобам списками в env,
-  §3/§7), `Wal { VerifyIntervalSec=30,
+  адреса нод пула воркер резолвит сам (пул §4; приёмнику — резолв из
+  etcd, tool-операциям — S3-контекст в POST-команде, §3/§7),
+  `Wal { VerifyIntervalSec=30,
   LagMaxSegments=1024, StaleSec=300 }` (
   период list/контроля цепочки, порог отставания в сегментах, порог тишины
   загрузок; конфигурации приёмника отдельной нет — приёмник внутри образа
@@ -1088,13 +1140,13 @@ s3://<bucket>/<C>/<X>/
   WarnPercent=80, CritPercent=90 }` (квота bucket установки для
   ключа/алертов хранилища; `Bytes=0` — квота не задана, пишется только
   `used_bytes`), `Restore { RecoveryTimeoutSec=1800 }` (бюджет
-  локального наката WAL restore-джобом — фаза recovering; исчерпание →
+  локального наката WAL restore/drill-операции — фаза recovering; исчерпание →
   FAILED «target не достигнут»), `Drill { IntervalDays=1, TimeoutSec=21600 }`
   (§3.6: дефолт периода дрилов шардов кластеров без
   policy-поля `drill.interval_days`, `0` — глобальное выключение новых
   запусков при доводке активных; бюджет активного дрилла от
   `started_unix` → FAILED `drill-timeout`; бюджет наката WAL внутри
-  drill-джоба — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
+  drill-операции — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
   OrphanTtlSec=604800 }` (период сверок per-cluster и глобального
   лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
   `Enabled=true` → непустой `S3:Bucket` (env `PGW_BACKUP_S3_BUCKET`)
@@ -1121,20 +1173,19 @@ s3://<bucket>/<C>/<X>/
 | Npgsql не экспонирует TIMELINE_HISTORY протокола | fallback канона §3: приёмник читает `pg_wal/<TLI>.history` файловой системой своей ноды (контейнер общий с PG) и грузит объект сам; недоступен и файл — факт `history_missing` в статус-ключе (диагностика) |
 | Смешанный сегмент точки failover-переключения (TLI1→TLI2 внутри одного 16-МиБ сегмента) | приёмник закрывает сегмент по границе LSN — объект содержит байты обоих таймлайнов; восстановимость через точку переключения опирается на replay-континуальность postgres (промоутнутая нода начинает новую TLI с END_OF_RECOVERY-записи, restore-накат читает её в том же сегменте); восстанавливаемость через точку переключения проверяется docker-E2E `E2eTliSwitchScenarios`: restore latest и target_time по одному исходному полному через смешанный сегмент (сегмент — единственный объект под именем TLI родителя; строгий факт + побайтовое подтверждение: switchWALLSN внутри сегмента, page-заголовки по обе стороны точки показывают TLI1/TLI2); склейка `.history` и непрерывность CheckWithRestart ПОСЛЕ промоута, restore ЧЕРЕЗ точку переключения |
 | Длинные имена `<C>-<X>` ломают имена слота/контейнера | слот — sha1-усечение (§3); имена контейнеров — те же ограничения, что у pgw-нод (существующая практика) |
-| Превышение staging-квоты джоба («нет места» — частый сбой бэкапов) | `Staging:QuotaBytes` → tmpfs `size=` (жёсткая квота, ENOSPC от ядра); null → disk-volume с реактивным ENOSPC; оба пути → FAILED + суточный алерт (§6) |
-| Протокол джоба (stdout-маркеры фаз/result-JSON) — неявный контракт воркера и образа | маркеры зафиксированы §2 (фазы + result с wal_start_segment/size_bytes); воркер толерантен к незнакомым строкам лога (парсит только свои JSON); смена формата — правкой канона; транспорт «воркер читает docker-логи джоба» — отклонение от [25](25-component-communications.md) №22, переход: backup `t24-job-status-channel` |
+| Переполнение staging полного («нет места» — частый сбой бэкапов) | staging — каталог в data-volume ноды (`Staging:Dir`, §2), отдельной квоты нет; ENOSPC ловится реактивно (падение `pg_basebackup`/IOException put) → FAILED с однострочной причиной + суточный алерт (§6) |
 | Restore перезатирает данные живого шарда (ошибка оператора) | обязательный `confirm` = имя шарда в API (мисматч → 400); максимум один активный restore на шард; runbook проговаривает необратимость (RPO = точка бэкапа/WAL-цели) |
 | PITR-назад (target_time) несшиваем с прежней WAL-цепочкой (новая TLI с меньшими номерами сегментов) | по COMPLETED restore ключ `wal` удаляется → планировщик §2 немедленно переснимает полный → новая цепочка от новой точки (§3.5); старые S3-объекты не трогаются |
-| Долгий накат WAL (большая база/длинная цепочка) — restore-джоб часами | бюджет `Restore:RecoveryTimeoutSec` + маркеры фаз в статусе (оператор видит прогресс); резюмов нет — повтор заявки качает заново (осознанная плата plain-механики) |
-| `target_time` вне досягаемости цепочки (раньше старта полного / позже конца WAL) | PG завершает recovery ошибкой «target not reached» / ждёт WAL — джоб ловит по бюджету/логу → FAILED с причиной; валидация непрерывности цепочки — заранее (WalChain) |
-| S3-endpoint недостижим с docker-хоста источника (джоб грузит из `mc`) | endpoint per-install обязан быть достижим отовсюду (объектное хранилище); стенд: адресация по имени сети контура (`owns3:9000`, без хост-переходов); extra_hosts host-gateway в джобе — прод-режим |
+| Долгий накат WAL (большая база/длинная цепочка) — restore-операция часами | бюджет `Restore:RecoveryTimeoutSec` + фазы в GET-статусе операции (оператор видит прогресс); резюмов нет — повтор заявки качает заново (осознанная плата plain-механики) |
+| `target_time` вне досягаемости цепочки (раньше старта полного / позже конца WAL) | PG завершает recovery ошибкой «target not reached» / ждёт WAL — операция ловит по бюджету → FAILED с причиной; валидация непрерывности цепочки — заранее (WalChain) |
+| S3-endpoint недостижим с docker-хоста источника (приёмник/tool-контейнер грузят .NET-клиентом) | endpoint per-install обязан быть достижим отовсюду (объектное хранилище); стенд: адресация по имени сети контура (`owns3:9000`, без хост-переходов); прод: extra_hosts host-gateway в tool-контейнере, приёмник ноды адресует как стрим (§7) |
 | Ошибка ретенции удаляет нужный бэкап (баг отбора/чистки) | guard «последний COMPLETED не удаляется никогда»; удаление только через транзитную DELETING-фазу с идемпотентными повторами; отбор/чистка — чистые функции под полным юнит-покрытием; WAL-чистка — строго ниже cutoff последнего verify-OK полного (§4/§5) |
 | Накат WAL поверх недельной/месячной GFS-точки невозможен (WAL ниже последнего verify-OK полного срезан) | осознанное следствие целевой схемы (retention 1/1/1 + cutoff по последнему verify-OK): старые GFS-точки восстановимы до собственной точки съёма — WAL их `-X stream`-набора лежит при них в `full/<id>/pg_wal/`; PITR с накатом — только от последнего валидного полного; restore-заявка от старого полного с целью позже его точки честно падает на валидации цепочки (permanent-отказ с границами) |
 | list всего bucket для `used_bytes` дорог на больших установках | по расписанию `Retention:IntervalSec` per-instance (не каждый тик), list-v2 пагинация; квота 0 → ключ пишется без вердикта; degradation — только свежесть числа |
-| Стоимость verify: скачивание полного из S3 (трафик + staging размером бэкапа) на каждый verify | `interval_sec` по умолчанию 7 дней (не каждый день все полные); staging-квота/лимиты — общие §6; verify-джоб ephemeral — ресурс занят на время проверки |
+| Стоимость verify: скачивание полного из S3 (трафик + staging размером бэкапа) на каждый verify | `interval_sec` по умолчанию 7 дней (не каждый день все полные); лимиты — общие §6; verify-tool-контейнер ephemeral — ресурс занят на время проверки |
 | Тихая порча/утеря объектов S3 после снятия бэкапа (bit rot, ручное удаление) | периодическая перепроверка `verify.interval_sec` + алерт `backup-verify-failed`; планировщик не считает проваленный verify свежестью → переснятие |
 | Расхождение spec↔arch при будущих правках | arch-правки — всегда первой фазой; ревью plan↔spec по чек-листам dev-flow |
-| Таймаут зависшего джоба ложноположителен на очень медленном валидном бэкапе (большая база/медленный S3) | дефолт 6 ч с запасом поверх «часовых» бэкапов; конфиг Job:FullTimeoutSec; FAILED по таймауту проходит общий бэкофф — шторм пересъёмов исключён |
+| Таймаут зависшей операции ложноположителен на очень медленном валидном бэкапе (большая база/медленный S3) | дефолт 6 ч с запасом поверх «часовых» бэкапов; конфиг Job:FullTimeoutSec; FAILED по таймауту проходит общий бэкофф — шторм пересъёмов исключён |
 | DELETING-сирота vs воскресший владелец (DR-restore в окне удаления) | TTL-окно 7 сут покрывает разбор; гвард: владелец появился в etcd → доводка отменяется, запись гаснет; DR-hold: префикс с валидным полным в DELETING по TTL вообще не попадает — остаточный риск «частично удалённое при старте DR» остаётся только для мусорных префиксов без полных |
 | Осиротевшие префиксы с валидными полными копятся в bucket (автоправило «последний полного не удаляет») | накопление видимо: ключ `/pgworker/backups/storage` (занятость/квота, алерты) + записи реестра (`has_valid_full`) + алерт панели; чистка — явная заявка `orphan-deletes` с confirm (панель/runbook); это осознанная плата «данные дороже места» (R4) |
 | Ratchet chain_start vs restore/PITR-назад | restore COMPLETED удаляет wal-ключ целиком — ratchet уходит вместе с ключом; новая цепочка строится планировщиком с нуля |
