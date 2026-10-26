@@ -21,11 +21,11 @@ public class RestoreOperationTests
 {
     private const string Id = "20260101000000Z";
 
-    private static StartRestoreRequest Request(string? targetTime = null) => new(
+    private static PgWorker.WalReceiver.Operations.StartRestoreRequest Request(string? targetTime = null) => new(
         BackupId: Id,
         TargetTime: targetTime,
         RecoveryTimeoutSec: 60,
-        S3: new S3Context(
+        S3: new PgWorker.WalReceiver.Operations.S3Context(
             Endpoints: ["http://s3a:9000"],
             AccessKey: "ak",
             SecretKey: "sk",

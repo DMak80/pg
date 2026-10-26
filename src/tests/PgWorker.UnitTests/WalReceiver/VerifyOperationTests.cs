@@ -18,9 +18,9 @@ public class VerifyOperationTests
 {
     private const string Id = "20260101000000Z";
 
-    private static StartVerifyRequest Request() => new(
+    private static PgWorker.WalReceiver.Operations.StartVerifyRequest Request() => new(
         Id,
-        new S3Context(
+        new PgWorker.WalReceiver.Operations.S3Context(
             Endpoints: ["http://s3a:9000"],
             AccessKey: "ak",
             SecretKey: "sk",

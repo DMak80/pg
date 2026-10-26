@@ -131,6 +131,11 @@ builder.Services.AddSingleton(sp =>
 // запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
 // до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+// Клиент HTTP API приёмника WalReceiver (t26, spec §3.5): per-вызов ~10 с —
+// 5xx/таймаут/отказ = transient для тиков бэкап-процессов (ReceiverReply).
+builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
+    new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
 // Клиент Patroni REST (t22, arch/14 §5 C): https к host:patroni-port portalloc;
 // верификация цепочки к per-install CA без hostname-проверки (канон P17
 // «require, не verify-full»: адрес ноды — из реплицированного portalloc;
