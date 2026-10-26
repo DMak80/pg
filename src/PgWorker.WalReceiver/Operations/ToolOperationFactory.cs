@@ -9,7 +9,6 @@ public sealed class ToolOperationFactory(OperationRegistry registry) : IToolOper
     public IReceiverOperation CreateVerify(StartVerifyRequest request)
         => new VerifyOperation(request, new ProcessRunner(), registry);
 
-    // Restore — шаг 7 (тогда же мапится маршрут /api/ops/restore).
     public IReceiverOperation CreateRestore(StartRestoreRequest request)
-        => throw new NotSupportedException("restore operation is not wired yet");
+        => new RestoreOperation(request, new ProcessRunner(), registry);
 }

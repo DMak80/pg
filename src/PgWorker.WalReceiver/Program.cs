@@ -42,6 +42,12 @@ internal static class Program
 
     private static async Task Main(string[] args)
     {
+        // Sub-режим restore_command (spec t26 §3.4): `walreceiver fetch-wal
+        // <seg> <dest>` — ДО создания builder; итог — exit-код процесса
+        // (0 — объект записан; 1 — объекта нет/отказ — конец WAL для postgres).
+        if (args is [{ } sub, ..] && sub == "fetch-wal")
+            Environment.Exit(await Operations.FetchWalCommand.RunAsync(args[1..]));
+
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls("http://0.0.0.0:8080");
         builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
@@ -138,6 +144,29 @@ internal static class Program
         });
 
         app.MapGet("/api/ops/verify", (OperationRegistry registry) => ToolStatus(registry));
+
+        // POST /api/ops/restore — тело StartRestoreRequest (backup_id /
+        // target_time RFC3339, null = latest / recovery_timeout_sec /
+        // S3-контекст): 409 / 202 (drill использует те же маршруты — механика
+        // одна, spec §3.4). GET — ToolStatusResponse (downloading|recovering +
+        // restored_to_lsn/system_id) / 404.
+        app.MapPost("/api/ops/restore", (StartRestoreRequest body,
+            OperationRegistry registry, IToolOperationFactory factory) =>
+        {
+            if (!registry.TryBegin(new OperationSnapshot(
+                    body.BackupId, OperationStates.Running, OperationPhases.Downloading)))
+                return Results.Json(
+                    new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
+
+            var operation = factory.CreateRestore(body);
+            active = operation;
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            return Results.Json(
+                new ToolStatusResponse(OperationStates.Running, OperationPhases.Downloading),
+                JsonOpts, statusCode: 202);
+        });
+
+        app.MapGet("/api/ops/restore", (OperationRegistry registry) => ToolStatus(registry));
 
         app.MapPost("/api/ops/cancel", async (OperationRegistry registry) =>
         {
