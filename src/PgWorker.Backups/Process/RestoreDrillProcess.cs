@@ -353,22 +353,43 @@ public sealed class RestoreDrillProcess(
                 return;
             }
 
-            // Молодой RUNNING без контейнера — статус не трогаем (transient).
-            // Поллинг create/start — тот же инвариант (arch/14 §6).
-            await LongCallPolling.EnsureAsync(
-                $"create/start drill job {containerName}",
-                async token =>
-                {
-                    var created = await engine.CreateContainerAsync(
-                        DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId,
-                        poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey), containerName, token);
-                    if (!created.IsSuccess)
-                        return created;
-                    return await engine.StartContainerAsync(containerName, token);
-                },
-                progress, logger,
-                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
-                JobCreateBudget, ct);
+            // Молодой RUNNING без контейнера — идемпотентная досоздача по имени
+            // (create/start прошедшего тика не дошёл — transient) + пере-POST
+            // (latest; 409-гвард делает команду идемпотентной).
+            var contour = options.ContourNetwork is { Length: > 0 };
+            int? recreatePort = null;
+            if (!contour)
+            {
+                var probe = Tool.FreePortProbe.Allocate();
+                if (!probe.IsSuccess)
+                    return; // transient — следующий тик
+                recreatePort = probe.Value;
+            }
+            var recreated = await engine.CreateContainerAsync(
+                Tool.ToolJobSpec.Build(options, cluster, containerName,
+                    BackupNames.DrillVolumeName(cluster, shard, drill.Id),
+                    "/home/postgres/pgdata", recreatePort), containerName, ct);
+            if (!recreated.IsSuccess)
+                return; // transient — следующий тик повторит
+            await engine.StartContainerAsync(containerName, ct);
+            var recreateUrl = await ToolReceiverUrlAsync(engine, host, containerName, ct);
+            if (recreateUrl is null)
+                return; // transient — адрес недоступен, POST следующим тиком
+            var poolRecreate = await s3Factory.ResolveAsync(cluster, ct);
+            if (poolRead.IsSuccess && poolRecreate.Value is { } recreatePool)
+            {
+                await receiver.StartRestoreAsync(recreateUrl, new StartRestoreRequest(
+                    BackupId: drill.BackupId,
+                    TargetTime: null,
+                    RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                    S3: new S3Context(
+                        Endpoints: [.. recreatePool.ReadAll],
+                        AccessKey: recreatePool.AccessKey,
+                        SecretKey: recreatePool.SecretKey,
+                        Bucket: options.S3Bucket,
+                        Prefix: $"{cluster}/{shard}",
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+            }
             return;
         }
 

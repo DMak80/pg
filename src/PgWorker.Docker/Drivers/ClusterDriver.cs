@@ -750,38 +750,27 @@ public sealed class PlainClusterDriver(
         => $"{NodeName(cluster, shard, nodeName)}-data";
 }
 
-// Общая чистка джобов бэкапов (t02/t05, Plain и Swarm): контейнеры по префиксам
-// (full: pgw-backup-full-<C>-*, restore: pgw-backup-restore-<C>-*) + volume,
-// выводимый из имени full-контейнера (pgw-backup-full-<C>-<X>-<id> →
-// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Restore-джобы
-// СВОЕГО volume не имеют: их точка монтирования — data-volume ноды (не удалять).
-// Имена — локальные константы канона BackupNames (PgWorker.Backups) — дубль без
-// ссылки (цикл зависимостей; прецедент — MoverRole в ShardEndpoints).
+// Общая чистка tool-контейнеров бэкапов (t02/t05/t26, Plain и Swarm):
+// verify/drill (контейнер и volume — одно имя) + restore (контейнер только —
+// его точка монтирования data-volume ноды, НЕ удалять). Контейнеров полного
+// больше нет (t26: полный исполняет приёмник ноды, pgw-backup-full-<C>-* —
+// префикс умер вместе с джобами). Имена — локальные константы канона
+// BackupNames (PgWorker.Backups) — дубль без ссылки (цикл зависимостей;
+// прецедент — MoverRole в ShardEndpoints).
 internal static class BackupJobsCleaner
 {
-    public const string JobContainerPrefix = "pgw-backup-full-";
     public const string RestoreJobContainerPrefix = "pgw-backup-restore-";
-    public const string JobVolumePrefix = "pgw-backup-";
-
-    // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
     public const string VerifyContainerPrefix = "pgw-backup-verify-";
-
-    // reliability t02: drill-джобы (контейнер и volume одно имя — чистка тем же
-    // проходом D1 по префиксу).
     public const string DrillContainerPrefix = "pgw-backup-drill-";
 
     public static async Task<Result> RemoveAsync(
         IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
     {
-        // t04: verify-джобы — контейнер и volume НОСЯТ ОДНО ИМЯ (в отличие от full:
-        // pgw-backup-full-<C>-<X>-<id> → volume pgw-backup-<C>-<X>-<id>).
-        // volumePrefix ОБЯЗАН содержать кластер (pgw-backup-<C>-) — имя контейнера
-        // без префикса даёт только <X>-<id>.
-        foreach (var (prefix, sameVolumeName) in new[]
-                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true), (DrillContainerPrefix, true) })
+        // verify/drill: контейнер и volume НОСЯТ ОДНО ИМЯ (volume ephemeral —
+        // чистится тем же проходом; 404 = ок).
+        foreach (var prefix in new[] { VerifyContainerPrefix, DrillContainerPrefix })
         {
             var containerPrefix = $"{prefix}{cluster}-";
-            var volumePrefix = $"{JobVolumePrefix}{cluster}-"; // pgw-backup-<C>-
             foreach (var engine in engines)
             {
                 var list = await engine.ListContainersAsync(containerPrefix, all: true, ct);
@@ -793,8 +782,7 @@ internal static class BackupJobsCleaner
                     var removed = await engine.RemoveContainerAsync(name, force: true, ct);
                     if (!removed.IsSuccess)
                         return removed;
-                    var volume = sameVolumeName ? name : volumePrefix + name[containerPrefix.Length..];
-                    var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
+                    var volumeRemoved = await engine.RemoveVolumeAsync(name, ct);
                     if (!volumeRemoved.IsSuccess)
                         return volumeRemoved;
                 }

@@ -524,12 +524,10 @@ public sealed class BackupsOptions
         VerifyIntervalSec: Policy.VerifyIntervalSec,
         S3Bucket: S3.Bucket,
         S3CaBundlePath: S3.CaBundlePath,
-        JobImage: Job.Image,
         NodeImage: nodeImage ?? "pgworker-node:dev",
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
         StagingDir: Staging.Dir,
-        StagingQuotaBytes: Staging.QuotaBytes,
         AgentCpu: Agent.Cpu,
         AgentMem: Agent.Mem,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
@@ -560,9 +558,7 @@ public sealed class BackupsOptions
     /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
     /// мусорный конфиг виден на старте.</summary>
     public bool IsValid()
-        => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Bucket)
-                && !string.IsNullOrWhiteSpace(Job.Image)))      // t25: wal-агента нет — образ не нужен
+        => !Enabled || !string.IsNullOrWhiteSpace(S3.Bucket)
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
@@ -630,10 +626,9 @@ public sealed class BackupsSupervisorOptions
 /// Таймауты (t07, arch/19 §6/§9) — бюджеты зависших джобов: полный/verify/restore.</summary>
 public sealed class BackupsJobOptions
 {
-    public string Image { get; set; } = "pgworker-backup:dev";
-
     /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c (t07):
-    /// возраст > лимита → kill+rm + FAILED job-timeout → переснятие по бэкоффу.</summary>
+    /// возраст > лимита → FAILED job-timeout + cancel API приёмника → переснятие
+    /// по бэкоффу (t26: контейнера полного нет, staging чистит приёмник).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
     /// <summary>Бюджет running verify-джоба по docker-факту StartedAt, c (t07):
@@ -696,11 +691,11 @@ public sealed class BackupsRetentionOptions
 
 /// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с
 /// квотой (guard «нет места» → FAILED, реализация t02; null — без квоты).</summary>
+/// <summary>Staging полного (t26, arch/19 §9): каталог в data-volume ноды
+/// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
 public sealed class BackupsStagingOptions
 {
-    public string Dir { get; set; } = "/backup-staging";
-
-    public long? QuotaBytes { get; set; }
+    public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
 /// <summary>Ресурсные лимиты джоба/агента бэкапов (arch/19 §6) →

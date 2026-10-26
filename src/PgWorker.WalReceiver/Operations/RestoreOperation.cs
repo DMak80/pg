@@ -6,7 +6,7 @@ using PgWorker.Etcd.S3;
 namespace PgWorker.WalReceiver.Operations;
 
 /// <summary>Операция restore/drill tool-контейнера (arch/19 §3.5/§3.6, spec
-/// t26 §3.4 — механика 1:1 из bash RestoreJobCommand, Р15): скачивание
+/// t26 §3.4 — механика 1:1 из bash-механики restore, Р15): скачивание
 /// full/&lt;id&gt;/ 1:1 в PGDATA (Spilo-layout) → канонические каталоги initdb →
 /// override-строки postgresql.auto.conf (restore_command = fetch-wal sub-режим
 /// того же бинаря; pristine auto.conf в .orig) → standby.signal →

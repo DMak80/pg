@@ -1,10 +1,10 @@
 namespace PgWorker.Backups;
 
-/// <summary>Runtime-опции подсистемы бэкапов (arch/19 §9, t02): склейка секции
-/// PgWorker:Backups (маппер BackupsOptions.ToRuntime() в App; образец
+/// <summary>Runtime-опции подсистемы бэкапов (arch/19 §9, t02/t26): склейка
+/// секции PgWorker:Backups (маппер BackupsOptions.ToRuntime() в App; образец
 /// MovesRuntimeOptions). S3-креды — per-cluster secrets пула
-/// (/s3/clusters/<C>/secrets, выбирается policy.s3), дальше — env джоба
-/// (в etcd/логи не попадают).</summary>
+/// (/s3/clusters/<C>/secrets, выбирается policy.s3); tool-операции —
+/// S3-контекст в POST-команде (секреты не в etcd/логах/argv).</summary>
 public sealed record BackupsRuntimeOptions(
     bool Enabled = false,
     long FullMaxAgeSec = 86400,
@@ -17,14 +17,12 @@ public sealed record BackupsRuntimeOptions(
     // фабрику доверия S3CaHttpClientFactory (env AWS_CA_BUNDLE линейкой
     // AWSSDK.Core 3.7.x не читается).
     string? S3CaBundlePath = null,
-    string JobImage = "pgworker-backup:dev",
     // t26: образ tool-контейнеров (verify/drill/restore) — pgworker-node
     // (tool-режим, arch/19 §3.5/§3.6/§5); маппинг — Docker.Images.Node.
     string NodeImage = "pgworker-node:dev",
     int RetryBaseSec = 300,
     int RetryMaxSec = 3600,
     string StagingDir = "/backup-staging",
-    long? StagingQuotaBytes = null,
     double? AgentCpu = null,
     long? AgentMem = null,
     // t03 (arch/19 §3/§9): расписание контроля цепочки и пороги деградаций.

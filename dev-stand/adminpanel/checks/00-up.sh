@@ -188,12 +188,6 @@ for i in $(seq 1 100); do ect_ok && break; sleep 1; done
 ect_ok || { echo "  ❌ as-etcd-1/2/3 quorum not formed within 100 s (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
 echo "  etcd contour ready (3/3 started)"
 
-# 1a-2) Образ джоба бэкапов (t02): собирается рядом с pgworker:dev — тег
-#       PgWorker:Backups:Job:Image (дефолт pgworker-backup:dev). Прямой docker
-#       build (а не compose build) — без env-зависимостей deploy/.env.
-docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:dev "$ROOT" \
-  || { echo "❌ image pgworker-backup build failed (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
-echo "  image pgworker-backup:dev ready"
 
 # 1b) PgWorker готовность (стенд = полная система; контур ВСЕГДА один —
 #     etcd-кластер стенда): воркеры (2 инстанса, t07) из deploy/docker-compose.yml

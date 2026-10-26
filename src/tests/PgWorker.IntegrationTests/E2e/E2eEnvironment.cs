@@ -115,16 +115,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // deploy/build-image.sh там; в registry не кладётся; pg его не собирает).
     public const string OwnS3Image = "owns3:dev";
 
-    // mc запинен существующим docker-тегом (ближайший к MC_VERSION образа
-    // pgworker-backup, arch/19 §10; у docker-тегов и архивных тегов dl.min.io
-    // метки времени расходятся).
+    // mc запинен существующим docker-тегом (у docker-тегов и архивных тегов
+    // dl.min.io метки времени расходятся).
     internal const string McImage = "minio/mc:RELEASE.2025-08-13T08-35-41Z";
 
     // Образ узла (задача 25): без DOORMAN_URL — узел без пулера, PgWorker
     // запускается с EnableDoorman=false (Д4, R1).
     public static string NodeImage => $"pgworker-node:e2e-{ImageTagSuffix}";
-
-    public static string JobImage => $"pgworker-backup:e2e-{ImageTagSuffix}";
 
     /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
     /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
@@ -1636,7 +1633,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static bool _staticReady;
     private static string _root = "";
     private static bool _owns3ImageReady;
-    private static bool _jobImageReady;
     private static bool _sdImageReady;
 
     private static string AppPublishDir => Path.Combine(_root, "artifacts", "e2e", "app");
@@ -1666,7 +1662,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
         {
             await EnsureStaticAsync(ct);
             await EnsureOwnS3ImageAsync(ct);
-            await EnsureJobImageAsync(ct);
             await EnsureSdImageAsync(ct);
             var root = E2eFixture.FindRoot(AppContext.BaseDirectory);
             await File.WriteAllTextAsync(
@@ -1916,46 +1911,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    private static async Task EnsureJobImageAsync(CancellationToken ct)
-    {
-        // Раннер: образ гарантированно собран фазой 1 (host-сборка — не задача
-        // раннера, SDK в контейнере нет).
-        if (IsInnerRunner)
-            return;
-        if (_jobImageReady)
-            return;
-        await StaticGate.WaitAsync(ct);
-        try
-        {
-            if (_jobImageReady)
-                return;
-            // Тест не строит образ: сборка — фаза подготовки (один процесс).
-            if (!PreparingPhase && Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") != "1")
-            {
-                if (!await DockerImageExistsAsync(JobImage, ct))
-                    throw new ApplicationException($"image {JobImage} is missing in docker. {PrepareHint}");
-                _jobImageReady = true;
-                return;
-            }
-            // Канон AGENTS.md «E2E-образы собираются на хосте»: джоб — sh-скрипт,
-            // .NET-publish не нужен; узкий контекст docker/ (без «тихой» передачи
-            // корня репозитория), вывод — с [PHASE]-меткой и таймингом.
-            var sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {JobImage}: docker build (context docker/)…");
-            await E2eFixture.RunProcessAsync("docker",
-            [
-                "build", "-f", $"{_root}/docker/PgWorker.Backup.E2E.Dockerfile", "-t", JobImage,
-                $"{_root}/docker",
-            ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-backup-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {JobImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
-            _jobImageReady = true;
-        }
-        finally
-        {
-            StaticGate.Release();
-        }
-    }
 
     // Образ file_sd-генератора (t15, arch/18 §5.4): .NET-сервис — publish НА
     // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
