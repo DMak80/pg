@@ -53,7 +53,9 @@ internal static class Program
         if (toolMode)
         {
             // Tool-режим: identity нет — hosted-цикл стрима не стартует;
-            // маршруты /api/ops/* — шаг 6. Инъекция фабрик — там же.
+            // единственный канал команд/статуса — API (spec t26 §3.3).
+            builder.Services.AddSingleton<IToolOperationFactory>(sp =>
+                new ToolOperationFactory(sp.GetRequiredService<OperationRegistry>()));
         }
         else
         {
@@ -102,10 +104,61 @@ internal static class Program
 
         var app = builder.Build();
         app.MapAppMetrics();
-        if (!toolMode)
+        if (toolMode)
+            MapToolRoutes(app);
+        else
             MapFullBackupRoutes(app, identity!, endpoints);
         await app.RunAsync();
     }
+
+    // Маршруты tool-операций (arch/19 §5/§3.5, spec §3.2): POST /api/ops/verify
+    // — 409 (вторая активная) / 202; GET — 200 снимок / 404; POST
+    // /api/ops/cancel — общий для tool-операций: 404 (нет активной) / 202
+    // best-effort (итог — failed/succeeded по GET). Одна активная операция на
+    // контейнер — общий OperationRegistry (TryBegin — гвард).
+    private static void MapToolRoutes(WebApplication app)
+    {
+        // Активная операция для cancel (снимок — в реестре, экземпляр — здесь).
+        IReceiverOperation? active = null;
+
+        app.MapPost("/api/ops/verify", (StartVerifyRequest body,
+            OperationRegistry registry, IToolOperationFactory factory) =>
+        {
+            if (!registry.TryBegin(new OperationSnapshot(
+                    body.BackupId, OperationStates.Running, OperationPhases.Downloading)))
+                return Results.Json(
+                    new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
+
+            var operation = factory.CreateVerify(body);
+            active = operation;
+            _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
+            return Results.Json(
+                new ToolStatusResponse(OperationStates.Running, OperationPhases.Downloading),
+                JsonOpts, statusCode: 202);
+        });
+
+        app.MapGet("/api/ops/verify", (OperationRegistry registry) => ToolStatus(registry));
+
+        app.MapPost("/api/ops/cancel", async (OperationRegistry registry) =>
+        {
+            if (registry.Current is null || active is null)
+                return Results.Json(
+                    new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
+            await active.CancelAsync();
+            return Results.Json(new { state = "cancelling" }, JsonOpts, statusCode: 202);
+        });
+    }
+
+    // Общий статус tool-операции: 200 снимок / 404 (нет активной/терминал снят).
+    private static IResult ToolStatus(OperationRegistry registry)
+        => registry.Current is { } snapshot
+            ? Results.Json(new ToolStatusResponse(
+                    snapshot.State, snapshot.Phase,
+                    snapshot.RestoredToLsn, snapshot.SystemId,
+                    snapshot.Error),
+                JsonOpts)
+            : Results.Json(
+                new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
 
     // Маршруты операции полного (arch/19 §2, spec §3.2): POST — 503 стоп-гейтов
     // (операция не начинается; Unknown — транспортный отказ etcd, fail-closed),
