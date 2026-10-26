@@ -195,13 +195,17 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     private async Task<RestoreOperationState> SeedRestoreAsync(
         string cluster, string shard, string id, string backupId = "", string source = "",
         string target = "latest", RestoreStatus state = RestoreStatus.Planned,
-        long? startedUnix = null)
+        long? startedUnix = null, string? phase = null, long? phaseUnix = null)
     {
         var ct = TestContext.Current.CancellationToken;
         var op = new RestoreOperationState(id, state, backupId,
             source.Length == 0 ? $"{cluster}/{shard}" : source, target, "shard1a",
             TimeProvider.System.GetUtcNow().ToUnixTimeSeconds(), "operator",
-            StartedUnix: startedUnix);
+            StartedUnix: startedUnix)
+        {
+            Phase = phase,
+            PhaseUnix = phaseUnix,
+        };
         await fixture.Gateway.PutAsync(fixture.Endpoint,
             BackupNames.RestoreKey(cluster, shard, id), RestoreStatusJson.Serialize(op), null, ct);
         return op;
@@ -704,7 +708,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
     [Fact]
     public async Task JobOverBudgetKillAndFailed()
     {
-        // Arrange — running-контейнер; started_unix глубже бюджета (1800+60)
+        // Arrange — running-контейнер; операция в recovering, переход (phase_unix)
+        // глубже бюджета (1800+60): воркерская стенка — backstop зависшего
+        // приёмника от ПЕРЕХОДА в recovering
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         var engine = new FakeBackupEngine();
@@ -717,7 +723,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             new ReceiverStatus("running", "recovering"), null);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121003Z",
             backupId: "20260910120000Z", state: RestoreStatus.Running,
-            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -728,6 +736,75 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
         failed.State.Should().Be(RestoreStatus.Failed);
         failed.Error.Should().Contain("budget");
+    }
+
+    // AAA (#mr-fix): долгий download НЕ съедает recovery-бюджет: операция в
+    // фазе downloading (переход глубже, чем весь recovery-бюджет) — стенка
+    // наката не применяется (она от перехода в recovering), статус RUNNING
+    // не фейлится, контейнер жив (bounded статусным Job:RestoreTimeoutSec)
+    [Fact]
+    public async Task LongDownloadDoesNotEatRecoveryBudget()
+    {
+        // Arrange — running-контейнер; downloading с phase_unix = now-2000
+        // (> 1800+60: при старой семантике стенка от started_unix убила бы)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121006Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "");
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2100,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 2000);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — статус жив (RUNNING), контейнер не снесён, FAILED нет
+        engine.Removed.Should().NotContain(name);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Error.Should().BeNull("a long download is not a recovery-budget failure");
+    }
+
+    // AAA (#mr-fix): переход downloading → recovering записывает phase_unix:
+    // статус в etcd несёт факт перехода (стенка наката считается от него)
+    [Fact]
+    public async Task PhaseTransitionWritesPhaseUnix()
+    {
+        // Arrange — running-контейнер; заявка RUNNING БЕЗ фазы (старт тика);
+        // приёмник отвечает running/recovering
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121007Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "");
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "recovering"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121007Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — phase=recovering + phase_unix ≈ now записаны в etcd
+        var supervised = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        supervised.State.Should().Be(RestoreStatus.Running);
+        supervised.Phase.Should().Be("recovering");
+        supervised.PhaseUnix.Should().BeGreaterOrEqualTo(
+            TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
     }
 
     // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в

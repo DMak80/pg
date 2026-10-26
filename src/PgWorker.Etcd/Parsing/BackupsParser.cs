@@ -304,8 +304,8 @@ public static class BackupsParser
 
     // restore/<id> (t05): обязательны state (PLANNED|RUNNING|REJOINING|COMPLETED|
     // FAILED)/backup_id/source/target/node/requested_unix/requested_by;
-    // опциональны started_unix/finished_unix/phase/restored_to_lsn/error;
-    // битое/неизвестное state — пропуск записи с диагностикой.
+    // опциональны started_unix/finished_unix/phase/phase_unix/restored_to_lsn/
+    // error; битое/неизвестное state — пропуск записи с диагностикой.
     private static RestoreOperationState? TryParseRestore(
         string cluster, string shard, string id, string raw, List<string> errors)
     {
@@ -350,6 +350,9 @@ public static class BackupsParser
                 ReadString(root, "source_pool"))
             {
                 SystemId = ReadString(root, "system_id"),
+                // Unix перехода в текущую фазу (пишет воркер): стенка наката
+                // restore — от перехода в recovering, не от старта заявки.
+                PhaseUnix = ReadLong(root, "phase_unix"),
             };
         }
         catch (JsonException)

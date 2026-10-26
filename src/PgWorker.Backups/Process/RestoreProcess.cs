@@ -490,25 +490,38 @@ public sealed class RestoreProcess(
             case "running":
             {
                 // Фаза операции → Phase статуса etcd (панель видит
-                // downloading/recovering, arch/19 §4).
+                // downloading/recovering, arch/19 §4); вместе с фазой — факт
+                // её перехода PhaseUnix (стенка наката — от перехода).
+                var current = op;
                 if (status.Phase is { Length: > 0 } phase && phase != op.Phase)
                 {
-                    var putPhase = await PutStatusAsync(cluster, shard.Name,
-                        op with { Phase = phase }, ct);
+                    current = op with { Phase = phase, PhaseUnix = NowUnix() };
+                    var putPhase = await PutStatusAsync(cluster, shard.Name, current, ct);
                     if (!putPhase.IsSuccess)
                         return Result<ProcessOutcome>.Failed(putPhase.Error!);
                 }
 
-                // 60-сек запас воркера поверх внутреннего бюджета наката
-                // (download не считается recovery-бюджетом приёмника).
-                var startedUnix = op.StartedUnix ?? NowUnix();
-                var budgetSec = options.RestoreRecoveryTimeoutSec + 60;
-                if (NowUnix() - startedUnix > budgetSec)
+                // Стенка наката — ТОЛЬКО в фазе recovering и от ПЕРЕХОДА в неё
+                // (PhaseUnix): скачивание набора (downloading) recovery-бюджет
+                // не съедает — долгий download на здоровой операции больше не
+                // даёт premature FAILED «recovery budget exhausted»; он под
+                // статусным бюджетом заявки Job:RestoreTimeoutSec (выше) и
+                // transient-семантикой download-retry. Внутри recovering
+                // приёмник держит свой бюджет RecoveryTimeoutSec — воркерская
+                // стенка (запас 60 c) — backstop зависшего приёмника. Ключ без
+                // PhaseUnix (в момент обновления воркера) — от started_unix
+                // (прежнее поведение).
+                var recoveringUnix = current.PhaseUnix ?? current.StartedUnix;
+                if (current.Phase == "recovering" && recoveringUnix is { } wallFrom)
                 {
-                    await engine.RemoveContainerAsync(name, force: true, ct);
-                    await FailPermanentAsync(cluster, shard.Name, op,
-                        $"recovery budget exhausted ({budgetSec}s)", ct);
-                    return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+                    var budgetSec = options.RestoreRecoveryTimeoutSec + 60;
+                    if (NowUnix() - wallFrom > budgetSec)
+                    {
+                        await engine.RemoveContainerAsync(name, force: true, ct);
+                        await FailPermanentAsync(cluster, shard.Name, op,
+                            $"recovery budget exhausted ({budgetSec}s)", ct);
+                        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+                    }
                 }
 
                 return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // жив — ждём

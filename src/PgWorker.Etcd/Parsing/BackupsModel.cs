@@ -163,6 +163,12 @@ public sealed record RestoreOperationState(
     /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не
     /// могут initdb'нуться в чужой кластер. null — старый образ джоба.</summary>
     public string? SystemId { get; init; }
+
+    /// <summary>Unix-время записи ТЕКУЩЕЙ фазы (воркер пишет при смене фазы
+    /// tool-операции): стенка наката restore считается от перехода в
+    /// recovering — скачивание набора (downloading) recovery-бюджет не съедает.
+    /// null — ключ без факта перехода (старый воркер): стенка от started_unix.</summary>
+    public long? PhaseUnix { get; init; }
 }
 
 /// <summary>Состояние дрилла восстановимости шарда (ключ
