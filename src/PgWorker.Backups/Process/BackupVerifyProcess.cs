@@ -320,15 +320,34 @@ public sealed class BackupVerifyProcess(
             receiverUrl = WalReceiverAddress.ForTool(jobName, engineHost, published, contourMode: false);
         }
 
-        var launch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
-            id,
-            new S3Context(
-                Endpoints: [.. pool.ReadAll],
-                AccessKey: pool.AccessKey,
-                SecretKey: pool.SecretKey,
-                Bucket: options.S3Bucket,
-                Prefix: $"{cluster}/{shard}",
-                CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        // Команда запуска с ограниченным ретраем (гонка бута tool-контейнера):
+        // приложение .NET self-contained слушает :8080 не мгновенно после
+        // docker start (наблюдались секунды под нагрузкой начальной фазы
+        // кластера) — POST в окне бута даёт connection refused; без ретрая
+        // контейнер-сирота ждёт 404-ветку супервиза (kill+recreate), и цикл
+        // «create → refused → 404 → снос» не сходится, пока бут дольше тика.
+        // POST у приёмника 404 не возвращает (202/409) — первый же ответ
+        // проснувшегося приложения запускает операцию, сходимость
+        // гарантирована в окне ретрая; исчерпание — transient (контейнер жив,
+        // супервиз продолжит по своей ветке). ~10 с — много меньше бута
+        // под штормом (там сходимость рециклом, см. bugs t095) и много
+        // меньше бюджетов зависших тиков.
+        ReceiverReply launch = default!;
+        for (var attempt = 1; ; attempt++)
+        {
+            launch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
+                id,
+                new S3Context(
+                    Endpoints: [.. pool.ReadAll],
+                    AccessKey: pool.AccessKey,
+                    SecretKey: pool.SecretKey,
+                    Bucket: options.S3Bucket,
+                    Prefix: $"{cluster}/{shard}",
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+            if (launch.IsAccepted || launch.IsConflict || !launch.IsTransient || attempt >= 5)
+                break;
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
         if (!launch.IsAccepted && !launch.IsConflict)
         {
             // Транспортный отказ/5xx команды: контейнер-сирота без операции —

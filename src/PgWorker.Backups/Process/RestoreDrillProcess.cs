@@ -225,22 +225,35 @@ public sealed class RestoreDrillProcess(
         // Команда StartRestoreAsync (latest — БЕЗ target_time, spec §3.6);
         // 409 = операция уже жива (пере-старт тика). Отказ — transient:
         // супервиз увидит контейнер без операции (IsNotFound) и пересоздаст.
+        // Ретрай команды в окне бута приложения (симметрично BackupVerifyProcess):
+        // .NET self-contained слушает :8080 не мгновенно — POST в окне бута
+        // даёт connection refused, и без ретрая цикл «create → refused →
+        // 404 → снос» не сходится, пока бут дольше тика; POST у приёмника
+        // 404 не возвращает (202/409) — первый ответ проснувшегося приложения
+        // запускает операцию.
         var receiverUrl = await ToolReceiverUrlAsync(engine, startHost, jobName, ct);
         if (receiverUrl is null)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — супервиз пере-POST
-        var launch = await receiver.StartRestoreAsync(
-            receiverUrl,
-            new StartRestoreRequest(
-                BackupId: backupId,
-                TargetTime: null,
-                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
-                S3: new S3Context(
-                    Endpoints: [.. poolCtx.ReadAll],
-                    AccessKey: poolCtx.AccessKey,
-                    SecretKey: poolCtx.SecretKey,
-                    Bucket: options.S3Bucket,
-                    Prefix: $"{cluster}/{shard}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        ReceiverReply launch;
+        for (var attempt = 1; ; attempt++)
+        {
+            launch = await receiver.StartRestoreAsync(
+                receiverUrl,
+                new StartRestoreRequest(
+                    BackupId: backupId,
+                    TargetTime: null,
+                    RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                    S3: new S3Context(
+                        Endpoints: [.. poolCtx.ReadAll],
+                        AccessKey: poolCtx.AccessKey,
+                        SecretKey: poolCtx.SecretKey,
+                        Bucket: options.S3Bucket,
+                        Prefix: $"{cluster}/{shard}",
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+            if (launch.IsAccepted || launch.IsConflict || !launch.IsTransient || attempt >= 5)
+                break;
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
         if (!launch.IsAccepted && !launch.IsConflict)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — супервиз пере-POST
 
