@@ -129,6 +129,9 @@ public sealed class FullBackupOperation : IReceiverOperation
                 targetFactory: _targetFactory);
 
             // 3. Чистка staging: прошлые <id>-каталоги + создание свежего (Р5).
+            // Каталог создаётся ПЕРЕД чисткой: на первой операции ноды его ещё
+            // нет (каталог — не volume-маунт, а обычный путь в data-volume).
+            Directory.CreateDirectory(_stagingRoot);
             foreach (var stale in Directory.EnumerateFileSystemEntries(_stagingRoot))
                 TryDelete(stale);
             Directory.CreateDirectory(Path.Combine(opRoot, "full"));
@@ -236,12 +239,16 @@ public sealed class FullBackupOperation : IReceiverOperation
     private OperationSnapshot Snap(string state, string phase)
         => new(_id, state, phase);
 
-    /// <summary>Публикация терминального failed-снимка (фаза — текущая).</summary>
+    /// <summary>Публикация терминального failed-снимка (фаза — текущая);
+    /// причина — в stdout контейнера (диагностика: etcd-статус живёт до
+    /// переснятия, журнал остаётся после).</summary>
     private void Fail(string error)
     {
         var phase = _registry.Current?.Phase ?? OperationPhases.Basebackup;
         _registry.Update(new OperationSnapshot(
             _id, OperationStates.Failed, phase, Error: error));
+        Console.Error.WriteLine(
+            $"walreceiver: full {_id} FAILED at {phase}: {error}");
     }
 
     private static string FirstLine(string text, string fallback)
