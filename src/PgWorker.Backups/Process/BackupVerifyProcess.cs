@@ -125,43 +125,53 @@ public sealed class BackupVerifyProcess(
     {
         var fulls = shardBackups.Full;
 
-        // (1) Супервиз verify-контейнеров шарда: есть хоть один (running/exited) —
-        //     обрабатываем и ЗАВЕРШАЕМ тик шарда — новых не стартуем (инвариант
-        //     одного джоба, spec §3.3 п.1). Лист — движок первого хоста таблицы
-        //     Docker:Hosts; сбой → transient (тик повторит).
+        // (1) Супервиз verify-контейнеров шарда: контейнер ищется ОБХОДОМ по
+        //     всем хостам Docker:Hosts (симметрия чистке BackupJobsCleaner):
+        //     он живёт на хосте ноды-источника полного (или fallback-хосте) —
+        //     на мульти-хосте лист только hosts[0] его не видит → вечный
+        //     transient-цикл супервиза. Найденный контейнер супервизится НА
+        //     СВОЁМ хосте (движок и host — от хоста, где он найден; адрес API —
+        //     инспект публикации этого движка). Есть хоть один — обрабатываем
+        //     и ЗАВЕРШАЕМ тик шарда — новых не стартуем (инвариант одного
+        //     джоба, spec §3.3 п.1). Сбой list хоста → transient (тик повторит).
         var shardPrefix = BackupNames.VerifyContainerName(cluster, shard, string.Empty);
         var hostsForList = await driver.GetHostsAsync(ct);
-        IDockerEngine? listEngine = hostsForList.IsSuccess && hostsForList.Value.Count > 0
-            ? driver.EngineFor(hostsForList.Value[0].Name)
-            : null;
-        if (listEngine is null)
-            return; // хостов нет/движок не резолвится — transient
-        var alive = await listEngine.ListContainersAsync(shardPrefix, all: true, ct);
-        if (!alive.IsSuccess)
-            return; // transport-сбой list → transient (тик повторит)
-        if (alive.Value.Count > 0)
+        if (!hostsForList.IsSuccess || hostsForList.Value.Count == 0)
+            return; // хостов нет/таблица недоступна — transient (тик повторит)
+        var superviseAny = false;
+        foreach (var hostInfo in hostsForList.Value)
         {
+            var listEngine = driver.EngineFor(hostInfo.Name);
+            if (listEngine is null)
+                continue; // хост не резолвится — ответ других хостов достаточен
+            var alive = await listEngine.ListContainersAsync(shardPrefix, all: true, ct);
+            if (!alive.IsSuccess)
+                return; // transport-сбой list → transient (тик повторит)
             // Диагностика жизненного цикла tool-контейнеров: что видит листинг
             // (имя:состояние) — вместе с reason в CleanupJobAsync замыкает
             // картину «кто и когда сносит контейнер».
-            logger.LogInformation(
-                "{Op} {cluster}/{shard}: supervise list — {Containers}",
-                Op, cluster, shard,
-                string.Join(", ", alive.Value.Select(c =>
-                    $"{c.Names.FirstOrDefault()?.TrimStart('/') ?? "?"}:{c.State}")));
+            if (alive.Value.Count > 0)
+                logger.LogInformation(
+                    "{Op} {cluster}/{shard}: supervise list on {Host} — {Containers}",
+                    Op, cluster, shard, hostInfo.Name,
+                    string.Join(", ", alive.Value.Select(c =>
+                        $"{c.Names.FirstOrDefault()?.TrimStart('/') ?? "?"}:{c.State}")));
             foreach (var container in alive.Value)
             {
                 var name = container.Names
                     .Select(n => n.TrimStart('/'))
                     .FirstOrDefault(n => n.StartsWith(shardPrefix, StringComparison.Ordinal));
-                if (name is not null)
-                    await SuperviseAsync(
-                        listEngine, cluster, shard, name, shardPrefix, container.State,
-                        shardBackups, nowUnix, hostsForList.Value[0].Name, ct);
+                if (name is null)
+                    continue;
+                superviseAny = true;
+                await SuperviseAsync(
+                    listEngine, cluster, shard, name, shardPrefix, container.State,
+                    shardBackups, nowUnix, hostInfo.Name, ct);
             }
-
-            return; // супервиз-тик: новых джобов не стартуем
         }
+
+        if (superviseAny)
+            return; // супервиз-тик: новых джобов не стартуем
 
         // (2) due-резолв: PENDING-очередь раньше периодики; по одному за тик.
         //     verify FAILED — терминален: не попадает ни в один список.

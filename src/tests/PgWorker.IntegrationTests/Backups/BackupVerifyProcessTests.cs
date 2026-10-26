@@ -213,6 +213,41 @@ public class BackupVerifyProcessTests
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
+    /// <summary>Мульти-хост драйвер: hosts → свои движки (контейнер на ВТОРОМ
+    /// хосте виден только обходом — регресс листа «только hosts[0]»).</summary>
+    internal sealed class MultiHostVerifyDriver(IReadOnlyList<HostInfo> hosts,
+        IReadOnlyDictionary<string, FakeVerifyEngine> engines) : IClusterDriver
+    {
+        public bool SupportsRunningInspection => true;
+        public IDockerEngine? EngineFor(string host)
+            => engines.TryGetValue(host, out var engine) ? engine : null;
+        public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+        public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(hosts));
+        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        private static NotSupportedException NotSupported() => new("not used in the verify tests");
+        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
+        public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
+            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+            bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
+        public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+            string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
+        public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
+            IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
+        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+            string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+    }
+
     // ── Сид-хелперы ──
     private static ClusterSnapshot BuildSnap(string cluster) => new(
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
@@ -278,7 +313,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     }
 
     private BackupVerifyProcess BuildProcess(
-        string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
+        string cluster, IClusterDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
         Action<string, string, string>? verifyObserver = null,
         Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>? logger = null)
         => new(
@@ -753,6 +788,45 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
         // Assert 2 — пересоздание (симметрия vanished-ветки 404)
         engine.Created.Should().HaveCount(2, "the recycled orphan is recreated on the next tick");
+    }
+
+    // AAA (#mr-fix): verify-контейнер на ВТОРОМ хосте (источник — h2; прежний
+    // лист «только hosts[0]» его не видел — вечный transient-цикл супервиза на
+    // мульти-хосте): обход по всем хостам Docker:Hosts находит его, итог
+    // доводится по API хоста, где контейнер найден, снос — на своём хосте
+    [Fact]
+    public async Task SupervisorFindsContainerOnSecondHost()
+    {
+        // Arrange — движки h1 (пуст) и h2 (running-джоб кандидата); GET — succeeded
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv12", ct);
+        Fx = fx;
+        await SeedAsync("sv12");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv12", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv12", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
+        var engineH1 = new FakeVerifyEngine();
+        var engineH2 = new FakeVerifyEngine();
+        var name = "pgw-backup-verify-sv12-shard1-20260911120000Z";
+        engineH2.Containers[name] = new(
+            Guid.NewGuid().ToString("N"), "running", -1, "");
+        Receiver.GetReply = ApiOk();
+        var driver = new MultiHostVerifyDriver(
+            (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0), new HostInfo("h2", 0)],
+            new Dictionary<string, FakeVerifyEngine> { ["h1"] = engineH1, ["h2"] = engineH2 });
+        var process = BuildProcess("sv12", driver, s3);
+
+        // Act — супервиз-тик (контейнер жив на h2, PENDING-кандидат)
+        (await process.TickAsync(BuildSnap("sv12"), BackupsOf("sv12",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — итог OK записан; снос прошёл на хосте h2 (своём), h1 не тронут
+        var verify = await ReadVerifyAsync("sv12", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("OK");
+        engineH2.Removed.Should().Contain(name, "the container is cleaned up on its own host");
+        engineH2.RemovedVolumes.Should().Contain(name);
+        engineH1.Created.Should().BeEmpty("no job is started while a foreign-host container is supervised");
     }
 
     // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
