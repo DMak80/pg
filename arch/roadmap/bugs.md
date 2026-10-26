@@ -122,6 +122,27 @@
   Гипотезы: деградация под параллельной нагрузкой (конкуренция 10 контуров
   за docker-демон/диск); сравнить тайминги агентов pool-ac5 с зелёной
   одиночной серией.
+- **`t100-restore-pgctl-start-timeout`** — E2E
+  `PgWorker.IntegrationTests.E2e.PoolReadAnyNodeScenarios.Pool_ReadAnyNode_RestoreAfterNodeStop`
+  (перепрогон restore-группы 2026-10-26, ветка `feat-t26-backup-jobs-in-receiver`,
+  HEAD `85831336`): фикс RUNNING-лупа подтверждён (5/6 restore-сценариев
+  серии зелёные: Restore_Latest/NewCluster/TargetTime, Pool_SingleNode,
+  PoolPolicyValidation — restore COMPLETED), статус операции честно
+  RUNNING → FAILED; сам фейл — restore shard1 упал «pg_ctl: server did not
+  start in time»: postgres в recovery не дошёл до готовности за канонические
+  `pg_ctl -w -t 60` (arch/19 §3.5; механика 1:1 с bash-джобой — та же) при
+  конкурентном скачивании параллельным drill того же бэкапа (drill-контейнер
+  стартовал 16:49:48Z, restore FAILED 16:51:01Z; S3-полоса делится между
+  restore-скачиванием full + drill-скачиванием + стримами). Ожидаемое:
+  restore COMPLETED; наблюдаемое: FAILED по pg_ctl-старту при нагрузке.
+  Прогон/логи: `arch/roadmap/bugs/t100-restore-pgctl-start-timeout/fail-tail.txt`
+  (локально; контур pool-ac6 — `${TMPDIR}pgw-e2e-artifacts-6cb59aa8…`,
+  MarkFailed). Команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet
+  test src/PgWorker.slnx -c Release --no-build --nologo --filter
+  "FullyQualifiedName~PoolReadAnyNodeScenarios"`. Гипотезы/лечение: канал
+  §3.5 — pg_ctl -t должен покрывать медленный recovery (подъём таймаута
+  старта или вынесение ожидания готовности в поллинг-бюджет
+  `recovery_timeout_sec`); правка канона arch/19 §3.5 — arch-first.
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`
