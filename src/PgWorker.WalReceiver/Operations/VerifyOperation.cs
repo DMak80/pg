@@ -5,9 +5,10 @@ using PgWorker.Etcd.S3;
 namespace PgWorker.WalReceiver.Operations;
 
 /// <summary>Операция verify tool-контейнера (arch/19 §5, spec t26 §3.4): одна
-/// активная на контейнер (общий OperationRegistry). Фаза downloading — list +
-/// скачивание full/&lt;id&gt;/ 1:1 .NET S3-клиентом (ReadAll-семантика, Р4 —
-/// S3-контекст приходит POST-командой, секреты только в POST) в staging-том;
+/// активная на контейнер (общий OperationRegistry). Фаза downloading —
+/// union-лист full/&lt;id&gt;/ по всем endpoints + скачивание 1:1 .NET S3-клиентом
+/// (Р4 — S3-контекст приходит POST-командой, секреты только в POST) в
+/// staging-том;
 /// сбой скачивания — failed с фазой downloading (МАРКЕР ТРАНЗИЕНТА: воркер
 /// держит PENDING и ретраит тиками, контейнер сносится и создаётся заново).
 /// Фаза verifying — pg_verifybackup (manifest SHA256, вкл. pg_wal/); ≠ 0 —
@@ -51,7 +52,8 @@ public sealed class VerifyOperation : IReceiverOperation
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
         var s3Base = $"{prefix}/full/{_request.BackupId}/";
         var stagingDir = Path.Combine(_stagingRoot, "full", _request.BackupId);
-        IBackupS3? s3 = null;
+        // Тип — PoolBackupS3 (не IBackupS3): union-листинг набора — метод пула.
+        PoolBackupS3? s3 = null;
         string? caBundlePath = null;
         try
         {
@@ -75,18 +77,22 @@ public sealed class VerifyOperation : IReceiverOperation
                 }
             }
 
-            // ReadAll-семантика: перебор нод до найденного (полный заливается
-            // на первую живую ноду момента заливки — verify ищет по всем).
+            // Пул-клиент (write=read=endpoints команды): скачивание ключа —
+            // перебор read-списка до найденного (GetObjectToFileAsync).
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
                 caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
                 targetFactory: _targetFactory);
 
-            // Фаза downloading: list + скачивание 1:1 (mkdir по относ. пути).
+            // Фаза downloading: union-лист + скачивание 1:1 (mkdir по
+            // относ. пути). Листинг — по ВСЕМ endpoints с дедупом: полный
+            // заливается на первую живую ноду момента заливки — соло-лист
+            // другой ноды (отказ посреди заливки/лаг mesh) неполон и дал бы
+            // недокачанный набор → ложный permanent verify-FAILED.
             _registry.Update(new OperationSnapshot(
                 _request.BackupId, OperationStates.Running, OperationPhases.Downloading));
-            var listed = await s3.ListPrefixAsync(s3Base, ct: token);
+            var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
             if (!listed.IsSuccess)
             {
                 Fail(OperationPhases.Downloading, OpText.OneLine(listed.Error!.Message));

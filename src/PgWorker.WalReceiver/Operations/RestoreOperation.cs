@@ -68,7 +68,8 @@ public sealed class RestoreOperation : IReceiverOperation
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
         var s3Base = $"{prefix}/full/{_request.BackupId}/";
 
-        IBackupS3? s3 = null;
+        // Тип — PoolBackupS3 (не IBackupS3): union-листинг набора — метод пула.
+        PoolBackupS3? s3 = null;
         string? caBundlePath = null;
         var phase = OperationPhases.Downloading;
         try
@@ -93,17 +94,21 @@ public sealed class RestoreOperation : IReceiverOperation
                 }
             }
 
-            // ReadAll-семантика (как verify): полный ищем по всем нодам пула.
+            // Пул-клиент (write=read=endpoints команды, симметрично verify):
+            // скачивание ключа — перебор read-списка до найденного.
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
                 caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
                 targetFactory: _targetFactory);
 
-            // 2. Фаза downloading: скачивание full/<id>/ 1:1 в PGDATA.
+            // 2. Фаза downloading: union-лист full/<id>/ по ВСЕМ endpoints с
+            //    дедупом (симметрично VerifyOperation: соло-лист другой ноды —
+            //    отказ посреди заливки/лаг mesh — неполон, недокачанный набор
+            //    дал бы ложный permanent-FAILED) и скачивание 1:1 в PGDATA.
             _registry.Update(new OperationSnapshot(
                 _request.BackupId, OperationStates.Running, phase));
-            var listed = await s3.ListPrefixAsync(s3Base, ct: token);
+            var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
             if (!listed.IsSuccess)
             {
                 Fail(phase, OpText.OneLine(listed.Error!.Message));

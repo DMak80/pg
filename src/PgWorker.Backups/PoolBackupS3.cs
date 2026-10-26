@@ -14,6 +14,8 @@ namespace PgWorker.Backups;
 /// Семантика: put/delete — write-список с перебором (исчерпание → маркер);
 /// точечные GET — read-список до найденного (NotFound → следующая, исходная
 /// ошибка наружу); листинги — первая доступная (пустой список = успех);
+/// union-листинги (wal-цепочка, full-набор verify/restore) — объединение
+/// read-целей с дедупом, успех — если ответил хотя бы один узел;
 /// BucketExists — любая доступная.
 /// </summary>
 public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
@@ -195,6 +197,38 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         => await FirstAliveAsync(
             uri => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct),
             $"list {prefix}");
+
+    /// <summary>Union-листинг произвольного префикса (S3ObjectInfo) по ВСЕМ
+    /// read-целям, дедуп по ключу: полный набор заливается на первую живую
+    /// ноду момента заливки — при её отказе посреди заливки/лаге mesh соло-
+    /// листинг первой живой цели неполон, и скачивающий (verify/restore)
+    /// получает недокачанный набор — ложный permanent-FAILED. Успех — если
+    /// ответил хотя бы один узел; исчерпание — маркер.</summary>
+    public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixUnionAsync(
+        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        var merged = new Dictionary<string, S3ObjectInfo>(StringComparer.Ordinal);
+        Result<IReadOnlyList<S3ObjectInfo>> last = default;
+        var anySuccess = false;
+        foreach (var uri in _readTargets)
+        {
+            var result = await AttemptAsync(uri, () => Target(uri).ListPrefixAsync(prefix, maxKeysPerTest, ct));
+            if (!result.IsSuccess)
+            {
+                last = result;
+                continue;
+            }
+
+            anySuccess = true;
+            foreach (var o in result.Value)
+                merged.TryAdd(o.Key, o);
+        }
+
+        if (!anySuccess)
+            return Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException(
+                $"{S3PoolMarkers.Exhausted}: list-prefix-union {prefix} — all pool nodes are unavailable: {last.Error!.Message}"));
+        return Result<IReadOnlyList<S3ObjectInfo>>.Success([.. merged.Values]);
+    }
 
     // Запись: попытка на текущей, отказ → следующая; исчерпание → маркер.
     public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)

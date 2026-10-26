@@ -45,10 +45,13 @@ public class VerifyOperationTests
     }
 
     /// <summary>Фейк IBackupS3: листинг/файловый GET (пишет dest); программный
-    /// отказ листинга.</summary>
+    /// отказ листинга. Keys — относительные ключи набора (по умолчанию полный
+    /// из двух объектов); расщепление набора по endpoints — разные экземпляры
+    /// с разными Keys за targetFactory.</summary>
     private sealed class FakeS3 : IBackupS3
     {
         public bool FailList;
+        public string[] Keys = ["backup_label", "pg_wal/000000010000000000000002"];
         public readonly List<string> Downloaded = [];
         // Композированные ключи запросов (cluster/shard/key) — ассерт состава
         // ключей ловит задвоение префикса (полный obj.Key вместо относительного).
@@ -59,15 +62,18 @@ public class VerifyOperationTests
             => Task.FromResult(FailList
                 ? Result<IReadOnlyList<S3ObjectInfo>>.Failed(
                     new ApplicationException("S3 list: pool down"))
-                : Result<IReadOnlyList<S3ObjectInfo>>.Success(new List<S3ObjectInfo>
-                {
-                    new($"{prefix}backup_label", 60, DateTimeOffset.UnixEpoch),
-                    new($"{prefix}pg_wal/000000010000000000000002", 5, DateTimeOffset.UnixEpoch),
-                }));
+                : Result<IReadOnlyList<S3ObjectInfo>>.Success(
+                    Keys.Select(k => new S3ObjectInfo(
+                        $"{prefix}{k}", 60, DateTimeOffset.UnixEpoch)).ToList()));
 
         public Task<Result> GetObjectToFileAsync(
             string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
         {
+            // NotFound-семантика реального S3: ключа нет в наборе этой ноды —
+            // отказ, пул переходит к следующей read-цели.
+            if (!Keys.Any(k => key.EndsWith(k, StringComparison.Ordinal)))
+                return Task.FromResult(Result.Failed(
+                    new ApplicationException($"not found: {key}")));
             Downloaded.Add(destFilePath);
             DownloadedKeys.Add($"{cluster}/{shard}/{key}");
             Directory.CreateDirectory(Path.GetDirectoryName(destFilePath)!);
@@ -119,6 +125,41 @@ public class VerifyOperationTests
         psi.ArgumentList.Should().Contain(Path.Combine(staging, "full", Id));
         // Assert: staging очищен после исхода.
         Directory.Exists(Path.Combine(staging, "full", Id)).Should().BeFalse();
+        Directory.Delete(staging, recursive: true);
+    }
+
+    [Fact]
+    public async Task SplitSetAcrossEndpoints_OperationDownloadsUnion()
+    {
+        // Arrange: два endpoints; набор расщеплён — нода A листит только
+        // backup_label, нода B только pg_wal-сегмент (соло-лист любой из них
+        // неполон — отказ ноды посреди заливки/лаг mesh); pg_verifybackup ок.
+        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var runner = new FakeRunner { VerifyExitCode = 0 };
+        var a = new FakeS3 { Keys = ["backup_label"] };
+        var b = new FakeS3 { Keys = ["pg_wal/000000010000000000000002"] };
+        var request = Request() with
+        {
+            S3 = Request().S3 with { Endpoints = ["http://s3a:9000", "http://s3b:9000"] },
+        };
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new VerifyOperation(request, runner, registry, staging,
+            uri => uri.Contains("s3a") ? a : b);
+
+        // Act.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: операция получила ОБЪЕДИНЁННЫЙ список — оба объекта скачаны
+        // (а не только набор первой живой ноды); verify succeeded.
+        a.Downloaded.Should().HaveCount(1);
+        a.Downloaded.Should().Contain(Path.Combine(staging, "full", Id, "backup_label"));
+        b.Downloaded.Should().HaveCount(1);
+        b.Downloaded.Should().Contain(Path.Combine(
+            staging, "full", Id, "pg_wal", "000000010000000000000002"));
+        registry.Current!.State.Should().Be("succeeded");
+        registry.Current.Phase.Should().Be("verifying");
         Directory.Delete(staging, recursive: true);
     }
 
