@@ -50,6 +50,9 @@ public class VerifyOperationTests
     {
         public bool FailList;
         public readonly List<string> Downloaded = [];
+        // Композированные ключи запросов (cluster/shard/key) — ассерт состава
+        // ключей ловит задвоение префикса (полный obj.Key вместо относительного).
+        public readonly List<string> DownloadedKeys = [];
 
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
@@ -66,6 +69,7 @@ public class VerifyOperationTests
             string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
         {
             Downloaded.Add(destFilePath);
+            DownloadedKeys.Add($"{cluster}/{shard}/{key}");
             Directory.CreateDirectory(Path.GetDirectoryName(destFilePath)!);
             File.WriteAllText(destFilePath, "data");
             return Task.FromResult(Result.Success());
@@ -104,6 +108,12 @@ public class VerifyOperationTests
         s3.Downloaded.Should().Contain(Path.Combine(staging, "full", Id, "backup_label"));
         s3.Downloaded.Should().Contain(Path.Combine(
             staging, "full", Id, "pg_wal", "000000010000000000000002"));
+        // Assert: ключи скачивания — композиция cluster/shard + ОТНОСИТЕЛЬНОГО
+        // ключа листинга (передача полного obj.Key давала бы задвоение префикса
+        // c1/s1/c1/s1/... — ключа не существует, downloading-transient навсегда).
+        s3.DownloadedKeys.Should().BeEquivalentTo([
+            $"c1/s1/full/{Id}/backup_label",
+            $"c1/s1/full/{Id}/pg_wal/000000010000000000000002"]);
         // Assert: pg_verifybackup запущен на staging-каталоге набора.
         var psi = runner.Invocations.Single(i => i.FileName == "pg_verifybackup");
         psi.ArgumentList.Should().Contain(Path.Combine(staging, "full", Id));

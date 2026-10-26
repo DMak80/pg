@@ -74,9 +74,12 @@ public class RestoreOperationTests
         }
     }
 
-    /// <summary>Фейк IBackupS3: list одного backup_label; GET пишет dest.</summary>
+    /// <summary>Фейк IBackupS3: list одного backup_label; GET пишет dest.
+    /// DownloadedKeys — композированные ключи запросов (ассерт состава ключей
+    /// ловит задвоение префикса: полный obj.Key вместо относительного).</summary>
     private sealed class FakeS3 : IBackupS3
     {
+        public readonly List<string> DownloadedKeys = [];
         public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
             string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Success(
@@ -88,6 +91,9 @@ public class RestoreOperationTests
             Directory.CreateDirectory(Path.GetDirectoryName(destFilePath)!);
             File.WriteAllText(destFilePath,
                 "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n");
+            // Композированный ключ — ассерт состава ключей ловит задвоение
+            // префикса (полный obj.Key вместо относительного).
+            DownloadedKeys.Add($"{cluster}/{shard}/{key}");
             return Task.FromResult(Result.Success());
         }
 
@@ -119,12 +125,12 @@ public class RestoreOperationTests
     }
 
     private static RestoreOperation Create(
-        string pgdata, FakeRunner runner, string? targetTime = null)
+        string pgdata, FakeRunner runner, string? targetTime = null, FakeS3? s3 = null)
     {
         var registry = new OperationRegistry();
         registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
         return new RestoreOperation(Request(targetTime), runner, registry,
-            pgdata: Path.Combine(pgdata, "pgroot", "data"), _ => new FakeS3());
+            pgdata: Path.Combine(pgdata, "pgroot", "data"), _ => s3 ?? new FakeS3());
     }
 
     [Fact]
@@ -134,7 +140,8 @@ public class RestoreOperationTests
         var root = NewPgdata();
         var pgdata = Path.Combine(root, "pgroot", "data");
         var runner = new FakeRunner();
-        var op = Create(root, runner);
+        var s3 = new FakeS3();
+        var op = Create(root, runner, s3: s3);
 
         // Act: полный пайплайн.
         await op.RunAsync(CancellationToken.None);
@@ -145,6 +152,9 @@ public class RestoreOperationTests
         snap.RestoredToLsn.Should().Be("0/2000028");
         snap.SystemId.Should().Be("7000000000000000001");
         snap.Phase.Should().Be("recovering");
+        // Assert: ключ скачивания — композиция cluster/shard + относительного
+        // ключа листинга (полный obj.Key давал бы задвоение c1/s1/c1/s1/...).
+        s3.DownloadedKeys.Should().BeEquivalentTo([$"c1/s1/full/{Id}/backup_label"]);
 
         var autoConf = Path.Combine(pgdata, "postgresql.auto.conf");
         var hbaConf = Path.Combine(pgdata, "pg_hba.conf");

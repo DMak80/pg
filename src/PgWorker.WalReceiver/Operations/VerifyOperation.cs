@@ -95,12 +95,18 @@ public sealed class VerifyOperation : IReceiverOperation
             Directory.CreateDirectory(stagingDir);
             foreach (var obj in listed.Value)
             {
+                // rel — путь файла под staging (относительно s3Base); key — ключ
+                // скачивания ОТНОСИТЕЛЬНО {cluster}/{shard}/ (контракт
+                // GetObjectToFileAsync сам сочиняет {cluster}/{shard}/{key}):
+                // полный obj.Key давал задвоение c1/s1/c1/s1/... (ключа нет —
+                // downloading-transient навсегда), rel давал бы укороченный ключ.
                 var rel = obj.Key[s3Base.Length..];
+                var key = obj.Key[(_request.S3.Prefix.Length + 1)..];
                 var dest = Path.Combine(stagingDir, rel.Replace('/', Path.DirectorySeparatorChar));
                 var destDir = Path.GetDirectoryName(dest);
                 if (!string.IsNullOrEmpty(destDir))
                     Directory.CreateDirectory(destDir);
-                var got = await s3.GetObjectToFileAsync(cluster, shard, obj.Key, dest, token);
+                var got = await s3.GetObjectToFileAsync(cluster, shard, key, dest, token);
                 if (!got.IsSuccess)
                 {
                     Fail(OperationPhases.Downloading, OpText.OneLine(got.Error!.Message));

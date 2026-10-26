@@ -132,6 +132,14 @@ public sealed class BackupVerifyProcess(
             return; // transport-сбой list → transient (тик повторит)
         if (alive.Value.Count > 0)
         {
+            // Диагностика жизненного цикла tool-контейнеров: что видит листинг
+            // (имя:состояние) — вместе с reason в CleanupJobAsync замыкает
+            // картину «кто и когда сносит контейнер».
+            logger.LogInformation(
+                "{Op} {cluster}/{shard}: supervise list — {Containers}",
+                Op, cluster, shard,
+                string.Join(", ", alive.Value.Select(c =>
+                    $"{c.Names.FirstOrDefault()?.TrimStart('/') ?? "?"}:{c.State}")));
             foreach (var container in alive.Value)
             {
                 var name = container.Names
@@ -388,7 +396,7 @@ public sealed class BackupVerifyProcess(
             || full.State != FullBackupStatus.Completed
             || full.Verify is { State: BackupVerifyStatus.Failed })
         {
-            await CleanupJobAsync(engine, containerName, ct);
+            await CleanupJobAsync(engine, containerName, "orphan-stale", ct);
             return;
         }
 
@@ -411,7 +419,7 @@ public sealed class BackupVerifyProcess(
                 await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
                     claims.InstanceId, "verify operation vanished — container recreated", ct);
                 observe(cluster, shard, "transient");
-                await CleanupJobAsync(engine, containerName, ct);
+                await CleanupJobAsync(engine, containerName, "not-found-recreate", ct);
                 return;
             }
             if (!reply.IsTransient && reply.Status is { } snapshot)
@@ -430,7 +438,7 @@ public sealed class BackupVerifyProcess(
                             claims.InstanceId, null, ct);
                         logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
                         observe(cluster, shard, "ok");
-                        await CleanupJobAsync(engine, containerName, ct);
+                        await CleanupJobAsync(engine, containerName, "after-ok", ct);
                         return;
                     }
                     case "failed" when snapshot.Phase == "downloading":
@@ -439,8 +447,11 @@ public sealed class BackupVerifyProcess(
                         // (PENDING), снос — следующий тик создаст заново.
                         await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
                             claims.InstanceId, snapshot.Error ?? "download failed", ct);
+                        logger.LogWarning(
+                            "{Op} {cluster}/{shard}: verify {id} download failed: {Error}",
+                            Op, cluster, shard, id, snapshot.Error ?? "download failed");
                         observe(cluster, shard, "transient");
-                        await CleanupJobAsync(engine, containerName, ct);
+                        await CleanupJobAsync(engine, containerName, "download-retry", ct);
                         return;
                     }
                     case "failed":
@@ -456,7 +467,7 @@ public sealed class BackupVerifyProcess(
                             claims.InstanceId, err, ct);
                         logger.LogError("{Op} {cluster}/{shard}: verify {id} FAILED: {Error}", Op, cluster, shard, id, err);
                         observe(cluster, shard, "failed");
-                        await CleanupJobAsync(engine, containerName, ct);
+                        await CleanupJobAsync(engine, containerName, "verify-failed", ct);
                         return;
                     }
                 }
@@ -485,7 +496,7 @@ public sealed class BackupVerifyProcess(
                     return; // transient — статус не сменился, снесём следующим тиком
                 await journal.WritePhaseAsync(cluster, Op, $"verify-timeout/{shard}/{id}",
                     claims.InstanceId, $"verify container older than {options.JobVerifyTimeoutSec} s — killed, attempt counted", ct);
-                await CleanupJobAsync(engine, containerName, ct);
+                await CleanupJobAsync(engine, containerName, "after-ok", ct);
             }
 
             return; // ждём — проверка в работе
@@ -511,8 +522,11 @@ public sealed class BackupVerifyProcess(
     }
 
     // Снос ephemeral verify-джоба: контейнер + volume (имена совпадают; 404 = успех).
-    private async Task CleanupJobAsync(IDockerEngine engine, string containerName, CancellationToken ct)
+    // reason — диагностика жизненного цикла (кто и за что снёс контейнер;
+    // docker-вызовы движка в логе воркера не видны).
+    private async Task CleanupJobAsync(IDockerEngine engine, string containerName, string reason, CancellationToken ct)
     {
+        logger.LogInformation("{Op}: cleanup {Container} — {Reason}", Op, containerName, reason);
         await engine.RemoveContainerAsync(containerName, force: true, ct);
         await engine.RemoveVolumeAsync(containerName, ct);
     }

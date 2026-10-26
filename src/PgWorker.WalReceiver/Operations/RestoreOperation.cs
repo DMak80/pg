@@ -112,12 +112,16 @@ public sealed class RestoreOperation : IReceiverOperation
             Directory.CreateDirectory(pgdata);
             foreach (var obj in listed.Value)
             {
+                // rel — путь под PGDATA (относительно s3Base); key — ключ
+                // скачивания ОТНОСИТЕЛЬНО {cluster}/{shard}/ (контракт
+                // GetObjectToFileAsync, симметрично VerifyOperation).
                 var rel = obj.Key[s3Base.Length..];
+                var key = obj.Key[(_request.S3.Prefix.Length + 1)..];
                 var dest = Path.Combine(pgdata, rel.Replace('/', Path.DirectorySeparatorChar));
                 var destDir = Path.GetDirectoryName(dest);
                 if (!string.IsNullOrEmpty(destDir))
                     Directory.CreateDirectory(destDir);
-                var got = await s3.GetObjectToFileAsync(cluster, shard, obj.Key, dest, token);
+                var got = await s3.GetObjectToFileAsync(cluster, shard, key, dest, token);
                 if (!got.IsSuccess)
                 {
                     Fail(phase, OpText.OneLine(got.Error!.Message));
