@@ -730,14 +730,16 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup-джобы;
-// verifyObserver — counter pgworker_backup_verify_total{result}.
+// Проверки полных бэкапов (t04/t26, arch/19 §5): цепочка + checksums в
+// tool-контейнере по API приёмника; verifyObserver — counter
+// pgworker_backup_verify_total{result}.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime(),

@@ -11,16 +11,17 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// BackupVerifyProcess — тиковая машина проверки полных бэкапов (t04, arch/19
-/// §5/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от on_create /
-/// периодика по verify.interval_sec; FAILED терминален) → цепочечная проверка
-/// list-ами S3 + строгий LSN-разбор .history (WalChain.CheckRange + WalHistory,
-/// без скачивания сегментов) → ephemeral verify-джоб pgw-backup-verify-&lt;C&gt;-&lt;X&gt;-&lt;id&gt;
-/// (inline bash mc cp + pg_verifybackup, протокол t02: result-JSON + exit-код)
-/// на docker-хосте источника. Тик не блокируется на длинную проверку: итог —
-/// супервизом следующих тиков (задача 9). Transient (S3/docker/скачивание) —
-/// статус кандидата не трогаем; permanent (дыра цепочки, нет wal_start) — FAILED
-/// сразу, джоб checksums не запускается (вердикт уже определён).
+/// BackupVerifyProcess — тиковая машина проверки полных бэкапов (t04/t26,
+/// arch/19 §5/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от
+/// on_create / периодика по verify.interval_sec; FAILED терминален) →
+/// цепочечная проверка list-ами S3 + строгий LSN-разбор .history
+/// (WalChain.CheckRange + WalHistory, без скачивания сегментов) →
+/// tool-контейнер pgw-backup-verify-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; (образ ноды в tool-режиме,
+/// pg_verifybackup по API приёмника) на docker-хосте источника. Тик не
+/// блокируется на длинную проверку: итог — поллинг GET /api/ops/verify
+/// следующих тиков. Transient (S3/docker/скачивание) — статус кандидата не
+/// трогаем; permanent (дыра цепочки, нет wal_start, pg_verifybackup ≠ 0) —
+/// FAILED сразу, checksums не запускается (вердикт уже определён).
 /// </summary>
 public sealed class BackupVerifyProcess(
     IEtcdGateway etcd,
@@ -28,6 +29,7 @@ public sealed class BackupVerifyProcess(
     IClusterDriver driver,
     ShardEndpoints shardEndpoints,
     BackupS3Factory s3Factory,
+    IWalReceiverApiClient receiver,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -137,7 +139,8 @@ public sealed class BackupVerifyProcess(
                     .FirstOrDefault(n => n.StartsWith(shardPrefix, StringComparison.Ordinal));
                 if (name is not null)
                     await SuperviseAsync(
-                        listEngine, cluster, shard, name, shardPrefix, container.State, shardBackups, nowUnix, ct);
+                        listEngine, cluster, shard, name, shardPrefix, container.State,
+                        shardBackups, nowUnix, hostsForList.Value[0].Name, ct);
             }
 
             return; // супервиз-тик: новых джобов не стартуем
@@ -248,18 +251,36 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
-        // (5) Джоб: docker-хост источника (node-факт portalloc; fallback — первый
-        //     хост таблицы Docker:Hosts с journal-фактом выбора).
-        var (engine, fallbackHost) = await EngineForShardAsync(cluster, shard, addresses, $"{shard}/{candidate.Node}", ct);
+        // (5) Tool-контейнер checksums (t26, spec §3.5): docker-хост источника
+        //     (node-факт portalloc; fallback — первый хост Docker:Hosts с
+        //     journal-фактом) + create/start + команда StartVerifyAsync
+        //     (S3-контекст read-списка — секреты только в POST, Р4).
+        var (engine, engineHost, fallbackHost) = await EngineForShardAsync(
+            cluster, shard, addresses, $"{shard}/{candidate.Node}", ct);
         if (engine is null)
         {
             observe(cluster, shard, "transient"); // хост не известен — следующий тик
             return;
         }
 
-        var spec = VerifyJobSpec.Build(options, cluster, shard, id,
-            pool.ReadAll, pool.AccessKey, pool.SecretKey);
+        // Порт API tool-контейнера: прод — зонд свободного динамического
+        // (правило AGENTS.md); контур (ContourNetwork задан) — без публикации
+        // (адрес — alias имени в сети контура, ForTool contourMode).
+        var contourMode = options.ContourNetwork is { Length: > 0 };
+        int? hostPort = null;
+        if (!contourMode)
+        {
+            var probe = Tool.FreePortProbe.Allocate();
+            if (!probe.IsSuccess)
+            {
+                observe(cluster, shard, "transient");
+                return;
+            }
+            hostPort = probe.Value;
+        }
         var jobName = BackupNames.VerifyContainerName(cluster, shard, id);
+        var spec = Tool.ToolJobSpec.Build(options, cluster, jobName,
+            BackupNames.VerifyVolumeName(cluster, shard, id), "/staging", hostPort);
         var created = await engine.CreateContainerAsync(spec, jobName, ct);
         if (!created.IsSuccess)
         {
@@ -274,6 +295,48 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
+        // Адрес API tool-контейнера: контур — alias сети контура; прод —
+        // инспект публикации :8080 (динамический host-порт).
+        string receiverUrl;
+        if (contourMode)
+        {
+            receiverUrl = WalReceiverAddress.ForTool(jobName, engineHost, null, contourMode: true);
+        }
+        else
+        {
+            var inspect = await engine.InspectContainerAsync(jobName, ct);
+            if (!inspect.IsSuccess)
+            {
+                observe(cluster, shard, "transient"); // порт не увидели — снос супервизом
+                return;
+            }
+            var published = inspect.Value.Ports
+                .FirstOrDefault(p => p.ContainerPort == 8080)?.HostPort;
+            if (published is null)
+            {
+                observe(cluster, shard, "transient");
+                return;
+            }
+            receiverUrl = WalReceiverAddress.ForTool(jobName, engineHost, published, contourMode: false);
+        }
+
+        var launch = await receiver.StartVerifyAsync(receiverUrl, new StartVerifyRequest(
+            id,
+            new S3Context(
+                Endpoints: [.. pool.ReadAll],
+                AccessKey: pool.AccessKey,
+                SecretKey: pool.SecretKey,
+                Bucket: options.S3Bucket,
+                Prefix: $"{cluster}/{shard}",
+                CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        if (!launch.IsAccepted && !launch.IsConflict)
+        {
+            // Транспортный отказ/5xx команды: контейнер-сирота без операции —
+            // снесёт супервиз (IsNotFound-ветка), PENDING остаётся.
+            observe(cluster, shard, "transient");
+            return;
+        }
+
         // journal-факты: started — факт запуска; при fallback-пути резюме тика —
         // выбор fallback-хоста (журнал — единый ключ последней фазы: резюме пишем
         // ПОСЛЕДНИМ, чтобы факт выбора не затирался started).
@@ -281,24 +344,27 @@ public sealed class BackupVerifyProcess(
         if (fallbackHost is not null)
             await journal.WritePhaseAsync(cluster, Op, $"engine-fallback/{shard}",
                 claims.InstanceId, fallbackHost, ct);
-        logger.LogInformation("{Op} {cluster}/{shard}: verify job {job} started (id {id})",
+        logger.LogInformation("{Op} {cluster}/{shard}: verify tool container {job} started (id {id})",
             Op, cluster, shard, jobName, id);
     }
 
-    // Супервиз одного verify-контейнера шарда (spec §3.2): orphan/stale → снос
-    // без итога; running → ждать; created → старт; exited → итог по exit-коду и
-    // result-JSON (фаза verify/нет результата с ok:false+phase=verify → permanent;
-    // download/мусор → transient: снос, статус не трогаем); итог OK/FAILED —
-    // полная перезапись ключа + журнал + снос джоба.
+    // Супервиз одного verify-tool-контейнера шарда (t26, spec §3.5): orphan/
+    // stale → снос без итога; created → старт; итог — ТОЛЬКО по API
+    // (GetVerifyAsync): succeeded ⇒ OK+checked_unix; failed+downloading
+    // (МАРКЕР ТРАНЗИЕНТА) ⇒ снос, статус не трогаем (PENDING, ретрай тиком);
+    // failed+verifying ⇒ FAILED+error; IsNotFound (операция vanished — рестарт
+    // приёмника) ⇒ transient: снос, PENDING-ретрай; running — возрастной
+    // бюджет Job:VerifyTimeoutSec по StartedAtUnix инспекта ⇒ kill+rm,
+    // checked_unix=now (вердикт НЕ ставится).
     private async Task SuperviseAsync(
         IDockerEngine engine, string cluster, string shard, string containerName, string shardPrefix,
-        string state, ShardBackups shardBackups, long nowUnix, CancellationToken ct)
+        string state, ShardBackups shardBackups, long nowUnix, string host, CancellationToken ct)
     {
         var id = containerName[shardPrefix.Length..];
         var full = shardBackups.Full.FirstOrDefault(f => f.Id == id);
 
         // orphan/stale (ключ ушёл — deprovisioning-гонка; внешний FAILED): итог НЕ
-        // пишем, объект сносим. verify null|PENDING|OK — легитимный кандидат джоба.
+        // пишем, объект сносим. verify null|PENDING|OK — легитимный кандидат.
         if (full is null
             || full.State != FullBackupStatus.Completed
             || full.Verify is { State: BackupVerifyStatus.Failed })
@@ -307,13 +373,85 @@ public sealed class BackupVerifyProcess(
             return;
         }
 
+        if (state == "created")
+        {
+            await engine.StartContainerAsync(containerName, ct); // создан, но не стартован
+            return;
+        }
+
+        // Итог — по API приёмника tool-контейнера (адрес: контур — alias,
+        // прод — инспект публикации :8080; host — хост контейнера).
+        var receiverUrl = await ToolReceiverUrlAsync(engine, host, containerName, ct);
+        if (receiverUrl is not null)
+        {
+            var reply = await receiver.GetVerifyAsync(receiverUrl, ct);
+            if (reply.IsNotFound)
+            {
+                // Контейнер жив, операции нет (рестарт приёмника) — transient:
+                // снос, PENDING остаётся, следующий тик создаст заново.
+                await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
+                    claims.InstanceId, "verify operation vanished — container recreated", ct);
+                observe(cluster, shard, "transient");
+                await CleanupJobAsync(engine, containerName, ct);
+                return;
+            }
+            if (!reply.IsTransient && reply.Status is { } snapshot)
+            {
+                switch (snapshot.State)
+                {
+                    case "succeeded":
+                    {
+                        // verify OK: checksums прошли (SHA256 + manifest).
+                        var updated = full with { Verify = new BackupVerify(BackupVerifyStatus.Ok, nowUnix) };
+                        var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                            BackupStatusJson.Serialize(updated), ct);
+                        if (!put.IsSuccess)
+                            return; // transient — статус не сменился, снесём следующим тиком
+                        await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
+                            claims.InstanceId, null, ct);
+                        logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
+                        observe(cluster, shard, "ok");
+                        await CleanupJobAsync(engine, containerName, ct);
+                        return;
+                    }
+                    case "failed" when snapshot.Phase == "downloading":
+                    {
+                        // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — статус не трогаем
+                        // (PENDING), снос — следующий тик создаст заново.
+                        await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
+                            claims.InstanceId, snapshot.Error ?? "download failed", ct);
+                        observe(cluster, shard, "transient");
+                        await CleanupJobAsync(engine, containerName, ct);
+                        return;
+                    }
+                    case "failed":
+                    {
+                        // PERMANENT (phase=verifying): pg_verifybackup ≠ 0 — данные плохие.
+                        var err = snapshot.Error ?? "pg_verifybackup failed";
+                        var failed = full with { Verify = new BackupVerify(BackupVerifyStatus.Failed, nowUnix, err) };
+                        var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                            BackupStatusJson.Serialize(failed), ct);
+                        if (!put.IsSuccess)
+                            return;
+                        await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{id}",
+                            claims.InstanceId, err, ct);
+                        logger.LogError("{Op} {cluster}/{shard}: verify {id} FAILED: {Error}", Op, cluster, shard, id, err);
+                        observe(cluster, shard, "failed");
+                        await CleanupJobAsync(engine, containerName, ct);
+                        return;
+                    }
+                }
+                // running — проверка в работе: проваливаемся в возрастной бюджет.
+            }
+        }
+
         if (state is "running" or "restarting")
         {
-            // t07 (arch/19 §6): возраст running-джоба — docker-факт StartedAt
-            // (в etcd-статусе кандидата времени запуска нет). Бюджет исчерпан →
-            // kill+rm; вердикт FAILED НЕ ставим (данные не виноваты) — попытка
-            // зачитывается checked_unix=now: следующий due через verify.interval_sec,
-            // лив-лок немедленных перезапусков исключён.
+            // t07 (arch/19 §6): возраст running-контейнера — docker-факт
+            // StartedAt (в etcd-статусе кандидата времени запуска нет). Бюджет
+            // исчерпан → kill+rm; вердикт FAILED НЕ ставим (данные не виноваты)
+            // — попытка зачитывается checked_unix=now: следующий due через
+            // verify.interval_sec, лив-лок немедленных перезапусков исключён.
             var inspectForAge = await engine.InspectContainerAsync(containerName, ct);
             if (inspectForAge.IsSuccess
                 && inspectForAge.Value.StartedAtUnix is { } started
@@ -327,68 +465,30 @@ public sealed class BackupVerifyProcess(
                 if (!putQuota.IsSuccess)
                     return; // transient — статус не сменился, снесём следующим тиком
                 await journal.WritePhaseAsync(cluster, Op, $"verify-timeout/{shard}/{id}",
-                    claims.InstanceId, $"verify job older than {options.JobVerifyTimeoutSec} s — killed, attempt counted", ct);
+                    claims.InstanceId, $"verify container older than {options.JobVerifyTimeoutSec} s — killed, attempt counted", ct);
                 await CleanupJobAsync(engine, containerName, ct);
             }
 
             return; // ждём — проверка в работе
         }
-        if (state == "created")
-        {
-            await engine.StartContainerAsync(containerName, ct); // создан, но не стартован
-            return;
-        }
+    }
 
-        if (state != "exited")
-            return; // прочие состояния — вне протокола супервиза
-
+    // Адрес API tool-контейнера verify (spec §3.1): контур (ContourNetwork) —
+    // alias имени :8080 в сети контура; прод — инспект публикации :8080
+    // (динамический host-порт). Инспект не удался — null (transient тика).
+    private async Task<string?> ToolReceiverUrlAsync(
+        IDockerEngine engine, string host, string containerName, CancellationToken ct)
+    {
+        if (options.ContourNetwork is { Length: > 0 })
+            return WalReceiverAddress.ForTool(containerName, host, null, contourMode: true);
         var inspect = await engine.InspectContainerAsync(containerName, ct);
         if (!inspect.IsSuccess)
-            return; // transient — итог недоступен
-        var exitCode = inspect.Value.ExitCode ?? -1;
-        var logs = await engine.GetContainerLogsAsync(containerName, 200, ct);
-        if (!logs.IsSuccess)
-            return; // transient — итог недоступен
-        var result = VerifyLog.Parse(logs.Value);
-
-        if (exitCode == 0 && result is { Ok: true })
-        {
-            // exit 0 + ok:true → verify OK: проверка прошла (SHA256 + manifest)
-            var updated = full with { Verify = new BackupVerify(BackupVerifyStatus.Ok, nowUnix) };
-            var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
-                BackupStatusJson.Serialize(updated), ct);
-            if (!put.IsSuccess)
-                return; // transient — статус не сменился, снесём джоб следующим тиком
-            await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
-                claims.InstanceId, null, ct);
-            logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
-            observe(cluster, shard, "ok");
-            await CleanupJobAsync(engine, containerName, ct);
-            return;
-        }
-
-        if (result is { Ok: false, Phase: "verify" or null, Error: { } err })
-        {
-            // ненулевой pg_verifybackup (phase=verify) → permanent FAILED: данные плохие
-            var failed = full with { Verify = new BackupVerify(BackupVerifyStatus.Failed, nowUnix, err) };
-            var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
-                BackupStatusJson.Serialize(failed), ct);
-            if (!put.IsSuccess)
-                return;
-            await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{id}",
-                claims.InstanceId, err, ct);
-            logger.LogError("{Op} {cluster}/{shard}: verify {id} FAILED: {Error}", Op, cluster, shard, id, err);
-            observe(cluster, shard, "failed");
-            await CleanupJobAsync(engine, containerName, ct);
-            return;
-        }
-
-        // иначе (phase=download / exit без результата) → transient: снос, статус
-        // НЕ меняем (PENDING остаётся — ретрай следующим тиком, spec §3.1)
-        await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
-            claims.InstanceId, result is { Error: { } transientError } ? transientError : "download failed", ct);
-        observe(cluster, shard, "transient");
-        await CleanupJobAsync(engine, containerName, ct);
+            return null;
+        var published = inspect.Value.Ports
+            .FirstOrDefault(p => p.ContainerPort == 8080)?.HostPort;
+        return published is null
+            ? null
+            : WalReceiverAddress.ForTool(containerName, host, published, contourMode: false);
     }
 
     // Снос ephemeral verify-джоба: контейнер + volume (имена совпадают; 404 = успех).
@@ -402,18 +502,18 @@ public sealed class BackupVerifyProcess(
     // portalloc; узел исчез из portalloc → ПЕРВЫЙ хост таблицы Docker:Hosts
     // (driver.GetHostsAsync — plain-драйвер отдаёт конфиг-таблицу) → EngineFor;
     // выбор fallback-хоста — journal-факт (phase "engine-fallback/<X>").
-    private async Task<(IDockerEngine? Engine, string? FallbackHost)> EngineForShardAsync(
+    private async Task<(IDockerEngine? Engine, string Host, string? FallbackHost)> EngineForShardAsync(
         string cluster, string shard,
         IReadOnlyDictionary<string, NodeAddress> addresses, string nodeKey, CancellationToken ct)
     {
         if (addresses.TryGetValue(nodeKey, out var addr))
-            return (driver.EngineFor(addr.Host), null);
+            return (driver.EngineFor(addr.Host), addr.Host, null);
 
         var hosts = await driver.GetHostsAsync(ct); // таблица Docker:Hosts (канон)
         var first = hosts.IsSuccess ? hosts.Value.FirstOrDefault() : null;
         if (first is null)
-            return (null, null);
-        return (driver.EngineFor(first.Name), first.Name);
+            return (null, string.Empty, null);
+        return (driver.EngineFor(first.Name), first.Name, first.Name);
     }
 
     // permanent FAILED: полная перезапись ключа статуса (BackupStatusJson), журнал
