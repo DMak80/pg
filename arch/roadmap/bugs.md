@@ -82,6 +82,23 @@
   src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo`.
   Логи: `arch/roadmap/bugs/t095-verify-orphan-refused-wait/` (локально:
   inspect+лог пересозданного контейнера; лог воркера — в t094-папке).
+- **`t096-haetcd-master-lease-absent`** — E2E
+  `PgWorker.IntegrationTests.E2e.E2eHaEtcdScenarios.HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive`
+  (полный прогон E2eFixture на ветке `feat-t26-backup-jobs-in-receiver`,
+  HEAD `ff1eb8e3`, 2026-10-26): после подъёма 3-узлового etcd и
+  provisioning (ok, 59.6/360 c) первая проба «1/5» не находит master-ключ —
+  `Expected object not to be <null> because the master key is alive
+  (probe 1/5); actually: absent`. Сценарий ВНЕ области t26 (ha-etcd
+  supervisor/lease, не бэкапы) — заводится на разбор в своей задаче.
+  Команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test
+  src/PgWorker.slnx -c Release --no-build --nologo --filter
+  "FullyQualifiedName~E2eHaEtcdScenarios"`. Ожидаемое: master-lease жив на
+  пробе 1/5 после provisioning; наблюдаемое: absent (lease не создан или
+  истёк к первой пробе — смотреть healthz/api-пробы и журнал воркера
+  keepalive/lease в артефактах сценария ha-etcd).
+  Логи: `arch/roadmap/bugs/t096-haetcd-master-lease-absent/fail-tail.log`
+  (локально; полный артефакт сценария — `${TMPDIR}pgw-e2e-artifacts-*/`
+  прогона, subdir guid 86ac9574…).
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`
