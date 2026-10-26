@@ -639,9 +639,9 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
     fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
-// Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
-// REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
-// статичный срез (врезка цикла и процесс гвардят Enabled).
+// Восстановление шарда из бэкапа (arch/19 §3.5): PLANNED→RUNNING→
+// REJOINING→COMPLETED; plain-only, операции — команды API tool-контейнера.
+// Runtime-опции — статичный срез (врезка цикла и процесс гвардят Enabled).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -750,7 +750,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Дрилл восстановимости (reliability t02, arch/19 §3.6): супервиз drill-джоба,
+// Дрилл восстановимости (arch/19 §3.6): супервиз drill-tool-контейнера,
 // отбор/валидация/запуск, доводимый снос; runtime — как у verify.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillProcess(
     sp.GetRequiredService<IEtcdGateway>(),

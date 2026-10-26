@@ -194,22 +194,18 @@ public class BackupApiOperationTests : IDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         // Arrange: POST создал операцию.
-        var (_, client, registry, _, _) = Build(toolMode: false);
+        var (_, client, _, _, _) = Build(toolMode: false);
         await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
         // Act: GET статуса.
         var ok = await client.GetAsync("/api/backup/full", ct);
 
-        // Assert: 200 со снимком фейка.
+        // Assert: 200 со снимком фейка. Терминальный снимок персистентен
+        // (снятий в проде нет — супервизы опираются на него, arch/19 §4).
         ((int)ok.StatusCode).Should().Be(200);
         var status = await ok.Content.ReadFromJsonAsync<FullStatusResponse>(ct);
         status!.State.Should().Be("running");
         status.Phase.Should().Be("basebackup");
-
-        // Act/Assert: после Clear — следующий GET = 404 (спека §3.2).
-        registry.Clear();
-        var gone = await client.GetAsync("/api/backup/full", ct);
-        ((int)gone.StatusCode).Should().Be(404);
     }
 
     [Fact]
@@ -369,16 +365,12 @@ public class BackupApiOperationTests : IDisposable
         // Act: GET.
         var ok = await client.GetAsync("/api/ops/restore", ct);
 
-        // Assert: 200 со снимком фейка (recovering).
+        // Assert: 200 со снимком фейка (recovering). Терминальный снимок
+        // персистентен (снятий в проде нет — супервизы опираются на него).
         ((int)ok.StatusCode).Should().Be(200);
         var status = await ok.Content.ReadFromJsonAsync<ToolStatusResponse>(ct);
         status!.State.Should().Be("running");
         status.Phase.Should().Be("recovering");
-
-        // Act/Assert: после Clear — 404.
-        registry.Clear();
-        var gone = await client.GetAsync("/api/ops/restore", ct);
-        ((int)gone.StatusCode).Should().Be(404);
     }
 
     [Fact]

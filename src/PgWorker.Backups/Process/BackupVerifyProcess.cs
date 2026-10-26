@@ -62,7 +62,7 @@ public sealed class BackupVerifyProcess(
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"{Op} {cluster}: claim is not ours (or lost) — mutations are forbidden"));
 
-        // Guard 2: Backups:Enabled=false → no-op (идущие ephemeral-джобы не убиваем).
+        // Guard 2: Backups:Enabled=false → no-op (идущие операции не трогаем).
         if (!options.Enabled)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
 

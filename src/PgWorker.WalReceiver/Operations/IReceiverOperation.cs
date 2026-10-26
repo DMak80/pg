@@ -1,13 +1,12 @@
 namespace PgWorker.WalReceiver.Operations;
 
 /// <summary>Общая грань операции бэкапов для маршрутов API (spec t26 §3.2):
-/// Snapshot — текущий снимок из реестра; RunAsync — весь пайплайн (маршрут
-/// запускает его фоновой Task); CancelAsync — best-effort отмена (cancel API:
-/// гасит дерево текущего child-процесса, чистит staging).</summary>
+/// RunAsync — весь пайплайн (маршрут запускает его фоновой Task); CancelAsync —
+/// best-effort отмена (cancel API: гасит дерево текущего child-процесса, чистит
+/// staging). Снимок статуса маршруты читают из OperationRegistry (прод-путь);
+/// собственный Snapshot-член реализациям не нужен в интерфейсе.</summary>
 public interface IReceiverOperation
 {
-    OperationSnapshot? Snapshot { get; }
-
     Task RunAsync(CancellationToken ct);
 
     Task CancelAsync();

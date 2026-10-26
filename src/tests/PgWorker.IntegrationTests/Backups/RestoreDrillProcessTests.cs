@@ -317,10 +317,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
     private static long NowUnix() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-    // Сид контейнера drill-джоба в фейк-движке.
-    private static void SeedContainer(FakeDrillEngine engine, string name, string state, int exitCode, string logs)
+    // Сид tool-контейнера дрилла в фейк-движке (вердикт — API приёмника;
+    // exit-код/логи контейнера операцией не читаются).
+    private static void SeedContainer(FakeDrillEngine engine, string name, string state)
         => engine.Containers[name] = new FakeDrillEngine.ContainerRec(
-            Guid.NewGuid().ToString("N"), state, exitCode, logs);
+            Guid.NewGuid().ToString("N"), state, -1, "");
 
     private async Task<string> ReadDrillAsync(string cluster)
     {
@@ -355,7 +356,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         SeedContainer(engine, BackupNames.DrillContainerName(cluster, Shard, DrillId),
-            "running", -1, "");
+            "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("running", "recovering"), null);
         await SeedDrillAsync(cluster,
@@ -370,12 +371,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"");
     }
 
-    // AAA: exited 0 + result ok:true → SUCCEEDED + finished_unix + restored_to_lsn
+    // AAA: API-вердикт succeeded → SUCCEEDED + finished_unix + restored_to_lsn
     // → cleaning → контейнер и volume удалены, phase снят.
     [Fact]
-    public async Task Supervise_ExitOk_SucceedsAndCleansUp()
+    public async Task Supervise_ApiSucceeded_TerminalAndCleansUp()
     {
-        // Arrange — exited(0) с result-JSON ок.
+        // Arrange — running-контейнер; GET приёмника — succeeded.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -384,7 +385,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
         await SeedDrillAsync(cluster,
@@ -403,11 +404,12 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         engine.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
     }
 
-    // AAA: exited 1 → FAILED с error из result; снос тот же.
+    // AAA: API-вердикт failed (phase=recovering — permanent) → FAILED с
+    // причиной из статуса операции; снос тот же.
     [Fact]
-    public async Task Supervise_ExitFail_FailsWithErrorAndCleansUp()
+    public async Task Supervise_ApiFailed_FailsWithErrorAndCleansUp()
     {
-        // Arrange — exited(1) с result-JSON ошибки.
+        // Arrange — running-контейнер; GET приёмника — failed/recovering.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -416,7 +418,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("failed", "recovering", Error: "boom"), null);
         await SeedDrillAsync(cluster,
@@ -449,7 +451,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 0, "{\"ok\":true}");
+        SeedContainer(engine, name, "exited");
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
                 FinishedUnix: NowUnix() - 300, Phase: "cleaning"));
@@ -485,7 +487,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 0, "{\"ok\":true}");
+        SeedContainer(engine, name, "exited");
         engine.RemoveFailsOnce = true;
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
@@ -740,7 +742,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("running", "downloading"), null);
         await SeedDrillAsync(cluster,
@@ -781,7 +783,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "{\"phase\":\"recovering\"}");
+        SeedContainer(engine, name, "running");
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 120));
         var process = BuildProcess(cluster, driver, new FakeBackupS3(),
@@ -878,7 +880,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600"), null);
         var s3 = new FakeBackupS3();
@@ -950,7 +952,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH2 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1, engineH2);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH2, name, "exited", 0, "{\"ok\":true}");
+        SeedContainer(engineH2, name, "exited");
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
                 FinishedUnix: NowUnix() - 300, Phase: "cleaning"));
@@ -981,7 +983,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH2 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1, engineH2);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH1, name, "exited", 1, "{\"ok\":false,\"error\":\"boom\"}");
+        SeedContainer(engineH1, name, "exited");
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
                 FinishedUnix: NowUnix() - 300, Phase: "cleaning"));
@@ -1019,7 +1021,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH2 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1, engineH2);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH2, name, "running", -1, "");
+        SeedContainer(engineH2, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("running", "recovering"), null);
         await SeedDrillAsync(cluster,
@@ -1055,7 +1057,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH1 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1) { HostsFails = true };
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH1, name, "running", -1, "");
+        SeedContainer(engineH1, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/700"), null);
         await SeedDrillAsync(cluster,
@@ -1117,7 +1119,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster2, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(200,
             new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
         await SeedDrillAsync(cluster2,
@@ -1149,7 +1151,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "");
+        SeedContainer(engine, name, "running");
         Receiver.GetReply = new ReceiverReply(404, null, null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));

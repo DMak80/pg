@@ -44,8 +44,12 @@ public class RestoreOperationTests
             ProcessStartInfo psi, CancellationToken ct)
         {
             var args = string.Join(" ", psi.ArgumentList);
-            var home = psi.EnvironmentVariables["HOME"];
-            var env = home is not null ? $"HOME={home}" : "";
+            // Журнал env: HOME + S3-контекст fetch-wal (PGW_S3_*) — ассерты
+            // «секреты в env процесса, не в argv» проверяются по факту.
+            var env = string.Join(";",
+                psi.EnvironmentVariables.Keys.Cast<string>()
+                    .Where(k => k == "HOME" || k.StartsWith("PGW_S3_", StringComparison.Ordinal))
+                    .Select(k => $"{k}={psi.EnvironmentVariables[k]}"));
             Invocations.Add((psi.FileName, args, env));
             switch (psi.FileName)
             {
@@ -186,9 +190,14 @@ public class RestoreOperationTests
         start.Args.Should().StartWith("--reuid=101 --regid=101 --clear-groups pg_ctl");
         start.Args.Should().Contain("start");
         start.Args.Should().Contain("listen_addresses=''");
-        start.Env.Should().Be("HOME=/tmp");
-        // Assert: S3-контекст fetch-wal — в env процесса (секреты не в argv).
-        var startPsiEnv = start.Env;
+        start.Env.Should().Contain("HOME=/tmp");
+        // Assert: S3-контекст fetch-wal — в env процесса (postgres наследует до
+        // restore_command; секреты не в argv, Р13).
+        start.Env.Should().Contain("PGW_S3_ENDPOINTS=http://s3a:9000");
+        start.Env.Should().Contain("PGW_S3_BUCKET=backups");
+        start.Env.Should().Contain("PGW_S3_PREFIX=c1/s1");
+        start.Env.Should().Contain("PGW_S3_ACCESS_KEY=ak");
+        start.Env.Should().Contain("PGW_S3_SECRET_KEY=sk");
         start.Args.Should().NotContain("sk");
 
         // Cleanup.

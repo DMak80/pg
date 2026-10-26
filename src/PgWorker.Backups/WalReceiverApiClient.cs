@@ -105,6 +105,9 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
     public async Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
         => await GetAsync($"{baseUrl}/api/ops/restore", ct);
 
+    // Внешний канал операторской отмены tool-операций (arch/19 §5): воркером
+    // НЕ используется (его отмены — cancel full + kill+rm tool-контейнера);
+    // эндпоинт каноничен — член оставлен для операторского инструментария.
     public async Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
         => await PostAsync<object?>($"{baseUrl}/api/ops/cancel", null, ct);
 

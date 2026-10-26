@@ -6,8 +6,9 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Docker;
 
-// Чистка джобов бэкапов D1 (t02/t04): контейнеры по префиксам full/verify +
-// volume (full → volume из имени без "full-"; verify → volume == имя контейнера).
+// Чистка tool-контейнеров бэкапов D1 (arch/19 §3.7): verify/drill — контейнер
+// и volume одно имя; restore — контейнер без volume (точка монтирования —
+// data-volume ноды, НЕ удалять).
 public class BackupJobsCleanerTests
 {
     // Локальный фейк IDockerEngine (по образцу FakeBackupEngine): только нужные

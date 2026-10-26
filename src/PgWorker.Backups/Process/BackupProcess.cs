@@ -333,8 +333,11 @@ public sealed class BackupProcess(
         if (reply.IsConflict)
         {
             var activeId = reply.Status?.Id;
-            if (activeId == id)
-                return true; // своя операция — пере-старт прошлого тика
+            // Своя операция — пере-старт прошлого тика. Тело без id (приёмник
+            // старой версии без корреляции) — прежнее поведение (своя): фантом
+            // исключает только ДОСТОВЕРНО чужой id.
+            if (activeId is null || activeId == id)
+                return true;
             await journal.WritePhaseAsync(cluster, Op, $"foreign-active/{shardName}/{id}",
                 claims.InstanceId,
                 $"receiver runs active operation id={activeId ?? "<none>"} — not ours (POST 409)", ct);

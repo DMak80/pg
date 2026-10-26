@@ -621,9 +621,9 @@ public sealed class BackupsSupervisorOptions
     public long OrphanTtlSec { get; set; } = 604800;
 }
 
-/// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
-/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.
-/// Таймауты (t07, arch/19 §6/§9) — бюджеты зависших джобов: полный/verify/restore.</summary>
+/// <summary>Бюджеты операций бэкапов (arch/19 §6/§9): возрастные гварды
+/// зависших — полный/verify/restore (исполняют приёмник/tool-контейнеры,
+/// воркер супервизит через API приёмника).</summary>
 public sealed class BackupsJobOptions
 {
     /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c (t07):
@@ -689,9 +689,7 @@ public sealed class BackupsRetentionOptions
     public int Months { get; set; } = 1;
 }
 
-/// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с
-/// квотой (guard «нет места» → FAILED, реализация t02; null — без квоты).</summary>
-/// <summary>Staging полного (t26, arch/19 §9): каталог в data-volume ноды
+/// <summary>Staging полного (arch/19 §9): каталог в data-volume ноды
 /// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
 public sealed class BackupsStagingOptions
 {

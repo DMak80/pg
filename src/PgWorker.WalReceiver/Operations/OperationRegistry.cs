@@ -28,6 +28,4 @@ public sealed class OperationRegistry
     /// Публикация нового снимка (атомарная замена; вызывается только владельцем операции).
     public void Update(OperationSnapshot next) => Volatile.Write(ref _current, next);
 
-    /// Снятие после терминального исхода (succeeded/failed) — следующий GET = 404.
-    public void Clear() => Volatile.Write(ref _current, null);
 }

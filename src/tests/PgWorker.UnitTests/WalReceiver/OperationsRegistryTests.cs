@@ -91,20 +91,6 @@ public class OperationsRegistryTests
     }
 
     [Fact]
-    public void Clear_RemovesSnapshot()
-    {
-        // Arrange: терминальный снимок.
-        var registry = new OperationRegistry();
-        registry.TryBegin(Snap("failed", "downloading"));
-
-        // Act: снятие (после терминального исхода).
-        registry.Clear();
-
-        // Assert: следующий GET — 404 (Current null).
-        registry.Current.Should().BeNull();
-    }
-
-    [Fact]
     public async Task ParallelUpdates_DoNotRace()
     {
         // Arrange: реестр + параллельные публикации из многих задач.
