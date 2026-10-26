@@ -1133,4 +1133,46 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert 2 — ровно один вызов: ok после снятия cleaning
         outcomes.Should().ContainSingle().Which.Should().Be((cluster2, Shard, "ok"));
     }
+
+    // AAA (#mr-fix): GET 404 при живом контейнере (рестарт приёмника) —
+    // transient: контейнер снесён, статус не фейлится (RUNNING остаётся);
+    // следующий тик досоздаёт контейнер и повторяет POST (скачивание заново)
+    [Fact]
+    public async Task ReceiverVanish404RemovesContainerNextTickRecreates()
+    {
+        // Arrange — RUNNING-ключ + running-контейнер; GET 404
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr15";
+        await SeedAsync(cluster);
+        var engine = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engine);
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(404, null, null);
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act 1 — супервиз: операция vanished → снос контейнера
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер снесён, ключ остался RUNNING (не фейл)
+        engine.Removed.Should().Contain(name);
+        (await ReadDrillAsync(cluster)).Should().Contain("\"RUNNING\"")
+            .And.NotContain("FAILED", "the vanish is a transient — the drill is not failed");
+
+        // Act 2 — следующий тик: контейнера нет → досоздача + пере-POST
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — контейнер создан заново, команда запуска повторена
+        engine.Created.Should().Contain(c => c.Name == name,
+            "the tool container is recreated on the next tick");
+        Receiver.StartBodies.Should().NotBeEmpty("the launch command is re-posted");
+    }
 }

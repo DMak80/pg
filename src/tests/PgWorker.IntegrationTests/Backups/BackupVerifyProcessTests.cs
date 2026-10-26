@@ -829,6 +829,46 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         engineH1.Created.Should().BeEmpty("no job is started while a foreign-host container is supervised");
     }
 
+    // AAA (#mr-fix): GET 404 при живом контейнере (рестарт приёмника) —
+    // transient: контейнер+volume снесены, статус остаётся PENDING (НЕ фейлится);
+    // следующий тик пересоздаёт джоб (ретрай тиками)
+    [Fact]
+    public async Task SupervisorNotFound404CleansAndRecreates()
+    {
+        // Arrange — джоб запущен (running); GET 404; PENDING-ключ в etcd
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv13", ct);
+        Fx = fx;
+        await SeedAsync("sv13");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv13", s3);
+        var name = "pgw-backup-verify-sv13-shard1-20260911120000Z";
+        Receiver.GetReply = new ReceiverReply(404, null, null);
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv13/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(pending);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        var process = BuildProcess("sv13", new FakeVerifyDriver(engine), s3);
+
+        // Act 1 — супервиз: операция vanished → снос
+        (await process.TickAsync(BuildSnap("sv13"), BackupsOf("sv13", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены, статус PENDING не тронут
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value
+            .Should().Be(before, "the vanish is a transient — PENDING is not failed");
+
+        // Act 2 — следующий тик: джобов нет, PENDING due → джоб создан заново
+        (await process.TickAsync(BuildSnap("sv13"), BackupsOf("sv13", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — пересоздание
+        engine.Created.Should().HaveCount(2, "the vanished operation is retried on the next tick");
+    }
+
     // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
     [Fact]
     public async Task TwoDueOnePerTickPendingEarlier()

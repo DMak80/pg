@@ -807,6 +807,53 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
             TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
     }
 
+    // AAA (#mr-fix): GET 404 при живом контейнере (рестарт приёмника) —
+    // transient: контейнер снесён, статус не фейлится (RUNNING остаётся);
+    // следующий тик пересоздаёт tool-контейнер и повторяет POST (Р9 —
+    // скачивание перезапустится новой командой)
+    [Fact]
+    public async Task ReceiverVanish404RemovesContainerNextTickRecreates()
+    {
+        // Arrange — RUNNING-заявка (фаза записана), running-контейнер; GET 404
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121008Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "");
+        _receiver.GetReply = new ReceiverReply(404, null, null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121008Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "downloading",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act 1 — супервиз: операция vanished → снос контейнера
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер снесён, статус жив (RUNNING, не фейл)
+        engine.Removed.Should().Contain(name);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running,
+            "the vanish is a transient — the request is not failed");
+        alive.Error.Should().BeNull();
+
+        // Act 2 — следующий тик: контейнера нет → create+start+POST (пере-запуск)
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — контейнер создан заново, команда запуска повторена
+        engine.Created.Should().Contain(c => c.Name == name,
+            "the tool container is recreated on the next tick");
+        _receiver.StartCalls.Should().BeGreaterOrEqualTo(1, "the launch command is re-posted");
+    }
+
     // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в
     // опциях теста) → restore-джоб kill+rm, заявка FAILED "restore-job-timeout",
     // щит initialize снят, volume первой ноды удалён
