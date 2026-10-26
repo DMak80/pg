@@ -618,8 +618,9 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IClusterSecretEnsurer>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
-// Полные бэкапы шардов (t02, arch/19): планировщик + супервизия джобов;
-// runtime-опции — склейка секции PgWorker:Backups; процесс — no-op при Enabled=false.
+// Полные бэкапы шардов (t02/t26, arch/19 §2): планировщик + супервизия через
+// HTTP API приёмника; runtime-опции — склейка секции PgWorker:Backups; процесс —
+// no-op при Enabled=false.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -632,13 +633,11 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
-    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge,
-    watchdogWindow: TimeSpan.FromSeconds(
-        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
-    progress: sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
+    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
 // Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
 // REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
