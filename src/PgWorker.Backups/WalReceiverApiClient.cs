@@ -32,10 +32,13 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
     [property: JsonPropertyName("s3")] S3Context S3);
 
-/// <summary>Снимок статуса из GET (поля spec t26 §3.2 / arch/19 §2/§5).</summary>
+/// <summary>Снимок статуса из GET (поля spec t26 §3.2 / arch/19 §2/§5); id —
+/// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/
+/// чужая» в 409-ветке запуска: чужой id трактуется как не-наша операция.</summary>
 public sealed record ReceiverStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
+    [property: JsonPropertyName("id")] string? Id = null,
     [property: JsonPropertyName("wal_start_segment")] string? WalStartSegment = null,
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
@@ -135,10 +138,11 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
         }
     }
 
-    // Тело 200/202 — статус операции; прочие коды тела не разбираем.
+    // Тело 200/202 — статус операции; 409 — снимок активной (id — корреляция
+    // «своя/чужая» в 409-ветке запуска); прочие коды тела не разбираем.
     private static async Task<ReceiverStatus?> ReadStatusAsync(HttpResponseMessage resp)
     {
-        if ((int)resp.StatusCode is not (200 or 202))
+        if ((int)resp.StatusCode is not (200 or 202 or 409))
             return null;
         try
         {

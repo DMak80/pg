@@ -222,8 +222,12 @@ internal partial class Program
                     JsonOpts, statusCode: 503);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.Id, OperationStates.Running, OperationPhases.Basebackup)))
+                // 409-ответ несёт снимок активной операции (id в т.ч.): воркер
+                // сверяет id в 409-ветке — своя операция (пере-старт прошлого
+                // тика) или чужая (phantom-COMPLETED гвард, arch/19 §2).
                 return Results.Json(
-                    new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
+                    ActiveFullStatus(registry, "operation already active"),
+                    JsonOpts, statusCode: 409);
 
             var operation = factory.Create(body.Id);
             active = operation;
@@ -231,7 +235,7 @@ internal partial class Program
             // RunAsync сам гасит все исключения в failed-снимок.
             _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
             return Results.Json(
-                new FullStatusResponse(OperationStates.Running, OperationPhases.Basebackup),
+                new FullStatusResponse(OperationStates.Running, OperationPhases.Basebackup, Id: body.Id),
                 JsonOpts, statusCode: 202);
         });
 
@@ -239,8 +243,9 @@ internal partial class Program
             registry.Current is { } snapshot
                 ? Results.Json(new FullStatusResponse(
                         snapshot.State, snapshot.Phase,
-                        snapshot.WalStartSegment, snapshot.SizeBytes,
-                        snapshot.Error),
+                        Id: snapshot.Id,
+                        WalStartSegment: snapshot.WalStartSegment, SizeBytes: snapshot.SizeBytes,
+                        Error: snapshot.Error),
                     JsonOpts)
                 : Results.Json(
                     new ErrorResponse("no active operation"), JsonOpts, statusCode: 404));
@@ -253,5 +258,19 @@ internal partial class Program
             await active.CancelAsync();
             return Results.Json(new { state = "cancelling" }, JsonOpts, statusCode: 202);
         });
+    }
+
+    // Снимок активной операции полным контрактом (с id и причиной — для 409):
+    // активной нет (гонка TryBegin/Clear) — running/basebackup-заглушка.
+    private static FullStatusResponse ActiveFullStatus(OperationRegistry registry, string error)
+    {
+        var snapshot = registry.Current;
+        return new FullStatusResponse(
+            snapshot?.State ?? OperationStates.Running,
+            snapshot?.Phase ?? OperationPhases.Basebackup,
+            Id: snapshot?.Id,
+            WalStartSegment: snapshot?.WalStartSegment,
+            SizeBytes: snapshot?.SizeBytes,
+            Error: error);
     }
 }

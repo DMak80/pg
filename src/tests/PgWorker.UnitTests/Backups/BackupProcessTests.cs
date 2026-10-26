@@ -228,12 +228,20 @@ public class BackupProcessTests
 
         public static ReceiverReply Accepted() =>
             new(202, new ReceiverStatus("running", "basebackup"), null);
-        public static ReceiverReply Conflict() => new(409, null, null);
+        // activeId — id активной операции в теле 409 (корреляция «своя/чужая»);
+        // null — тело без id (приёмник без корреляции — прежнее поведение).
+        public static ReceiverReply Conflict(string? activeId = null) => new(409,
+            activeId is null
+                ? null
+                : new ReceiverStatus("running", "basebackup", Id: activeId,
+                    Error: "operation already active"),
+            null);
         public static ReceiverReply Status(string state, string phase,
             string? wal = null, long? size = null, string? error = null) =>
-            new(200, new ReceiverStatus(state, phase, wal, size, null, null, error), null);
+            new(200, new ReceiverStatus(state, phase, null, wal, size, null, null, error), null);
         public static ReceiverReply Transport() => new(0, null, "connection refused");
         public static ReceiverReply ServerError() => new(502, null, "bad gateway");
+        public static ReceiverReply Rejected() => new(404, null, null);
 
         public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
         {
@@ -477,6 +485,92 @@ public class BackupProcessTests
         rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"));
         var entry503 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value;
         entry503?.Phase.Should().NotStartWith("receiver-unavailable");
+    }
+
+    // AAA: 409 со СВОИМ id в теле (пере-старт прошлого тика, приёмник новой
+    // версии) — как раньше: PLANNED → RUNNING
+    [Fact]
+    public async Task StartFull_Conflict409OwnId_PlannedBecomesRunning()
+    {
+        // Arrange — PLANNED; приёмник отвечает 409 с id нашей операции
+        var rig = await NewRig();
+        rig.Receiver.StartFullReply = FakeReceiverClient.Conflict("20260908030000Z");
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Planned);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — своя операция: тот же id стал RUNNING
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        FullOf(rig.Etcd, "20260908030000Z").State.Should().Be(FullBackupStatus.Running);
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("started/shard1/20260908030000Z");
+    }
+
+    // AAA: 409 с ЧУЖИМ id (после job-timeout с недоехавшим cancel старая
+    // операция живёт) — не-наша операция: transient с журналом, PLANNED
+    // остаётся (фантомный COMPLETED чужого снимка исключён)
+    [Fact]
+    public async Task StartFull_Conflict409ForeignId_PlannedStays_JournalForeign()
+    {
+        // Arrange — PLANNED; приёмник отвечает 409 с ЧУЖИМ id активной операции
+        var rig = await NewRig();
+        rig.Receiver.StartFullReply = FakeReceiverClient.Conflict("20250101000000Z");
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Planned);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — статус не тронут (ключа нет), journal — foreign-active с чужим id
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"));
+        var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
+        entry.Phase.Should().Be("foreign-active/shard1/20260908030000Z");
+        entry.LastError.Should().Contain("20250101000000Z");
+    }
+
+    // AAA: неклассифицированный код (404 — нода на до-t26 образе) в G3 —
+    // НЕ теряется молча: journal receiver-rejected с кодом, PLANNED остаётся
+    [Fact]
+    public async Task StartFull_Unclassified404_G3JournalsAndStaysPlanned()
+    {
+        // Arrange — тик планировщика (бэкапов нет); приёмник отвечает 404
+        var rig = await NewRig();
+        rig.Receiver.StartFullReply = FakeReceiverClient.Rejected();
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), [], CancellationToken.None);
+
+        // Assert — PLANNED записан ДО команды (journal-before-manipulations)
+        // и остался; journal — receiver-rejected с кодом и адресом
+        outcome.IsSuccess.Should().BeTrue();
+        var fullKey = rig.Etcd.Store.Keys.Single(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
+        var id = fullKey.Split('/')[^1];
+        FullOf(rig.Etcd, id).State.Should().Be(FullBackupStatus.Planned);
+        var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
+        entry.Phase.Should().Be($"receiver-rejected/shard1/{id}");
+        entry.LastError.Should().Contain("404").And.Contain(ReceiverUrlMaster);
+    }
+
+    // AAA: неклассифицированный код (404) в PLANNED-ветке супервиза — journal
+    // receiver-rejected, PLANNED остаётся (симметрия 502-transient-теста выше)
+    [Fact]
+    public async Task PlannedRepost_Unclassified404_JournalsAndStaysPlanned()
+    {
+        // Arrange — PLANNED; приёмник отвечает 404
+        var rig = await NewRig();
+        rig.Receiver.StartFullReply = FakeReceiverClient.Rejected();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Planned);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — статус не тронут (ключа нет), journal — receiver-rejected
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"));
+        var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
+        entry.Phase.Should().Be("receiver-rejected/shard1/20260908030000Z");
+        entry.LastError.Should().Contain("404");
     }
 
     // AAA: GET uploading → state=UPLOADING + wal_start_segment (node/role сохранены)

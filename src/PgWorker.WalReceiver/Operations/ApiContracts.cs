@@ -5,10 +5,13 @@ namespace PgWorker.WalReceiver.Operations;
 /// <summary>Тело POST /api/backup/full и POST /api/ops/* (запуск операции).</summary>
 public sealed record StartFullRequest([property: JsonPropertyName("id")] string Id);
 
-/// <summary>Статус операции полного бэкапа (GET /api/backup/full).</summary>
+/// <summary>Статус операции полного бэкапа (GET /api/backup/full; 409 на POST —
+/// снимок активной операции): id несёт активная операция — воркер сверяет его
+/// в 409-ветке запуска (своя/чужая: фантомный COMPLETED чужого снимка исключён).</summary>
 public sealed record FullStatusResponse(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
+    [property: JsonPropertyName("id")] string? Id = null,
     [property: JsonPropertyName("wal_start_segment")] string? WalStartSegment = null,
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
     [property: JsonPropertyName("error")] string? Error = null);

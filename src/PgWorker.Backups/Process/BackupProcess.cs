@@ -266,17 +266,17 @@ public sealed class BackupProcess(
 
             // Команда запуска приёмнику ВЫБРАННОЙ ноды (t26, spec §3.5): канал
             // alias:8080 в общей сети воркера и нод (Object — усыновлённая нода).
-            // 202 ⇒ RUNNING; 409 = пере-старт прошлого тика, операция уже жива ⇒
-            // RUNNING; 503 (только STOPPED/disabled — WAL_CHAIN_ERROR гейтом
-            // операции НЕ является, приёмник отвечает 202: пересъём — единственное
-            // лечение разрыва) и транспортный отказ ⇒ PLANNED остаётся, следующий
-            // тик повторит (transient с journal-фактом адреса — spec §3.1).
+            // 202 ⇒ RUNNING; 409 — сверка id активной операции (своя — пере-старт
+            // прошлого тика ⇒ RUNNING; чужая — transient с журналом); 503
+            // (только STOPPED/disabled — WAL_CHAIN_ERROR гейтом операции НЕ
+            // является, приёмник отвечает 202: пересъём — единственное лечение
+            // разрыва), транспортный отказ и неклассифицированный код ⇒ PLANNED
+            // остаётся, следующий тик повторит (с журналом — spec §3.1).
             // Контейнера полного больше нет — docker-движок здесь не нужен.
-            var launched = await receiver.StartFullAsync(
-                WalReceiverAddress.ForNode(cluster, shard.Name, node,
-                    nodeKv.Key is not null ? nodeKv.Value.Object : null),
-                id, ct);
-            if (launched.IsAccepted || launched.IsConflict)
+            var receiverUrl = WalReceiverAddress.ForNode(cluster, shard.Name, node,
+                nodeKv.Key is not null ? nodeKv.Value.Object : null);
+            var launched = await receiver.StartFullAsync(receiverUrl, id, ct);
+            if (await LaunchAcceptedAsync(cluster, shard.Name, id, launched, receiverUrl, ct))
             {
                 var running = planned with { State = FullBackupStatus.Running };
                 var putRunning = await PutAsync(BackupNames.FullKey(cluster, shard.Name, id), BackupStatusJson.Serialize(running), ct);
@@ -285,20 +285,6 @@ public sealed class BackupProcess(
                 await journal.WritePhaseAsync(cluster, Op, $"started/{shard.Name}/{id}", claims.InstanceId, null, ct);
                 logger.LogInformation("backups {Cluster}/{Shard}: full {Id} started on {Node} (role={Role})",
                     cluster, shard.Name, id, node, role);
-            }
-            else if (launched.IsGated)
-            {
-                // 503 — только STOPPED/disabled (WAL_CHAIN_ERROR отвечает 202):
-                // операция не начинается, PLANNED остаётся, следующий тик
-                // повторит (стоп-семантика подсистемы, arch/19 §2).
-            }
-            else if (launched.IsTransient)
-            {
-                // Недостижимость приёмника (DNS/отказ/таймаут/5xx) — journal-факт
-                // с адресом (spec §3.1 диагностика); PLANNED остаётся.
-                await journal.WritePhaseAsync(cluster, Op, $"receiver-unavailable/{shard.Name}/{id}",
-                    claims.InstanceId, $"{WalReceiverAddress.ForNode(cluster, shard.Name, node,
-                        nodeKv.Key is not null ? nodeKv.Value.Object : null)}: {launched.Error}", ct);
             }
         }
 
@@ -321,6 +307,69 @@ public sealed class BackupProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
+    // Общий обработчик ответа POST /api/backup/full в обеих ветках запуска
+    // (G3 и PLANNED-повтор): true — команда принята (статус → RUNNING); false —
+    // PLANNED остаётся:
+    //   202 — принята;
+    //   409 — сверка id активной операции из тела ответа: наш id — пере-старт
+    //     прошлого тика (принята); чужой id (или без тела) — НЕ наша операция:
+    //     фантомный COMPLETED чужого снимка исключён (после job-timeout с
+    //     недоехавшим cancel старая операция живёт) — transient с журналом,
+    //     закроет возрастной бюджет (job-timeout + cancel best-effort);
+    //   503 — стоп-гейты (STOPPED/disabled; WAL_CHAIN_ERROR отвечает 202):
+    //     молча, стоп-семантика подсистемы (arch/19 §2);
+    //   транспортный отказ — journal-факт receiver-unavailable с адресом;
+    //   неклассифицированный код (404 — нода на до-t26 образе, прочее) —
+    //     journal-факт + LogWarning с кодом и адресом: rolling-upgrade даёт
+    //     тихо повторяющийся POST — без диагностики недопустимо (spec §3.1
+    //     «диагностика — journal-факт»).
+    private async Task<bool> LaunchAcceptedAsync(
+        string cluster, string shardName, string id, ReceiverReply reply,
+        string receiverUrl, CancellationToken ct)
+    {
+        if (reply.IsAccepted)
+            return true;
+
+        if (reply.IsConflict)
+        {
+            var activeId = reply.Status?.Id;
+            if (activeId == id)
+                return true; // своя операция — пере-старт прошлого тика
+            await journal.WritePhaseAsync(cluster, Op, $"foreign-active/{shardName}/{id}",
+                claims.InstanceId,
+                $"receiver runs active operation id={activeId ?? "<none>"} — not ours (POST 409)", ct);
+            logger.LogWarning(
+                "backups {Cluster}/{Shard}: full {Id} POST 409 — receiver runs foreign operation (id={ActiveId}) at {Url}",
+                cluster, shardName, id, activeId ?? "<none>", receiverUrl);
+            return false;
+        }
+
+        if (reply.IsGated)
+        {
+            // 503 — только STOPPED/disabled (WAL_CHAIN_ERROR отвечает 202):
+            // операция не начинается, PLANNED остаётся молча (стоп-семантика).
+            return false;
+        }
+
+        if (reply.IsTransient)
+        {
+            // Недостижимость приёмника (DNS/отказ/таймаут/5xx) — journal-факт
+            // с адресом (spec §3.1 диагностика); PLANNED остаётся.
+            await journal.WritePhaseAsync(cluster, Op, $"receiver-unavailable/{shardName}/{id}",
+                claims.InstanceId, $"{receiverUrl}: {reply.Error}", ct);
+            return false;
+        }
+
+        // Финальная ветка «неклассифицированный код»: без неё 404/прочее
+        // выпадали без единой строки диагностики (тихий лайвлок повторов).
+        await journal.WritePhaseAsync(cluster, Op, $"receiver-rejected/{shardName}/{id}",
+            claims.InstanceId, $"HTTP {reply.StatusCode} from {receiverUrl}: {reply.Error}", ct);
+        logger.LogWarning(
+            "backups {Cluster}/{Shard}: full {Id} start rejected by receiver {Url} — HTTP {Code}",
+            cluster, shardName, id, receiverUrl, reply.StatusCode);
+        return false;
+    }
+
     // Живая сверка клэйма перед мутациями шарда (arch/17 S5): IsMine на входе
     // тика не защищает длинный тик от takeover. false — ключа нет/чужой/etcd
     // недоступен: мутации не начинаются (P9), журнал несёт claim-lost/<фазу>.
@@ -339,8 +388,9 @@ public sealed class BackupProcess(
     // (t26, arch/19 §2, spec §3.5). Ветвление по active.State:
     //   возрастной бюджет — ПЕРВЫЙ гвард: FAILED job-timeout + cancel API
     //     best-effort (приёмник гасит child-процессы и чистит staging);
-    //   PLANNED — идемпотентный повтор StartFullAsync (202/409 ⇒ RUNNING;
-    //     503/transient — PLANNED остаётся, следующий тик повторит);
+    //   PLANNED — идемпотентный повтор StartFullAsync (202/409-своя ⇒ RUNNING;
+    //     409-чужая — transient с журналом; 503/транспорт/неклассифицированный
+    //     код — PLANNED остаётся, следующий тик повторит);
     //   RUNNING/UPLOADING — GetFullAsync: transient ⇒ статус не меняем;
     //     404 ⇒ FAILED operation-vanished (рестарт приёмника/ноды, переснятие
     //     новым id); uploading ⇒ UPLOADING+WalStartSegment; succeeded ⇒
@@ -411,11 +461,12 @@ public sealed class BackupProcess(
             var receiverUrl = WalReceiverAddress.ForNode(cluster, shard.Name, active.Node, source.Object);
 
             // PLANNED: команда запуска ещё не принята — идемпотентный повтор
-            // (202 = принят; 409 = пере-старт прошлого тика, операция уже жива).
+            // (202 = принят; 409 — сверка id: своя операция ⇒ RUNNING, чужая ⇒
+            // transient с журналом).
             if (active.State == FullBackupStatus.Planned)
             {
                 var launch = await receiver.StartFullAsync(receiverUrl, active.Id, ct);
-                if (launch.IsAccepted || launch.IsConflict)
+                if (await LaunchAcceptedAsync(cluster, shard.Name, active.Id, launch, receiverUrl, ct))
                 {
                     var running = active with { State = FullBackupStatus.Running };
                     var putRunning = await PutAsync(
@@ -424,20 +475,6 @@ public sealed class BackupProcess(
                         return putRunning;
                     await journal.WritePhaseAsync(cluster, Op, $"started/{shard.Name}/{active.Id}",
                         claims.InstanceId, null, ct);
-                }
-                else if (launch.IsGated)
-                {
-                    // 503 — только STOPPED/disabled (WAL_CHAIN_ERROR отвечает
-                    // 202): операция не начинается, PLANNED остаётся молча
-                    // (стоп-семантика подсистемы, arch/19 §2).
-                }
-                else if (launch.IsTransient)
-                {
-                    // Недостижимость приёмника — journal-факт с адресом
-                    // (spec §3.1); PLANNED остаётся, следующий тик повторит.
-                    await journal.WritePhaseAsync(cluster, Op,
-                        $"receiver-unavailable/{shard.Name}/{active.Id}",
-                        claims.InstanceId, $"{receiverUrl}: {launch.Error}", ct);
                 }
                 continue;
             }

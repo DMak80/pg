@@ -180,10 +180,13 @@ public class BackupApiOperationTests : IDisposable
         // Act: повторный POST.
         var response = await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
 
-        // Assert: 409-гвард.
+        // Assert: 409-гвард; тело — снимок АКТИВНОЙ операции с её id (воркер
+        // сверяет id в 409-ветке: своя/чужая — фантомный COMPLETED гвард).
         ((int)response.StatusCode).Should().Be(409);
-        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>(ct);
-        error!.Error.Should().Contain("already active");
+        var active = await response.Content.ReadFromJsonAsync<FullStatusResponse>(ct);
+        active!.Error.Should().Contain("already active");
+        active.Id.Should().Be(Id);
+        active.State.Should().Be("running");
     }
 
     [Fact]
