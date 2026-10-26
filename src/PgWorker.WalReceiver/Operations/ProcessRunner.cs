@@ -3,8 +3,11 @@ using System.Diagnostics;
 namespace PgWorker.WalReceiver.Operations;
 
 /// <summary>Прод-реализация IProcessRunner (arch/19 §3.4 «все child-процессы —
-/// Process.Start»): полный слив stdout/stderr в память; при отмене — kill
-/// дерева процессов (pg_basebackup/recovery не оставляют сирот).</summary>
+/// Process.Start»): полный слив stdout/stderr в память — ОБА потока читаются
+/// параллельно (дочерний пишет stderr одновременно с stdout: последовательное
+/// чтение при многострочном stderr упирается в заполненный пайп-буфер и
+/// deadlock'ает child); при отмене — kill дерева процессов
+/// (pg_basebackup/recovery не оставляют сирот).</summary>
 public sealed class ProcessRunner : IProcessRunner
 {
     public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
@@ -18,9 +21,10 @@ public sealed class ProcessRunner : IProcessRunner
         {
             try { process.Kill(entireProcessTree: true); } catch { /* уже вышел */ }
         });
-        var stdout = await process.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await process.StandardError.ReadToEndAsync(ct);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
+        await Task.WhenAll(stdoutTask, stderrTask);
         await process.WaitForExitAsync(ct);
-        return (process.ExitCode, stdout, stderr);
+        return (process.ExitCode, stdoutTask.Result, stderrTask.Result);
     }
 }
