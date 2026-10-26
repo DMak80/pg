@@ -793,13 +793,59 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         spec.Image.Should().Be("pgworker-node:dev");
         spec.Env!["PGW_NODE_TOOL"].Should().Be("1");
         spec.VolumeName.Should().Be("pgw-c1-shard1-shard1a-data");
-        // Два тика — две идемпотентные команды (409-гвард приёмника покрывает).
-        _receiver.StartBodies.Should().HaveCountGreaterThanOrEqualTo(1);
+        // Команда — тиком запуска (контейнер создан этим тиком); второй тик
+        // с живым контейнером и записанной фазой команд НЕ повторяет
+        // (повтор при терминале приёмника перезапустил бы операцию —
+        // succeeded не дожил бы до воркера).
+        _receiver.StartBodies.Should().ContainSingle();
         var body = _receiver.StartBodies[^1];
         body.BackupId.Should().Be("20260910120000Z").And.NotBe(op.Id);
         body.TargetTime.Should().BeNull();
         body.RecoveryTimeoutSec.Should().Be(1800);
         body.S3.Prefix.Should().Be("c1/shard1");
+    }
+
+    // AAA (регрессия полного E2E-гейта): команда запуска — только тиком
+    // запуска. Повтор команды на каждом тике при терминальном снимке
+    // приёмника давал 202 (TryBegin перезаписывает терминал) РАНЬШЕ, чем
+    // тик читал GET succeeded, — операция перезапускалась вечно, статус
+    // etcd висел в RUNNING до бюджетного таймаута.
+    [Fact]
+    public async Task RunningWithRecordedPhaseDoesNotResendLaunchCommand()
+    {
+        // Arrange — RUNNING с записанной фазой (команда принята прошлым тиком),
+        // running-контейнер; приёмник отвечает succeeded — терминальный снимок
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121007Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "");
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121007Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
+        op = op with { Phase = "recovering" };
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.RestoreKey("c1", "shard1", op.Id), RestoreStatusJson.Serialize(op), null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act — три тика подряд (контейнер жив, фаза записана)
+        for (var i = 0; i < 3; i++)
+            (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+                .IsSuccess.Should().BeTrue();
+
+        // Assert — команда не повторялась ни разу; терминал дошёл до статуса
+        // (REJOINING), контейнер прибран
+        _receiver.StartCalls.Should().Be(0,
+            "the launch command belongs to the launch tick only");
+        var restored = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        restored.State.Should().Be(RestoreStatus.Rejoining);
+        restored.RestoredToLsn.Should().Be("0/42");
+        engine.Removed.Should().Contain(name);
     }
 
     [Fact]

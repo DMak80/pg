@@ -368,6 +368,18 @@ public sealed class RestoreProcess(
                 list.Error!.Message, ct);
         var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
 
+        // Команда запуска — ТОЛЬКО тиком запуска (контейнер создан/стартован
+        // этим тиком) или при незаписанной фазе (takeover между стартом
+        // контейнера и командой). Повтор команды на каждом тике супервиза
+        // НЕБЕЗОПАСЕН: когда операция приёмника достигла терминала,
+        // 409-гвард принимает новую команду (202) РАНЬШЕ, чем тот же тик
+        // успевает прочитать GET succeeded, — операция перезапускается
+        // вечно, статус etcd висит в RUNNING до бюджетного таймаута.
+        // Самовосстановление «операции нет при живом контейнере» (рестарт
+        // приёмника) — ветка IsNotFound ниже: снос + пере-создание следующим
+        // тиком — команда уходит тиком запуска.
+        var freshlyLaunched = false;
+
         // Идемпотентный запуск: контейнера нет → демонтаж + create (tool-спека:
         // data-volume первой ноды, динамический API-порт в проде); старт — в
         // обоих случаях; затем команда StartRestoreAsync (409 = операция уже
@@ -409,6 +421,7 @@ public sealed class RestoreProcess(
             if (!created.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                     created.Error!.Message, ct);
+            freshlyLaunched = true;
         }
 
         if (found is not { State: "running" })
@@ -417,33 +430,40 @@ public sealed class RestoreProcess(
             if (!started.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                     started.Error!.Message, ct);
+            freshlyLaunched = true;
         }
 
-        // Команда запуска (каждый тик с живым контейнером — 409-гвард приёмника
-        // делает её идемпотентной): backup_id / target_time (null = latest) /
-        // recovery_timeout_sec / S3-контекст source_pool ?? собственного пула
-        // (prefix — DR-источник). Секреты — только в POST-теле (Р4).
-        var launch = await receiver.StartRestoreAsync(
-            await ToolReceiverUrlAsync(engine, addr.Host, name, ct),
-            new StartRestoreRequest(
-                BackupId: op.BackupId,
-                TargetTime: targetTime,
-                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
-                S3: new S3Context(
-                    Endpoints: [.. poolCtx.ReadAll],
-                    AccessKey: poolCtx.AccessKey,
-                    SecretKey: poolCtx.SecretKey,
-                    Bucket: options.S3Bucket,
-                    Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
-                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
-        if (!launch.IsAccepted && !launch.IsConflict)
+        // Контейнер был running ещё до тика И фаза заявки записана — команда
+        // уже принята (202/409 прошлого тика); только GET-поллинг (см.
+        // комментарий о небезопасности повтора команды выше).
+        var alreadyLaunched = !freshlyLaunched && !string.IsNullOrEmpty(op.Phase);
+        if (!alreadyLaunched)
         {
-            // Транспортный отказ/5xx команды — transient: статус не меняем
-            // (фаза etcd-статуса остаётся), следующий тик повторит POST.
-            return await TransientAsync(cluster, $"receiver-unavailable/{shard.Name}/{op.Id}",
-                launch.Error, ct);
+            // Команда запуска (тик запуска контейнера / takeover без фазы):
+            // backup_id / target_time (null = latest) / recovery_timeout_sec /
+            // S3-контекст source_pool ?? собственного пула (prefix —
+            // DR-источник). Секреты — только в POST-теле (Р4).
+            var launch = await receiver.StartRestoreAsync(
+                await ToolReceiverUrlAsync(engine, addr.Host, name, ct),
+                new StartRestoreRequest(
+                    BackupId: op.BackupId,
+                    TargetTime: targetTime,
+                    RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                    S3: new S3Context(
+                        Endpoints: [.. poolCtx.ReadAll],
+                        AccessKey: poolCtx.AccessKey,
+                        SecretKey: poolCtx.SecretKey,
+                        Bucket: options.S3Bucket,
+                        Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
+                        CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+            if (!launch.IsAccepted && !launch.IsConflict)
+            {
+                // Транспортный отказ/5xx команды — transient: статус не меняем
+                // (фаза etcd-статуса остаётся), следующий тик повторит POST.
+                return await TransientAsync(cluster, $"receiver-unavailable/{shard.Name}/{op.Id}",
+                    launch.Error, ct);
+            }
         }
-
         // Супервиз: итог — ТОЛЬКО по API (GetRestoreAsync); exit-инспекта нет.
         var reply = await receiver.GetRestoreAsync(
             await ToolReceiverUrlAsync(engine, addr.Host, name, ct), ct);
