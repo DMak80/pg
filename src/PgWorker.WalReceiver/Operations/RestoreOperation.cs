@@ -28,16 +28,22 @@ public sealed class RestoreOperation : IReceiverOperation
     private readonly StartRestoreRequest _request;
     private readonly IProcessRunner _runner;
     private readonly OperationRegistry _registry;
+    private readonly string _pgdata;
+    private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (шаг 9)
     private readonly CancellationTokenSource _cts = new();
 
     public RestoreOperation(
         StartRestoreRequest request,
         IProcessRunner runner,
-        OperationRegistry registry)
+        OperationRegistry registry,
+        string? pgdata = null,
+        Func<string, IBackupS3>? targetFactory = null)
     {
         _request = request;
         _runner = runner;
         _registry = registry;
+        _pgdata = pgdata ?? ToolPaths.Pgdata;
+        _targetFactory = targetFactory;
     }
 
     public OperationSnapshot? Snapshot => _registry.Current;
@@ -47,7 +53,7 @@ public sealed class RestoreOperation : IReceiverOperation
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _cts.Token);
         var token = linked.Token;
 
-        var pgdata = ToolPaths.Pgdata;
+        var pgdata = _pgdata;
         // volume-корень для chown -R (bash: ${PGDATA%%/pgroot/data}).
         var volumeRoot = pgdata.EndsWith("/pgroot/data", StringComparison.Ordinal)
             ? pgdata[..^"/pgroot/data".Length]
@@ -91,7 +97,8 @@ public sealed class RestoreOperation : IReceiverOperation
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout);
+                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                targetFactory: _targetFactory);
 
             // 2. Фаза downloading: скачивание full/<id>/ 1:1 в PGDATA.
             _registry.Update(new OperationSnapshot(
@@ -296,7 +303,7 @@ public sealed class RestoreOperation : IReceiverOperation
         {
             // Cancel API: kill дерева уже сделан runner'ом; pg_ctl stop
             // best-effort; чистку сигналов НЕ делаем — контейнер снесёт воркер.
-            await StopBestEffortAsync(ToolPaths.Pgdata);
+            await StopBestEffortAsync(_pgdata);
             Fail(phase, "cancelled");
         }
         catch (Exception e)
@@ -319,7 +326,7 @@ public sealed class RestoreOperation : IReceiverOperation
     public async Task CancelAsync()
     {
         _cts.Cancel();
-        await StopBestEffortAsync(ToolPaths.Pgdata);
+        await StopBestEffortAsync(_pgdata);
     }
 
     // Системная утилита child-процессом (chown/chmod/pg_controldata — root).

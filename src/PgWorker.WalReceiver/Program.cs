@@ -29,7 +29,9 @@ namespace PgWorker.WalReceiver;
 // Явный internal-класс (не top-level statements): сгенерированный top-level
 // Program публичен в глобальном namespace и конфликтует (CS0433) с
 // PgWorker.App.Program в сборках, ссылающихся на оба проекта (тесты).
-internal static class Program
+// Не static: WebApplicationFactory<T> требует не-static тип (API-тесты,
+// шаг 9); точка входа — static Main.
+internal partial class Program
 {
     // Дефолт каталога staging полного в data-volume ноды (arch/19 §9);
     // перекрывается env PGW_BACKUP_STAGING_DIR (ставит EnsureNode — шаг 11).

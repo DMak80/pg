@@ -19,16 +19,22 @@ public sealed class VerifyOperation : IReceiverOperation
     private readonly StartVerifyRequest _request;
     private readonly IProcessRunner _runner;
     private readonly OperationRegistry _registry;
+    private readonly string _stagingRoot;
+    private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (шаг 9)
     private readonly CancellationTokenSource _cts = new();
 
     public VerifyOperation(
         StartVerifyRequest request,
         IProcessRunner runner,
-        OperationRegistry registry)
+        OperationRegistry registry,
+        string? stagingRoot = null,
+        Func<string, IBackupS3>? targetFactory = null)
     {
         _request = request;
         _runner = runner;
         _registry = registry;
+        _stagingRoot = stagingRoot ?? ToolPaths.Staging;
+        _targetFactory = targetFactory;
     }
 
     public OperationSnapshot? Snapshot => _registry.Current;
@@ -44,7 +50,7 @@ public sealed class VerifyOperation : IReceiverOperation
         var cluster = slash > 0 ? prefix[..slash] : prefix;
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
         var s3Base = $"{prefix}/full/{_request.BackupId}/";
-        var stagingDir = Path.Combine(ToolPaths.Staging, "full", _request.BackupId);
+        var stagingDir = Path.Combine(_stagingRoot, "full", _request.BackupId);
         IBackupS3? s3 = null;
         string? caBundlePath = null;
         try
@@ -74,7 +80,8 @@ public sealed class VerifyOperation : IReceiverOperation
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout);
+                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                targetFactory: _targetFactory);
 
             // Фаза downloading: list + скачивание 1:1 (mkdir по относ. пути).
             _registry.Update(new OperationSnapshot(

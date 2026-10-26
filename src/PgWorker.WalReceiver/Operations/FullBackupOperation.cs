@@ -44,7 +44,8 @@ public sealed class FullBackupOperation : IReceiverOperation
         IS3PoolStore pools,
         Func<CancellationToken, Task<WalReceiverRole>> roleProbe,
         IProcessRunner runner,
-        OperationRegistry registry)
+        OperationRegistry registry,
+        Func<string, IBackupS3>? targetFactory = null)
     {
         _id = id;
         _stagingRoot = stagingDir;
@@ -55,7 +56,10 @@ public sealed class FullBackupOperation : IReceiverOperation
         _roleProbe = roleProbe;
         _runner = runner;
         _registry = registry;
+        _targetFactory = targetFactory; // тестовый шов: фейк IBackupS3 (шаг 9)
     }
+
+    private readonly Func<string, IBackupS3>? _targetFactory;
 
     /// <summary>Текущий снимок операции (чтение реестра).</summary>
     public OperationSnapshot? Snapshot => _registry.Current;
@@ -121,7 +125,8 @@ public sealed class FullBackupOperation : IReceiverOperation
 
             s3 = new PoolBackupS3(
                 writeTargets, pool.ReadAll, pool.AccessKey, pool.SecretKey,
-                bucket, caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout);
+                bucket, caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                targetFactory: _targetFactory);
 
             // 3. Чистка staging: прошлые <id>-каталоги + создание свежего (Р5).
             foreach (var stale in Directory.EnumerateFileSystemEntries(_stagingRoot))
