@@ -43,26 +43,6 @@
   пограничное окно stale/lag при быстрых прогонах; проверить расчёт
   `lag_segments`/`StaleSec` на снимке теста.
   Логи: `arch/roadmap/bugs/t093-retention-wal-degraded-flake/retention-t03-run.log` (локально).
-- **`t094-pgtune-reensure-storm`** — EnsureNode перезапускает pgtune КАЖДЫЙ тик
-  реконсиляции на протяжении минут начальной фазы кластера вместо
-  идемпотентного «уже настроено — пропуск»: в логе воркера E2E-сред
-  `PgWorker.Provisioning.Processes.PgtuneInputsFactory` выдаёт 270–500
-  предупреждений/мин (≈1 вызов pgtune/с) устойчиво 4–5 минут
-  (прогоны 2026-10-26, ветка `feat-t26-backup-jobs-in-receiver`, HEAD
-  `4677242e`: bk-spr 344/мин, bk-verify 496/мин; аналогично в прогоне 05:xx).
-  Нагружает docker-VM macOS-хоста subprocess-штормом; коррелирует с задержкой
-  первого бута tool-контейнеров verify (молчание :8080 до ~305 с — см.
-  `t095`) и общей медлительностью начальной фазы. Вне области t26
-  (provisioning). Воспроизведение: любой E2E с кластером
-  (`DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test
-  src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo --filter
-  "FullyQualifiedName~E2eSupervisorSelfHealScenarios"`), считать
-  `PgtuneInputsFactory` по минутам в логе `pgw-ew-*`. Наблюдаемое: re-ensure
-  каждый тик; ожидаемое: pgtune однократно на ноду (идемпотентный ensure).
-  Гипотезы: маркер «tuning применён» не пишется/не читается обратно
-  (EnsureNodeAsync несёт только tuning — сверка идемпотентности), либо
-  патроновский конфиг-факт затирается рестартом postgres.
-  Логи: `arch/roadmap/bugs/t094-pgtune-reensure-storm/worker-bkverify.log` (локально).
 - **`t096-haetcd-master-lease-absent`** — E2E
   `PgWorker.IntegrationTests.E2e.E2eHaEtcdScenarios.HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive`
   (полный прогон E2eFixture на ветке `feat-t26-backup-jobs-in-receiver`,
