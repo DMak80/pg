@@ -66,10 +66,13 @@ public class E2eBackupVerifyScenarios
         }, TimeSpan.FromSeconds(180), ct);
         sawPending.Should().BeTrue("on_create: verify must start (PENDING in the key / pgw-backup-verify-* container)");
 
-        // Act 2 — ждём verify.state=OK (бюджет 300 c: полный ~минуты + verify-скачивание)
+        // Act 2 — ждём verify.state=OK (бюджет 600 c: полный ~секунды + готовность
+        // tool-контейнера — первый бут под нагрузкой начальной фазы кластера
+        // наблюдается до ~305 с, прогон 2026-10-26: контейнер готов на 305-й
+        // секунде; сам verify после готовности — секунды)
         var verified = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(600), ct);
 
         // Assert 1 — OK + checked_unix (фаза PENDING зафиксирована Act 1)
         verified.Should().BeTrue("on_create: verify must reach OK (AC1)");
@@ -120,10 +123,11 @@ public class E2eBackupVerifyScenarios
             $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
         await using var app = await StartBackupHostAsync("bkcorrupt", ct);
 
-        // Assert 1 — первый verify OK (как в маркере)
+        // Assert 1 — первый verify OK (бюджет 600 c — тот же расчёт готовности
+        // tool-контейнера, что в Act 2 Verify_Ok_OnCreate)
         var firstOk = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(600), ct);
         firstOk.Should().BeTrue("the original set is valid");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
@@ -134,11 +138,11 @@ public class E2eBackupVerifyScenarios
                 "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
                       + $" && mc rm t/{Bucket}/{cluster}/shard1/full/{id}/PG_VERSION"], ct);
 
-        // Assert 2 — перепроверка по interval → FAILED + error (бюджет 180 c:
-        // interval 5 c + тик + джоб со скачиванием)
+        // Assert 2 — перепроверка по interval → FAILED + error (бюджет 300 c:
+        // interval 5 c + тик + тот же конвейер tool-контейнера, что в Assert 1)
         var failed = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"FAILED"""")),
-            TimeSpan.FromSeconds(180), ct);
+            TimeSpan.FromSeconds(300), ct);
         failed.Should().BeTrue("corrupting the set must yield verify FAILED (AC2)");
         var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;
