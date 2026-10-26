@@ -12,15 +12,16 @@ namespace PgWorker.Backups.Process;
 
 /// <summary>
 /// RestoreDrillProcess — тиковая машина планового тестового восстановления
-/// (reliability t02, arch/19 §3.6) под клэймом &lt;C&gt; (Op backup-drill):
-/// супервиз активного drill-джоба pgw-backup-drill-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; (фазы
-/// downloading|recovering из логов; exit-код+result-JSON — истина итога),
+/// (reliability t02/t26, arch/19 §3.6) под клэймом &lt;C&gt; (Op backup-drill):
+/// супервиз активного drill-tool-контейнера pgw-backup-drill-&lt;C&gt;-&lt;X&gt;-&lt;id&gt;
+/// (фазы downloading|recovering и итог — по API приёмника GetRestoreAsync),
 /// доводимый снос контура фазой cleaning (journal-before-rm; переживает
 /// рестарт воркера — идемпотентная доводка по детерминированным именам),
 /// отбор «один шард за проход, наименее свежий по дриллу» (DrillPlanner),
 /// валидация кандидата — путь restore-заявки t05 (манифест + WalChain),
-/// запуск джоба; таймаут-бюджет DrillTimeoutSec → FAILED drill-timeout,
-/// RUNNING без контейнера старше бюджета → FAILED drill-vanished.
+/// запуск tool-контейнера + StartRestoreAsync (latest); таймаут-бюджет
+/// DrillTimeoutSec → FAILED drill-timeout, RUNNING без контейнера старше
+/// бюджета → FAILED drill-vanished.
 /// Control — «старт postgres + выход из recovery» (restored_to_lsn);
 /// SQL-проверок данных нет. Состояние — один etcd-ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill (перезаписывается).
@@ -31,6 +32,7 @@ public sealed class RestoreDrillProcess(
     IClusterDriver driver,
     ShardEndpoints shardEndpoints,
     BackupS3Factory s3Factory,
+    IWalReceiverApiClient receiver,
     ClaimStore claims,
     WorkJournal journal,
     BackupsRuntimeOptions options,
@@ -177,7 +179,7 @@ public sealed class RestoreDrillProcess(
         // ── Запуск: journal-before-manipulations — put RUNNING до create
         // (arch/17); хост — первая нода шарда из portalloc (как restore-джоб).
         var id = BackupPlanner.NextId([], time.GetUtcNow().UtcDateTime);
-        var engine = await EngineForShardAsync(snap, shard, ct);
+        var (engine, startHost) = await EngineForShardAsync(snap, shard, ct);
         if (engine is null)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
@@ -191,32 +193,59 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Failed(put.Error!);
 
         var jobName = BackupNames.DrillContainerName(cluster, shard, id);
-        // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
-        // spec §3.2): ensure-семантика — контейнер уже есть → только старт.
-        var launched = await LongCallPolling.EnsureAsync(
-            $"create/start drill job {jobName}",
-            async token =>
-            {
-                var list = await engine.ListContainersAsync(jobName, all: true, token);
-                if (!list.IsSuccess)
-                    return Result.Failed(list.Error!);
-                if (list.Value.Any(c => c.Names.Contains(jobName)))
-                    return await engine.StartContainerAsync(jobName, token);
-                var created = await engine.CreateContainerAsync(
-                    DrillJobSpec.Build(options, cluster, shard, id, backupId,
-                        poolCtx.ReadAll, poolCtx.AccessKey, poolCtx.SecretKey), jobName, token);
-                if (!created.IsSuccess)
-                    return created;
-                return await engine.StartContainerAsync(jobName, token);
-            },
-            progress, logger,
-            TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
-            JobCreateBudget, ct);
-        if (!launched.IsSuccess)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся, тик досоздаст по имени
+        // Tool-контейнер drill (t26): свой volume (одно имя с контейнером —
+        // D1 жив), PGDATA Spilo-layout; API-порт — прод: зонд динамического,
+        // контур — без публикации. ensure-семантика: уже есть → только старт.
+        var contourMode = options.ContourNetwork is { Length: > 0 };
+        int? hostPort = null;
+        if (!contourMode)
+        {
+            var portProbe = Tool.FreePortProbe.Allocate();
+            if (!portProbe.IsSuccess)
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — тик повторит
+            hostPort = portProbe.Value;
+        }
+        var listed0 = await engine.ListContainersAsync(jobName, all: true, ct);
+        if (!listed0.IsSuccess)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient
+        if (!listed0.Value.Any(c => c.Names.Contains(jobName)))
+        {
+            var created = await engine.CreateContainerAsync(
+                Tool.ToolJobSpec.Build(options, cluster, jobName,
+                    BackupNames.DrillVolumeName(cluster, shard, id),
+                    "/home/postgres/pgdata", hostPort), jobName, ct);
+            if (!created.IsSuccess)
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся
+        }
+
+        var started = await engine.StartContainerAsync(jobName, ct);
+        if (!started.IsSuccess)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — тик повторит старт
+
+        // Команда StartRestoreAsync (latest — БЕЗ target_time, spec §3.6);
+        // 409 = операция уже жива (пере-старт тика). Отказ — transient:
+        // супервиз увидит контейнер без операции (IsNotFound) и пересоздаст.
+        var receiverUrl = await ToolReceiverUrlAsync(engine, startHost, jobName, ct);
+        if (receiverUrl is null)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — супервиз пере-POST
+        var launch = await receiver.StartRestoreAsync(
+            receiverUrl,
+            new StartRestoreRequest(
+                BackupId: backupId,
+                TargetTime: null,
+                RecoveryTimeoutSec: options.RestoreRecoveryTimeoutSec,
+                S3: new S3Context(
+                    Endpoints: [.. poolCtx.ReadAll],
+                    AccessKey: poolCtx.AccessKey,
+                    SecretKey: poolCtx.SecretKey,
+                    Bucket: options.S3Bucket,
+                    Prefix: $"{cluster}/{shard}",
+                    CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
+        if (!launch.IsAccepted && !launch.IsConflict)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — супервиз пере-POST
 
         await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
-        logger.LogInformation("{Op} {cluster}/{shard}: drill job {job} started (full backup {backupId})",
+        logger.LogInformation("{Op} {cluster}/{shard}: drill tool container {job} started (full backup {backupId})",
             Op, cluster, shard, jobName, backupId);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -263,7 +292,7 @@ public sealed class RestoreDrillProcess(
         // демонтируется) — джоб мог жить на ЛЮБОМ хосте: листим ВСЕ хосты
         // таблицы и супервизим найденный. Лист одного «чужого» хоста дал бы
         // ложное «контейнера нет» (drill-vanished) или досоздачу-дубликат.
-        var (engine, fallback) = await ResolveSuperviseEngineAsync(snap, shard, ct);
+        var (engine, host, fallback) = await ResolveSuperviseEngineAsync(snap, shard, ct);
         if (engine is null)
         {
             await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}/{drill.Id}",
@@ -282,11 +311,11 @@ public sealed class RestoreDrillProcess(
         var container = listed.Value.FirstOrDefault(c =>
             c.Names.Any(n => n.TrimStart('/') == containerName));
 
-        // Fallback-путь: джоба нет на первом хосте — ищем на остальных (мульти-хост).
+        // Fallback-путь: контейнера нет на первом хосте — ищем на остальных (мульти-хост).
         IDockerEngine? foundEngine = container is null ? null : engine;
         if (container is null && fallback)
         {
-            foundEngine = await FindContainerEngineAsync(prefix, containerName, engine, ct);
+            (foundEngine, host) = await FindContainerEngineAsync(prefix, containerName, engine, host, ct);
             if (foundEngine is not null)
             {
                 var foundList = await foundEngine.ListContainersAsync(prefix, all: true, ct);
@@ -363,7 +392,7 @@ public sealed class RestoreDrillProcess(
             return;
         }
 
-        var jobEngine = foundEngine ?? engine; // супервиз — на хосте найденного джоба
+        var jobEngine = foundEngine ?? engine; // супервиз — на хосте найденного контейнера
 
         if (container.State is "created")
         {
@@ -371,62 +400,96 @@ public sealed class RestoreDrillProcess(
             return;
         }
 
-        if (container.State is "running" or "restarting")
+        // Итог — ТОЛЬКО по API (t26): exit-инспект/логи упразднены.
+        var receiverUrl = await ToolReceiverUrlAsync(jobEngine, host, containerName, ct);
+        if (receiverUrl is null)
+            return; // transient — адрес недоступен, статус ключа не трогаем
+        var reply = await receiver.GetRestoreAsync(receiverUrl, ct);
+
+        if (reply.IsNotFound)
         {
-            // Фаза джоба (downloading|recovering — протокол t05) — в ключ при
-            // изменении; иначе ждём (InProgress — тик не блокируется).
-            var logs = await jobEngine.GetContainerLogsAsync(containerName, 200, ct);
-            if (!logs.IsSuccess)
-                return; // transient — фаза недоступна
-            var phase = DrillJobLog.Parse(logs.Value).Phase;
-            if (phase is { } p && p != drill.Phase)
-                await PutDrillAsync(cluster, shard, drill with { Phase = p }, ct); // fail — тик повторит
+            // Контейнер жив, операции нет (рестарт приёмника) — transient:
+            // снос контейнера; следующий тик досоздаст и повторит POST.
+            await jobEngine.RemoveContainerAsync(containerName, force: true, ct);
+            await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}/{drill.Id}",
+                claims.InstanceId, "drill operation vanished — container recreated", ct);
             return;
         }
 
-        if (container.State != "exited")
-            return; // прочие состояния — вне протокола супервиза
+        if (reply.IsTransient || reply.Status is not { } snapshot)
+            return; // transient тика — статус ключа не трогаем
 
-        // Итог: exit-код + result-JSON (истина итога, arch/19 §3.5-образец).
-        var inspect = await jobEngine.InspectContainerAsync(containerName, ct);
+        switch (snapshot.State)
+        {
+            case "running":
+                // Фаза операции (downloading|recovering) — в ключ при изменении.
+                if (snapshot.Phase is { Length: > 0 } p && p != drill.Phase)
+                    await PutDrillAsync(cluster, shard, drill with { Phase = p }, ct); // fail — тик повторит
+                return;
+
+            case "succeeded":
+            {
+                // старт postgres + выход из recovery доказаны (restored_to_lsn).
+                // Вердикт ОДНИМ put сразу с phase=cleaning (spec §2.5).
+                var terminal = drill with
+                {
+                    State = DrillStatus.Succeeded,
+                    FinishedUnix = nowUnix,
+                    RestoredToLsn = snapshot.RestoredToLsn,
+                    Phase = "cleaning",
+                };
+                var putTerminal = await PutDrillAsync(cluster, shard, terminal, ct);
+                if (!putTerminal.IsSuccess)
+                    return; // ключ остаётся RUNNING — вердикт выведется заново
+                await FinishCleanupAsync(cluster, shard, terminal, ct);
+                return;
+            }
+
+            case "failed" when snapshot.Phase == "downloading":
+            {
+                // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — операция ЗАВЕРШИЛАСЬ,
+                // контейнер сносим; следующий тик досоздаст и повторит POST.
+                await jobEngine.RemoveContainerAsync(containerName, force: true, ct);
+                await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}/{drill.Id}",
+                    claims.InstanceId, snapshot.Error ?? "download failed", ct);
+                return;
+            }
+
+            case "failed":
+            {
+                // PERMANENT (recovering): терминальный FAILED + cleaning → снос.
+                var terminal = drill with
+                {
+                    State = DrillStatus.Failed,
+                    FinishedUnix = nowUnix,
+                    Error = snapshot.Error ?? "drill operation failed",
+                    Phase = "cleaning",
+                };
+                var putTerminal = await PutDrillAsync(cluster, shard, terminal, ct);
+                if (!putTerminal.IsSuccess)
+                    return;
+                await FinishCleanupAsync(cluster, shard, terminal, ct);
+                return;
+            }
+        }
+    }
+
+    // Адрес API tool-контейнера drill (spec §3.1): контур — alias имени :8080
+    // в сети контура; прод — инспект публикации :8080 (динамический порт);
+    // недоступен — null (transient тика: статус ключа не трогаем).
+    private async Task<string?> ToolReceiverUrlAsync(
+        IDockerEngine engine, string host, string containerName, CancellationToken ct)
+    {
+        if (options.ContourNetwork is { Length: > 0 })
+            return WalReceiverAddress.ForTool(containerName, host, null, contourMode: true);
+        var inspect = await engine.InspectContainerAsync(containerName, ct);
         if (!inspect.IsSuccess)
-            return; // transient — итог недоступен
-        var exitCode = inspect.Value.ExitCode ?? -1;
-        var exitLogs = await jobEngine.GetContainerLogsAsync(containerName, 200, ct);
-        if (!exitLogs.IsSuccess)
-            return; // transient — итог недоступен
-        var result = DrillJobLog.Parse(exitLogs.Value);
-
-        // Вердикт ОДНИМ put сразу с phase=cleaning (spec §2.5): окно
-        // «терминал без cleaning» исключено — transient put оставляет ключ
-        // RUNNING, exited-джоб инспектируется заново следующим тиком.
-        DrillState terminal;
-        if (exitCode == 0 && result.Result is { Ok: true })
-        {
-            // старт postgres + выход из recovery доказаны (restored_to_lsn).
-            terminal = drill with
-            {
-                State = DrillStatus.Succeeded,
-                FinishedUnix = nowUnix,
-                RestoredToLsn = result.Result.RestoredToLsn,
-                Phase = "cleaning",
-            };
-        }
-        else
-        {
-            terminal = drill with
-            {
-                State = DrillStatus.Failed,
-                FinishedUnix = nowUnix,
-                Error = result.Result is { Ok: false, Error: { } err } ? err : $"exit {exitCode}",
-                Phase = "cleaning",
-            };
-        }
-
-        var putTerminal = await PutDrillAsync(cluster, shard, terminal, ct);
-        if (!putTerminal.IsSuccess)
-            return; // ключ остаётся RUNNING — вердикт выведется заново следующим тиком
-        await FinishCleanupAsync(cluster, shard, terminal, ct);
+            return null;
+        var published = inspect.Value.Ports
+            .FirstOrDefault(p => p.ContainerPort == 8080)?.HostPort;
+        return published is null
+            ? null
+            : WalReceiverAddress.ForTool(containerName, host, published, contourMode: false);
     }
 
     // ── Доводимый снос контура после терминального исхода (все пути сходятся) ──
@@ -495,7 +558,7 @@ public sealed class RestoreDrillProcess(
 
     // Резолв движка супервиза: (engine, fallback) — fallback = portalloc/шард
     // недоступны, движок = первый хост таблицы Docker:Hosts (образец verify).
-    private async Task<(IDockerEngine? Engine, bool Fallback)> ResolveSuperviseEngineAsync(
+    private async Task<(IDockerEngine? Engine, string Host, bool Fallback)> ResolveSuperviseEngineAsync(
         ClusterSnapshot snap, string shard, CancellationToken ct)
     {
         var addresses = await shardEndpoints.ReadPortAllocAsync(snap.Config.Cluster, ct);
@@ -506,37 +569,38 @@ public sealed class RestoreDrillProcess(
             .FirstOrDefault();
         if (addresses.IsSuccess && firstNode is not null
             && addresses.Value.TryGetValue($"{shard}/{firstNode}", out var addr))
-            return (driver.EngineFor(addr.Host), false);
+            return (driver.EngineFor(addr.Host), addr.Host, false);
 
         var hosts = await driver.GetHostsAsync(ct); // таблица Docker:Hosts (канон)
         var first = hosts.IsSuccess ? hosts.Value.FirstOrDefault() : null;
-        return (first is null ? null : driver.EngineFor(first.Name), true);
+        return (first is null ? null : driver.EngineFor(first.Name),
+            first?.Name ?? string.Empty, true);
     }
 
     // Fallback-поиск джоба на остальных хостах таблицы (мульти-хост): движок,
     // где найден контейнер по имени; не найден/чужой хост недоступен — null.
-    private async Task<IDockerEngine?> FindContainerEngineAsync(
-        string prefix, string containerName, IDockerEngine skip, CancellationToken ct)
+    private async Task<(IDockerEngine? Engine, string Host)> FindContainerEngineAsync(
+        string prefix, string containerName, IDockerEngine skip, string skipHost, CancellationToken ct)
     {
         var hosts = await driver.GetHostsAsync(ct);
         if (!hosts.IsSuccess)
-            return null;
+            return (null, string.Empty);
         foreach (var host in hosts.Value)
         {
             var hostEngine = driver.EngineFor(host.Name);
-            if (hostEngine is null || ReferenceEquals(hostEngine, skip))
+            if (hostEngine is null || ReferenceEquals(hostEngine, skip) || host.Name == skipHost)
                 continue;
             var listed = await hostEngine.ListContainersAsync(prefix, all: true, ct);
             if (!listed.IsSuccess)
                 continue; // хост недоступен — ищем дальше
             if (listed.Value.Any(c => c.Names.Any(n => n.TrimStart('/') == containerName)))
-                return hostEngine;
+                return (hostEngine, host.Name);
         }
 
-        return null;
+        return (null, string.Empty);
     }
 
-    private async Task<IDockerEngine?> EngineForShardAsync(
+    private async Task<(IDockerEngine? Engine, string Host)> EngineForShardAsync(
         ClusterSnapshot snap, string shard, CancellationToken ct)
     {
         var addresses = await shardEndpoints.ReadPortAllocAsync(snap.Config.Cluster, ct);
@@ -547,11 +611,11 @@ public sealed class RestoreDrillProcess(
             .FirstOrDefault();
         if (addresses.IsSuccess && firstNode is not null
             && addresses.Value.TryGetValue($"{shard}/{firstNode}", out var addr))
-            return driver.EngineFor(addr.Host);
+            return (driver.EngineFor(addr.Host), addr.Host);
 
         var hosts = await driver.GetHostsAsync(ct); // таблица Docker:Hosts (канон)
         var first = hosts.IsSuccess ? hosts.Value.FirstOrDefault() : null;
-        return first is null ? null : driver.EngineFor(first.Name);
+        return (first is null ? null : driver.EngineFor(first.Name), first?.Name ?? string.Empty);
     }
 
     // Failover-put ключа дрилла (первый успешный endpoint — образец verify).
