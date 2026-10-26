@@ -479,7 +479,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 - **Операция**: восстановление ОДНОГО шарда `<X>` кластера `<C>` из
   `full/<id>` + накат WAL-цепочки до цели: `latest` (конец цепочки — полная
-  потеря шарда/DR) или `target_time` (RFC3339 — порча данных, откат к
+  потеря шарда/DR) или `target_time` (порча данных, откат к
   моменту до порчи). Запуск — команда оператора через HTTP API воркера
   (`POST /api/clusters/<C>/shards/<X>/restore`,
   [14-pgworker.md](14-pgworker.md) §1.1): тело задаёт `backup_id` (нет —
@@ -502,7 +502,10 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   agent-ключей не пишет, etcd ему не нужен; весь S3-контекст приходит
   POST-командой — секреты только в POST, §7). Старт БЕЗ команд — все
   операции через API: `POST /api/ops/restore` (тело: `backup_id`,
-  `target_time`? RFC3339, `recovery_timeout_sec`, S3-контекст) и
+  `target_time`? — PG-совместимый формат `yyyy-MM-dd HH:mm:sszzz` (воркер
+  разбирает RFC3339 заявки и нормализует — parser postgres не принимает
+  «T»-сепаратор/суффикс «Z»; `target_time` отсутствует = latest),
+  `recovery_timeout_sec`, S3-контекст) и
   `GET /api/ops/restore` (фазы `downloading|recovering`,
   `restored_to_lsn`?, `system_id`?, `error`?). Контейнер монтирует
   data-volume ПЕРВОЙ ноды шарда `pgw-<C>-<X>-<n1>-data` (volume создаёт

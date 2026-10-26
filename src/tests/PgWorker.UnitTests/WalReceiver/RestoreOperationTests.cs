@@ -313,6 +313,84 @@ public class RestoreOperationTests
         FetchWalCommand.ParseEnv(_ => null).Should().BeNull();
     }
 
+    /// <summary>Фейк IBackupS3 fetch-wal-прохода: программируемый исход GET
+    /// (успех / not found / транспортная ошибка).</summary>
+    private sealed class FakeFetchS3(Result outcome) : IBackupS3
+    {
+        public Task<Result> GetObjectToFileAsync(
+            string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+            => Task.FromResult(outcome);
+
+        public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(string prefix, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<Result<string>> DownloadTextAsync(string cluster, string shard, string objectKey, CancellationToken ct = default) => throw new NotSupportedException();
+    }
+
+    private static Result NotFound() =>
+        Result.Failed(new ApplicationException("S3 get-to-file c1/s1/wal/x: not found"));
+
+    private static Result Transport() =>
+        Result.Failed(new ApplicationException("S3 get-to-file c1/s1/wal/x: connection reset"));
+
+    // AAA: сегмент найден на ВТОРОЙ ноде пула — exit 0, перебор до найденного
+    [Fact]
+    public async Task FetchOnce_FoundOnSecondEndpoint_ExitsZero()
+    {
+        // Arrange — первая нода: not found; вторая: успех
+        var clients = new List<IBackupS3> { new FakeFetchS3(NotFound()), new FakeFetchS3(Result.Success()) };
+
+        // Act
+        var (exitCode, transport) = await FetchWalCommand.FetchOnceAsync(
+            clients, "c1", "s1", "00000001000000000000000A", "/tmp/fetch-wal-test", CancellationToken.None);
+
+        // Assert
+        exitCode.Should().Be(0);
+        transport.Should().BeNull();
+    }
+
+    // AAA: «сегмента нет» на ВСЕХ endpoints — exit 1 БЕЗ transportError
+    // (конец WAL — сразу, без ретрая)
+    [Fact]
+    public async Task FetchOnce_NotFoundEverywhere_IsEndOfWal()
+    {
+        // Arrange
+        var clients = new List<IBackupS3> { new FakeFetchS3(NotFound()), new FakeFetchS3(NotFound()) };
+
+        // Act
+        var (exitCode, transport) = await FetchWalCommand.FetchOnceAsync(
+            clients, "c1", "s1", "seg", "/tmp/fetch-wal-test", CancellationToken.None);
+
+        // Assert — транспортного сбоя нет: ретрай не нужен (конец WAL)
+        exitCode.Should().Be(1);
+        transport.Should().BeNull();
+    }
+
+    // AAA: транспортный сбой отличим от «сегмента нет» — transportError несёт
+    // причину (RunAsync ретраит 3×2 с и exit 1 c диагностикой в stderr)
+    [Fact]
+    public async Task FetchOnce_TransportFailure_IsDistinguishable()
+    {
+        // Arrange — первая нода not found, вторая транспортный сбой:
+        // ответ «сегмента нет» НЕдостоверен (вторая нода не ответила по сути)
+        var clients = new List<IBackupS3> { new FakeFetchS3(NotFound()), new FakeFetchS3(Transport()) };
+
+        // Act
+        var (exitCode, transport) = await FetchWalCommand.FetchOnceAsync(
+            clients, "c1", "s1", "seg", "/tmp/fetch-wal-test", CancellationToken.None);
+
+        // Assert
+        exitCode.Should().Be(1);
+        transport.Should().NotBeNull().And.Contain("connection reset",
+            "a transport failure must be retried, not read as end-of-WAL");
+    }
+
     // Snapshot читается из операции (реестр — приватный в тесте).
     private static OperationSnapshot? registrySnapshot(RestoreOperation op)
         => op.Snapshot;

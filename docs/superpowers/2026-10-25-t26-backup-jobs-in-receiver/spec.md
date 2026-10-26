@@ -131,7 +131,7 @@ Tool-режим (verify/drill/restore; одна активная операци�
 |---|---|
 | `POST /api/ops/verify` | тело `{"backup_id","s3":{"endpoints":[…],"access_key","secret_key","bucket","prefix":"<C>/<X>","ca_pem"?}}`; 202/409 |
 | `GET /api/ops/verify` | `{"state","phase":"downloading\|verifying","error"?}`; 404 |
-| `POST /api/ops/restore` | тело `{"backup_id","target_time"?RFC3339,"recovery_timeout_sec","s3":{…}}`; 202/409; `target_time` отсутствует = `latest` |
+| `POST /api/ops/restore` | тело `{"backup_id","target_time"?:PG-совместимый (yyyy-MM-dd HH:mm:sszzz; воркер разбирает RFC3339 заявки и нормализует — разбор на воркере),"recovery_timeout_sec","s3":{…}}`; 202/409; `target_time` отсутствует = `latest` |
 | `GET /api/ops/restore` | `{"state","phase":"downloading\|recovering","restored_to_lsn"?,"system_id"?,"error"?}`; 404 |
 | `POST /api/ops/cancel` | 202 — best-effort (kill postgres/pg_verifybackup/скачивание, чистка) |
 

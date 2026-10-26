@@ -240,7 +240,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
 | `mcr.microsoft.com/dotnet/aspnet:10.0` | runtime-стадии тех же Dockerfile'ов |
-| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | джобы полного/verify/restore бэкапов, бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
+| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | бакетные проверки E2E, `00-up.sh` (запинен — supply-chain; операции бэкапов — .NET S3-клиент приёмника, mc не потребляют) |
 | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд — переходный read-only-архив `as-minio` (снос — ../OwnS3/docs/owns3-migration.md §6) |
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |

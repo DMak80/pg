@@ -119,9 +119,11 @@ public sealed class RestoreOperation : IReceiverOperation
             {
                 // rel — путь под PGDATA (относительно s3Base); key — ключ
                 // скачивания ОТНОСИТЕЛЬНО {cluster}/{shard}/ (контракт
-                // GetObjectToFileAsync, симметрично VerifyOperation).
+                // GetObjectToFileAsync, симметрично VerifyOperation). Срез — от
+                // НОРМАЛИЗОВАННОГО префикса (Trim('/')): сырые '/' на краях
+                // команды сдвигали бы срез на лишние символы.
                 var rel = obj.Key[s3Base.Length..];
-                var key = obj.Key[(_request.S3.Prefix.Length + 1)..];
+                var key = obj.Key[(prefix.Length + 1)..];
                 var dest = Path.Combine(pgdata, rel.Replace('/', Path.DirectorySeparatorChar));
                 var destDir = Path.GetDirectoryName(dest);
                 if (!string.IsNullOrEmpty(destDir))

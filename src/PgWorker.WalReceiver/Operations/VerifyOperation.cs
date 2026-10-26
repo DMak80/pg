@@ -106,8 +106,10 @@ public sealed class VerifyOperation : IReceiverOperation
                 // GetObjectToFileAsync сам сочиняет {cluster}/{shard}/{key}):
                 // полный obj.Key давал задвоение c1/s1/c1/s1/... (ключа нет —
                 // downloading-transient навсегда), rel давал бы укороченный ключ.
+                // Срез — от НОРМАЛИЗОВАННОГО префикса (Trim('/')): сырые '/' на
+                // краях команды сдвигали бы срез на лишние символы.
                 var rel = obj.Key[s3Base.Length..];
-                var key = obj.Key[(_request.S3.Prefix.Length + 1)..];
+                var key = obj.Key[(prefix.Length + 1)..];
                 var dest = Path.Combine(stagingDir, rel.Replace('/', Path.DirectorySeparatorChar));
                 var destDir = Path.GetDirectoryName(dest);
                 if (!string.IsNullOrEmpty(destDir))

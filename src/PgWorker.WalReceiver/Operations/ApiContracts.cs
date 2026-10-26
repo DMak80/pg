@@ -31,7 +31,7 @@ public sealed record StartVerifyRequest(
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
-    [property: JsonPropertyName("target_time")] string? TargetTime, // RFC3339; null = latest
+    [property: JsonPropertyName("target_time")] string? TargetTime, // PG-совместимый yyyy-MM-dd HH:mm:sszzz (воркер нормализует RFC3339); null = latest
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
     [property: JsonPropertyName("s3")] S3Context S3);
 

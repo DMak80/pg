@@ -134,8 +134,11 @@ public sealed class FullBackupOperation : IReceiverOperation
             // 3. Чистка staging: прошлые <id>-каталоги + создание свежего (Р5).
             // Каталог создаётся ПЕРЕД чисткой: на первой операции ноды его ещё
             // нет (каталог — не volume-маунт, а обычный путь в data-volume).
+            // Список материализуется ДО удаления: снос во время ленивой
+            // EnumerateFileSystemEntries по тому же каталогу — неопределённое
+            // поведение перечисления (пропуски/IOException).
             Directory.CreateDirectory(_stagingRoot);
-            foreach (var stale in Directory.EnumerateFileSystemEntries(_stagingRoot))
+            foreach (var stale in Directory.EnumerateFileSystemEntries(_stagingRoot).ToList())
                 TryDelete(stale);
             Directory.CreateDirectory(Path.Combine(opRoot, "full"));
 

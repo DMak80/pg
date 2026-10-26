@@ -1,5 +1,6 @@
 using PgWorker.Backups;
 using PgWorker.Etcd.S3;
+using Shared.Core;
 
 namespace PgWorker.WalReceiver.Operations;
 
@@ -17,13 +18,27 @@ internal sealed record FetchWalContext(
 /// exit 1 — конец WAL (канон §3.5). Регистр: %f приходит ВЕРХНИМ hex
 /// (XLogFileName), объекты S3 записаны приёмником строчными, S3-ключи
 /// регистрозависимы — нормализация обязательна, иначе первый буквенный сегмент
-/// даёт ложный 404 и обрывает recovery до цели. Файл уже лежит по dest
+/// даёт ложный 404 и обрывает recovery до цели. Транспортный сбой (НЕ «сегмента
+/// нет») — ограниченный внутренний ретрай 3×2 с перед exit 1: restore_command
+/// зовётся postgres'ом на каждый сегмент, разовый сетевой флап иначе читается
+/// как конец WAL → преждевременный promote. Файл уже лежит по dest
 /// (переполучение восстановления) → exit 0 без хода в S3.</summary>
 internal static class FetchWalCommand
 {
+    // Бюджет внутреннего ретрая транспортных сбоев: 3 попытки с паузой 2 с —
+    // перекрывает секундные флапы, не растягивает restore_command (postgres
+    // ждёт завершения restore_command на каждый сегмент).
+    internal static readonly int TransportAttempts = 3;
+    private static readonly TimeSpan TransportRetryDelay = TimeSpan.FromSeconds(2);
+
     /// <summary>Чистая функция для тестов: нормализация регистра сегмента.</summary>
     internal static string NormalizeSegment(string segment)
         => segment.ToLowerInvariant();
+
+    /// <summary>Чистая функция для тестов: «объекта нет» (not found) — конец WAL;
+    /// прочие ошибки — транспорт (ретрай).</summary>
+    internal static bool IsNotFound(Result error)
+        => error.Error?.Message.EndsWith(": not found", StringComparison.Ordinal) == true;
 
     /// <summary>Чистая функция для тестов: разбор S3-контекста из env
     /// (порядок endpoints сохраняется — порядок из команды запуска, Р4);
@@ -47,9 +62,29 @@ internal static class FetchWalCommand
             string.IsNullOrWhiteSpace(env("PGW_S3_CA_PEM")) ? null : env("PGW_S3_CA_PEM"));
     }
 
+    /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
+    /// read-списка до найденного); transportError — первая транспортная ошибка
+    /// прохода (null — «сегмента нет нигде», все ответили not found).</summary>
+    internal static async Task<(int ExitCode, string? TransportError)> FetchOnceAsync(
+        IReadOnlyList<IBackupS3> clients, string cluster, string shard,
+        string segment, string target, CancellationToken ct)
+    {
+        string? transportError = null;
+        foreach (var client in clients)
+        {
+            var got = await client.GetObjectToFileAsync(
+                cluster, shard, $"wal/{NormalizeSegment(segment)}", target, ct);
+            if (got.IsSuccess)
+                return (0, null);
+            if (!IsNotFound(got))
+                transportError ??= got.Error!.Message.Split('\n')[0];
+        }
+        return (1, transportError);
+    }
+
     /// <summary>Точка входа sub-режима (Program.Main ДО builder): код 0 — объект
-    /// записан в dest (или уже был там); 1 — объекта нет нигде/отказ/невалидный
-    /// env (для postgres — конец WAL или сбой recovery).</summary>
+    /// записан в dest (или уже был там); 1 — объекта нет нигде/исчерпан ретрай/
+    /// невалидный env (для postgres — конец WAL или сбой recovery).</summary>
     public static async Task<int> RunAsync(string[] args)
     {
         if (args is not [{ } segment, { } dest, ..] || args.Length != 2)
@@ -85,19 +120,37 @@ internal static class FetchWalCommand
 
         try
         {
-            foreach (var endpoint in context.Endpoints)
+            // Ограниченный внутренний ретрай транспортных сбоев (не «сегмента
+            // нет» — тот сразу exit 1): клиенты пересоздаются на попытку
+            // (истёкший/битый коннект не переиспользуется).
+            for (var attempt = 1; ; attempt++)
             {
-                await using var s3 = new BackupS3(
+                var clients = context.Endpoints.Select(endpoint => (IBackupS3)new BackupS3(
                     new S3ClientOptions(endpoint, context.Bucket, context.AccessKey,
                         context.SecretKey, Region: null, CaBundlePath: caBundlePath),
-                    WalReceiverCore.PutAttemptTimeout);
-                var got = await s3.GetObjectToFileAsync(
-                    cluster, shard, $"wal/{NormalizeSegment(segment)}", target);
-                if (got.IsSuccess)
-                    return 0;
+                    WalReceiverCore.PutAttemptTimeout)).ToList();
+                try
+                {
+                    var (exitCode, transportError) = await FetchOnceAsync(
+                        clients, cluster, shard, segment, target, CancellationToken.None);
+                    if (exitCode == 0)
+                        return 0;
+                    if (transportError is null)
+                        return 1; // нигде нет — конец WAL (все endpoints not found)
+                    if (attempt >= TransportAttempts)
+                    {
+                        Console.Error.WriteLine($"fetch-wal: {transportError}");
+                        return 1;
+                    }
+                }
+                finally
+                {
+                    foreach (var client in clients)
+                        if (client is IAsyncDisposable disposable)
+                            await disposable.DisposeAsync();
+                }
+                await Task.Delay(TransportRetryDelay);
             }
-
-            return 1; // объекта нет ни на одной ноде — конец WAL
         }
         catch (Exception e)
         {

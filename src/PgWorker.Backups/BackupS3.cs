@@ -371,6 +371,14 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
             await WriteDownloadToFileAsync(response.ResponseStream, destFilePath, ct);
             return Result.Success();
         }
+        // 404 — «объекта нет» ОТЛИЧИМ от транспортного сбоя (суффикс ": not found",
+        // симметрия GetObjectAsync): fetch-wal по нему решает «конец WAL» сразу,
+        // транспортный сбой — ретраит (иначе флап сети читается как конец WAL).
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result.Failed(new ApplicationException(
+                $"S3 get-to-file {cluster}/{shard}/{key}: not found"));
+        }
         catch (Exception e)
         {
             return Result.Failed(new ApplicationException(
