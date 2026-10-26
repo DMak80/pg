@@ -43,13 +43,8 @@ public class E2eWalStreamScenarios
     [Fact]
     public async Task WalStream_UploadsSegmentsContinuously()
     {
-        // Arrange — гейт docker; skip-защита: общий образ t02/t03 обязан быть в дереве
-        // (в раннере корень репозитория недоступен — образ уже собран фазой 1, guard пропускается).
+        // Arrange — гейт docker (общий образ pgworker-node собирается фазой E2ePrepare)
         DockerTrait.SkipIfUnavailable();
-        if (!E2eEnvironment.IsInnerRunner
-            && !File.Exists(Path.Combine(
-                E2eFixture.FindRoot(AppContext.BaseDirectory), "docker", "PgWorker.Backup.Dockerfile")))
-            Assert.Skip("docker/PgWorker.Backup.Dockerfile is missing — the shared job/agent image comes from t02");
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("wal-stream", withS3Node: true, ct: ct);
         Fx = fx;

@@ -99,7 +99,7 @@ public sealed class RestoreOperation : IReceiverOperation
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
                 targetFactory: _targetFactory);
 
             // 2. Фаза downloading: union-лист full/<id>/ по ВСЕМ endpoints с

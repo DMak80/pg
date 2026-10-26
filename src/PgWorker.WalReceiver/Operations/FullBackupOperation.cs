@@ -128,7 +128,7 @@ public sealed class FullBackupOperation : IReceiverOperation
 
             s3 = new PoolBackupS3(
                 writeTargets, pool.ReadAll, pool.AccessKey, pool.SecretKey,
-                bucket, caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                bucket, caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
                 targetFactory: _targetFactory);
 
             // 3. Чистка staging: прошлые <id>-каталоги + создание свежего (Р5).

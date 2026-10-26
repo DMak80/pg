@@ -123,6 +123,17 @@ public sealed class WalReceiverCore
     // висел до отмены попытки — вторая цель не получала ни одной попытки).
     internal static readonly TimeSpan PutAttemptTimeout = TimeSpan.FromSeconds(15);
 
+    // Файловые операции НАБОРА полного (PutFileAsync/GetObjectToFileAsync —
+    // файлы произвольного размера, до единиц ГиБ): per-попытка бюджет от класса
+    // размера, не от сегмента. PutAttemptTimeout выбран под WAL-сегменты
+    // 16–24 МиБ — файл набора >~1 ГиБ при канале <70 МиБ/с не укладывается
+    // никогда (бесконечный transient-цикл put / недокачанный набор). 300 с:
+    // многогигабайтный файл доезжает и при скромном канале (~10 МиБ/с — 3 ГиБ),
+    // а «молча принявшая TCP» нода (прецедент R3 выше) по-прежнему не съедает
+    // бюджет перебора — фейловер доезжает до следующей цели; заведомо ниже
+    // воркеровских бюджетов операции (6/24 ч, arch/19 §6).
+    internal static readonly TimeSpan FileAttemptTimeout = TimeSpan.FromSeconds(300);
+
     // Период пробы роли из стрима (arch/19 §3: смена ролей подхватывается
     // приёмником без участия воркера).
     private static readonly TimeSpan RoleProbePeriod = TimeSpan.FromSeconds(5);

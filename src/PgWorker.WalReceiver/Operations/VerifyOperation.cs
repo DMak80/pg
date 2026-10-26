@@ -82,7 +82,7 @@ public sealed class VerifyOperation : IReceiverOperation
             s3 = new PoolBackupS3(
                 _request.S3.Endpoints, _request.S3.Endpoints,
                 _request.S3.AccessKey, _request.S3.SecretKey, _request.S3.Bucket,
-                caBundlePath, requestTimeout: WalReceiverCore.PutAttemptTimeout,
+                caBundlePath, requestTimeout: WalReceiverCore.FileAttemptTimeout,
                 targetFactory: _targetFactory);
 
             // Фаза downloading: union-лист + скачивание 1:1 (mkdir по

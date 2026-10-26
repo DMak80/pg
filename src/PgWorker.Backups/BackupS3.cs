@@ -76,8 +76,9 @@ public interface IBackupS3
     Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
 
     /// <summary>t26: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
-    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — в FileStream
-    /// (dest перезаписывается: File.Create усекает — ретраи идемпотентны).</summary>
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — через
+    /// временный &lt;dest&gt;.part с атомарной заменой по успеху (обрыв не оставляет
+    /// частичный файл; dest перезаписывается — ретраи идемпотентны).</summary>
     Task<Result> GetObjectToFileAsync(
         string cluster, string shard, string key, string destFilePath, CancellationToken ct = default);
 }
@@ -367,14 +368,37 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
                 BucketName = _bucket,
                 Key = $"{cluster}/{shard}/{key}",
             }, ct);
-            await using var output = File.Create(destFilePath);
-            await response.ResponseStream.CopyToAsync(output, ct);
+            await WriteDownloadToFileAsync(response.ResponseStream, destFilePath, ct);
             return Result.Success();
         }
         catch (Exception e)
         {
             return Result.Failed(new ApplicationException(
                 $"S3 get-to-file {cluster}/{shard}/{key}: {e.Message}", e));
+        }
+    }
+
+    /// <summary>Скачивание в файл ЧЕРЕЗ временный &lt;dest&gt;.part с атомарной
+    /// заменой по успеху: обрыв тела ответа (транзиентный сетевой сбой) не
+    /// оставляет частичный файл по dest — получатель (fetch-wal: ярлык «файл
+    /// уже лежит»; restore: CRC) иначе принял бы обрезанный файл за валидный.
+    /// Неуспех гасит .part в catch — по dest либо полный файл, либо ничего.</summary>
+    internal static async Task WriteDownloadToFileAsync(
+        Stream source, string destFilePath, CancellationToken ct)
+    {
+        var partPath = destFilePath + ".part";
+        try
+        {
+            await using (var output = File.Create(partPath))
+            {
+                await source.CopyToAsync(output, ct);
+            }
+            File.Move(partPath, destFilePath, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(partPath); } catch { /* уже нет */ }
+            throw;
         }
     }
 
