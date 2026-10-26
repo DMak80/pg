@@ -114,11 +114,11 @@ public sealed class VerifyOperation : IReceiverOperation
                 }
             }
 
-            // Фаза verifying: pg_verifybackup -D <staging> (child через runner).
+            // Фаза verifying: pg_verifybackup <каталог набора> (child через
+            // runner; каталог — ПОЗИЦИОННЫЙ аргумент, флага -D у утилиты нет).
             _registry.Update(new OperationSnapshot(
                 _request.BackupId, OperationStates.Running, OperationPhases.Verifying));
             var psi = new ProcessStartInfo { FileName = "pg_verifybackup" };
-            psi.ArgumentList.Add("-D");
             psi.ArgumentList.Add(stagingDir);
             var (exitCode, _, stderr) = await _runner.RunAsync(psi, token);
             if (exitCode != 0)
