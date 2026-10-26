@@ -277,6 +277,11 @@ public sealed class BackupProcess(
                 logger.LogInformation("backups {Cluster}/{Shard}: full {Id} started on {Node} (role={Role})",
                     cluster, shard.Name, id, node, role);
             }
+            else if (launched.IsGated)
+            {
+                // 503 стоп-гейтов — операция не начинается: PLANNED остаётся,
+                // следующий тик повторит (стоп-семантика подсистемы, arch/19 §2).
+            }
             else if (launched.IsTransient)
             {
                 // Недостижимость приёмника (DNS/отказ/таймаут/5xx) — journal-факт
@@ -285,8 +290,6 @@ public sealed class BackupProcess(
                     claims.InstanceId, $"{WalReceiverAddress.ForNode(cluster, shard.Name, node,
                         nodeKv.Key is not null ? nodeKv.Value.Object : null)}: {launched.Error}", ct);
             }
-            // 503 стоп-гейтов (IsGated) — операция не начинается: PLANNED остаётся,
-            // следующий тик повторит (стоп-семантика подсистемы, arch/19 §2).
         }
 
         // t14 (arch/18 §2.7): возрастные серии полных — наблюдение тика
@@ -404,6 +407,11 @@ public sealed class BackupProcess(
                     await journal.WritePhaseAsync(cluster, Op, $"started/{shard.Name}/{active.Id}",
                         claims.InstanceId, null, ct);
                 }
+                else if (launch.IsGated)
+                {
+                    // 503 стоп-гейтов — операция не начинается: PLANNED остаётся
+                    // молча (стоп-семантика подсистемы, arch/19 §2).
+                }
                 else if (launch.IsTransient)
                 {
                     // Недостижимость приёмника — journal-факт с адресом
@@ -412,8 +420,6 @@ public sealed class BackupProcess(
                         $"receiver-unavailable/{shard.Name}/{active.Id}",
                         claims.InstanceId, $"{receiverUrl}: {launch.Error}", ct);
                 }
-                // 503 стоп-гейтов (IsGated) — операция не начинается: PLANNED
-                // остаётся молча (стоп-семантика подсистемы, arch/19 §2).
                 continue;
             }
 

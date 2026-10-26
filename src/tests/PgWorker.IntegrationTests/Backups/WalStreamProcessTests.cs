@@ -114,8 +114,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: verify,
         WalLagMaxSegments: lag,
         WalStaleSec: stale);

@@ -26,6 +26,23 @@
 
 ## Задачи
 
+- **`t093-retention-wal-degraded-flake`** — флейк
+  `PgWorker.IntegrationTests.Backups.RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03`:
+  после чистки WAL ниже cutoff контроль `WalStreamProcess` пишет wal-ключ
+  `DEGRADED` вместо `ACTIVE` (ожидается `Active`, error=null). Воспроизводится
+  1/1 и серией (2026-10-25, ветка `feat-t26-backup-jobs-in-receiver`,
+  HEAD `0dc52c5b`); путь теста (RetentionProcess/WalStreamProcess/FakeBackupS3)
+  не затронут правками t26 — всплыл на перегоне серии Backups после шага 16.
+  Фильтр: `--filter "FullyQualifiedName~RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03"`;
+  команда: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo --filter "FullyQualifiedName~Backups"`.
+  Ошибка: `Expected wal.Value.State to be WalStreamStatus.Active, but found
+  WalStreamStatus.Degraded` (`RetentionProcessTests.cs:331`). Наблюдаемое:
+  DEGRADED (вероятно lag/тишина-ветка контроля на фейковом SQL-снимке
+  `FakeWalSqlExecutor`); ожидаемое: ACTIVE после подъёма chain_start.
+  Гипотезы: контроль считает last_uploaded_unix от сида `Unix(Now)` —
+  пограничное окно stale/lag при быстрых прогонах; проверить расчёт
+  `lag_segments`/`StaleSec` на снимке теста.
+  Логи: `arch/roadmap/bugs/t093-retention-wal-degraded-flake/retention-t03-run.log` (локально).
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`

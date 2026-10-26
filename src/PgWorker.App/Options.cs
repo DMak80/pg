@@ -558,7 +558,7 @@ public sealed class BackupsOptions
     /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
     /// мусорный конфиг виден на старте.</summary>
     public bool IsValid()
-        => !Enabled || !string.IsNullOrWhiteSpace(S3.Bucket)
+        => (!Enabled || !string.IsNullOrWhiteSpace(S3.Bucket))
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60

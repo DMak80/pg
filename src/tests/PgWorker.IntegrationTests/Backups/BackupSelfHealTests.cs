@@ -78,12 +78,40 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             TimeProvider.System);
 
+    /// <summary>Мини-фейк API приёмника: StartFull — 202 (журнал URL), прочее —
+    /// no-op (self-heal проверяет только факт запуска пересъёма).</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public readonly List<string> StartFullUrls = [];
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+        {
+            StartFullUrls.Add(baseUrl);
+            return Task.FromResult(new ReceiverReply(202,
+                new ReceiverStatus("running", "basebackup"), null));
+        }
+
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 0,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
@@ -147,21 +175,21 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         broken!.State.Should().Be(WalStreamStatus.Broken);
         broken.ChainStartSegment.Should().Be("000000010000000000000003");
 
-        // Arrange 2 — BackupProcess тик: джобов нет, BROKEN → due → PLANNED →
-        // create/start фейка → RUNNING (планировщик отреагировал)
-        var engine = new FakeBackupEngine();
+        // Arrange 2 — BackupProcess тик: BROKEN → due → PLANNED → StartFullAsync
+        // приёмнику (фейк 202) → RUNNING (планировщик отреагировал)
+        var receiver = new FakeReceiverClient();
         var backupProcess = new BackupProcess(
             fixture.Gateway, [fixture.Endpoint],
-            new SelfHealDriver(driver, engine),
+            new SelfHealDriver(driver, new FakeBackupEngine()),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            Options(), FakePoolFactory.Single(new FakeBackupS3()), TimeProvider.System,
+            Options(), FakePoolFactory.Single(new FakeBackupS3()), receiver, TimeProvider.System,
             NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
-        engine.Created.Should().NotBeEmpty("BROKEN is healed by retaking — the job is started");
+        receiver.StartFullUrls.Should().NotBeEmpty("BROKEN is healed by retaking — started via the receiver API");
 
         // Arrange 3 — симуляция завершения пересъёма: etcd-ключ COMPLETED нового id
         // с wal_start=..05 + объекты S3 5..6 (цепь от нового полного непрерывна)

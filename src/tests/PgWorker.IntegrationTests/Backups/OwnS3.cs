@@ -158,8 +158,7 @@ public sealed class OwnS3 : IAsyncDisposable
     public BackupsRuntimeOptions Runtime() => new(
         Enabled: true,
         S3Bucket: Bucket,
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 30,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);

@@ -99,7 +99,7 @@ public class RestoreDrillProcessTests
             return Task.FromResult(found.Key is null
                 ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))
                 : Result<DockerContainerInspect>.Success(new DockerContainerInspect(
-                    found.Value.Id, found.Key, [], [], [],
+                    found.Value.Id, found.Key, [], [], [new PortMap(8080, 31999)],
                     found.Value.State == "running", found.Value.ExitCode,
                     StartedAtUnix: found.Value.StartedUnix)));
         }
@@ -259,16 +259,51 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
     }
 
+    // Фейк API приёмника: ответы GetRestore программируются тестами.
+    private readonly FakeReceiverClient Receiver = new();
+
+    /// <summary>Мини-фейк API приёмника (drill-сценарии): StartRestore — 202,
+    /// GetRestore — программируемый ответ.</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public ReceiverReply GetReply { get; set; } =
+            new(200, new ReceiverStatus("running", "downloading"), null);
+        public readonly List<StartRestoreRequest> StartBodies = [];
+
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+        {
+            StartBodies.Add(body);
+            return Task.FromResult(new ReceiverReply(202,
+                new ReceiverStatus("running", "downloading"), null));
+        }
+
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(GetReply);
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
     private RestoreDrillProcess BuildProcess(
         string cluster, FakeDrillDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
         Action<string, string, string>? drillObserver = null)
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
-            FakePoolFactory.Single(s3), Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
+            FakePoolFactory.Single(s3), Receiver, Claims,
+            new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
-                Enabled: true, S3Bucket: "bkt",
-                JobImage: "pgworker-backup:test"),
+                Enabled: true, S3Bucket: "bkt"),
             TimeProvider.System,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreDrillProcess>.Instance,
             drillObserver);
@@ -307,11 +342,11 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         return parsed.Value;
     }
 
-    // AAA: RUNNING + контейнер running → phase из логов пишется в ключ при изменении.
+    // AAA: RUNNING + операция running → phase из API пишется в ключ при изменении.
     [Fact]
-    public async Task Supervise_RunningContainer_UpdatesPhaseFromLogs()
+    public async Task Supervise_RunningContainer_UpdatesPhaseFromApi()
     {
-        // Arrange — свой etcd; RUNNING-ключ + running-контейнер с фазой recovering.
+        // Arrange — свой etcd; RUNNING-ключ + GET отвечает recovering.
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -320,7 +355,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         SeedContainer(engine, BackupNames.DrillContainerName(cluster, Shard, DrillId),
-            "running", -1, "{\"phase\":\"recovering\"}");
+            "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "recovering"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
@@ -328,7 +365,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Act
         var result = await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct);
 
-        // Assert — ключ содержит phase recovering (из логов джоба).
+        // Assert — ключ содержит phase recovering (из статуса операции).
         result.IsSuccess.Should().BeTrue();
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"");
     }
@@ -347,8 +384,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 0,
-            "{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/42\"}");
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
@@ -378,7 +416,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 1, "{\"ok\":false,\"error\":\"boom\"}");
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("failed", "recovering", Error: "boom"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
@@ -521,13 +561,17 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert — ключ RUNNING; джоб создан+запущен (inline bash); журнал started.
+        // Assert — ключ RUNNING; tool-контейнер создан+запущен (образ нод,
+        // старт БЕЗ команд); команда StartRestore (latest) ушла; журнал started.
         (await ReadDrillAsync(cluster)).Should().Contain("\"RUNNING\"");
-        engine.Created.Should().ContainSingle();
-        engine.Created[0].Name.Should().StartWith(BackupNames.DrillJobContainerPrefix(cluster));
-        var spec = engine.Created[0].Spec;
-        spec.Cmd![0].Should().Be("bash");
-        engine.Started.Should().Contain(engine.Created[0].Name);
+        var (name, spec) = engine.Created.Should().ContainSingle().Subject;
+        name.Should().StartWith($"pgw-backup-drill-{cluster}-");
+        spec.Image.Should().Be(new BackupsRuntimeOptions().NodeImage);
+        spec.Env!["PGW_NODE_TOOL"].Should().Be("1");
+        spec.Cmd.Should().BeNull();
+        engine.Started.Should().Contain(name);
+        Receiver.StartBodies.Should().ContainSingle().Which.BackupId.Should().Be(FullId);
+        Receiver.StartBodies[0].TargetTime.Should().BeNull();
         (await ReadWorkPhaseAsync(cluster)).Should().Contain("started/shard1/");
     }
 
@@ -577,7 +621,6 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         SeedValidCandidate(s3, cluster);
         var process = BuildProcess(cluster, driver, s3, new BackupsRuntimeOptions(
             Enabled: true, S3Bucket: "bkt",
-            JobImage: "pgworker-backup:test",
             DrillIntervalDays: 0));
 
         // Act
@@ -697,21 +740,23 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "running", -1, "{\"phase\":\"downloading\"}");
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "downloading"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
 
-        // Act 1 — супервиз: фаза из логов.
+        // Act 1 — супервиз: фаза из API.
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert 1 — ключ видит фазу чужого джоба.
+        // Assert 1 — ключ видит фазу операции прошлого инстанса.
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"downloading\"");
 
-        // Act 2 — джоб «прошлого инстанса» дошёл до исхода (exited 0, ok).
-        SeedContainer(engine, name, "exited", 0,
-            "{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/500\"}");
+        // Act 2 — операция «прошлого инстанса» дошла до исхода (GET succeeded).
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/500"), null);
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
@@ -742,7 +787,6 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var process = BuildProcess(cluster, driver, new FakeBackupS3(),
             new BackupsRuntimeOptions(
                 Enabled: true, S3Bucket: "bkt",
-                JobImage: "pgworker-backup:test",
                 DrillTimeoutSec: 60));
 
         // Act
@@ -775,7 +819,6 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var process = BuildProcess(cluster, driver, new FakeBackupS3(),
             new BackupsRuntimeOptions(
                 Enabled: true, S3Bucket: "bkt",
-                JobImage: "pgworker-backup:test",
                 DrillTimeoutSec: 60));
 
         // Act
@@ -835,15 +878,15 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 0,
-            "{\"ok\":true,\"restored_to_lsn\":\"0/600\"}");
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/600"), null);
         var s3 = new FakeBackupS3();
         SeedValidCandidate(s3, cluster);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, FullId, NowUnix() - 30));
         var process = BuildProcess(cluster, driver, s3, new BackupsRuntimeOptions(
-            Enabled: false, S3Bucket: "bkt",
-            JobImage: "pgworker-backup:test"));
+            Enabled: false, S3Bucket: "bkt"));
 
         // Act 1 — доводка активного до терминала/сноса (стоп-семантика).
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
@@ -976,7 +1019,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH2 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1, engineH2);
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH2, name, "running", -1, "{\"phase\":\"recovering\"}");
+        SeedContainer(engineH2, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("running", "recovering"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
@@ -985,8 +1030,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert — фаза найденного на h2 джоба в ключе; джоб НЕ считался vanished
-        // (ни досоздачи на h1, ни FAILED).
+        // Assert — фаза найденного на h2 контейнера в ключе; контейнер НЕ считался
+        // vanished (ни досоздачи на h1, ни FAILED).
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"")
             .And.NotContain("drill-vanished").And.NotContain("\"FAILED\"");
         engineH1.Created.Should().BeEmpty("a re-creation duplicate on a foreign host is forbidden");
@@ -1000,7 +1045,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
     [Fact]
     public async Task Supervise_VerdictThenTransientCleanup_KeyKeepsCleaningPhase()
     {
-        // Arrange — RUNNING + exited ok; таблица хостов недоступна (снос сорвётся).
+        // Arrange — RUNNING + операция succeeded; таблица хостов недоступна
+        // (снос сорвётся после вердикта).
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await OwnEtcd.StartAsync("drill", ct);
         Fx = fx;
@@ -1009,8 +1055,9 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var engineH1 = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engineH1) { HostsFails = true };
         var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
-        SeedContainer(engineH1, name, "exited", 0,
-            "{\"ok\":true,\"restored_to_lsn\":\"0/700\"}");
+        SeedContainer(engineH1, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/700"), null);
         await SeedDrillAsync(cluster,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         var process = BuildProcess(cluster, driver, new FakeBackupS3());
@@ -1064,14 +1111,15 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Assert 1 — чистый итог без джоба
         outcomes.Should().ContainSingle().Which.Should().Be((cluster, Shard, "failed"));
 
-        // Arrange 2 — RUNNING-джоб exited(0) ok → чистый итог SUCCEEDED
+        // Arrange 2 — RUNNING-операция succeeded → чистый итог SUCCEEDED
         const string cluster2 = "dro2";
         await SeedAsync(cluster2);
         var engine = new FakeDrillEngine();
         var driver = new FakeDrillDriver(engine);
         var name = BackupNames.DrillContainerName(cluster2, Shard, DrillId);
-        SeedContainer(engine, name, "exited", 0,
-            "{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/42\"}");
+        SeedContainer(engine, name, "running", -1, "");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("succeeded", "recovering", RestoredToLsn: "0/42"), null);
         await SeedDrillAsync(cluster2,
             new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
         outcomes.Clear();
