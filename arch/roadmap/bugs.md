@@ -26,6 +26,25 @@
 
 ## Задачи
 
+- **`t101-retention-wal-chain-start-degraded`** — интеграция
+  `PgWorker.IntegrationTests.Backups.RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03`
+  падает: после тика ретенции (срез сегментов 3–4) и тика контроля t03
+  wal-ключ ожидаемо `ACTIVE` с поднятым `chain_start` до cutoff
+  (`000000010000000000000005`), фактически `State=DEGRADED`
+  (`RetentionProcessTests.cs:331`:
+  `Expected wal.Value.State to be WalStreamStatus.Active, but found
+  WalStreamStatus.Degraded`). Воспроизводится изолированно
+  (`--filter "FullyQualifiedName~WalCleanupRaisesVerifyChainStartT03"`),
+  падает и на коммите БЕЗ правок текущей задачи (база `9e91a951`,
+  ветка `feat-t26-backup-jobs-in-receiver`, 2026-10-26) — пре-существующий.
+  Команда:
+  `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo --filter "FullyQualifiedName~WalCleanupRaisesVerifyChainStartT03"`.
+  Гипотеза: тик WalStreamProcess в тестовом контуре уходит в ветку
+  DEGRADED (pool-resolve/слоты/FrozenClock-взаимодействие) до/вместо
+  t03-контроля; разбор — по логике `WalStreamProcess` (статусный писатель
+  `WalStatusWriter`).
+  Логи: `arch/roadmap/bugs/t101-retention-wal-chain-start-degraded/`
+  (полный лог серии + изолированный прогон базы).
 - **`t093-retention-wal-degraded-flake`** — флейк
   `PgWorker.IntegrationTests.Backups.RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03`:
   после чистки WAL ниже cutoff контроль `WalStreamProcess` пишет wal-ключ
