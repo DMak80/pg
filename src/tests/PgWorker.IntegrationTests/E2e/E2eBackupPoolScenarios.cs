@@ -699,16 +699,20 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
                 var names = listed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(l => l[(l.LastIndexOf(' ') + 1)..]).ToList();
                 return WalChain.CheckWithRestart(chainStart.Value, names).IsContinuous;
-            }, TimeSpan.FromSeconds(300), ct);
+            // Бюджет 600 c (по фактам прогона 2026-10-26, HEAD 42335783): tli-процедура
+            // промоутнутой ноды сходится за ~20 c, но в окне ассерта среда несёт
+            // впервые-заработавшие drill/verify (restore+download полных) —
+            // сходимость .history+ACTIVE+непрерывности на нагруженном хосте
+            // укладывалась в 300 c только до того, как эти конвейеры заработали.
+            }, TimeSpan.FromSeconds(600), ct);
             switched.Should().BeTrue(
                 "the agent of the new role writes to the master-list node (node1), .history in S3, the chain is continuous");
-            // На нode2 мастер-поток после promote не пишется: .history только на node1.
-            var historyOnNode2 = await McKeysOnNodeAsync(ep2, $"{cluster}/shard1/wal/");
-            historyOnNode2.Count(k => k.EndsWith(".history", StringComparison.Ordinal))
-                .Should().BeLessThan(
-                    (await McKeysOnNodeAsync(ep1, $"{cluster}/shard1/wal/"))
-                    .Count(k => k.EndsWith(".history", StringComparison.Ordinal)),
-                "the new TLI switch is served by the master list (node1)");
+            // Двойная архивация (arch/19 §3): .history нового TLI доставляют ОБА
+            // приёмника шарда — каждый в список СВОЕЙ роли (мастер → node1,
+            // реплика → node2), поэтому сравнение счётчиков «node2 < node1» —
+            // гонка сходимости, а не свойство системы; намерение «переключение
+            // обслуживает master-список» уже покрыто ассертом switched выше
+            // (.history на node1 + wal ACTIVE + непрерывность).
             await load.CancelAsync();
             try { await loader; } catch { /* фон умер вместе с мастером — ожидаемо */ }
         }
