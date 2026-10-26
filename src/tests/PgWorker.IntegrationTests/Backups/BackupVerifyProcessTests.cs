@@ -675,6 +675,86 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-sv4-shard1-20260911120000Z");
     }
 
+    // AAA (arch/19 §5, окно бута): GET транспортно-отказал (приложение ещё не
+    // слушает API), возраст джоба в окне бута (60 c) → ожидание: контейнер жив,
+    // статус PENDING без квоты (transient-ветка, данных не касались)
+    [Fact]
+    public async Task SupervisorRefusedInBootWindowWaits()
+    {
+        // Arrange — джоб running молчит (StatusCode 0), StartedUnix = now-10 c
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("sv10");
+        var now = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv10", s3);
+        var name = "pgw-backup-verify-sv10-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with
+            { State = "running", StartedUnix = now - 10 };
+        Receiver.GetReply = new ReceiverReply(0, null, "Connection refused");
+        var key = "/pgworker/backups/sv10/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(Completed("20260911120000Z",
+            "000000010000000000000001", new BackupVerify(BackupVerifyStatus.Pending, null)));
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+
+        // Act — супервиз
+        var process = BuildProcess("sv10", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv10"), BackupsOf("sv10",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — в окне бута: контейнер не снесён, статус не тронут
+        engine.Removed.Should().NotContain(name);
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value.Should().Be(before);
+    }
+
+    // AAA (arch/19 §5, окно бута): GET транспортно-отказал дольше окна бута —
+    // застрявший бут: ограниченный рецикл «снос + пересоздание» (симметрия
+    // IsNotFound-ветки), PENDING остаётся без checked_unix, следующий тик
+    // пересоздаёт джоб; ожидания возрастного бюджета (6 ч) нет
+    [Fact]
+    public async Task SupervisorRefusedBeyondBootWindowRecycles()
+    {
+        // Arrange — джоб running молчит, StartedUnix = now-120 c (> окна 60 c)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("sv11");
+        var now = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv11", s3);
+        var name = "pgw-backup-verify-sv11-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with
+            { State = "running", StartedUnix = now - 120 };
+        Receiver.GetReply = new ReceiverReply(0, null, "Connection refused");
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv11/shard1/full/20260911120000Z";
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, BackupStatusJson.Serialize(pending), null, ct);
+        var process = BuildProcess("sv11", new FakeVerifyDriver(engine), s3);
+        var backups = BackupsOf("sv11", pending);
+
+        // Act — супервиз: отказ-сирота старше окна
+        (await process.TickAsync(BuildSnap("sv11"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены (ограниченный рецикл), статус
+        // PENDING без checked_unix (квоты нет — до данных операция не дошла)
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        var verify = await ReadVerifyAsync("sv11", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("PENDING");
+        verify.TryGetProperty("checked_unix", out _).Should().BeFalse("no quota — the operation never touched the data");
+        var journal = await Fx.Gateway.GetAsync(Fx.Endpoint, "/pgworker/work/sv11", ct);
+        journal.Value!.Value.Should().Contain("boot-recycle/shard1/20260911120000Z");
+
+        // Act 2 — следующий тик: PENDING снова due (checked_unix null) → джоб создан заново
+        (await process.TickAsync(BuildSnap("sv11"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 2 — пересоздание (симметрия vanished-ветки 404)
+        engine.Created.Should().HaveCount(2, "the recycled orphan is recreated on the next tick");
+    }
+
     // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
     [Fact]
     public async Task TwoDueOnePerTickPendingEarlier()

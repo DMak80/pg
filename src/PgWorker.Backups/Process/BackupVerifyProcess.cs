@@ -41,6 +41,15 @@ public sealed class BackupVerifyProcess(
 {
     private const string Op = "backup-verify";
 
+    /// <summary>Окно бута tool-контейнера (arch/19 §5): приложение .NET
+    /// self-contained слушает API не мгновенно после docker start (под
+    /// нагрузкой начальной фазы кластера наблюд state refusal десятки секунд);
+    /// транспортный отказ GET дольше окна — застрявший бут: ограниченный
+    /// рецикл «снос + пересоздание» вместо ожидания возрастного бюджета
+    /// Job:VerifyTimeoutSec. С запасом покрывает наблюдавшийся бут под
+    /// нагрузкой (~20 с) и много меньше любой операции verify.</summary>
+    private const int ToolBootWindowSec = 60;
+
     private TimeSpan WatchdogWindow => watchdogWindow ?? TimeSpan.FromSeconds(15);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
@@ -359,7 +368,9 @@ public sealed class BackupVerifyProcess(
         if (!launch.IsAccepted && !launch.IsConflict)
         {
             // Транспортный отказ/5xx команды: контейнер-сирота без операции —
-            // снесёт супервиз (IsNotFound-ветка), PENDING остаётся.
+            // супервиз отправит её по ветке окна бута (refused дольше
+            // ToolBootWindowSec → ограниченный рецикл, arch/19 §5), PENDING
+            // остаётся.
             observe(cluster, shard, "transient");
             return;
         }
@@ -380,7 +391,10 @@ public sealed class BackupVerifyProcess(
     // (GetVerifyAsync): succeeded ⇒ OK+checked_unix; failed+downloading
     // (МАРКЕР ТРАНЗИЕНТА) ⇒ снос, статус не трогаем (PENDING, ретрай тиком);
     // failed+verifying ⇒ FAILED+error; IsNotFound (операция vanished — рестарт
-    // приёмника) ⇒ transient: снос, PENDING-ретрай; running — возрастной
+    // приёмника) ⇒ transient: снос, PENDING-ретрай; транспортный отказ
+    // (StatusCode 0 — приложение не слушает) ⇒ окно бута ToolBootWindowSec от
+    // StartedAt: в окне — ожидание, дольше — ограниченный рецикл «снос +
+    // пересоздание» (arch/19 §5); 5xx и running — возрастной
     // бюджет Job:VerifyTimeoutSec по StartedAtUnix инспекта ⇒ kill+rm,
     // checked_unix=now (вердикт НЕ ставится).
     private async Task SuperviseAsync(
@@ -421,6 +435,28 @@ public sealed class BackupVerifyProcess(
                 observe(cluster, shard, "transient");
                 await CleanupJobAsync(engine, containerName, "not-found-recreate", ct);
                 return;
+            }
+            if (reply.StatusCode == 0)
+            {
+                // Транспортный отказ GET (приложение ещё не слушает API — бут,
+                // либо процесс замолчал): окно бута (arch/19 §5). В окне —
+                // transient-ожидание; отказ дольше окна — застрявший бут:
+                // ограниченный рецикл «снос + пересоздание» (симметрия
+                // IsNotFound-ветки), PENDING остаётся — до возрастного бюджета
+                // отказ-сирота не живёт. Ветка применяется в любом состоянии
+                // контейнера (running/exited — молчащее приложение одинаково).
+                var inspectBoot = await engine.InspectContainerAsync(containerName, ct);
+                if (inspectBoot.IsSuccess
+                    && inspectBoot.Value.StartedAtUnix is { } bootStarted
+                    && SupervisionTimeouts.IsTimedOut(bootStarted, nowUnix, ToolBootWindowSec))
+                {
+                    await journal.WritePhaseAsync(cluster, Op, $"boot-recycle/{shard}/{id}",
+                        claims.InstanceId,
+                        $"tool container refuses API for over {ToolBootWindowSec} s — recycled (boot window)", ct);
+                    observe(cluster, shard, "transient");
+                    await CleanupJobAsync(engine, containerName, "boot-refused-recycle", ct);
+                }
+                return; // в окне бута — ждём; рецикл следующим тиком
             }
             if (!reply.IsTransient && reply.Status is { } snapshot)
             {

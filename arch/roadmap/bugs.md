@@ -63,25 +63,6 @@
   (EnsureNodeAsync несёт только tuning — сверка идемпотентности), либо
   патроновский конфиг-факт затирается рестартом postgres.
   Логи: `arch/roadmap/bugs/t094-pgtune-reensure-storm/worker-bkverify.log` (локально).
-- **`t095-verify-orphan-refused-wait`** — дыра в супервизии verify
-  tool-контейнеров (t26): `StartVerifyAsync` транспортно-отказал (контейнер
-  жив, приложение ещё не слушает :8080) → контейнер-сирота остаётся, а ветка
-  пересоздания супервиза — `IsNotFound` (HTTP 404) — при connection refused
-  НЕДОСТИЖИМА (`BackupVerifyProcess.SuperviseAsync`, ветка
-  `reply.IsNotFound`): система ждёт молча до возрастного бюджета
-  `Job:VerifyTimeoutSec` (6 ч) вместо ограниченного рецикла «снос +
-  пересоздание». Наблюдаемое (прогон 2026-10-26, HEAD `4677242e`,
-  bk-verify): POST /api/ops/verify refused 11:42:46→11:47:42, контейнер
-  пересоздан 11:47:44 и был готов через 0.3 с — т.е. конвейер верен, но
-  5 минут простоя на «refused-сироте»; бюджет ассерта истек за секунду до
-  готовности. Ожидаемое: refused-сирота старта N сек → снос + пересоздание
-  (симметрия IsNotFound-ветки). Нужна arch-first санкция на семантику
-  (transient-ждать vs ограниченный рецикл) — правка в супервизе t26.
-  Фильтр: `--filter "FullyQualifiedName~E2eBackupVerifyScenarios"`;
-  команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test
-  src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo`.
-  Логи: `arch/roadmap/bugs/t095-verify-orphan-refused-wait/` (локально:
-  inspect+лог пересозданного контейнера; лог воркера — в t094-папке).
 - **`t096-haetcd-master-lease-absent`** — E2E
   `PgWorker.IntegrationTests.E2e.E2eHaEtcdScenarios.HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive`
   (полный прогон E2eFixture на ветке `feat-t26-backup-jobs-in-receiver`,
