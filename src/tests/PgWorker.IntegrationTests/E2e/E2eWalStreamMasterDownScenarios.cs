@@ -35,7 +35,7 @@ public class E2eWalStreamMasterDownScenarios
 
     private EtcdGateway G => Fx.Gateway;
 
-    // после promote воркер пересоздаёт агентов на новых ролях; ключ не BROKEN.
+    // после promote воркер пересоздаёт агентов на новых ролях; ключ не WAL_CHAIN_ERROR.
     [Fact]
     public async Task WalStream_MasterDown_ReplicaAgentContinues()
     {
@@ -104,7 +104,7 @@ public class E2eWalStreamMasterDownScenarios
                 $"[PHASE] wal-ac4: repair phase finished/lifted (repaired={repaired}) — key measurements");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
-            // цепочка непрерывна (CheckWithRestart), ключ не BROKEN
+            // цепочка непрерывна (CheckWithRestart), ключ не WAL_CHAIN_ERROR
             var grew = await E2ePhase.WaitAsync(Fx, "wal-ac4-delivery-grew", async () =>
             {
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -134,7 +134,7 @@ public class E2eWalStreamMasterDownScenarios
             }, TimeSpan.FromSeconds(30), ct);
             keySeen.Should().BeTrue("the wal key must exist after the failover");
             keyState!.State.Should().NotBe(
-                PgWorker.Etcd.Parsing.WalStreamStatus.Broken, "the key is not BROKEN (AC4)");
+                PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError, "the key is not WAL_CHAIN_ERROR (AC4)");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             var chain = PgWorker.Backups.WalChain.CheckWithRestart(
                 PgWorker.Backups.WalFileName.TryParse(keyState!.ChainStartSegment)!.Value,
@@ -395,7 +395,7 @@ public class E2eWalStreamMasterDownScenarios
     }
 
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
-    // супервиз пересоздаёт агента, цепочка S3 непрерывна, BROKEN не возникает,
+    // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
     // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised

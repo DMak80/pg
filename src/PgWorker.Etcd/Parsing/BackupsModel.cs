@@ -23,7 +23,7 @@ public enum BackupSourceRole
     Master,
 }
 
-/// <summary>Состояние WAL-потока шарда (arch/19 §4; t07: Broken — разрыв
+/// <summary>Состояние WAL-потока шарда (arch/19 §4; t07: WalChainError — разрыв
 /// цепочки/слот исчез, лечение — пересъём полного; DEGRADED — только
 /// transient lag/тишина).</summary>
 public enum WalStreamStatus
@@ -31,7 +31,7 @@ public enum WalStreamStatus
     Active,
     Degraded,
     Stopped,
-    Broken,
+    WalChainError,
 }
 
 /// <summary>Статус проверки полного (pg_verifybackup — t04, arch/19 §8).</summary>

@@ -186,7 +186,7 @@ public class E2eWalStreamScenarios
 
     // AAA (t25, spec §6 п.3): legacy wal-контейнер pgw-backup-wal-<C>-* (имитация
     // etcd-образом sleep infinity) — санитарный снос тиком WalStreamProcess; новый
-    // приёмник стримит (слот свободен), цепочка S3 непрерывна, BROKEN не возникает.
+    // приёмник стримит (слот свободен), цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает.
     // Контейнерных агентов больше нет: пересоздание супервизом воркера упразднено —
     // приёмник живёт в контейнере ноды под supervisord.
     [Fact]
@@ -312,7 +312,7 @@ public class E2eWalStreamScenarios
             }, TimeSpan.FromSeconds(120), ct);
             grew.Should().BeTrue("the receiver keeps streaming after the sweep — delivery continues");
 
-            // Ключ: BROKEN НЕ возникал весь сценарий (поллинг срезом); финал ACTIVE
+            // Ключ: WAL_CHAIN_ERROR НЕ возникал весь сценарий (поллинг срезом); финал ACTIVE
             PgWorker.Etcd.Parsing.WalStreamStatus? sawStatus = null;
             var backActive = await E2eFixture.WaitForAsync(async () =>
             {
@@ -320,13 +320,13 @@ public class E2eWalStreamScenarios
                 if (!read.IsSuccess || read.Value is null)
                     return false;
                 sawStatus = read.Value.State;
-                if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Broken)
+                if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError)
                     return true; // немедленный фейл ниже
                 return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(120), ct);
             sawStatus.Should().NotBe(
-                PgWorker.Etcd.Parsing.WalStreamStatus.Broken,
-                "delivery from the S3 tail rules out a gap — BROKEN is forbidden (AC2)");
+                PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError,
+                "delivery from the S3 tail rules out a gap — WAL_CHAIN_ERROR is forbidden (AC2)");
             backActive.Should().BeTrue("the wal key returns to ACTIVE");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             list.IsSuccess.Should().BeTrue();
@@ -651,7 +651,7 @@ public class E2eWalStreamScenarios
     }
 
     // AAA (критерий 5): lost-слот мастера при живой sync-архивации — воркер лечит
-    // сам (recreate + журнальная фаза slot-recreate), ключ НЕ BROKEN, приёмник
+    // сам (recreate + журнальная фаза slot-recreate), ключ НЕ WAL_CHAIN_ERROR, приёмник
     // возвращается к стриму, цепочка WalChain непрерывна, last_uploaded растёт без
     // дыры. Детерминизация: между остановкой приёмника мастера (supervisorctl stop,
     // t25 — процесс ноды) и возвратом воркера (Kill/старт — паттерн «смерть
@@ -769,7 +769,7 @@ public class E2eWalStreamScenarios
             }, TimeSpan.FromSeconds(120), ct);
             receiverBack.Should().BeTrue("the master receiver streams again after the slot recreate");
 
-            // Assert 4 — ключ wal: BROKEN не возникал (поллинг срезом), финал ACTIVE;
+            // Assert 4 — ключ wal: WAL_CHAIN_ERROR не возникал (поллинг срезом), финал ACTIVE;
             // last_uploaded СТРОГО растёт от «до потери» (sync доставлял + мастер вернулся)
             PgWorker.Etcd.Parsing.WalStreamStatus? sawStatus = null;
             var recovered = await E2eFixture.WaitForAsync(async () =>
@@ -778,12 +778,12 @@ public class E2eWalStreamScenarios
                 if (!read.IsSuccess || read.Value is null)
                     return false;
                 sawStatus = read.Value.State;
-                if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Broken)
+                if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError)
                     return true; // немедленный фейл ниже
                 return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(180), ct);
-            sawStatus.Should().NotBe(PgWorker.Etcd.Parsing.WalStreamStatus.Broken,
-                "lost on one source while the other is alive — BROKEN is forbidden (criterion 5)");
+            sawStatus.Should().NotBe(PgWorker.Etcd.Parsing.WalStreamStatus.WalChainError,
+                "lost on one source while the other is alive — WAL_CHAIN_ERROR is forbidden (criterion 5)");
             recovered.Should().BeTrue("the key must return to ACTIVE");
             var afterWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
             var beforeSeg = PgWorker.Backups.WalFileName.TryParse(beforeWal.LastUploadedSegment)!.Value;
@@ -813,7 +813,7 @@ public class E2eWalStreamScenarios
     }
 
     // AAA (AC4): остановка мастера — агент sync-реплики продолжает цепочку без дыр;
-    // после promote воркер пересоздаёт агентов на новых ролях; ключ не BROKEN.
+    // после promote воркер пересоздаёт агентов на новых ролях; ключ не WAL_CHAIN_ERROR.
 
     private static async Task BackgroundWalLoadAsync(string adminDsn, CancellationToken ct)
     {
@@ -1027,7 +1027,7 @@ public class E2eWalStreamScenarios
     }
 
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
-    // супервиз пересоздаёт агента, цепочка S3 непрерывна, BROKEN не возникает,
+    // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
     // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised

@@ -195,11 +195,11 @@ public sealed class BackupProcess(
             // цепочку от своего wal_start», t27: пересъём в окне до первого
             // закрытого сегмента бессмыслен; ИЛИ полный старее последней
             // restore — WalStream восстанавливает ключ быстрее тика, инцидент
-            // E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
+            // E2E-гейта t05; t07: WAL_CHAIN_ERROR wal-ключа — пересъём безусловно)
             // и после бэкоффа.
-            // t07 (прогон 2026-09-13, arch/19 §2): BROKEN-пересъём — только пока
+            // t07 (прогон 2026-09-13, arch/19 §2): WAL_CHAIN_ERROR-пересъём — только пока
             // разрыв НЕ покрыт: COMPLETED-полный с wal_start ≥ границы разрыва
-            // (chain_start BROKEN-записи) уже ждёт заживления контролем (§3),
+            // (chain_start WAL_CHAIN_ERROR-записи) уже ждёт заживления контролем (§3),
             // повторный пересъём поверх — шторм (12 полных за 2 мин) без пользы.
             // Не покрывший (FAILED/ниже границы) — due, общий бэкофф как раньше.
             if (BackupPlanner.HasActive(fulls))
@@ -210,7 +210,7 @@ public sealed class BackupProcess(
                 .OrderByDescending(f => f)
                 .Cast<long?>()
                 .FirstOrDefault();
-            var brokenBoundary = shardBackups?.Wal is { State: WalStreamStatus.Broken } brokenWal
+            var brokenBoundary = shardBackups?.Wal is { State: WalStreamStatus.WalChainError } brokenWal
                 ? brokenWal.ChainStartSegment
                 : null;
             var breakCovered = brokenBoundary is { Length: > 0 } boundary
@@ -260,9 +260,11 @@ public sealed class BackupProcess(
             // Команда запуска приёмнику ВЫБРАННОЙ ноды (t26, spec §3.5): канал
             // alias:8080 в общей сети воркера и нод (Object — усыновлённая нода).
             // 202 ⇒ RUNNING; 409 = пере-старт прошлого тика, операция уже жива ⇒
-            // RUNNING; 503/транспортный отказ ⇒ PLANNED остаётся, следующий тик
-            // повторит (transient с journal-фактом адреса — spec §3.1). Контейнера
-            // полного больше нет — docker-движок здесь не нужен.
+            // RUNNING; 503 (только STOPPED/disabled — WAL_CHAIN_ERROR гейтом
+            // операции НЕ является, приёмник отвечает 202: пересъём — единственное
+            // лечение разрыва) и транспортный отказ ⇒ PLANNED остаётся, следующий
+            // тик повторит (transient с journal-фактом адреса — spec §3.1).
+            // Контейнера полного больше нет — docker-движок здесь не нужен.
             var launched = await receiver.StartFullAsync(
                 WalReceiverAddress.ForNode(cluster, shard.Name, node,
                     nodeKv.Key is not null ? nodeKv.Value.Object : null),
@@ -279,8 +281,9 @@ public sealed class BackupProcess(
             }
             else if (launched.IsGated)
             {
-                // 503 стоп-гейтов — операция не начинается: PLANNED остаётся,
-                // следующий тик повторит (стоп-семантика подсистемы, arch/19 §2).
+                // 503 — только STOPPED/disabled (WAL_CHAIN_ERROR отвечает 202):
+                // операция не начинается, PLANNED остаётся, следующий тик
+                // повторит (стоп-семантика подсистемы, arch/19 §2).
             }
             else if (launched.IsTransient)
             {
@@ -409,8 +412,9 @@ public sealed class BackupProcess(
                 }
                 else if (launch.IsGated)
                 {
-                    // 503 стоп-гейтов — операция не начинается: PLANNED остаётся
-                    // молча (стоп-семантика подсистемы, arch/19 §2).
+                    // 503 — только STOPPED/disabled (WAL_CHAIN_ERROR отвечает
+                    // 202): операция не начинается, PLANNED остаётся молча
+                    // (стоп-семантика подсистемы, arch/19 §2).
                 }
                 else if (launch.IsTransient)
                 {

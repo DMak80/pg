@@ -9,7 +9,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Backups;
 
 // Машина состояний цикла приёмника (t25, arch/19 §3, spec §3.1 п.2–8): гейты
-// (disabled → waiting_disabled; wal-ключ STOPPED/BROKEN → paused), роль none →
+// (disabled → waiting_disabled; wal-ключ STOPPED/WAL_CHAIN_ERROR → paused), роль none →
 // waiting_role, креды/цели (waiting_password/waiting_policy), слот (waiting_slot),
 // permanent-исходы ядра без выхода процесса (failed_permanent), факты
 // pool_exhausted (ставится/снимается первым успешным put) и tli_jump в
@@ -363,10 +363,10 @@ public class WalReceiverLoopTests
 
     [Theory]
     [InlineData("STOPPED")]
-    [InlineData("BROKEN")]
-    public async Task WalKeyStoppedOrBroken_Pauses_StreamNotStarted(string state)
+    [InlineData("WAL_CHAIN_ERROR")]
+    public async Task WalKeyStoppedOrChainError_Pauses_StreamNotStarted(string state)
     {
-        // Arrange — wal-ключ шарда в STOPPED (карантин) / BROKEN (разрыв)
+        // Arrange — wal-ключ шарда в STOPPED (карантин) / WAL_CHAIN_ERROR (разрыв)
         var etcd = new FakeEtcd();
         SeedHappyPath(etcd);
         etcd.Kvs[WalKey] = $$"""{"cluster":"{{Cluster}}","shard":"{{Shard}}","state":"{{state}}"}""";

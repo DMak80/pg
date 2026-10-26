@@ -48,11 +48,11 @@ public static class BackupPlanner
         IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix,
         long? lastRestoreFinishedUnix = null, bool walChainBroken = false,
         // t24 (arch/19 §2): живой непокрытый tli-gap wal-ключа — пересъём
-        // безусловно, симметрично BROKEN; правило покрытия и бэкофф — как у
+        // безусловно, симметрично WAL_CHAIN_ERROR; правило покрытия и бэкофф — как у
         // walChainBroken.
         bool walGapUncovered = false)
     {
-        // t07 (arch/19 §2): BROKEN wal-ключа — пересъём безусловно (разрыв лечит
+        // t07 (arch/19 §2): WAL_CHAIN_ERROR wal-ключа — пересъём безусловно (разрыв лечит
         // только новый полный); бэкофф серии FAILED применяется вызывающим как
         // всегда — шторм пересъёмов исключён.
         if (walChainBroken || walGapUncovered)

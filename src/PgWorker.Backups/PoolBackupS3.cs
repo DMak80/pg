@@ -150,7 +150,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
     /// <summary>Union-листинг wal/ по ВСЕМ read-целям (t36, arch/19 §5 «где
     /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
     /// первая доступная нода может отставать (лаг mesh) — её соло-листинг даёт
-    /// ЛОЖНУЮ дыру и переводит шард в BROKEN (прецедент AC4: n1 после рестарта
+    /// ЛОЖНУЮ дыру и переводит шард в WAL_CHAIN_ERROR (прецедент AC4: n1 после рестарта
     /// догоняет mesh — 002 отсутствует только на ней). Успех — если ответил
     /// хотя бы один узел; исчерпание — маркер.</summary>
     public async Task<Result<IReadOnlyList<WalObject>>> ListWalUnionAsync(

@@ -200,7 +200,7 @@ public class E2eDrillScenarios
         // дыра «второй объект списка» может лечь ниже chain_start и Check её не
         // видит (прогон 2026-10-01: дрилл легитимно SUCCEEDED за 6 c). Затем
         // включаем дриллы policy-полем (применяется следующим тиком без рестарта
-        // — AC7). Пересъём BROKEN-цепочки занимает минуты — дыра живёт до
+        // — AC7). Пересъём WAL_CHAIN_ERROR-цепочки занимает минуты — дыра живёт до
         // валидации дрилла (тик 1 с).
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var fullStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;

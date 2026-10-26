@@ -757,19 +757,19 @@ public class BackupProcessTests
         guard.Sql.Should().Contain("backup_exec");
     }
 
-    // AAA (AC1): wal-ключ BROKEN → планировщик создаёт новый полный, даже если
+    // AAA (AC1): wal-ключ WAL_CHAIN_ERROR → планировщик создаёт новый полный, даже если
     // последний COMPLETED свежий (инвариант одного активного/бэкофф — как всегда)
     [Fact]
     public async Task Tick_OnBrokenWal_PlansReshoot()
     {
-        // Arrange — COMPLETED ..42 (5 мин назад) + BROKEN с границей ..44 ВЫШЕ
+        // Arrange — COMPLETED ..42 (5 мин назад) + WAL_CHAIN_ERROR с границей ..44 ВЫШЕ
         // старого полного (дыра выше ..44): ..42 разрыв НЕ покрывает — пересъём нужен
         var rig = await NewRig();
         var now = TimeProvider.System.GetUtcNow();
         var completed = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
             "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-6)),
             Unix(now.AddMinutes(-5)), "000000010000000000000042", 1048576, null, null);
-        var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
+        var brokenWal = new WalStreamState(WalStreamStatus.WalChainError, "slot_shop_shard1", "shard1a",
             "000000010000000000000044", "000000010000000000000044", "000000010000000000000044",
             Unix(now.AddMinutes(-30)), null, "WAL chain gap");
         var backups = new IReadOnlyList<ClusterBackups>[]
@@ -784,7 +784,7 @@ public class BackupProcessTests
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
 
         // Assert — появился новый полный (PLANNED/RUNNING) с ДРУГИМ id:
-        // BROKEN лечится пересъёмом независимо от свежести полного (spec §3.2)
+        // WAL_CHAIN_ERROR лечится пересъёмом независимо от свежести полного (spec §3.2)
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         var fullKeys = rig.Etcd.Store.Keys
             .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/")).ToList();
@@ -794,17 +794,17 @@ public class BackupProcessTests
     }
 
     // AAA (t07): COMPLETED-полный с wal_start ≥ границы разрыва УЖЕ покрывает
-    // BROKEN — повторный пересъём не планируется (иначе шторм пересъёмов)
+    // WAL_CHAIN_ERROR — повторный пересъём не планируется (иначе шторм пересъёмов)
     [Fact]
     public async Task Tick_OnBrokenCoveredByFull_NoReshoot()
     {
-        // Arrange — COMPLETED ..46 (старт выше границы разрыва ..42) + BROKEN ..42
+        // Arrange — COMPLETED ..46 (старт выше границы разрыва ..42) + WAL_CHAIN_ERROR ..42
         var rig = await NewRig();
         var now = TimeProvider.System.GetUtcNow();
         var reshot = new FullBackupState("20260908030500Z", FullBackupStatus.Completed,
             "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-6)),
             Unix(now.AddMinutes(-5)), "000000010000000000000046", 1048576, null, null);
-        var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
+        var brokenWal = new WalStreamState(WalStreamStatus.WalChainError, "slot_shop_shard1", "shard1a",
             "000000010000000000000042", "000000010000000000000042", "000000010000000000000042",
             Unix(now.AddMinutes(-30)), null, "WAL chain gap");
         var backups = new IReadOnlyList<ClusterBackups>[]

@@ -157,11 +157,11 @@ public class E2eWalStreamTliScenarios
             }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
             glueOk.Should().BeTrue("the CheckWithRestart chain is continuous, the key ACTIVE (AC1)");
 
-            // Итоговые ассерты — ключ зазора НЕТ, ошибки tli-gap НЕТ, BROKEN НЕТ
+            // Итоговые ассерты — ключ зазора НЕТ, ошибки tli-gap НЕТ, WAL_CHAIN_ERROR НЕТ
             var readFinal = await writer.ReadAsync(cluster, "shard1", ct);
             readFinal.Value!.Gap.Should().BeNull("backfill closes the gap — no RPO-loss marker (AC1)");
             readFinal.Value.Error.Should().NotContain("tli-gap");
-            readFinal.Value.State.Should().NotBe(WalStreamStatus.Broken);
+            readFinal.Value.State.Should().NotBe(WalStreamStatus.WalChainError);
         }
         catch (Exception ex)
         {
@@ -381,7 +381,7 @@ public class E2eWalStreamTliScenarios
             finalRead.Value!.State.Should().Be(WalStreamStatus.Active,
                 "wal key is ACTIVE at convergence (§3.7 inv.2)");
             finalRead.Value.Gap.Should().BeNull("no live gap at convergence (§3.7 inv.2)");
-            finalRead.Value.State.Should().NotBe(WalStreamStatus.Broken, "no BROKEN at convergence (§3.7 inv.2)");
+            finalRead.Value.State.Should().NotBe(WalStreamStatus.WalChainError, "no WAL_CHAIN_ERROR at convergence (§3.7 inv.2)");
             chainLastSegment.Should().NotBeNull();
             var assertTli = await PrimaryTimelineAsync(cluster, "shard1", ct);
             var controlSegment = PgWorker.Backups.WalFileName.FromLsn(assertTli, controlLsn!);

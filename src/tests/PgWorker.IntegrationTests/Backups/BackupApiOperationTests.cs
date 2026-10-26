@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using PgWorker.WalReceiver;
 using PgWorker.WalReceiver.Operations;
 using Shared.Core;
 using Shared.Etcd.Client;
@@ -208,16 +209,13 @@ public class BackupApiOperationTests : IDisposable
         ((int)gone.StatusCode).Should().Be(404);
     }
 
-    public static TheoryData<string> StoppedStates => new() { "STOPPED", "BROKEN" };
-
-    [Theory]
-    [MemberData(nameof(StoppedStates))]
-    public async Task PostFull_WalKeyStoppedOrBroken_Returns503NotStarted(string state)
+    [Fact]
+    public async Task PostFull_WalKeyStopped_Returns503NotStarted()
     {
         var ct = TestContext.Current.CancellationToken;
-        // Arrange: wal-ключ шарда в STOPPED/BROKEN (пауза приёмника).
+        // Arrange: wal-ключ шарда в STOPPED (карантин — гейт операции).
         var (_, client, _, created, etcd) = Build(toolMode: false);
-        etcd.Kvs["/pgworker/backups/c1/s1/wal"] = $$"""{"state":"{{state}}"}""";
+        etcd.Kvs["/pgworker/backups/c1/s1/wal"] = """{"state":"STOPPED"}""";
 
         // Act: POST full.
         var response = await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
@@ -225,6 +223,30 @@ public class BackupApiOperationTests : IDisposable
         // Assert: 503 — операция не начинается, статус не портится.
         ((int)response.StatusCode).Should().Be(503);
         created.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PostFull_WalKeyChainError_Returns202AndStarts_StreamStillPaused()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: wal-ключ шарда в WAL_CHAIN_ERROR (разрыв цепочки архива).
+        var (_, client, _, created, etcd) = Build(toolMode: false);
+        etcd.Kvs["/pgworker/backups/c1/s1/wal"] = """{"state":"WAL_CHAIN_ERROR"}""";
+
+        // Act: POST full.
+        var response = await client.PostAsJsonAsync("/api/backup/full", new StartFullRequest(Id), ct);
+
+        // Assert: 202 — WAL_CHAIN_ERROR НЕ гейт операции (пересъём — единственное
+        // лечение разрыва), операция стартовала.
+        ((int)response.StatusCode).Should().Be(202);
+        var status = await response.Content.ReadFromJsonAsync<FullStatusResponse>(ct);
+        status!.State.Should().Be("running");
+        created.Should().Equal(Id);
+
+        // Assert: гейт СТРИМА при этом paused — приёмники замирают (Р17:
+        // замирание стрима не мешает параллельному полному).
+        (await WalReceiverGates.IsStopGatedAsync(
+            etcd, ["http://etcd-fake:2379"], "c1", "s1", ct)).Should().BeTrue();
     }
 
     [Fact]

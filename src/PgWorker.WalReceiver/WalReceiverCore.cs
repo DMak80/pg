@@ -89,7 +89,7 @@ public sealed class WalSessionEvents
 
     /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, t25/arch/19 §3): true —
     /// глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ шарда в
-    /// STOPPED/BROKEN — сессия чисто завершается (Reconnect): цикл
+    /// STOPPED/WAL_CHAIN_ERROR — сессия чисто завершается (Reconnect): цикл
     /// перепроверит гейты и уйдёт в waiting_disabled/paused; живой стрим
     /// обязан замирать по стоп-гейтам, а не ждать обрыва транспорта.</summary>
     public Func<CancellationToken, Task<bool>>? StopGateProbe;

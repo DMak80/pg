@@ -67,7 +67,7 @@ public class ReliabilityCalculatorTests
                 new Dictionary<string, long?> { ["s1"] = t - 500 },
                 Shards: new Dictionary<string, WalStreamInfo?>
                 {
-                    ["s1"] = new("shop", "s1", WalStreamInfoState.Broken, "slot", "n1", t - 5, 9, "err"),
+                    ["s1"] = new("shop", "s1", WalStreamInfoState.WalChainError, "slot", "n1", t - 5, 9, "err"),
                 },
                 Policy: new BackupsPolicyInfo(null, null, null, 86400, null, null)),
         };

@@ -571,7 +571,7 @@ public static class BackupsParser
         "ACTIVE" => WalStreamInfoState.Active,
         "DEGRADED" => WalStreamInfoState.Degraded,
         "STOPPED" => WalStreamInfoState.Stopped,
-        "BROKEN" => WalStreamInfoState.Broken,
+        "WAL_CHAIN_ERROR" => WalStreamInfoState.WalChainError,
         _ => null,
     };
 

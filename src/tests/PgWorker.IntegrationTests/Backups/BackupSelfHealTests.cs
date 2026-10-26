@@ -19,7 +19,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Сквозной контур самолечения (t07 AC1, spec §3.2): дыра цепочки → WalStream
-// пишет BROKEN → BackupProcess планирует пересъём (IsDue walChainBroken) →
+// пишет WAL_CHAIN_ERROR → BackupProcess планирует пересъём (IsDue walChainBroken) →
 // симуляция COMPLETED переснятого полного → WalStream контроль заживляет
 // (ACTIVE + агент тем же тиком). Реальный etcd, фейки docker/SQL/S3.
 [Collection(NonE2eCollection.Name)]
@@ -147,7 +147,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         return parsed.Value.Single(c => c.Config.Cluster == cluster);
     }
 
-    // AAA (AC1 сквозной): дыра → BROKEN → планировщик PLANNED/RUNNING → симуляция
+    // AAA (AC1 сквозной): дыра → WAL_CHAIN_ERROR → планировщик PLANNED/RUNNING → симуляция
     // завершения пересъёма (etcd-ключ COMPLETED с wal_start выше границы + объекты
     // S3) → WalStream контроль → ACTIVE + агент поднят
     [Fact]
@@ -170,12 +170,12 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
         (await walProcess.TickAsync(BuildSnap("sh1"), backups1, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert 1 — wal=BROKEN с границей разрыва ..03
+        // Assert 1 — wal=WAL_CHAIN_ERROR с границей разрыва ..03
         var broken = await ReadWalAsync("sh1");
-        broken!.State.Should().Be(WalStreamStatus.Broken);
+        broken!.State.Should().Be(WalStreamStatus.WalChainError);
         broken.ChainStartSegment.Should().Be("000000010000000000000003");
 
-        // Arrange 2 — BackupProcess тик: BROKEN → due → PLANNED → StartFullAsync
+        // Arrange 2 — BackupProcess тик: WAL_CHAIN_ERROR → due → PLANNED → StartFullAsync
         // приёмнику (фейк 202) → RUNNING (планировщик отреагировал)
         var receiver = new FakeReceiverClient();
         var backupProcess = new BackupProcess(
@@ -189,7 +189,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
-        receiver.StartFullUrls.Should().NotBeEmpty("BROKEN is healed by retaking — started via the receiver API");
+        receiver.StartFullUrls.Should().NotBeEmpty("WAL_CHAIN_ERROR is healed by retaking — started via the receiver API");
 
         // Arrange 3 — симуляция завершения пересъёма: etcd-ключ COMPLETED нового id
         // с wal_start=..05 + объекты S3 5..6 (цепь от нового полного непрерывна)
@@ -202,7 +202,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             BackupStatusJson.Serialize(recompleted), null, ct);
         s3.Objects.Add(("sh1", "shard1", "000000010000000000000006"));
 
-        // Act — WalStream тик (контроль при BROKEN — каждый тик; процесс новый —
+        // Act — WalStream тик (контроль при WAL_CHAIN_ERROR — каждый тик; процесс новый —
         // «рестарт воркера»: маркер разрыва читается из ключа, не из памяти)
         var rereadWal = await ReadWalAsync("sh1");
         var backups2 = new ClusterBackups("sh1", null,

@@ -191,10 +191,14 @@ internal partial class Program
             : Results.Json(
                 new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);
 
-    // Маршруты операции полного (arch/19 §2, spec §3.2): POST — 503 стоп-гейтов
-    // (операция не начинается; Unknown — транспортный отказ etcd, fail-closed),
-    // 409 (вторая активная), 202 (принята, фоновая Task); GET — 200 снимок /
-    // 404 (нет активной — vanished-семантика); cancel — 202 best-effort / 404.
+    // Маршруты операции полного (arch/19 §2, spec §3.2): POST — 503 гейта
+    // ОПЕРАЦИИ (STOPPED/disabled/Unknown — операция не начинается; Unknown —
+    // транспортный отказ etcd, fail-closed); WAL_CHAIN_ERROR — НЕ гейт
+    // операции: 202, операция начинается (пересъём — единственное лечение
+    // разрыва цепочки, гейтом не блокируется; стрим при этом стоит по гейту
+    // СТРИМА — IsStopGatedAsync, без изменений), 409 (вторая активная), 202
+    // (принята, фоновая Task); GET — 200 снимок / 404 (нет активной —
+    // vanished-семантика); cancel — 202 best-effort / 404.
     // Гейты читаются только при СТАРТЕ: идущая операция стоп-гейтами не рвётся
     // (отменяют только cancel и бюджет воркера).
     private static void MapFullBackupRoutes(
@@ -212,9 +216,9 @@ internal partial class Program
         {
             var gates = await WalReceiverGates.ReadAsync(
                 etcd, endpoints, identity.Cluster, identity.Shard, ct);
-            if (gates.Disabled || gates.Paused || gates.Unknown)
+            if (gates.Disabled || (gates.Paused && !gates.ChainError) || gates.Unknown)
                 return Results.Json(
-                    new ErrorResponse("backups disabled, paused or gates unknown"),
+                    new ErrorResponse("backups disabled, stopped or gates unknown"),
                     JsonOpts, statusCode: 503);
             if (!registry.TryBegin(new OperationSnapshot(
                     body.Id, OperationStates.Running, OperationPhases.Basebackup)))

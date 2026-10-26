@@ -8,7 +8,7 @@ namespace PgWorker.WalReceiver;
 /// WebApplication-хоста. Старт: идентичность из env (`WalReceiverIdentity`) —
 /// невалидный набор → лог в stdout контейнера + exit 1 (supervisord с
 /// `exitcodes=0` не перезапускает). Каждая итерация (~5 c при ожидании):
-/// стоп-гейты etcd (disabled → `waiting_disabled`; wal-ключ STOPPED/BROKEN →
+/// стоп-гейты etcd (disabled → `waiting_disabled`; wal-ключ STOPPED/WAL_CHAIN_ERROR →
 /// `paused`; etcd недоступен → работа по последним известным гейтам, стрим не
 /// рвём — слот держит WAL) → роль REST-пробой (`none` → `waiting_role`) →
 /// резолв кредов/целей (`WalReceiverTargets`: waiting_password /
@@ -132,7 +132,7 @@ public sealed class WalReceiverLoop : BackgroundService
 
         // Последние известные гейты (etcd-моргание: стрим не рвётся — работаем
         // по последним известным до следующего успешного чтения).
-        var lastGates = new WalReceiverGateState(Disabled: false, Paused: false, Unknown: false);
+        var lastGates = new WalReceiverGateState(Disabled: false, Paused: false, ChainError: false, Unknown: false);
         var currentRole = WalReceiverRole.None;
         var state = WalReceiverState.Starting;
         // Бэкофф ретраев failed_permanent-сессий (сек; 0 — сброшен, см. исходы).
@@ -319,7 +319,7 @@ public sealed class WalReceiverLoop : BackgroundService
                     RoleChangedProbe = token => ProbeRoleChangedAsync(token, roleAtStart),
                     // Стоп-гейт из стрима (t25/arch/19 §3): живой стрим замирает
                     // по ЛЮБОМУ гейту — /pgworker/backups-disabled ИЛИ wal-ключ
-                    // шарда STOPPED/BROKEN — ≤ 5 c, не ждёт обрыва транспорта;
+                    // шарда STOPPED/WAL_CHAIN_ERROR — ≤ 5 c, не ждёт обрыва транспорта;
                     // etcd-моргание проба глотает (false).
                     StopGateProbe = token => WalReceiverGates.IsStopGatedAsync(
                         _etcd, _endpoints, identity.Cluster, identity.Shard, token),

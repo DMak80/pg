@@ -236,11 +236,11 @@ public class BackupPlannerTests
         BackupPlanner.HasActive([Full("id", state, Unix(Now))]).Should().Be(expected);
     }
 
-    // AAA: BROKEN-цепочка → due безусловно, даже при свежем валидном полном (AC1)
+    // AAA: WAL_CHAIN_ERROR-цепочка → due безусловно, даже при свежем валидном полном (AC1)
     [Fact]
     public void IsDue_WalChainBroken_DueUnconditionally()
     {
-        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=BROKEN
+        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=WAL_CHAIN_ERROR
         var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
         var fulls = new[]
         {
