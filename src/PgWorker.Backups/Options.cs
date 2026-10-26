@@ -22,7 +22,7 @@ public sealed record BackupsRuntimeOptions(
     string NodeImage = "pgworker-node:dev",
     int RetryBaseSec = 300,
     int RetryMaxSec = 3600,
-    string StagingDir = "/backup-staging",
+    string StagingDir = "/home/postgres/pgdata/backup-staging",
     double? AgentCpu = null,
     long? AgentMem = null,
     // t03 (arch/19 §3/§9): расписание контроля цепочки и пороги деградаций.

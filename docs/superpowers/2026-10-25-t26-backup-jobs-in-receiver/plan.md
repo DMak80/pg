@@ -1147,6 +1147,10 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     `src/PgWorker.App/Options.cs` (`BackupsOptions`): удалить `BackupsJobOptions.Image`
     (секция `Job` остаётся с таймаутами), `StagingQuotaBytes`;
     `Staging.Dir` дефолт → `/home/postgres/pgdata/backup-staging`;
+    унифицировать дефолт записи `StagingDir` в `BackupsRuntimeOptions`
+    (`src/PgWorker.Backups/Options.cs`: `"/backup-staging"` →
+    `"/home/postgres/pgdata/backup-staging"` — `ToRuntime` в App маппит
+    значение ВСЕГДА, дефолт записи недостижим; единообразие с каноном);
     `IsValid()`: убрать проверку `Job.Image` непустого; `appsettings.json`
     (App) — обновить секцию `Backups` (без Job.Image/QuotaBytes, новый Staging.Dir).
   - deploy/dev-stand (spec §3.7 «упоминания в images-инфраструктуре/ранбуке — убрать»):
@@ -1181,7 +1185,9 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     (контейнеры полного не существуют; префикс умирает — spec §3.7); снос
     verify/restore/drill префиксов и staging-volumes verify/drill — оставить;
     `BackupNames.ContainerName/VolumeName/JobContainerPrefix/JobVolumePrefix`
-    (full-имена) — удалить вместе с потребителями.
+    (full-имена) — удалить ОБЯЗАТЕЛЬНО: потребителей ноль (мёртвый код
+    упразднённой сущности `pgw-backup-full-*`; если методы ещё в файле —
+    довыпилить в этом шаге, компиляция подпунктом это проверит).
   - `GetContainerLogsAsync` — продуктовых вызовов из бэкап-процессов больше
     нет (сегодняшние 5: BackupProcess/BackupVerifyProcess/RestoreProcess/
     RestoreDrillProcess — сняты шагами 12–14); метод интерфейса движка
@@ -1199,6 +1205,8 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
   упраздняется) `grep -rEn "pgworker-backup([^s]|$)" src/ docker/ deploy/ dev-stand/ --include="*.cs" --include="Dockerfile*" --include="*.yml" --include="*.yaml" --include="*.sh" --include="*.txt" -l` — пусто;
   `grep -rn "BackupJobSpec\|RestoreJobCommand\|VerifyJobSpec\|DrillJobSpec\|BackupJobLog\|RestoreJobLog\|DrillJobLog\|VerifyLog" src/ docker/ --include="*.cs" --include="Dockerfile*" -l` — пусто;
   `grep -rn "Job__Image\|Job:Image\|PGW_BACKUP_JOB_IMAGE" deploy/ dev-stand/ -l` — пусто;
+  `grep -rn "BackupNames.ContainerName\|BackupNames.VolumeName\|BackupNames.JobContainerPrefix\|BackupNames.JobVolumePrefix" src/ tests/ --include="*.cs" -l` — пусто (full-имена удалены);
+  `grep -n "\"/backup-staging\"" src/PgWorker.Backups/Options.cs` — пусто (дефолт StagingDir канонический);
   `grep -n "GetContainerLogsAsync" src/PgWorker.Backups -r` — пусто;
   сборка зелёная (подпункт).
 - **Связь со spec:** §3.6 (конфиг), §3.7 (образы и чистки), §8 п.1
