@@ -179,8 +179,8 @@ CA-сертификат registry должен быть доверен Docker и 
 
 ### ⚠️ Локально собираемые образы в registry НЕ класть — никогда
 
-`pgworker:dev`, `kafkaworker:dev`, `pgworker-backup:dev`, `adminpanel:dev`,
-`pgworker-node:dev|e2e`, `pgworker-backup:e2e`, сайдкары/opsbox стенда —
+`pgworker:dev`, `kafkaworker:dev`, `adminpanel:dev`,
+`pgworker-node:dev|e2e`, сайдкары/opsbox стенда —
 артефакты конкретной машины/ветки. В общий registry они **категорически
 запрещены**: реестр — зеркало воспроизводимых внешних зависимостей, а не хранилище
 сборок. `mirror-image.sh` для таких имён не запускать, в `images.txt` не вносить.
@@ -245,7 +245,7 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |
 | `postgres:18-alpine` | интеграционные тесты бэкапов (OwnPostgres, WalSqlTests) |
-| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, база `pgworker-backup` и opsbox |
+| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, opsbox |
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |

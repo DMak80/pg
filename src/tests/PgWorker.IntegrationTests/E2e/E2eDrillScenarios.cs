@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + tool-контейнеры образа нод (t26) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -357,7 +357,7 @@ public class E2eDrillScenarios
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: S3 на ownS3-ноду,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // tool-контейнеры образа нод (t26), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)

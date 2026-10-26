@@ -44,8 +44,8 @@ public class ContainerSpecTests
     [Fact]
     public void BuildContainerBody_CmdWithResetEntrypoint_SetsEmptyEntrypoint()
     {
-        // Arrange — WAL-агент бэкапов поверх образа с ENTRYPOINT джоба
-        var spec = new ContainerSpec("pgworker-backup:test", [], "job",
+        // Arrange — агент поверх образа с ENTRYPOINT (сброс → inline-команда)
+        var spec = new ContainerSpec("pgworker-node:test", [], "job",
             Cmd: ["bash", "-c", "pg_receivewal"],
             ResetEntrypoint: true);
 

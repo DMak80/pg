@@ -148,7 +148,7 @@ public class DockerEngineTests
         var handler = new FakeHandler(_ => Json("""{"Id":"abc","Warnings":[]}""", HttpStatusCode.Created));
         var engine = NewEngine(handler);
         var spec = new ContainerSpec(
-            "pgworker-backup:test", [], "pgw-backup-wal-shop-shard1",
+            "pgworker-node:test", [], "pgw-backup-wal-shop-shard1",
             Env: new Dictionary<string, string>(),
             VolumeName: "pgw-backup-wal-shop-shard1-staging",
             VolumeDest: "/backup-staging",

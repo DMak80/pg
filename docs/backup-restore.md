@@ -20,9 +20,10 @@ arch/14 §1.1. Тон — по [docs/runbook.md](runbook.md).
    (приёмник — программа контейнера ноды); ноды удаляются ВМЕСТЕ
    с data-volume («погиб диск»), ноды в state=REBUILDING, HA-scope Patroni
    чистится (`initialize/leader/sync`, `optime/`, `members/`; `request_*`
-   остаётся). Затем ephemeral restore-джоб (`pgworker-backup`, фазы
-   `downloading`→`recovering` в поле `phase`): качает полный в data-volume
-   первой ноды, `pg_ctl` с `restore_command` (mc из `wal/`) накатывает WAL до
+   остаётся). Затем tool-контейнер restore (образ нод в tool-режиме `t26`,
+   фазы `downloading`→`recovering` в поле `phase`, управление — HTTP API
+   приёмника): качает полный в data-volume первой ноды, `pg_ctl` с
+   `restore_command` (`walreceiver fetch-wal` из `wal/`) накатывает WAL до
    цели (latest — конец архива; `time:<RFC3339>` — recovery_target_time).
    Бюджет наката — `Restore:RecoveryTimeoutSec` (дефолт 1800 с).
 3. **REJOINING — rejoin**: первая нода поднимается на восстановленном volume,
