@@ -9,7 +9,7 @@ using Xunit;
 namespace PgWorker.UnitTests.WalReceiver;
 
 // Инцидентная механика restore/drill в .NET (arch/19 §3.5, spec t26 §3.4,
-// Р15 — 1:1 из bash RestoreJobCommand): сигналы (standby.signal →
+// Р15 — перенос 1:1): сигналы (standby.signal →
 // recovery.signal), override-строки auto.conf (в т.ч. target_time только при
 // цели; latest — без строки), trust-строка pg_hba, порядок runner-вызовов
 // (chown -R 101:101 → chmod 700 → pg_ctl start под setpriv с HOME=/tmp →
