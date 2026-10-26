@@ -41,7 +41,7 @@ WalReceiver — инструментальный режим без identity: н�
 
 Инварианты, НЕ меняющиеся: etcd-контракт `/pgworker/backups/*` (пишет только
 воркер + статус-ключи приёмников стрима), планировщик полных (инвариант
-одного активного, бэкофф, BROKEN/gap-правила), контроль цепочки, ретенция,
+одного активного, бэкофф, WAL_CHAIN_ERROR/gap-правила), контроль цепочки, ретенция,
 супервизор/сироты, RPO-инвариант подтверждения-по-доставке, стоп-семантика,
 DR-механика restore (source_pool, демонтаж/REJOINING/initialize-щит).
 
@@ -121,7 +121,7 @@ result-JSON). Состояния операций: `running | succeeded | failed
 
 | Метод/путь | Семантика |
 |---|---|
-| `POST /api/backup/full` | тело `{"id":"<YYYYMMDDHHMMSSZ>"}`; 202 — принята; 409 — уже есть активная (гварды приёмника); 503 — стоп-гейты (wal-ключ STOPPED/BROKEN, `/pgworker/backups-disabled`, `Backups:Enabled=false`-семантика) — операция не начинается |
+| `POST /api/backup/full` | тело `{"id":"<YYYYMMDDHHMMSSZ>"}`; 202 — принята; 409 — уже есть активная (гварды приёмника); 503 — стоп-гейты (wal-ключ STOPPED, `/pgworker/backups-disabled`, `Backups:Enabled=false`-семантика) — операция не начинается; **WAL_CHAIN_ERROR — НЕ стоп-гейт полного**: 202, операция начинается (WAL_CHAIN_ERROR — нарушение цепочки WAL в архиве S3, НЕ состояние кластера; его единственное лечение — пересъём полного, гейтом он блокироваться не может — решение пользователя, §6 Р17) |
 | `GET /api/backup/full` | 200 `{"state","phase":"basebackup\|uploading","wal_start_segment"?,"size_bytes"?,"error"?}`; 404 — активной нет (vanished-семантика для воркера) |
 | `POST /api/backup/full/cancel` | 202 — best-effort: kill child `pg_basebackup`, отмена upload, чистка staging |
 
@@ -151,6 +151,14 @@ Tool-режим (verify/drill/restore; одна активная операци�
   бэкапа на том же :8080. Операция полного — фоновая Task в процессе,
   параллельная стриму; статус — в памяти (IMMUTABLE-снимок, публикация —
   атомарная замена ссылки, паттерн `LiveFacts`).
+- **Два независимых гейта в приёмнике** (не смешивать): гейт СТРИМА —
+  wal-ключ STOPPED/WAL_CHAIN_ERROR, `/pgworker/backups-disabled` ⇒ приёмник
+  `paused`, стрим замёрз (БЕЗ ИЗМЕНЕНИЙ, arch/19 §3); гейт ОПЕРАЦИИ
+  полного — STOPPED/`backups-disabled`/`Enabled=false` ⇒ 503 на POST,
+  WAL_CHAIN_ERROR — НЕ гейт (202, операция начинается; заживление
+  WAL_CHAIN_ERROR — сам
+  пересъём, §6 Р17). Замирание стрима при WAL_CHAIN_ERROR не мешает параллельному
+  полному: стрим стоит (backpressure, слот держит WAL), полный пишет в S3.
 - **Tool-режим** контейнера: env `PGW_NODE_TOOL=1` — (а) entrypoint образа
   НЕ запускает spilo-программу supervisord (Patroni/haproxy/doorman не
   стартуют); WalReceiver — главный процесс контейнера (PID-1 через
@@ -228,7 +236,10 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   в etcd-статусе — резолв воркера). Вместо create джоб-контейнера: PLANNED
   (etcd) → `POST /api/backup/full` приёмнику ВЫБРАННОЙ ноды → 202 ⇒ RUNNING;
   409 при PLANNED ⇒ операция уже жива (пере-старт прошлого тика) ⇒ RUNNING;
-  503/5xx ⇒ PLANNED остаётся, следующий тик повторит. Супервизия: `GET` →
+  503/5xx ⇒ PLANNED остаётся, следующий тик повторит (WAL_CHAIN_ERROR
+  планировщик §2 требует переснять — API приёмника при WAL_CHAIN_ERROR
+  отвечает 202 и пересъём
+  не блокирует, §6 Р17). Супервизия: `GET` →
   `uploading` (фиксация `WalStartSegment`, как сегодня из маркеров) →
   `succeeded` (COMPLETED + `size_bytes`, `verify` PENDING при on_create) /
   `failed` (FAILED + `error`); 404 при RUNNING-статусе etcd ⇒ FAILED
@@ -334,7 +345,16 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
 ## 5. Отражение в arch (состав правок канонов, arch-first)
 
 - **arch/19 §2** (механика полных): исполнитель — приёмник WalReceiver ноды
-  по API (команда `POST /api/backup/full {id}`, статус GET, cancel); pg_basebackup
+  по API (команда `POST /api/backup/full {id}`, статус GET, cancel);
+  стоп-гейты POST полного — STOPPED/`backups-disabled`/`Enabled=false`;
+  **WAL_CHAIN_ERROR — НЕ стоп-гейт полного** (202; WAL_CHAIN_ERROR — разрыв
+  цепочки в АРХИВЕ
+  S3, не состояние кластера; пересъём — единственное лечение и гейтом не
+  блокируется; выбор источника при WAL_CHAIN_ERROR — штатный: sync-standby,
+  fallback мастер; стрим-гейт приёмника при WAL_CHAIN_ERROR — без изменений,
+  §3 arch/19); состояние wal-ключа `BROKEN` переименовано в
+  `WAL_CHAIN_ERROR` (перечень `ACTIVE|DEGRADED|STOPPED|WAL_CHAIN_ERROR`;
+  имена с GAP запрещены — коллизия с полем `gap` TLI-зазора 58P01); pg_basebackup
   локально `127.0.0.1:5432`, upload .NET S3-клиентом по write-списку своей
   роли; staging — каталог data-volume ноды (реактивный ENOSPC); выбор
   ноды-источника и node/role-факты — воркер; бюджеты — воркер + cancel
@@ -389,7 +409,8 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   .NET S3-клиент; bash-скрипты и stdout-маркеры умирают вместе с
   pgworker-backup).
 - **Р4. Параметры операций** — смешанная модель: full в нодах — приёмник
-  резолвирует сам из etcd (команда несёт только id, 503 на стоп-гейтах);
+  резолвирует сам из etcd (команда несёт только id; 503 — стоп-гейты
+  операции, см. Р17);
   tool-операции — полный контекст (S3 endpoints/креды/bucket/префикс/
   backup_id/цель) в команде запуска от воркера; секреты только в POST.
 - **Р5. Staging полного** — каталог в существующем data-volume ноды
@@ -415,9 +436,10 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   фактической роли (REST-проба, симметрия стриму), фиксируется на старте
   операции.
 - **Р11. Гварды** — приёмник: 409 на вторую активную операцию; воркер:
-  инвариант одного активного полного на шард (как сегодня); 503 на
-  стоп-гейтах приёмника (paused/wal-ключ STOPPED|BROKEN/disabled) —
-  стоп-семантика подсистемы не меняется.
+  инвариант одного активного полного на шард (как сегодня); 503 — стоп-гейты
+  операции полного (STOPPED/`backups-disabled`/`Enabled=false`, Р17);
+  гейт СТРИМА приёмника (STOPPED/WAL_CHAIN_ERROR/disabled ⇒ `paused`) — без
+  изменений, к операции полного не применяется (кроме 503-гейтов выше).
 - **Р12. Аутентификация API** — не вводится (домашняя установка;
   enterprise-доработки — только через roadmap).
 - **Р13. Пароль backup_exec** — в argv child-процессов НЕ передаётся
@@ -430,6 +452,25 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   включая возврат pristine auto.conf и вычистку archive_mode.
 - **Р16. Метрики** — новых серий приёмника не вводится (осознанно;
   наблюдаемость — через etcd-статусы воркера и журнал).
+- **Р17. WAL_CHAIN_ERROR — не стоп-гейт полного** (решение пользователя,
+  каскадный сброс из Фазы 6 E2E `Backup_ChainBroken_SelfHeals`, дословно:
+  «в арх правку при BROKEN приоритет источник — sync-standby, fallback на
+  мастер, 503 НЕ ДОЛЖЕН распространяться на полный бэкап при BROKEN. BROKEN
+  это нарушение цепочки wal в архиве, это НЕ ЗНАЧИТ что сам кластер
+  BROKEN»). Переименование (выбор пользователя): состояние wal-ключа
+  `BROKEN` переименовано в **`WAL_CHAIN_ERROR`** — перечень состояний
+  `ACTIVE|DEGRADED|STOPPED|WAL_CHAIN_ERROR`; имена с GAP запрещены
+  (коллизия с полем `gap` — TLI-зазор 58P01, отдельная сущность).
+  Семантика: WAL_CHAIN_ERROR — нарушение цепочки WAL в АРХИВЕ (S3), НЕ
+  состояние кластера и НЕ свидетельство о данных нод. `POST
+  /api/backup/full` при WAL_CHAIN_ERROR отвечает 202 — операция начинается;
+  503-гейты операции — только STOPPED, `/pgworker/backups-disabled`,
+  `Backups:Enabled=false`. Выбор ноды-источника при WAL_CHAIN_ERROR —
+  штатный, без изменений (sync-standby по Patroni `GET /cluster`, fallback
+  на мастер). Стоп-семантика СТРИМА приёмника при WAL_CHAIN_ERROR (paused,
+  замирание) — без изменений; заживление — пересъёмом полного, который
+  гейтом больше не блокируется (прежнее противоречие «503 при
+  WAL_CHAIN_ERROR» vs «пересъём — единственное лечение» — устранено).
 
 ## 7. Ограничения
 
@@ -461,8 +502,13 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
    etcd-статусы формата §4 arch/19 без изменений (парсеры панели живы);
    staging после исхода чист.
 4. FAILED-пути: age-бюджет ⇒ FAILED + cancel; рестарт приёмника ⇒
-   operation-vanished ⇒ переснятие с бэкоффом; 503 стоп-гейтов ⇒ операция
-   не стартует, статус не портится.
+   operation-vanished ⇒ переснятие с бэкоффом; 503 стоп-гейтов
+   (STOPPED/`backups-disabled`/`Enabled=false`) ⇒ операция не стартует,
+   статус не портится; **WAL_CHAIN_ERROR ⇒ POST полного 202, операция
+   стартует** (источник — штатный sync-standby fallback мастер; стрим
+   приёмника замёрз по гейту стрима; E2E `Backup_ChainBroken_SelfHeals` —
+   заживление пересъёмом сходится, лив-лока 503 нет; wal-ключ в состоянии
+   `WAL_CHAIN_ERROR`, не `BROKEN`).
 5. Verify: on_create + периодическая перепроверка; OK/FAILED + причины;
    таймаут ⇒ PENDING (вердикт НЕ ставится), ретраи.
 6. Restore: заявка через API воркера (contract §3.5 arch/19 не меняется) —

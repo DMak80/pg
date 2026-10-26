@@ -120,9 +120,27 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     `wal_start_segment` — из `backup_label` (парсер `BackupLabel`), `size_bytes`
     — сумма файлов; файлы 1:1 в `full/<id>/` (вкл. `backup_manifest`, `pg_wal/`)
     + дублирование закрытых сегментов набора в `wal/` — сохраняется; 503
-    стоп-гейтов приёмника — операция не начинается; vanished ⇒ FAILED
+    стоп-гейтов приёмника — операция не начинается (СТОП-ГЕЙТЫ БЕЗ
+    WAL_CHAIN_ERROR — Р17: 503 только для wal-ключа STOPPED,
+    `/pgworker/backups-disabled`, `Backups:Enabled=false`-семантики; при
+    WAL_CHAIN_ERROR — 202, операция начинается: пересъём полным — единственное
+    лечение разрыва цепочки, выбор источника штатный sync-standby fallback
+    мастер; «BROKEN-пересъём»/«BROKEN-правило покрытия» переименованы в
+    WAL_CHAIN_ERROR-формулировки); vanished ⇒ FAILED
     `operation-vanished` (Р9); контейнера полного больше нет — cleanup только
     cancel; «Планировщик» — без изменений по логике (PLANNED → API-запуск → RUNNING).
+  - **Переименование состояния BROKEN → WAL_CHAIN_ERROR** (Р17, решение
+    пользователя; каскад из Фазы 6, arch/spec правлены в рабочем дереве):
+    по всему arch/19 (и согласованно в spec §3.2/§3.3/§8 п.4) — значение
+    `state` wal-ключа (§4/§7: перечень `ACTIVE|DEGRADED|STOPPED|WAL_CHAIN_ERROR`;
+    имена с GAP запрещены — коллизия с полем `gap` TLI-зазора), формулировки
+    «BROKEN-пересъём», «BROKEN-правило покрытия», «дыра → BROKEN»,
+    «wal-ключ BROKEN» у гейтов приёмника (гейт СТРИМА: STOPPED/WAL_CHAIN_ERROR
+    ⇒ paused — без изменений), BROKEN-упоминания в §2/§3/§5. Парсеры панели
+    толерантны (канон), живых прод-ключей нет — миграции значений не требуется.
+    ⚠️ Статус: arch/19 + spec.md УЖЕ правлены в рабочем дереве (без коммита,
+    одобрены пользователем на гейте) — исполнитель СВЕРЯЕТ дерево с этим
+    перечнем и КОММИТИТ arch/spec-правки этим шагом (без пересоздания).
   - **§3.5** (restore): блок «Restore-джоб» → «Tool-контейнер restore»:
     контейнер образа `pgworker-node` в tool-режиме (`PGW_NODE_TOOL=1`; без
     Patroni/supervisord-программ, WalReceiver — главный процесс, без identity),
@@ -433,14 +451,28 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
   - Маршруты (Minimal APIs, в `Program.cs` нодовой ветки; JSON — System.Text.Json
     с дефолтами + `DefaultIgnoreCondition = WhenWritingNull`):
     - `POST /api/backup/full` — тело `{"id":"<YYYYMMDDHHMMSSZ>"}` (id не
-      валидируется форматом — детерминизм обеспечен воркером): стоп-гейты
-      `WalReceiverGates.ReadAsync(...)` → `Disabled||Paused||Unknown` ⇒ **503**
-      `{"error":"backups disabled, paused or gates unknown"}` (Unknown —
-      транспортный отказ etcd при чтении гейтов: операция не начинается,
-      fail-closed — симметрия «503 — операция не начинается» spec §3.2/Р11;
-      воркер повторит тиком — transient §3.1); registry.TryBegin ⇒ false ⇒
-      **409** `{"error":"operation already active"}`; иначе создать операцию,
-      запустить `Task.Run(RunAsync)` и ответить **202** `{"state":"running","phase":"basebackup"}`.
+      валидируется форматом — детерминизм обеспечен воркером). ДВА НЕЗАВИСИМЫХ
+      ГЕЙТА в приёмнике (spec §3.3, не смешивать): гейт СТРИМА —
+      wal-ключ STOPPED/WAL_CHAIN_ERROR + `/pgworker/backups-disabled` ⇒ стрим
+      `paused` (БЕЗ ИЗМЕНЕНИЙ, `WalReceiverGates.IsStopGatedAsync`); гейт
+      ОПЕРАЦИИ — только STOPPED/disabled/`Enabled=false`-семантика ⇒ **503**.
+      Маршрут: `WalReceiverGates.ReadAsync(...)` →
+      `Disabled || (Paused && !ChainError) || Unknown` ⇒ **503**
+      `{"error":"backups disabled, stopped or gates unknown"}`;
+      `ChainError=true` (wal-ключ в WAL_CHAIN_ERROR) — НЕ гейт операции:
+      **202, операция начинается** (Р17: WAL_CHAIN_ERROR — разрыв цепочки WAL
+      в архиве S3, не состояние кластера; единственное лечение — сам пересъём
+      полным; замирание стрима по гейту стрима не мешает параллельному
+      полному — стрим стоит, полный пишет в S3). `WalReceiverGateState`
+      расширяется полем `bool ChainError` (парсинг значения `state` wal-ключа
+      в `ReadAsync`: `WAL_CHAIN_ERROR` ⇒ Paused=true, ChainError=true;
+      STOPPED ⇒ Paused=true, ChainError=false; стрим-гейт `IsStopGatedAsync` —
+      без изменений). Unknown — транспортный отказ etcd при чтении гейтов:
+      операция не начинается, fail-closed — симметрия «503 — операция не
+      начинается» spec §3.2/Р11; воркер повторит тиком — transient §3.1.
+      registry.TryBegin ⇒ false ⇒ **409** `{"error":"operation already active"}`;
+      иначе создать операцию, запустить `Task.Run(RunAsync)` и ответить
+      **202** `{"state":"running","phase":"basebackup"}`.
     - `GET /api/backup/full` — registry.Current null ⇒ **404**; иначе **200**
       `{"state","phase","wal_start_segment"?,"size_bytes"?,"error"?}` (имена
       полей — snake_case из spec §3.2; `JsonSerializerOptions` с
@@ -498,7 +530,8 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
   202/409/503/404/200 соответствуют spec §3.2; staging чистится приёмником.
 - [ ] **Проверка:** сборка зелёная (та же команда, шаг 4); юнит-тесты операций —
   шаг 9. Смоук ручной не требуется.
-- **Связь со spec:** §3.2 (таблица нодового режима), §3.4 (Full backup),
+- **Связь со spec:** §3.2 (таблица нодового режима: 503 без WAL_CHAIN_ERROR,
+  Р17), §3.3 (два независимых гейта: стрим vs операция), §3.4 (Full backup),
   §2 п.4 (бюджеты/отмена), Р4 (резолв из etcd), Р5 (staging), Р10 (write-список
   по фактической роли, фиксация на старте), Р11 (гварды), Р13 (PGPASSWORD).
 
@@ -701,7 +734,10 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     POST full без операций → 202; повторный POST → 409; GET → 200 со снимком
     фейка → после Clear → 404; гейты (фейк IEtcdGateway с wal-ключом STOPPED/
     `backups-disabled`; ОТДЕЛЬНЫЙ кейс: гейт-чтение с Unknown=true — тоже 503,
-    операция не стартовала) → POST → 503 и операция не стартовала; cancel без
+    операция не стартовала; КЕЙС Р17: wal-ключ в `WAL_CHAIN_ERROR` — POST →
+    **202, операция стартует** (ChainError — НЕ гейт операции; стрим-гейт при
+    этом paused — ассерт `IsStopGatedAsync` true)) → POST STOPPED/disabled/Unknown →
+    503 и операция не стартовала; cancel без
     активной → 404; tool-маршруты verify/restore — те же таблицы (202/409/404).
   - `src/tests/PgWorker.UnitTests/WalReceiver/FullBackupOperationTests.cs`
     (фейк IProcessRunner + фейк IBackupS3): счастливый путь — порядок фаз
@@ -955,13 +991,21 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     удалить `BackupS3Factory`-env-джобовые списки из спек (резолв пула остаётся
     — `poolResolved`/G3-гварды работают как сегодня).
   - G0/G1/pool-резолв/addresses/restore-гвард/G2 (роль+pg_hba)/G3-планировщик
-    (`HasActive/IsDue/BackoffPassed/NextId`, BROKEN/gap-покрытие), journal-before-
+    (`HasActive/IsDue/BackoffPassed/NextId`, WAL_CHAIN_ERROR/gap-покрытие —
+    ЛОГИКА покрытия разрыва без изменений, значение `state` wal-ключа — новое
+    имя `WAL_CHAIN_ERROR` вместо `BROKEN` в парсинге `WalReceiverStatusReader`
+    и всех константах контракта воркера; переименование состояния — шаг 1
+    arch/канон, Р17), journal-before-
     manipulations, клэйм-гварды — БЕЗ ИЗМЕНЕНИЙ.
   - G3 вместо create/start джоба: после PLANNED-put — `receiver.StartFullAsync(
     WalReceiverAddress.ForNode(cluster, shard.Name, node, nodeKv.Value.Object), id, ct)`:
     `IsAccepted || IsConflict` ⇒ put RUNNING (409 = пере-старт прошлого тика,
-    операция уже жива — spec §3.5); `IsGated/IsTransient` ⇒ PLANNED остаётся,
-    следующий тик повторит (journal-факт при недостижимости: phase
+    операция уже жива — spec §3.5); **`IsGated` (503) возможен ТОЛЬКО при
+    STOPPED/disabled — ветка PLANNED остаётся, следующий тик повторит; при
+    WAL_CHAIN_ERROR API отвечает 202 — операций блокировки нет** (Р17:
+    пересъём — единственное лечение, лив-лока 503 нет, сам-хил сходится);
+    `IsTransient` ⇒ PLANNED остаётся, следующий тик повторит (journal-факт при
+    недостижимости: phase
     `receiver-unavailable/<X>/<id>`, error = адрес + причина — spec §3.1
     диагностика); контейнера полного больше нет — docker-движок источника
     здесь не нужен.
@@ -1179,11 +1223,18 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     `ReceiverReply`), счётчики вызовов Start/Cancel/Get с baseUrl-аргументами.
   - `BackupProcessTests` — таблицы (AAA-комментарии): 202 ⇒ RUNNING; 409 при
     PLANNED ⇒ RUNNING (пере-старт); 503/5xx/0 ⇒ PLANNED остаётся + journal
-    `receiver-unavailable`; GET uploading ⇒ UPLOADING+WalStartSegment; GET
+    `receiver-unavailable` (503 — только STOPPED/disabled-семантика приёмника;
+    КЕЙС Р17: при wal-ключе шарда `WAL_CHAIN_ERROR` фейк-клиент отвечает 202 —
+    G3-пересъём идёт, PLANNED ⇒ RUNNING, лив-лока 503 нет); GET uploading ⇒
+    UPLOADING+WalStartSegment; GET
     succeeded ⇒ COMPLETED+SizeBytes+verify PENDING; GET failed ⇒ FAILED+error;
     404 при RUNNING ⇒ FAILED `operation-vanished`; возраст > FullTimeoutSec ⇒
     FAILED job-timeout + CancelFullAsync вызван; G0/G1/G2/G3-гварды — прежние
     кейсы живут (фейк-драйвер etcd/db — как сейчас).
+  - Переименование в тестовых данных (Р17): все фикстуры/фейки etcd с
+    wal-ключом `state:"BROKEN"` → `state:"WAL_CHAIN_ERROR"` (парсеры
+    `WalReceiverStatusReader`, контроль цепочки, WalReceiverGateState-кейсы —
+    шаг 9); `grep -rn '"BROKEN"' src/ --include="*.cs"` — пусто после шага.
   - `BackupVerifyProcessTests`: создание tool-контейнера (`ToolJobSpec`-спека
     в фейк-драйвере: образ `NodeImage`, env `PGW_NODE_TOOL=1`, volume verify,
     порт-публикация в прод-режиме) + StartVerify с S3-контекстом; succeeded ⇒
@@ -1223,13 +1274,24 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
     недостижимость приёмника — блокировка alias, рестарт tool-контейнера —
     vanished-сценарии); динамические порты — `GetMappedPublicPort`-стиль
     (инспект публикации tool-контейнера), никаких литералов портов.
+  - `Backup_ChainBroken_SelfHeals` (Р17, spec §8 п.4): сценарий ставит
+    wal-ключ шарда в `WAL_CHAIN_ERROR` (НЕ `BROKEN` — старое имя упразднено);
+    ожидание: контроль требует пересъём → G3 → POST /api/backup/full →
+    **202** (WAL_CHAIN_ERROR — не гейт операции) → COMPLETED → контроль
+    заживляет цепочку; лив-лока 503 нет (до Р17 этот сценарий тупиковал:
+    503 ⇒ пересъём отклонён ⇒ BROKEN навсегда). Сам-хил — ассерт сценария.
+  - Переименование в E2E/фикстурах: все записи wal-ключей `BROKEN` →
+    `WAL_CHAIN_ERROR` (сценарии self-heal/TLI, фейковые etcd-данные).
   - Изоляция/teardown/телеметрия — по `docs/e2e-isolation.md` и AGENTS.md:
     MarkFailed, артефакты, `[PHASE]` — существующая инфраструктура не меняется.
   - Документация (упоминания образа/джобов): `docs/runbook.md`,
     `docs/backup-restore.md`, `docs/e2e-isolation.md` — убрать упоминания
     `pgworker-backup`/`PgWorker:Backups:Job:Image`/`PGW_BACKUP_JOB_IMAGE`
     (формулировки привести к приёмнику/tool-контейнерам; тон окружающего
-    текста, без исторических пассажей).
+    текста, без исторических пассажей); там же и в прочих `docs/**` —
+    переименование состояния wal-ключа BROKEN → WAL_CHAIN_ERROR (значение
+    `state` в описаниях контракта/сценариев; исторические упоминания
+    устаревшего значения не оставлять).
 - [ ] **Выход:** E2E-сценарии бэкапов адаптированы к приёмнику/tool-контейнерам;
   артефакты `pgworker-backup` отсутствуют во всём репо (кроме S3-бакета
   `pgworker-backups` — он НЕ упраздняется).
@@ -1251,6 +1313,24 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
   3. Юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Release --no-build --nologo > /tmp/t26-gate-ut.log 2>&1` — зелёный.
   4. Интеграция: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo > /tmp/t26-gate-it.log 2>&1` — зелёный; после КАЖДОЙ серии — зачистка (`docker ps -a --filter name=pgw- | head`, `docker network ls | grep -c kfw-net`, `docker network prune -f` при сиротах) до финальной строки прогона.
   5. Docker-E2E: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.slnx -c Release --no-build --filter "FullyQualifiedName~Scale_AddEmptyShard" > /tmp/t26-gate-e2e-min.log 2>&1` — зелёный; затем ПОЛНЫЙ прогон E2eFixture (`--filter "FullyQualifiedName~E2e"`), так как меняются образ ноды/supervisord-ветка, адресация API и все бэкап-пути; зачистка после серии; фейлы вне области задачи — задача в `arch/roadmap/bugs.md`, работа продолжается; ПЕРЕЗАПУСК упавших — запрещён без согласия пользователя (разбор по логам `/tmp/pgw-e2e-artifacts-<guid>/`).
+  6. **`Backup_ChainBroken_SelfHeals` — обязательный зелёный кейс гейта** (Р17,
+     spec §8 п.4): wal-ключ `WAL_CHAIN_ERROR` ⇒ POST полного 202 ⇒ пересъём ⇒
+     контроль заживляет (лив-лока 503 нет). Красный — разбор по логам воркера
+     (`backup-wal`/`refull`), НЕ перепрогон.
+  7. **Докопать хвосты предыдущего прогона** (`.dev-flow/handoff.md`, фейл 2/3):
+     (а) 4-минутный полный (в bk-spr — 23.6 с, в bk-corrupt — ~4 мин, причина
+     не разобрана) — добавить диагностику/лог прогресса в `FullBackupOperation`
+     (registry.Update по фазам + диагностическая строка прогресса
+     basebackup→uploading с размером staging; приёмник не молчит в логах ноды),
+     при повторе разницы — сравнить тайминги по логам; (б) обрыв GET-поллинга
+     `/api/backup/full` на 14-м запросе при появившемся позже COMPLETED —
+     проверить restart-логику цикла `BackupProcess` (loops-контроллер,
+     takeover) и дополнить журнал фазой супервизии (journal при каждом
+     переходе тика) — после фиксаций перепрогон `E2eBackupVerifyScenarios` и
+     `E2eSupervisorSelfHealScenarios` (бюджеты ассертов verify — по факту
+     времени полного; НЕ увеличивать молча: сначала логи, затем вывод),
+     затем `PoolRoleSwitchScenarios` (Pool_RoleSwitch — не прогонялся с
+     фиксами), затем полный E2eFixture.
 - [ ] **Выход:** гейт зелёный на свежем Release; серии зачищены.
 - [ ] **Проверка:** финальные строки всех лог-файлов (`Passed!`, `[PHASE] … done`); `docker ps -a | grep -c pgw-` ≈ 0, `docker network ls | grep -c kfw-net` ≈ 0.
 - **Связь со spec:** §3.8 п.3 (гейт: свежий Release, две отдельные команды,
@@ -1285,6 +1365,11 @@ AWSSDK (существующий `IBackupS3`/`PoolBackupS3`), etcd через
   5, 6, 7; §3.5 (процессы) → 12–14; §3.6 (конфиг) → 11, 15; §3.7 (образы/
   чистки) → 8, 15; §3.8 (тесты) → 9, 16, 17, 18. §8 (критерии 1–9): 1 → 15;
   2 → 3, 11, 17; 3–4 → 12; 5 → 13; 6 → 14; 7 → 8, 14; 8 → 18; 9 → 1–3, 19.
+  Р17 (WAL_CHAIN_ERROR — не стоп-гейт полного; переименование BROKEN) → 1
+  (arch/spec, коммит правок рабочего дерева), 5 (гейт операции + `ChainError`),
+  9 (юнит-кейсы 202/503), 12 (503-ветка STOPPED/disabled, воркер-парсинг),
+  16 (тест-фикстуры), 17 (E2E ChainBroken + docs), 18 (обязательный зелёный
+  кейс + handoff-хвосты).
 - **Развилки:** выбор entrypoint-ветки (§3.3 «выбор за планом») — зафиксирован
   в шаге 8; setpriv-эквивалент (§3.4 «выбор за планом») — зафиксирован в шаге 7;
   маркер транзиента скачивания (§3.5 «план фиксирует маркер») — зафиксирован
