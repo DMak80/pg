@@ -682,6 +682,10 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
+            // Staging полного (t26, arch/19 §2/§9): каталог в data-volume
+            // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
+            if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
+                env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
         }
 
         if (enableDoorman)

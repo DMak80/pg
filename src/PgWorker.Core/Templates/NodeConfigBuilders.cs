@@ -58,8 +58,10 @@ public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, st
 /// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
 /// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
 /// env не ставится — приёмник старт-фейлится (подсистема выключена
-/// валидацией старта: Enabled=true ⇒ Bucket непустой).</summary>
-public sealed record NodeBackupEnv(string? Bucket, string? CaPem);
+/// валидацией старта: Enabled=true ⇒ Bucket непустой). StagingDir — путь
+/// staging полного в data-volume ноды (t26, arch/19 §9; null/пуст ⇒ env не
+/// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).</summary>
+public sealed record NodeBackupEnv(string? Bucket, string? CaPem, string? StagingDir = null);
 
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —

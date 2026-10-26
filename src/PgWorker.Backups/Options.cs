@@ -18,6 +18,9 @@ public sealed record BackupsRuntimeOptions(
     // AWSSDK.Core 3.7.x не читается).
     string? S3CaBundlePath = null,
     string JobImage = "pgworker-backup:dev",
+    // t26: образ tool-контейнеров (verify/drill/restore) — pgworker-node
+    // (tool-режим, arch/19 §3.5/§3.6/§5); маппинг — Docker.Images.Node.
+    string NodeImage = "pgworker-node:dev",
     int RetryBaseSec = 300,
     int RetryMaxSec = 3600,
     string StagingDir = "/backup-staging",

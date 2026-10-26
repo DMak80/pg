@@ -319,7 +319,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     // связка с Enabled прятала бы причину падения за режимом.
     var nodeBackupEnv = new NodeBackupEnv(
         Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
-        CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath));
+        CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
+        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
 
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {

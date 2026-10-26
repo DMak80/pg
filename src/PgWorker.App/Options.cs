@@ -46,7 +46,8 @@ public sealed class PgWorkerOptions
     /// restore/wal/ретенция/verify/drill/супервизор) получают один и тот же
     /// режим сетей спек джобов и адресации источника.</summary>
     public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime(
-        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null);
+        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null,
+        Docker.Images.Node);
 
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
     /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
@@ -514,8 +515,9 @@ public sealed class BackupsOptions
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
     /// — именованными аргументами: record расширялся с обеих сторон.
     /// t41: contourNetwork — режим сети контура (Docker.ContourNetwork;
-    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()).</summary>
-    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null) => new(
+    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()). t26:
+    /// nodeImage — образ tool-контейнеров (Docker.Images.Node).</summary>
+    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null, string? nodeImage = null) => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
@@ -523,6 +525,7 @@ public sealed class BackupsOptions
         S3Bucket: S3.Bucket,
         S3CaBundlePath: S3.CaBundlePath,
         JobImage: Job.Image,
+        NodeImage: nodeImage ?? "pgworker-node:dev",
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
         StagingDir: Staging.Dir,
