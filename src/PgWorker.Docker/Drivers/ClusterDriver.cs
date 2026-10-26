@@ -101,11 +101,13 @@ public interface IClusterDriver
     // null — хост не известен (вызывающий трактует как transient).
     IDockerEngine? EngineFor(string host);
 
-    // Чистка джоб-контейнеров pgw-backup-full-<C>-* (и их staging volumes) +
-    // restore-джобов pgw-backup-restore-<C>-* (t05; БЕЗ volume — он является
-    // data-volume ноды, его снесёт RemoveNodeAsync) (Deprovisioning D1/D2,
-    // remove-shard): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
-    // (arch/19 §4 — orphan t07).
+    // Чистка tool-контейнеров бэкапов кластера (Deprovisioning D1/D2,
+    // remove-shard): verify/drill по префиксам pgw-backup-verify-<C>-* /
+    // pgw-backup-drill-<C>-* — remove force вместе с их volume (volume — одно
+    // имя с контейнером) + restore-контейнеры pgw-backup-restore-<C>-* —
+    // remove force БЕЗ volume (он — data-volume ноды, его снесёт
+    // RemoveNodeAsync): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
+    // (arch/19 §4 — orphan).
     Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct);
 
     // Точечная чистка restore-джобов шарда pgw-backup-restore-<C>-<X>-* (t05
