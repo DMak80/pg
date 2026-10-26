@@ -229,6 +229,9 @@ public class FullBackupOperationTests
         var psi = runner.Invocations.Single(i => i.FileName == "pg_basebackup");
         psi.EnvironmentVariables["PGPASSWORD"].Should().Be(Password);
         string.Join(" ", psi.ArgumentList).Should().NotContain(Password);
+        // Assert: HOME=/tmp — /root недоступен под uid 101 (Spilo: postgresql.crt
+        // в /root/.postgresql; libpq без этого падает Permission denied).
+        psi.EnvironmentVariables["HOME"].Should().Be("/tmp");
         // Assert: staging очищен после исхода.
         Directory.EnumerateFileSystemEntries(staging).Should().BeEmpty();
 

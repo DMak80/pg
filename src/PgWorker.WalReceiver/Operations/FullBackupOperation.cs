@@ -149,6 +149,13 @@ public sealed class FullBackupOperation : IReceiverOperation
             psi.ArgumentList.Add("stream");
             psi.ArgumentList.Add("--checkpoint=fast");
             psi.ArgumentList.Add("--manifest-checksums=SHA256");
+            // HOME=/tmp: walreceiver работает под postgres (supervisord
+            // user=postgres), а HOME наследует от supervisord (/root) —
+            // в образе Spilo там лежит postgresql.crt, недоступный uid 101
+            // (Permission denied); с HOME=/tmp libpq клиентский сертификат
+            // не ищет (sslmode=require его не требует). Приём arch/19 §3.5
+            // (pg_ctl restore) — тот же паттерн, RestoreOperation.PgCtl.
+            psi.EnvironmentVariables["HOME"] = "/tmp";
             psi.EnvironmentVariables["PGPASSWORD"] = targets.Password!;
             var (exitCode, _, stderr) = await _runner.RunAsync(psi, token);
             if (exitCode != 0)
