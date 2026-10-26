@@ -101,6 +101,9 @@ public sealed class FullBackupOperation : IReceiverOperation
             var writeTargets = role == WalReceiverRole.Master
                 ? pool.WriteMaster
                 : pool.WriteReplica;
+            // Прогресс в журнал ноды (диагностика «почему долго»: приёмник не
+            // молчит между 202 и терминальным статусом).
+            Prog($"basebackup start (role={role.ToString().ToLowerInvariant()})");
 
             // CA https S3 (per-install, env ноды): материализация в temp —
             // один раз на операцию (образец WalReceiverLoop), 0600.
@@ -174,6 +177,7 @@ public sealed class FullBackupOperation : IReceiverOperation
                 return;
             }
             var sizeBytes = DirectorySize(Path.Combine(opRoot, "full"));
+            Prog($"basebackup done: wal_start={walStart} size={sizeBytes} bytes — uploading");
 
             // 6. Фаза uploading: upload 1:1 (вкл. backup_manifest, pg_wal/) —
             //    ключ = <C>/<X>/full/<id>/<отн. путь>; ЗАТЕМ закрытые сегменты
@@ -183,6 +187,7 @@ public sealed class FullBackupOperation : IReceiverOperation
                 _id, OperationStates.Uploading, OperationPhases.Uploading,
                 WalStartSegment: walStart));
             var fullDir = Path.Combine(opRoot, "full");
+            var uploadedFiles = 0;
             foreach (var file in Directory.EnumerateFiles(fullDir, "*", SearchOption.AllDirectories))
             {
                 var rel = Path.GetRelativePath(fullDir, file).Replace('\\', '/');
@@ -193,6 +198,9 @@ public sealed class FullBackupOperation : IReceiverOperation
                     Fail(put.Error!.Message.Split('\n')[0]);
                     return;
                 }
+                uploadedFiles++;
+                if (uploadedFiles % UploadProgressEveryFiles == 0)
+                    Prog($"upload progress: {uploadedFiles} files, {DirectorySize(fullDir)} bytes");
             }
             foreach (var file in Directory.EnumerateFiles(Path.Combine(fullDir, "pg_wal")))
             {
@@ -213,6 +221,7 @@ public sealed class FullBackupOperation : IReceiverOperation
             _registry.Update(new OperationSnapshot(
                 _id, OperationStates.Succeeded, OperationPhases.Uploading,
                 WalStartSegment: walStart, SizeBytes: sizeBytes));
+            Prog($"COMPLETED: wal_start={walStart} size={sizeBytes} bytes, files={uploadedFiles}");
         }
         catch (OperationCanceledException)
         {
@@ -233,6 +242,13 @@ public sealed class FullBackupOperation : IReceiverOperation
                 await disposable.DisposeAsync();
         }
     }
+
+    // Прогресс-строка в stderr (журнал ноды): шаг прогресс-диагностики —
+    // приёмник не молчит в логах между 202 и терминальным статусом.
+    private const int UploadProgressEveryFiles = 500;
+
+    private void Prog(string message)
+        => Console.Error.WriteLine($"walreceiver: full {_id} {message}");
 
     /// <summary>Best-effort отмена (cancel API): гасит внутренний CTS — runner
     /// убивает дерево текущего child-процесса; операция завершится failed

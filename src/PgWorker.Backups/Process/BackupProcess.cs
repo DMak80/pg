@@ -106,7 +106,14 @@ public sealed class BackupProcess(
             // демонтируется restore-процессом — контуры бэкапов его не трогают.
             if (shardBackups?.Restores.Any(r => r.State
                     is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
+            {
+                // Диагностика «почему супервизия молчит» (тик не валим — так
+                // задумано); в лог, не в etcd-журнал (condition персистентный).
+                logger.LogInformation(
+                    "backups {Cluster}/{Shard}: supervision skipped — restore in progress",
+                    cluster, shard.Name);
                 continue;
+            }
 
             // S: супервизия активного (PLANNED — запуск/достарт; Running/Uploading —
             // поллинг UPLOADING/итог/vanished).
@@ -392,7 +399,15 @@ public sealed class BackupProcess(
             // node-факт статуса: нода исчезла из portalloc → transient
             // (адрес приёмника не собрать достоверно) — следующий тик.
             if (source is null)
+            {
+                // Диагностика «почему поллинг молчит» (расследование обрыва
+                // GET-поллинга: portalloc-факт ноды активной операции пропал —
+                // в лог, не в etcd-журнал — условие может держаться тиками).
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: full {Id} supervision skipped — node {Node} missing from portalloc",
+                    cluster, shard.Name, active.Id, active.Node);
                 continue;
+            }
             var receiverUrl = WalReceiverAddress.ForNode(cluster, shard.Name, active.Node, source.Object);
 
             // PLANNED: команда запуска ещё не принята — идемпотентный повтор
@@ -472,6 +487,11 @@ public sealed class BackupProcess(
                             BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(uploading), ct);
                         if (!put.IsSuccess)
                             return put;
+                        // Journal-факт перехода супервизии (диагностика долгих
+                        // полных: граница basebackup/upload в журнале воркера).
+                        await journal.WritePhaseAsync(cluster, Op,
+                            $"uploading/{shard.Name}/{active.Id}", claims.InstanceId,
+                            $"wal_start={snapshot.WalStartSegment ?? "-"}", ct);
                     }
                     continue;
 
