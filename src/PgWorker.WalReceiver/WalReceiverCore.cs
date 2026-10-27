@@ -312,7 +312,7 @@ public sealed class WalReceiverCore
                         return Outcome(WalSessionKind.WaitingSlot);
                     var (procedureResult, jump, historyMissing) =
                         started.Error is WalStartRefused && tailSegment is not null
-                            ? await TliProcedureAsync(o, source, s3, events, startAt, tailSegment, retry, sct)
+                            ? await TliProcedureAsync(o, source, s3, events, startAt, tailSegment, retry, exhaustion, sct)
                             : (Result<ulong?>.Success(null), (WalReceiverTliJump?)null, (uint?)null);
                     if (jump is { } j)
                     {
@@ -527,11 +527,15 @@ public sealed class WalReceiverCore
     /// прежнее (транспорт), поэтому перед досыпкой и перед прыжком — OpenAsync.
     /// Идемпотентна: гонки повторного промоута конвергентны — каждая итерация
     /// начинается IDENTIFY_SYSTEM, счётчиков попыток нет; старт с историческим
-    /// TIMELINE безопасен (сервер отдаёт его до конца ветки).</summary>
+    /// TIMELINE безопасен (сервер отдаёт его до конца ветки). Флаг исчерпания —
+    /// СЕССИОННЫЙ (общий с put-циклом сегментов): снятие факта «первым
+    /// успешным put» обязано срабатывать и на put-ах процедуры, иначе
+    /// pool_exhausted залипает в статус-ключе при живых успешных put-ах.</summary>
     private static async Task<(Result<ulong?> Start, WalReceiverTliJump? Jump, uint? HistoryMissing)>
         TliProcedureAsync(
             WalReceiverOptions o, IXLogReplicationSource source, IBackupS3 s3, WalSessionEvents events,
-            ulong tail, string tailSegment, TimeSpan retry, CancellationToken ct)
+            ulong tail, string tailSegment, TimeSpan retry, PoolExhaustionFlag exhaustion,
+            CancellationToken ct)
     {
         uint? historyMissing = null;
         if (WalFileName.TryParse(tailSegment) is not { } tailFile)
@@ -554,12 +558,11 @@ public sealed class WalReceiverCore
             var history = await ReadHistoryWithFallbackAsync(source, events, serverTli, ct);
             if (history.Value is { } content)
             {
-                var procedureExhaustion = new PoolExhaustionFlag();
                 await PutWithRetryAsync(
                     s3, events, o, $"{o.Cluster}/{o.Shard}/wal/{serverTli:x8}.history",
                     content,
                     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)),
-                    retry, ct, procedureExhaustion);
+                    retry, ct, exhaustion);
                 events.HistoryDelivered?.Invoke(content.Length);
             }
             else
