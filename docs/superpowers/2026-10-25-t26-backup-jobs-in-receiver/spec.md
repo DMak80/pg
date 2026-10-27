@@ -115,7 +115,12 @@ DR-механика restore (source_pool, демонтаж/REJOINING/initialize-
 JSON-контракт; маршруты минимального API (Minimal APIs). Все ответы —
 короткие; фазы/ошибки — однострочные (JSON-безопасность, как сегодня в
 result-JSON). Состояния операций: `running | succeeded | failed`; у полного
-дополнительно `uploading` (фаза фиксации `wal_start_segment`).
+дополнительно `uploading` (фаза фиксации `wal_start_segment`); у tool-операций
+дополнительно `cancelled` (операторская отмена: `POST /api/ops/cancel` —
+внешний канал мимо воркера — завершает операцию снимком `cancelled`, НЕ
+`failed`: отмена — не суждение о данных; повторный GET отдаёт снимок
+`cancelled`, операция не выглядит активной (не resurrect), новая операция на
+контейнере возможна — гвард пропускает терминальные снимки).
 
 Нодовый режим (полный бэкап; приёмник с identity):
 
@@ -133,7 +138,7 @@ Tool-режим (verify/drill/restore; одна активная операци�
 | `GET /api/ops/verify` | `{"state","phase":"downloading\|verifying","error"?}`; 404 |
 | `POST /api/ops/restore` | тело `{"backup_id","target_time"?:PG-совместимый (yyyy-MM-dd HH:mm:sszzz; воркер разбирает RFC3339 заявки и нормализует — разбор на воркере),"recovery_timeout_sec","s3":{…}}`; 202/409; `target_time` отсутствует = `latest` |
 | `GET /api/ops/restore` | `{"state","phase":"downloading\|recovering","restored_to_lsn"?,"system_id"?,"error"?}`; 404 |
-| `POST /api/ops/cancel` | 202 — best-effort (kill postgres/pg_verifybackup/скачивание, чистка) |
+| `POST /api/ops/cancel` | 202 — best-effort (kill postgres/pg_verifybackup/скачивание, чистка); итог операции — снимок `state=cancelled` (НЕ failed — отмена не суждение о данных; воркер-супервиз отличает от vanished: verify-кандидат → PENDING, restore/drill → запись удаляется) |
 
 Секреты — ТОЛЬКО в POST-телах; GET-статусы и логи их не содержат.
 `wal_start_segment` появляется с фазы uploading (из `backup_label`), как
@@ -254,7 +259,11 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   `POST /api/ops/verify` (S3-контекст read-списка) → поллинг `GET`:
   `succeeded` ⇒ OK + `checked_unix`; сбой скачивания (транзиент статуса
   `failed` с маркером загрузки — план фиксирует маркер) ⇒ PENDING ретраи
-  тиками; `failed` ⇒ verify FAILED + `error`. Бюджет `Job:VerifyTimeoutSec`:
+  тиками; `failed` ⇒ verify FAILED + `error`; GET `cancelled` (операторская
+  отмена — `POST /api/ops/cancel` tool-контейнера, внешний канал мимо
+  воркера) ⇒ снос контейнера+volume, кандидат → PENDING (`checked_unix=now`
+  — перепроверка по расписанию политики), journal `cancelled-by-operator`,
+  НИКАКОГО перманентного FAILED. Бюджет `Job:VerifyTimeoutSec`:
   kill+rm tool-контейнера, кандидат остаётся PENDING, попытка зачтена
   (вердикт FAILED по таймауту НЕ ставится — как сегодня). Итог ⇒ снос
   контейнера+volume.
@@ -266,14 +275,22 @@ journal-before-manipulations, transient/permanent-семантику, takeover.
   S3-контекст source_pool DR-заявки ?? собственного пула) → поллинг `GET`:
   `phase` → статус etcd (панель видит downloading/recovering); `succeeded` ⇒
   REJOINING (+`restored_to_lsn`, `system_id`); `failed` ⇒ permanent-FAILED
-  (чистка volume первой ноды — как сегодня). Бюджеты `Job:RestoreTimeoutSec`
+  (чистка volume первой ноды — как сегодня); GET `cancelled` (операторская
+  отмена) ⇒ всё как до старта операции: снос tool-контейнера и data-volume
+  первой ноды (до-restore «пустое» состояние), снятие щита
+  `restore-in-progress`, запись заявки `/<C>/<X>/restore/<id>` УДАЛЯЕТСЯ
+  из etcd (операции нет — записи нет), journal `cancelled-by-operator`,
+  НИКАКОГО перманентного FAILED. Бюджеты `Job:RestoreTimeoutSec`
   (статусный) и `recovery_timeout_sec` (внутри операции) — сохраняются;
   исчерпание ⇒ FAILED + снос контейнера. Демонтаж — ТОЛЬКО до первого старта
   tool-контейнера (409 volume-in-use прецедент жив).
 - **RestoreDrillProcess**: отбор/валидация/cleaning-фаза — БЕЗ изменений;
   запуск — tool-контейнер (свой volume `pgw-backup-drill-<C>-<X>-<id>`,
   контейнер+volume одно имя — D1 жив) + `POST /api/ops/restore` (latest,
-  без target) + поллинг; `Drill:TimeoutSec` / `drill-vanished` — как сегодня.
+  без target) + поллинг; GET `cancelled` (операторская отмена) ⇒ снос
+  scratch-контейнера/volume, ключ дрилла УДАЛЯЕТСЯ (следов не осталось),
+  journal `cancelled-by-operator`, НИКАКОГО FAILED; `Drill:TimeoutSec` /
+  `drill-vanished` — как сегодня.
 
 ### 3.6. Конфигурация (§9 arch/19)
 
