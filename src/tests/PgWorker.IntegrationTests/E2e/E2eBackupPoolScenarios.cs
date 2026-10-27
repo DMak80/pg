@@ -587,14 +587,35 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
             // Act B — список [node1]: рестарт воркера (policy перечитывается стартом —
-            // детерминизм без надежды на revise на лету; приёмники сами меняют цель
-            // по etcd-policy, t25), стоп node1 → исчерпание: DEGRADED + маркер;
-            // подъём → ACTIVE.
+            // детерминизм без надежды на revise на лету), стоп node1 → исчерпание:
+            // DEGRADED + маркер; подъём → ACTIVE.
             await app.DisposeAsync();
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
+            // Рецикл подключения приёмников (воркер ВНИЗ — его стартовый del
+            // ключа не помешает): write-список резолвится ТОЛЬКО на цикле
+            // подключения (arch/19 §3 — новая сессия), а живые сессии Act A
+            // стримят со старым списком [node1,node2] — исчерпания списка
+            // [node1] без рецикла не случится. Форсируем новую сессию
+            // легитимным arch-гейтом: put /pgworker/backups-disabled → сессии
+            // чисто завершаются (StopGateProbe ≤ 5 c, Reconnect) →
+            // waiting_disabled → delete → цикл подключения резолвит targets
+            // заново, уже [node1].
+            await G.PutAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, "1", null, ct);
+            var paused = await E2eFixture.WaitForAsync(async () =>
+            {
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count >= 2 && facts.All(f => f.State == "waiting_disabled");
+            }, TimeSpan.FromSeconds(120), ct);
+            paused.Should().BeTrue("receivers paused by the backups-disabled gate");
+            await G.DeleteAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, prefix: false, ct);
             var app2 = await StartPoolHostAsync("pac4b", ct);
             await using var app2Owner = app2;
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("agents with the new env are raised");
+            var reconnected = await E2eFixture.WaitForAsync(async () =>
+            {
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count >= 2 && facts.All(f => f.State == "streaming");
+            }, TimeSpan.FromSeconds(120), ct);
+            reconnected.Should().BeTrue("receivers opened new sessions with the [node1] write list");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
             var degraded = await E2eFixture.WaitForAsync(async () =>
             {
