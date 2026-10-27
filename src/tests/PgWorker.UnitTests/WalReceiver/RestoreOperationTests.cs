@@ -478,6 +478,30 @@ public class RestoreOperationTests
             "a transport failure must be retried, not read as end-of-WAL");
     }
 
+    // AAA: транспортный ретрай ограничен ЛИБО лимитом попыток, ЛИБО жёстким
+    // дедлайном вызова (arch/19 §3.5): первый транспортный сбой при запасе
+    // лимита и дедлайна — ретрай; последняя попытка — стоп; дедлайн наступил
+    // — стоп при неисчерпанном лимите (мёртвая нода не растягивает вызов
+    // сверх бюджета, промоут восстановления не уезжает из бюджета операции)
+    [Fact]
+    public void ShouldRetryTransport_LimitedByAttemptsOrDeadline()
+    {
+        // Arrange — старт вызова и тики «теперь»
+        var start = Environment.TickCount64;
+
+        // Act + Assert — первая попытка при запасе обоих лимитов: ретрай
+        FetchWalCommand.ShouldRetryTransport(1, start, start).Should().BeTrue(
+            "the first transport attempt with both budgets intact is retried");
+        // исчерпан лимит попыток: стоп даже при запасе дедлайна
+        FetchWalCommand.ShouldRetryTransport(
+            FetchWalCommand.TransportAttempts, start, start).Should().BeFalse(
+            "the transport retry limit stops the call even with the deadline intact");
+        // наступил дедлайн вызова: стоп при неисчерпанном лимите попыток
+        FetchWalCommand.ShouldRetryTransport(
+            1, start, start + FetchWalCommand.CallDeadline.Ticks).Should().BeFalse(
+            "the call deadline stops the call even with attempts left (arch/19 §3.5)");
+    }
+
     // Snapshot читается из операции (реестр — приватный в тесте).
     private static OperationSnapshot? registrySnapshot(RestoreOperation op)
         => op.Snapshot;

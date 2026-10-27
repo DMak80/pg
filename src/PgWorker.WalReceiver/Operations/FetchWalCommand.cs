@@ -21,8 +21,14 @@ internal sealed record FetchWalContext(
 /// даёт ложный 404 и обрывает recovery до цели. Транспортный сбой (НЕ «сегмента
 /// нет») — ограниченный внутренний ретрай 3×2 с перед exit 1: restore_command
 /// зовётся postgres'ом на каждый сегмент, разовый сетевой флап иначе читается
-/// как конец WAL → преждевременный promote. Файл уже лежит по dest
-/// (переполучение восстановления) → exit 0 без хода в S3.</summary>
+/// как конец WAL → преждевременный promote. Вызов в ЛЮБОМ исходе укладывается в
+/// жёсткий дедлайн (CallDeadline): внутренние ретраи S3-клиента выключены
+/// (MaxErrorRetry=0 — ретраит сам fetch-wal), иначе клиентские ретраи ×
+/// пер-запросный таймаут × перебор мёртвой ноды растягивают один вызов на
+/// минуты, целевое восстановление не доходит до «исчерпание архива → promote»
+/// в бюджете операции. Длительные моргания сети покрывают ПОВТОРНЫЕ вызовы
+/// restore_command самим postgres'ом. Файл уже лежит по dest (переполучение
+/// восстановления) → exit 0 без хода в S3.</summary>
 internal static class FetchWalCommand
 {
     // Бюджет внутреннего ретрая транспортных сбоев: 3 попытки с паузой 2 с —
@@ -30,6 +36,12 @@ internal static class FetchWalCommand
     // ждёт завершения restore_command на каждый сегмент).
     internal static readonly int TransportAttempts = 3;
     private static readonly TimeSpan TransportRetryDelay = TimeSpan.FromSeconds(2);
+
+    // Жёсткий дедлайн ВСЕГО вызова (arch/19 §3.5): после него — stderr-факт и
+    // exit 1 (для postgres — конец WAL; повторный вызов restore_command продолжит
+    // добор). Проверяется МЕЖДУ попытками: текущая доигрывается в своём
+    // пер-запросном таймауте, попытки сверх дедлайна не начинаются.
+    internal static readonly TimeSpan CallDeadline = TimeSpan.FromSeconds(45);
 
     // Корень данных ноды (arch/19 §3.5, Spilo-layout): data-volume монтируется
     // сюда, PGDATA — data/ под ним; postgres зовёт restore_command с cwd = PGDATA.
@@ -82,6 +94,13 @@ internal static class FetchWalCommand
             endpoints, bucket, prefix, accessKey, secretKey,
             string.IsNullOrWhiteSpace(env("PGW_S3_CA_PEM")) ? null : env("PGW_S3_CA_PEM"));
     }
+
+    /// <summary>Чистая функция для тестов: продолжать ли транспортные попытки —
+    /// лимит попыток НЕ исчерпан И жёсткий дедлайн вызова НЕ наступил
+    /// (arch/19 §3.5: вызов в любом исходе — секунды, не минуты).</summary>
+    internal static bool ShouldRetryTransport(int attempt, long startTick, long nowTick)
+        => attempt < TransportAttempts
+           && TimeSpan.FromTicks(nowTick - startTick) < CallDeadline;
 
     /// <summary>Чистая функция для тестов: ОДИН проход по клиентам пула (перебор
     /// read-списка до найденного); transportError — первая транспортная ошибка
@@ -152,13 +171,17 @@ internal static class FetchWalCommand
         try
         {
             // Ограниченный внутренний ретрай транспортных сбоев (не «сегмента
-            // нет» — тот сразу exit 1): клиенты пересоздаются на попытку
-            // (истёкший/битый коннект не переиспользуется).
+            // нет» — тот сразу exit 1) ПОД жёстким дедлайном вызова: клиенты
+            // пересоздаются на попытку (истёкший/битый коннект не переиспользуется),
+            // клиентские ретраи выключены (MaxErrorRetry=0) — одна транспортная
+            // попытка ограничена пер-запросным таймаутом клиента на ноду.
+            var startTick = Environment.TickCount64;
             for (var attempt = 1; ; attempt++)
             {
                 var clients = context.Endpoints.Select(endpoint => (IBackupS3)new BackupS3(
                     new S3ClientOptions(endpoint, context.Bucket, context.AccessKey,
-                        context.SecretKey, Region: null, CaBundlePath: caBundlePath),
+                        context.SecretKey, Region: null, CaBundlePath: caBundlePath,
+                        MaxErrorRetry: 0),
                     WalReceiverCore.PutAttemptTimeout)).ToList();
                 try
                 {
@@ -168,7 +191,7 @@ internal static class FetchWalCommand
                         return 0;
                     if (transportError is null)
                         return 1; // нигде нет — конец WAL (все endpoints not found)
-                    if (attempt >= TransportAttempts)
+                    if (!ShouldRetryTransport(attempt, startTick, Environment.TickCount64))
                     {
                         Console.Error.WriteLine($"fetch-wal: {transportError}");
                         return 1;

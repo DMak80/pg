@@ -222,6 +222,37 @@ public class BackupPlannerTests
         BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeTrue();
     }
 
+    // AAA: антишторм (arch/19 §2, t097) — НЕпокрывший COMPLETED (wal_start ниже
+    // границы разрыва) считается попыткой бэкоффа: пока redo/restart-точка
+    // источника не перешла границу, повторный полный снимается с той же позиции
+    // — без пользы (шторм «полный каждые 10 с»); предикат caller'а учитывает
+    // только непокрывшие, покрывший COMPLETED попыткой НЕ является
+    [Fact]
+    public void Backoff_UncoveredCompleted_CountsAsAttempt()
+    {
+        // Arrange — старый валидный COMPLETED + свежий COMPLETED с wal_start
+        // ниже границы (последняя попытка 100 c назад), граница «1/001»
+        var uncoveredFull = Full("20260910025820Z", FullBackupStatus.Completed, Unix(Now) - 100, Unix(Now) - 90)
+            with { WalStartSegment = "000000020000000100000000" };
+        var fulls = new FullBackupState[]
+        {
+            Full("20260908030000Z", FullBackupStatus.Completed, Unix(Now.AddDays(-2)), Unix(Now.AddDays(-2).AddMinutes(5))),
+            uncoveredFull,
+        };
+
+        // Act / Assert — без предиката: шторм (попыток нет, пропуск немедленный);
+        // с предикатом: 100 < 300 — держит; сквозь 300 c — отпускает.
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeTrue(
+            "without the uncovered predicate a covered-in-name COMPLETED storms the retake");
+        var uncovered = new Func<FullBackupState, bool>(f =>
+            f.State == FullBackupStatus.Completed
+            && f.WalStartSegment is { Length: > 0 } ws
+            && string.CompareOrdinal(ws, "000000020000000100000001") < 0);
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now), uncovered).Should().BeFalse(
+            "an uncovered COMPLETED below the gap boundary is a backoff attempt");
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now) + 201, uncovered).Should().BeTrue();
+    }
+
     // AAA: инвариант — максимум один активный (PLANNED/RUNNING/UPLOADING)
     [Theory]
     [InlineData(FullBackupStatus.Planned, true)]

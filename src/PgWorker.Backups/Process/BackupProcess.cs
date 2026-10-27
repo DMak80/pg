@@ -83,8 +83,15 @@ public sealed class BackupProcess(
         }
         // Пул не выбран (policy без s3) — подсистема кластера молчит: полный не
         // планируется, journal не пишем (алерт backup-pool-missing — панель).
+        // Молчание тика — диагностируется в лог (супервизия/пересъёмы до конца
+        // тика не доходят — разбор «почему полный не поллится/не переснимается»).
         if (poolResolved.Value is null)
+        {
+            logger.LogWarning(
+                "backups {Cluster}: pool not selected (policy without s3) — supervision and retakes are skipped",
+                cluster);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
 
         // Адреса нод один раз на тик (portalloc).
         var addresses = await shardEndpoints.ReadPortAllocAsync(cluster, ct);
@@ -128,17 +135,35 @@ public sealed class BackupProcess(
             // уже прошла), следующий тик дообеспечит.
             var master = await shardEndpoints.ResolveMasterAsync(cluster, shard, addresses.Value, ct);
             if (!master.IsSuccess || master.Value is null)
+            {
+                // Диагностика «почему пересъёмы молчат» (тик не валим — так
+                // задумано; лог, не etcd-журнал — condition персистентный).
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: role-guard skipped — master resolve failed: {Error}",
+                    cluster, shard.Name, master.IsSuccess ? "no master resolved" : master.Error!.Message);
                 continue;
+            }
             var adminDsn = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, installSecrets);
             var guard = await db.ExecuteScalarAsync(
                 adminDsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(creds.Value.BackupPassword), ct);
             if (!guard.IsSuccess)
-                continue; // transient (сеть/мастер ушёл) — следующий тик дообеспечит
+            {
+                // transient (сеть/мастер ушёл) — следующий тик дообеспечит
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: role-guard skipped — guard query failed: {Error}",
+                    cluster, shard.Name, guard.Error!.Message);
+                continue;
+            }
             if (guard.Value is string createRole)
             {
                 var createdRole = await db.ExecuteAsync(adminDsn, createRole, ct);
                 if (!createdRole.IsSuccess)
+                {
+                    logger.LogWarning(
+                        "backups {Cluster}/{Shard}: role-guard skipped — create role failed: {Error}",
+                        cluster, shard.Name, createdRole.Error!.Message);
                     continue;
+                }
             }
 
             // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
@@ -163,7 +188,10 @@ public sealed class BackupProcess(
             // нечего, применится при первом старте). Отказ — transient: шард
             // skip, следующий тик дообеспечит (запуск на непатченной ноде карался
             // бы FAILED-циклом с бэкоффом). Усвоенные ноды (object) — exec в их
-            // контейнер (pgw-имени у них нет).
+            // контейнер (pgw-имени у них нет). Паттерн pkill — «patro[n]i»:
+            // -f матчит ПОЛНЫЙ cmdline, а команда скрипта — его собственный
+            // argv — содержала литерал «local/bin/patroni» и pkill убивал
+            // скрипт SIGHUP'ом (exit 129) до опроса применения (t097).
             var hbaPatched = true;
             foreach (var nodeKey in addresses.Value.Keys
                          .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
@@ -177,7 +205,7 @@ public sealed class BackupProcess(
                     F=/run/postgres.yml; S='replication backup_exec'
                     grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && grep -q "$S" "$F" 2>/dev/null && exit 0
                     grep -q "$S" "$F" 2>/dev/null || { sed -i 's/^  pg_hba:$/  pg_hba:\n  - hostssl replication backup_exec all scram-sha-256/' "$F" && chown postgres:root "$F" && chmod 644 "$F"; }
-                    pkill -HUP -f 'local/bin/patroni' 2>/dev/null
+                    pkill -HUP -f 'local/bin/patro[n]i' 2>/dev/null
                     [ -f "$PGDATA/PG_VERSION" ] || exit 0
                     grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0
                     i=0; while [ $i -lt 10 ]; do grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done
@@ -189,6 +217,11 @@ public sealed class BackupProcess(
                     : await driver.ExecNodeAsync(cluster, shard.Name, nodeName, hbaCmd, ct);
                 if (!patched.IsSuccess)
                 {
+                    // Диагностика «почему пересъёмы молчат» (тик не валим — так
+                    // задумано; лог, не etcd-журнал — condition персистентный).
+                    logger.LogWarning(
+                        "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
+                        cluster, shard.Name, nodeName, patched.Error!.Message);
                     hbaPatched = false;
                     break;
                 }
@@ -237,17 +270,78 @@ public sealed class BackupProcess(
                     walChainBroken: brokenBoundary is not null && !breakCovered,
                     walGapUncovered: gapBoundary is not null && !gapCovered))
                 continue;
-            if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
-                continue; // бэкофф переснятия FAILED — следующий тик
+
+            // Антишторм (arch/19 §2, t097): при живой непокрытой границе (gap или
+            // chain) COMPLETED-полный с wal_start НИЖЕ границы — тоже ПОПЫТКА
+            // бэкоффа: пока redo/restart-точка источника не перешла границу,
+            // повторный полный снимается с той же позиции — без пользы (шторм
+            // «полный каждые 10 с» из t07-инцидента). Покрывший не считается —
+            // его ждёт снятие метки контролем, а не новый полный.
+            Func<FullBackupState, bool>? uncoveredAttempt = null;
+            var liveBoundary = gapBoundary is { Length: > 0 } gapBoundary2 && !gapCovered
+                ? gapBoundary2
+                : brokenBoundary is { Length: > 0 } brokenBoundary2 && !breakCovered
+                    ? brokenBoundary2
+                    : null;
+            if (liveBoundary is { Length: > 0 } boundaryValue)
+            {
+                uncoveredAttempt = f => f.State == FullBackupStatus.Completed
+                    && f.WalStartSegment is { Length: > 0 } ws
+                    && string.CompareOrdinal(ws, boundaryValue) < 0;
+                // Диагностика живой границы — разбор «почему пересъём штормит/молчит»
+                // (тик не валим; строка на тик при непокрытом разрыве — как control).
+                var uncoveredCount = fulls.Count(uncoveredAttempt);
+                logger.LogInformation(
+                    "backups {Cluster}/{Shard}: retake check — fulls={Fulls} boundary={Boundary} " +
+                    "covered={Covered} uncovered={Uncovered} started={LastStarted}",
+                    cluster, shard.Name, fulls.Count, boundaryValue, gapCovered || breakCovered,
+                    uncoveredCount, fulls.Count > 0 ? fulls.Max(f => f.StartedUnix) : 0);
+            }
+            if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix, uncoveredAttempt))
+            {
+                // Бэкофф переснятия FAILED — норма (не деградация), но молчание
+                // планировщика при живом пересъёмном сигнале разобрать трудно:
+                // одна строка на тик снимает вопрос «почему полных нет».
+                logger.LogInformation(
+                    "backups {Cluster}/{Shard}: retake postponed — backoff window is open",
+                    cluster, shard.Name);
+                continue; // бэкофф переснятия — следующий тик
+            }
 
             // источник — sync-standby, fallback мастер; резолв не удался →
             // transient: journal НЕ пишем, следующий тик повторит.
             var source = await shardEndpoints.ResolveBackupSourceAsync(cluster, shard, addresses.Value, ct);
             if (!source.IsSuccess || source.Value is null)
+            {
+                // Диагностика «почему пересъёмы молчат» (тик не валим — так
+                // задумано; лог, не etcd-журнал — condition персистентный).
+                logger.LogWarning(
+                    "backups {Cluster}/{Shard}: retake skipped — source resolve failed: {Error}",
+                    cluster, shard.Name,
+                    source.IsSuccess ? "no source resolved" : source.Error!.Message);
                 continue;
+            }
             var role = source.Value.Ports == master.Value.Ports && source.Value.Host == master.Value.Host
                 ? BackupSourceRole.Master
                 : BackupSourceRole.Replica;
+
+            // t097 (arch/19 §2): при живой непокрытой границе redo/restart-точка
+            // источника стоит в сегменте ДО границы — pg_basebackup пишет START WAL
+            // с неё, и пересъём снимался бы с той же позиции бесконечно. Restartpoint
+            // реплики движется ТОЛЬКО по checkpoint-записям МАСТЕРА (idle-мастер их
+            // не пишет — точка замерла; CHECKPOINT на самой реплике точку НЕ двигает),
+            // поэтому CHECKPOINT выполняется НА МАСТЕРЕ: реплика replay'ит запись
+            // (lag ~0) и двигает redo-точку в текущий сегмент. Пересъём — здесь же
+            // (replay укладывается в спавн pg_basebackup; промах самоисправится
+            // следующим пересъёмом). Best-effort: отказ не отменяет пересъём.
+            if (uncoveredAttempt is not null)
+            {
+                var checkpoint = await db.ExecuteAsync(adminDsn, "CHECKPOINT", ct);
+                if (!checkpoint.IsSuccess)
+                    logger.LogWarning(
+                        "backups {Cluster}/{Shard}: pre-retake CHECKPOINT failed: {Error}",
+                        cluster, shard.Name, checkpoint.Error!.Message);
+            }
 
             var id = BackupPlanner.NextId(fulls.Select(f => f.Id), time.GetUtcNow().UtcDateTime);
             // node-факт — имя ноды-источника из portalloc; не нашли (рассинхрон

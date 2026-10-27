@@ -541,6 +541,13 @@ public class E2eWalStreamTliScenarios
             var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var claimKv = await GetOrNullAsync($"/pgworker/claims/{cluster}");
+            // Разбор «почему супервизия/пересъёмы молчат»: полные ключи шарда,
+            // policy-ключ кластера, master-ключ шарда — состояние планировщика
+            // видно из etcd (host.log молчаливые continue тика не несёт).
+            var fullsDump = await FullKeysAsync(cluster, "shard1");
+            var policyKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/policy");
+            var masterKv = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master");
+            var portallocKv = await GetOrNullAsync($"/pgworker/portalloc/{cluster}");
             var patroni = await PatroniClusterDumpAsync(cluster, TestContext.Current.CancellationToken);
             var hostLog = "";
             foreach (var host in Fx.Hosts)
@@ -586,10 +593,18 @@ public class E2eWalStreamTliScenarios
                     hostLog += $"\n== {host.Name}: host.log unavailable: {e.Message}";
                 }
 
+            var portallocDump = portallocKv?.Value is { } pa && pa.Length > 1600
+                ? pa[..1600] + "…"
+                : portallocKv?.Value ?? "-";
             var dump =
                 $"reason={reason}\nreceivers=[{receiversDump}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
-                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
+                $"claim=[{claimKv?.Value ?? "-"}]\npolicy=[{policyKv?.Value ?? "-"}]\n" +
+                $"master=[{masterKv?.Value ?? "-"}]\n" +
+                $"portalloc=[{portallocDump}]\n" +
+                $"fulls={fullsDump.Count}:\n" +
+                string.Join("\n", fullsDump.Select(k => $"  {k.Key}: {k.Value}")) + "\n" +
+                $"patroni={patroni}\nHOST.LOG:{hostLog}\n";
             // Дамп — в каталог телеметрии прогона (t29 §3.4): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
