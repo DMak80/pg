@@ -58,8 +58,7 @@ public class E2eEtcdSnapshotExportScenarios
     private BackupsRuntimeOptions OwnS3RuntimeForHost() => new(
         Enabled: true,
         S3Bucket: Bucket,
-        JobImage: E2eEnvironment.JobImage,
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 30,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);

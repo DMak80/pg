@@ -111,7 +111,7 @@ public class BackupVerifyProcessTests
             return Task.FromResult(found.Key is null
                 ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))
                 : Result<DockerContainerInspect>.Success(new DockerContainerInspect(
-                    found.Value.Id, found.Key, [], [], [],
+                    found.Value.Id, found.Key, [], [], [new PortMap(8080, 31999)],
                     found.Value.State == "running", found.Value.ExitCode,
                     StartedAtUnix: found.Value.StartedUnix)));
         }
@@ -213,6 +213,41 @@ public class BackupVerifyProcessTests
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
+    /// <summary>Мульти-хост драйвер: hosts → свои движки (контейнер на ВТОРОМ
+    /// хосте виден только обходом — регресс листа «только hosts[0]»).</summary>
+    internal sealed class MultiHostVerifyDriver(IReadOnlyList<HostInfo> hosts,
+        IReadOnlyDictionary<string, FakeVerifyEngine> engines) : IClusterDriver
+    {
+        public bool SupportsRunningInspection => true;
+        public IDockerEngine? EngineFor(string host)
+            => engines.TryGetValue(host, out var engine) ? engine : null;
+        public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+        public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(hosts));
+        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        private static NotSupportedException NotSupported() => new("not used in the verify tests");
+        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
+        public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
+            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+            bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
+        public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+            string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
+        public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
+            IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
+        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+            string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+    }
+
     // ── Сид-хелперы ──
     private static ClusterSnapshot BuildSnap(string cluster) => new(
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
@@ -233,18 +268,62 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("claim is a tick precondition");
     }
 
+    // Фейк API приёмника: ответы GetVerify программируются тестами.
+    private readonly FakeReceiverClient Receiver = new();
+
+    // Ответы GET /api/ops/verify (маркер транзиента — пара state/phase, spec §3.2).
+    private static ReceiverReply ApiOk() =>
+        new(200, new ReceiverStatus("succeeded", "verifying"), null);
+    private static ReceiverReply ApiDownloadTransient(string error) =>
+        new(200, new ReceiverStatus("failed", "downloading", Error: error), null);
+    private static ReceiverReply ApiVerifyFailed(string error) =>
+        new(200, new ReceiverStatus("failed", "verifying", Error: error), null);
+
+    /// <summary>Мини-фейк API приёмника (verify-сценарии): StartVerify — 202
+    /// (тело в журнал), GetVerify — программируемый ответ.</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public ReceiverReply StartReply { get; set; } =
+            new(202, new ReceiverStatus("running", "downloading"), null);
+        public ReceiverReply GetReply { get; set; } =
+            new(200, new ReceiverStatus("running", "downloading"), null);
+        public readonly List<StartVerifyRequest> StartBodies = [];
+
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+        {
+            StartBodies.Add(body);
+            return Task.FromResult(StartReply);
+        }
+
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(GetReply);
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
     private BackupVerifyProcess BuildProcess(
-        string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
+        string cluster, IClusterDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
         Action<string, string, string>? verifyObserver = null,
         Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>? logger = null)
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
-            FakePoolFactory.Single(s3), Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
+            FakePoolFactory.Single(s3), Receiver, Claims,
+            new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
                 Enabled: true, S3Bucket: "bkt",
-                JobImage: "pgworker-backup:test",
-                StagingDir: "/backup-staging"),
+                StagingDir: "/home/postgres/pgdata/backup-staging"),
             TimeProvider.System,
             logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,
             verifyObserver);
@@ -291,11 +370,16 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         // Act
         var result = await process.TickAsync(BuildSnap("vc1"), backups, ct);
 
-        // Assert — контейнер pgw-backup-verify-vc1-shard1-20260911120000Z создан+запущен
+        // Assert — tool-контейнер создан+запущен (образ нод в tool-режиме,
+        // старт БЕЗ команд — весь жизненный цикл через API приёмника)
         result.IsSuccess.Should().BeTrue();
-        engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-vc1-shard1-20260911120000Z");
-        engine.Started.Should().Contain("pgw-backup-verify-vc1-shard1-20260911120000Z");
-        engine.Created.Single().Spec.Cmd.Should().BeEquivalentTo(VerifyJobCommand.Build(), o => o.WithStrictOrdering());
+        var (name, spec) = engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-vc1-shard1-20260911120000Z").Subject;
+        engine.Started.Should().Contain(name);
+        spec.Image.Should().Be(new BackupsRuntimeOptions().NodeImage);
+        spec.Env!["PGW_NODE_TOOL"].Should().Be("1");
+        spec.Cmd.Should().BeNull();
+        Receiver.StartBodies.Should().ContainSingle().Which.BackupId.Should().Be("20260911120000Z");
+        Receiver.StartBodies[0].S3.Prefix.Should().Be("vc1/shard1");
     }
 
     // AAA: дыра в wal/ внутри [start..end] → permanent FAILED с границами,
@@ -515,9 +599,10 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv1", s3);
         var name = "pgw-backup-verify-sv1-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        engine.Containers[name] = engine.Containers[name] with { State = "running" };
+        Receiver.GetReply = ApiOk();
 
-        // Act — второй тик (супервиз итога)
+        // Act — второй тик (супервиз итога по API)
         var process = BuildProcess("sv1", new FakeVerifyDriver(engine), s3);
         (await process.TickAsync(BuildSnap("sv1"), BackupsOf("sv1",
             Completed("20260911120000Z", "000000010000000000000001",
@@ -545,8 +630,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv2", s3);
         var name = "pgw-backup-verify-sv2-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 1,
-            Logs = "{\"ok\":false,\"phase\":\"verify\",\"error\":\"checksum mismatch failed\"}" };
+        engine.Containers[name] = engine.Containers[name] with { State = "running" };
+        Receiver.GetReply = ApiVerifyFailed("checksum mismatch failed");
 
         // Act
         var process = BuildProcess("sv2", new FakeVerifyDriver(engine), s3);
@@ -574,8 +659,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv3", s3);
         var name = "pgw-backup-verify-sv3-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 1,
-            Logs = "{\"ok\":false,\"phase\":\"download\",\"error\":\"mc cp failed\"}" };
+        engine.Containers[name] = engine.Containers[name] with { State = "running" };
+        Receiver.GetReply = ApiDownloadTransient("mc cp failed");
         var key = "/pgworker/backups/sv3/shard1/full/20260911120000Z";
         var before = BackupStatusJson.Serialize(Completed("20260911120000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null)));
@@ -623,6 +708,222 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
 
         // Assert — идемпотентный запуск заново (цепочка → create+start), не FAILED
         engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-sv4-shard1-20260911120000Z");
+    }
+
+    // AAA (arch/19 §5, окно бута): GET транспортно-отказал (приложение ещё не
+    // слушает API), возраст джоба в окне бута (60 c) → ожидание: контейнер жив,
+    // статус PENDING без квоты (transient-ветка, данных не касались)
+    [Fact]
+    public async Task SupervisorRefusedInBootWindowWaits()
+    {
+        // Arrange — джоб running молчит (StatusCode 0), StartedUnix = now-10 c
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("sv10");
+        var now = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv10", s3);
+        var name = "pgw-backup-verify-sv10-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with
+            { State = "running", StartedUnix = now - 10 };
+        Receiver.GetReply = new ReceiverReply(0, null, "Connection refused");
+        var key = "/pgworker/backups/sv10/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(Completed("20260911120000Z",
+            "000000010000000000000001", new BackupVerify(BackupVerifyStatus.Pending, null)));
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+
+        // Act — супервиз
+        var process = BuildProcess("sv10", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv10"), BackupsOf("sv10",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — в окне бута: контейнер не снесён, статус не тронут
+        engine.Removed.Should().NotContain(name);
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value.Should().Be(before);
+    }
+
+    // AAA (arch/19 §5, окно бута): GET транспортно-отказал дольше окна бута —
+    // застрявший бут: ограниченный рецикл «снос + пересоздание» (симметрия
+    // IsNotFound-ветки), PENDING остаётся без checked_unix, следующий тик
+    // пересоздаёт джоб; ожидания возрастного бюджета (6 ч) нет
+    [Fact]
+    public async Task SupervisorRefusedBeyondBootWindowRecycles()
+    {
+        // Arrange — джоб running молчит, StartedUnix = now-120 c (> окна 60 c)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("sv11");
+        var now = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv11", s3);
+        var name = "pgw-backup-verify-sv11-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with
+            { State = "running", StartedUnix = now - 120 };
+        Receiver.GetReply = new ReceiverReply(0, null, "Connection refused");
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv11/shard1/full/20260911120000Z";
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, BackupStatusJson.Serialize(pending), null, ct);
+        var process = BuildProcess("sv11", new FakeVerifyDriver(engine), s3);
+        var backups = BackupsOf("sv11", pending);
+
+        // Act — супервиз: отказ-сирота старше окна
+        (await process.TickAsync(BuildSnap("sv11"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены (ограниченный рецикл), статус
+        // PENDING без checked_unix (квоты нет — до данных операция не дошла)
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        var verify = await ReadVerifyAsync("sv11", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("PENDING");
+        verify.TryGetProperty("checked_unix", out _).Should().BeFalse("no quota — the operation never touched the data");
+        var journal = await Fx.Gateway.GetAsync(Fx.Endpoint, "/pgworker/work/sv11", ct);
+        journal.Value!.Value.Should().Contain("boot-recycle/shard1/20260911120000Z");
+
+        // Act 2 — следующий тик: PENDING снова due (checked_unix null) → джоб создан заново
+        (await process.TickAsync(BuildSnap("sv11"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 2 — пересоздание (симметрия vanished-ветки 404)
+        engine.Created.Should().HaveCount(2, "the recycled orphan is recreated on the next tick");
+    }
+
+    // AAA (#mr-fix): verify-контейнер на ВТОРОМ хосте (источник — h2; прежний
+    // лист «только hosts[0]» его не видел — вечный transient-цикл супервиза на
+    // мульти-хосте): обход по всем хостам Docker:Hosts находит его, итог
+    // доводится по API хоста, где контейнер найден, снос — на своём хосте
+    [Fact]
+    public async Task SupervisorFindsContainerOnSecondHost()
+    {
+        // Arrange — движки h1 (пуст) и h2 (running-джоб кандидата); GET — succeeded
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv12", ct);
+        Fx = fx;
+        await SeedAsync("sv12");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv12", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv12", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
+        var engineH1 = new FakeVerifyEngine();
+        var engineH2 = new FakeVerifyEngine();
+        var name = "pgw-backup-verify-sv12-shard1-20260911120000Z";
+        engineH2.Containers[name] = new(
+            Guid.NewGuid().ToString("N"), "running", -1, "");
+        Receiver.GetReply = ApiOk();
+        var driver = new MultiHostVerifyDriver(
+            (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0), new HostInfo("h2", 0)],
+            new Dictionary<string, FakeVerifyEngine> { ["h1"] = engineH1, ["h2"] = engineH2 });
+        var process = BuildProcess("sv12", driver, s3);
+
+        // Act — супервиз-тик (контейнер жив на h2, PENDING-кандидат)
+        (await process.TickAsync(BuildSnap("sv12"), BackupsOf("sv12",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — итог OK записан; снос прошёл на хосте h2 (своём), h1 не тронут
+        var verify = await ReadVerifyAsync("sv12", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("OK");
+        engineH2.Removed.Should().Contain(name, "the container is cleaned up on its own host");
+        engineH2.RemovedVolumes.Should().Contain(name);
+        engineH1.Created.Should().BeEmpty("no job is started while a foreign-host container is supervised");
+    }
+
+    // AAA: операторская отмена verify (cancel API — внешний канал мимо воркера;
+    // GET отдаёт снимок state=cancelled — НЕ failed и НЕ 404-vanished) —
+    // операция как не начинавшаяся: контейнер+volume снесены, кандидат
+    // возвращается в PENDING с checked_unix=now (квота попытки — перепроверка
+    // по расписанию политики, симметрия таймаут-ветке), перманентного FAILED
+    // нет; следующий тик НЕ пересоздаёт джоб (отличие от vanished-ветки —
+    // пересоздание там немедленно, здесь — по расписанию периодики).
+    [Fact]
+    public async Task SupervisorCancelledBackToPendingCleansJobNotRecreated()
+    {
+        // Arrange — джоб запущен (running); GET cancelled; PENDING-ключ в etcd
+        // (checked_unix=null — попытки ещё не было)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv14", ct);
+        Fx = fx;
+        await SeedAsync("sv14");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv14", s3);
+        var name = "pgw-backup-verify-sv14-shard1-20260911120000Z";
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("cancelled", "verifying", Error: "cancelled by operator"), null);
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv14/shard1/full/20260911120000Z";
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key,
+            BackupStatusJson.Serialize(pending), null, ct);
+        var process = BuildProcess("sv14", new FakeVerifyDriver(engine), s3);
+
+        // Act 1 — супервиз: операция отменена оператором → снос + PENDING
+        (await process.TickAsync(BuildSnap("sv14"), BackupsOf("sv14", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены; кандидат PENDING с
+        // checked_unix=now (квота попытки); FAILED нет
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        var verify = await ReadVerifyAsync("sv14", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("PENDING",
+            "the cancel is not a verdict on the data — the candidate is re-checked by policy");
+        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0,
+            "the attempt counts (retry schedule), unlike the vanished branch");
+        verify.TryGetProperty("error", out _).Should().BeFalse("no failure verdict");
+
+        // Act 2 — следующий тик: модель = факт etcd после cancel-ветки
+        // (PENDING c checked_unix=now — квота попытки записана ключом)
+        var afterCancel = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending,
+                TimeProvider.System.GetUtcNow().ToUnixTimeSeconds()));
+        (await process.TickAsync(BuildSnap("sv14"), BackupsOf("sv14", afterCancel), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — джоб НЕ пересоздан (квота попытки: перепроверка по
+        // расписанию verify.interval_sec, немедленных перезапусков нет)
+        engine.Created.Should().HaveCount(1,
+            "cancelled is not vanished — no immediate re-creation, the policy schedule rules");
+    }
+
+    // AAA (#mr-fix): GET 404 при живом контейнере (рестарт приёмника) —
+    // transient: контейнер+volume снесены, статус остаётся PENDING (НЕ фейлится);
+    // следующий тик пересоздаёт джоб (ретрай тиками)
+    [Fact]
+    public async Task SupervisorNotFound404CleansAndRecreates()
+    {
+        // Arrange — джоб запущен (running); GET 404; PENDING-ключ в etcd
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv13", ct);
+        Fx = fx;
+        await SeedAsync("sv13");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv13", s3);
+        var name = "pgw-backup-verify-sv13-shard1-20260911120000Z";
+        Receiver.GetReply = new ReceiverReply(404, null, null);
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv13/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(pending);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
+        var process = BuildProcess("sv13", new FakeVerifyDriver(engine), s3);
+
+        // Act 1 — супервиз: операция vanished → снос
+        (await process.TickAsync(BuildSnap("sv13"), BackupsOf("sv13", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены, статус PENDING не тронут
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value
+            .Should().Be(before, "the vanish is a transient — PENDING is not failed");
+
+        // Act 2 — следующий тик: джобов нет, PENDING due → джоб создан заново
+        (await process.TickAsync(BuildSnap("sv13"), BackupsOf("sv13", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — пересоздание
+        engine.Created.Should().HaveCount(2, "the vanished operation is retried on the next tick");
     }
 
     // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
@@ -691,9 +992,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         (await process.TickAsync(BuildSnap("sv6"), [WithInterval(3600)], ct)).IsSuccess.Should().BeTrue();
         engine.Created.Should().ContainSingle("the OK full is older than the interval — re-verify (AC5)");
 
-        // Act 1b — джоб завершился ok:true → супервиз пишет итог
-        var name = "pgw-backup-verify-sv6-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        // Act 1b — операция завершилась (GET succeeded) → супервиз пишет итог
+        Receiver.GetReply = ApiOk();
         (await process.TickAsync(BuildSnap("sv6"), [WithInterval(3600)], ct)).IsSuccess.Should().BeTrue();
 
         // Assert 1b — verify OK и checked_unix РАСТЁТ (было now-7200, стало ~now)
@@ -925,15 +1225,13 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         outcomes2.Should().ContainSingle().Which.Should().Be((cluster2, "shard1", "failed"));
 
         // Arrange 3 — джоб стартует первым тиком (StartJobAsync без наблюдателя:
-        // старт-тик исходов не эмитит), контейнер завершается exit 0 + ok:true
-        // (образец «Супервиз_Exit0_Ok_чисткаДжоба»)
+        // старт-тик исходов не эмитит), операция завершилась успешно (GET Ok)
         const string cluster3 = "vo3";
         await SeedAsync(cluster3);
         var s3ok = new FakeBackupS3();
         var engine = await StartJobAsync(cluster3, s3ok);
         var jobName = $"pgw-backup-verify-{cluster3}-shard1-20260911120000Z";
-        engine.Containers[jobName] = engine.Containers[jobName] with
-            { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        Receiver.GetReply = ApiOk();
         var outcomes3 = new List<(string C, string S, string Result)>();
         var process3 = BuildProcess(cluster3, new FakeVerifyDriver(engine), s3ok,
             verifyObserver: (c, s, r) => outcomes3.Add((c, s, r)));
@@ -944,7 +1242,7 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
                     new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
             .IsSuccess.Should().BeTrue();
 
-        // Assert 3 — exit 0 + ok:true → observe ok после успешной записи OK в etcd
+        // Assert 3 — GET succeeded → observe ok после успешной записи OK в etcd
         outcomes3.Should().ContainSingle().Which.Should().Be((cluster3, "shard1", "ok"));
     }
 
@@ -964,7 +1262,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("hl1", s3);
         var name = "pgw-backup-verify-hl1-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        engine.Containers[name] = engine.Containers[name] with { State = "running" };
+        Receiver.GetReply = ApiOk();
         var logger = new SpyLogger();
         var process = BuildProcess("hl1", new FakeVerifyDriver(engine), s3, logger: logger);
 
@@ -992,11 +1291,8 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("hl2", s3);
         var name = "pgw-backup-verify-hl2-shard1-20260911120000Z";
-        engine.Containers[name] = engine.Containers[name] with
-        {
-            State = "exited", ExitCode = 1,
-            Logs = "{\"ok\":false,\"phase\":\"verify\",\"error\":\"checksum mismatch failed\"}",
-        };
+        engine.Containers[name] = engine.Containers[name] with { State = "running" };
+        Receiver.GetReply = ApiVerifyFailed("checksum mismatch failed");
         var logger = new SpyLogger();
         var process = BuildProcess("hl2", new FakeVerifyDriver(engine), s3, logger: logger);
 

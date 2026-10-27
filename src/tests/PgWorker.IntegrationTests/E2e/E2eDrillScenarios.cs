@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + tool-контейнеры образа нод (t26) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -200,7 +200,7 @@ public class E2eDrillScenarios
         // дыра «второй объект списка» может лечь ниже chain_start и Check её не
         // видит (прогон 2026-10-01: дрилл легитимно SUCCEEDED за 6 c). Затем
         // включаем дриллы policy-полем (применяется следующим тиком без рестарта
-        // — AC7). Пересъём BROKEN-цепочки занимает минуты — дыра живёт до
+        // — AC7). Пересъём WAL_CHAIN_ERROR-цепочки занимает минуты — дыра живёт до
         // валидации дрилла (тик 1 с).
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var fullStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
@@ -357,7 +357,7 @@ public class E2eDrillScenarios
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: S3 на ownS3-ноду,
-    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    // tool-контейнеры образа нод (t26), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)
@@ -366,7 +366,6 @@ public class E2eDrillScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         };

@@ -14,21 +14,21 @@ namespace PgWorker.Backups;
 
 /// <summary>Итог контроля одного прохода (t07): State — СВЕЖЕЕ состояние шарда
 /// ПОСЛЕ контроля (записанное контролем или прежнее при «не время»); ChainBroken —
-/// вычисляется из State: state=BROKEN (разрыв цепочки/слот — permanent, t07,
+/// вычисляется из State: state=WAL_CHAIN_ERROR (разрыв цепочки/слот — permanent, t07,
 /// маркер живёт в etcd-ключе и переживает рестарт/takeover) — приёмники шарда
-/// замирают сами по BROKEN-гейту (t25, arch/19 §3). Transient-деградация
+/// замирают сами по WAL_CHAIN_ERROR-гейту (t25, arch/19 §3). Transient-деградация
 /// (DEGRADED lag/тишина) держит ChainBroken=false — приёмник живёт в контейнере
 /// ноды и продолжает стрим/ретраи без пересоздания (spec §3.2 п.5/п.7).</summary>
 public sealed record ControlOutcome(WalStreamState? State)
 {
-    public bool ChainBroken => State is { State: WalStreamStatus.Broken };
+    public bool ChainBroken => State is { State: WalStreamStatus.WalChainError };
 }
 
 /// <summary>WalStreamProcess — машина одного тика WAL-архивации шардов кластера
 /// под клэймом <C> (t03/t25, arch/19 §3): (0) санитарный снос legacy wal-контейнеров
 /// pgw-backup-wal-&lt;C&gt;-* (миграция без оператора), (1) креды/ensure-зависимости,
 /// (2) резолв ДВУХ источников (мастер + sync-standby — двойная архивация), (3) ensure
-/// слота per-instance (живой слот на любой ноде — не BROKEN), (4–5) факты приёмников
+/// слота per-instance (живой слот на любой ноде — не WAL_CHAIN_ERROR), (4–5) факты приёмников
 /// из статус-ключей etcd agent/&lt;N&gt; (Range; агентов-контейнеров больше нет —
 /// приёмник живёт в контейнере ноды) + деградация «источник без живого приёмника»,
 /// (6–7) контроль цепочки+lag по расписанию Wal:VerifyIntervalSec; gap (tli_jump) и
@@ -59,7 +59,7 @@ public sealed class WalStreamProcess(
     private const string Op = "backup-wal";
 
     // Расписание контроля (list S3 — не каждый тик): ключ cluster/shard → unix последнего прохода.
-    // При BROKEN-ключе шарда или exhaustion-DEGRADED расписание НЕ действует —
+    // При WAL_CHAIN_ERROR-ключе шарда или exhaustion-DEGRADED расписание НЕ действует —
     // контроль каждый тик (t07/t02).
     private readonly ConcurrentDictionary<string, long> _lastVerifyUnix = [];
 
@@ -167,7 +167,7 @@ public sealed class WalStreamProcess(
     // ── Шаги одного шарда (spec §3.2 п.1–5) ──
 
     // Наблюдатели контрольного прохода (t14, arch/18 §2.7): лаг и uploaded-age —
-    // один факт одного прохода, одинаковая null-семантика (BROKEN/STOPPED/факта
+    // один факт одного прохода, одинаковая null-семантика (WAL_CHAIN_ERROR/STOPPED/факта
     // нет — серии исчезают; null идемпотентен).
     private void Observe(string cluster, string shard, long? lagSegments, long? uploadedAgeSec)
     {
@@ -251,10 +251,10 @@ public sealed class WalStreamProcess(
 
         // (3) Слот per-instance (t27 §3.3 п.3; t19 arch/19 §3): имя слота одно и то же
         //     на КАЖДОЙ ноде-источнике (слоты разных инстансов независимы); зонд —
-        //     существование И wal_status: alive = существует и НЕ lost. BROKEN —
+        //     существование И wal_status: alive = существует и НЕ lost. WAL_CHAIN_ERROR —
         //     слоты ВСЕХ источников исчезли ИЛИ потеряны при живой цепочке (живой слот
         //     на любой ноде держит WAL); lost одного при живом втором — авто-recreate
-        //     без BROKEN (потерянный агент вернётся от хвоста S3 ретраем приёмника).
+        //     без WAL_CHAIN_ERROR (потерянный агент вернётся от хвоста S3 ретраем приёмника).
         var slotProbes = new List<(WalSource Src, string Dsn, bool Exists, string? WalStatus)>();
         foreach (var src in sources)
         {
@@ -278,7 +278,7 @@ public sealed class WalStreamProcess(
                 // ed1561b): битый ключ не роняет тик форс-мьютом. Фолбэк
                 // clock-сейчас — defensive-значение ТОЛЬКО параметра baseUnix:
                 // BreakAsync потребляет его лишь при wal == null (запись с нуля),
-                // здесь wal != null (chainKnown) — в BROKEN-запись now() НЕ попадает
+                // здесь wal != null (chainKnown) — в WAL_CHAIN_ERROR-запись now() НЕ попадает
                 // («факт над записью», ревью Ф4-2 №2); факт битого ключа — в журнале.
                 if (wal.LastUploadedUnix is null)
                 {
@@ -289,7 +289,7 @@ public sealed class WalStreamProcess(
                         claims.InstanceId, invalid, ct);
                 }
 
-                // BROKEN + слот пересоздаётся immediate+reserved СРАЗУ (t07); error
+                // WAL_CHAIN_ERROR + слот пересоздаётся immediate+reserved СРАЗУ (t07); error
                 // различает «исчез» / «потерян (lost)» по факту зонда (t19)
                 var anyExists = slotProbes.Any(p => p.Exists);
                 await BreakAsync(cluster, shard.Name, wal, slot, masterRef, adminDsn, ct,
@@ -304,9 +304,9 @@ public sealed class WalStreamProcess(
                 return;
             }
 
-            // Первый старт ИЛИ BROKEN-ключ: ensure-alive на КАЖДОМ источнике
+            // Первый старт ИЛИ WAL_CHAIN_ERROR-ключ: ensure-alive на КАЖДОМ источнике
             // (отсутствует → create; lost → recreate — пустой префикс wal/ + lost лечится
-            // recreate без BROKEN, свежий слот держит текущую позицию).
+            // recreate без WAL_CHAIN_ERROR, свежий слот держит текущую позицию).
             foreach (var dead in slotProbes)
             {
                 var ensured = await sql.EnsureSlotAliveAsync(dead.Dsn, slot, ct);
@@ -316,7 +316,7 @@ public sealed class WalStreamProcess(
         }
         else
         {
-            // lost при живом втором источнике — НЕ BROKEN: recreate потерянного
+            // lost при живом втором источнике — НЕ WAL_CHAIN_ERROR: recreate потерянного
             // (journal-before-manipulations, arch/17: фаза ДО мутации — видимость
             // действия при падении между drop и create; тик повторит).
             foreach (var lost in slotProbes.Where(p => p.Exists && p.WalStatus == "lost"))
@@ -355,7 +355,7 @@ public sealed class WalStreamProcess(
             ? (agentFacts is null ? wal.Agents : BuildAgentFacts(shardNodes, agentFacts))
             : null; // факты — ДОБАВКА к живому ключу (ключ создаёт контроль, spec п.8)
 
-        // (6–7) Контроль: BROKEN-исход — ключ BROKEN (слот recreate при «слот
+        // (6–7) Контроль: WAL_CHAIN_ERROR-исход — ключ WAL_CHAIN_ERROR (слот recreate при «слот
         // исчез»); docker-сносов в тике больше нет (t25).
         await ControlDueAsync(
             cluster, shard.Name, wal, shardBackups, options, sources, slot, adminDsn,
@@ -474,12 +474,12 @@ public sealed class WalStreamProcess(
         return null;
     }
 
-    // (5–7) Контроль (spec §3.2 п.6–8; t07 arch/19 §3): при BROKEN-ключе — КАЖДЫЙ
+    // (5–7) Контроль (spec §3.2 п.6–8; t07 arch/19 §3): при WAL_CHAIN_ERROR-ключе — КАЖДЫЙ
     // тик (без VerifyIntervalSec-расчёта: скорость заживления; list дырного
     // префикса дёшев); иначе по расписанию. list S3 → chain_start (t18:
     // wal_start новейшего verify-OK COMPLETED-полного, ratchet — не понижается
     // ?? min-объект)
-    // → CheckChain → дыра: BROKEN (агентов-контейнеров больше нет — t25, только
+    // → CheckChain → дыра: WAL_CHAIN_ERROR (агентов-контейнеров больше нет — t25, только
     // ключ). факты прогресса — ТОЛЬКО из наблюдений: last_uploaded из S3-объектов
     // либо прошлого ключа, никогда от now() («факт над записью», ревью Ф4-2 №2);
     // lag-зонд; transient-деградации (not-running/gap/exhaustion/lag/тишина)
@@ -495,10 +495,10 @@ public sealed class WalStreamProcess(
         var masterFacts = agentFacts?.FirstOrDefault(f => f.Node == masterRef);
         var key = $"{cluster}/{shard}";
         var now = clock.GetUtcNow().ToUnixTimeSeconds();
-        // Расписание — пропуск только для НЕ-BROKEN (t07) и НЕ-exhaustion-DEGRADED
+        // Расписание — пропуск только для НЕ-WAL_CHAIN_ERROR (t07) и НЕ-exhaustion-DEGRADED
         // (t02: заживление подъёмом ноды пула — контроль каждый тик, симметрично
-        // BROKEN; union-листинг — один класс вызовов).
-        if (wal is not { State: WalStreamStatus.Broken }
+        // WAL_CHAIN_ERROR; union-листинг — один класс вызовов).
+        if (wal is not { State: WalStreamStatus.WalChainError }
             && !IsExhaustionDegraded(wal)
             && _lastVerifyUnix.TryGetValue(key, out var last)
             && now - last < options.WalVerifyIntervalSec)
@@ -511,7 +511,7 @@ public sealed class WalStreamProcess(
         // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/ —
         // UNION по всем нодам пула (t36, arch/19 §5 «где данные есть»): первая
         // доступная нода может отставать (лаг mesh) — её соло-листинг даёт
-        // ложную дыру и BROKEN (прецедент AC4: нода после рестарта догоняет
+        // ложную дыру и WAL_CHAIN_ERROR (прецедент AC4: нода после рестарта догоняет
         // mesh). Пульс прогресса на время вызова (канон t19): прямой S3-вызов
         // на недоступном endpoint может висеть до HttpClient-таймаута без
         // отметок — watchdog (порт сноса 30 c) гасил reconcile посреди
@@ -523,7 +523,7 @@ public sealed class WalStreamProcess(
 
         // chain_start (t18, arch/19 §3): wal_start новейшего (по started_unix)
         // COMPLETED-полного с verify.state=OK — ОДНА точка с cutoff-ретенции
-        // (§4 п.5; расщепление точек давало бы ложный BROKEN после среза WAL);
+        // (§4 п.5; расщепление точек давало бы ложный WAL_CHAIN_ERROR после среза WAL);
         // ratchet — не понижается ниже записанной границы; нет OK-полного →
         // записанная ?? min-объект потока (как раньше при полных нет).
         var ratchet = wal is { ChainStartSegment.Length: > 0 }
@@ -553,9 +553,9 @@ public sealed class WalStreamProcess(
 
         if (!chain.IsContinuous)
         {
-            // Дыра: BROKEN даже без прошлого ключа (t07, AC4-тотальность) —
+            // Дыра: WAL_CHAIN_ERROR даже без прошлого ключа (t07, AC4-тотальность) —
             // BreakAsync строит запись с границей разрыва (приёмники замирают
-            // по BROKEN-гейту сами, t25).
+            // по WAL_CHAIN_ERROR-гейту сами, t25).
             var lastForBase = chain.LastSegment?.Name ?? start.Name;
             var lastModifiedForBase = objects
                 .Where(o => o.Name == lastForBase)
@@ -611,7 +611,7 @@ public sealed class WalStreamProcess(
         // зазора из листинга (ретенция срезала нижележащие TLI). Установка
         // гейтится теми же предикатами — цикл «снятие ↔ повторная установка»
         // при живом факте исключён. Внутри-TLI прыжок (TLI сегмента From ==
-        // TLI прыжка) — обычная дыра (BROKEN путь контроля по объектам), gap
+        // TLI прыжка) — обычная дыра (WAL_CHAIN_ERROR путь контроля по объектам), gap
         // НЕ ставится.
         static bool CoveredByFull(IReadOnlyList<FullBackupState> fulls, string toSegment)
             => fulls.Any(f => f.State == FullBackupStatus.Completed
@@ -628,7 +628,7 @@ public sealed class WalStreamProcess(
 
         if (gap is null
             && masterFacts?.TliJump is { } jump
-            && TliOfSegment(jump.From) != jump.Tli // внутри-TLI прыжок — путь BROKEN
+            && TliOfSegment(jump.From) != jump.Tli // внутри-TLI прыжок — путь WAL_CHAIN_ERROR
             && !CoveredByFull(shardFulls, jump.To)
             && ProfileObserved(jump.To))
         {
@@ -657,7 +657,7 @@ public sealed class WalStreamProcess(
         {
             // t25 (arch/19 §4): «источник без живого приёмника» — мастер или sync
             // без живого статус-ключа (lease истёк — процесс мёртв/нода вниз) при
-            // не-BROKEN wal-ключе → DEGRADED (transient-семантика, приоритет
+            // не-WAL_CHAIN_ERROR wal-ключе → DEGRADED (transient-семантика, приоритет
             // ПОСЛЕ gap, ДО lag/тишины; алерт панельный по DEGRADED общий).
             // Транспорт etcd недоступен (agentFacts null) — факт ненаблюдаем:
             // проверка пропускается (не деградация).
@@ -717,11 +717,11 @@ public sealed class WalStreamProcess(
         return new ControlOutcome(next); // цепочка цела (ACTIVE/DEGRADED)
     }
 
-    // Разрыв цепочки (t07, arch/19 §3): BROKEN + error + граница разрыва в
+    // Разрыв цепочки (t07, arch/19 §3): WAL_CHAIN_ERROR + error + граница разрыва в
     // chain_start. Маркер разрыва — ключ etcd (не память): переживает рестарт
     // воркера/takeover; заживление — контроль (COMPLETED-полный ≥ границы с
     // непрерывной цепью → ACTIVE). Агентов-контейнеров больше нет (t25):
-    // приёмники замирают сами по STOPPED/BROKEN-гейту etcd — docker-сносов в
+    // приёмники замирают сами по STOPPED/WAL_CHAIN_ERROR-гейту etcd — docker-сносов в
     // тике нет. recreateSlot: слот при «слот исчез» пересоздаётся immediate+
     // reserved СРАЗУ — к старту пересъёма полного слот держит позицию ≤ wal_start
     // нового полного; при дыре цепочки слот НЕ трогаем (живой копит WAL в
@@ -751,12 +751,12 @@ public sealed class WalStreamProcess(
             WalStreamStatus.Active, slot, masterRef, baseStart, baseLast, baseLast, baseUnix, null, null);
         var broken = current with
         {
-            State = WalStreamStatus.Broken,
+            State = WalStreamStatus.WalChainError,
             ChainStartSegment = baseStart, // граница разрыва (t07, ratchet §3)
             Error = error,
         };
         await status.WriteIfChangedAsync(cluster, shard, broken, ct);
-        Observe(cluster, shard, null, null); // t14: BROKEN — серии исчезают
+        Observe(cluster, shard, null, null); // t14: WAL_CHAIN_ERROR — серии исчезают
         return broken;
     }
 
@@ -808,7 +808,7 @@ public sealed class WalStreamProcess(
     // t02/t25 (arch/19 §3): exhaustion-DEGRADED — DEGRADED-ключ с маркером
     // s3-pool-exhausted в error (исчерпание write-списка мастер-приёмника —
     // флаг pool_exhausted его статус-ключа) — контроль КАЖДЫЙ тик, симметрично
-    // BROKEN (скорость заживления; union-листинг — один класс вызовов).
+    // WAL_CHAIN_ERROR (скорость заживления; union-листинг — один класс вызовов).
     private static bool IsExhaustionDegraded(WalStreamState? wal)
         => wal is { State: WalStreamStatus.Degraded }
             && wal.Error?.Contains(S3PoolMarkers.Exhausted, StringComparison.Ordinal) == true;

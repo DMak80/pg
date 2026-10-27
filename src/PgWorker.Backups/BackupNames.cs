@@ -15,21 +15,10 @@ public static class BackupNames
     public static string RestoreKey(string cluster, string shard, string id)
         => $"/pgworker/backups/{cluster}/{shard}/restore/{id}";
 
-    public static string ContainerName(string cluster, string shard, string id)
-        => $"pgw-backup-full-{cluster}-{shard}-{id}";
-
     /// <summary>Имя restore-джоба (t05): pgw-backup-restore-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; —
     /// попадает в D1-префикс чистки pgw-backup-*.</summary>
     public static string RestoreContainerName(string cluster, string shard, string id)
         => $"pgw-backup-restore-{cluster}-{shard}-{id}";
-
-    public static string VolumeName(string cluster, string shard, string id)
-        => $"pgw-backup-{cluster}-{shard}-{id}";
-
-    // Префиксы чистки Deprovisioning (D2, t02).
-    public static string JobContainerPrefix(string cluster) => $"pgw-backup-full-{cluster}-";
-
-    public static string JobVolumePrefix(string cluster) => $"pgw-backup-{cluster}-";
 
     // t04: имена verify-джоба — детерминированы (супервиз takeover-инвариантен);
     // контейнер и volume — одно имя (volume ephemeral, чистится после итога).

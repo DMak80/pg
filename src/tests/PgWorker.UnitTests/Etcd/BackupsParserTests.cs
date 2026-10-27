@@ -120,18 +120,18 @@ public class BackupsParserTests
             .Which.State.Should().Be(FullBackupStatus.Planned);
     }
 
-    // AAA (t07, arch/19 §4 — прогон 2026-09-13): BROKEN обязан читаться
+    // AAA (t07, arch/19 §4 — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
     // СНАПШОТНЫМ парсером: неизвестное state давало Wal=null → контроль шёл от
-    // min COMPLETED (ниже границы разрыва), ключ замерал в BROKEN, планировщик
+    // min COMPLETED (ниже границы разрыва), ключ замерал в WAL_CHAIN_ERROR, планировщик
     // штормовал пересъёмами (walKeyExists=false при живом ключе).
     [Fact]
     public void Parse_WalBroken_StateBroken_FieldsIntact()
     {
-        // Arrange — живой BROKEN-ключ шарда (граница разрыва в chain_start).
+        // Arrange — живой WAL_CHAIN_ERROR-ключ шарда (граница разрыва в chain_start).
         var kvs = new List<Kv>
         {
             new("/pgworker/backups/demo/s1/wal",
-                "{\"state\":\"BROKEN\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
+                "{\"state\":\"WAL_CHAIN_ERROR\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
                 "\"chain_start_segment\":\"000000010000000000000029\",\"last_received_segment\":\"000000010000000000000029\"," +
                 "\"last_uploaded_segment\":\"000000010000000000000029\",\"last_uploaded_unix\":1789324156," +
                 "\"error\":\"WAL chain gap: expected 00000001000000000000002a, found 00000001000000000000002b\"}", 1),
@@ -144,8 +144,8 @@ public class BackupsParserTests
         result.IsSuccess.Should().BeTrue();
         errors.Should().BeEmpty();
         var s1 = result.Value.Should().ContainSingle().Subject.Shards["s1"];
-        s1.Wal.Should().NotBeNull("BROKEN is a valid state — the key is not discarded");
-        s1.Wal!.State.Should().Be(WalStreamStatus.Broken);
+        s1.Wal.Should().NotBeNull("WAL_CHAIN_ERROR is a valid state — the key is not discarded");
+        s1.Wal!.State.Should().Be(WalStreamStatus.WalChainError);
         s1.Wal.Slot.Should().Be("pgw_bkp_demo_s1");
         s1.Wal.ChainStartSegment.Should().Be("000000010000000000000029");
         s1.Wal.LastUploadedSegment.Should().Be("000000010000000000000029");

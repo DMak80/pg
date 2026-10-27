@@ -46,7 +46,8 @@ public sealed class PgWorkerOptions
     /// restore/wal/ретенция/verify/drill/супервизор) получают один и тот же
     /// режим сетей спек джобов и адресации источника.</summary>
     public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime(
-        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null);
+        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null,
+        Docker.Images.Node);
 
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
     /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
@@ -514,19 +515,19 @@ public sealed class BackupsOptions
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
     /// — именованными аргументами: record расширялся с обеих сторон.
     /// t41: contourNetwork — режим сети контура (Docker.ContourNetwork;
-    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()).</summary>
-    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null) => new(
+    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()). t26:
+    /// nodeImage — образ tool-контейнеров (Docker.Images.Node).</summary>
+    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null, string? nodeImage = null) => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
         VerifyIntervalSec: Policy.VerifyIntervalSec,
         S3Bucket: S3.Bucket,
         S3CaBundlePath: S3.CaBundlePath,
-        JobImage: Job.Image,
+        NodeImage: nodeImage ?? "pgworker-node:dev",
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
         StagingDir: Staging.Dir,
-        StagingQuotaBytes: Staging.QuotaBytes,
         AgentCpu: Agent.Cpu,
         AgentMem: Agent.Mem,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
@@ -557,9 +558,7 @@ public sealed class BackupsOptions
     /// false — подсистема не активна. Диапазоны ретенции/квоты (t06) — всегда:
     /// мусорный конфиг виден на старте.</summary>
     public bool IsValid()
-        => (!Enabled
-            || (!string.IsNullOrWhiteSpace(S3.Bucket)
-                && !string.IsNullOrWhiteSpace(Job.Image)))      // t25: wal-агента нет — образ не нужен
+        => (!Enabled || !string.IsNullOrWhiteSpace(S3.Bucket))
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
@@ -622,15 +621,14 @@ public sealed class BackupsSupervisorOptions
     public long OrphanTtlSec { get; set; } = 604800;
 }
 
-/// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
-/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.
-/// Таймауты (t07, arch/19 §6/§9) — бюджеты зависших джобов: полный/verify/restore.</summary>
+/// <summary>Бюджеты операций бэкапов (arch/19 §6/§9): возрастные гварды
+/// зависших — полный/verify/restore (исполняют приёмник/tool-контейнеры,
+/// воркер супервизит через API приёмника).</summary>
 public sealed class BackupsJobOptions
 {
-    public string Image { get; set; } = "pgworker-backup:dev";
-
     /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c (t07):
-    /// возраст > лимита → kill+rm + FAILED job-timeout → переснятие по бэкоффу.</summary>
+    /// возраст > лимита → FAILED job-timeout + cancel API приёмника → переснятие
+    /// по бэкоффу (t26: контейнера полного нет, staging чистит приёмник).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
     /// <summary>Бюджет running verify-джоба по docker-факту StartedAt, c (t07):
@@ -691,13 +689,11 @@ public sealed class BackupsRetentionOptions
     public int Months { get; set; } = 1;
 }
 
-/// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с
-/// квотой (guard «нет места» → FAILED, реализация t02; null — без квоты).</summary>
+/// <summary>Staging полного (arch/19 §9): каталог в data-volume ноды
+/// (дефолт — канон); ENOSPC — реактивный FAILED приёмника; квоты нет.</summary>
 public sealed class BackupsStagingOptions
 {
-    public string Dir { get; set; } = "/backup-staging";
-
-    public long? QuotaBytes { get; set; }
+    public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
 }
 
 /// <summary>Ресурсные лимиты джоба/агента бэкапов (arch/19 §6) →

@@ -304,8 +304,8 @@ public static class BackupsParser
 
     // restore/<id> (t05): обязательны state (PLANNED|RUNNING|REJOINING|COMPLETED|
     // FAILED)/backup_id/source/target/node/requested_unix/requested_by;
-    // опциональны started_unix/finished_unix/phase/restored_to_lsn/error;
-    // битое/неизвестное state — пропуск записи с диагностикой.
+    // опциональны started_unix/finished_unix/phase/phase_unix/restored_to_lsn/
+    // error; битое/неизвестное state — пропуск записи с диагностикой.
     private static RestoreOperationState? TryParseRestore(
         string cluster, string shard, string id, string raw, List<string> errors)
     {
@@ -350,6 +350,9 @@ public static class BackupsParser
                 ReadString(root, "source_pool"))
             {
                 SystemId = ReadString(root, "system_id"),
+                // Unix перехода в текущую фазу (пишет воркер): стенка наката
+                // restore — от перехода в recovering, не от старта заявки.
+                PhaseUnix = ReadLong(root, "phase_unix"),
             };
         }
         catch (JsonException)
@@ -420,14 +423,16 @@ public static class BackupsParser
                 "ACTIVE" => WalStreamStatus.Active,
                 "DEGRADED" => WalStreamStatus.Degraded,
                 "STOPPED" => WalStreamStatus.Stopped,
-                // t07 (arch/19 §4): BROKEN обязан читаться СНАПШОТНЫМ парсером.
-                // Прогон 2026-09-13: неизвестное BROKEN давало Wal=null → контроль
-                // шёл от ratchet=null (min COMPLETED, ниже границы разрыва), дыра
-                // «вечно свежая», ключ замерал в BROKEN, планировщик штормовал
-                // пересъёмами (walKeyExists=false). Интеграционные тесты t07 это
+                // t07 (arch/19 §4): WAL_CHAIN_ERROR обязан читаться СНАПШОТНЫМ
+                // парсером. Прогон 2026-09-13: неизвестное состояние разрыва
+                // давало Wal=null → контроль шёл от ratchet=null (min COMPLETED,
+                // ниже границы разрыва), дыра «вечно свежая», ключ замерал в
+                // разрыве, планировщик штормовал пересъёмами
+                // (walKeyExists=false). Интеграционные тесты t07 это
                 // пропустили: они читают ключ через WalStatusWriter.ReadAsync
-                // (там BROKEN добавлен), а не через снапшотный BackupsParser.
-                "BROKEN" => WalStreamStatus.Broken,
+                // (там состояние разрыва добавлено), а не через снапшотный
+                // BackupsParser.
+                "WAL_CHAIN_ERROR" => WalStreamStatus.WalChainError,
                 _ => (WalStreamStatus?)null,
             };
             var slot = ReadString(root, "slot");

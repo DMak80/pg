@@ -114,8 +114,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: verify,
         WalLagMaxSegments: lag,
         WalStaleSec: stale);
@@ -379,9 +378,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act — тик контроля (дыра ловится)
         (await process.TickAsync(BuildSnap("cc2"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — BROKEN с границами (агентов-контейнеров больше нет — t25)
+        // Assert — WAL_CHAIN_ERROR с границами (агентов-контейнеров больше нет — t25)
         var wal = await ReadWal("cc2");
-        wal!.State.Should().Be(WalStreamStatus.Broken);
+        wal!.State.Should().Be(WalStreamStatus.WalChainError);
         wal.Error.Should().Contain("000000010000000000000002").And.Contain("000000010000000000000003");
     }
 
@@ -412,12 +411,12 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act
         (await process.TickAsync(BuildSnap("cc3"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — BROKEN с error про слот; слот пересоздан (t25: агентов нет)
+        // Assert — WAL_CHAIN_ERROR с error про слот; слот пересоздан (t25: агентов нет)
         var wal = await ReadWal("cc3");
-        wal!.State.Should().Be(WalStreamStatus.Broken);
+        wal!.State.Should().Be(WalStreamStatus.WalChainError);
         wal.Error.Should().Contain("slot");
         wal.ChainStartSegment.Should().Be("000000010000000000000002", "gap boundary — last_uploaded at detection time");
-        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cc3_shard1"), "the slot is recreated at BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cc3_shard1"), "the slot is recreated at WAL_CHAIN_ERROR (spec §3.2)");
     }
 
     [Fact]
@@ -715,7 +714,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             .Which.Age.Should().BeGreaterThanOrEqualTo(0);
     }
 
-    // AAA: t14 — BROKEN (дыра цепочки) снимает обе серии: наблюдатели получают null
+    // AAA: t14 — WAL_CHAIN_ERROR (дыра цепочки) снимает обе серии: наблюдатели получают null
     [Fact]
     public async Task VerifyGapBrokenDropsSeriesOfBothObservers()
     {
@@ -737,8 +736,8 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act
         (await process.TickAsync(BuildSnap("cw2"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — BROKEN: ровно один вызов на наблюдателя, оба null (серии исчезают)
-        (await ReadWal("cw2"))!.State.Should().Be(WalStreamStatus.Broken);
+        // Assert — WAL_CHAIN_ERROR: ровно один вызов на наблюдателя, оба null (серии исчезают)
+        (await ReadWal("cw2"))!.State.Should().Be(WalStreamStatus.WalChainError);
         lags.Should().ContainSingle(t => t.C == "cw2" && t.Lag == null);
         ages.Should().ContainSingle(t => t.C == "cw2" && t.Age == null);
     }
@@ -763,7 +762,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         lastUploaded, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), 0, null,
         Gap: gap);
 
-    // Слоты: сидированный слот мастера (живой wal-ключ — иначе «слот исчез» BROKEN).
+    // Слоты: сидированный слот мастера (живой wal-ключ — иначе «слот исчез» WAL_CHAIN_ERROR).
     private static void SeedSlot(FakeWalSqlExecutor sql, string cluster)
         => sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => [])
             .Add($"pgw_bkp_{cluster}_shard1");
@@ -850,7 +849,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     }
 
     // AAA (AC4): внутри-TLI прыжок (from_tli == to_tli) — gap НЕ ставится
-    // (обычная дыра цепочки → BROKEN-путь контроля по объектам).
+    // (обычная дыра цепочки → WAL_CHAIN_ERROR-путь контроля по объектам).
     [Fact]
     public async Task TliJumpSameTli_NoGap()
     {

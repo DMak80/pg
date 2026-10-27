@@ -169,6 +169,18 @@ public sealed class BackupsS3UnavailableException(string message)
 
 public static class BackupStorageMappers
 {
+
+// Канонические имена состояний wal-ключа (arch/19 §4): enum → значение etcd
+// (ToUpperInvariant съедает подчёркивание: WalChainError → «WALCHAINERROR»,
+// бейдж панели и правила алертов не совпадали с каноном).
+private static string WalStateName(WalStreamInfoState state) => state switch
+{
+    WalStreamInfoState.Active => "ACTIVE",
+    WalStreamInfoState.Degraded => "DEGRADED",
+    WalStreamInfoState.Stopped => "STOPPED",
+    WalStreamInfoState.WalChainError => "WAL_CHAIN_ERROR",
+    _ => state.ToString().ToUpperInvariant(),
+};
     public static BackupStorageDto MapStorage(EtcdSnapshot snapshot, long orphanTtlSec, long nowUnix)
     {
         var s3 = snapshot.S3Storage;
@@ -339,7 +351,7 @@ public static class BackupStorageMappers
         var walEntry = reconcile.Wal.FirstOrDefault(w => w.Cluster == cluster && w.Shard == shard);
         var etcdWal = etcdCluster?.Shards?.TryGetValue(shard, out var info) == true ? info : null;
         var wal = walEntry is null && etcdWal is null ? null : new BackupWalDto(
-            EtcdState: etcdWal?.State.ToString().ToUpperInvariant(),
+            EtcdState: etcdWal is null ? null : WalStateName(etcdWal.State),
             EtcdLastSegment: walEntry?.EtcdLastSegment,
             EtcdLastUnix: walEntry?.EtcdLastUnix,
             S3SegmentCount: s3Shard?.Wal?.SegmentCount ?? 0,

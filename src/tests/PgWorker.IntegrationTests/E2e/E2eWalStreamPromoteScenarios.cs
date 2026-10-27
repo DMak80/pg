@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // монолитный одиночный факт (2-6 мин) — отдельный класс.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// + tool-контейнеры образа нод (t26) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -328,7 +328,7 @@ public class E2eWalStreamPromoteScenarios
     }
 
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
-    // супервиз пересоздаёт агента, цепочка S3 непрерывна, BROKEN не возникает,
+    // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
     // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
@@ -340,7 +340,6 @@ public class E2eWalStreamPromoteScenarios
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

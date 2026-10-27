@@ -600,10 +600,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
     // host.docker.internal (БЕЗ замены на localhost — паттерн
     // StartRestoreHostAsync единственного зелёного контура «полные + WAL +
-    // restore», spec §3.1): full-джоб грузит бэкап mc cp ИЗНУТРИ своего
-    // контейнера по списку PGW_BK_S3_ENDPOINTS (BackupJobSpec) — localhost
-    // там недостижим; WAL-агент получает те же ноды списками S3_ENDPOINTS/
-    // S3_READ_ENDPOINTS, restore-джоба — S3_ENDPOINTS (алиасы per-ноды пула).
+    // restore», spec §3.1): полный бэкап снимает приёмник ноды — upload
+    // .NET-клиентом по write-списку пула ИЗНУТРИ контура (алиасы per-ноды
+    // пула) — localhost там недостижим; WAL-агент получает те же ноды
+    // списками S3_ENDPOINTS/S3_READ_ENDPOINTS, restore — tool-контейнер
+    // тем же ReadAll-списком в POST-команде.
     // Замена host.docker.internal → localhost — ТОЛЬКО в host-клиентах
     // сценария (HostS3Client): воркер-процесс на хосте резолвит
     // host.docker.internal.
@@ -613,7 +614,6 @@ public sealed class TliSwitchContext : IAsyncLifetime
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

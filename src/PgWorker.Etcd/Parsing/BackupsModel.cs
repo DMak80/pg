@@ -23,7 +23,7 @@ public enum BackupSourceRole
     Master,
 }
 
-/// <summary>Состояние WAL-потока шарда (arch/19 §4; t07: Broken — разрыв
+/// <summary>Состояние WAL-потока шарда (arch/19 §4; t07: WalChainError — разрыв
 /// цепочки/слот исчез, лечение — пересъём полного; DEGRADED — только
 /// transient lag/тишина).</summary>
 public enum WalStreamStatus
@@ -31,7 +31,7 @@ public enum WalStreamStatus
     Active,
     Degraded,
     Stopped,
-    Broken,
+    WalChainError,
 }
 
 /// <summary>Статус проверки полного (pg_verifybackup — t04, arch/19 §8).</summary>
@@ -163,6 +163,12 @@ public sealed record RestoreOperationState(
     /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не
     /// могут initdb'нуться в чужой кластер. null — старый образ джоба.</summary>
     public string? SystemId { get; init; }
+
+    /// <summary>Unix-время записи ТЕКУЩЕЙ фазы (воркер пишет при смене фазы
+    /// tool-операции): стенка наката restore считается от перехода в
+    /// recovering — скачивание набора (downloading) recovery-бюджет не съедает.
+    /// null — ключ без факта перехода (старый воркер): стенка от started_unix.</summary>
+    public long? PhaseUnix { get; init; }
 }
 
 /// <summary>Состояние дрилла восстановимости шарда (ключ

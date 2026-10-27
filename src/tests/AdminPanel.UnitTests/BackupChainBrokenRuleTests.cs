@@ -6,8 +6,8 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-chain-broken (t07, spec §3.5): wal=BROKEN живого Active-кластера —
-// critical с текстом сбоя И действия воркера; DEGRADED/STOPPED/BROKEN мёртвого
+// backup-chain-broken (t07, spec §3.5): wal=WAL_CHAIN_ERROR живого Active-кластера —
+// critical с текстом сбоя И действия воркера; DEGRADED/STOPPED/WAL_CHAIN_ERROR мёртвого
 // кластера — молчание (DEGRADED — домен wal-chain-broken t03).
 public class BackupChainBrokenRuleTests
 {
@@ -28,7 +28,7 @@ public class BackupChainBrokenRuleTests
     private static EtcdSnapshot SnapshotWith(ClusterBackupsInfo backups)
         => TestSnapshots.Healthy(Now) with { Backups = [backups] };
 
-    // AAA (AC8→алерт): wal=BROKEN живого Active-кластера → critical backup-chain-broken
+    // AAA (AC8→алерт): wal=WAL_CHAIN_ERROR живого Active-кластера → critical backup-chain-broken
     // с текстом сбоя И действия воркера
     [Fact]
     public void Broken_ActiveCluster_Critical()
@@ -37,7 +37,7 @@ public class BackupChainBrokenRuleTests
         // кластере → нужно имя шарда из кластера: берём демо-шард FullCluster()
         var cluster = TestSnapshots.FullCluster();
         var shardName = cluster.Shards[0].Name;
-        var wal = Wal(WalStreamInfoState.Broken, "WAL chain hole: expected X") with { Shard = shardName };
+        var wal = Wal(WalStreamInfoState.WalChainError, "WAL chain hole: expected X") with { Shard = shardName };
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             Backups = [new ClusterBackupsInfo("demo", null,
@@ -70,7 +70,7 @@ public class BackupChainBrokenRuleTests
         alerts.Should().BeEmpty();
     }
 
-    // AAA: BROKEN мёртвого (не-Active) кластера — молчание
+    // AAA: WAL_CHAIN_ERROR мёртвого (не-Active) кластера — молчание
     [Fact]
     public void Broken_DeadCluster_Silent()
     {
@@ -79,7 +79,7 @@ public class BackupChainBrokenRuleTests
         {
             Backups = [new ClusterBackupsInfo("ghost", null,
                 new Dictionary<string, long?>(),
-                new Dictionary<string, WalStreamInfo?> { ["s1"] = Wal(WalStreamInfoState.Broken) })],
+                new Dictionary<string, WalStreamInfo?> { ["s1"] = Wal(WalStreamInfoState.WalChainError) })],
         };
 
         // Act

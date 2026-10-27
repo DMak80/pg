@@ -86,7 +86,7 @@ public static class ReliabilityCalculator
         }
         else
         {
-            // BROKEN/STOPPED или wal-ключа нет — потеряем хвост после последнего
+            // WAL_CHAIN_ERROR/STOPPED или wal-ключа нет — потеряем хвост после последнего
             // валидного полного (полного нет — «никогда», числа нет).
             mode = RpoMode.Full;
             potential = fullAgeSec;

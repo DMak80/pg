@@ -16,7 +16,11 @@ public class RestoreStatusJsonTests
         var state = new RestoreOperationState(
             "20260911120000Z", RestoreStatus.Rejoining, "20260911090000Z",
             "src/shop", "time:2026-09-11T10:00:00Z", "shard1a", 1760000000, "operator",
-            StartedUnix: 1760000005, Phase: null, RestoredToLsn: "0/3000028");
+            StartedUnix: 1760000005, Phase: null, RestoredToLsn: "0/3000028")
+        {
+            SystemId = "7219190278989296001",
+            PhaseUnix = 1760000300,
+        };
 
         // Act
         var json = RestoreStatusJson.Serialize(state);
@@ -26,6 +30,30 @@ public class RestoreStatusJsonTests
         // Assert
         errors.Should().BeEmpty();
         parsed.Value.Single().Shards["shard1"].Restores.Single().Should().Be(state);
+    }
+
+    // AAA: phase_unix (переход в текущую фазу) — roundtrip writer→парсер
+    [Fact]
+    public void Serialize_PhaseUnix_RoundtripsThroughParser()
+    {
+        // Arrange — RUNNING в фазе recovering с фактом перехода
+        var state = new RestoreOperationState(
+            "id2", RestoreStatus.Running, "b", "c/x", "latest", "n", 1, "api",
+            StartedUnix: 100, Phase: "recovering")
+        {
+            PhaseUnix = 260,
+        };
+
+        // Act
+        var json = RestoreStatusJson.Serialize(state);
+        var parsed = BackupsParser.Parse(
+            [new Kv("/pgworker/backups/c/shard1/restore/id2", json, 1)], out var errors);
+
+        // Assert — переход восстановлен (стенка наката считается от него)
+        errors.Should().BeEmpty();
+        var op = parsed.Value.Single().Shards["shard1"].Restores.Single();
+        op.PhaseUnix.Should().Be(260);
+        op.Phase.Should().Be("recovering");
     }
 
     // AAA: null-поля не сериализуются (канон §4 — по факту).

@@ -29,6 +29,10 @@ public static class RestoreStatusJson
             o["finished_unix"] = finished;
         if (state.Phase is { } phase)
             o["phase"] = phase;
+        // Unix перехода в текущую фазу: стенка наката restore — от перехода в
+        // recovering (скачивание набора recovery-бюджет не съедает).
+        if (state.PhaseUnix is { } phaseUnix)
+            o["phase_unix"] = phaseUnix;
         if (state.RestoredToLsn is { } lsn)
             o["restored_to_lsn"] = lsn;
         if (state.SystemId is { } sysid)

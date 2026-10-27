@@ -66,27 +66,26 @@ public class BackupsOptionsTests
     [Fact]
     public void Defaults_JobRetry_CanonValues()
     {
-        // Arrange / Act — дефолты t02 (arch/19 §9): образ джоба + бэкофф 300/3600.
+        // Arrange / Act — дефолты t02 (arch/19 §9): бэкофф 300/3600 (образ
+        // джоба упразднён t26 — tool-контейнеры образа нод).
         var options = new BackupsOptions();
 
         // Assert
-        options.Job.Image.Should().Be("pgworker-backup:dev");
         options.Retry.BaseSec.Should().Be(300);
         options.Retry.MaxSec.Should().Be(3600);
     }
 
     [Fact]
-    public void Enabled_EmptyJobImage_Invalid()
+    public void Enabled_EmptyBucket_Invalid()
     {
-        // Arrange — включили с S3-комплектом, но образ джоба не задан.
+        // Arrange — включили без bucket (env PGW_BACKUP_S3_BUCKET).
         var options = new BackupsOptions
         {
             Enabled = true,
             S3 = new BackupsS3Options
             {
-                Bucket = "pgworker-backups",
+                Bucket = "",
             },
-            Job = new BackupsJobOptions { Image = "" },
         };
 
         // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
@@ -108,8 +107,7 @@ public class BackupsOptionsTests
         options.Policy.Retention.Months.Should().Be(1);
         options.Policy.FullMaxAgeSec.Should().Be(86400);
         options.Policy.VerifyOnCreate.Should().BeTrue();
-        options.Staging.Dir.Should().Be("/backup-staging");
-        options.Staging.QuotaBytes.Should().BeNull();
+        options.Staging.Dir.Should().Be("/home/postgres/pgdata/backup-staging");
         options.Agent.Cpu.Should().BeNull();
         options.Agent.Mem.Should().BeNull();
     }
@@ -121,25 +119,24 @@ public class BackupsOptionsTests
         // его per-cluster secrets-ключ etcd).
         var options = new BackupsOptions
         {
-            Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
             S3 = new BackupsS3Options
             {
                 Bucket = "b",
             },
-            Staging = new BackupsStagingOptions { Dir = "/st", QuotaBytes = 1024 },
+            Staging = new BackupsStagingOptions { Dir = "/st" },
             Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
             Wal = new BackupsWalOptions { VerifyIntervalSec = 5, LagMaxSegments = 10, StaleSec = 60 },
         };
 
         // Act
-        var runtime = options.ToRuntime();
+        var runtime = options.ToRuntime(nodeImage: "pgworker-node:test");
 
         // Assert
-        runtime.JobImage.Should().Be("pgworker-backup:test");
+        runtime.NodeImage.Should().Be("pgworker-node:test");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);
-        runtime.StagingQuotaBytes.Should().Be(1024);
+        runtime.StagingDir.Should().Be("/st");
     }
 
     // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.

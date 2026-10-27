@@ -315,9 +315,10 @@ public class E2eRestoreScenarios
 
     // Воркер с бэкап-комплектом (t02+t03+t05): паттерн StartBackupHostAsync —
     // креды пула в env-профиле, пул — policy.s3, адреса нод воркер резолвит
-    // из /s3/ (advertised host.docker.internal): full-джобы t02 получают
-    // список PGW_BK_S3_ENDPOINTS, агенты t03 — S3_ENDPOINTS/S3_READ_ENDPOINTS
-    // (внутри контейнера localhost недостижим!). Пороги WAL-контроля — короткие.
+    // из /s3/ (advertised host.docker.internal): полный бэкап снимает
+    // приёмник ноды — upload изнутри контура, агенты t03 —
+    // S3_ENDPOINTS/S3_READ_ENDPOINTS (внутри контейнера localhost
+    // недостижим!). Пороги WAL-контроля — короткие.
     private Task<HostInstance> StartRestoreHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
@@ -325,7 +326,6 @@ public class E2eRestoreScenarios
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

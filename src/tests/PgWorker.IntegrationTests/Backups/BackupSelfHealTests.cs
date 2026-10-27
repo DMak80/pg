@@ -19,7 +19,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Сквозной контур самолечения (t07 AC1, spec §3.2): дыра цепочки → WalStream
-// пишет BROKEN → BackupProcess планирует пересъём (IsDue walChainBroken) →
+// пишет WAL_CHAIN_ERROR → BackupProcess планирует пересъём (IsDue walChainBroken) →
 // симуляция COMPLETED переснятого полного → WalStream контроль заживляет
 // (ACTIVE + агент тем же тиком). Реальный etcd, фейки docker/SQL/S3.
 [Collection(NonE2eCollection.Name)]
@@ -78,12 +78,40 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             TimeProvider.System);
 
+    /// <summary>Мини-фейк API приёмника: StartFull — 202 (журнал URL), прочее —
+    /// no-op (self-heal проверяет только факт запуска пересъёма).</summary>
+    private sealed class FakeReceiverClient : IWalReceiverApiClient
+    {
+        public readonly List<string> StartFullUrls = [];
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+        {
+            StartFullUrls.Add(baseUrl);
+            return Task.FromResult(new ReceiverReply(202,
+                new ReceiverStatus("running", "basebackup"), null));
+        }
+
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
+    }
+
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
         S3Bucket: "bkt",
-        JobImage: "pgworker-backup:test",
-        StagingDir: "/backup-staging",
+        StagingDir: "/home/postgres/pgdata/backup-staging",
         WalVerifyIntervalSec: 0,
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
@@ -119,7 +147,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         return parsed.Value.Single(c => c.Config.Cluster == cluster);
     }
 
-    // AAA (AC1 сквозной): дыра → BROKEN → планировщик PLANNED/RUNNING → симуляция
+    // AAA (AC1 сквозной): дыра → WAL_CHAIN_ERROR → планировщик PLANNED/RUNNING → симуляция
     // завершения пересъёма (etcd-ключ COMPLETED с wal_start выше границы + объекты
     // S3) → WalStream контроль → ACTIVE + агент поднят
     [Fact]
@@ -142,26 +170,26 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
         (await walProcess.TickAsync(BuildSnap("sh1"), backups1, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert 1 — wal=BROKEN с границей разрыва ..03
+        // Assert 1 — wal=WAL_CHAIN_ERROR с границей разрыва ..03
         var broken = await ReadWalAsync("sh1");
-        broken!.State.Should().Be(WalStreamStatus.Broken);
+        broken!.State.Should().Be(WalStreamStatus.WalChainError);
         broken.ChainStartSegment.Should().Be("000000010000000000000003");
 
-        // Arrange 2 — BackupProcess тик: джобов нет, BROKEN → due → PLANNED →
-        // create/start фейка → RUNNING (планировщик отреагировал)
-        var engine = new FakeBackupEngine();
+        // Arrange 2 — BackupProcess тик: WAL_CHAIN_ERROR → due → PLANNED → StartFullAsync
+        // приёмнику (фейк 202) → RUNNING (планировщик отреагировал)
+        var receiver = new FakeReceiverClient();
         var backupProcess = new BackupProcess(
             fixture.Gateway, [fixture.Endpoint],
-            new SelfHealDriver(driver, engine),
+            new SelfHealDriver(driver, new FakeBackupEngine()),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            Options(), FakePoolFactory.Single(new FakeBackupS3()), TimeProvider.System,
+            Options(), FakePoolFactory.Single(new FakeBackupS3()), receiver, TimeProvider.System,
             NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
             .IsSuccess.Should().BeTrue();
-        engine.Created.Should().NotBeEmpty("BROKEN is healed by retaking — the job is started");
+        receiver.StartFullUrls.Should().NotBeEmpty("WAL_CHAIN_ERROR is healed by retaking — started via the receiver API");
 
         // Arrange 3 — симуляция завершения пересъёма: etcd-ключ COMPLETED нового id
         // с wal_start=..05 + объекты S3 5..6 (цепь от нового полного непрерывна)
@@ -174,7 +202,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             BackupStatusJson.Serialize(recompleted), null, ct);
         s3.Objects.Add(("sh1", "shard1", "000000010000000000000006"));
 
-        // Act — WalStream тик (контроль при BROKEN — каждый тик; процесс новый —
+        // Act — WalStream тик (контроль при WAL_CHAIN_ERROR — каждый тик; процесс новый —
         // «рестарт воркера»: маркер разрыва читается из ключа, не из памяти)
         var rereadWal = await ReadWalAsync("sh1");
         var backups2 = new ClusterBackups("sh1", null,

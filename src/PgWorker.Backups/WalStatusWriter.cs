@@ -117,7 +117,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         WalStreamStatus.Active => "ACTIVE",
         WalStreamStatus.Degraded => "DEGRADED",
         WalStreamStatus.Stopped => "STOPPED",
-        WalStreamStatus.Broken => "BROKEN",
+        WalStreamStatus.WalChainError => "WAL_CHAIN_ERROR",
         _ => "ACTIVE",
     };
 
@@ -125,7 +125,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
     {
         "DEGRADED" => WalStreamStatus.Degraded,
         "STOPPED" => WalStreamStatus.Stopped,
-        "BROKEN" => WalStreamStatus.Broken,
+        "WAL_CHAIN_ERROR" => WalStreamStatus.WalChainError,
         _ => WalStreamStatus.Active,
     };
 

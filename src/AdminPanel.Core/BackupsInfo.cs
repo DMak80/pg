@@ -4,8 +4,8 @@ namespace AdminPanel.Core;
 // arch/19 §4; adminpanel/02 §2.3.1; t03). Дубли воркерной модели — осознанные
 // (бэкапные модели выведены за скоуп унификации t08); агрегат по кластерам —
 // ClusterBackupsInfo (BackupInfo.cs, t02-модель + Wal-словарь t03).
-// t07: Broken — разрыв цепочки (permanent; воркер переснимает полный).
-public enum WalStreamInfoState { Active, Degraded, Stopped, Broken }
+// t07: WalChainError — разрыв цепочки (permanent; воркер переснимает полный).
+public enum WalStreamInfoState { Active, Degraded, Stopped, WalChainError }
 
 /// <summary>Границы RPO-зазора tli-прыжка приёмника из поля gap wal-ключа
 /// (архивный формат arch/19 §4): сегменты (From .. To] невосстановимы из

@@ -75,7 +75,6 @@ public abstract class E2eBackupPoolScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -703,13 +702,12 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
             }, TimeSpan.FromSeconds(300), ct);
             switched.Should().BeTrue(
                 "the agent of the new role writes to the master-list node (node1), .history in S3, the chain is continuous");
-            // На нode2 мастер-поток после promote не пишется: .history только на node1.
-            var historyOnNode2 = await McKeysOnNodeAsync(ep2, $"{cluster}/shard1/wal/");
-            historyOnNode2.Count(k => k.EndsWith(".history", StringComparison.Ordinal))
-                .Should().BeLessThan(
-                    (await McKeysOnNodeAsync(ep1, $"{cluster}/shard1/wal/"))
-                    .Count(k => k.EndsWith(".history", StringComparison.Ordinal)),
-                "the new TLI switch is served by the master list (node1)");
+            // Двойная архивация (arch/19 §3): .history нового TLI доставляют ОБА
+            // приёмника шарда — каждый в список СВОЕЙ роли (мастер → node1,
+            // реплика → node2), поэтому сравнение счётчиков «node2 < node1» —
+            // гонка сходимости, а не свойство системы; намерение «переключение
+            // обслуживает master-список» уже покрыто ассертом switched выше
+            // (.history на node1 + wal ACTIVE + непрерывность).
             await load.CancelAsync();
             try { await loader; } catch { /* фон умер вместе с мастером — ожидаемо */ }
         }

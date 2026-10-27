@@ -183,6 +183,13 @@ public sealed class FakeBackupS3 : IBackupS3
             (IReadOnlyList<string>)ids));
     }
 
+// t26: файловые методы интерфейса в этом тесте не используются —
+    // заглушка (фейк нужен только перечисленным выше операциям).
+    public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
+        => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
+
+    public Task<Result> GetObjectToFileAsync(string cluster, string shard, string key, string destFilePath, CancellationToken ct = default)
+        => Task.FromResult(Result.Failed(new ApplicationException("get-to-file: not supported by this fake")));
     public Task<Result<string>> DownloadTextAsync(
         string cluster, string shard, string objectKey, CancellationToken ct = default)
     {

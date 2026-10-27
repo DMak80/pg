@@ -1002,8 +1002,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             {
                 // t03/pg-семантика (флаг ResetEntrypoint супер-спеки t07): сброс
                 // ENTRYPOINT образа — inline-команда агента/тест-контейнера
-                // выполняется как есть, а не аргументами образного entrypoint
-                // (образ pgworker-backup несёт ENTRYPOINT джоба t02).
+                // выполняется как есть, а не аргументами образного entrypoint.
                 body["Entrypoint"] = Array.Empty<string>();
             }
 

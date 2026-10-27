@@ -58,8 +58,8 @@ sync-standby):
   (drop + create immediate+reserved) автоматически, журнальная фаза
   `slot-recreate/<X>` (op `backup-wal` в `/pgworker/work/<C>`); потерянный агент
   возвращается сам от хвоста S3 (вечный ретрай приёмника), живой продолжает
-  доставку — BROKEN не ставится, цепочка не рвётся;
-- lost/исчезновение слотов ВСЕХ источников при живой цепочке — wal-ключ BROKEN,
+  доставку — WAL_CHAIN_ERROR не ставится, цепочка не рвётся;
+- lost/исчезновение слотов ВСЕХ источников при живой цепочке — wal-ключ WAL_CHAIN_ERROR,
   агенты останавливаются, воркер переснимает полный бэкап; архивация
   восстанавливается от `wal_start` нового полного.
 
@@ -179,8 +179,8 @@ CA-сертификат registry должен быть доверен Docker и 
 
 ### ⚠️ Локально собираемые образы в registry НЕ класть — никогда
 
-`pgworker:dev`, `kafkaworker:dev`, `pgworker-backup:dev`, `adminpanel:dev`,
-`pgworker-node:dev|e2e`, `pgworker-backup:e2e`, сайдкары/opsbox стенда —
+`pgworker:dev`, `kafkaworker:dev`, `adminpanel:dev`,
+`pgworker-node:dev|e2e`, сайдкары/opsbox стенда —
 артефакты конкретной машины/ветки. В общий registry они **категорически
 запрещены**: реестр — зеркало воспроизводимых внешних зависимостей, а не хранилище
 сборок. `mirror-image.sh` для таких имён не запускать, в `images.txt` не вносить.
@@ -240,12 +240,12 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `grafana/grafana:13.0.8` | dev-стенд (метрики) |
 | `mcr.microsoft.com/dotnet/sdk:10.0` | build-стадии Dockerfile'ов PgWorker/KafkaWorker/AdminPanel |
 | `mcr.microsoft.com/dotnet/aspnet:10.0` | runtime-стадии тех же Dockerfile'ов |
-| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | джобы полного/verify/restore бэкапов, бакетные проверки E2E, `00-up.sh` (запинен — supply-chain) |
+| `minio/mc:RELEASE.2025-08-13T08-35-41Z` | бакетные проверки E2E, `00-up.sh` (запинен — supply-chain; операции бэкапов — .NET S3-клиент приёмника, mc не потребляют) |
 | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | dev-стенд — переходный read-only-архив `as-minio` (снос — ../OwnS3/docs/owns3-migration.md §6) |
 | `nginx:alpine` | TlsEngineProxyTests |
 | `node:22-alpine` | AdminPanel.Dockerfile (сборка SPA) |
 | `postgres:18-alpine` | интеграционные тесты бэкапов (OwnPostgres, WalSqlTests) |
-| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, база `pgworker-backup` и opsbox |
+| `postgres:18` | dev-стенд (шарды), тесты AdminPanel, opsbox |
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |

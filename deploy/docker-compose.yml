@@ -49,9 +49,6 @@ x-pgworker-env: &pgworker-env
   # Доверие CA https S3-целей (t42, arch/19 §7): путь ca.pem в контейнере
   # (ro-монтирование TLS-пакета, прод); единый на все цели. Пусто — http.
   PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
-  # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
-  # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
-  PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
   # Экспорт etcd-снапшотов в S3 (t36, arch/14 §6/§8): ОТДЕЛЬНАЯ env-пара
   # PgWorker:Snapshots:Export:S3 (свой bucket, префикс etcd/, свои креды —
   # PGW_SNAPSHOTS_S3_*); обязательна при Enabled=true (fail-fast старта).
@@ -444,17 +441,6 @@ services:
       OWNS3_REPLICATION_TARGETS__0__SECRETKEY: ${OWNS3_MESH_PEER1_SECRETKEY:?set the peer key of node 1}
     volumes:
       - owns3-m2-data:/data
-
-  # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
-  # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
-  # подняться в up; entrypoint-заглушка — защита от случайного run.
-  pgworker-backup:
-    build:
-      context: ..
-      dockerfile: docker/PgWorker.Backup.Dockerfile
-    image: pgworker-backup:dev
-    profiles: ["build"]
-    entrypoint: ["true"]
 
 # Единая сеть контура мониторинга (t15, arch/18 §5.4): deploy-проект ВЛАДЕЕТ
 # сетью — в ней deploy-воркеры PgWorker (aliases), Prometheus (external-attach

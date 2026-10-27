@@ -396,17 +396,17 @@ public class BackupsParserTests
         cluster.ShardsRestores.Should().BeEmpty("no restore keys — rules stay silent");
     }
 
-// ---- t07: BROKEN wal + ключ реестра сирот ----
+// ---- t07: WAL_CHAIN_ERROR wal + ключ реестра сирот ----
 
-// AAA (AC8): state=BROKEN читается; незнакомое state — KeyParseError (как прежде)
+// AAA (AC8): state=WAL_CHAIN_ERROR читается; незнакомое state — KeyParseError (как прежде)
 [Fact]
-public void Parse_WalBroken_IsRead()
+public void Parse_WalChainError_IsRead()
 {
-    // Arrange — wal-ключ с state=BROKEN (граница разрыва в chain_start_segment)
+    // Arrange — wal-ключ с state=WAL_CHAIN_ERROR (граница разрыва в chain_start_segment)
     var kvs = new List<Kv>
     {
         new("/pgworker/backups/c1/s1/wal",
-            """{"state":"BROKEN","slot":"pgw_bkp_c1_s1","master_node":"s1a","chain_start_segment":"000000010000000000000005","last_received_segment":"000000010000000000000005","last_uploaded_segment":"000000010000000000000005","last_uploaded_unix":1760000000,"error":"WAL chain hole: expected 000000010000000000000006"}""", 1),
+            """{"state":"WAL_CHAIN_ERROR","slot":"pgw_bkp_c1_s1","master_node":"s1a","chain_start_segment":"000000010000000000000005","last_received_segment":"000000010000000000000005","last_uploaded_segment":"000000010000000000000005","last_uploaded_unix":1760000000,"error":"WAL chain hole: expected 000000010000000000000006"}""", 1),
     };
 
     // Act
@@ -416,7 +416,7 @@ public void Parse_WalBroken_IsRead()
     result.Errors.Should().BeEmpty();
     var wal = result.Clusters.Single().Shards!["s1"];
     wal.Should().NotBeNull();
-    wal!.State.Should().Be(WalStreamInfoState.Broken);
+    wal!.State.Should().Be(WalStreamInfoState.WalChainError);
     wal.Error.Should().Contain("hole");
 }
 

@@ -81,7 +81,6 @@ public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
                 {
                     ["PgWorker:Backups:Enabled"] = "true",
                     ["PgWorker:Backups:S3:Bucket"] = "bkt",
-                    ["PgWorker:Backups:Job:Image"] = "pgworker-backup:test",
                 }));
         }
     }

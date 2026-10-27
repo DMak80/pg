@@ -131,6 +131,11 @@ builder.Services.AddSingleton(sp =>
 // запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
 // до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+// Клиент HTTP API приёмника WalReceiver (t26, spec §3.5): per-вызов ~10 с —
+// 5xx/таймаут/отказ = transient для тиков бэкап-процессов (ReceiverReply).
+builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
+    new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
 // Клиент Patroni REST (t22, arch/14 §5 C): https к host:patroni-port portalloc;
 // верификация цепочки к per-install CA без hostname-проверки (канон P17
 // «require, не verify-full»: адрес ноды — из реплицированного portalloc;
@@ -314,7 +319,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     // связка с Enabled прятала бы причину падения за режимом.
     var nodeBackupEnv = new NodeBackupEnv(
         Bucket: string.IsNullOrWhiteSpace(opts.Backups.S3.Bucket) ? null : opts.Backups.S3.Bucket,
-        CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath));
+        CaPem: BackupCaPem.ReadIfConfigured(opts.Backups.S3.CaBundlePath),
+        StagingDir: string.IsNullOrWhiteSpace(opts.Backups.Staging.Dir) ? null : opts.Backups.Staging.Dir);
 
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
@@ -612,8 +618,9 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IClusterSecretEnsurer>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
-// Полные бэкапы шардов (t02, arch/19): планировщик + супервизия джобов;
-// runtime-опции — склейка секции PgWorker:Backups; процесс — no-op при Enabled=false.
+// Полные бэкапы шардов (t02/t26, arch/19 §2): планировщик + супервизия через
+// HTTP API приёмника; runtime-опции — склейка секции PgWorker:Backups; процесс —
+// no-op при Enabled=false.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -626,22 +633,21 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
-    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge,
-    watchdogWindow: TimeSpan.FromSeconds(
-        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
-    progress: sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
+    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
-// Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
-// REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
-// статичный срез (врезка цикла и процесс гвардят Enabled).
+// Восстановление шарда из бэкапа (arch/19 §3.5): PLANNED→RUNNING→
+// REJOINING→COMPLETED; plain-only, операции — команды API tool-контейнера.
+// Runtime-опции — статичный срез (врезка цикла и процесс гвардят Enabled).
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),
@@ -725,14 +731,16 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup-джобы;
-// verifyObserver — counter pgworker_backup_verify_total{result}.
+// Проверки полных бэкапов (t04/t26, arch/19 §5): цепочка + checksums в
+// tool-контейнере по API приёмника; verifyObserver — counter
+// pgworker_backup_verify_total{result}.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.BackupsRuntime(),
@@ -742,7 +750,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Дрилл восстановимости (reliability t02, arch/19 §3.6): супервиз drill-джоба,
+// Дрилл восстановимости (arch/19 §3.6): супервиз drill-tool-контейнера,
 // отбор/валидация/запуск, доводимый снос; runtime — как у verify.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -750,6 +758,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<BackupS3Factory>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.BackupsRuntime(),

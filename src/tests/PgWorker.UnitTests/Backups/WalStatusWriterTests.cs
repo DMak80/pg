@@ -53,43 +53,43 @@ public class WalStatusWriterTests
         degradedJson.Should().Contain("\"error\":\"WAL chain gap: expected X\"");
     }
 
-    // AAA: BROKEN пишется как "BROKEN" и читается обратно (контракт arch/19 §4, t07)
+    // AAA: WAL_CHAIN_ERROR пишется как "WAL_CHAIN_ERROR" и читается обратно (контракт arch/19 §4, t07)
     [Fact]
-    public void ToJson_StateBroken_WritesBROKEN()
+    public void ToJson_StateWalChainError_WritesWalChainError()
     {
         // Arrange — состояние разрыва цепочки с границей в chain_start
         var state = new WalStreamState(
-            WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
+            WalStreamStatus.WalChainError, "pgw_bkp_c1_shard1", "shard1a",
             "000000010000000000000005", "000000010000000000000005",
             "000000010000000000000005", 1757500000, null, "WAL chain gap: expected 000000010000000000000006");
 
         // Act
         var json = WalStatusWriter.ToJson(state);
 
-        // Assert — машиночитаемое поле state=BROKEN (spec §3.1)
-        json.Should().Contain("\"state\":\"BROKEN\"");
+        // Assert — машиночитаемое поле state=WAL_CHAIN_ERROR (spec §3.1)
+        json.Should().Contain("\"state\":\"WAL_CHAIN_ERROR\"");
     }
 
-    // AAA: ключ с state=BROKEN читается парсером обратно в Broken (roundtrip
+    // AAA: ключ с state=WAL_CHAIN_ERROR читается парсером обратно в WalChainError (roundtrip
     // через публичный путь записи/чтения — по образцу тестов файла)
     [Fact]
-    public async Task Parse_BrokenKey_ReadsBroken()
+    public async Task Parse_WalChainErrorKey_ReadsWalChainError()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
         var writer = new WalStatusWriter(gateway, ["http://test"]);
-        var broken = new WalStreamState(
-            WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
+        var chainError = new WalStreamState(
+            WalStreamStatus.WalChainError, "pgw_bkp_c1_shard1", "shard1a",
             "000000010000000000000005", "000000010000000000000005",
             "000000010000000000000005", 1757500000, null, "WAL chain gap");
-        await writer.WriteIfChangedAsync("c1", "shard1", broken, ct: TestContext.Current.CancellationToken);
+        await writer.WriteIfChangedAsync("c1", "shard1", chainError, ct: TestContext.Current.CancellationToken);
 
         // Act
         var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
 
-        // Assert — сериализованное BROKEN парсится в WalStreamStatus.Broken
+        // Assert — сериализованное WAL_CHAIN_ERROR парсится в WalStreamStatus.WalChainError
         read.IsSuccess.Should().BeTrue();
-        read.Value.Should().BeEquivalentTo(broken);
+        read.Value.Should().BeEquivalentTo(chainError);
     }
 
     [Fact]

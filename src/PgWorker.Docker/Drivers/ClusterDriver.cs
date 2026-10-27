@@ -101,11 +101,13 @@ public interface IClusterDriver
     // null — хост не известен (вызывающий трактует как transient).
     IDockerEngine? EngineFor(string host);
 
-    // Чистка джоб-контейнеров pgw-backup-full-<C>-* (и их staging volumes) +
-    // restore-джобов pgw-backup-restore-<C>-* (t05; БЕЗ volume — он является
-    // data-volume ноды, его снесёт RemoveNodeAsync) (Deprovisioning D1/D2,
-    // remove-shard): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
-    // (arch/19 §4 — orphan t07).
+    // Чистка tool-контейнеров бэкапов кластера (Deprovisioning D1/D2,
+    // remove-shard): verify/drill по префиксам pgw-backup-verify-<C>-* /
+    // pgw-backup-drill-<C>-* — remove force вместе с их volume (volume — одно
+    // имя с контейнером) + restore-контейнеры pgw-backup-restore-<C>-* —
+    // remove force БЕЗ volume (он — data-volume ноды, его снесёт
+    // RemoveNodeAsync): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
+    // (arch/19 §4 — orphan).
     Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct);
 
     // Точечная чистка restore-джобов шарда pgw-backup-restore-<C>-<X>-* (t05
@@ -682,6 +684,10 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
+            // Staging полного (t26, arch/19 §2/§9): каталог в data-volume
+            // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
+            if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
+                env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
         }
 
         if (enableDoorman)
@@ -746,38 +752,27 @@ public sealed class PlainClusterDriver(
         => $"{NodeName(cluster, shard, nodeName)}-data";
 }
 
-// Общая чистка джобов бэкапов (t02/t05, Plain и Swarm): контейнеры по префиксам
-// (full: pgw-backup-full-<C>-*, restore: pgw-backup-restore-<C>-*) + volume,
-// выводимый из имени full-контейнера (pgw-backup-full-<C>-<X>-<id> →
-// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Restore-джобы
-// СВОЕГО volume не имеют: их точка монтирования — data-volume ноды (не удалять).
-// Имена — локальные константы канона BackupNames (PgWorker.Backups) — дубль без
-// ссылки (цикл зависимостей; прецедент — MoverRole в ShardEndpoints).
+// Общая чистка tool-контейнеров бэкапов (t02/t05/t26, Plain и Swarm):
+// verify/drill (контейнер и volume — одно имя) + restore (контейнер только —
+// его точка монтирования data-volume ноды, НЕ удалять). Контейнеров полного
+// больше нет (t26: полный исполняет приёмник ноды, pgw-backup-full-<C>-* —
+// префикс умер вместе с джобами). Имена — локальные константы канона
+// BackupNames (PgWorker.Backups) — дубль без ссылки (цикл зависимостей;
+// прецедент — MoverRole в ShardEndpoints).
 internal static class BackupJobsCleaner
 {
-    public const string JobContainerPrefix = "pgw-backup-full-";
     public const string RestoreJobContainerPrefix = "pgw-backup-restore-";
-    public const string JobVolumePrefix = "pgw-backup-";
-
-    // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
     public const string VerifyContainerPrefix = "pgw-backup-verify-";
-
-    // reliability t02: drill-джобы (контейнер и volume одно имя — чистка тем же
-    // проходом D1 по префиксу).
     public const string DrillContainerPrefix = "pgw-backup-drill-";
 
     public static async Task<Result> RemoveAsync(
         IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
     {
-        // t04: verify-джобы — контейнер и volume НОСЯТ ОДНО ИМЯ (в отличие от full:
-        // pgw-backup-full-<C>-<X>-<id> → volume pgw-backup-<C>-<X>-<id>).
-        // volumePrefix ОБЯЗАН содержать кластер (pgw-backup-<C>-) — имя контейнера
-        // без префикса даёт только <X>-<id>.
-        foreach (var (prefix, sameVolumeName) in new[]
-                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true), (DrillContainerPrefix, true) })
+        // verify/drill: контейнер и volume НОСЯТ ОДНО ИМЯ (volume ephemeral —
+        // чистится тем же проходом; 404 = ок).
+        foreach (var prefix in new[] { VerifyContainerPrefix, DrillContainerPrefix })
         {
             var containerPrefix = $"{prefix}{cluster}-";
-            var volumePrefix = $"{JobVolumePrefix}{cluster}-"; // pgw-backup-<C>-
             foreach (var engine in engines)
             {
                 var list = await engine.ListContainersAsync(containerPrefix, all: true, ct);
@@ -789,8 +784,7 @@ internal static class BackupJobsCleaner
                     var removed = await engine.RemoveContainerAsync(name, force: true, ct);
                     if (!removed.IsSuccess)
                         return removed;
-                    var volume = sameVolumeName ? name : volumePrefix + name[containerPrefix.Length..];
-                    var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
+                    var volumeRemoved = await engine.RemoveVolumeAsync(name, ct);
                     if (!volumeRemoved.IsSuccess)
                         return volumeRemoved;
                 }

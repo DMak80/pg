@@ -195,7 +195,7 @@ public class E2eRetentionScenarios
     }
 
     // Воркер с включённой подсистемой: S3 на ownS3-ноду, образ джобов
-    // pgworker-backup:e2e, ускоренный бэкофф, ретенция раз в 60 c (минимум
+    // tool-контейнеры образа нод (t26), ускоренный бэкофф, ретенция раз в 60 c (минимум
     // валидации IntervalSec ≥ 60; первый проход — сразу, далее по расписанию).
     private Task<HostInstance> StartRetentionHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
@@ -204,7 +204,6 @@ public class E2eRetentionScenarios
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
-            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "600",

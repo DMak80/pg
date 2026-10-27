@@ -6,8 +6,9 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Docker;
 
-// Чистка джобов бэкапов D1 (t02/t04): контейнеры по префиксам full/verify +
-// volume (full → volume из имени без "full-"; verify → volume == имя контейнера).
+// Чистка tool-контейнеров бэкапов D1 (arch/19 §3.7): verify/drill — контейнер
+// и volume одно имя; restore — контейнер без volume (точка монтирования —
+// data-volume ноды, НЕ удалять).
 public class BackupJobsCleanerTests
 {
     // Локальный фейк IDockerEngine (по образцу FakeBackupEngine): только нужные
@@ -81,11 +82,13 @@ public class BackupJobsCleanerTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    // AAA: чистка D1 убирает и full-, и verify-джобы кластера с их volumes (t04)
+    // AAA: чистка D1 убирает verify-tool-контейнеры кластера (t26: контейнеров
+    // полного больше нет — префикс pgw-backup-full-<C>-* умер вместе с джобами)
     [Fact]
-    public async Task Remove_CleansFull_AndVerifyJobs_WithVolumes()
+    public async Task Remove_CleansVerifyJobs_WithVolumes_FullIgnored()
     {
-        // Arrange — движок с full-джобом (t02) и verify-джобом (t04) кластера c1
+        // Arrange — движок с verify-джобом кластера c1; full-контейнер (legacy-
+        // мусор прошлой поставки) чисткой НЕ трогается — префикса в чистке нет
         var engine = new FakeCleanerEngine
         {
             Containers =
@@ -99,13 +102,13 @@ public class BackupJobsCleanerTests
         // Act
         var removed = await BackupJobsCleaner.RemoveAsync([engine], "c1", CancellationToken.None);
 
-        // Assert — контейнер c2 не тронут; volume выводится из имени:
-        // full → pgw-backup-<C>-<X>-<id>; verify → имя контейнера (volume = имя)
+        // Assert — контейнер c2 не тронут; verify: volume = имя контейнера;
+        // full-префикс не чистится (умер вместе с джобами полного, spec §3.7)
         removed.IsSuccess.Should().BeTrue();
         engine.RemovedContainers.Should().BeEquivalentTo(
-            ["pgw-backup-full-c1-shard1-20260911120000Z", "pgw-backup-verify-c1-shard1-20260911120000Z"]);
+            ["pgw-backup-verify-c1-shard1-20260911120000Z"]);
         engine.RemovedVolumes.Should().BeEquivalentTo(
-            ["pgw-backup-c1-shard1-20260911120000Z", "pgw-backup-verify-c1-shard1-20260911120000Z"]);
+            ["pgw-backup-verify-c1-shard1-20260911120000Z"]);
     }
 
     // AAA (reliability t02, AC4/D1): drill-префикс в чистке — контейнер и volume

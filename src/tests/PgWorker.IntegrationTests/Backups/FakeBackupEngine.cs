@@ -66,11 +66,13 @@ public sealed class FakeBackupEngine : IDockerEngine
         if (InspectFails)
             return Task.FromResult(Result<DockerContainerInspect>.Failed(
                 new ApplicationException("docker: inspect failed")));
-        var found = Containers.FirstOrDefault(p => p.Value.Id == id);
+        // Поиск по Id ИЛИ по имени (t26: инспекция публикации :8080 идёт по
+        // детерминированному имени tool-контейнера).
+        var found = Containers.FirstOrDefault(p => p.Value.Id == id || p.Key == id);
         return Task.FromResult(found.Key is null
             ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))
             : Result<DockerContainerInspect>.Success(new DockerContainerInspect(
-                id, found.Key, [], [], [],
+                id, found.Key, [], [], [new PortMap(8080, 31999)],
                 found.Value.State == "running", found.Value.ExitCode)));
     }
 
