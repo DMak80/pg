@@ -627,14 +627,23 @@ public sealed class ProvisioningProcess(
 
     // Адрес master-ноды шарда для SQL-фаз: master-ключ (host|имяНоды:clientPort —
     // порт ключа клиентский, SQL-порт берём из portalloc) → fallback Patroni REST.
+    // Ключ дискриминирует ноду только ОДНОЗНАЧНЫМ матчем: advertised-режим
+    // (arch/16) несёт ОДИН host у всех нод шарда (E2E: host.docker.internal), и
+    // host-матч выбирал бы произвольную ноду — на практике реплику (25006 на
+    // CREATE DATABASE, provisioning-stuck); callback on_start пишет ключ ещё до
+    // provisioning (t096). Имя ноды приоритетнее; совпадений 0 или >1 — истина
+    // за Patroni-пробами.
     private async Task<NodeAddress?> ResolveMasterAsync(ShardSpec shard, ShardTopology topology, CancellationToken ct)
     {
         if (!string.IsNullOrWhiteSpace(shard.Master))
         {
             var left = shard.Master.Split(':')[0];
-            var byKey = topology.Nodes.FirstOrDefault(p => p.Value.Host == left || p.Key == left);
-            if (byKey.Value is not null)
-                return byKey.Value;
+            var byName = topology.Nodes.Where(p => p.Key == left).Select(p => p.Value).ToList();
+            if (byName.Count == 1)
+                return byName[0];
+            var byHost = topology.Nodes.Where(p => p.Value.Host == left).Select(p => p.Value).ToList();
+            if (byHost.Count == 1)
+                return byHost[0];
         }
 
         foreach (var node in topology.Nodes.Keys)

@@ -163,6 +163,18 @@ public static class SpiloEnvBuilder
                   authentication:
                     username: {{RestRotation.RestUsername}}
                     {{RestPasswordKey}}: "{{rest.RestPassword}}"
+                postgresql:
+                  callbacks:
+                    # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
+                    # Секция ЛОКАЛЬНАЯ, не bootstrap.dcs: Patroni мержит локальную
+                    # postgresql поверх динамической ключ-за-ключом, и Spilo-дефолт
+                    # callbacks (on_role_change.sh zalandos) целиком заменяет
+                    # DCS-свой — в dcs наш скрипт молча не работал. CLI-параметр
+                    # env-file обязателен: Patroni-callback запускается с
+                    # обрезанным env; роль Patroni добавляет позиционным
+                    # аргументом (pgwnodetool уходит в probe-фоллбэк).
+                    on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
+                    on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
                 bootstrap:
                   dcs:
                     ttl: {{PatroniTimings.Ttl}}
@@ -172,13 +184,6 @@ public static class SpiloEnvBuilder
                     synchronous_mode_strict: {{(syncStrict ? "true" : "false")}}
                     postgresql:
                       use_pg_rewind: true
-                      callbacks:
-                        # P11: key /clusters/<C>/shards/<X>/master under etcd-lease.
-                        # CLI-параметр env-file обязателен: Patroni-callback
-                        # запускается с обрезанным env; роль добавляет Patroni
-                        # позиционным аргументом после параметров.
-                        on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
-                        on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env
                       parameters:
                 {{ParametersBlock(tuning, excludeParams)}}
                 """,
