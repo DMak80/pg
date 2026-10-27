@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text;
 using Npgsql.Replication;
 using NpgsqlTypes;
 using PgWorker.Backups;
@@ -24,7 +26,8 @@ internal interface IReplicationConnection : IAsyncDisposable
 
     Task SendStatusUpdate(CancellationToken ct);
 
-    Task<TimelineHistoryFile> TimelineHistory(uint tli, CancellationToken ct);
+    /// <summary>TIMELINE_HISTORY: байты файла истории; null — источника нет.</summary>
+    Task<byte[]?> TimelineHistory(uint tli, CancellationToken ct);
 }
 
 /// <summary>Прод-обёртка PhysicalReplicationConnection (запечатан Npgsql —
@@ -54,8 +57,46 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
 
     public Task SendStatusUpdate(CancellationToken ct) => _inner.SendStatusUpdate(ct);
 
-    public Task<TimelineHistoryFile> TimelineHistory(uint tli, CancellationToken ct)
-        => _inner.TimelineHistory(tli, ct);
+    // TIMELINE_HISTORY: сырые байты файла истории. Публичный TimelineHistory
+    // Npgsql 10.0.3 НЕ используется: сервер (PG ≥ 14) объявляет колонку
+    // content как text, неся сырые байты файла, — публичный парсер кастует её
+    // к byte[] и падает InvalidCastException'ом на КАЖДОМ запросе (апстрим-фикс
+    // npgsql#6709 не выпущен). Читаем приватный ReadSingleRow Npgsql
+    // (simple-протокол: replication-команды сервер маршрутизирует только в нём,
+    // extended-протокол их не исполняет); строку декодируем в байты — .history
+    // пишется постгресом в ASCII, декодировка обратима. Смена приватного API
+    // апстримом → исключение → catch вызывающего (history_error + fallback ФС).
+    public async Task<byte[]?> TimelineHistory(uint tli, CancellationToken ct)
+    {
+        // ReadSingleRow объявлен в БАЗОВОМ ReplicationConnection: приватные
+        // методы базового класса через GetMethod на наследнике не видны.
+        var replicationType = typeof(PhysicalReplicationConnection).BaseType;
+        var readSingleRow = replicationType?.GetMethod(
+            "ReadSingleRow", BindingFlags.NonPublic | BindingFlags.Instance,
+            [typeof(string), typeof(CancellationToken)]);
+        if (readSingleRow is null)
+            throw new ApplicationException(
+                "Npgsql ReadSingleRow(string, CancellationToken) not found — upstream API changed");
+        object[] row;
+        try
+        {
+            row = await (Task<object[]>)readSingleRow.Invoke(_inner,
+                [$"TIMELINE_HISTORY {tli:D}", ct])!;
+        }
+        catch (TargetInvocationException e)
+        {
+            throw e.InnerException ?? e; // настоящий отказ протокола, не обёртка
+        }
+
+        return row[1] switch
+        {
+            byte[] bytes => bytes, // bytea-декларация (PG < 14)
+            string text => Encoding.UTF8.GetBytes(text), // text-декларация (PG ≥ 14), ASCII
+            { } other => throw new ApplicationException(
+                $"TIMELINE_HISTORY {tli}: unexpected content column {other.GetType().Name}"),
+            _ => throw new ApplicationException($"TIMELINE_HISTORY {tli}: empty content"),
+        };
+    }
 
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
 }
@@ -68,7 +109,9 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
 /// standby status update: apply/flush = подтверждённая LSN (Npgsql отвечает
 /// серверным keepalive последним выставленным статусом, потому подтверждение
 /// ставится ТОЛЬКО после успешного S3-put — инвариант RPO); TimelineHistory —
-/// публичный API Npgsql (вердикт t27: экспонируется — fallback не нужен).
+/// сырой ReadSingleRow Npgsql (публичный TimelineHistory не годится: сервер
+/// с PG ≥ 14 объявляет content как text при сырых байтах — публичный каст к
+/// byte[] падает на каждом запросе; fallback к ФС ноды остаётся страховкой).
 /// Жизненный цикл соединения: повторный OpenAsync гасит прежнее, сбой
 /// START_REPLICATION гасит сломанное — каждое соединение живёт ровно до
 /// своей замены (утечка walsender'ов исчерпывает max_wal_senders источника).</summary>
@@ -278,8 +321,8 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
         {
             await using var history = NewConnection();
             await history.Open(ct);
-            var file = await history.TimelineHistory(tli, ct);
-            return Result<byte[]?>.Success(file.Content);
+            var content = await history.TimelineHistory(tli, ct);
+            return Result<byte[]?>.Success(content);
         }
         catch (Exception e)
         {
