@@ -297,6 +297,11 @@ public class RetentionProcessTests(EtcdFixture fixture)
             }), null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
             "pw", null, ct);
+        // t25: приёмник «жив» (статус-ключ agent/<N>) — контроль не деградирует
+        // not-running; предмет теста — подъём chain_start до cutoff после среза.
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            $"/pgworker/backups/{cluster}/shard1/agent/shard1a",
+            """{"node":"shard1a","state":"streaming","pool_exhausted":false}""", null, ct);
         var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005",
             verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
         await SeedFullAsync(cluster, full);
