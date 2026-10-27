@@ -26,6 +26,9 @@ public static class HasyncCommand
             throw new ArgumentException("--servers must contain at least one node");
 
         var socketPath = cli.Value("socket") ?? "/run/haproxy/admin.sock";
+        // Unix-сокет HAProxy — только под /run (CWE-22, реальное расположение
+        // /run/haproxy/admin.sock).
+        EnvironmentGuard.EnsureFileUnderRoot(socketPath, "/run", "socket path");
         var whoamiPort = cli.Int("whoami-port", 8008);
         var serverPort = cli.Value("server-port") ?? "5432";
         var interval = cli.Double("interval", 2);

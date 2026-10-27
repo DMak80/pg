@@ -61,6 +61,26 @@ public class ContractTests
             EnvironmentGuard.EnsureFileUnderRoot("/var/master-lease.pid", "/tmp", "pid file"));
     }
 
+    // EnvironmentGuard (мульти-корневой): попадание хотя бы в один корень —
+    // ок; путь вне всех корней и выход через «..» — отказ (CWE-22).
+    // AAA: arrange — корни прод (/home/postgres) и тестов (/tmp); act —
+    // валидация путей; assert — в границах проходит, вне — ArgumentException.
+    [Fact]
+    public void EnvironmentGuard_FileUnderRoots()
+    {
+        string[] roots = ["/home/postgres", "/tmp"];
+
+        EnvironmentGuard.EnsureFileUnderRoots("/home/postgres/pgw-node.env", roots, "env file");
+        EnvironmentGuard.EnsureFileUnderRoots("/tmp/pgw-node.env", roots, "env file");
+
+        Assert.Throws<ArgumentException>(() =>
+            EnvironmentGuard.EnsureFileUnderRoots("/etc/passwd", roots, "env file"));
+        Assert.Throws<ArgumentException>(() =>
+            EnvironmentGuard.EnsureFileUnderRoots("/home/postgres/../etc/passwd", roots, "env file"));
+        Assert.Throws<ArgumentException>(() =>
+            EnvironmentGuard.EnsureFileUnderRoots("/tmp/../etc/passwd", roots, "env file"));
+    }
+
     // EnvFileSource: setdefault — живой env сильнее файла.
     [Fact]
     public void EnvFileSource_SetdefaultSemantics()

@@ -31,6 +31,10 @@ public static class MasterLeaseCommand
         var role = positional.FirstOrDefault()?.ToLowerInvariant();
         var daemon = cli.Has("daemon");
 
+        // CLI-пути — только в границах разрешённых корней (CWE-22): env-файл —
+        // прод /home/postgres (NodeConfigBuilders), тесты/ручные прогоны /tmp;
+        // pid-файл — /tmp.
+        EnvironmentGuard.EnsureFileUnderRoots(envFile, ["/home/postgres", "/tmp"], "env file");
         EnvironmentGuard.EnsureFileUnderRoot(pidFile, "/tmp", "pid file");
 
         if (daemon)
