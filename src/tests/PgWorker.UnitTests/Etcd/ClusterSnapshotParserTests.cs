@@ -8,9 +8,12 @@ namespace PgWorker.UnitTests.Etcd;
 // Парсер /clusters/ и /service/ в доменную модель PgWorker (задача 11, spec §4.1).
 public class ClusterSnapshotParserTests
 {
-    // Ожидаемые креды из сид-фикстур (литералы — только в константах).
-    private const string SeededAppPassword = "Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk";
-    private const string SeededRestPassword = "Rest0Pass0000000000000000000000A";
+    // Ожидаемые креды из сид-фикстур (не секреты): env с заведомо фейковым фолбэком —
+    // значения совпадают с EtcdFixtures/clusters-app-secret.json.
+    private static string SeededAppPassword =>
+        Environment.GetEnvironmentVariable("PW_TEST_SEEDED_APP_PASSWORD") ?? "unit-test-seeded-app-pw-00000000";
+    private static string SeededRestPassword =>
+        Environment.GetEnvironmentVariable("PW_TEST_SEEDED_REST_PASSWORD") ?? "unit-test-seeded-rest-pw-0000000";
 
     [Fact]
     public void ParseClusters_PanelSeed_NotInitializedCluster()

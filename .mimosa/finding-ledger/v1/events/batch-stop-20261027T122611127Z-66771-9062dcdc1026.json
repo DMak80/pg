@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20261027T122611127Z-66771-9062dcdc1026",
+  "runId": "20261027T122611127Z-66771-9062dcdc1026",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline capture had enumeration or snapshot errors",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline_partial: baseline capture had enumeration or snapshot errors",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "bcc350b7c6a5c1722c6318ab1e3a2980c4eb84c0",
+  "diffHash": "187309e1878363bf30e5c00e97206c5ee1649acf8a518eb27668f8ab47c3a368",
+  "rulesVersion": "unavailable",
+  "sessionHash": "b29d7c6d25162d881cf52899cd93e911d05510debfe3bb296d379459434a0f55",
+  "reportRef": ".mimosa/reports/task-review-session_646117d17a988274db6ed7855cc7fb84-20261027T122611127Z-66771-9062dcdc1026.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tests/KafkaWorker.UnitTests/Provisioning/BrokerEnvBuilderTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tests/KafkaWorker.UnitTests/Provisioning/CaRotatorTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tests/KafkaWorker.UnitTests/Provisioning/SecurityMigratorTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-10-27T12:26:11.385Z"
+}

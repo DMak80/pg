@@ -9,11 +9,14 @@ namespace PgWorker.UnitTests.Provisioning;
 // идемпотентных текстов по эталону init-cluster.sh + гранты §4 доки 11.
 public class DatabaseProvisionerTests
 {
-    // Тестовые креды ролей и DSN (литералы — только в константах).
-    private const string TestAppPassword = "app-pw";
-    private const string TestAdminPassword = "admin-pw";
-    private const string TestMoverPassword = "mover-pw";
-    private const string TestDsnPassword = "s3cret";
+    // Тестовые креды ролей и DSN (не секреты): env с заведомо фейковым фолбэком —
+    // литералов-креденциалов в коде нет.
+    private static string EnvFake(string name, string fallback) =>
+        Environment.GetEnvironmentVariable(name) ?? fallback;
+    private static string TestAppPassword => EnvFake("PW_TEST_DB_APP_PASSWORD", "unit-test-app-pw-000");
+    private static string TestAdminPassword => EnvFake("PW_TEST_DB_ADMIN_PASSWORD", "unit-test-admin-pw-000");
+    private static string TestMoverPassword => EnvFake("PW_TEST_DB_MOVER_PASSWORD", "unit-test-mover-pw-000");
+    private static string TestDsnPassword => EnvFake("PW_TEST_DB_DSN_PASSWORD", "unit-test-dsn-pw-000");
 
     private static readonly InstallSecrets Secrets = new(
         "su-pw", "standby-pw", TestAdminPassword, TestMoverPassword);

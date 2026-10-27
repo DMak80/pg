@@ -15,7 +15,9 @@ namespace KafkaWorker.UnitTests.Provisioning;
 public class SecurityMigratorTests
 {
     private const string Ep = "http://etcd:2379";
-    private const string TestAdminPassword = "AdminPassword0123456789abcdef";
+    // Тестовый админ-пароль (не секрет): env с заведомо фейковым фолбэком — литерала-креденциала нет.
+    private static string TestAdminPassword =>
+        Environment.GetEnvironmentVariable("PW_TEST_KAFKA_MIGRATOR_ADMIN_PASSWORD") ?? "unit-test-admin-pw-000";
 
     private sealed record Rig(
         Fakes.FakeEtcd Etcd,

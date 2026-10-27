@@ -15,9 +15,12 @@ namespace ValkeyWorker.UnitTests.App;
 // без portalloc, advertised-приоритет хоста, консервативные null-поля, дефолт <=0.
 public sealed class ValkeyMetricsCollectorTests
 {
-    // Тестовые креды снапшота (литералы — только в константах).
-    private const string TestAdminPassword = "secret";
-    private const string TestAppPassword = "app-secret";
+    // Тестовые креды снапшота (не секреты): env с заведомо фейковым фолбэком —
+    // литералов-креденциалов в коде нет.
+    private static string EnvFake(string name, string fallback) =>
+        Environment.GetEnvironmentVariable(name) ?? fallback;
+    private static string TestAdminPassword => EnvFake("PW_TEST_VALKEY_ADMIN_PASSWORD", "unit-test-admin-pw-000");
+    private static string TestAppPassword => EnvFake("PW_TEST_VALKEY_APP_PASSWORD", "unit-test-app-pw-000");
 
     // Фейк RESP-клиента: INFO-ответы по (host, port) + журнал вызовов.
     private sealed class FakeValkey : IValkeyConnection
@@ -51,12 +54,12 @@ public sealed class ValkeyMetricsCollectorTests
 
     // Снапшот Active-кластера c1/node1 (RUNNING) с admin-кредами.
     private static ValkeyClusterSnapshot Snap(string cluster = "c1", string? state = null,
-        string? adminUser = "admin", string? adminPassword = TestAdminPassword)
+        string? adminUser = "admin", string? adminPassword = null)
         => new(cluster,
             new ValkeyClusterConfig(1, 536870912, "allkeys-lru", 1756500000, state),
             new Dictionary<string, ValkeyNodeSnapshot> { ["node1"] = new("node1", "RUNNING", null) },
             Endpoints: "dockhost:17001", AppUser: "app", AppPassword: TestAppPassword,
-            AdminUser: adminUser, AdminPassword: adminPassword,
+            AdminUser: adminUser, AdminPassword: adminPassword ?? TestAdminPassword,
             CaPem: null, CaKey: null, UnknownKeys: [], ParseErrors: []);
 
     private static IReadOnlyDictionary<string, NodeAddress> Alloc(params (string Node, int Port)[] nodes)

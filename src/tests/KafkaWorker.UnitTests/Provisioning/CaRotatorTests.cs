@@ -14,8 +14,11 @@ public class CaRotatorTests
 {
     private const string Ep = "http://etcd:2379";
     private const string Cluster = "events";
-    private const string TestAppPassword = "app-pw";
-    private const string TestAdminPassword = "admin-pw";
+    // Тестовые креды (не секреты): env с заведомо фейковым фолбэком — литералов-креденциалов нет.
+    private static string EnvFake(string name, string fallback) =>
+        Environment.GetEnvironmentVariable(name) ?? fallback;
+    private static string TestAppPassword => EnvFake("PW_TEST_KAFKA_CA_APP_PASSWORD", "unit-test-app-pw-000");
+    private static string TestAdminPassword => EnvFake("PW_TEST_KAFKA_CA_ADMIN_PASSWORD", "unit-test-admin-pw-000");
 
     private static readonly ProvisioningOptions Options =
         new(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0");

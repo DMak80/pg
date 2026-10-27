@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-delivery-20261025T163318068Z-97793-9cdd41dd6702",
+  "runId": "20261025T163318068Z-97793-9cdd41dd6702",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "StopDelivery"
+  },
+  "revision": "b79d46f84a1b88e2e1b283d458620202ce6b0cda",
+  "diffHash": "47b091cd8c699aba6dd80053f0eda3478e927e0102ad8cde7d7ae1e378cc0e8c",
+  "rulesVersion": "unavailable",
+  "sessionHash": "03a516c751fb02080c5acad738e6448320984ad9d3d6bab4145a260241d0f56c",
+  "reportRef": ".mimosa/reports/task-review-session_1342dc7ea4c7a609f3cfe4d97ce1b249-20261025T163318068Z-97793-9cdd41dd6702.json",
+  "events": [
+    {
+      "eventId": "hook-1aa5294365881e7cf651c734a2902753",
+      "findingId": "mimosa-d5741ca4b01cb97a8e4dd358",
+      "type": "finding_blocked",
+      "at": "2026-10-25T16:33:18.346Z",
+      "identity": {
+        "projectRelativeFile": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "64c96e4b64fa72f3da66e10682445643d3c7eff1bad9122b2c9d93a56f822307",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 20,
+      "endLine": 20,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "64c96e4b64fa72f3da66e10682445643d3c7eff1bad9122b2c9d93a56f822307"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-6a10e064397256737c45938d335b0d0d",
+      "findingId": "mimosa-538d8e520eee4632e1954884",
+      "type": "finding_blocked",
+      "at": "2026-10-25T16:33:18.346Z",
+      "identity": {
+        "projectRelativeFile": "src/tests/ValkeyWorker.IntegrationTests/Valkey/CaRotationTests.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 240,
+      "endLine": 240,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-7b19a153290304cf73cee3f86696089a",
+      "findingId": "mimosa-f1deb605446342d2a9c6ad3e",
+      "type": "finding_blocked",
+      "at": "2026-10-25T16:33:18.346Z",
+      "identity": {
+        "projectRelativeFile": "src/tests/ValkeyWorker.IntegrationTests/Valkey/ConvergeTests.cs",
+        "ruleId": "security",
+        "codeEvidenceHash": "64240e14baf335903e516943847b216ed5a8620b1ae0d10758853fe6a1491faa",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 55,
+      "endLine": 55,
+      "reasonCode": "stop_rewake",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "64240e14baf335903e516943847b216ed5a8620b1ae0d10758853fe6a1491faa"
+      },
+      "sequence": 2
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-10-25T16:33:18.613Z"
+}

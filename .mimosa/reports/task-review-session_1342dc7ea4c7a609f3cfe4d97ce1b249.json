@@ -1,0 +1,3096 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20261025T163318068Z-97793-9cdd41dd6702",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "candidate-select",
+      "target": "src/tests/PgWorker.IntegrationTests/Etcd/OwnedEtcdFixture.cs",
+      "reason": "candidate_limit_exceeded: 17 changed reviewable file(s) were not scanned because the limit is 20"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 1753,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 37
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 37,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 37,
+      "selected_files": 20,
+      "limit": 20,
+      "truncated": true
+    },
+    "scanning": {
+      "required_files": 20,
+      "scanned_files": 20,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 50,
+      "detailed_findings": 3,
+      "detail_limit": 3,
+      "truncated": true
+    },
+    "reason_counts": {
+      "candidate_limit_exceeded": 1,
+      "project_check_failed": 1
+    },
+    "reasons": [
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": "src/tests/PgWorker.IntegrationTests/Etcd/OwnedEtcdFixture.cs",
+        "detail": "17 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": "src/tests/PgWorker.IntegrationTests/Etcd/OwnedEtcdFixture.cs",
+        "detail": "candidate_limit_exceeded: 17 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-10-25T16:33:18.068Z",
+  "session_id": "session_1342dc7ea4c7a609f3cfe4d97ce1b249",
+  "target": ".",
+  "revision": "b79d46f84a1b88e2e1b283d458620202ce6b0cda",
+  "rules_version": "unavailable",
+  "diff_hash": "47b091cd8c699aba6dd80053f0eda3478e927e0102ad8cde7d7ae1e378cc0e8c",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 20,
+    "changed_files": [
+      {
+        "file": "src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs",
+        "ranges": [
+          {
+            "start": 15,
+            "end": 17
+          },
+          {
+            "start": 231,
+            "end": 231
+          },
+          {
+            "start": 234,
+            "end": 234
+          },
+          {
+            "start": 923,
+            "end": 925
+          },
+          {
+            "start": 927,
+            "end": 927
+          },
+          {
+            "start": 929,
+            "end": 929
+          },
+          {
+            "start": 933,
+            "end": 936
+          },
+          {
+            "start": 939,
+            "end": 940
+          },
+          {
+            "start": 943,
+            "end": 944
+          },
+          {
+            "start": 946,
+            "end": 948
+          },
+          {
+            "start": 950,
+            "end": 950
+          },
+          {
+            "start": 1186,
+            "end": 1186
+          },
+          {
+            "start": 1188,
+            "end": 1218
+          },
+          {
+            "start": 1231,
+            "end": 1231
+          },
+          {
+            "start": 1233,
+            "end": 1233
+          },
+          {
+            "start": 1236,
+            "end": 1236
+          },
+          {
+            "start": 1262,
+            "end": 1280
+          }
+        ],
+        "before_hash": "abbf9014133dc4217bbff874990cb857fb2c3f50a7f4aa379dc21f24b207c1c3",
+        "after_hash": "2536ad847853393c605c5614679118b0365c4d0ccf7b226e2ca5a5979697744d"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+        "ranges": [
+          {
+            "start": 11,
+            "end": 14
+          },
+          {
+            "start": 225,
+            "end": 225
+          },
+          {
+            "start": 227,
+            "end": 227
+          }
+        ],
+        "before_hash": "426bcc29e8e07f8ad6fe3e5ae146e3e8ac6c8587112e723e4657e1e577b311ae",
+        "after_hash": "b185134d7749ebb2f43cb38a5403d6e5c7d2edb3886f3604d73003de6a7214e2"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Provisioning/AddShardProcessTests.cs",
+        "ranges": [
+          {
+            "start": 23,
+            "end": 24
+          },
+          {
+            "start": 397,
+            "end": 397
+          }
+        ],
+        "before_hash": "f41eaa2a0b8f5f5304acff3bbd52d98f30a921fac224f09699e824888d57fc1b",
+        "after_hash": "e78969a8ae4806deeb442fb68f7e025c1f9555e021c287f5dafc490ad59ca35f"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretEnsurerTests.cs",
+        "ranges": [
+          {
+            "start": 14,
+            "end": 15
+          },
+          {
+            "start": 135,
+            "end": 135
+          },
+          {
+            "start": 144,
+            "end": 144
+          },
+          {
+            "start": 146,
+            "end": 146
+          }
+        ],
+        "before_hash": "cff201f6aa9bc1cd66022a956b83357682453926e7dc423d79877a9ad006347d",
+        "after_hash": "4ad1bdc492a7d8f4bf12bf5e711ebb6c17316291683b31abd37381f00180923e"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+        "ranges": [
+          {
+            "start": 12,
+            "end": 17
+          },
+          {
+            "start": 19,
+            "end": 19
+          },
+          {
+            "start": 43,
+            "end": 43
+          },
+          {
+            "start": 49,
+            "end": 50
+          },
+          {
+            "start": 52,
+            "end": 52
+          },
+          {
+            "start": 197,
+            "end": 197
+          },
+          {
+            "start": 225,
+            "end": 225
+          },
+          {
+            "start": 231,
+            "end": 231
+          }
+        ],
+        "before_hash": "54602ebeb73d3f4565e7df6b159bad8e49d4daa2fc94824ff92801fbb10e05f0",
+        "after_hash": "1eda215d05fb82b8ec3681bc89e0e131672109b1b5b219201f9676fae3c12028"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs",
+        "ranges": [
+          {
+            "start": 225,
+            "end": 225
+          },
+          {
+            "start": 338,
+            "end": 339
+          },
+          {
+            "start": 343,
+            "end": 355
+          },
+          {
+            "start": 361,
+            "end": 361
+          },
+          {
+            "start": 379,
+            "end": 395
+          }
+        ],
+        "before_hash": "6d5584889de102b1a39d68110779cf7f79aa02c04556360c33db38e294d8a726",
+        "after_hash": "42d4a658cd8b9d53a14eceb73d98c414697e29566c6b4b20307a805e6ef1f86f"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs",
+        "ranges": [
+          {
+            "start": 25,
+            "end": 26
+          },
+          {
+            "start": 58,
+            "end": 58
+          },
+          {
+            "start": 1185,
+            "end": 1185
+          },
+          {
+            "start": 1212,
+            "end": 1212
+          },
+          {
+            "start": 1296,
+            "end": 1296
+          },
+          {
+            "start": 1328,
+            "end": 1328
+          },
+          {
+            "start": 1363,
+            "end": 1363
+          },
+          {
+            "start": 1393,
+            "end": 1393
+          },
+          {
+            "start": 1422,
+            "end": 1422
+          },
+          {
+            "start": 1905,
+            "end": 1905
+          },
+          {
+            "start": 1909,
+            "end": 1909
+          },
+          {
+            "start": 1914,
+            "end": 1914
+          },
+          {
+            "start": 1919,
+            "end": 1919
+          },
+          {
+            "start": 1928,
+            "end": 1928
+          },
+          {
+            "start": 1954,
+            "end": 1954
+          },
+          {
+            "start": 1962,
+            "end": 1962
+          },
+          {
+            "start": 1967,
+            "end": 1967
+          },
+          {
+            "start": 1972,
+            "end": 1972
+          },
+          {
+            "start": 2005,
+            "end": 2005
+          },
+          {
+            "start": 2016,
+            "end": 2016
+          },
+          {
+            "start": 2041,
+            "end": 2041
+          },
+          {
+            "start": 2065,
+            "end": 2065
+          },
+          {
+            "start": 2076,
+            "end": 2076
+          },
+          {
+            "start": 2085,
+            "end": 2085
+          }
+        ],
+        "before_hash": "fcd731f6c7478357d8c754bf5bcb0b8657c29394f08d2cba67e7bcf26b4e6427",
+        "after_hash": "ce752a2f0ae27fdc48b89f73a5cd400929ac9cdfb3542331ebe29e1ee38b6023"
+      },
+      {
+        "file": "src/tests/PgWorker.UnitTests/Templates/NodeConfigBuildersTests.cs",
+        "ranges": [
+          {
+            "start": 14,
+            "end": 16
+          },
+          {
+            "start": 36,
+            "end": 36
+          },
+          {
+            "start": 41,
+            "end": 41
+          },
+          {
+            "start": 85,
+            "end": 85
+          },
+          {
+            "start": 87,
+            "end": 87
+          },
+          {
+            "start": 91,
+            "end": 91
+          },
+          {
+            "start": 101,
+            "end": 101
+          },
+          {
+            "start": 105,
+            "end": 105
+          },
+          {
+            "start": 110,
+            "end": 110
+          }
+        ],
+        "before_hash": "c195ce0f76bce9166040729f8d5123fb20f00963ea776d110d12b074617f9bab",
+        "after_hash": "36973a4983c21fde69ffd0efdb297a5d516da3f95004a32418eb968a382b39b6"
+      },
+      {
+        "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+        "ranges": [
+          {
+            "start": 400,
+            "end": 400
+          },
+          {
+            "start": 402,
+            "end": 402
+          },
+          {
+            "start": 411,
+            "end": 411
+          },
+          {
+            "start": 419,
+            "end": 420
+          },
+          {
+            "start": 464,
+            "end": 464
+          },
+          {
+            "start": 471,
+            "end": 472
+          },
+          {
+            "start": 556,
+            "end": 556
+          },
+          {
+            "start": 560,
+            "end": 560
+          },
+          {
+            "start": 570,
+            "end": 570
+          },
+          {
+            "start": 575,
+            "end": 575
+          },
+          {
+            "start": 585,
+            "end": 586
+          },
+          {
+            "start": 591,
+            "end": 591
+          },
+          {
+            "start": 601,
+            "end": 601
+          },
+          {
+            "start": 606,
+            "end": 606
+          },
+          {
+            "start": 616,
+            "end": 616
+          },
+          {
+            "start": 621,
+            "end": 621
+          },
+          {
+            "start": 635,
+            "end": 635
+          },
+          {
+            "start": 637,
+            "end": 637
+          },
+          {
+            "start": 641,
+            "end": 641
+          },
+          {
+            "start": 643,
+            "end": 643
+          },
+          {
+            "start": 647,
+            "end": 648
+          },
+          {
+            "start": 650,
+            "end": 650
+          },
+          {
+            "start": 656,
+            "end": 656
+          },
+          {
+            "start": 751,
+            "end": 751
+          },
+          {
+            "start": 753,
+            "end": 753
+          },
+          {
+            "start": 761,
+            "end": 761
+          },
+          {
+            "start": 763,
+            "end": 763
+          },
+          {
+            "start": 771,
+            "end": 772
+          },
+          {
+            "start": 774,
+            "end": 774
+          },
+          {
+            "start": 779,
+            "end": 780
+          },
+          {
+            "start": 782,
+            "end": 782
+          },
+          {
+            "start": 822,
+            "end": 823
+          },
+          {
+            "start": 827,
+            "end": 827
+          },
+          {
+            "start": 834,
+            "end": 835
+          }
+        ],
+        "before_hash": "915b33589c1028b153b0203da5254f0e6987826c3e414cee3a00745a8b732eb4",
+        "after_hash": "02604317d7a9c57d65e2ea7a6fe669ac8d6de20429ab8289ff715948a6b89f4d"
+      },
+      {
+        "file": "src/tests/S3Worker.IntegrationTests/S3/S3OwnS3Image.cs",
+        "ranges": [
+          {
+            "start": 25,
+            "end": 25
+          },
+          {
+            "start": 32,
+            "end": 32
+          }
+        ],
+        "before_hash": "36d25200bcc6dd0bb872408c733f6e1fa3f0d1d9c27ac361060da64d27c322d3",
+        "after_hash": "861def9be879329dffef2ece3f4df8d236342417eb0102042e3c258e33034ed5"
+      },
+      {
+        "file": "src/tests/S3Worker.UnitTests/Docker/ClusterDriverTests.cs",
+        "ranges": [
+          {
+            "start": 12,
+            "end": 14
+          },
+          {
+            "start": 204,
+            "end": 204
+          }
+        ],
+        "before_hash": "1ba7f2ff0795e1d5d235d3519083d103ab55da64128fa4ea2b5c222a08b553a9",
+        "after_hash": "739148d5108f54057ff6828c8f3057823bdd939bcff5d9997014e59ecc18c851"
+      },
+      {
+        "file": "src/tests/S3Worker.UnitTests/OwnS3/SigV4GetSignerTests.cs",
+        "ranges": [
+          {
+            "start": 18,
+            "end": 18
+          }
+        ],
+        "before_hash": "88d0888dd05f2eb70b83802f762e978894ec53b0cb851b9f015483a1de92e2c7",
+        "after_hash": "95f348ec1fa980a87953077938b86075e433826f56a17101712df6ba33d1c07c"
+      },
+      {
+        "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+        "ranges": [
+          {
+            "start": 21,
+            "end": 21
+          },
+          {
+            "start": 64,
+            "end": 64
+          },
+          {
+            "start": 357,
+            "end": 358
+          }
+        ],
+        "before_hash": "adfc98727f76c2ee4bb817b56905ded1db9268841187e58e8f6b54a74c7f70e3",
+        "after_hash": "b81c7b4cb0d72f4923d0d76b8686c28f7e363a9d89f8efb5dcf531aac43fde28"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+        "ranges": [
+          {
+            "start": 336,
+            "end": 337
+          },
+          {
+            "start": 343,
+            "end": 343
+          },
+          {
+            "start": 371,
+            "end": 371
+          },
+          {
+            "start": 378,
+            "end": 379
+          },
+          {
+            "start": 490,
+            "end": 490
+          },
+          {
+            "start": 494,
+            "end": 494
+          },
+          {
+            "start": 502,
+            "end": 502
+          },
+          {
+            "start": 505,
+            "end": 506
+          },
+          {
+            "start": 511,
+            "end": 511
+          },
+          {
+            "start": 521,
+            "end": 521
+          },
+          {
+            "start": 526,
+            "end": 526
+          },
+          {
+            "start": 539,
+            "end": 539
+          },
+          {
+            "start": 541,
+            "end": 541
+          },
+          {
+            "start": 546,
+            "end": 547
+          },
+          {
+            "start": 549,
+            "end": 549
+          },
+          {
+            "start": 555,
+            "end": 555
+          },
+          {
+            "start": 618,
+            "end": 618
+          },
+          {
+            "start": 620,
+            "end": 620
+          },
+          {
+            "start": 625,
+            "end": 626
+          },
+          {
+            "start": 628,
+            "end": 628
+          },
+          {
+            "start": 668,
+            "end": 669
+          },
+          {
+            "start": 673,
+            "end": 673
+          },
+          {
+            "start": 680,
+            "end": 681
+          }
+        ],
+        "before_hash": "e2ab2b593d105babf669d2ee3f468685c2f845888b1eccf8853c147a711dfc65",
+        "after_hash": "9541865cc84045a56888f5da9c6fc1814736d5b69c81a72069202f053a3deff9"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/CaRotationTests.cs",
+        "ranges": [
+          {
+            "start": 231,
+            "end": 231
+          },
+          {
+            "start": 234,
+            "end": 235
+          },
+          {
+            "start": 240,
+            "end": 240
+          }
+        ],
+        "before_hash": "68417139ae5ff8e826d3de19f5ba4184c4ba046bf79415187abecce03d143ed3",
+        "after_hash": "497d65dd46c87cd80cae073340b9fb3da75bf5a327ff9da3a65cda7d47859d86"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/ConvergeTests.cs",
+        "ranges": [
+          {
+            "start": 51,
+            "end": 51
+          },
+          {
+            "start": 55,
+            "end": 55
+          }
+        ],
+        "before_hash": "631fc18edfea2e55e7446586bfd2b6cc6a6b3208e3108e0217ba01eae8323092",
+        "after_hash": "6849d6cee046a523e04f8bb4fec9505218e781f97ccfe8402630f7c0c8cea443"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/MetricsCollectorTests.cs",
+        "ranges": [
+          {
+            "start": 56,
+            "end": 56
+          },
+          {
+            "start": 60,
+            "end": 60
+          }
+        ],
+        "before_hash": "4b3557b60bfc24fd207b3412f327bc4adbe5fa07fc030d7377aca5b09a483aee",
+        "after_hash": "801dbe142e4459b060edb7ffff34aede4876e8cd0759ba1bd322103910ceb0c6"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+        "ranges": [
+          {
+            "start": 78,
+            "end": 80
+          },
+          {
+            "start": 118,
+            "end": 118
+          },
+          {
+            "start": 121,
+            "end": 122
+          },
+          {
+            "start": 127,
+            "end": 127
+          }
+        ],
+        "before_hash": "ec57237dd6de3209bfa08d3947758e60c5c94aed92091e37f63fa97e63a78ca5",
+        "after_hash": "92d61b2c577ce87259011c1cc725e47e16d63226de9c4d5160a092865f44eea8"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/TlsMigrationTests.cs",
+        "ranges": [
+          {
+            "start": 141,
+            "end": 141
+          },
+          {
+            "start": 144,
+            "end": 145
+          },
+          {
+            "start": 150,
+            "end": 150
+          }
+        ],
+        "before_hash": "fe8d33734cac96238a2196e1bf591bcee8ec86867290c304428b40446a0d5a93",
+        "after_hash": "bab1e41e60b287ab783a352e4187ab8dda5bd4b4ed87dfb36b1e39e1a5961105"
+      },
+      {
+        "file": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+        "ranges": [
+          {
+            "start": 18,
+            "end": 21
+          },
+          {
+            "start": 54,
+            "end": 54
+          },
+          {
+            "start": 58,
+            "end": 58
+          }
+        ],
+        "before_hash": "29f4414028d730fae2d9224a5b61f334f0b07d5fbb5ce189ac72614b115debe8",
+        "after_hash": "2c21023e4f7715c7985ea9e0630ce79677a2be87b0ca7d2982b6d71a9e325b7a"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-10-25T16:33:16.225Z",
+    "completed_at": "2026-10-25T16:33:18.068Z",
+    "duration_ms": 1843,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 1843,
+    "peakMemoryBytes": 223100928,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 20,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 50,
+  "rewake_finding_count": 3,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-d5741ca4b01cb97a8e4dd358",
+      "file": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+      "line": 20,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "64c96e4b64fa72f3da66e10682445643d3c7eff1bad9122b2c9d93a56f822307",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-538d8e520eee4632e1954884",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/CaRotationTests.cs",
+      "line": 240,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-f1deb605446342d2a9c6ad3e",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/ConvergeTests.cs",
+      "line": 55,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "blocked",
+      "decision": "stop_rewake",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "64240e14baf335903e516943847b216ed5a8620b1ae0d10758853fe6a1491faa",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-7c551b3a933defdcf56424b5",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/MetricsCollectorTests.cs",
+      "line": 60,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "a2fd64df2a3d7bb3c07663e745fa81aec38b40ea6cc418bde86a851c529c660d",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-d6c1949a2a4fcb62802a1dfe",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 79,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "ef6f2decca3e96506c7de9eab3432ac2030e92a66eaf67ba829c307e013bf0e1",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-cd48270c49df5f2f5e316ce9",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 80,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "61b5932af2e61d4d3ea596f02bb53c4dfae8112967f064fad66f1da5b1af7073",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-6ee6eb72a6616a3355542ac4",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 127,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-a7bcfc42bd873ac659f4e315",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/TlsMigrationTests.cs",
+      "line": 150,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-39d60030f60f4d05ed8d8f70",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 343,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "011c981a8e3b50a1cb64972dcf4ae8410b31c4e7cc56bed0fc17693f43f93bd6",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-d05b5aaad57420fc6677a53e",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 378,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 494,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 511,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 526,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-65bc53bbee0a02340609e54f",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 549,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "2e4b0bc710d0ddaaa78851778a9128277c13174fba18e2b1307aa35b613d1971",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-ef6a7fe8804a0f7eabe9b61b",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 618,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "8237e87595cbbc0798324f3ef2dc68d1cffcab89e59f624472552c9077b73851",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 620,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-5aae46517e27e70922d58636",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 626,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "0205676df2c82194b09e4f21955034cf53b79f3f3144ed3b7825635d71dfd5ce",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-fda7d55a5b448a85dff1e6b8",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 628,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "bdacc9f568cf300827ae463f0dce1c744411d63f7ffdb99b23e9685c752f07ac",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-3e830353fc879f9a7b78c6e9",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 680,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "e7c64f79fde9a973584ee99399ce6d87e447cdb23cd61d563b4b376999a6f38f",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-4257f36480f36c74668c4891",
+      "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+      "line": 21,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "70179c6a2bb86bf05269f446e098a92215e828300f97f209f052fc33412f569a",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-fdadb84d8a13a8e6f45ec1eb",
+      "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+      "line": 358,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "648bfa57649759aaf1d9d78dcb39d7a0f4d7c6147ca057fd1c40b153ee1656c8",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-817eae7425fb243f9f056276",
+      "file": "src/tests/S3Worker.UnitTests/OwnS3/SigV4GetSignerTests.cs",
+      "line": 18,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "887c55e1c24da7d337ec428cf2b913d5567b4c4cd3f9ae95b49dea0622cba3c5",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-0bd8d67e945c4db7d757ce71",
+      "file": "src/tests/S3Worker.IntegrationTests/S3/S3OwnS3Image.cs",
+      "line": 32,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 402,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-46ca148bf9bb5748f9d92c33",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 419,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-46ca148bf9bb5748f9d92c33",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 471,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 560,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 575,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 591,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-ac0514278e62c86dd66a3a9e",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 606,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "5ef2ed405936f1ea3264516e79325b49cad8c15c790581092d9e696d68f671e2",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 621,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-3d0576d7fae7c416c8ce74be",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 650,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "2e4b0bc710d0ddaaa78851778a9128277c13174fba18e2b1307aa35b613d1971",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-2eba1294895e61534232af1d",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 751,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "8237e87595cbbc0798324f3ef2dc68d1cffcab89e59f624472552c9077b73851",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 753,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-280b5bc7f5618e3b84e14622",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 761,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "7d0f932cafb4b5704de9e6d0fae0fc9c52e29ec5a10bbdf71517595a413cc57c",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c9ff00b3f67b53aa0a5e7b50",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 763,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "986d10f4ac842c57370ba63e301cc30ff705ecd8fa727668b8edbd57edfe82e5",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1b80717fbbfa899e67b26735",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 774,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "572b0036fd384f72f9bf4abada5ff5b9c2362abad86a233fdeac4f24ae3e135e",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-5860bcbaa5237282dd339cba",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 782,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "cc393f0ac25902cedf6b4805eb4b7c48e41aa967d81691934e147686baeec2c6",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-87ae46c2e527c2b173e08ef8",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 834,
+      "severity": "high",
+      "category": "命令注入",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "e7c64f79fde9a973584ee99399ce6d87e447cdb23cd61d563b4b376999a6f38f",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-2d8aff5123ab734133413213",
+      "file": "src/tests/PgWorker.UnitTests/Templates/NodeConfigBuildersTests.cs",
+      "line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "2b86af972a073e682e7cbe4b87ef4665651bbed7f5d440f06eb298c0cfd19400",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-3dc1d83a4e9e41e037da866b",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/AddShardProcessTests.cs",
+      "line": 24,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "aa8e3f70a4fdd60cd8ac5f494cac490c955bf40498096f5db56d1b28a4d536fe",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-175398d17bf2af92c797f908",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretEnsurerTests.cs",
+      "line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "f150d56953f1c388d4b5197a223cca896b8a13594f2b1874917c6a9ea547a166",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c1a6de48355cb9f6b021456f",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 14,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "ee20a93b610312c39d0e7f7f5060a03f438574ef900ab0660aefb7bf487459c9",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-de33e6dc27355313d7368e47",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "46d3f314f0efb37df87ccca425acef79625382fb3e06922e3df783ec99a39d2b",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-a68a76e777ec08a38f2d460e",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 197,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "d82195e5c64c858f1ec44cb8af53f69efbbc7d8307c3c4dc9fb8e892980dc4d0",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-564dc49ed607e2451e3b74a0",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs",
+      "line": 225,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "054ca6fd6573b8b43a5abd87b5962b5897e6753f9029814fa54121b9f9e484a8",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-010b5a83d5ba686b2b90e06e",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs",
+      "line": 26,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "f88bf7994c6e8bb85685cc28f5584cdcebf759e349281f45ccb780d5e829ce81",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-079752616a3a2a94cb708ff5",
+      "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+      "line": 12,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "6fae06f42db908dd62832d9ccf44ebefcd26118fecddccdce0a258d7f4446132",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c881316cf45d484588aeba08",
+      "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+      "line": 13,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "f88bf7994c6e8bb85685cc28f5584cdcebf759e349281f45ccb780d5e829ce81",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c85f220960a2bb1711383826",
+      "file": "src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs",
+      "line": 16,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "candidate",
+      "decision": "observe",
+      "at": "2026-10-25T16:33:18.068Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "8efc11c4745cb4f9755682250c9d17df652517d7dbcc68db1d93a3efb94231bb",
+        "runtime_oracle": false
+      }
+    }
+  ],
+  "findings": [
+    {
+      "finding_id": "mimosa-d5741ca4b01cb97a8e4dd358",
+      "file": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+      "line": 20,
+      "end_line": 20,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.UnitTests/App/ValkeyMetricsCollectorTests.cs",
+          "line": 20,
+          "evidence_hash": "64c96e4b64fa72f3da66e10682445643d3c7eff1bad9122b2c9d93a56f822307",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    },
+    {
+      "finding_id": "mimosa-538d8e520eee4632e1954884",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/CaRotationTests.cs",
+      "line": 240,
+      "end_line": 240,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/CaRotationTests.cs",
+          "line": 240,
+          "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    },
+    {
+      "finding_id": "mimosa-f1deb605446342d2a9c6ad3e",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/ConvergeTests.cs",
+      "line": 55,
+      "end_line": 55,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "blocked",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/ConvergeTests.cs",
+          "line": 55,
+          "evidence_hash": "64240e14baf335903e516943847b216ed5a8620b1ae0d10758853fe6a1491faa",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": true
+    },
+    {
+      "finding_id": "mimosa-7c551b3a933defdcf56424b5",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/MetricsCollectorTests.cs",
+      "line": 60,
+      "end_line": 60,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/MetricsCollectorTests.cs",
+          "line": 60,
+          "evidence_hash": "a2fd64df2a3d7bb3c07663e745fa81aec38b40ea6cc418bde86a851c529c660d",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-d6c1949a2a4fcb62802a1dfe",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 79,
+      "end_line": 79,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+          "line": 79,
+          "evidence_hash": "ef6f2decca3e96506c7de9eab3432ac2030e92a66eaf67ba829c307e013bf0e1",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-cd48270c49df5f2f5e316ce9",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 80,
+      "end_line": 80,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+          "line": 80,
+          "evidence_hash": "61b5932af2e61d4d3ea596f02bb53c4dfae8112967f064fad66f1da5b1af7073",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-6ee6eb72a6616a3355542ac4",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+      "line": 127,
+      "end_line": 127,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/SupervisionTests.cs",
+          "line": 127,
+          "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-a7bcfc42bd873ac659f4e315",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/TlsMigrationTests.cs",
+      "line": 150,
+      "end_line": 150,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/Valkey/TlsMigrationTests.cs",
+          "line": 150,
+          "evidence_hash": "dd16dd2a5a05ff6a8003bb64705f27f959f8aa6f8e9a34c12c1739d048a598b0",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-39d60030f60f4d05ed8d8f70",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 343,
+      "end_line": 343,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 343,
+          "evidence_hash": "011c981a8e3b50a1cb64972dcf4ae8410b31c4e7cc56bed0fc17693f43f93bd6",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-d05b5aaad57420fc6677a53e",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 378,
+      "end_line": 378,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 378,
+          "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 494,
+      "end_line": 494,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 494,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 511,
+      "end_line": 511,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 511,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 526,
+      "end_line": 526,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 526,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-65bc53bbee0a02340609e54f",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 549,
+      "end_line": 549,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 549,
+          "evidence_hash": "2e4b0bc710d0ddaaa78851778a9128277c13174fba18e2b1307aa35b613d1971",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-ef6a7fe8804a0f7eabe9b61b",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 618,
+      "end_line": 618,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 618,
+          "evidence_hash": "8237e87595cbbc0798324f3ef2dc68d1cffcab89e59f624472552c9077b73851",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-1267d664f8a4dcf4024343df",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 620,
+      "end_line": 620,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 620,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-5aae46517e27e70922d58636",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 626,
+      "end_line": 626,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 626,
+          "evidence_hash": "0205676df2c82194b09e4f21955034cf53b79f3f3144ed3b7825635d71dfd5ce",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-fda7d55a5b448a85dff1e6b8",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 628,
+      "end_line": 628,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 628,
+          "evidence_hash": "bdacc9f568cf300827ae463f0dce1c744411d63f7ffdb99b23e9685c752f07ac",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-3e830353fc879f9a7b78c6e9",
+      "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+      "line": 680,
+      "end_line": 680,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/ValkeyWorker.IntegrationTests/E2e/ValkeyE2eEnvironment.cs",
+          "line": 680,
+          "evidence_hash": "e7c64f79fde9a973584ee99399ce6d87e447cdb23cd61d563b4b376999a6f38f",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-4257f36480f36c74668c4891",
+      "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+      "line": 21,
+      "end_line": 21,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+          "line": 21,
+          "evidence_hash": "70179c6a2bb86bf05269f446e098a92215e828300f97f209f052fc33412f569a",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-fdadb84d8a13a8e6f45ec1eb",
+      "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+      "line": 358,
+      "end_line": 358,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.UnitTests/Provisioning/SecretRotatorTests.cs",
+          "line": 358,
+          "evidence_hash": "648bfa57649759aaf1d9d78dcb39d7a0f4d7c6147ca057fd1c40b153ee1656c8",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-817eae7425fb243f9f056276",
+      "file": "src/tests/S3Worker.UnitTests/OwnS3/SigV4GetSignerTests.cs",
+      "line": 18,
+      "end_line": 18,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.UnitTests/OwnS3/SigV4GetSignerTests.cs",
+          "line": 18,
+          "evidence_hash": "887c55e1c24da7d337ec428cf2b913d5567b4c4cd3f9ae95b49dea0622cba3c5",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-0bd8d67e945c4db7d757ce71",
+      "file": "src/tests/S3Worker.IntegrationTests/S3/S3OwnS3Image.cs",
+      "line": 32,
+      "end_line": 32,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/S3/S3OwnS3Image.cs",
+          "line": 32,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 402,
+      "end_line": 402,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 402,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-46ca148bf9bb5748f9d92c33",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 419,
+      "end_line": 419,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 419,
+          "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-46ca148bf9bb5748f9d92c33",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 471,
+      "end_line": 471,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 471,
+          "evidence_hash": "255f0f36ca8b7338e597df7130ac0d76b6a65dbd309cf3e766c2bff290b92aae",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 560,
+      "end_line": 560,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 560,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 575,
+      "end_line": 575,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 575,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 591,
+      "end_line": 591,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 591,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-ac0514278e62c86dd66a3a9e",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 606,
+      "end_line": 606,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 606,
+          "evidence_hash": "5ef2ed405936f1ea3264516e79325b49cad8c15c790581092d9e696d68f671e2",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 621,
+      "end_line": 621,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 621,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-3d0576d7fae7c416c8ce74be",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 650,
+      "end_line": 650,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 650,
+          "evidence_hash": "2e4b0bc710d0ddaaa78851778a9128277c13174fba18e2b1307aa35b613d1971",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-2eba1294895e61534232af1d",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 751,
+      "end_line": 751,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 751,
+          "evidence_hash": "8237e87595cbbc0798324f3ef2dc68d1cffcab89e59f624472552c9077b73851",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-dbc236518f8228117e2feb44",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 753,
+      "end_line": 753,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 753,
+          "evidence_hash": "79fd289ae9c2f542602a5d9c8576186bd74cf2002f94643ccfb3af662c0c0f32",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-280b5bc7f5618e3b84e14622",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 761,
+      "end_line": 761,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 761,
+          "evidence_hash": "7d0f932cafb4b5704de9e6d0fae0fc9c52e29ec5a10bbdf71517595a413cc57c",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-c9ff00b3f67b53aa0a5e7b50",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 763,
+      "end_line": 763,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 763,
+          "evidence_hash": "986d10f4ac842c57370ba63e301cc30ff705ecd8fa727668b8edbd57edfe82e5",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-1b80717fbbfa899e67b26735",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 774,
+      "end_line": 774,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 774,
+          "evidence_hash": "572b0036fd384f72f9bf4abada5ff5b9c2362abad86a233fdeac4f24ae3e135e",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-5860bcbaa5237282dd339cba",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 782,
+      "end_line": 782,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 782,
+          "evidence_hash": "cc393f0ac25902cedf6b4805eb4b7c48e41aa967d81691934e147686baeec2c6",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-87ae46c2e527c2b173e08ef8",
+      "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+      "line": 834,
+      "end_line": 834,
+      "severity": "high",
+      "category": "命令注入",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/S3Worker.IntegrationTests/E2e/S3E2eEnvironment.cs",
+          "line": 834,
+          "evidence_hash": "e7c64f79fde9a973584ee99399ce6d87e447cdb23cd61d563b4b376999a6f38f",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-2d8aff5123ab734133413213",
+      "file": "src/tests/PgWorker.UnitTests/Templates/NodeConfigBuildersTests.cs",
+      "line": 15,
+      "end_line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Templates/NodeConfigBuildersTests.cs",
+          "line": 15,
+          "evidence_hash": "2b86af972a073e682e7cbe4b87ef4665651bbed7f5d440f06eb298c0cfd19400",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-3dc1d83a4e9e41e037da866b",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/AddShardProcessTests.cs",
+      "line": 24,
+      "end_line": 24,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/AddShardProcessTests.cs",
+          "line": 24,
+          "evidence_hash": "aa8e3f70a4fdd60cd8ac5f494cac490c955bf40498096f5db56d1b28a4d536fe",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-175398d17bf2af92c797f908",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretEnsurerTests.cs",
+      "line": 15,
+      "end_line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/ClusterSecretEnsurerTests.cs",
+          "line": 15,
+          "evidence_hash": "f150d56953f1c388d4b5197a223cca896b8a13594f2b1874917c6a9ea547a166",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-c1a6de48355cb9f6b021456f",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 14,
+      "end_line": 14,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+          "line": 14,
+          "evidence_hash": "ee20a93b610312c39d0e7f7f5060a03f438574ef900ab0660aefb7bf487459c9",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-de33e6dc27355313d7368e47",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 15,
+      "end_line": 15,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+          "line": 15,
+          "evidence_hash": "46d3f314f0efb37df87ccca425acef79625382fb3e06922e3df783ec99a39d2b",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-a68a76e777ec08a38f2d460e",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+      "line": 197,
+      "end_line": 197,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/DatabaseProvisionerTests.cs",
+          "line": 197,
+          "evidence_hash": "d82195e5c64c858f1ec44cb8af53f69efbbc7d8307c3c4dc9fb8e892980dc4d0",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-564dc49ed607e2451e3b74a0",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs",
+      "line": 225,
+      "end_line": 225,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs",
+          "line": 225,
+          "evidence_hash": "054ca6fd6573b8b43a5abd87b5962b5897e6753f9029814fa54121b9f9e484a8",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-010b5a83d5ba686b2b90e06e",
+      "file": "src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs",
+      "line": 26,
+      "end_line": 26,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Provisioning/NodeSupervisorTests.cs",
+          "line": 26,
+          "evidence_hash": "f88bf7994c6e8bb85685cc28f5584cdcebf759e349281f45ccb780d5e829ce81",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-079752616a3a2a94cb708ff5",
+      "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+      "line": 12,
+      "end_line": 12,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+          "line": 12,
+          "evidence_hash": "6fae06f42db908dd62832d9ccf44ebefcd26118fecddccdce0a258d7f4446132",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-c881316cf45d484588aeba08",
+      "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+      "line": 13,
+      "end_line": 13,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Etcd/ClusterSnapshotParserTests.cs",
+          "line": 13,
+          "evidence_hash": "f88bf7994c6e8bb85685cc28f5584cdcebf759e349281f45ccb780d5e829ce81",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    },
+    {
+      "finding_id": "mimosa-c85f220960a2bb1711383826",
+      "file": "src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs",
+      "line": 16,
+      "end_line": 16,
+      "severity": "high",
+      "category": "硬编码凭据",
+      "kind": "semgrep",
+      "advisory": false,
+      "status": "candidate",
+      "evidence_boundary": "candidate",
+      "evidence": [
+        {
+          "kind": "static_scan",
+          "boundary": "candidate",
+          "producer": "deterministic",
+          "source": "semgrep",
+          "file": "src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs",
+          "line": 16,
+          "evidence_hash": "8efc11c4745cb4f9755682250c9d17df652517d7dbcc68db1d93a3efb94231bb",
+          "runtime_oracle": false
+        }
+      ],
+      "already_reported_to_agent": false,
+      "selected_for_rewake": false
+    }
+  ],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-session_1342dc7ea4c7a609f3cfe4d97ce1b249-20261025T163318068Z-97793-9cdd41dd6702.json",
+    "latest_report": ".mimosa/reports/task-review-session_1342dc7ea4c7a609f3cfe4d97ce1b249.json",
+    "history_summary": ".mimosa/history/run-20261025T163318068Z-97793-9cdd41dd6702.json"
+  }
+}
