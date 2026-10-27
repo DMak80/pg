@@ -26,142 +26,60 @@
 
 ## Задачи
 
-- **`t101-retention-wal-chain-start-degraded`** — интеграция
-  `PgWorker.IntegrationTests.Backups.RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03`
-  падает: после тика ретенции (срез сегментов 3–4) и тика контроля t03
-  wal-ключ ожидаемо `ACTIVE` с поднятым `chain_start` до cutoff
-  (`000000010000000000000005`), фактически `State=DEGRADED`
-  (`RetentionProcessTests.cs:331`:
-  `Expected wal.Value.State to be WalStreamStatus.Active, but found
-  WalStreamStatus.Degraded`). Воспроизводится изолированно
-  (`--filter "FullyQualifiedName~WalCleanupRaisesVerifyChainStartT03"`),
-  падает и на коммите БЕЗ правок текущей задачи (база `9e91a951`,
-  ветка `feat-t26-backup-jobs-in-receiver`, 2026-10-26) — пре-существующий.
-  Команда:
-  `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo --filter "FullyQualifiedName~WalCleanupRaisesVerifyChainStartT03"`.
-  Гипотеза: тик WalStreamProcess в тестовом контуре уходит в ветку
-  DEGRADED (pool-resolve/слоты/FrozenClock-взаимодействие) до/вместо
-  t03-контроля; разбор — по логике `WalStreamProcess` (статусный писатель
-  `WalStatusWriter`).
-  Логи: `arch/roadmap/bugs/t101-retention-wal-chain-start-degraded/`
-  (полный лог серии + изолированный прогон базы).
-- **`t093-retention-wal-degraded-flake`** — флейк
-  `PgWorker.IntegrationTests.Backups.RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03`:
-  после чистки WAL ниже cutoff контроль `WalStreamProcess` пишет wal-ключ
-  `DEGRADED` вместо `ACTIVE` (ожидается `Active`, error=null). Воспроизводится
-  1/1 и серией (2026-10-25, ветка `feat-t26-backup-jobs-in-receiver`,
-  HEAD `0dc52c5b`); путь теста (RetentionProcess/WalStreamProcess/FakeBackupS3)
-  не затронут правками t26 — всплыл на перегоне серии Backups после шага 16.
-  Фильтр: `--filter "FullyQualifiedName~RetentionProcessTests.WalCleanupRaisesVerifyChainStartT03"`;
-  команда: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Release --no-build --nologo --filter "FullyQualifiedName~Backups"`.
-  Ошибка: `Expected wal.Value.State to be WalStreamStatus.Active, but found
-  WalStreamStatus.Degraded` (`RetentionProcessTests.cs:331`). Наблюдаемое:
-  DEGRADED (вероятно lag/тишина-ветка контроля на фейковом SQL-снимке
-  `FakeWalSqlExecutor`); ожидаемое: ACTIVE после подъёма chain_start.
-  Гипотезы: контроль считает last_uploaded_unix от сида `Unix(Now)` —
-  пограничное окно stale/lag при быстрых прогонах; проверить расчёт
-  `lag_segments`/`StaleSec` на снимке теста.
-  Логи: `arch/roadmap/bugs/t093-retention-wal-degraded-flake/retention-t03-run.log` (локально).
-- **`t096-haetcd-master-lease-absent`** — E2E
-  `PgWorker.IntegrationTests.E2e.E2eHaEtcdScenarios.HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive`
-  (полный прогон E2eFixture на ветке `feat-t26-backup-jobs-in-receiver`,
-  HEAD `ff1eb8e3`, 2026-10-26): после подъёма 3-узлового etcd и
-  provisioning (ok, 59.6/360 c) первая проба «1/5» не находит master-ключ —
-  `Expected object not to be <null> because the master key is alive
-  (probe 1/5); actually: absent`. Сценарий ВНЕ области t26 (ha-etcd
-  supervisor/lease, не бэкапы) — заводится на разбор в своей задаче.
-  Команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test
-  src/PgWorker.slnx -c Release --no-build --nologo --filter
-  "FullyQualifiedName~E2eHaEtcdScenarios"`. Ожидаемое: master-lease жив на
-  пробе 1/5 после provisioning; наблюдаемое: absent (lease не создан или
-  истёк к первой пробе — смотреть healthz/api-пробы и журнал воркера
-  keepalive/lease в артефактах сценария ha-etcd).
-  Логи: `arch/roadmap/bugs/t096-haetcd-master-lease-absent/fail-tail.log`
-  (локально; полный артефакт сценария — `${TMPDIR}pgw-e2e-artifacts-*/`
-  прогона, subdir guid 86ac9574…).
 - **`t097-waltli-jump-fact-absent`** — E2E
   `PgWorker.IntegrationTests.E2e.E2eWalStreamTliScenarios.WalStream_TliJump_GapMarked_FullRetaken`
-  (+ класс-левел `WalStream_TliBackfill_ClosesGap_NoRpoLoss`; полный прогон
-  E2eFixture, ветка `feat-t26-backup-jobs-in-receiver`, HEAD `39f3685d`,
-  2026-10-26): прыжок TLI прошёл (wal-ключ ACTIVE, TLI 2, досыпка доходит —
-  `last_uploaded_segment=000000020000000100000002`), но факт `tli_jump` не
-  появился ни в одном agent-ключе приёмников за 60 с — «Expected boolean to
-  be True because the tli_jump fact must be observable in a live receiver
-  agent key, but found False» (E2eWalStreamTliScenarios.cs:401). Механика
-  tli_jump — стрим WalReceiver (t25), вне t26. Ожидаемое: факт прыжка
-  персистентен в живом agent-ключе до следующего прыжка; наблюдаемое:
-  ключей с `"tli_jump":` нет при живых обоих агентах. Гипотезы: ни один
-  приёмник не имел хвоста ниже точки форка (прыжок никем не фиксируется —
-  сценарная предусловие-гонка старта приёмников) либо факт пишется не в тот
-  ключ/стирается досыпкой. Команда: `DOTNET_CLI_UI_LANGUAGE=en
-  PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build
-  --nologo --filter "FullyQualifiedName~E2eWalStreamTliScenarios"`.
-  Логи: `arch/roadmap/bugs/t097-waltli-jump-fact-absent/diag-walt24a.txt`
-  (локально; контур wal-t24a — `${TMPDIR}pgw-e2e-artifacts-c2d66004…`).
-- **`t098-tliswitch-mixedness-gate-flake`** — E2E
-  `PgWorker.IntegrationTests.E2e.E2eTliSwitchScenarios.Restore_TargetTimeThroughTliSwitch_StopsAtGoal`
-  (+ `Restore_LatestThroughTliSwitch_PicksUpWholeTail`; полный прогон
-  E2eFixture, ветка `feat-t26-backup-jobs-in-receiver`, HEAD `39f3685d`,
-  2026-10-26): фикстура TliSwitchContext упала в InitializeAsync — «the
-  mixedness gate failed: Did not expect value to be 0UL because the switch
-  point 0/9000000 is INSIDE segment 000000000000000000000009 (not on the
-  16 MiB boundary)» (E2eTliSwitchScenarios.cs:303). Сценарий требует
-  промоута ВНУТРИ сегмента (offset ≠ 0) для проверки смешанного сегмента;
-  тайминг-флейк: промоут пришёлся ровно на границу сегмента 9 (offset 0) —
-  проверяемое состояние не наступило. Сценарий/TLI-механика t26 не
-  трогались. Ожидаемое: gate дожидается «смешанного» промоута (retry
-  допустим) или падение трактуется как не-баг-сценария; наблюдаемое:
-  класс-левел FAIL обоих restore-фактов без исполнения их тела. Команда:
+  (+ класс-левел `WalStream_TliBackfill_ClosesGap_NoRpoLoss`): сценарий
+  красный на СЛЕДУЮЩЕМ слое после починки индукции. Индукция прыжка
+  (drop слота + 160 записных переключений на новом мастере) дополнена
+  явным `CHECKPOINT` — постгрес перерабатывает сегменты только на
+  checkpoint, без него pg_wal держал сегменты старого TLI, досыпка
+  проходила успешно и прыжка не случалось (факт `tli_jump` ненаблюдаем).
+  Теперь приёмник получает 58P01, tli-процедура выполняет прыжок, факт
+  `tli-gap` поднимается, ретейк-полный запускается и физически COMPLETED
+  на ноде. Красный из-за: etcd-статус ретейк-полного остаётся UPLOADING
+  навсегда — супервизия `BackupProcess` поллит GET приёмника (несколько
+  ответов), но ключ в COMPLETED не переводит; после ~6 GET-поллингов цикл
+  полных по кластеру замолкает целиком (WalStreamProcess жив — control-строки
+  продолжаются), wal-ключ держит `Degraded+gap`, сценарная сходимость
+  (`wal-converged`, 900 c) не наступает. Разбор — `BackupProcess.TickAsync`/
+  `SuperviseActiveAsync` на пути после tli-перехода; телеметрия:
+  `/tmp/pgw_t097_run3_artifacts/` (журналы воркера и нод),
+  `/tmp/pgw_t097_evidence/` (docker-логи контуров). Команда:
   `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
-  -c Release --no-build --nologo --filter
-  "FullyQualifiedName~E2eTliSwitchScenarios"`. Логи:
-  `arch/roadmap/bugs/t098-tliswitch-mixedness-gate-flake/fail-tail.txt`
-  (локально; контур tlsw — `${TMPDIR}pgw-e2e-artifacts-121d01…`). Гипотезы:
-  gate — ассерт-предусловие сценария без retry-цикла; лечение — повторный
-  промоут-шаг в фикстуре до получения offset ≠ 0 (или классификация
-  «предусловие не наступило» как skip).
+  -c Release --no-build --nologo --filter "FullyQualifiedName~E2eWalStreamTliScenarios"`.
 - **`t099-pool-roleswitch-agent-facts`** — E2E
   `PgWorker.IntegrationTests.E2e.PoolRoleSwitchScenarios.Pool_RoleSwitch_AgentRecreatedWithMasterList`
-  (полный прогон E2eFixture, ветка `feat-t26-backup-jobs-in-receiver`, HEAD
-  `39f3685d`, 2026-10-26): «Expected boolean to be True because the agent
-  of the new role writes to the master-list node (node1), .history in S3,
-  the chain is continuous, but found False» — после role-switch агент-факты
-  новой роли не сошлись за бюджет сценария (8 m 35 s). Сценарий был
-  зелёным в одиночной серии на тех же бюджетах (фикс-коммит `240290c6`
-  прогонял Verify+Supervisor+PoolRoleSwitch зелёными); упал в полном
-  прогоне под ~10 параллельными контурами — нагрузочный класс. Агент/
-  стрим-механика вне t26. Ожидаемое: агент новой роли пишет в master-list
-  ноду, .history в S3, цепочка непрерывна; наблюдаемое: False на финальном
-  ассерте. Команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet
-  test src/PgWorker.slnx -c Release --no-build --nologo --filter
-  "FullyQualifiedName~PoolRoleSwitchScenarios"`. Логи:
-  `arch/roadmap/bugs/t099-pool-roleswitch-agent-facts/fail-tail.txt`
-  (локально; контур pool-ac5 —
-  `${TMPDIR}pgw-e2e-artifacts-089be4b1…`, docker-логи нод сохранены).
-  Гипотезы: деградация под параллельной нагрузкой (конкуренция 10 контуров
-  за docker-демон/диск); сравнить тайминги агентов pool-ac5 с зелёной
-  одиночной серией.
+  красный под нагрузкой: первопричина установлена — залипший факт
+  `pool_exhausted` в статус-ключе приёмника. Публикация факта —
+  fire-and-forget без переиздания; снятие («первый успешный put») было
+  привязано к ЛОКАЛЬНОМУ флагу put-цикла — у tli-процедуры истории свой
+  флаг, и успешные put-ы сессии факт не снимали; исход сессии не наступал
+  (стрим штатно ждал закрытых сегментов) → wal-ключ DEGRADED навсегда,
+  `Active` недостижим, финальный ассерт False. Фикс применён: единый
+  СЕССИОННЫЙ `PoolExhaustionFlag`, общий для put-цикла сегментов и
+  tli-процедуры (`WalReceiverCore`); потерянные публикации чинит
+  keepalive-переиздание статус-ключа. Требуется E2E-верификация
+  (нагрузочный класс — воспроизводится в полном прогоне под ~10
+  параллельными контурами). Команда: `DOTNET_CLI_UI_LANGUAGE=en
+  PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --no-build
+  --nologo --filter "FullyQualifiedName~PoolRoleSwitchScenarios"`.
 - **`t100-restore-pgctl-start-timeout`** — E2E
-  `PgWorker.IntegrationTests.E2e.PoolReadAnyNodeScenarios.Pool_ReadAnyNode_RestoreAfterNodeStop`
-  (перепрогон restore-группы 2026-10-26, ветка `feat-t26-backup-jobs-in-receiver`,
-  HEAD `85831336`): фикс RUNNING-лупа подтверждён (5/6 restore-сценариев
-  серии зелёные: Restore_Latest/NewCluster/TargetTime, Pool_SingleNode,
-  PoolPolicyValidation — restore COMPLETED), статус операции честно
-  RUNNING → FAILED; сам фейл — restore shard1 упал «pg_ctl: server did not
-  start in time»: postgres в recovery не дошёл до готовности за канонические
-  `pg_ctl -w -t 60` (arch/19 §3.5; механика 1:1 с bash-джобой — та же) при
-  конкурентном скачивании параллельным drill того же бэкапа (drill-контейнер
-  стартовал 16:49:48Z, restore FAILED 16:51:01Z; S3-полоса делится между
-  restore-скачиванием full + drill-скачиванием + стримами). Ожидаемое:
-  restore COMPLETED; наблюдаемое: FAILED по pg_ctl-старту при нагрузке.
-  Прогон/логи: `arch/roadmap/bugs/t100-restore-pgctl-start-timeout/fail-tail.txt`
-  (локально; контур pool-ac6 — `${TMPDIR}pgw-e2e-artifacts-6cb59aa8…`,
-  MarkFailed). Команда: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet
-  test src/PgWorker.slnx -c Release --no-build --nologo --filter
-  "FullyQualifiedName~PoolReadAnyNodeScenarios"`. Гипотезы/лечение: канал
-  §3.5 — pg_ctl -t должен покрывать медленный recovery (подъём таймаута
-  старта или вынесение ожидания готовности в поллинг-бюджет
-  `recovery_timeout_sec`); правка канона arch/19 §3.5 — arch-first.
+  `PgWorker.IntegrationTests.E2e.PoolReadAnyNodeScenarios.Pool_ReadAnyNode_RestoreAfterNodeStop`:
+  старт-таймаут починен (arch/19 §3.5: `pg_ctl start -w -t` =
+  `recovery_timeout_sec` операции, не литерал; `RestoreOperation`) —
+  postgres достигает готовности при медленном recovery (доказано прогонами:
+  «ready to accept read-only» при recovery длиной 3+ мин, старый `-t 60`
+  убивал бы старт). Красный по следующему слою: restore из полного на TLI2
+  (wal_start за TLI-переходом) после consistent-точки НЕ запрашивает
+  следующий WAL (restore_command молчит) и не promote-ится — статус
+  операции RUNNING до конца сценарного бюджета (300 c), оба прогона
+  2026-10-27 одинаково. Составляющая среды: fetch-wal ретраит DNS-моргания
+  ownS3 (`Name or service not known`, до ~2 мин). Разбор: `restore-pg.log`
+  живого tool-контейнера после consistent-точки (docker cp); гипотезы:
+  fetch-wal-цикл после consistent, recovery-цель latest на границе TLI2,
+  покрытие конца архива дублями pg_wal набора. Команда:
+  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
+  -c Release --no-build --nologo --filter "FullyQualifiedName~PoolReadAnyNodeScenarios"`.
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`
@@ -253,30 +171,6 @@
   Логи: `arch/roadmap/bugs/t11-walreceiver-restapi-ca-probe/`
   (выжимка серии walpool2: 10 фейлов, [PHASE]-хвосты, `[TIMING]`,
   diag-фрагменты; повторные прогоны после фикса — там же).
-- **`t12-pool-failover-exhaustion-marker-missing`** —
-  `PoolFailoverExhaustionScenarios.Pool_FailoverList_And_Exhaustion_SelfHeal`
-  (E2E, docker): Act B «policy [node1] + стоп node1» — DEGRADED с маркером
-  `s3-pool-exhausted` в wal-ключе НЕ появляется за 300 c (ассерт
-  E2eBackupPoolScenarios.cs:600); приёмник мастера при этом жив (supervisord
-  RUNNING, роль master по REST-пробе, ключ agent/&lt;N&gt; жив). Юнит-контур
-  «флаг pool_exhausted в agent-ключе → DEGRADED с маркером» покрыт и зелёный
-  (WalStreamProcessTests.ExhaustionFlagDegraded_ThenFlagClearedHealsActive,
-  t25). Разбор невозможен: teardown Pool-контура при MarkFailed НЕ сохранил
-  docker-логи нод (в артефактах только etcd/mc/owns3/worker — канон
-  docs/e2e-launch.md требует «docker-логи/inspect ВСЕХ контейнеров») —
-  телеметрия Pool-контуров подлежит починке. Прогон 2026-10-24, ветка
-  `feat-t25-wal-receiver-in-pgnode` (Шаг 12 t25, серия pool2); лог серии:
-  `arch/roadmap/bugs/t12-pool-failover-exhaustion-marker-missing/`
-  (pool2-лог + runner.log выжимка). Гипотезы: (а) приёмник в Act B стоит в
-  ожидании (waiting_policy/slot) — флаг не ставится; (б) put-маркер
-  PoolBackupS3 теряется между приёмником и статус-put; (в) гонка рестарта
-  воркера и policy-обновления. Повтор прогонки — с починенной телеметрией.
-  Повтор (полный E2eFixture 2026-10-26, ветка `feat-t26-backup-jobs-in-receiver`,
-  HEAD `39f3685d`): тот же ассерт «list exhaustion — DEGRADED with the
-  s3-pool-exhausted marker … found False» за 9 m 37 s; на этот раз
-  docker-логи нод/воркера контура СОХРАНЕНЫ в
-  `${TMPDIR}pgw-e2e-artifacts-d7bf03a9036e4f23b5c4f47674d92acc/`
-  (pool-ac4, MarkFailed) — разбор по телеметрии возможен.
 - **`t13-restore-pitr-recovery-short-of-archive`** — E2E restore PITR
   (`E2eRestoreScenarios.Restore_TargetTime_PitrRollback`,
   `Restore_Latest_RebuildsDestroyedShard`, 2026-10-25, ветка
