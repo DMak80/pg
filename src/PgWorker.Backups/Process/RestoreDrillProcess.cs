@@ -479,6 +479,32 @@ public sealed class RestoreDrillProcess(
                 return;
             }
 
+            case "cancelled":
+            {
+                // Операторская отмена (POST /api/ops/cancel tool-контейнера —
+                // внешний канал мимо воркера; снимок state=cancelled отличает
+                // её от vanished): scratch-контейнер и volume сносятся
+                // (следов не осталось), ключ дрилла УДАЛЯЕТСЯ — операций нет,
+                // записи нет; никакого FAILED (arch/19 §3.6; следующий дрилл
+                // шарда — по общим правилам отбора).
+                await jobEngine.RemoveContainerAsync(containerName, force: true, ct);
+                var rmVolume = await jobEngine.RemoveVolumeAsync(
+                    BackupNames.DrillVolumeName(cluster, shard, drill.Id), ct);
+                if (!rmVolume.IsSuccess)
+                    return; // volume не снесся — ключ не удаляем, тик повторит ветку
+                var delOp = await etcd.DeleteAsync(endpoints[0],
+                    BackupNames.DrillKey(cluster, shard), prefix: false, ct);
+                if (!delOp.IsSuccess)
+                    return; // transient — ключ жив, тик повторит ветку
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"cancelled-by-operator/{shard}/{drill.Id}", claims.InstanceId,
+                    "drill operation cancelled by operator — key removed, no trace left", ct);
+                logger.LogInformation(
+                    "{Op} {cluster}/{shard}: drill {Id} cancelled by operator — key removed, no trace left",
+                    Op, cluster, shard, drill.Id);
+                return;
+            }
+
             case "failed" when snapshot.Phase == "downloading":
             {
                 // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — операция ЗАВЕРШИЛАСЬ,

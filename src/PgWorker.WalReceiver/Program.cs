@@ -122,8 +122,9 @@ internal partial class Program
     // Маршруты tool-операций (arch/19 §5/§3.5, spec §3.2): POST /api/ops/verify
     // — 409 (вторая активная) / 202; GET — 200 снимок / 404; POST
     // /api/ops/cancel — общий для tool-операций: 404 (нет активной) / 202
-    // best-effort (итог — failed/succeeded по GET). Одна активная операция на
-    // контейнер — общий OperationRegistry (TryBegin — гвард).
+    // best-effort (итог — снимок state=cancelled: НЕ failed — отмена не
+    // суждение о данных; воркер-супервиз отличает её от vanished). Одна
+    // активная операция на контейнер — общий OperationRegistry (TryBegin — гвард).
     private static void MapToolRoutes(WebApplication app)
     {
         // Активная операция для cancel (снимок — в реестре, экземпляр — здесь).
@@ -180,7 +181,9 @@ internal partial class Program
         });
     }
 
-    // Общий статус tool-операции: 200 снимок / 404 (нет активной/терминал снят).
+    // Общий статус tool-операции: 200 снимок (в т.ч. терминальный — снимок
+    // персистентен, воркер-супервиз отличает cancelled от vanished-404) /
+    // 404 (операций в реестре нет).
     private static IResult ToolStatus(OperationRegistry registry)
         => registry.Current is { } snapshot
             ? Results.Json(new ToolStatusResponse(

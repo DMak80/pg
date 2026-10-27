@@ -86,12 +86,19 @@ public class BackupApiOperationTests : IDisposable
             => throw new NotSupportedException();
     }
 
-    /// <summary>Фейк операции: RunAsync — no-op (тесты контракта маршрутов).</summary>
-    private sealed class FakeOp : IReceiverOperation
+    /// <summary>Фейк операции: RunAsync — no-op (тесты контракта маршрутов);
+    /// CancelAsync публикует в реестр снимок state=cancelled (механика cancel
+    /// API: итог операции — снимок cancelled, НЕ failed, spec §3.2).</summary>
+    private sealed class FakeOp(OperationRegistry? registry = null, string? id = null) : IReceiverOperation
     {
         public OperationSnapshot? Snapshot => null;
         public Task RunAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task CancelAsync() => Task.CompletedTask;
+        public Task CancelAsync()
+        {
+            registry?.Update(new OperationSnapshot(
+                id ?? "op", "cancelled", "downloading", Error: "cancelled by operator"));
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Фейк полной фабрики: счётчик созданий; на Create публикует
@@ -102,7 +109,7 @@ public class BackupApiOperationTests : IDisposable
         {
             created.Add(id);
             registry.Update(new OperationSnapshot(id, "running", "basebackup"));
-            return new FakeOp();
+            return new FakeOp(registry, id);
         }
     }
 
@@ -114,14 +121,14 @@ public class BackupApiOperationTests : IDisposable
         {
             created.Add(request.BackupId);
             registry.Update(new OperationSnapshot(request.BackupId, "running", "downloading"));
-            return new FakeOp();
+            return new FakeOp(registry, request.BackupId);
         }
 
         public IReceiverOperation CreateRestore(StartRestoreRequest request)
         {
             created.Add(request.BackupId);
             registry.Update(new OperationSnapshot(request.BackupId, "running", "recovering"));
-            return new FakeOp();
+            return new FakeOp(registry, request.BackupId);
         }
     }
 
@@ -391,6 +398,40 @@ public class BackupApiOperationTests : IDisposable
         // Act/Assert: cancel активной — 202.
         var cancel = await client.PostAsync("/api/ops/cancel", content: null, ct);
         ((int)cancel.StatusCode).Should().Be(202);
+    }
+
+    // AAA: cancel tool-операции — итог снимок state=cancelled (НЕ failed —
+    // отмена не суждение о данных): повторный GET отдаёт тот же снимок
+    // (персистентен — супервиз отличает отмену от vanished-404; операция не
+    // resurrect и не выглядит активной); новая операция принимается — гвард
+    // пропускает терминальные снимки (spec §3.2).
+    [Fact]
+    public async Task CancelOps_SnapshotCancelled_PersistsOnGet_NewOpAccepted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Arrange: tool-режим, активная verify-операция.
+        var (_, client, _, created, _) = Build(toolMode: true);
+        ((int)(await client.PostAsJsonAsync("/api/ops/verify", new StartVerifyRequest(Id,
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1")), ct)).StatusCode)
+            .Should().Be(202);
+
+        // Act 1: cancel.
+        var cancel = await client.PostAsync("/api/ops/cancel", content: null, ct);
+
+        // Assert 1: 202; повторный GET — снимок cancelled (НЕ running, НЕ 404).
+        ((int)cancel.StatusCode).Should().Be(202);
+        var after = await client.GetAsync("/api/ops/verify", ct);
+        ((int)after.StatusCode).Should().Be(200, "the terminal snapshot persists — cancelled != vanished");
+        var status = await after.Content.ReadFromJsonAsync<ToolStatusResponse>(ct);
+        status!.State.Should().Be("cancelled");
+        status.Error.Should().Be("cancelled by operator");
+
+        // Act 2/Assert 2: новая операция принимается (гвард пропустил терминал).
+        var next = await client.PostAsJsonAsync("/api/ops/verify", new StartVerifyRequest(
+            "20260102000000Z",
+            new S3Context(["http://s3a:9000"], "ak", "sk", "backups", "c1/s1")), ct);
+        ((int)next.StatusCode).Should().Be(202, "a terminal snapshot is not an active operation");
+        created.Should().Equal(Id, "20260102000000Z");
     }
 
     public void Dispose()

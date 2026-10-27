@@ -397,15 +397,16 @@ public sealed class BackupVerifyProcess(
 
     // Супервиз одного verify-tool-контейнера шарда (t26, spec §3.5): orphan/
     // stale → снос без итога; created → старт; итог — ТОЛЬКО по API
-    // (GetVerifyAsync): succeeded ⇒ OK+checked_unix; failed+downloading
-    // (МАРКЕР ТРАНЗИЕНТА) ⇒ снос, статус не трогаем (PENDING, ретрай тиком);
-    // failed+verifying ⇒ FAILED+error; IsNotFound (операция vanished — рестарт
-    // приёмника) ⇒ transient: снос, PENDING-ретрай; транспортный отказ
-    // (StatusCode 0 — приложение не слушает) ⇒ окно бута ToolBootWindowSec от
-    // StartedAt: в окне — ожидание, дольше — ограниченный рецикл «снос +
-    // пересоздание» (arch/19 §5); 5xx и running — возрастной
-    // бюджет Job:VerifyTimeoutSec по StartedAtUnix инспекта ⇒ kill+rm,
-    // checked_unix=now (вердикт НЕ ставится).
+    // (GetVerifyAsync): succeeded ⇒ OK+checked_unix; cancelled (операторская
+    // отмена) ⇒ PENDING (checked_unix=now — расписание политики), снос;
+    // failed+downloading (МАРКЕР ТРАНЗИЕНТА) ⇒ снос, статус не трогаем
+    // (PENDING, ретрай тиком); failed+verifying ⇒ FAILED+error; IsNotFound
+    // (операция vanished — рестарт приёмника) ⇒ transient: снос, PENDING-
+    // ретрай; транспортный отказ (StatusCode 0 — приложение не слушает) ⇒
+    // окно бута ToolBootWindowSec от StartedAt: в окне — ожидание, дольше —
+    // ограниченный рецикл «снос + пересоздание» (arch/19 §5); 5xx и running —
+    // возрастной бюджет Job:VerifyTimeoutSec по StartedAtUnix инспекта ⇒
+    // kill+rm, checked_unix=now (вердикт НЕ ставится).
     private async Task SuperviseAsync(
         IDockerEngine engine, string cluster, string shard, string containerName, string shardPrefix,
         string state, ShardBackups shardBackups, long nowUnix, string host, CancellationToken ct)
@@ -484,6 +485,31 @@ public sealed class BackupVerifyProcess(
                         logger.LogInformation("{Op} {cluster}/{shard}: verify {id} OK", Op, cluster, shard, id);
                         observe(cluster, shard, "ok");
                         await CleanupJobAsync(engine, containerName, "after-ok", ct);
+                        return;
+                    }
+                    case "cancelled":
+                    {
+                        // Операторская отмена (POST /api/ops/cancel — внешний
+                        // канал мимо воркера; снимок state=cancelled отличает её
+                        // от vanished): операция как не начинавшаяся —
+                        // перманентного вердикта нет. Кандидат → PENDING с
+                        // checked_unix=now (квота попытки — перепроверка по
+                        // расписанию verify.interval_sec, симметрия
+                        // таймаут-ветке ниже); контейнер+volume сносятся.
+                        var quota = full.Verify is null
+                            ? new BackupVerify(BackupVerifyStatus.Pending, nowUnix)
+                            : full.Verify with { State = BackupVerifyStatus.Pending, CheckedUnix = nowUnix };
+                        var putQuota = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                            BackupStatusJson.Serialize(full with { Verify = quota }), ct);
+                        if (!putQuota.IsSuccess)
+                            return; // transient — статус не сменился, снесём следующим тиком
+                        await journal.WritePhaseAsync(cluster, Op, $"cancelled-by-operator/{shard}/{id}",
+                            claims.InstanceId, "verify operation cancelled by operator — candidate back to PENDING", ct);
+                        logger.LogInformation(
+                            "{Op} {cluster}/{shard}: verify {id} cancelled by operator — candidate back to PENDING",
+                            Op, cluster, shard, id);
+                        observe(cluster, shard, "transient");
+                        await CleanupJobAsync(engine, containerName, "cancelled-by-operator", ct);
                         return;
                     }
                     case "failed" when snapshot.Phase == "downloading":

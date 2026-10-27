@@ -17,13 +17,17 @@ public sealed record OperationSnapshot(
     string? Error = null);
 
 /// <summary>Константы состояний операций (spec t26 §3.2): running | succeeded |
-/// failed; у полного дополнительно uploading (фаза фиксации).</summary>
+/// failed; у полного дополнительно uploading (фаза фиксации); у tool-операций
+/// дополнительно cancelled — операторская отмена (cancel API, внешний канал):
+/// НЕ failed — отмена не суждение о данных (arch/19 §3.5/§5); снимок
+/// персистентен — воркер-супервиз отличает отмену от vanished (404).</summary>
 public static class OperationStates
 {
     public const string Running = "running";
     public const string Uploading = "uploading";
     public const string Succeeded = "succeeded";
     public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
 }
 
 /// <summary>Константы фаз операций (spec t26 §3.2): полный — basebackup |

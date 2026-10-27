@@ -12,9 +12,11 @@ namespace PgWorker.WalReceiver.Operations;
 /// сбой скачивания — failed с фазой downloading (МАРКЕР ТРАНЗИЕНТА: воркер
 /// держит PENDING и ретраит тиками, контейнер сносится и создаётся заново).
 /// Фаза verifying — pg_verifybackup (manifest SHA256, вкл. pg_wal/); ≠ 0 —
-/// failed с фазой verifying (PERMANENT — данные плохие). Чистка staging —
-/// при любом исходе; терминальный снимок остаётся в реестре (следующий POST
-/// — новая операция, TryBegin перезапишет терминальный).</summary>
+/// failed с фазой verifying (PERMANENT — данные плохие). Операторская отмена
+/// (cancel API) — снимок state=cancelled (НЕ failed — отмена не суждение о
+/// данных; воркер отличает её от vanished и вернёт кандидата в PENDING).
+/// Чистка staging — при любом исходе; терминальный снимок остаётся в реестре
+/// (следующий POST — новая операция, TryBegin перезапишет терминальный).</summary>
 public sealed class VerifyOperation : IReceiverOperation
 {
     private readonly StartVerifyRequest _request;
@@ -140,8 +142,12 @@ public sealed class VerifyOperation : IReceiverOperation
         }
         catch (OperationCanceledException)
         {
-            // Cancel API: failed cancelled (контейнер снесёт воркер).
-            Fail(CurrentPhase(), "cancelled");
+            // Операторская отмена (cancel API, внешний канал): снимок
+            // state=cancelled — НЕ failed (отмена не суждение о данных,
+            // arch/19 §5); воркер-супервиз вернёт кандидата в PENDING.
+            _registry.Update(new OperationSnapshot(
+                _request.BackupId, OperationStates.Cancelled, CurrentPhase(),
+                Error: "cancelled by operator"));
         }
         catch (Exception e)
         {

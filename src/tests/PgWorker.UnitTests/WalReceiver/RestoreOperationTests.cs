@@ -33,12 +33,14 @@ public class RestoreOperationTests
             Prefix: "c1/s1"));
 
     /// <summary>Фейк runner: пишет stdout по FileName (pg_controldata/psql),
-    /// программируемый исход pg_ctl start; журнал вызовов для порядка.</summary>
+    /// программируемый исход pg_ctl start; журнал вызовов для порядка;
+    /// PsqlPollHang — psql-поллинг висит до отмены токена (cancel API).</summary>
     private sealed class FakeRunner : IProcessRunner
     {
         public readonly List<(string FileName, string Args, string Env)> Invocations = [];
         public int StartExitCode;
         public int PsqlPollFailsBeforeOk;
+        public bool PsqlPollHang;
 
         public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
             ProcessStartInfo psi, CancellationToken ct)
@@ -54,6 +56,8 @@ public class RestoreOperationTests
             switch (psi.FileName)
             {
                 case "psql":
+                    if (PsqlPollHang && args.Contains("pg_is_in_recovery"))
+                        await Task.Delay(Timeout.InfiniteTimeSpan, ct); // OperationCanceledException
                     if (PsqlPollFailsBeforeOk > 0 && args.Contains("pg_is_in_recovery"))
                     {
                         PsqlPollFailsBeforeOk--;
@@ -279,6 +283,46 @@ public class RestoreOperationTests
         registrySnapshot(op)!.State.Should().Be("succeeded");
         runner.Invocations.Count(i => i.FileName == "psql"
                 && i.Args.Contains("pg_is_in_recovery")).Should().Be(3);
+        Directory.Delete(root, recursive: true);
+    }
+
+    // AAA: операторская отмена в recovery-поллинге (cancel API — внешний канал
+    // мимо воркера) — снимок state=cancelled, НЕ failed («операции не было»,
+    // arch/19 §3.5; воркер отличает её от vanished: удаляет запись заявки и
+    // сносит volume); чистку сигналов НЕ делаем (контейнер снесёт воркер);
+    // терминальный снимок персистентен и не активен — гвард пропускает новую
+    // операцию.
+    [Fact]
+    public async Task CancelDuringRecoveryPoll_StateCancelled_NotFailed()
+    {
+        // Arrange: psql-поллинг висит до отмены; операция доходит до поллинга.
+        var root = NewPgdata();
+        var pgdata = Path.Combine(root, "pgroot", "data");
+        var runner = new FakeRunner { PsqlPollHang = true };
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new RestoreOperation(Request(), runner, registry,
+            pgdata, _ => new FakeS3());
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => runner.Invocations.Any(i =>
+                    i.FileName == "psql" && i.Args.Contains("pg_is_in_recovery")),
+                TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches the recovery poll before the cancel");
+
+        // Act: cancel API гасит операцию (pg_ctl stop best-effort — фейк 0).
+        await op.CancelAsync();
+        await run;
+
+        // Assert: снимок cancelled (НЕ failed) с однострочной причиной.
+        registrySnapshot(op)!.State.Should().Be("cancelled");
+        registrySnapshot(op)!.Error.Should().Be("cancelled by operator");
+        // Assert: чистку сигналов НЕ делали (воркер снесёт volume целиком).
+        File.Exists(Path.Combine(pgdata, "recovery.signal")).Should().BeTrue();
+        // Assert: терминальный снимок не активен — гвард принимает новую
+        // операцию (повторный GET отдаёт снимок cancelled — не resurrect).
+        registry.TryBegin(new OperationSnapshot(
+                "20260102000000Z", "running", "downloading"))
+            .Should().BeTrue("a terminal snapshot is not an active operation");
         Directory.Delete(root, recursive: true);
     }
 

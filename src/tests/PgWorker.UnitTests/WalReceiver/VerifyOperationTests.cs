@@ -27,19 +27,25 @@ public class VerifyOperationTests
             Bucket: "backups",
             Prefix: "c1/s1"));
 
-    /// <summary>Фейк runner: pg_verifybackup — программируемый exit/stderr.</summary>
+    /// <summary>Фейк runner: pg_verifybackup — программируемый exit/stderr;
+    /// HangVerify — pg_verifybackup висит до отмены токена (cancel API).</summary>
     private sealed class FakeRunner : IProcessRunner
     {
         public readonly List<ProcessStartInfo> Invocations = [];
         public int VerifyExitCode;
         public string VerifyStderr = "";
+        public bool HangVerify;
 
         public async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(
             ProcessStartInfo psi, CancellationToken ct)
         {
             Invocations.Add(psi);
             if (psi.FileName == "pg_verifybackup")
+            {
+                if (HangVerify)
+                    await Task.Delay(Timeout.InfiniteTimeSpan, ct); // OperationCanceledException
                 return (VerifyExitCode, "", VerifyStderr);
+            }
             return (0, "", "");
         }
     }
@@ -209,6 +215,45 @@ public class VerifyOperationTests
         // OpText.FirstLine Trim('"') снимает хвостовую кавычку одной строки.
         registry.Current.Error.Should().Be(
             "backup_manifest checksum mismatch for file \"pg_wal/000000010000000000000002");
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA: операторская отмена (cancel API — внешний канал мимо воркера) —
+    // снимок state=cancelled, НЕ failed (отмена не суждение о данных, arch/19
+    // §5; воркер-супервиз отличает её от vanished и вернёт кандидата в PENDING);
+    // staging очищен при любом исходе; терминальный снимок персистентен и не
+    // активен — гвард пропускает, новая операция на контейнере возможна.
+    [Fact]
+    public async Task CancelMidVerify_StateCancelled_NotFailed_StagingCleaned()
+    {
+        // Arrange: pg_verifybackup висит до отмены; операция доходит до
+        // verifying-фазы.
+        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var runner = new FakeRunner { HangVerify = true };
+        var registry = new OperationRegistry();
+        registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
+        var op = new VerifyOperation(Request(), runner, registry, staging, _ => new FakeS3());
+        var run = op.RunAsync(CancellationToken.None);
+        SpinWait.SpinUntil(() => registry.Current?.Phase == "verifying",
+                TimeSpan.FromSeconds(10))
+            .Should().BeTrue("the operation reaches pg_verifybackup before the cancel");
+
+        // Act: cancel API гасит операцию.
+        await op.CancelAsync();
+        await run;
+
+        // Assert: снимок cancelled (НЕ failed) с однострочной причиной.
+        registry.Current!.State.Should().Be("cancelled");
+        registry.Current.Phase.Should().Be("verifying");
+        registry.Current.Error.Should().Be("cancelled by operator");
+        // Assert: staging очищен при любом исходе.
+        Directory.Exists(Path.Combine(staging, "full", Id)).Should().BeFalse();
+        // Assert: терминальный снимок не активен — гвард принимает новую
+        // операцию (повторный GET отдаёт снимок cancelled — не resurrect).
+        registry.TryBegin(new OperationSnapshot(
+                "20260102000000Z", "running", "downloading"))
+            .Should().BeTrue("a terminal snapshot is not an active operation");
         Directory.Delete(staging, recursive: true);
     }
 }

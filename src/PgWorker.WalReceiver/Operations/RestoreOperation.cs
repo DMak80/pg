@@ -15,7 +15,10 @@ namespace PgWorker.WalReceiver.Operations;
 /// поллинг pg_is_in_recovery() с бюджетом (promote-окно ретраится) → LSN →
 /// stop → возврат pristine auto.conf с вычисткой archive_mode/archive_command
 /// и снятие trust-строки → system_id из pg_controldata. Дрилл — тот же класс:
-/// команда без target_time = latest. Резюмов нет — FAILED → новая заявка.</summary>
+/// команда без target_time = latest. Резюмов нет — FAILED → новая заявка.
+/// Операторская отмена (cancel API) — снимок state=cancelled (НЕ failed —
+/// «операции не было», arch/19 §3.5; воркер удаляет запись заявки и сносит
+/// volume).</summary>
 public sealed class RestoreOperation : IReceiverOperation
 {
     // Spilo-postgres (образ pgworker-node): численные uid:gid владельца PGDATA.
@@ -312,10 +315,15 @@ public sealed class RestoreOperation : IReceiverOperation
         }
         catch (OperationCanceledException)
         {
-            // Cancel API: kill дерева уже сделан runner'ом; pg_ctl stop
-            // best-effort; чистку сигналов НЕ делаем — контейнер снесёт воркер.
+            // Операторская отмена (cancel API, внешний канал): kill дерева уже
+            // сделан runner'ом; pg_ctl stop best-effort; снимок state=cancelled —
+            // НЕ failed (отмена = «операции не было», arch/19 §3.5; воркер
+            // отличает её от vanished: запись заявки удаляется, volume сносится).
+            // Чистку сигналов НЕ делаем — контейнер снесёт воркер.
             await StopBestEffortAsync(_pgdata);
-            Fail(phase, "cancelled");
+            _registry.Update(new OperationSnapshot(
+                _request.BackupId, OperationStates.Cancelled, phase,
+                Error: "cancelled by operator"));
         }
         catch (Exception e)
         {

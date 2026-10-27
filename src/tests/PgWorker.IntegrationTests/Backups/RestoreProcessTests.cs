@@ -854,6 +854,58 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, Cancel
         _receiver.StartCalls.Should().BeGreaterOrEqualTo(1, "the launch command is re-posted");
     }
 
+    // AAA: операторская отмена restore (cancel API tool-контейнера — внешний
+    // канал мимо воркера; GET отдаёт снимок state=cancelled — НЕ failed и НЕ
+    // 404-vanished) — всё как до старта операции: tool-контейнер и data-volume
+    // первой ноды снесены (до-restore «пустое» состояние), щит initialize
+    // снят, запись заявки УДАЛЕНА из etcd (операции нет — записи нет);
+    // никакого перманентного FAILED; следующий тик ничего не пересоздаёт
+    // (отличие от vanished-ветки, где заявка живёт и пере-запускается).
+    [Fact]
+    public async Task ReceiverCancelledRequestRemovedNoFailedNoTrace()
+    {
+        // Arrange — RUNNING-заявка, running-контейнер, щит-заполнитель; GET cancelled
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121009Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "");
+        _receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator"), null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121009Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "recovering",
+            phaseUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 50);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/initialize",
+            "restore-in-progress", null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        var requestKey = BackupNames.RestoreKey("c1", "shard1", op.Id);
+
+        // Act 1 — супервиз: операция отменена оператором
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер и volume первой ноды снесены; запись заявки
+        // удалена; щит снят (заполнитель запер бы bootstrap пустых нод)
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, requestKey, ct)).Value.Should().BeNull(
+            "the operation is as if it never started — no request key left");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value.Should().BeNull("the initialize placeholder is removed with the cancelled restore");
+
+        // Act 2 — следующий тик: заявок нет — ничего не пересоздаётся
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — ни контейнера, ни новой заявки, ни FAILED
+        engine.Created.Should().BeEmpty("the cancelled operation leaves no request to retry");
+    }
+
     // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в
     // опциях теста) → restore-джоб kill+rm, заявка FAILED "restore-job-timeout",
     // щит initialize снят, volume первой ноды удалён

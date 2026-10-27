@@ -829,6 +829,63 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         engineH1.Created.Should().BeEmpty("no job is started while a foreign-host container is supervised");
     }
 
+    // AAA: операторская отмена verify (cancel API — внешний канал мимо воркера;
+    // GET отдаёт снимок state=cancelled — НЕ failed и НЕ 404-vanished) —
+    // операция как не начинавшаяся: контейнер+volume снесены, кандидат
+    // возвращается в PENDING с checked_unix=now (квота попытки — перепроверка
+    // по расписанию политики, симметрия таймаут-ветке), перманентного FAILED
+    // нет; следующий тик НЕ пересоздаёт джоб (отличие от vanished-ветки —
+    // пересоздание там немедленно, здесь — по расписанию периодики).
+    [Fact]
+    public async Task SupervisorCancelledBackToPendingCleansJobNotRecreated()
+    {
+        // Arrange — джоб запущен (running); GET cancelled; PENDING-ключ в etcd
+        // (checked_unix=null — попытки ещё не было)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("sv14", ct);
+        Fx = fx;
+        await SeedAsync("sv14");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv14", s3);
+        var name = "pgw-backup-verify-sv14-shard1-20260911120000Z";
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("cancelled", "verifying", Error: "cancelled by operator"), null);
+        var pending = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var key = "/pgworker/backups/sv14/shard1/full/20260911120000Z";
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key,
+            BackupStatusJson.Serialize(pending), null, ct);
+        var process = BuildProcess("sv14", new FakeVerifyDriver(engine), s3);
+
+        // Act 1 — супервиз: операция отменена оператором → снос + PENDING
+        (await process.TickAsync(BuildSnap("sv14"), BackupsOf("sv14", pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер+volume снесены; кандидат PENDING с
+        // checked_unix=now (квота попытки); FAILED нет
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        var verify = await ReadVerifyAsync("sv14", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("PENDING",
+            "the cancel is not a verdict on the data — the candidate is re-checked by policy");
+        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0,
+            "the attempt counts (retry schedule), unlike the vanished branch");
+        verify.TryGetProperty("error", out _).Should().BeFalse("no failure verdict");
+
+        // Act 2 — следующий тик: модель = факт etcd после cancel-ветки
+        // (PENDING c checked_unix=now — квота попытки записана ключом)
+        var afterCancel = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending,
+                TimeProvider.System.GetUtcNow().ToUnixTimeSeconds()));
+        (await process.TickAsync(BuildSnap("sv14"), BackupsOf("sv14", afterCancel), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — джоб НЕ пересоздан (квота попытки: перепроверка по
+        // расписанию verify.interval_sec, немедленных перезапусков нет)
+        engine.Created.Should().HaveCount(1,
+            "cancelled is not vanished — no immediate re-creation, the policy schedule rules");
+    }
+
     // AAA (#mr-fix): GET 404 при живом контейнере (рестарт приёмника) —
     // transient: контейнер+volume снесены, статус остаётся PENDING (НЕ фейлится);
     // следующий тик пересоздаёт джоб (ретрай тиками)

@@ -547,6 +547,41 @@ public sealed class RestoreProcess(
                 return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
             }
 
+            case "cancelled":
+            {
+                // Операторская отмена (POST /api/ops/cancel tool-контейнера —
+                // внешний канал мимо воркера; снимок state=cancelled отличает
+                // её от vanished): всё как до старта операции — tool-контейнер
+                // и data-volume первой ноды сносятся (до-restore «пустое»
+                // состояние), щит initialize снимается (заполнитель
+                // «restore-in-progress» навсегда запер бы bootstrap пустых
+                // нод), запись заявки УДАЛЯЕТСЯ — операции нет, записи нет;
+                // никакого FAILED (arch/19 §3.5).
+                await engine.RemoveContainerAsync(name, force: true, ct);
+                await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
+                var initKey = $"/service/{cluster}-{shard.Name}/initialize";
+                var init = await etcd.GetAsync(endpoints[0], initKey, ct);
+                if (init.IsSuccess && init.Value?.Value == "restore-in-progress")
+                {
+                    var delShield = await etcd.DeleteAsync(endpoints[0], initKey, prefix: false, ct);
+                    if (!delShield.IsSuccess)
+                        logger?.LogError(
+                            "backup-restore {Cluster}/{Shard}/{Id}: initialize placeholder was not deleted — {Error}",
+                            cluster, shard.Name, op.Id, delShield.Error?.Message);
+                }
+                var delOp = await etcd.DeleteAsync(endpoints[0],
+                    BackupNames.RestoreKey(cluster, shard.Name, op.Id), prefix: false, ct);
+                if (!delOp.IsSuccess)
+                    return Result<ProcessOutcome>.Failed(delOp.Error!);
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"cancelled-by-operator/{shard.Name}/{op.Id}", claims.InstanceId,
+                    "restore operation cancelled by operator — request removed, shard back to pre-restore state", ct);
+                logger?.LogInformation(
+                    "backup-restore {Cluster}/{Shard}/{Id}: cancelled by operator — request removed, shard back to pre-restore state",
+                    cluster, shard.Name, op.Id);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+
             case "failed" when status.Phase == "downloading":
             {
                 // МАРКЕР ТРАНЗИЕНТА: сбой скачивания — статус не трогаем

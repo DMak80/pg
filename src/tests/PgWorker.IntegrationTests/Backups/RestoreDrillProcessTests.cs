@@ -1177,4 +1177,47 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
             "the tool container is recreated on the next tick");
         Receiver.StartBodies.Should().NotBeEmpty("the launch command is re-posted");
     }
+
+    // AAA: операторская отмена дрилла (cancel API tool-контейнера — внешний
+    // канал мимо воркера; GET отдаёт снимок state=cancelled — НЕ failed и НЕ
+    // 404-vanished) — scratch-контейнер и volume сносятся (следов не осталось),
+    // ключ дрилла УДАЛЯЕТСЯ (операций нет — записей нет); никакого FAILED;
+    // следующий тик ничего не пересоздаёт (отличие от vanished-ветки, где ключ
+    // живёт и пере-запускается).
+    [Fact]
+    public async Task ReceiverCancelledKeyRemovedNoTraceNoFailed()
+    {
+        // Arrange — RUNNING-ключ + running-контейнер; GET cancelled
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr16";
+        await SeedAsync(cluster);
+        var engine = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engine);
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engine, name, "running");
+        Receiver.GetReply = new ReceiverReply(200,
+            new ReceiverStatus("cancelled", "recovering", Error: "cancelled by operator"), null);
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act 1 — супервиз: операция отменена оператором
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — scratch снесён (контейнер+volume); ключ дрилла УДАЛЁН
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
+        (await Fx.Gateway.GetAsync(Fx.Endpoint, DrillKey(cluster), ct)).Value.Should().BeNull(
+            "no trace left — the drill key is removed with the cancelled operation");
+
+        // Act 2 — следующий тик: ключа нет — ничего не пересоздаётся
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — ни контейнера, ни новой записи
+        engine.Created.Should().BeEmpty("the cancelled drill leaves no key to retry");
+    }
 }
