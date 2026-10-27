@@ -147,6 +147,10 @@ public class FullBackupOperationTests
                 await File.WriteAllTextAsync(Path.Combine(dest, "postgresql.conf"), "x");
                 await File.WriteAllTextAsync(
                     Path.Combine(dest, "pg_wal", "000000010000000000000002"), "wal");
+                // Реальный pg_basebackup кладёт сегменты набора ВЕРХНИМ hex —
+                // буквенный сегмент проверяет нормализацию дубля wal/.
+                await File.WriteAllTextAsync(
+                    Path.Combine(dest, "pg_wal", "0000000100000000000000AB"), "wal");
                 await File.WriteAllTextAsync(
                     Path.Combine(dest, "pg_wal", "000000010000000000000003.partial"), "p");
                 await File.WriteAllTextAsync(
@@ -234,6 +238,42 @@ public class FullBackupOperationTests
         psi.EnvironmentVariables["HOME"].Should().Be("/tmp");
         // Assert: staging очищен после исхода.
         Directory.EnumerateFileSystemEntries(staging).Should().BeEmpty();
+
+        // Cleanup: временный каталог.
+        Directory.Delete(staging, recursive: true);
+    }
+
+    // AAA: wal-дубли набора заливаются в общий префикс wal/ ПОД НОРМАЛИЗОВАННЫМ
+    // (СТРОЧНЫМ) именем — pg_basebackup кладёт сегменты ВЕРХНИМ hex, канон
+    // ключей wal/ — строчные (симметрия стриму приёмников и fetch-wal): дубль
+    // сливается со стримом, мёртвого груза в верхнем регистре нет (arch/19 §2,
+    // spec §3.4). Файл 1:1 в full/<id>/pg_wal/ остаётся ВЕРХНИМ (набор 1:1).
+    [Fact]
+    public async Task WalDuplicates_UploadedLowercased_MergeWithStream()
+    {
+        // Arrange: фейки etcd/runner/S3 + временный staging (сегмент 0AB —
+        // ВЕРХНИМ в наборе, как кладёт pg_basebackup).
+        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(staging);
+        var etcd = Etcd();
+        var runner = new FakeRunner();
+        var s3 = new FakeS3();
+        var registry = new OperationRegistry();
+        var op = Create(etcd, runner, s3, staging, registry);
+
+        // Act: полный пайплайн.
+        await op.RunAsync(CancellationToken.None);
+
+        // Assert: дубль — СТРОЧНЫМ именем (сливается со стримом); верхнего
+        // дубля в wal/ нет.
+        var prefix = $"{Cluster}/{Shard}";
+        registry.Current!.State.Should().Be("succeeded");
+        s3.PutKeys.Should().Contain($"{prefix}/wal/0000000100000000000000ab");
+        s3.PutKeys.Should().NotContain(k => k.StartsWith($"{prefix}/wal/")
+            && k.EndsWith("0000000100000000000000AB", StringComparison.Ordinal),
+            "the wal/ key canon is lowercase — an uppercase duplicate is dead weight");
+        // Assert: файл НАБОРА в full/<id>/ — 1:1, ВЕРХНИМ (не тронут).
+        s3.PutKeys.Should().Contain($"{prefix}/full/{Id}/pg_wal/0000000100000000000000AB");
 
         // Cleanup: временный каталог.
         Directory.Delete(staging, recursive: true);

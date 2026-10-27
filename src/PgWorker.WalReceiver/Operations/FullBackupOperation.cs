@@ -211,8 +211,12 @@ public sealed class FullBackupOperation : IReceiverOperation
                 if (name.EndsWith(".partial", StringComparison.Ordinal)
                     || name.EndsWith(".history", StringComparison.Ordinal))
                     continue;
+                // Имя дубля — НОРМАЛИЗОВАННОЕ (строчное): pg_basebackup кладёт
+                // сегменты набора ВЕРХНИМ hex, а канон ключей wal/ — строчные
+                // (симметрия стриму приёмников и fetch-wal) — дубль сливается
+                // со стримом, дублирования объектов нет (arch/19 §2).
                 var put = await s3.PutFileAsync(
-                    $"{_identity.Cluster}/{_identity.Shard}/wal/{name}", file, token);
+                    $"{_identity.Cluster}/{_identity.Shard}/wal/{FetchWalCommand.NormalizeSegment(name)}", file, token);
                 if (!put.IsSuccess)
                 {
                     Fail(put.Error!.Message.Split('\n')[0]);
