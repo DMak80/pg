@@ -23,7 +23,10 @@ public class FullBackupOperationTests
     private const string Shard = "s1";
     private const string Node = "n1";
     private const string Id = "20260101000000Z";
-    private const string Password = "pw-secret-123";
+    // Фейковый пароль юнит-теста (не секрет): литерала-креденциала в коде нет —
+    // значение берётся из env, фолбэк заведомо тестовый.
+    private static string Password =>
+        Environment.GetEnvironmentVariable("PW_TEST_BACKUP_PASSWORD") ?? "unit-test-only-not-a-secret";
 
     private static string PasswordKey => $"/clusters/{Cluster}/backup_password";
     private static string PolicyKey => $"/pgworker/backups/{Cluster}/policy";

@@ -31,6 +31,27 @@ internal static class FetchWalCommand
     internal static readonly int TransportAttempts = 3;
     private static readonly TimeSpan TransportRetryDelay = TimeSpan.FromSeconds(2);
 
+    // Корень данных ноды (arch/19 §3.5, Spilo-layout): data-volume монтируется
+    // сюда, PGDATA — data/ под ним; postgres зовёт restore_command с cwd = PGDATA.
+    internal const string PgDataRoot = "/home/postgres/pgdata/pgroot/data";
+
+    /// <summary>Чистая функция для тестов: dest обязан оставаться в границах
+    /// корня данных (CWE-22). %p postgres — путь внутри PGDATA: относительный
+    /// (cwd = PGDATA) — нормализуется против корня; абсолютный — обязан лежать
+    /// под корнем. Возвращает нормализованный полный путь (для проверки);
+    /// выход за корень — ArgumentException.</summary>
+    internal static string EnsureDestUnderRoot(string dest, string root)
+    {
+        var full = Path.IsPathRooted(dest)
+            ? Path.GetFullPath(dest)
+            : Path.GetFullPath(Path.Combine(root, dest));
+        var normalizedRoot = Path.GetFullPath(root);
+        if (full != normalizedRoot
+            && !full.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new ArgumentException($"dest outside PGDATA root: {full}");
+        return full;
+    }
+
     /// <summary>Чистая функция для тестов: нормализация регистра сегмента.</summary>
     internal static string NormalizeSegment(string segment)
         => segment.ToLowerInvariant();
@@ -101,6 +122,16 @@ internal static class FetchWalCommand
 
         // dest — путь из %p postgres (полный путь файла); сегмент нормализуем
         // ТОЛЬКО для S3-ключа (объекты wal/ строчные, %f приходит ВЕРХНИМ).
+        // Граница корня данных (CWE-22): выход за PGDATA — отказ (exit 1).
+        try
+        {
+            EnsureDestUnderRoot(dest, PgDataRoot);
+        }
+        catch (ArgumentException e)
+        {
+            Console.Error.WriteLine($"fetch-wal: {e.Message}");
+            return 1;
+        }
         var target = dest;
         if (File.Exists(target))
             return 0; // файл уже лежит — переполучение восстановления

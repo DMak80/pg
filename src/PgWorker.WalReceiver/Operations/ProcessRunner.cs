@@ -16,6 +16,13 @@ public sealed class ProcessRunner : IProcessRunner
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
         psi.UseShellExecute = false;
+        if (psi.UseShellExecute || psi.Arguments.Length > 0)
+        {
+            // Инвариант безопасности: только ArgumentList (никакой строки Arguments
+            // и никакого shell) — аргументы не интерпретируются интерпретатором.
+            throw new InvalidOperationException(
+                "ProcessRunner требует ArgumentList и UseShellExecute=false (без shell).");
+        }
         using var process = Process.Start(psi)!;
         using var reg = ct.Register(() =>
         {

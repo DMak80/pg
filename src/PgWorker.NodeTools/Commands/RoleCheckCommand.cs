@@ -26,8 +26,10 @@ public static class RoleCheckCommand
         var pgDatabase = cli.Value("pg-database") ?? "postgres";
         // Пароль — из --pg-password-file (не в argv/process list); CLI-параметр
         // оставлен для стенда без пароля (trust) — латентного риска нет.
+        // Файл пароля — только в границах разрешённых корней (CWE-22):
+        // /run/secrets (docker secrets), /tmp — стендовые/ручные прогоны.
         var pgPassword = cli.Value("pg-password-file") is { } pwFile
-            ? File.ReadAllText(pwFile).Trim()
+            ? ReadPasswordFile(pwFile)
             : cli.Value("pg-password");
         var listenPort = cli.Int("listen-port", 8008);
 
@@ -36,6 +38,13 @@ public static class RoleCheckCommand
         await ServeAsync(listenPort, nodeName, pgHost, pgPort, pgUser, pgDatabase, pgPassword);
         await registration;
         return 0;
+    }
+
+    // Чтение файла пароля с проверкой границы корней (CWE-22).
+    private static string ReadPasswordFile(string path)
+    {
+        EnvironmentGuard.EnsureFileUnderRoots(path, ["/run/secrets", "/tmp"], "password file");
+        return File.ReadAllText(path).Trim();
     }
 
     private static async Task ServeAsync(
