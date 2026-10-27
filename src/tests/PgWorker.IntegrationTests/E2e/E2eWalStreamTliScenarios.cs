@@ -272,7 +272,17 @@ public class E2eWalStreamTliScenarios
             }
             Console.WriteLine($"[PHASE] wal-t24b: slot {slot} dropped, 160 recorded switches start");
             await SwitchWithRecordsAsync(newMasterDsn, 160, ct);
-            Console.WriteLine("[PHASE] wal-t24b: 160 recorded switches done (old-tli segments recycled)");
+            // Переработка сегментов постгресом выполняется ТОЛЬКО на
+            // checkpoint: без явного CHECKPOINT pg_wal продолжает держать
+            // сегменты старого TLI, досыпка приёмника проходит успешно и
+            // прыжка не происходит (разбор t097).
+            await using (var cpConn = new NpgsqlConnection(newMasterDsn))
+            {
+                await cpConn.OpenAsync(ct);
+                await using var cp = new NpgsqlCommand("CHECKPOINT", cpConn);
+                await cp.ExecuteNonQueryAsync(ct);
+            }
+            Console.WriteLine("[PHASE] wal-t24b: 160 recorded switches + checkpoint done (old-tli segments recycled)");
             await Fx.RunDockerAsync(
                 ["exec", newMasterContainer, "supervisorctl", "start", "walreceiver"], ct);
 
