@@ -366,6 +366,40 @@ public class RestoreOperationTests
         FetchWalCommand.ParseEnv(_ => null).Should().BeNull();
     }
 
+    // AAA: dest (%p postgres) в границах корня данных проходит — относительный
+    // (%p, cwd = PGDATA) нормализуется против корня, абсолютный — под корнем.
+    [Fact]
+    public void EnsureDestUnderRoot_AcceptsDestInsideRoot()
+    {
+        var root = FetchWalCommand.PgDataRoot;
+
+        // Act
+        var relative = FetchWalCommand.EnsureDestUnderRoot("pg_wal/RECOVERYXLOG", root);
+        var history = FetchWalCommand.EnsureDestUnderRoot("pg_wal/00000002.history", root);
+        var absolute = FetchWalCommand.EnsureDestUnderRoot(
+            $"{FetchWalCommand.PgDataRoot}/pg_wal/RECOVERYXLOG", root);
+
+        // Assert — нормализованный полный путь остался под корнем
+        relative.Should().Be($"{FetchWalCommand.PgDataRoot}/pg_wal/RECOVERYXLOG");
+        history.Should().Be($"{FetchWalCommand.PgDataRoot}/pg_wal/00000002.history");
+        absolute.Should().Be($"{FetchWalCommand.PgDataRoot}/pg_wal/RECOVERYXLOG");
+    }
+
+    // AAA: dest вне корня данных — отказ (CWE-22): выход через «..» и
+    // абсолютный путь вне PGDATA — ArgumentException (RunAsync → exit 1).
+    [Fact]
+    public void EnsureDestUnderRoot_RejectsDestOutsideRoot()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            FetchWalCommand.EnsureDestUnderRoot("../../../../etc/passwd", FetchWalCommand.PgDataRoot));
+        Assert.Throws<ArgumentException>(() =>
+            FetchWalCommand.EnsureDestUnderRoot("pg_wal/../../etc/passwd", FetchWalCommand.PgDataRoot));
+        Assert.Throws<ArgumentException>(() =>
+            FetchWalCommand.EnsureDestUnderRoot("/etc/passwd", FetchWalCommand.PgDataRoot));
+        Assert.Throws<ArgumentException>(() =>
+            FetchWalCommand.EnsureDestUnderRoot("/tmp/seg", FetchWalCommand.PgDataRoot));
+    }
+
     /// <summary>Фейк IBackupS3 fetch-wal-прохода: программируемый исход GET
     /// (успех / not found / транспортная ошибка).</summary>
     private sealed class FakeFetchS3(Result outcome) : IBackupS3
