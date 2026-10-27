@@ -37,3 +37,5 @@ artifacts/
 
 # Логи багов (трек arch/roadmap/bugs.md) — в git не хранятся
 arch/roadmap/bugs/
+.mimosa/
+.my/
