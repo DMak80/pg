@@ -219,7 +219,11 @@ public sealed class RestoreOperation : IReceiverOperation
             // 8. Фаза recovering: pg_ctl start под uid/gid 101 (обёртка
             //    setpriv), unix-socket, сеть не слушает; env HOME=/tmp +
             //    S3-контекст fetch-wal (postgres наследует до
-            //    restore_command; секреты не в argv, Р13).
+            //    restore_command; секреты не в argv, Р13). Старт-ожидание
+            //    pg_ctl -t = бюджет восстановления: до консистентной точки
+            //    postgres качает сегменты fetch-wal-ом — под нагрузкой это
+            //    минуты, короткий литерал рвал операцию до поллинга
+            //    (arch/19 §3.5).
             phase = OperationPhases.Recovering;
             _registry.Update(new OperationSnapshot(
                 _request.BackupId, OperationStates.Running, phase));
@@ -228,7 +232,9 @@ public sealed class RestoreOperation : IReceiverOperation
             startPsi.ArgumentList.Add("/tmp/restore-pg.log");
             startPsi.ArgumentList.Add("-w");
             startPsi.ArgumentList.Add("-t");
-            startPsi.ArgumentList.Add("60");
+            startPsi.ArgumentList.Add(
+                Math.Max(_request.RecoveryTimeoutSec, 60).ToString(
+                    System.Globalization.CultureInfo.InvariantCulture));
             startPsi.ArgumentList.Add("-o");
             startPsi.ArgumentList.Add("-c listen_addresses='' -c unix_socket_directories='/tmp'");
             var (startExit, _, startErr) = await _runner.RunAsync(startPsi, token);
