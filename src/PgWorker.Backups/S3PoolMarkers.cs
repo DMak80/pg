@@ -15,4 +15,9 @@ public static class S3PoolMarkers
 /// BackupsRuntimeOptions.</summary>
 public sealed record S3ClientOptions(
     string Endpoint, string Bucket, string AccessKey, string SecretKey,
-    string? Region = null, string? CaBundlePath = null);
+    string? Region = null, string? CaBundlePath = null,
+    // Внутренние ретраи S3-клиента на транспорт: null — дефолт AWSSDK (несколько
+    // попыток с паузами). Пути с СВОЕЙ ретрай-политикой (fetch-wal, arch/19 §3.5)
+    // выключают их (0) — иначе клиентские ретраи × пер-запросный таймаут ×
+    // собственные попытки растягивают один вызов до минут на мёртвой ноде.
+    int? MaxErrorRetry = null);

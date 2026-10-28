@@ -107,6 +107,8 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
             AuthenticationRegion = options.Region,
             Timeout = timeout,
         };
+        if (options.MaxErrorRetry is { } retries)
+            config.MaxErrorRetry = retries;
         // Доверие CA https S3-endpoint (t42, spec §5 fallback): AWSSDK.Core env
         // AWS_CA_BUNDLE не читает (доказано E2E t42) — per-install CA доверяется
         // фабрикой HttpClient. Путь не задан (http-endpoint) — прежнее поведение.

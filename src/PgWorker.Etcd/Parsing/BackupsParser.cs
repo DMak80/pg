@@ -449,10 +449,30 @@ public static class BackupsParser
                 return null;
             }
 
+            // t24 (arch/19 §4): границы RPO-зазора tli-прыжка — обязательны для
+            // СНАПШОТНОГО чтения (планировщик переснимает полный по
+            // walGapUncovered из снапшота, arch/19 §2). Прогон t097
+            // (2026-10-27): снапшотный парсер Gap терял — живой непокрытый
+            // зазор для планировщика не существовал, пересъём не планировался
+            // (wal-ключ вечно DEGRADED+gap), а WalStreamProcess (свой парсер)
+            // метку удерживал — расхождение «контроль видит gap, планировщик
+            // нет».
+            WalGapState? gap = null;
+            if (root.TryGetProperty("gap", out var gapEl)
+                && gapEl.ValueKind == JsonValueKind.Object)
+            {
+                var from = ReadString(gapEl, "from");
+                var to = ReadString(gapEl, "to");
+                var tli = ReadLong(gapEl, "tli");
+                if (from is { Length: > 0 } && to is { Length: > 0 } && tli is { } gapTli)
+                    gap = new WalGapState(from, to, (uint)gapTli);
+            }
+
             return new WalStreamState(
                 state.Value, slot, masterNode, chainStart, lastReceived,
                 lastUploaded, lastUploadedUnix,
-                ReadLong(root, "lag_segments"), ReadString(root, "error"));
+                ReadLong(root, "lag_segments"), ReadString(root, "error"),
+                Gap: gap);
         }
         catch (JsonException)
         {

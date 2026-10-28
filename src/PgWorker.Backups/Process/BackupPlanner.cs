@@ -69,22 +69,33 @@ public static class BackupPlanner
     }
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
-    // COMPLETED с verify=FAILED; окно = min(BaseSec·2^(n−1), MaxSec) от последней
-    // попытки (max started_unix после последнего валидного); n = 0 → без задержки.
+    // COMPLETED с verify=FAILED + НЕпокрывшие COMPLETED (uncovered — предикат
+    // вызывающего: wal_start ниже границы разрыва; arch/19 §2 антишторм t097:
+    // пока redo/restart-точка источника не перешла границу зазора, повторный
+    // полный снимается с той же позиции — без пользы; считать попыткой —
+    // окно растёт). Окно = min(BaseSec·2^(n−1), MaxSec) от последней попытки
+    // (max started_unix после последнего валидного); n = 0 → без задержки.
     public static bool BackoffPassed(
-        IReadOnlyList<FullBackupState> fulls, int baseSec, int maxSec, long nowUnix)
+        IReadOnlyList<FullBackupState> fulls, int baseSec, int maxSec, long nowUnix,
+        Func<FullBackupState, bool>? uncovered = null)
     {
+        // Непокрывший COMPLETED сам валиден — исключён из «последнего валидного»
+        // (иначе последний ретейк гасит собственный бэкофф: его попытка в tail
+        // не попадает — t097-шторм именно на этом сценарии).
         var lastValidStarted = fulls
-            .Where(IsValid)
+            .Where(f => IsValid(f) && !(uncovered?.Invoke(f) ?? false))
             .Select(f => (long?)f.StartedUnix)
             .Max() ?? long.MinValue;
-        var tail = fulls.Where(f => f.StartedUnix > lastValidStarted).ToList();
-        var failures = tail.Count(f =>
-            f.State == FullBackupStatus.Failed || f.Verify is { State: BackupVerifyStatus.Failed });
+        var attempts = fulls
+            .Where(f => f.StartedUnix > lastValidStarted || (uncovered?.Invoke(f) ?? false))
+            .ToList();
+        var failures = attempts.Count(f =>
+            f.State == FullBackupStatus.Failed || f.Verify is { State: BackupVerifyStatus.Failed }
+            || (uncovered?.Invoke(f) ?? false));
         if (failures == 0)
             return true;
 
-        var lastAttempt = tail.Max(f => f.StartedUnix);
+        var lastAttempt = attempts.Max(f => f.StartedUnix);
         var delaySec = Math.Min((long)baseSec << Math.Min(failures - 1, 30), maxSec);
         return nowUnix >= lastAttempt + delaySec;
     }

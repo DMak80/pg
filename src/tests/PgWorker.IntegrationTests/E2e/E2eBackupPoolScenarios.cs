@@ -587,14 +587,35 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
             // Act B — список [node1]: рестарт воркера (policy перечитывается стартом —
-            // детерминизм без надежды на revise на лету; приёмники сами меняют цель
-            // по etcd-policy, t25), стоп node1 → исчерпание: DEGRADED + маркер;
-            // подъём → ACTIVE.
+            // детерминизм без надежды на revise на лету), стоп node1 → исчерпание:
+            // DEGRADED + маркер; подъём → ACTIVE.
             await app.DisposeAsync();
             await PutPolicyAsync(cluster, ["node1"], ["node2"]);
+            // Рецикл подключения приёмников (воркер ВНИЗ — его стартовый del
+            // ключа не помешает): write-список резолвится ТОЛЬКО на цикле
+            // подключения (arch/19 §3 — новая сессия), а живые сессии Act A
+            // стримят со старым списком [node1,node2] — исчерпания списка
+            // [node1] без рецикла не случится. Форсируем новую сессию
+            // легитимным arch-гейтом: put /pgworker/backups-disabled → сессии
+            // чисто завершаются (StopGateProbe ≤ 5 c, Reconnect) →
+            // waiting_disabled → delete → цикл подключения резолвит targets
+            // заново, уже [node1].
+            await G.PutAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, "1", null, ct);
+            var paused = await E2eFixture.WaitForAsync(async () =>
+            {
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count >= 2 && facts.All(f => f.State == "waiting_disabled");
+            }, TimeSpan.FromSeconds(120), ct);
+            paused.Should().BeTrue("receivers paused by the backups-disabled gate");
+            await G.DeleteAsync(Endpoint, PgWorker.Backups.BackupsDisabledGate.Key, prefix: false, ct);
             var app2 = await StartPoolHostAsync("pac4b", ct);
             await using var app2Owner = app2;
-            (await WaitBothWalAgentsAsync(cluster, ct)).Should().BeTrue("agents with the new env are raised");
+            var reconnected = await E2eFixture.WaitForAsync(async () =>
+            {
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count >= 2 && facts.All(f => f.State == "streaming");
+            }, TimeSpan.FromSeconds(120), ct);
+            reconnected.Should().BeTrue("receivers opened new sessions with the [node1] write list");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
             var degraded = await E2eFixture.WaitForAsync(async () =>
             {
@@ -756,12 +777,38 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             var done = await WaitCompletedFullAsync(cluster, ct);
             done.Should().NotBeNull();
 
-            // Act — mirror содержимого bucket node1 → node2, затем стоп node1.
-            var ep1 = HostPort(Fx.S3Endpoint);
-            await Fx.RunMcAsync(
-                $"mc alias set s http://{ep1} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                + $" && mc alias set d http://{ep2} {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                + $" && mc mirror --overwrite s/{Bucket} d/{Bucket}", TimeSpan.FromMinutes(5), ct);
+            // Act — копия bucket node1 → node2, затем стоп node1.
+            // Прогон t100-3…7 (2026-10-27): S3→S3 копии (mc mirror/cp --recursive)
+            // под параллельной записью приёмника СТАБИЛЬНО теряли объекты набора
+            // (корневые backup_manifest/label на node2 отсутствовали, mc exit 0) —
+            // restore закономерно FAILED «no backup_manifest». Прямая проверка
+            // показала: чистый ownS3 с той же data LIST/STAT/GET манифеста
+            // отдаёт — S3-API ownS3 корректен; дефект в S3→S3-копировании под
+            // конкурентной записью. Копия — ЧЕРЕЗ ФС (docker cp контейнер→контейнер,
+            // мимо S3-API); restore читает node2 через S3-API, как в проде.
+            var node2Container = Fx.ExtraS3NodeContainerName(Node2Alias);
+            // tar-пайп контейнер→контейнер (docker cp … - | docker exec -i tar -x):
+            // без host-файлов (docker cp на macOS раскладывал host-копию
+            // непредсказуемо — прогон t100-11) и с чисткой целевого корня: слияние
+            // со собственными объектами node2 даёт смешанные каталоги, на которых
+            // LIST ownS3 отдаёт 500 (t100-9). У node2 собственных записей нет:
+            // write-списки пула — [node1].
+            await E2eFixture.RunProcessAsync("sh", ["-c",
+                $"docker cp {Fx.S3NodeContainerName}:/data/pgworker-backups -"
+                + $" | docker exec -i {node2Container} sh -c"
+                + $" 'rm -rf /data/pgworker-backups && mkdir -p /data/pgworker-backups && tar -xf - -C /data/pgworker-backups'"], ct);
+            // ownS3 индексирует /data при СТАРТЕ (прогон t100-8: fs-файлы, дописанные
+            // в живой контейнер, S3-API не видны; чистый ownS3, стартовавший с той же
+            // data, LIST/STAT/GET манифеста отдаёт) — рестарт переиндексирует копию.
+            await Fx.RunDockerAsync(["restart", node2Container], ct);
+            // Манифест на node2 — ассерт ДО стопа node1 (канон e2e-launch): fs-факт
+            // (xl.meta объекта) — ownS3-API поверх него проверен чистым ownS3.
+            var fullId = done.Key.Split('/').Last();
+            var manifestOnNode2 = await Fx.RunDockerAsync(["exec", node2Container, "sh", "-c",
+                $"test -f /data/pgworker-backups/{Bucket}/{cluster}/shard1/full/{fullId}/backup_manifest/xl.meta"
+                + " && echo PRESENT || echo MISSING"], ct);
+            manifestOnNode2.Trim().Should().Be("PRESENT",
+                "the mesh copy must carry the backup manifest before node1 is stopped");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).

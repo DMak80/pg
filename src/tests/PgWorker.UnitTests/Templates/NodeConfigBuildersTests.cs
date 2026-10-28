@@ -141,7 +141,18 @@ public class NodeConfigBuildersTests
         spilo.Should().NotContain("listen");
         // bootstrap-секция не изменена (restapi — дополнение, не замена)
         spilo.Should().Contain("bootstrap:");
+        // callbacks — в ЛОКАЛЬНОЙ postgresql-секции (Patroni мержит локальную
+        // postgresql поверх динамической ключ-за-ключом: Spilo-дефолт callbacks
+        // из шаблона целиком заменяет DCS-свой — в bootstrap.dcs наш скрипт
+        // молча не работает); локальная секция идёт ДО bootstrap.
+        var callbacksIdx = spilo.IndexOf("postgresql:", StringComparison.Ordinal);
+        var bootstrapIdx = spilo.IndexOf("bootstrap:", StringComparison.Ordinal);
+        callbacksIdx.Should().BePositive("the local postgresql section must exist");
+        callbacksIdx.Should().BeLessThan(bootstrapIdx, "callbacks live in the LOCAL postgresql section, not bootstrap.dcs");
+        spilo.Should().Contain("on_start: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
         spilo.Should().Contain("on_role_change: /opt/pgw-tools/pgwnodetool master-lease --env-file /home/postgres/pgw-node.env");
+        spilo.Should().NotContain("dcs.postgresql.callbacks",
+            "callbacks must not be under bootstrap.dcs (Spilo default overrides it)");
     }
 
     [Fact]

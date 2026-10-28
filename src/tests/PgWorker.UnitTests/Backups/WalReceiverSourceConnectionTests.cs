@@ -246,7 +246,7 @@ public class WalReceiverSourceConnectionTests
 
         public Task SendStatusUpdate(CancellationToken ct) => Task.CompletedTask;
 
-        public Task<TimelineHistoryFile> TimelineHistory(uint tli, CancellationToken ct)
+        public Task<byte[]?> TimelineHistory(uint tli, CancellationToken ct)
             => throw new NotSupportedException("fake: history is not needed in these tests");
 
         public ValueTask DisposeAsync()

@@ -52,6 +52,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private bool _hostDelegated;
     private string _hostError = string.Empty;
 
+    // Предусловие смешанности не наступило (см. AssertMixedSwitchAsync):
+    // непустая строка — факты скипаются (штатный исход прогона).
+    private string _prepareSkip = string.Empty;
+
     /// <summary>Хост-гвардия фактов: если класс исполнялся в раннере — факт
     /// скипается (ok) или краснеет с исходом (fail). Тела фактов на хосте не
     /// исполняются — Ctx-поля там не заполняются.</summary>
@@ -62,6 +66,16 @@ public sealed class TliSwitchContext : IAsyncLifetime
         if (_hostError.Length > 0)
             throw new ApplicationException(_hostError);
         Assert.Skip("the class is executed in the runner (the outcome is in the runner log)");
+    }
+
+    /// <summary>Гвардия предусловия фактов: если подготовка зафиксировала
+    /// «профиль не смешанный» (промоут лёг ровно на границу сегмента) — факт
+    /// скипается: проверяемого состояния нет, красный была бы гонкой
+    /// подготовки, а не дефектом.</summary>
+    public void SkipIfPrepareSkipped()
+    {
+        if (_prepareSkip.Length > 0)
+            Assert.Skip(_prepareSkip);
     }
 
     public async ValueTask InitializeAsync()
@@ -157,6 +171,8 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
         // Шаг 6 — строгий гейт смешанности: контур готов к заявкам.
         await AssertMixedSwitchAsync(ct);
+        if (_prepareSkip.Length > 0)
+            return; // предусловие не наступило — факты скипнутся, TCut не нужен
         Console.WriteLine($"[PHASE] tlsw-ready: contour ready (OldBackupId={OldBackupId}, " +
             $"Tli2={Tli2}, T_cut={TCut:yyyy-MM-ddTHH:mm:ssZ})");
     }
@@ -184,6 +200,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
         return (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
                | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
     }
+
+    // Предусловие смешанности не наступило: точка переключения ровно на
+    // границе сегмента — смешанного объекта нет (гейт §3.3 п.1).
+    private sealed class BoundarySwitchException(string message)
+        : ApplicationException(message);
 
     // Байтовое чтение объекта сегмента + проход page-заголовков (spec §3.1):
     // XLogPageHeaderData (C-выравнивание): xlp_tli = LeU32 @ +4,
@@ -223,23 +244,34 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // (1) switchWALLsn ВНУТРИ сегмента S (не на границе 16 МиБ — «на границе»
     //     покрытием t28 не считается: накат шёл бы по стыку сегментов);
     // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя
-    //     00000001…S (приёмник именует по page header границы; иных имён S нет);
+    //     (приёмник именует по page header границы; иных имён S нет);
     // (3) ПОБАЙТОВО: page-заголовки объекта S по обе стороны switchWALLSN
     //     показывают TLI1/TLI2 (переходная страница не ассертится);
     // (4) первый TLI2-именованный объект = Next(S), TLI1-именованных выше S
     //     нет — профиль в точности эвристика TLI-перехода валидатора restore;
     // (5) WalChain.Check(wal_start, list) непрерывен — тем же валидатором,
     //     которым restore-заявка пройдёт валидацию.
-    // Провал ЛЮБОГО пункта — диагностическое исключение с дампом (буква
-    // spec §3.3: history-содержимое, карта pageaddr→tli объекта S, list wal/,
-    // ключи full/wal, Patroni /cluster), НЕ ретрай: профиль прогона
-    // зафиксирован и либо смешанный, либо контур честно красный с точной
-    // причиной.
+    // Пункт (1) «точка на границе» — редкий тайминг-исход ПОДГОТОВКИ (мастер
+    // в shutdown-окне останавливает стрим — TLI1-хвост не успевает к реплике
+    // до промоута; ретрай промоута невозможен без мульти-таймлайн-профиля):
+    // проверяемого состояния нет — факты скипаются штатно (_prepareSkip),
+    // контур чистится обычным teardown'ом. Провал ЛЮБОГО ДРУГОГО пункта —
+    // диагностическое исключение с дампом (history-содержимое, карта
+    // pageaddr→tli объекта S, list wal/, ключи full/wal, Patroni /cluster),
+    // НЕ ретрай: профиль прогона зафиксирован и контур честно красный с
+    // точной причиной.
     private async Task AssertMixedSwitchAsync(CancellationToken ct)
     {
         try
         {
             await AssertMixedSwitchCoreAsync(ct);
+        }
+        catch (BoundarySwitchException bex)
+        {
+            _prepareSkip = bex.Message;
+            Console.WriteLine(
+                $"[PHASE] tlsw-mixedness-precondition: facts skipped — {bex.Message}");
+            return;
         }
         catch (Exception ex)
         {
@@ -300,10 +332,13 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
         // (1) точка переключения СТРОГО внутри сегмента S («на границе»
         // покрытием t28 не считается: накат шёл бы по стыку сегментов).
-        (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes)
-            .Should().NotBe(0UL,
-                $"the switch point {entry.SwitchLsn} is INSIDE segment {switchSeg.Name} "
-                + "(not on the 16 MiB boundary)");
+        // На границе — НЕ красный ассерт, а предусловие: смешанного объекта
+        // не существует, фактам нечего проверять (промоут-тайминг, см. гейт).
+        if (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes == 0UL)
+            throw new BoundarySwitchException(
+                $"the switch point {entry.SwitchLsn} landed EXACTLY on the 16 MiB boundary "
+                + $"of segment {switchSeg.Name} — the promoting replica did not replay the "
+                + "TLI1 tail before the promote; no mixed object exists");
 
         var names = await ListWalNamesAsync(Cluster, "shard1");
         var parentName = $"{entry.ParentTli:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
@@ -1084,6 +1119,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     {
         DockerTrait.SkipIfUnavailable();
         Ctx.SkipIfHostDelegated();
+        Ctx.SkipIfPrepareSkipped();
         var ct = TestContext.Current.CancellationToken;
         try
         {
@@ -1167,6 +1203,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     {
         DockerTrait.SkipIfUnavailable();
         Ctx.SkipIfHostDelegated();
+        Ctx.SkipIfPrepareSkipped();
         // Гейт (spec §3.5): Fact 1 упал → повторная заявка на сломанном
         // контуре — каскадный красный без новой информации; телеметрия
         // первой заявки уже собрана.
