@@ -1187,10 +1187,48 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         return JsonSerializer.Deserialize<T>(text, Json);
     }
 
-    // Pull образа (POST /images/create): гарантирует наличие образа перед
-    // повторным create (pull-fallback §7.2).
-    internal Task PullImageAsync(string imageName, CancellationToken ct)
-        => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
+    // Pull образа (POST /images/create) — долгая операция: поллинг-цикл
+    // идемпотентных итераций (arch/14 §6, образец StopContainerAsync).
+    // Пер-попыточный клиентский таймаут итерации меньше длительности загрузки —
+    // обрыв итерации НЕ неудача: демон продолжает загрузку (завершённые слои
+    // кэшированы), следующая итерация повторяет запрос. Бюджет — порог сноса
+    // (30 с, arch/14 §6); факт = 2xx ответа. Не-2xx (образ не найден, registry
+    // недоступен) — DockerHttpException немедленно (путь в сообщении — по нему
+    // диагностируется pull-fallback §7.2); бюджет без факта → Failed, путь
+    // в тексте.
+    internal async Task PullImageAsync(string imageName, CancellationToken ct)
+        => await PullImageAsync(imageName, ct, PullBudget);
+
+    // Бюджет pull-цикла — порог сноса (arch/14 §6, единый для долгих фаз):
+    // 4 итерации по пер-попыточному таймауту; исчерпание — transient-фейл
+    // тика (повтор ПРОЦЕССОМ, канон arch/14 §6). Тестовое окно — internal-
+    // перегрузка (прецедент DockerEngineFactory.Create).
+    internal static readonly TimeSpan PullBudget = TimeSpan.FromSeconds(30);
+
+    internal async Task PullImageAsync(string imageName, CancellationToken ct, TimeSpan budget)
+    {
+        var path = $"/images/create?fromImage={Uri.EscapeDataString(imageName)}";
+        var elapsed = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, path, ct: ct);
+                return; // демон вернулся из pull — образ на хосте
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Клиентский таймаут итерации: загрузка продолжается в демоне —
+                // повторяем идемпотентный POST в бюджете поллинга.
+                Console.Error.WriteLine(
+                    $"[docker] pull {imageName}: client timeout after {elapsed.Elapsed.TotalSeconds:F1}s, retrying (budget {budget.TotalSeconds:F0}s)");
+            }
+
+            if (elapsed.Elapsed >= budget)
+                throw new ApplicationException(
+                    $"pull of image {imageName} did not complete within {budget.TotalSeconds:F0}s ({path})");
+        }
+    }
 
     public ValueTask DisposeAsync()
     {

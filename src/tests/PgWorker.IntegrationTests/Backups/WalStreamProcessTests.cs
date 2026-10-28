@@ -913,6 +913,15 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var journalUnix1 = System.Text.Json.JsonDocument.Parse(journal1.Value!.Value)
             .RootElement.GetProperty("updated_unix").GetInt64();
         clock.Now = clock.Now.AddSeconds(600);
+        // Прод-семантика снапшота (arch/19 §4, ReconcileLoop): бэкап-префикс
+        // перечитывается из etcd КАЖДЫЙ тик — тик 2 обязан видеть gap, записанный
+        // тиком 1; статичный снапшот с прежним wal-ключом эмулировал бы
+        // несуществующий в проде путь «установка gap повторно» (повторная
+        // journal-фаза на каждом тике).
+        var walWithGap = (await ReadWal(cluster))!;
+        walWithGap.Gap.Should().NotBeNull("tick 1 must have persisted the gap");
+        backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new(FullShard("000000010000000000000001").Full, walWithGap) });
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
         var raw2 = await ReadRawWal(cluster);
         var journal2 = await fixture.Gateway.GetAsync(
