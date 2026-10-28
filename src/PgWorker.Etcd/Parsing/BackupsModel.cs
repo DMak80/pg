@@ -72,12 +72,19 @@ public sealed record BackupPolicyS3(
 /// <param name="DrillIntervalDays">Период дрилов шардов кластера, суток
 /// (reliability t02, arch/19 §4); 0 — дрилл кластера выключен; null — поля
 /// нет в policy-ключе → дефолт конфига подставляет потребитель.</param>
+/// <param name="GarbageMinAgeSec">Возрастной гейт мусора супервизора (arch/19
+/// §4 «Гейты мусора»): минимальный возраст самого старого объекта S3-префикса
+/// `full/&lt;id&gt;/`, прежде чем префикс без etcd-ключа сочтётся удаляемым
+/// мусором (защита заливающегося полного от устаревшего снапшота тика);
+/// null — поля нет в policy-ключе → дефолт конфига подставляет потребитель;
+/// 0 — гейт снят.</param>
 /// <param name="S3">Секция s3 (t36): null — пул не выбран (отсутствие/битая
 /// секция — подсистема кластера не пишет и не читает, arch/19 §4).</param>
 public sealed record BackupPolicy(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null,
     int? DrillIntervalDays = null,
+    long? GarbageMinAgeSec = null,
     BackupPolicyS3? S3 = null);
 
 /// <summary>Результат проверки полного: состояние + время последней проверки;

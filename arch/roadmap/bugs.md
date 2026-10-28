@@ -26,35 +26,6 @@
 
 ## Задачи
 
-- **`t100-restore-pgctl-start-timeout`** — E2E
-  `PgWorker.IntegrationTests.E2e.PoolReadAnyNodeScenarios.Pool_ReadAnyNode_RestoreAfterNodeStop`:
-  два слоя починены (ветка `bugs`, коммиты `2ce80837`, `1bedcd26`), вскрыт
-  следующий слой — надёжность записи ownS3 под конкурентной нагрузкой.
-  Слой 1 (pg_ctl-бюджет, arch/19 §3.5): старт-ожидание `pg_ctl start -w -t`
-  = `recovery_timeout_sec` операции, не литерал — postgres достигает
-  готовности при медленном recovery. Слой 2 (fetch-wal, arch/19 §3.5):
-  вызов restore_command укладывается в жёсткий дедлайн 45 c (внутренние
-  ретраи S3-клиента выключены — `MaxErrorRetry:0`, ретраит сам fetch-wal
-  3×2 с): прежде мёртвая нода пула растягивала КАЖДЫЙ вызов до минут
-  (клиентские ретраи × пер-запросный таймаут × перебор мёртвой ноды),
-  целевое восстановление не доходило до «исчерпание архива → promote» и
-  операция висела RUNNING до сноса; изолирующий эксперимент на снятой
-  pgdata (docker export → postgres 18 в изоляции) показал: с мгновенно
-  отказывающим restore_command промоут за 6 мс — механика PG исправна.
-  Вскрытый слой: приёмник отдаёт PUT 200 при частичной фактической записи
-  (первый полный: etcd COMPLETED «files=1299», в ФС ~1009 объектов,
-  корневые backup_manifest/backup_label отсутствуют) и LIST 500 при
-  конкурентных изменениях (прогон t100-9: рестарт node2 после fs-копии —
-  ListObjectsV2 500); следствие — restore «из пула при мёртвой node1»
-  закономерно FAILED «no backup_manifest» (валидация RestoreProcess).
-  Сцена-копия node1→node2 переведена на ФС-путь (docker cp tar-пайп с
-  чисткой целевого корня и рестартом node2, fs-ассерт манифеста до стопа
-  node1 — E2eBackupPoolScenarios) и честно падает на недопоставке
-  хранилища. Разбор — в ../OwnS3 (конкурентный PUT/LIST); телеметрия:
-  `/tmp/pgw_t100_run3_artifacts`, `/tmp/pgw_t100_run10_artifacts`
-  (docker-логи контуров). Команда:
-  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
-  -c Release --no-build --nologo --filter "FullyQualifiedName~PoolReadAnyNodeScenarios"`.
 - **`t03-docker-image-pull-timeout`** — таймаут HttpClient 7,5 с на
   `/images/create` под нагрузкой серии:
   `PgWorker.IntegrationTests.Docker.EngineSupersetTests.CreateContainer_MissingImage_PullsAndRetries`

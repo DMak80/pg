@@ -14,7 +14,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + tool-контейнеры образа нод (t26) + живой кластер воркером с Backups:Enabled=true.
+// + drill-операции в приёмнике WalReceiver первой ноды (arch/19 §3.6) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
@@ -109,17 +109,6 @@ public class E2eDrillScenarios
         var nodes = await Fx.RunDockerAsync(
             ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-shard1-"], ct);
         nodes.Length.Should().BeGreaterThan(0, "the drill does not dismantle the prod nodes of the shard (state RUNNING)");
-
-        // Assert — контейнер и volume дрилла отсутствуют (ассерт чистоты, AC4/AC2)
-        var cleaned = await E2eFixture.WaitForAsync(async () =>
-        {
-            var containers = await Fx.RunDockerAsync(
-                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-            var volumes = await Fx.RunDockerAsync(
-                ["volume", "ls", "-q", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-            return containers.Length == 0 && volumes.Length == 0;
-        }, TimeSpan.FromSeconds(60), ct);
-        cleaned.Should().BeTrue("the drill contour is torn down after the outcome");
 
         // Assert — оба парсера без ошибок; панельные правила молчат на успехе (AC5)
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
@@ -323,11 +312,6 @@ public class E2eDrillScenarios
             .And.Contain(found!, "the gap boundary — the found segment")
             .And.NotContain("phase", "no job — a clean outcome");
 
-        // Assert — контейнеров дрилла нет вовсе (джоб не запускался).
-        var containers = await Fx.RunDockerAsync(
-            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-drill-{cluster}-"], ct);
-        containers.Should().BeEmpty("the job did not run — the validation refusal");
-
         // Assert — панельный алерт провала горит на фактических kvs кластера.
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var panelCluster = AdminPanel.Etcd.Parsing.BackupsParser.Parse(kvs)
@@ -357,7 +341,7 @@ public class E2eDrillScenarios
     // AAA (AC1/AC3/AC4): первый дрилл стартует сам после COMPLETED-полного,
 
     // Воркер с включённой подсистемой бэкапов: S3 на ownS3-ноду,
-    // tool-контейнеры образа нод (t26), ускоренный бэкофф.
+    // drill-операция — в приёмнике первой ноды (arch/19 §3.6), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)

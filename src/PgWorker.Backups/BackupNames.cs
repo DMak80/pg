@@ -1,8 +1,9 @@
 namespace PgWorker.Backups;
 
 // Канонические имена подсистемы бэкапов (arch/19 §2/§4): ключи etcd пишет
-// ТОЛЬКО воркер под клэймом <C>; имена docker-объектов детерминированы —
-// takeover-инстанс находит джоб по имени. t03 добавляет имя слота WAL-агента.
+// ТОЛЬКО воркер под клэймом <C>. t03 добавляет имя слота WAL-агента.
+// Docker-имён джобов бэкапов больше нет (t26+): все операции исполняют
+// приёмники WalReceiver нод (§2/§3.5/§3.6/§5).
 public static class BackupNames
 {
     public static string ClusterPrefix(string cluster) => $"/pgworker/backups/{cluster}/";
@@ -15,40 +16,10 @@ public static class BackupNames
     public static string RestoreKey(string cluster, string shard, string id)
         => $"/pgworker/backups/{cluster}/{shard}/restore/{id}";
 
-    /// <summary>Имя restore-джоба (t05): pgw-backup-restore-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; —
-    /// попадает в D1-префикс чистки pgw-backup-*.</summary>
-    public static string RestoreContainerName(string cluster, string shard, string id)
-        => $"pgw-backup-restore-{cluster}-{shard}-{id}";
-
-    // t04: имена verify-джоба — детерминированы (супервиз takeover-инвариантен);
-    // контейнер и volume — одно имя (volume ephemeral, чистится после итога).
-    public static string VerifyContainerName(string cluster, string shard, string id)
-        => $"pgw-backup-verify-{cluster}-{shard}-{id}";
-
-    public static string VerifyVolumeName(string cluster, string shard, string id)
-        => $"pgw-backup-verify-{cluster}-{shard}-{id}";
-
-    public static string VerifyJobContainerPrefix(string cluster) => $"pgw-backup-verify-{cluster}-";
-
     /// <summary>Ключ дрилла шарда (reliability t02, arch/19 §4):
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill — один на шард.</summary>
     public static string DrillKey(string cluster, string shard)
         => $"/pgworker/backups/{cluster}/{shard}/drill";
-
-    /// <summary>Имя drill-джоба (reliability t02, arch/19 §3.6):
-    /// pgw-backup-drill-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; — D1-префикс pgw-backup-*,
-    /// супервиз takeover-инвариантен.</summary>
-    public static string DrillContainerName(string cluster, string shard, string id)
-        => $"pgw-backup-drill-{cluster}-{shard}-{id}";
-
-    /// <summary>Volume drill-джоба = имя контейнера (одно имя — D1 сносит
-    /// оба проходом по префиксу, arch/19 §3.6).</summary>
-    public static string DrillVolumeName(string cluster, string shard, string id)
-        => DrillContainerName(cluster, shard, id);
-
-    /// <summary>Префикс drill-джобов кластера для чистки D1.</summary>
-    public static string DrillJobContainerPrefix(string cluster)
-        => $"pgw-backup-drill-{cluster}-";
 
     /// <summary>Слот приёмника WAL шарда (t03, arch/19 §3): pgw_bkp_&lt;C&gt;_&lt;X&gt;;
     /// длиннее NAMEDATALEN(63) → pgw_bkp_ + sha1("&lt;C&gt;/&lt;X&gt;")[:16] (усечение без

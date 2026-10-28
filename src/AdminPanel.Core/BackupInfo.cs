@@ -13,8 +13,8 @@ public sealed record ShardVerifyFailure(string Shard, string Id, string Error, l
 
 /// <summary>Статус дрилла шарда (reliability t02, ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill):
 /// панель читает, панель в etcd не пишет (пишет воркер под клэймом). Phase —
-/// downloading|recovering|cleaning; снятая фаза у терминального = контур
-/// подтверждённо снесён.</summary>
+/// downloading|recovering; снятая фаза у терминального = чистый итог
+/// (scratch чистит приёмник при любом исходе, arch/19 §3.6).</summary>
 public sealed record DrillInfo(
     string Cluster, string Shard, string Id, string State, string BackupId,
     long StartedUnix, long? FinishedUnix, string? Phase, string? RestoredToLsn, string? Error);

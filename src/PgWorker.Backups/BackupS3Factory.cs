@@ -1,13 +1,20 @@
+using System.Collections.Concurrent;
 using PgWorker.Etcd.S3;
 using Shared.Core;
 
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Фабрика per-cluster пула-клиента (t36): резолв policy+пула (резолвер) + кэш
-/// контекста на тик НЕ нужен — создание per-вызов, dispose вызывающим (кэш
-/// клиентов per-цели внутри PoolBackupS3). restore/глобальные проходы —
-/// по имени пула напрямую (CreateForPoolAsync: write=read=все ноды).
+/// Фабрика per-cluster пула-клиента (t36): резолв policy+пула (резолвер) +
+/// КЭШ пул-клиентов per-контекст (arch/19 §5 «Кэш пул-клиентов»): клиент
+/// живёт в фабрике ДО КОНЦА ПРОЦЕССА, пока не сменился контекст пула
+/// (endpoints/креды/bucket/CA) — circuit-breaker-стейт отказных целей
+/// переживает тики: недоступная нода пула оплачивает свой S3-таймаут один
+/// раз за breaker-окно, а не в каждом тике каждой врезки (per-тик клиент
+/// делал бы тик ~35 c из 5 c при мёртвой ноде пула). Вызывающие получают
+/// кэшированный инстанс и НЕ диспоузят его (dispose — no-op семантика:
+/// владелец — фабрика). restore/глобальные проходы — по имени пула напрямую
+/// (CreateForPoolAsync: write=read=все ноды), тем же кэшем.
 /// </summary>
 public sealed class BackupS3Factory(
     BackupPoolResolver resolver,
@@ -15,23 +22,37 @@ public sealed class BackupS3Factory(
     Func<string> bucket,
     Func<string?> caBundlePath,
     TimeSpan requestTimeout,
-    Func<string, IBackupS3>? targetFactory = null)
+    Func<string, IBackupS3>? targetFactory = null,
+    TimeSpan? breakerWindow = null)
 {
+    private readonly ConcurrentDictionary<string, PoolBackupS3> _cache = new();
+
     /// <summary>Пасс-through резолв для процессов: контекст списков до создания
     /// клиента (гварды policy.s3 / waiting-backup-pool — у вызывающего).</summary>
     public Task<Result<BackupPoolContext?>> ResolveAsync(string cluster, CancellationToken ct)
         => resolver.ResolveAsync(cluster, ct);
 
-    /// <summary>Пул-клиент из резолвнутого контекста (создание per-вызов,
-    /// dispose вызывающим; клиенты per-цели кэшируются внутри PoolBackupS3).
-    /// Чтение — ВСЕГДА ReadAll (все ноды пула, arch/19 §5 «где данные есть»):
-    /// write-реплика — не read-список (per-cluster клиент обслуживает контроль/
-    /// verify/restore — перебор чтения обязан доходить до живой ноды пула).</summary>
+    /// <summary>Пул-клиент из резолвнутого контекста — КЭШИРОВАННЫЙ
+    /// (владелец — фабрика; вызывающий НЕ диспоузит). Чтение — ВСЕГДА ReadAll
+    /// (все ноды пула, arch/19 §5 «где данные есть»): write-реплика — не
+    /// read-список (per-cluster клиент обслуживает контроль/verify/restore —
+    /// перебор чтения обязан доходить до живой ноды пула).</summary>
     public PoolBackupS3 Create(BackupPoolContext ctx)
+    {
+        // Ключ контекста: смена любого входа (ноды списков, креды, bucket, CA)
+        // даёт новый клиент; прежний живёт до конца процесса (единицы клиентов).
+        var key = string.Join("|", ctx.Pool, ctx.AccessKey, ctx.SecretKey, bucket(),
+            caBundlePath() ?? "", string.Join(",", ctx.WriteMaster), string.Join(",", ctx.ReadAll));
+        return _cache.GetOrAdd(key, _ => Build(ctx));
+    }
+
+    // Сборка нового клиента (вне замка кэша — GetOrAdd может звать фабрику
+    // делегата повторно; лишний клиент просто не попадёт в кэш).
+    private PoolBackupS3 Build(BackupPoolContext ctx)
         => new(
             ctx.WriteMaster.ToList(), ctx.ReadAll.ToList(),
             ctx.AccessKey, ctx.SecretKey, bucket(), caBundlePath(),
-            requestTimeout,
+            requestTimeout, breakerWindow: breakerWindow,
             targetFactory: targetFactory ?? (uri => new BackupS3(
                 new S3ClientOptions(uri, bucket(), ctx.AccessKey, ctx.SecretKey,
                     CaBundlePath: caBundlePath()),
@@ -55,7 +76,7 @@ public sealed class BackupS3Factory(
 
     /// <summary>Пул-клиент по имени (restore source_pool, глобальные сверки):
     /// write=read=все ноды пула (порядок endpoints); контекст — списки env
-    /// джобов чтения.</summary>
+    /// джобов чтения; клиент — тем же кэшем (breaker переживает тики).</summary>
     public async Task<Result<(PoolBackupS3 Client, BackupPoolContext Context)>> CreateForPoolAsync(
         string pool, CancellationToken ct)
     {
@@ -78,12 +99,8 @@ public sealed class BackupS3Factory(
         // Адреса чтения — portalloc-пары в порядке endpoints, http-URI (тот же
         // резолв, что в резолвере; endpoints-ключ схему не несёт — arch/23 §2).
         var endpoints = BackupPoolResolver.ReadAllUris(s3pool);
-        return Result<(PoolBackupS3, BackupPoolContext)>.Success((
-            new PoolBackupS3(endpoints, endpoints, poolSecrets.AccessKey, poolSecrets.SecretKey, bucket(),
-                caBundlePath(), requestTimeout, targetFactory: targetFactory),
-            new BackupPoolContext(pool, poolSecrets.AccessKey, poolSecrets.SecretKey, endpoints, endpoints,
-                endpoints)));
+        var ctx = new BackupPoolContext(pool, poolSecrets.AccessKey, poolSecrets.SecretKey,
+            endpoints, endpoints, endpoints);
+        return Result<(PoolBackupS3, BackupPoolContext)>.Success((Create(ctx), ctx));
     }
-
-    // Сборка клиента из резолвнутого контекста вынесена в public Create(ctx).
 }

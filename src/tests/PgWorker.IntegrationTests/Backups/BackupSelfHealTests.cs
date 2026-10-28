@@ -226,7 +226,8 @@ public class BackupSelfHealTests(EtcdFixture fixture)
     }
 
     // Драйвер-композит (паттерн RestoreProcessTests.TestDriver): агентные вызовы —
-    // StubScaleDriver, движок джобов — FakeBackupEngine.
+    // StubScaleDriver, движок EngineFor — FakeBackupEngine (tool-джобов больше
+    // нет — операции бэкапов исполняют приёмники нод).
     private sealed class SelfHealDriver(IClusterDriver inner, IDockerEngine engine) : IClusterDriver
     {
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
@@ -245,9 +246,6 @@ public class BackupSelfHealTests(EtcdFixture fixture)
 
 public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
         public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
-
-        public Task<Result> RemoveBackupJobsAsync(string c, CancellationToken ct) => inner.RemoveBackupJobsAsync(c, ct);
-        public Task<Result> RemoveRestoreJobsAsync(string c, string sh, CancellationToken ct) => inner.RemoveRestoreJobsAsync(c, sh, ct);
     }
 
     // SQL-двойник: скаляр-гвард «роль уже есть» (паттерн BackupProcessTests.FakeSql).

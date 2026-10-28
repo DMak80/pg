@@ -19,9 +19,9 @@ public interface IFullBackupOperationFactory
     IReceiverOperation Create(string id);
 }
 
-/// <summary>Фабрика tool-операций (tool-режим: verify/restore по виду запроса;
-/// DI-контракт Program — реализации шагов 6–7, тесты подменяют фейками, шаг 9).</summary>
-public interface IToolOperationFactory
+/// <summary>Фабрика ops-операций ноды (verify/restore по виду запроса;
+/// DI-контракт Program — реализации шага 5, тесты подменяют фейками, шаг 9).</summary>
+public interface IOpsOperationFactory
 {
     IReceiverOperation CreateVerify(StartVerifyRequest request);
 

@@ -12,8 +12,8 @@ namespace PgWorker.UnitTests.WalReceiver;
 // Р15 — перенос 1:1): сигналы (standby.signal →
 // recovery.signal), override-строки auto.conf (в т.ч. target_time только при
 // цели; latest — без строки), trust-строка pg_hba, порядок runner-вызовов
-// (chown -R 101:101 → chmod 700 → pg_ctl start под setpriv с HOME=/tmp →
-// psql-поллинг → LSN → pg_ctl stop -m fast → chown auto.conf), возврат
+// (chmod 700 → pg_ctl start с HOME=/tmp →
+// psql-поллинг → LSN → pg_ctl stop -m fast), возврат
 // pristine auto.conf без archive_mode/archive_command, снятие trust-строки,
 // system_id из pg_controldata; fetch-wal: разбор env + строчный регистр
 // сегмента. AAA-комментарии.
@@ -23,6 +23,7 @@ public class RestoreOperationTests
 
     private static PgWorker.WalReceiver.Operations.StartRestoreRequest Request(string? targetTime = null) => new(
         BackupId: Id,
+        Id: null,
         TargetTime: targetTime,
         RecoveryTimeoutSec: 60,
         S3: new PgWorker.WalReceiver.Operations.S3Context(
@@ -70,8 +71,9 @@ public class RestoreOperationTests
                 case "pg_controldata":
                     return (0, "Database system identifier:           7000000000000000001\n", "");
 
-                case "setpriv":
-                    // pg_ctl под setpriv: программируемый исход СТАРТА.
+                case "pg_ctl":
+                    // pg_ctl (процесс приёмника уже postgres): программируемый
+                    // исход СТАРТА.
                     return args.Contains(" start") && StartExitCode != 0
                         ? (StartExitCode, "", "pg_ctl: could not start server")
                         : (0, "", "");
@@ -181,17 +183,14 @@ public class RestoreOperationTests
         // Assert: trust-строка снята.
         File.ReadAllLines(hbaConf).Should().NotContain("local all all trust");
 
-        // Assert: порядок runner-вызовов: chown -R 101:101 (volume) → chmod 700
-        // → pg_ctl start (setpriv) → psql (poll) → psql (LSN) → pg_ctl stop →
-        // chown auto.conf.
+        // Assert: порядок runner-вызовов: chmod 700 → pg_ctl start (прямой —
+        // процесс приёмника уже postgres) → psql (poll) → psql (LSN) →
+        // pg_ctl stop; chown в приёмнике ноды недоступен и не нужен.
         var fileNames = runner.Invocations.Select(i => i.FileName).ToArray();
-        fileNames.Should().ContainInOrder("chown", "chmod", "setpriv", "psql", "psql", "setpriv", "chown");
-        var chown = runner.Invocations.First(i => i.FileName == "chown");
-        chown.Args.Should().Be($"-R 101:101 {root}");
+        fileNames.Should().ContainInOrder("chmod", "pg_ctl", "psql", "psql", "pg_ctl");
         var chmod = runner.Invocations.First(i => i.FileName == "chmod");
         chmod.Args.Should().Be($"700 {pgdata}");
-        var start = runner.Invocations.First(i => i.FileName == "setpriv");
-        start.Args.Should().StartWith("--reuid=101 --regid=101 --clear-groups pg_ctl");
+        var start = runner.Invocations.First(i => i.FileName == "pg_ctl");
         start.Args.Should().Contain("start");
         start.Args.Should().Contain("listen_addresses=''");
         start.Env.Should().Contain("HOME=/tmp");

@@ -182,6 +182,15 @@ public static class BackupsParser
                 && drillDays.TryGetInt32(out var daysValue))
                 drillIntervalDays = daysValue;
 
+            // t100: возрастной гейт мусора супервизора — garbage_min_age_sec
+            // policy-ключа (перекрывает дефолт конфига); отсутствие/невалидное →
+            // null (дефолт — потребитель); 0 — гейт снят.
+            long? garbageMinAgeSec = null;
+            if (root.TryGetProperty("garbage_min_age_sec", out var garbage)
+                && garbage.ValueKind == JsonValueKind.Number
+                && garbage.TryGetInt64(out var garbageValue))
+                garbageMinAgeSec = garbageValue;
+
             // t36: секция s3 — пул + списки по роли источника. Отсутствие/битая
             // секция = пул не выбран — как drill, толерантность парсеров
             // (arch/19 §4): parseError не валид, S3=null, policy читается.
@@ -190,7 +199,7 @@ public static class BackupsParser
             return new BackupPolicy(
                 days, weeks, months,
                 ReadLong(root, "full_max_age_sec") ?? 86400,
-                verifyOnCreate, verifyIntervalSec, drillIntervalDays, s3);
+                verifyOnCreate, verifyIntervalSec, drillIntervalDays, garbageMinAgeSec, s3);
         }
         catch (JsonException)
         {

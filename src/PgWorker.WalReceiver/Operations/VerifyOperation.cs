@@ -4,13 +4,14 @@ using PgWorker.Etcd.S3;
 
 namespace PgWorker.WalReceiver.Operations;
 
-/// <summary>Операция verify tool-контейнера (arch/19 §5, spec t26 §3.4): одна
-/// активная на контейнер (общий OperationRegistry). Фаза downloading —
+/// <summary>Verify-операция процесса приёмника ноды (arch/19 §5): одна
+/// активная ops-операция на процесс (общий OpsOperationRegistry; полный —
+/// свой реестр и не мешает). Фаза downloading —
 /// union-лист full/&lt;id&gt;/ по всем endpoints + скачивание 1:1 .NET S3-клиентом
 /// (Р4 — S3-контекст приходит POST-командой, секреты только в POST) в
-/// staging-том;
+/// staging data-volume ноды;
 /// сбой скачивания — failed с фазой downloading (МАРКЕР ТРАНЗИЕНТА: воркер
-/// держит PENDING и ретраит тиками, контейнер сносится и создаётся заново).
+/// держит PENDING и ретраит тиком, операция начнётся заново).
 /// Фаза verifying — pg_verifybackup (manifest SHA256, вкл. pg_wal/); ≠ 0 —
 /// failed с фазой verifying (PERMANENT — данные плохие). Операторская отмена
 /// (cancel API) — снимок state=cancelled (НЕ failed — отмена не суждение о
@@ -36,7 +37,7 @@ public sealed class VerifyOperation : IReceiverOperation
         _request = request;
         _runner = runner;
         _registry = registry;
-        _stagingRoot = stagingRoot ?? ToolPaths.Staging;
+        _stagingRoot = stagingRoot ?? NodePaths.Staging;
         _targetFactory = targetFactory;
     }
 
@@ -93,7 +94,8 @@ public sealed class VerifyOperation : IReceiverOperation
             // другой ноды (отказ посреди заливки/лаг mesh) неполон и дал бы
             // недокачанный набор → ложный permanent verify-FAILED.
             _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Running, OperationPhases.Downloading));
+                _request.BackupId, OperationStates.Running, OperationPhases.Downloading,
+                StartedUnix: _registry.Current?.StartedUnix));
             var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
             if (!listed.IsSuccess)
             {
@@ -127,7 +129,8 @@ public sealed class VerifyOperation : IReceiverOperation
             // Фаза verifying: pg_verifybackup <каталог набора> (child через
             // runner; каталог — ПОЗИЦИОННЫЙ аргумент, флага -D у утилиты нет).
             _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Running, OperationPhases.Verifying));
+                _request.BackupId, OperationStates.Running, OperationPhases.Verifying,
+                StartedUnix: _registry.Current?.StartedUnix));
             var psi = new ProcessStartInfo { FileName = "pg_verifybackup" };
             psi.ArgumentList.Add(stagingDir);
             var (exitCode, _, stderr) = await _runner.RunAsync(psi, token);
@@ -137,17 +140,14 @@ public sealed class VerifyOperation : IReceiverOperation
                 Fail(OperationPhases.Verifying, OpText.FirstLine(stderr, "pg_verifybackup failed"));
                 return;
             }
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Succeeded, OperationPhases.Verifying));
+            Update(OperationStates.Succeeded, OperationPhases.Verifying);
         }
         catch (OperationCanceledException)
         {
             // Операторская отмена (cancel API, внешний канал): снимок
             // state=cancelled — НЕ failed (отмена не суждение о данных,
             // arch/19 §5); воркер-супервиз вернёт кандидата в PENDING.
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Cancelled, CurrentPhase(),
-                Error: "cancelled by operator"));
+            Update(OperationStates.Cancelled, CurrentPhase(), "cancelled by operator");
         }
         catch (Exception e)
         {
@@ -177,10 +177,18 @@ public sealed class VerifyOperation : IReceiverOperation
         return Task.CompletedTask;
     }
 
+    // Обновление снимка с переносом started_unix TryBegin (возрастной бюджет
+    // verify воркера, arch/19 §6): Update заменяет снимок целиком.
+    private void Update(string state, string phase, string? error = null)
+        => _registry.Update(new OperationSnapshot(
+            _request.BackupId, state, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+
     private string CurrentPhase()
         => _registry.Current?.Phase ?? OperationPhases.Downloading;
 
     private void Fail(string phase, string error)
         => _registry.Update(new OperationSnapshot(
-            _request.BackupId, OperationStates.Failed, phase, Error: error));
+            _request.BackupId, OperationStates.Failed, phase,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
 }

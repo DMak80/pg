@@ -165,42 +165,25 @@ public class DeprovisioningProcessTests
             "evacuation journals do not survive cluster deletion");
     }
 
-    // AAA: D2 t02 — deprovisioning убивает джобы бэкапов и чистит их префикс etcd
+    // AAA: D2 — deprovisioning чистит префикс бэкапов etcd (docker-джобов
+    // бэкапов нет: операции исполняют приёмники нод, уходят с нодами)
     [Fact]
-    public async Task Tick_RemovesBackupJobsAndPrefix()
+    public async Task Tick_BackupPrefixDoesNotSurvive()
     {
-        // Arrange — кластер в TO_REMOVE + живые ключи бэкапов; фейк-драйвер помнит
-        // вызов RemoveBackupJobsAsync; фейк-etcd содержит /pgworker/backups/shop/s1/full/x.
+        // Arrange — кластер в TO_REMOVE + живые ключи бэкапов; фейк-etcd
+        // содержит /pgworker/backups/shop/s1/full/x и restore-ключ шарда.
         var rig = await NewRig();
         rig.Etcd.Seed("/pgworker/backups/shop/s1/full/20260910030000Z",
             "{\"state\":\"RUNNING\",\"node\":\"n\",\"role\":\"replica\",\"started_unix\":1,\"wal_start_segment\":\"s\"}");
-
-        // Act
-        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
-
-        // Assert — джобы убиты, префикс бэкапов не переживает кластер
-        outcome.IsSuccess.Should().BeTrue();
-        rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
-        rig.Etcd.Store.Should().NotContainKey("/pgworker/backups/shop/s1/full/20260910030000Z",
-            "the backup prefix does not survive the cluster");
-    }
-
-    // AAA: D1/D2 t05 — restore-джобы убиты тем же RemoveBackupJobsAsync-путём,
-    // restore-ключи префикса /pgworker/backups/<C>/ не переживают кластер
-    [Fact]
-    public async Task Tick_RemovesRestoreJobsAndRestoreKeys()
-    {
-        // Arrange — кластер в TO_REMOVE + restore-ключ шарда (RUNNING)
-        var rig = await NewRig();
         rig.Etcd.Seed("/pgworker/backups/shop/s1/restore/20260911120000Z",
             "{\"state\":\"RUNNING\",\"backup_id\":\"b\",\"source\":\"shop/s1\",\"target\":\"latest\",\"node\":\"n\",\"requested_unix\":1,\"requested_by\":\"api\"}");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — D1 вызван (чистит и restore-префикс), ключей restore нет (D2)
+        // Assert — префикс бэкапов (вкл. full/ и restore/<id>) не переживает
+        // кластер (D2 del --prefix)
         outcome.IsSuccess.Should().BeTrue();
-        rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
         rig.Etcd.Store.Keys.Should().NotContain(k =>
             k.StartsWith("/pgworker/backups/shop/", StringComparison.Ordinal),
             "the whole backup prefix, including restore/<id>, does not survive the cluster");

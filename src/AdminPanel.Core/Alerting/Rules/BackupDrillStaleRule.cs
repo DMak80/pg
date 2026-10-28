@@ -47,7 +47,7 @@ public sealed class BackupDrillStaleRule : IAlertRule
                     continue;
 
                 // Успешного дрилла нет → 0 («горит при наличии полных»);
-                // FAILED/RUNNING/cleaning не считаются успехом.
+                // FAILED/RUNNING не считаются успехом.
                 var lastSuccess = backups.ShardsDrills?.TryGetValue(shard, out var drill) == true
                                   && drill is { State: "SUCCEEDED", FinishedUnix: { } finished }
                     ? finished

@@ -5,25 +5,26 @@ using PgWorker.Etcd.S3;
 
 namespace PgWorker.WalReceiver.Operations;
 
-/// <summary>Операция restore/drill tool-контейнера (arch/19 §3.5/§3.6, spec
-/// t26 §3.4 — механика 1:1 из bash-механики restore, Р15): скачивание
-/// full/&lt;id&gt;/ 1:1 в PGDATA (Spilo-layout) → канонические каталоги initdb →
+/// <summary>Restore/drill-операция процесса приёмника ноды (arch/19
+/// §3.5/§3.6 — механика 1:1 из bash-механики restore, Р15): скачивание
+/// full/&lt;id&gt;/ 1:1 в целевой PGDATA (restore — PGDATA ноды, volume пуст
+/// после демонтажа; drill — scratch-каталог backup-drill/&lt;id&gt;/pgdata,
+/// прод-данные недостижимы) → канонические каталоги initdb →
 /// override-строки postgresql.auto.conf (restore_command = fetch-wal sub-режим
 /// того же бинаря; pristine auto.conf в .orig) → standby.signal →
-/// recovery.signal → trust-строка pg_hba → chown 101:101/chmod 700 ПОСЛЕ
-/// модификаций → pg_ctl start под uid/gid 101 (обёртка setpriv, HOME=/tmp) →
+/// recovery.signal → trust-строка pg_hba → chmod 700 ПОСЛЕ модификаций
+/// (процесс работает под postgres uid 101 — файлы скачиваются сразу нужным
+/// владельцем) → pg_ctl start (напрямую, без setpriv) → HOME=/tmp →
 /// поллинг pg_is_in_recovery() с бюджетом (promote-окно ретраится) → LSN →
 /// stop → возврат pristine auto.conf с вычисткой archive_mode/archive_command
-/// и снятие trust-строки → system_id из pg_controldata. Дрилл — тот же класс:
-/// команда без target_time = latest. Резюмов нет — FAILED → новая заявка.
+/// и снятие trust-строки → system_id из pg_controldata. Дрилл — тот же класс
+/// (id в запросе): чистка scratch — при любом исходе, вкл. отмену. Резюмов
+/// нет — FAILED → новая заявка.
 /// Операторская отмена (cancel API) — снимок state=cancelled (НЕ failed —
-/// «операции не было», arch/19 §3.5; воркер удаляет запись заявки и сносит
-/// volume).</summary>
+/// «операции не было», arch/19 §3.5; воркер удаляет запись заявки / ключ
+/// дрилла; scratch дрилла чистится при этом здесь).</summary>
 public sealed class RestoreOperation : IReceiverOperation
 {
-    // Spilo-postgres (образ pgworker-node): численные uid:gid владельца PGDATA.
-    private const string PgUidGid = "101:101";
-
     // Бюджет одной пробы поллинга: рестарт postmaster (promote-окно) может
     // держать сокет — проба гасится kill'ом, исход err → ретрай до бюджета.
     private static readonly TimeSpan PollAttemptTimeout = TimeSpan.FromSeconds(10);
@@ -32,6 +33,7 @@ public sealed class RestoreOperation : IReceiverOperation
     private readonly IProcessRunner _runner;
     private readonly OperationRegistry _registry;
     private readonly string _pgdata;
+    private readonly bool _isDrill; // id в запросе — drill: scratch + чистка при любом исходе
     private readonly Func<string, IBackupS3>? _targetFactory; // тестовый шов (шаг 9)
     private readonly CancellationTokenSource _cts = new();
 
@@ -45,7 +47,11 @@ public sealed class RestoreOperation : IReceiverOperation
         _request = request;
         _runner = runner;
         _registry = registry;
-        _pgdata = pgdata ?? ToolPaths.Pgdata;
+        _isDrill = request.Id is { Length: > 0 };
+        _pgdata = pgdata
+                  ?? (_isDrill
+                      ? Path.Combine(NodePaths.DrillRoot, request.Id!, "pgdata")
+                      : NodePaths.Pgdata);
         _targetFactory = targetFactory;
     }
 
@@ -57,10 +63,6 @@ public sealed class RestoreOperation : IReceiverOperation
         var token = linked.Token;
 
         var pgdata = _pgdata;
-        // volume-корень для chown -R (bash: ${PGDATA%%/pgroot/data}).
-        var volumeRoot = pgdata.EndsWith("/pgroot/data", StringComparison.Ordinal)
-            ? pgdata[..^"/pgroot/data".Length]
-            : pgdata;
         var autoConf = Path.Combine(pgdata, "postgresql.auto.conf");
         var autoOrig = autoConf + ".orig";
         var hbaConf = Path.Combine(pgdata, "pg_hba.conf");
@@ -70,6 +72,18 @@ public sealed class RestoreOperation : IReceiverOperation
         var cluster = slash > 0 ? prefix[..slash] : prefix;
         var shard = slash > 0 ? prefix[(slash + 1)..] : string.Empty;
         var s3Base = $"{prefix}/full/{_request.BackupId}/";
+
+        // Patroni ноды — ВНИЗ на время RESTORE (arch/19 §3.5): живой Patroni
+        // вмешивается в заполняемую PGDATA (стартует постгрес как secondary на
+        // полуданных, воссоздаёт standby.signal, убивает restore-постгрес).
+        // ТОЛЬКО restore: дрилл идёт на ЖИВОЙ ноде — stop spilo там гасит
+        // прод-постгрес (runit внутри spilo) — 57P01 клиентам. supervisorctl —
+        // через локальный сокет контейнера (chmod 0770 root:postgres,
+        // supervisord.conf образа); отказ — операция не начинается: честный
+        // failed-снимок вместо тихой гонки с Patroni. finally вернёт Patroni.
+        if (!_isDrill)
+            if (!await StopPatroniAsync(token))
+                return;
 
         // Тип — PoolBackupS3 (не IBackupS3): union-листинг набора — метод пула.
         PoolBackupS3? s3 = null;
@@ -109,8 +123,7 @@ public sealed class RestoreOperation : IReceiverOperation
             //    дедупом (симметрично VerifyOperation: соло-лист другой ноды —
             //    отказ посреди заливки/лаг mesh — неполон, недокачанный набор
             //    дал бы ложный permanent-FAILED) и скачивание 1:1 в PGDATA.
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Running, phase));
+            Update(OperationStates.Running, phase);
             var listed = await s3.ListPrefixUnionAsync(s3Base, ct: token);
             if (!listed.IsSuccess)
             {
@@ -198,16 +211,10 @@ public sealed class RestoreOperation : IReceiverOperation
             await File.WriteAllLinesAsync(
                 hbaConf, new[] { "local all all trust" }.Concat(hba), token);
 
-            // 7. Владелец/права ПОСЛЕ всех модификаций: файлы .NET создал под
-            //    root; chmod 700 обязателен — S3 не хранит unix-права, PGDATA
+            // 7. Права ПОСЛЕ модификаций: файлы созданы под postgres (uid 101 в
+            //    ноде — supervisord user=postgres, владельца менять не нужно);
+            //    chmod 700 обязателен — S3 не хранит unix-права, PGDATA
             //    иначе 0755 → FATAL «invalid permissions» на pg_ctl start.
-            var (chownExit, _, chownErr) = await _runner.RunAsync(
-                Sys("chown", ["-R", PgUidGid, volumeRoot]), token);
-            if (chownExit != 0)
-            {
-                Fail(phase, OpText.FirstLine(chownErr, "chown 101:101 failed"));
-                return;
-            }
             var (chmodExit, _, chmodErr) = await _runner.RunAsync(
                 Sys("chmod", ["700", pgdata]), token);
             if (chmodExit != 0)
@@ -216,17 +223,20 @@ public sealed class RestoreOperation : IReceiverOperation
                 return;
             }
 
-            // 8. Фаза recovering: pg_ctl start под uid/gid 101 (обёртка
-            //    setpriv), unix-socket, сеть не слушает; env HOME=/tmp +
+            // 8. Фаза recovering: pg_ctl start (процесс уже postgres, uid 101 —
+            //    напрямую), unix-socket, сеть не слушает; env HOME=/tmp +
             //    S3-контекст fetch-wal (postgres наследует до
             //    restore_command; секреты не в argv, Р13). Старт-ожидание
             //    pg_ctl -t = бюджет восстановления: до консистентной точки
             //    postgres качает сегменты fetch-wal-ом — под нагрузкой это
             //    минуты, короткий литерал рвал операцию до поллинга
-            //    (arch/19 §3.5).
+            //    (arch/19 §3.5). standby.signal снимается повторно ПЕРЕД
+            //    стартом: живой Patroni ноды может воссоздать файл в окне
+            //    между правками и стартом — postgres уйдёт в standby-ожидание
+            //    WAL вместо recovery и промоута (факт прогона t100).
             phase = OperationPhases.Recovering;
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Running, phase));
+            Update(OperationStates.Running, phase);
+            File.Delete(Path.Combine(pgdata, "standby.signal"));
             var startPsi = PgCtl(pgdata, "start");
             startPsi.ArgumentList.Add("-l");
             startPsi.ArgumentList.Add("/tmp/restore-pg.log");
@@ -285,8 +295,8 @@ public sealed class RestoreOperation : IReceiverOperation
             // 11. Чистка recovery-остатков: сигнал; возврат pristine auto.conf
             //     с вычисткой archive_mode/archive_command (pristine снят с
             //     ноды-источника и несёт её archive_mode — reload недостаточен,
-            //     «Pending restart» рвёт соединения после restore); chown
-            //     (запись пересоздаёт файл под root); снятие trust-строки.
+            //     «Pending restart» рвёт соединения после restore); снятие
+            //     trust-строки.
             File.Delete(Path.Combine(pgdata, "recovery.signal"));
             File.Move(autoOrig, autoConf, overwrite: true);
             var pristine = await File.ReadAllLinesAsync(autoConf, token);
@@ -295,7 +305,6 @@ public sealed class RestoreOperation : IReceiverOperation
                             && !Regex.IsMatch(l, @"^archive_command\s*="))
                 .ToArray();
             await File.WriteAllLinesAsync(autoConf, cleaned, token);
-            await _runner.RunAsync(Sys("chown", [PgUidGid, autoConf]), token);
             var hbaNow = await File.ReadAllLinesAsync(hbaConf, token);
             await File.WriteAllLinesAsync(hbaConf,
                 hbaNow.Where(l => l.TrimEnd('\r') != "local all all trust"), token);
@@ -315,21 +324,16 @@ public sealed class RestoreOperation : IReceiverOperation
             }
 
             // Итог succeeded (+RestoredToLsn, SystemId).
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Succeeded, phase,
-                RestoredToLsn: lsn, SystemId: sysId));
+            Update(OperationStates.Succeeded, phase, restoredToLsn: lsn, systemId: sysId);
         }
         catch (OperationCanceledException)
         {
             // Операторская отмена (cancel API, внешний канал): kill дерева уже
             // сделан runner'ом; pg_ctl stop best-effort; снимок state=cancelled —
             // НЕ failed (отмена = «операции не было», arch/19 §3.5; воркер
-            // отличает её от vanished: запись заявки удаляется, volume сносится).
-            // Чистку сигналов НЕ делаем — контейнер снесёт воркер.
+            // отличает её от vanished: запись заявки/ключ дрилла удаляются).
             await StopBestEffortAsync(_pgdata);
-            _registry.Update(new OperationSnapshot(
-                _request.BackupId, OperationStates.Cancelled, phase,
-                Error: "cancelled by operator"));
+            Update(OperationStates.Cancelled, phase, error: "cancelled by operator");
         }
         catch (Exception e)
         {
@@ -337,6 +341,29 @@ public sealed class RestoreOperation : IReceiverOperation
         }
         finally
         {
+            // Patroni ноды — обратно при ЛЮБОМ исходе RESTORE (там он был
+            // остановлен; поднимет постгрес уже с валидным initialize и
+            // данными — REJOINING-рестарта не нужно). Дрилл Patroni не трогал.
+            if (!_isDrill)
+            {
+                try
+                {
+                    await RunnerSys("supervisorctl", ["start", "spilo"], CancellationToken.None);
+                }
+                catch { /* best-effort */ }
+            }
+            // Scratch дрилла чистится при ЛЮБОМ исходе (arch/19 §3.6) —
+            // терминальный ключ дрилла сразу чистый; PGDATA restore НЕ трогаем
+            // (там восстановленные данные до REJOINING).
+            if (_isDrill)
+            {
+                try
+                {
+                    if (Directory.Exists(_pgdata))
+                        Directory.Delete(_pgdata, recursive: true);
+                }
+                catch { /* best-effort */ }
+            }
             if (caBundlePath is not null)
                 try { File.Delete(caBundlePath); } catch { /* уже нет */ }
             if (s3 is IAsyncDisposable disposable)
@@ -346,15 +373,70 @@ public sealed class RestoreOperation : IReceiverOperation
 
     /// <summary>Best-effort отмена (cancel API): гасит внутренний CTS — runner
     /// убивает дерево текущего child-процесса (psql/pg_ctl/скачивание); плюс
-    /// pg_ctl stop -m fast best-effort (чистку сигналов НЕ делает — контейнер
-    /// снесёт воркер).</summary>
+    /// pg_ctl stop -m fast best-effort (чистку PGDATA restore НЕ делает —
+    /// там восстановленные данные до REJOINING; scratch дрилла чистит
+    /// finally RunAsync).</summary>
     public async Task CancelAsync()
     {
         _cts.Cancel();
         await StopBestEffortAsync(_pgdata);
     }
 
-    // Системная утилита child-процессом (chown/chmod/pg_controldata — root).
+    // Обновление снимка с переносом started_unix TryBegin (Update заменяет
+    // снимок целиком) и опциональными результатами restore.
+    private void Update(string state, string phase,
+        string? restoredToLsn = null, string? systemId = null, string? error = null)
+        => _registry.Update(new OperationSnapshot(
+            _request.Id ?? _request.BackupId, state, phase,
+            RestoredToLsn: restoredToLsn, SystemId: systemId,
+            StartedUnix: _registry.Current?.StartedUnix, Error: error));
+
+    /// <summary>Patroni ноды вниз перед восстановлением + подтверждение
+    /// STOPPED (короткий бюджет): false — операция не начинается (честный
+    /// failed-снимок вместо тихой гонки с Patroni за PGDATA).</summary>
+    private async Task<bool> StopPatroniAsync(CancellationToken token)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo { FileName = "supervisorctl" };
+            psi.ArgumentList.Add("stop");
+            psi.ArgumentList.Add("spilo");
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(token);
+            attempt.CancelAfter(TimeSpan.FromSeconds(10));
+            var (exit, _, err) = await _runner.RunAsync(psi, attempt.Token);
+            if (exit != 0)
+            {
+                Fail(OperationPhases.Downloading,
+                    OpText.OneLine($"supervisorctl stop spilo: exit {exit} {err}"));
+                return false;
+            }
+        }
+        catch (Exception e)
+        {
+            Fail(OperationPhases.Downloading,
+                OpText.OneLine($"supervisorctl stop spilo: {e.Message.Split('\n')[0]}"));
+            return false;
+        }
+
+        return true;
+    }
+
+    // Системная утилита child-процессом (supervisorctl) — best-effort: ошибка
+    // запуска (нет бинарника — unit-контур) проглатывается.
+    private async Task RunnerSys(string fileName, string[] args, CancellationToken token)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo { FileName = fileName };
+            foreach (var a in args)
+                psi.ArgumentList.Add(a);
+            await _runner.RunAsync(psi, token);
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
     private static ProcessStartInfo Sys(string fileName, string[] args)
     {
         var psi = new ProcessStartInfo { FileName = fileName };
@@ -363,20 +445,17 @@ public sealed class RestoreOperation : IReceiverOperation
         return psi;
     }
 
-    // pg_ctl под setpriv: --reuid/--regid/--clear-groups + утилита и аргументы;
-    // env HOME=/tmp + S3-контекст fetch-wal (наследуется postgres'ом).
+    // pg_ctl — процесс WalReceiver в ноде уже postgres (supervisord
+    // user=postgres): запуск напрямую, без setpriv/детекта uid; env
+    // HOME=/tmp + S3-контекст fetch-wal (наследуется postgres'ом).
     private ProcessStartInfo PgCtl(string pgdata, string command)
     {
-        var psi = new ProcessStartInfo { FileName = "setpriv" };
-        psi.ArgumentList.Add("--reuid=101");
-        psi.ArgumentList.Add("--regid=101");
-        psi.ArgumentList.Add("--clear-groups");
-        psi.ArgumentList.Add("pg_ctl");
+        var psi = new ProcessStartInfo { FileName = "pg_ctl" };
         psi.ArgumentList.Add("-D");
         psi.ArgumentList.Add(pgdata);
         psi.ArgumentList.Add(command);
-        // HOME рута под uid 101 недоступен (наследуется postgres'ом и
-        // fetch-wal'ом — рабочие файлы пишутся в /tmp).
+        // HOME под postgres недоступен для записи так же, как под root
+        // (наследуется postgres'ом и fetch-wal'ом — рабочие файлы в /tmp).
         psi.EnvironmentVariables["HOME"] = "/tmp";
         psi.EnvironmentVariables["PGW_S3_ENDPOINTS"] = string.Join(",", _request.S3.Endpoints);
         psi.EnvironmentVariables["PGW_S3_BUCKET"] = _request.S3.Bucket;
@@ -388,7 +467,7 @@ public sealed class RestoreOperation : IReceiverOperation
         return psi;
     }
 
-    // psql — root-клиент по trust (без setpriv, как bash); проба с собственным
+    // psql — локальный клиент по trust; проба с собственным
     // таймаутом: рестарт postmaster может держать сокет — исход null (err),
     // ретрай до бюджета. Успех — trimmed stdout.
     private async Task<string?> ProbeAsync(string query, CancellationToken token)
@@ -446,6 +525,5 @@ public sealed class RestoreOperation : IReceiverOperation
     }
 
     private void Fail(string phase, string error)
-        => _registry.Update(new OperationSnapshot(
-            _request.BackupId, OperationStates.Failed, phase, Error: error));
+        => Update(OperationStates.Failed, phase, error: error);
 }

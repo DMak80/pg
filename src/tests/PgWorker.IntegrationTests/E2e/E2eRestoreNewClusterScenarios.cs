@@ -364,7 +364,7 @@ public class E2eRestoreNewClusterScenarios
     }
 
     // Диагностика провала: журнал воркера + restore-ключи/полные шарда + docker-объекты
-    // кластера (фильтр по ТЕГУ кластера — substring ловит и pgw-backup-restore-*).
+    // кластера (фильтр по ТЕГУ кластера — substring ловит и восстановленные ноды).
     private async Task<string> DumpDiagnosticsAsync(string cluster, string shard)
     {
         var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
@@ -416,7 +416,7 @@ public class E2eRestoreNewClusterScenarios
         try
         {
             var psJobs = await Fx.RunDockerAsync(
-            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-restore-{cluster}-"],
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"],
             TestContext.Current.CancellationToken);
             foreach (var line in psJobs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {

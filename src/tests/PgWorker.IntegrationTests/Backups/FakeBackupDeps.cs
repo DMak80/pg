@@ -324,7 +324,8 @@ public sealed class FakePatroni : IAsyncDisposable
 // WalStreamProcess/Retention на пул-режим без etcd-сида /s3/.
 public static class FakePoolFactory
 {
-    public static BackupS3Factory Single(IBackupS3 target, string bucket = "pgworker-backups")
+    public static BackupS3Factory Single(
+        IBackupS3 target, string bucket = "pgworker-backups", TimeSpan? breakerWindow = null)
     {
         var pool = new PgWorker.Etcd.S3.S3Pool("backups", false,
             [new PgWorker.Etcd.S3.S3PoolNode("node1", "RUNNING", "h1", "h1", 9000)],
@@ -341,7 +342,8 @@ public static class FakePoolFactory
                             "backups", ["node1"], ["node1"])))),
             new FixedPoolStore(pool),
             () => bucket, () => null, TimeSpan.FromSeconds(5),
-            targetFactory: _ => target);
+            targetFactory: _ => target,
+            breakerWindow: breakerWindow);
     }
 
     // Два пула («backups», «cold») на ОДНОМ фейк-таргете: union-сверки свипера

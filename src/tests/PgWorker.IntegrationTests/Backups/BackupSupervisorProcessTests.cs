@@ -59,17 +59,19 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
     private static ShardBackups FullsOf(params FullBackupState[] fulls) => new(fulls, null);
 
-    // AAA (AC6): мусор full/<id>/ живого шарда удаляется первым проходом, journal
-    // пишет supervisor/swept-full/<X>/<id>; повторный проход — no-op
+    // AAA (AC6): мусор full/<id>/ живого шарда (старше возрастного гейта —
+    // t100 «Гейты мусора») удаляется первым проходом, journal пишет
+    // supervisor/swept-full/<X>/<id>; повторный проход — no-op
     [Fact]
     public async Task PassGarbageOfLiveShardRemovedIdempotently()
     {
         // Arrange — клэйм c1; объекты c1/shard1/full/A/... и full/B/...;
-        // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы
+        // etcd-ключ только для A (COMPLETED); S3 wal-объекты — живы;
+        // объекты старше дефолтного GarbageMinAgeSec (600 с) — мусор дозрел
         var ct = TestContext.Current.CancellationToken;
         var cluster = $"sc1{Tag}";
         await SeedAsync(cluster);
-        var s3 = new FakeBackupS3();
+        var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_manifest", 100));
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911110000Z/backup_label", 50));
         s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
@@ -95,6 +97,57 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
 
         // Assert 2 — новых удалений нет (list подтверждает пустоту — no-op)
         s3.DeletedKeys.Should().HaveCount(1, "idempotency: a repeated pass removes nothing");
+    }
+
+    // AAA (t100, гейт 2 — возрастной): unowned-префикс моложе GarbageMinAgeSec —
+    // заливка in-flight (снапшот тика мог отстать от планировщика того же тика) —
+    // НЕ удаляется, остаётся следующему проходу
+    [Fact]
+    public async Task PassSkipsYoungUnownedPrefix()
+    {
+        // Arrange — объекты без etcd-ключа, LastModified = сейчас (свежая заливка)
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc4{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3(); // LastModified = UtcNow — моложе дефолтных 600 с
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/base/1/2600", 8192));
+        var process = BuildProcess(Options(), s3);
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы, журнал-фактов удаления нет
+        s3.DeletedKeys.Should().BeEmpty("a young unowned prefix is an in-flight upload, not garbage");
+        s3.PrefixObjects.Should().HaveCount(2);
+    }
+
+    // AAA (t100, гейт 1 — свежее чтение ключа): etcd-ключ появился ПОСЛЕ снятия
+    // снапшота тика (планировщик того же тика запланировал полный) — префикс
+    // «unowned» по снапшоту, но свежий range находит ключ → не удаляется
+    [Fact]
+    public async Task PassSkipsPrefixWithFreshlyWrittenKey()
+    {
+        // Arrange — S3-префикс старый (гейт 2 пройден бы), ключа в снапшоте нет,
+        // но ключ реально записан в etcd
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"sc5{Tag}";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddMinutes(-30) };
+        s3.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
+        var process = BuildProcess(Options(), s3);
+        (await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.FullKey(cluster, "shard1", "20260911120000Z"),
+            PgWorker.Backups.Job.BackupStatusJson.Serialize(new FullBackupState("20260911120000Z",
+                FullBackupStatus.Uploading, "shard1a", BackupSourceRole.Replica,
+                1757500000, null, null, null, null, null)), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — объекты живы (ключ найден свежим чтением, не снапшотом)
+        s3.DeletedKeys.Should().BeEmpty("the fresh key check must protect a just-planned full");
+        s3.PrefixObjects.Should().ContainSingle();
     }
 
     // AAA (AC9): шард в активном restore — супервизор его не трогает

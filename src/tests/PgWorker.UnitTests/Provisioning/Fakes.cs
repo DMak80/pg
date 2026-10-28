@@ -521,26 +521,8 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
         }
 
-        // t02: чистка джобов бэкапов (D2) — фейк помнит вызов, движки не нужны.
-        public bool RemoveBackupJobsCalled { get; private set; }
-
-        // t05: чистка restore-джобов шарда (remove-shard) — помним вызовы.
-        public List<(string Cluster, string Shard)> RemovedRestoreJobs { get; } = [];
-
         public IDockerEngine? Engine { get; set; }
         public IDockerEngine? EngineFor(string host) => Engine;
-
-        public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
-        {
-            RemoveBackupJobsCalled = true;
-            return Task.FromResult(Result.Success());
-        }
-
-        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
-        {
-            RemovedRestoreJobs.Add((cluster, shard));
-            return Task.FromResult(Result.Success());
-        }
     }
 
     // Мок SQL: запоминает DSN/SQL вызовов (порядок journal-before-SQL проверяют тесты).

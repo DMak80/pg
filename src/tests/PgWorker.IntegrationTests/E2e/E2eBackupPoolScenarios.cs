@@ -777,6 +777,20 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             var done = await WaitCompletedFullAsync(cluster, ct);
             done.Should().NotBeNull();
 
+            // Пауза стрима ПЕРЕД копией (стрим пишется только на node1 — write
+            // [node1]): без паузы сегменты, залитые на node1 ПОСЛЕ копии,
+            // существуют только на останавливаемой node1 — накат restore
+            // упирается в «стык» (fetch-wal: node1 мёртв, на node2 not found)
+            // и recovery ждёт до бюджета. Пауза делает копию консистентной:
+            // хвост wal/ заморожен на момент tar-пайпа. Снятие — после стопа
+            // node1 (restore шарду стрим не нужен; teardown снимает ключ).
+            await G.PutAsync(Endpoint, "/pgworker/backups-disabled", "1", null, ct);
+            (await E2eFixture.WaitForAsync(async () =>
+            {
+                var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
+                return facts.Count >= 2 && facts.All(f => f.State == "waiting_disabled");
+            }, TimeSpan.FromSeconds(60), ct)).Should().BeTrue("receivers paused before the copy");
+
             // Act — копия bucket node1 → node2, затем стоп node1.
             // Прогон t100-3…7 (2026-10-27): S3→S3 копии (mc mirror/cp --recursive)
             // под параллельной записью приёмника СТАБИЛЬНО теряли объекты набора
@@ -792,24 +806,34 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             // непредсказуемо — прогон t100-11) и с чисткой целевого корня: слияние
             // со собственными объектами node2 даёт смешанные каталоги, на которых
             // LIST ownS3 отдаёт 500 (t100-9). У node2 собственных записей нет:
-            // write-списки пула — [node1].
+            // write-списки пула — [node1]. docker cp кладёт basename каталога в
+            // корень tar («pgworker-backups/…»): без --strip-components=1 распаковка
+            // даёт вложенный дубль /data/pgworker-backups/pgworker-backups/… — S3-API
+            // node2 пуст (fs-объекты на уровень ниже), restore честно 404 (прогон
+            // t100 run4; fs-ассерт тогда давал ложный PRESENT: его шаблон
+            // /data/pgworker-backups/<Bucket>/… совпал с вложенным путём).
+            // ФС-путь объекта — <OWNS3_DATA_DIR=…>/pgworker-backups/<key> (env
+            // ownS3-нод E2E), поэтому ассерт ниже проверяет <data>/pgworker-backups/
+            // как РОВНО один сегмент каталога бакета.
             await E2eFixture.RunProcessAsync("sh", ["-c",
                 $"docker cp {Fx.S3NodeContainerName}:/data/pgworker-backups -"
                 + $" | docker exec -i {node2Container} sh -c"
-                + $" 'rm -rf /data/pgworker-backups && mkdir -p /data/pgworker-backups && tar -xf - -C /data/pgworker-backups'"], ct);
+                + $" 'rm -rf /data/pgworker-backups && mkdir -p /data/pgworker-backups"
+                + $" && tar -xf - -C /data/pgworker-backups --strip-components=1'"], ct);
             // ownS3 индексирует /data при СТАРТЕ (прогон t100-8: fs-файлы, дописанные
             // в живой контейнер, S3-API не видны; чистый ownS3, стартовавший с той же
             // data, LIST/STAT/GET манифеста отдаёт) — рестарт переиндексирует копию.
             await Fx.RunDockerAsync(["restart", node2Container], ct);
             // Манифест на node2 — ассерт ДО стопа node1 (канон e2e-launch): fs-факт
-            // (xl.meta объекта) — ownS3-API поверх него проверен чистым ownS3.
+            // (xl.meta объекта по ФС-пути <data>/pgworker-backups/<key>).
             var fullId = done.Key.Split('/').Last();
             var manifestOnNode2 = await Fx.RunDockerAsync(["exec", node2Container, "sh", "-c",
-                $"test -f /data/pgworker-backups/{Bucket}/{cluster}/shard1/full/{fullId}/backup_manifest/xl.meta"
+                $"test -f /data/pgworker-backups/{cluster}/shard1/full/{fullId}/backup_manifest/xl.meta"
                 + " && echo PRESENT || echo MISSING"], ct);
             manifestOnNode2.Trim().Should().Be("PRESENT",
                 "the mesh copy must carry the backup manifest before node1 is stopped");
             await Fx.RunDockerAsync(["stop", Fx.S3NodeContainerName], ct);
+            await G.DeleteAsync(Endpoint, "/pgworker/backups-disabled", prefix: false, ct);
 
             // Assert — restore из пула при мёртвой node1: COMPLETED (чтение c node2).
             var restore = await RestoreLatestAsync(cluster, "shard1", ct);

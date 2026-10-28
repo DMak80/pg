@@ -137,7 +137,7 @@ public sealed class RemoveShardProcess(
             }
         }
 
-        return await driver.RemoveRestoreJobsAsync(cluster, shard, ct);
+        return Result.Success();
     }
 
     // Сериализация FAILED-статуса (канон arch/19 §4). Локальная копия структуры

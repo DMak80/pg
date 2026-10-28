@@ -638,7 +638,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     // restore», spec §3.1): полный бэкап снимает приёмник ноды — upload
     // .NET-клиентом по write-списку пула ИЗНУТРИ контура (алиасы per-ноды
     // пула) — localhost там недостижим; WAL-агент получает те же ноды
-    // списками S3_ENDPOINTS/S3_READ_ENDPOINTS, restore — tool-контейнер
+    // списками S3_ENDPOINTS/S3_READ_ENDPOINTS, restore — операция WalReceiver ноды
     // тем же ReadAll-списком в POST-команде.
     // Замена host.docker.internal → localhost — ТОЛЬКО в host-клиентах
     // сценария (HostS3Client): воркер-процесс на хосте резолвит
@@ -775,7 +775,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         }, TimeSpan.FromSeconds(90), ct);
 
     // Диагностика провала: журнал воркера + restore-ключи/полные шарда + docker-объекты
-    // кластера (фильтр по ТЕГУ кластера — substring ловит и pgw-backup-restore-*).
+    // кластера (фильтр по ТЕГУ кластера — substring ловит и восстановленные ноды).
     public async Task<string> DumpDiagnosticsAsync(string cluster, string shard)
     {
         var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
@@ -827,7 +827,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         try
         {
             var psJobs = await Fx.RunDockerAsync(
-            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-restore-{cluster}-"],
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-{cluster}-"],
             TestContext.Current.CancellationToken);
             foreach (var line in psJobs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {

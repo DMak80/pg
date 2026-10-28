@@ -195,7 +195,7 @@ public class E2eRetentionScenarios
     }
 
     // Воркер с включённой подсистемой: S3 на ownS3-ноду, образ джобов
-    // tool-контейнеры образа нод (t26), ускоренный бэкофф, ретенция раз в 60 c (минимум
+    // операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф, ретенция раз в 60 c (минимум
     // валидации IntervalSec ≥ 60; первый проход — сразу, далее по расписанию).
     private Task<HostInstance> StartRetentionHostAsync(string name, CancellationToken ct)
         => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>

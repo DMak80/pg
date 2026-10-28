@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // монолитный одиночный факт (~11 мин, §7) — отдельный класс.
 // E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
-// + tool-контейнеры образа нод (t26) + живой кластер воркером с Backups:Enabled=true.
+// + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы

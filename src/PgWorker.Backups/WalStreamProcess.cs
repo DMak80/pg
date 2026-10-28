@@ -63,36 +63,13 @@ public sealed class WalStreamProcess(
     // контроль каждый тик (t07/t02).
     private readonly ConcurrentDictionary<string, long> _lastVerifyUnix = [];
 
-    // Кэш пула-клиентов per-pool (t36): клиент переиспользуется между шардами
-    // тика и между тиками — регулярное пересоздание AmazonS3Client (TLS-хендшейки)
-    // на контрольный тик каждого шарда росло с числом шардов. Дрейф контекста
-    // (policy/списки/креды — record-равенство BackupPoolContext) — инвалидация:
-    // устаревший клиент вниз, новый на свежем контексте. Ревизию policy отдельно
-    // не читаем: структурное равенство контекстов покрывает смену сущностей
-    // (смена policy без изменения списков/кредов не требует нового клиента).
-    // Тики клэйм-цикла последовательны — конкурентного use-after-dispose нет.
-    private readonly Dictionary<string, (BackupPoolContext Ctx, PoolBackupS3 Client)> _poolClients =
-        new(StringComparer.Ordinal);
-    private readonly object _poolGate = new();
-
+    // Пул-клиент per-pool: кэш теперь в САМОЙ фабрике (arch/19 §5 «Кэш
+    // пул-клиентов» — breaker-стейт переживает тики, владелец — фабрика);
+    // WalStream-кэш упразднён: локальный dispose кэшированного фабрикой
+    // клиента закрывал бы общие HttpClients. Смена контекста — новая запись
+    // в кэше фабрики, прежняя живёт до конца процесса.
     private PoolBackupS3 PoolClient(BackupPoolContext pool)
-    {
-        lock (_poolGate)
-        {
-            if (_poolClients.TryGetValue(pool.Pool, out var cached))
-            {
-                if (cached.Ctx == pool)
-                    return cached.Client;
-                _poolClients.Remove(pool.Pool);
-                // DisposeAsync PoolBackupS3 синхронен по существу (обход кэша
-                // таргетов) — синхронное ожидание не блокирует надолго.
-                cached.Client.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            }
-            var created = s3Factory.Create(pool);
-            _poolClients[pool.Pool] = (pool, created);
-            return created;
-        }
-    }
+        => s3Factory.Create(pool);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, ClusterBackups? backups, CancellationToken ct)

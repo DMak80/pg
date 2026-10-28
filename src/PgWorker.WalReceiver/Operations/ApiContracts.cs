@@ -16,7 +16,8 @@ public sealed record FullStatusResponse(
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
     [property: JsonPropertyName("error")] string? Error = null);
 
-/// <summary>S3-контекст tool-операций (секреты — ТОЛЬКО в POST-теле, spec §3.2).</summary>
+/// <summary>S3-контекст ops-операций (verify/restore/drill; секреты — ТОЛЬКО
+/// в POST-теле, spec §3.2).</summary>
 public sealed record S3Context(
     [property: JsonPropertyName("endpoints")] string[] Endpoints,
     [property: JsonPropertyName("access_key")] string AccessKey,
@@ -31,16 +32,21 @@ public sealed record StartVerifyRequest(
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
+    // id ЛИШЬ у drill-запуска (arch/19 §3.6): scratch-каталог
+    // backup-drill/<id>/pgdata; restore (null) пишет в PGDATA ноды.
+    [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("target_time")] string? TargetTime, // PG-совместимый yyyy-MM-dd HH:mm:sszzz (воркер нормализует RFC3339); null = latest
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
     [property: JsonPropertyName("s3")] S3Context S3);
 
-/// <summary>Статус tool-операции (GET /api/ops/verify|restore).</summary>
-public sealed record ToolStatusResponse(
+/// <summary>Статус ops-операции (GET /api/ops/verify|restore); started_unix —
+/// время TryBegin (возрастной бюджет verify воркера, arch/19 §6).</summary>
+public sealed record OpsStatusResponse(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
+    [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
     [property: JsonPropertyName("error")] string? Error = null);
 
 public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);

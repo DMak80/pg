@@ -6,8 +6,7 @@ namespace PgWorker.UnitTests.Backups;
 
 // Адресация HTTP API приёмника (t26, arch/19 §2/§3.5, spec §3.1): нода —
 // alias:8080 по docker-имени (канонические pgw-<C>-<X>-<n>; object — имя её
-// контейнера); tool-контейнер — контур: alias имени в сети контура (без
-// публикации), прод: host:<динамический порт> из инспекта публикации :8080.
+// контейнера). Все операции бэкапов — команды на приёмники нод (§5/§3.5/§3.6).
 public class WalReceiverAddressTests
 {
     [Theory]
@@ -27,22 +26,5 @@ public class WalReceiverAddressTests
         // Arrange / Act / Assert — object-нода: адрес по имени её контейнера.
         WalReceiverAddress.ForNode("shop", "shard1", "shard1a", "as-shard1a")
             .Should().Be("http://as-shard1a:8080");
-    }
-
-    [Fact]
-    public void ForTool_ContourMode_ContainerAliasNoPublish()
-    {
-        // Arrange / Act / Assert — контур: alias имени :8080 в сети контура
-        // (host/порт не участвуют).
-        WalReceiverAddress.ForTool("pgw-backup-drill-c1-s1-id", "h1", null, contourMode: true)
-            .Should().Be("http://pgw-backup-drill-c1-s1-id:8080");
-    }
-
-    [Fact]
-    public void ForTool_ProdMode_HostWithPublishedPort()
-    {
-        // Arrange / Act / Assert — прод: host + динамический порт публикации.
-        WalReceiverAddress.ForTool("pgw-backup-verify-c1-s1-id", "h1", 31999, contourMode: false)
-            .Should().Be("http://h1:31999");
     }
 }

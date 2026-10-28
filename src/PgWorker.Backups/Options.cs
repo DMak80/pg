@@ -3,8 +3,10 @@ namespace PgWorker.Backups;
 /// <summary>Runtime-опции подсистемы бэкапов (arch/19 §9, t02/t26): склейка
 /// секции PgWorker:Backups (маппер BackupsOptions.ToRuntime() в App; образец
 /// MovesRuntimeOptions). S3-креды — per-cluster secrets пула
-/// (/s3/clusters/<C>/secrets, выбирается policy.s3); tool-операции —
-/// S3-контекст в POST-команде (секреты не в etcd/логах/argv).</summary>
+/// (/s3/clusters/&lt;C&gt;/secrets, выбирается policy.s3); ops-операции —
+/// S3-контекст в POST-команде (секреты не в etcd/логах/argv). Контейнеров/
+/// джобов бэкапов нет (t26+): операции исполняют приёмники WalReceiver нод —
+/// Agent/NodeImage/ContourNetwork-опций нет.</summary>
 public sealed record BackupsRuntimeOptions(
     bool Enabled = false,
     long FullMaxAgeSec = 86400,
@@ -17,14 +19,9 @@ public sealed record BackupsRuntimeOptions(
     // фабрику доверия S3CaHttpClientFactory (env AWS_CA_BUNDLE линейкой
     // AWSSDK.Core 3.7.x не читается).
     string? S3CaBundlePath = null,
-    // t26: образ tool-контейнеров (verify/drill/restore) — pgworker-node
-    // (tool-режим, arch/19 §3.5/§3.6/§5); маппинг — Docker.Images.Node.
-    string NodeImage = "pgworker-node:dev",
     int RetryBaseSec = 300,
     int RetryMaxSec = 3600,
     string StagingDir = "/home/postgres/pgdata/backup-staging",
-    double? AgentCpu = null,
-    long? AgentMem = null,
     // t03 (arch/19 §3/§9): расписание контроля цепочки и пороги деградаций.
     int WalVerifyIntervalSec = 30,
     int WalLagMaxSegments = 1024,
@@ -50,6 +47,10 @@ public sealed record BackupsRuntimeOptions(
     // зависших джобов (arch/19 §6).
     int SupervisorIntervalSec = 600,
     long SupervisorOrphanTtlSec = 604800,
+    // t100 (arch/19 §4 «Гейты мусора»): дефолт возрастного гейта мусора
+    // супервизора — policy-ключ garbage_min_age_sec кластера перекрывает;
+    // защита заливающегося полного от устаревшего снапшота тика.
+    long GarbageMinAgeSec = 600,
     int JobFullTimeoutSec = 21600,
     int JobVerifyTimeoutSec = 21600,
     int JobRestoreTimeoutSec = 86400,
@@ -58,8 +59,4 @@ public sealed record BackupsRuntimeOptions(
     // глобальное выключение новых запусков) и бюджет активного дрилла от
     // started_unix → FAILED drill-timeout.
     int DrillIntervalDays = 1,
-    int DrillTimeoutSec = 21600,
-    // t41 (arch/14 §2.1): сеть контура поставки — задана → ноды/ephemeral-джобы
-    // бэкапов создаются в ней одной (pgw-net-<C> не используется, extra_hosts
-    // спек не применяются); null — прод-режим.
-    string? ContourNetwork = null);
+    int DrillTimeoutSec = 21600);

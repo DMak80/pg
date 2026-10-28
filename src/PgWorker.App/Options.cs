@@ -41,13 +41,8 @@ public sealed class PgWorkerOptions
     /// процессная логика — t02–t07. Default Enabled=false.</summary>
     public BackupsOptions Backups { get; set; } = new();
 
-    /// <summary>Единая точка сборки BackupsRuntimeOptions (t41): контур-сеть
-    /// читается ЗДЕСЬ из Docker-секции — все процессы-потребители (полные/
-    /// restore/wal/ретенция/verify/drill/супервизор) получают один и тот же
-    /// режим сетей спек джобов и адресации источника.</summary>
-    public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime(
-        Docker.ContourNetwork is { Length: > 0 } ? Docker.ContourNetwork : null,
-        Docker.Images.Node);
+    /// <summary>Единая точка сборки BackupsRuntimeOptions.</summary>
+    public BackupsRuntimeOptions BackupsRuntime() => Backups.ToRuntime();
 
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
     /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
@@ -484,8 +479,6 @@ public sealed class BackupsOptions
 
     public BackupsStagingOptions Staging { get; set; } = new();
 
-    public BackupsAgentOptions Agent { get; set; } = new();
-
     public BackupsJobOptions Job { get; set; } = new();
 
     public BackupsRetryOptions Retry { get; set; } = new();
@@ -512,24 +505,18 @@ public sealed class BackupsOptions
     public BackupsDrillOptions Drill { get; set; } = new();
 
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
-    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
-    /// — именованными аргументами: record расширялся с обеих сторон.
-    /// t41: contourNetwork — режим сети контура (Docker.ContourNetwork;
-    /// единая точка сборки — PgWorkerOptions.BackupsRuntime()). t26:
-    /// nodeImage — образ tool-контейнеров (Docker.Images.Node).</summary>
-    public BackupsRuntimeOptions ToRuntime(string? contourNetwork = null, string? nodeImage = null) => new(
+    /// — именованными аргументами: record расширялся с обеих сторон
+    /// (контейнеров/джобов бэкапов нет — операции исполняют приёмники нод).</summary>
+    public BackupsRuntimeOptions ToRuntime() => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
         VerifyIntervalSec: Policy.VerifyIntervalSec,
         S3Bucket: S3.Bucket,
         S3CaBundlePath: S3.CaBundlePath,
-        NodeImage: nodeImage ?? "pgworker-node:dev",
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
         StagingDir: Staging.Dir,
-        AgentCpu: Agent.Cpu,
-        AgentMem: Agent.Mem,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
         WalStaleSec: Wal.StaleSec,
@@ -544,12 +531,12 @@ public sealed class BackupsOptions
         RestoreRecoveryTimeoutSec: Restore.RecoveryTimeoutSec,
         SupervisorIntervalSec: Supervisor.IntervalSec,
         SupervisorOrphanTtlSec: Supervisor.OrphanTtlSec,
+        GarbageMinAgeSec: Supervisor.GarbageMinAgeSec,
         JobFullTimeoutSec: Job.FullTimeoutSec,
         JobVerifyTimeoutSec: Job.VerifyTimeoutSec,
         JobRestoreTimeoutSec: Job.RestoreTimeoutSec,
         DrillIntervalDays: Drill.IntervalDays,
-        DrillTimeoutSec: Drill.TimeoutSec,
-        ContourNetwork: contourNetwork);
+        DrillTimeoutSec: Drill.TimeoutSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь непустой Bucket (env PGW_BACKUP_S3_BUCKET); env-профили
@@ -613,16 +600,20 @@ public sealed class BackupsRestoreOptions
 /// <summary>Супервизор бэкапов (t07, arch/19 §4/§9): период сверок S3↔etcd
 /// per-cluster и глобального лидер-прохода (реестр сирот
 /// /pgworker/backups/orphans); OrphanTtlSec=0 — авто-удаление выключено,
-/// только алерт панели.</summary>
+/// только алерт панели; GarbageMinAgeSec — дефолт возрастного гейта мусора
+/// (arch/19 §4 «Гейты мусора»; policy-ключ garbage_min_age_sec кластера
+/// перекрывает), 0 — гейт снят.</summary>
 public sealed class BackupsSupervisorOptions
 {
     public int IntervalSec { get; set; } = 600;
 
     public long OrphanTtlSec { get; set; } = 604800;
+
+    public long GarbageMinAgeSec { get; set; } = 600;
 }
 
 /// <summary>Бюджеты операций бэкапов (arch/19 §6/§9): возрастные гварды
-/// зависших — полный/verify/restore (исполняют приёмник/tool-контейнеры,
+/// зависших — полный/verify/restore (исполняют приёмники WalReceiver нод,
 /// воркер супервизит через API приёмника).</summary>
 public sealed class BackupsJobOptions
 {
@@ -631,12 +622,14 @@ public sealed class BackupsJobOptions
     /// по бэкоффу (t26: контейнера полного нет, staging чистит приёмник).</summary>
     public int FullTimeoutSec { get; set; } = 21600;
 
-    /// <summary>Бюджет running verify-джоба по docker-факту StartedAt, c (t07):
-    /// kill+rm, кандидат остаётся PENDING с checked_unix = now (попытка зачтена).</summary>
+    /// <summary>Бюджет running verify-операции приёмника (started_unix снимка
+    /// API), c: cancel best-effort, кандидат остаётся PENDING с
+    /// checked_unix = now (попытка зачтена).</summary>
     public int VerifyTimeoutSec { get; set; } = 21600;
 
-    /// <summary>Бюджет RUNNING-фазы restore-заявки, c (t07): kill+rm + FAILED
-    /// restore-job-timeout с чисткой щита initialize; REJOINING не таймаутится.</summary>
+    /// <summary>Бюджет RUNNING-фазы restore-заявки, c: снос первой ноды
+    /// (операция уходит с ней) + FAILED restore-job-timeout с чисткой щита
+    /// initialize; REJOINING не таймаутится.</summary>
     public int RestoreTimeoutSec { get; set; } = 86400;
 }
 
@@ -694,16 +687,6 @@ public sealed class BackupsRetentionOptions
 public sealed class BackupsStagingOptions
 {
     public string Dir { get; set; } = "/home/postgres/pgdata/backup-staging";
-}
-
-/// <summary>Ресурсные лимиты джоба/агента бэкапов (arch/19 §6) →
-/// HostConfig.NanoCPUs/Memory; null — без лимита (образец request_* нод,
-/// arch/14 §2.4 п.4). Cpu — ядра, Mem — байты.</summary>
-public sealed class BackupsAgentOptions
-{
-    public double? Cpu { get; set; }
-
-    public long? Mem { get; set; }
 }
 
 /// <summary>WAL-поток шарда (t03, arch/19 §3/§9): период list/контроля цепочки,

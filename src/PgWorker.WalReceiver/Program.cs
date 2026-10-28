@@ -17,15 +17,13 @@ namespace PgWorker.WalReceiver;
 // образа требует aspnet-рантайм; Kestrel 0.0.0.0:8080 несёт /metrics
 // (Shared.Metrics, Meter PgWorker.WalReceiver, словарь arch/18 §2.8) и HTTP
 // API операций бэкапов (arch/19 §2/§3.5/§3.6/§5; канал arch/25 №22).
-// Режимы (spec t26 §3.3): нодовый — identity из env контейнера ноды +
-// hosted-цикл стрима WalReceiverLoop + маршруты /api/backup/full*; tool-режим
-// (PGW_NODE_TOOL=1) — WalReceiver главный процесс tool-контейнера БЕЗ
-// identity: hosted-цикл не регистрируется (нет identity — нет цикла стрима),
-// etcd-статусов агент не пишет, единственный канал команд/статуса — API
-// (маршруты — шаг 6). Метрики — одинаковые в обоих режимах (новых серий нет).
-// Реестр операций — singleton в обоих режимах (нодовый: полный; tool: одна
-// операция на контейнер). PGW_WALRECEIVER_NO_STREAM=1 — тестовый выключатель
-// hosted-цикла (API-тесты маршрутов поднимают Program без identity/etcd).
+// Режим ОДИН: identity из env контейнера ноды + hosted-цикл стрима
+// WalReceiverLoop + маршруты /api/backup/full* и ops-маршруты /api/ops/*
+// (verify/restore/cancel) — ВСЕ операции бэкапов исполняет этот единственный
+// процесс: полный — full-реестр, verify/restore/drill — общий ops-реестр
+// (полный ops-операцию не блокирует — разные реестры, arch/19 §5).
+// PGW_WALRECEIVER_NO_STREAM=1 — тестовый выключатель hosted-цикла (API-тесты
+// маршрутов поднимают Program без identity/etcd).
 // Явный internal-класс (не top-level statements): сгенерированный top-level
 // Program публичен в глобальном namespace и конфликтует (CS0433) с
 // PgWorker.App.Program в сборках, ссылающихся на оба проекта (тесты).
@@ -35,7 +33,7 @@ internal partial class Program
 {
     // Дефолт каталога staging полного в data-volume ноды (arch/19 §9);
     // перекрывается env PGW_BACKUP_STAGING_DIR (ставит EnsureNode — шаг 11).
-    private const string DefaultStagingDir = "/home/postgres/pgdata/backup-staging";
+    private const string DefaultStagingDir = NodePaths.Staging;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -54,87 +52,83 @@ internal partial class Program
         builder.WebHost.UseUrls("http://0.0.0.0:8080");
         builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
         builder.Services.AddSingleton<OperationRegistry>();
+        builder.Services.AddSingleton<OpsOperationRegistry>();
 
-        var toolMode = Environment.GetEnvironmentVariable("PGW_NODE_TOOL") == "1";
-        WalReceiverIdentity? identity = null;
-        string[] endpoints = [];
-        if (toolMode)
+        // Identity обязана быть валидной (env ноды — невалидный набор: лог в
+        // stdout + exit 1; supervisord с exitcodes=0 не перезапускает —
+        // лупинга env-дефекта нет).
+        var identity = WalReceiverIdentity.Parse(Environment.GetEnvironmentVariable, out var errors);
+        if (identity is null)
         {
-            // Tool-режим: identity нет — hosted-цикл стрима не стартует;
-            // единственный канал команд/статуса — API (spec t26 §3.3).
-            builder.Services.AddSingleton<IToolOperationFactory>(sp =>
-                new ToolOperationFactory(sp.GetRequiredService<OperationRegistry>()));
+            Console.Out.WriteLine(
+                $"walreceiver: invalid identity env: {string.Join("; ", errors)} — exit 1");
+            Environment.Exit(1);
         }
-        else
+        var endpoints = identity.EtcdEndpoints.ToArray();
+
+        var etcd = new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
+        var pools = new S3PoolStore(
+            new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }), endpoints);
+        Func<CancellationToken, Task<WalReceiverRole>> roleProbe = ct =>
+            PatroniRoleProbe.ProbeAsync(
+                Environment.GetEnvironmentVariable("SSL_RESTAPI_CA") ?? "", ct);
+
+        builder.Services.AddSingleton<IEtcdGateway>(etcd);
+        builder.Services.AddSingleton(endpoints);
+        builder.Services.AddSingleton<IS3PoolStore>(pools);
+
+        // Стрим WAL — тот же процесс: hosted-цикл с общими deps
+        // (PGW_WALRECEIVER_NO_STREAM=1 — тестовый выключатель).
+        if (Environment.GetEnvironmentVariable("PGW_WALRECEIVER_NO_STREAM") != "1")
         {
-            // Нодовый режим: identity обязана быть валидной (env ноды —
-            // невалидный набор: лог в stdout + exit 1; supervisord с
-            // exitcodes=0 не перезапускает — лупинга env-дефекта нет).
-            identity = WalReceiverIdentity.Parse(Environment.GetEnvironmentVariable, out var errors);
-            if (identity is null)
-            {
-                Console.Out.WriteLine(
-                    $"walreceiver: invalid identity env: {string.Join("; ", errors)} — exit 1");
-                Environment.Exit(1);
-            }
-            endpoints = identity.EtcdEndpoints.ToArray();
-
-            var etcd = new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) });
-            var pools = new S3PoolStore(
-                new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(10) }), endpoints);
-            Func<CancellationToken, Task<WalReceiverRole>> roleProbe = ct =>
-                PatroniRoleProbe.ProbeAsync(
-                    Environment.GetEnvironmentVariable("SSL_RESTAPI_CA") ?? "", ct);
-
-            builder.Services.AddSingleton<IEtcdGateway>(etcd);
-            builder.Services.AddSingleton(endpoints);
-            builder.Services.AddSingleton<IS3PoolStore>(pools);
-
-            // Стрим WAL — тот же процесс: hosted-цикл с общими deps
-            // (PGW_WALRECEIVER_NO_STREAM=1 — тестовый выключатель).
-            if (Environment.GetEnvironmentVariable("PGW_WALRECEIVER_NO_STREAM") != "1")
-            {
-                builder.Services.AddSingleton(sp => new WalReceiverLoop(
-                    Environment.GetEnvironmentVariable, etcd, endpoints, pools, roleProbe,
-                    o => new NpgsqlXLogSource(o), o => new NpgsqlSlotPositionReader(o)));
-                builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
-            }
-
-            // Staging полного (Р5): env ноды → дефолт arch/19 §9.
-            var stagingDir = Environment.GetEnvironmentVariable("PGW_BACKUP_STAGING_DIR")
-                is { Length: > 0 } dir ? dir : DefaultStagingDir;
-            builder.Services.AddSingleton<IFullBackupOperationFactory>(sp =>
-                new FullBackupOperationFactory(
-                    identity, etcd, endpoints, pools, roleProbe,
-                    new ProcessRunner(), stagingDir,
-                    sp.GetRequiredService<OperationRegistry>()));
+            builder.Services.AddSingleton(sp => new WalReceiverLoop(
+                Environment.GetEnvironmentVariable, etcd, endpoints, pools, roleProbe,
+                o => new NpgsqlXLogSource(o), o => new NpgsqlSlotPositionReader(o)));
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<WalReceiverLoop>());
         }
+
+        // Staging полного (Р5): env ноды → дефолт arch/19 §9.
+        var stagingDir = Environment.GetEnvironmentVariable("PGW_BACKUP_STAGING_DIR")
+            is { Length: > 0 } dir ? dir : DefaultStagingDir;
+        builder.Services.AddSingleton<IFullBackupOperationFactory>(sp =>
+            new FullBackupOperationFactory(
+                identity, etcd, endpoints, pools, roleProbe,
+                new ProcessRunner(), stagingDir,
+                sp.GetRequiredService<OperationRegistry>()));
+        // Ops-операции (verify/restore/drill) — тот же процесс: общий
+        // ops-реестр (одна активная; полный — свой реестр, arch/19 §5).
+        builder.Services.AddSingleton<IOpsOperationFactory>(sp =>
+            new NodeOperationFactory(
+                stagingDir, sp.GetRequiredService<OpsOperationRegistry>()));
 
         var app = builder.Build();
         app.MapAppMetrics();
-        if (toolMode)
-            MapToolRoutes(app);
-        else
-            MapFullBackupRoutes(app, identity!, endpoints);
+        MapFullBackupRoutes(app, identity, endpoints);
+        MapOpsRoutes(app);
         await app.RunAsync();
     }
 
-    // Маршруты tool-операций (arch/19 §5/§3.5, spec §3.2): POST /api/ops/verify
-    // — 409 (вторая активная) / 202; GET — 200 снимок / 404; POST
-    // /api/ops/cancel — общий для tool-операций: 404 (нет активной) / 202
-    // best-effort (итог — снимок state=cancelled: НЕ failed — отмена не
-    // суждение о данных; воркер-супервиз отличает её от vanished). Одна
-    // активная операция на контейнер — общий OperationRegistry (TryBegin — гвард).
-    private static void MapToolRoutes(WebApplication app)
+    // Маршруты ops-операций (arch/19 §5/§3.5/§3.6): POST /api/ops/verify —
+    // 409 (вторая активная ops-операция) / 202; GET — 200 снимок (в т.ч.
+    // started_unix — возрастной бюджет verify воркера §6) / 404; POST
+    // /api/ops/restore — 409 / 202 (drill использует тот же маршрут —
+    // механика одна, id в теле — признак drill, §3.6); POST /api/ops/cancel
+    // — общий для ops-операций: 404 (нет активной) / 202 best-effort (итог —
+    // снимок state=cancelled: НЕ failed — отмена не суждение о данных;
+    // воркер-супервиз отличает её от vanished). Одна активная ops-операция
+    // на процесс — общий OpsOperationRegistry (TryBegin — гвард); полный
+    // живёт в СВОЁМ реестре и ops-операцию не блокирует.
+    private static void MapOpsRoutes(WebApplication app)
     {
         // Активная операция для cancel (снимок — в реестре, экземпляр — здесь).
         IReceiverOperation? active = null;
 
         app.MapPost("/api/ops/verify", (StartVerifyRequest body,
-            OperationRegistry registry, IToolOperationFactory factory) =>
+            OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
             if (!registry.TryBegin(new OperationSnapshot(
-                    body.BackupId, OperationStates.Running, OperationPhases.Downloading)))
+                    body.BackupId, OperationStates.Running, OperationPhases.Downloading,
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
                 return Results.Json(
                     new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
 
@@ -142,22 +136,24 @@ internal partial class Program
             active = operation;
             _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
             return Results.Json(
-                new ToolStatusResponse(OperationStates.Running, OperationPhases.Downloading),
+                new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
         });
 
-        app.MapGet("/api/ops/verify", (OperationRegistry registry) => ToolStatus(registry));
+        app.MapGet("/api/ops/verify", (OpsOperationRegistry registry) => OpsStatus(registry));
 
         // POST /api/ops/restore — тело StartRestoreRequest (backup_id /
-        // target_time RFC3339, null = latest / recovery_timeout_sec /
-        // S3-контекст): 409 / 202 (drill использует те же маршруты — механика
-        // одна, spec §3.4). GET — ToolStatusResponse (downloading|recovering +
-        // restored_to_lsn/system_id) / 404.
+        // id? — drill-признак / target_time RFC3339, null = latest /
+        // recovery_timeout_sec / S3-контекст): 409 / 202 (drill использует
+        // те же маршруты — механика одна, arch/19 §3.6). GET —
+        // OpsStatusResponse (downloading|recovering + restored_to_lsn/
+        // system_id/started_unix) / 404.
         app.MapPost("/api/ops/restore", (StartRestoreRequest body,
-            OperationRegistry registry, IToolOperationFactory factory) =>
+            OpsOperationRegistry registry, IOpsOperationFactory factory) =>
         {
             if (!registry.TryBegin(new OperationSnapshot(
-                    body.BackupId, OperationStates.Running, OperationPhases.Downloading)))
+                    body.Id ?? body.BackupId, OperationStates.Running, OperationPhases.Downloading,
+                    StartedUnix: DateTimeOffset.UtcNow.ToUnixTimeSeconds())))
                 return Results.Json(
                     new ErrorResponse("operation already active"), JsonOpts, statusCode: 409);
 
@@ -165,13 +161,13 @@ internal partial class Program
             active = operation;
             _ = Task.Run(() => operation.RunAsync(CancellationToken.None));
             return Results.Json(
-                new ToolStatusResponse(OperationStates.Running, OperationPhases.Downloading),
+                new OpsStatusResponse(OperationStates.Running, OperationPhases.Downloading),
                 JsonOpts, statusCode: 202);
         });
 
-        app.MapGet("/api/ops/restore", (OperationRegistry registry) => ToolStatus(registry));
+        app.MapGet("/api/ops/restore", (OpsOperationRegistry registry) => OpsStatus(registry));
 
-        app.MapPost("/api/ops/cancel", async (OperationRegistry registry) =>
+        app.MapPost("/api/ops/cancel", async (OpsOperationRegistry registry) =>
         {
             if (registry.Current is null || active is null)
                 return Results.Json(
@@ -181,15 +177,15 @@ internal partial class Program
         });
     }
 
-    // Общий статус tool-операции: 200 снимок (в т.ч. терминальный — снимок
+    // Общий статус ops-операции: 200 снимок (в т.ч. терминальный — снимок
     // персистентен, воркер-супервиз отличает cancelled от vanished-404) /
     // 404 (операций в реестре нет).
-    private static IResult ToolStatus(OperationRegistry registry)
+    private static IResult OpsStatus(OpsOperationRegistry registry)
         => registry.Current is { } snapshot
-            ? Results.Json(new ToolStatusResponse(
+            ? Results.Json(new OpsStatusResponse(
                     snapshot.State, snapshot.Phase,
                     snapshot.RestoredToLsn, snapshot.SystemId,
-                    snapshot.Error),
+                    snapshot.StartedUnix, snapshot.Error),
                 JsonOpts)
             : Results.Json(
                 new ErrorResponse("no active operation"), JsonOpts, statusCode: 404);

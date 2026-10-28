@@ -731,13 +731,12 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Проверки полных бэкапов (t04/t26, arch/19 §5): цепочка + checksums в
-// tool-контейнере по API приёмника; verifyObserver — counter
-// pgworker_backup_verify_total{result}.
+// Проверки полных бэкапов (t04/t26, arch/19 §5): цепочка + checksums —
+// verify-операция WalReceiver ноды-источника по её API; verifyObserver —
+// counter pgworker_backup_verify_total{result}.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<IWalReceiverApiClient>(),
@@ -750,12 +749,11 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
     sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
-// Дрилл восстановимости (arch/19 §3.6): супервиз drill-tool-контейнера,
-// отбор/валидация/запуск, доводимый снос; runtime — как у verify.
+// Дрилл восстановимости (arch/19 §3.6): супервиз drill-операции WalReceiver
+// первой ноды шарда, отбор/валидация/запуск; runtime — как у verify.
 builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<BackupS3Factory>(),
     sp.GetRequiredService<IWalReceiverApiClient>(),

@@ -3,12 +3,14 @@ using System.Threading;
 namespace PgWorker.WalReceiver.Operations;
 
 /// <summary>
-/// Реестр одной активной операции приёмника (spec §3.2): нодовый режим —
-/// полный бэкап, tool-режим — одна операция на контейнер. Снимки IMMUTABLE,
-/// публикация — атомарная замена ссылки (паттерн LiveFacts); TryBegin —
-/// 409-гвард второй активной операции.
+/// Реестр одной активной операции приёмника (spec §3.2): полный — свой
+/// реестр (FullRegistry), verify/restore/drill — общий ops-реестр (одна
+/// ops-операция на процесс приёмника; полный ops-операцию не блокирует —
+/// разные реестры, §5). Снимки IMMUTABLE, публикация — атомарная замена
+/// ссылки (паттерн LiveFacts); TryBegin — 409-гвард второй активной
+/// операции.
 /// </summary>
-public sealed class OperationRegistry
+public class OperationRegistry
 {
     private OperationSnapshot? _current; // доступ только через Volatile
 
@@ -29,3 +31,8 @@ public sealed class OperationRegistry
     public void Update(OperationSnapshot next) => Volatile.Write(ref _current, next);
 
 }
+
+/// <summary>Отдельный DI-тип ops-реестра (verify/restore/drill): один инстанс
+/// на процесс приёмника, НЕ делится с операцией полного — на ноде возможен
+/// полный (full-реестр) и одна ops-операция одновременно (arch/19 §5).</summary>
+public sealed class OpsOperationRegistry : OperationRegistry;

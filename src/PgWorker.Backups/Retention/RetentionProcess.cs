@@ -71,7 +71,8 @@ public sealed class RetentionProcess(
         }
         if (poolRead.Value is not { } poolCtx)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
-        await using var s3 = s3Factory.Create(poolCtx);
+        // Клиент — кэш фабрики (breaker переживает тики) — НЕ диспоузим.
+        var s3 = s3Factory.Create(poolCtx);
 
         // S: расписание per-cluster; не время — только storage-монитор.
         if (nowUnix - _lastPassUnix.GetOrAdd(cluster, 0L) >= options.RetentionIntervalSec)

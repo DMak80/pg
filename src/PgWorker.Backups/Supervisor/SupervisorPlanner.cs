@@ -19,4 +19,12 @@ public static class SupervisorPlanner
         var owned = etcdFulls.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
         return s3FullIds.Where(id => !owned.Contains(id)).ToList();
     }
+
+    /// <summary>Возрастной гейт мусора (arch/19 §4 «Гейты мусора»): самый старый
+    /// объект unowned-префикса достиг порога GarbageMinAgeSec → мусор дозрел
+    /// (заливка in-flight молода — снимок тика мог отстать от планировщика
+    /// этого же тика). minAgeSec &lt;= 0 — гейт снят (мгновенное удаление).</summary>
+    public static bool IsGarbageMatured(
+        DateTimeOffset oldestObject, long minAgeSec, DateTimeOffset now)
+        => minAgeSec <= 0 || now - oldestObject >= TimeSpan.FromSeconds(minAgeSec);
 }

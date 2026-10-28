@@ -93,27 +93,23 @@ public class BackupsOptionsTests
     }
 
     [Fact]
-    public void Defaults_PolicyStagingAgent_CanonValues()
+    public void Defaults_PolicyStaging_CanonValues()
     {
-        // Arrange / Act — дефолты каркаса (арх/19 §4/§6/§9).
+        // Arrange / Act — дефолты каркаса (арх/19 §4/§9).
         var options = new BackupsOptions();
 
         // Assert — GFS 1/1/1 — целевая схема (t18: последний + недельная +
-        // месячная позиции), суточное окно, verify при создании; staging-каталог;
-        // квота и лимиты джобов — null (без лимита, образец request_* нод
-        // arch/14 §2.4 п.4).
+        // месячная позиции), суточное окно, verify при создании; staging-каталог.
         options.Policy.Retention.Days.Should().Be(1);
         options.Policy.Retention.Weeks.Should().Be(1);
         options.Policy.Retention.Months.Should().Be(1);
         options.Policy.FullMaxAgeSec.Should().Be(86400);
         options.Policy.VerifyOnCreate.Should().BeTrue();
         options.Staging.Dir.Should().Be("/home/postgres/pgdata/backup-staging");
-        options.Agent.Cpu.Should().BeNull();
-        options.Agent.Mem.Should().BeNull();
     }
 
     [Fact]
-    public void ToRuntime_MergesAllSections_AndAdvertisedFallback()
+    public void ToRuntime_MergesAllSections()
     {
         // Arrange — из per-install констант только bucket/CA (креды — пул и
         // его per-cluster secrets-ключ etcd).
@@ -124,15 +120,13 @@ public class BackupsOptionsTests
                 Bucket = "b",
             },
             Staging = new BackupsStagingOptions { Dir = "/st" },
-            Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
             Wal = new BackupsWalOptions { VerifyIntervalSec = 5, LagMaxSegments = 10, StaleSec = 60 },
         };
 
         // Act
-        var runtime = options.ToRuntime(nodeImage: "pgworker-node:test");
+        var runtime = options.ToRuntime();
 
         // Assert
-        runtime.NodeImage.Should().Be("pgworker-node:test");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);
         runtime.WalStaleSec.Should().Be(60);

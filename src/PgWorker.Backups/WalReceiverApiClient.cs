@@ -28,13 +28,18 @@ public sealed record StartVerifyRequest(
 
 public sealed record StartRestoreRequest(
     [property: JsonPropertyName("backup_id")] string BackupId,
+    // id ЛИШЬ у drill-запуска (arch/19 §3.6): scratch-каталог на ноде
+    // backup-drill/<id>/pgdata; restore (null) пишет в PGDATA ноды.
+    [property: JsonPropertyName("id")] string? Id,
     [property: JsonPropertyName("target_time")] string? TargetTime,
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
     [property: JsonPropertyName("s3")] S3Context S3);
 
 /// <summary>Снимок статуса из GET (поля spec t26 §3.2 / arch/19 §2/§5); id —
 /// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/
-/// чужая» в 409-ветке запуска: чужой id трактуется как не-наша операция.</summary>
+/// чужая» в 409-ветке запуска: чужой id трактуется как не-наша операция;
+/// started_unix — время TryBegin операции приёмника (возрастной бюджет
+/// verify воркера, arch/19 §6 — docker-инспектов больше нет).</summary>
 public sealed record ReceiverStatus(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("phase")] string Phase,
@@ -43,6 +48,7 @@ public sealed record ReceiverStatus(
     [property: JsonPropertyName("size_bytes")] long? SizeBytes = null,
     [property: JsonPropertyName("restored_to_lsn")] string? RestoredToLsn = null,
     [property: JsonPropertyName("system_id")] string? SystemId = null,
+    [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
     [property: JsonPropertyName("error")] string? Error = null);
 
 /// <summary>Исход вызова API приёмника: StatusCode 0 = транспортный отказ/таймаут;
@@ -105,9 +111,9 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
     public async Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
         => await GetAsync($"{baseUrl}/api/ops/restore", ct);
 
-    // Внешний канал операторской отмены tool-операций (arch/19 §5): воркером
-    // НЕ используется (его отмены — cancel full + kill+rm tool-контейнера);
-    // эндпоинт каноничен — член оставлен для операторского инструментария.
+    // Внешний канал операторской отмены ops-операций приёмника (arch/19 §5):
+    // воркером используется и как best-effort stop при таймауте verify/drill
+    // (arch/19 §6); restore-таймаут сносит первую ноду (операция уходит с ней).
     public async Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
         => await PostAsync<object?>($"{baseUrl}/api/ops/cancel", null, ct);
 
@@ -160,9 +166,8 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
 
 /// <summary>Резолв адреса API приёмника (arch/19 §2/§3.5, arch/14 §2.4):
 /// нода — имя docker-контейнера :8080 в общей сети воркера и нод (канонические
-/// pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt;, object — имя её контейнера); tool-контейнер —
-/// контур: имя :8080 в сети контура, прод: host:динамический порт из инспекта
-/// публикации :8080.</summary>
+/// pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt;, object — имя её контейнера); ВСЕ операции
+/// бэкапов (полный/verify/restore/drill) — команды на приёмники нод.</summary>
 public static class WalReceiverAddress
 {
     /// <summary>Базовый URL API приёмника ноды: имя docker-контейнера :8080
@@ -174,10 +179,4 @@ public static class WalReceiverAddress
             : $"pgw-{cluster}-{shard}-{node}";
         return $"http://{container}:8080";
     }
-
-    /// <summary>Базовый URL API tool-контейнера: контур (ContourNetwork задан) —
-    /// имя контейнера :8080 в сети контура; прод — host:&lt;динамический порт&gt;
-    /// из инспекта публикации :8080.</summary>
-    public static string ForTool(string containerName, string host, int? publishedPort, bool contourMode)
-        => contourMode ? $"http://{containerName}:8080" : $"http://{host}:{publishedPort ?? 0}";
 }

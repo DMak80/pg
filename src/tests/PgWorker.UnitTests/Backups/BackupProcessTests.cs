@@ -238,7 +238,7 @@ public class BackupProcessTests
             null);
         public static ReceiverReply Status(string state, string phase,
             string? wal = null, long? size = null, string? error = null) =>
-            new(200, new ReceiverStatus(state, phase, null, wal, size, null, null, error), null);
+            new(200, new ReceiverStatus(state, phase, null, wal, size, null, null, null, error), null);
         public static ReceiverReply Transport() => new(0, null, "connection refused");
         public static ReceiverReply ServerError() => new(502, null, "bad gateway");
         public static ReceiverReply Rejected() => new(404, null, null);

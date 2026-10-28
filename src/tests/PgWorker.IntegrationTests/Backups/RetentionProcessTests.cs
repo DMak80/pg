@@ -67,7 +67,11 @@ public class RetentionProcessTests(EtcdFixture fixture)
 
     private RetentionProcess BuildProcess(
         BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
-        fixture.Gateway, [fixture.Endpoint], FakePoolFactory.Single(s3),
+        fixture.Gateway, [fixture.Endpoint],
+        // breakerWindow=0 — тест доводки СЛЕДУЮЩИМ тиком: транспортный отказ
+        // первого delete не должен исключать единственную цель на 45 c
+        // (семантику breaker-окна покрывают юниты PoolBackupS3Tests).
+        FakePoolFactory.Single(s3, breakerWindow: TimeSpan.Zero),
         FakePoolFactory.Store(),
         _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         options, clock ?? new FrozenClock(),
