@@ -74,39 +74,3 @@
   Точечный фикс в задаче t02: база обоих Dockerfile — `dotnet/aspnet:10.0`.
   Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
   (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
-
-- **`t14-restore-rejoin-patroni-boot-flake`** — rejoin-фаза restore-заявки:
-  Patroni ноды не приходит в бюджет 120 c при живой restore-операции
-  (2026-10-28, ветка `bugs-t10-t11-t13`, база main `8b160759`; команда — как
-  в t10, фильтры `FullyQualifiedName~E2eRestoreScenarios` и
-  `FullyQualifiedName~E2eTliSwitch`). Тесты:
-  `E2eRestoreScenarios.Restore_Latest_RebuildsDestroyedShard` (2/2 последних
-  прогонов), `E2eTliSwitchScenarios.Restore_TargetTimeThroughTliSwitch_StopsAtGoal`
-  и `Restore_LatestThroughTliSwitch_PicksUpWholeTail` (класс-фейл tlsw).
-  Восстановление честно COMPLETED (restored_to_lsn корректен, послебакапные
-  коммиты применены), дальше REJOINING → permanent-FAILED
-  `Patroni did not come up within 120s` в двух видах: (а) probe
-  «The SSL connection could not be established» — проба Patroni ноды не
-  отвечает всё окно; (б) `members=shard1a:replica:running,shard1b:replica:stopped`
-  — восстановленная первая нода поднялась РЕПЛИКОЙ (лидера нет), вторая —
-  uninitialized при живом контейнере; в HA-scope остаточный ключ
-  `failover={"leader":"shard1a","member":"shard1b","scheduled_at":<момент
-  демонтажа>}`, last_failover cause=accelerated. Гипотезы: (1) демонтаж
-  (arch/19 §3.5) чистит initialize/leader/sync/status, но НЕ `failover` —
-  запланированный switchover прошлой жизни выполняется Patroni
-  восстановленной ноды accelerated → лидерство уходит на неинициализированную
-  ноду → гейт firstReady (лидер на первой ноде) недостижим; (2) источник
-  failover-ключа уточнить (кто пишет его в момент демонтажа). Логи:
-  `arch/roadmap/bugs/t14-restore-rejoin-patroni-boot-flake/`.
-- **`t15-walstream-promote-ac5-chain-glue`** — AC5 промоут-сценария стрима:
-  `E2eWalStreamPromoteScenarios.WalStream_Promote_TliHistory_ChainGlued`,
-  2026-10-28, ветка `bugs-t10-t11-t13` (та же серия, что t14; команда — как
-  в t10, фильтр `FullyQualifiedName~E2eWalStreamPromote`). После останова
-  мастера (docker stop, промоут shard1b, tli=2) гейт «wal-chain-glued»
-  (WalChain.CheckWithRestart continuous + wal-ключ ACTIVE, бюджет 300 c)
-  не сходится: objects=36, maxTli=0x2, history=present, ok=False — цепочка
-  TLI2 с дырой, wal-ключ в WAL_CHAIN_ERROR весь бюджет. Класс t097
-  (досыпка старого TLI при смене таймлайна), но t097-фикс (CHECKPOINT на
-  мастере) неприменим — мастер stopнут docker'ом. Ожидаемое: CheckWithRestart
-  перезапускается от первого сегмента maxTli, цепь непрерывна, ключ ACTIVE.
-  Логи: `arch/roadmap/bugs/t15-walstream-promote-ac5-chain-glue/`.

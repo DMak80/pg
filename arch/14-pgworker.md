@@ -229,7 +229,15 @@ F (§5).
 контейнера/образа нет) +
 `supervisord` + .NET CLI `pgwnodetool master-lease` (параметр
 `--env-file /home/postgres/pgw-node.env`): `/v3/lease/grant` +
-keepalive цикл 1 с, TTL 5 с. Внутри контейнера всё общается через localhost —
+keepalive цикл 1 с, TTL 5 с. Программа `spilo` supervisord'а — обёртка над
+апстримным `/launch.sh`: апстрим ставит `runsvdir -P` (каждый `runsv` в СВОЕЙ
+группе процессов — групповой stop/kill supervisord'а `stopasgroup`/`killasgroup`
+их не достаёт; сироты держат `supervise/lock`, и Patroni следующего запуска
+не стартует никогда — «unable to lock supervise/lock», ломает restore-стоп/
+старт Patroni ноды, arch/19 §3.5). Обёртка гасит runit-дерево сама: TERM →
+штатный `sv stop patroni` + сервисы (бюджет, до окна supervisord'а), затем
+точечный добор `runsv`/`runsvdir` — лок освобождён, `start spilo` поднимает
+Patroni чисто. Внутри контейнера всё общается через localhost —
 работает и в plain, и в swarm (у swarm нет host-network и «подов»; sidecar'ы
 отдельными сервисами громоздки). Приёмник WAL идентичность получает env'ом
 ноды (`PGW_BACKUP_CLUSTER/SHARD/NODE` + per-install `PGW_BACKUP_S3_BUCKET`,
@@ -887,7 +895,10 @@ P2 на каждый шард X:
         При исчерпании бюджета (лидера нет) — проверка данных scope (Д3):
         docker-exec `test -f …/PG_VERSION` по каждой ноде → Present/Absent/
         Unknown; ВСЕ Absent (доказанная утрата) → чистка HA-scope (точечные
-        initialize/leader/sync + префиксы optime//members/; request_* —
+        initialize/leader/sync/failover + префиксы optime//members/;
+        `failover` обязателен — остаточный маркер с `scheduled_at` в прошлом
+        гонит Patroni новой жизни в accelerated failover на
+        неинициализированного кандидата; request_* —
         декларации панели — НЕ трогаем) с journal phase=reset-scope → Patroni
         бутстрапится заново, бюджет ожидания начинается снова; хоть одна
         Present → НЕ лечить (чистка уничтожила бы данные): journal-фейл

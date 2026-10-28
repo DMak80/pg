@@ -178,6 +178,16 @@ public sealed class WalReceiverLoop : BackgroundService
         {
             try
             {
+                // Граница сессии (arch/19 §3 «Агент»): факт pool_exhausted
+                // наблюдала СЕССИЯ прошлой итерации — новая итерация
+                // перепубликует флаг фактическим состоянием (исчерпания нет);
+                // при живом исчерпании факт вернёт первый же неудачный put.
+                // Иначе idle-источник (промоут без записи — put'ов нет) держал
+                // бы здоровый пул в DEGRADED неограниченно: «снятый первым
+                // успешным put» не наступает никогда.
+                if (Volatile.Read(ref _facts).PoolExhausted)
+                    PublishFacts(null, false, null, null);
+
                 // 4.1. Стоп-гейты: Unknown — работаем по последним известным
                 //      (перепроверка через 5 c; etcd-моргание стрим не рвёт).
                 var gates = await WalReceiverGates.ReadAsync(

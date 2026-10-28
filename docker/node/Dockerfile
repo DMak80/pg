@@ -40,11 +40,13 @@ RUN chmod +x /opt/pgw-tools/pgwnodetool
 # Контекст сборки — корень репозитория:
 # docker build -f docker/node/Dockerfile -t pgworker-node:dev .
 COPY docker/node/supervisord.conf /etc/supervisor/supervisord.conf
+COPY docker/node/spilo-supervised.sh /spilo-supervised.sh
 COPY docker/node/docker-entrypoint.sh /docker-entrypoint-pgw.sh
 COPY docker/node/docker-entrypoint-haproxy.sh /docker-entrypoint-haproxy.sh
 COPY docker/node/docker-entrypoint-doorman.sh /docker-entrypoint-doorman.sh
 RUN chmod +x /docker-entrypoint-pgw.sh \
-    /docker-entrypoint-haproxy.sh /docker-entrypoint-doorman.sh
+    /docker-entrypoint-haproxy.sh /docker-entrypoint-doorman.sh \
+    /spilo-supervised.sh
 
 # Порты публикуются PgWorker при создании контейнера (портпаблиши аллокатора).
 EXPOSE 5432 8008 6432

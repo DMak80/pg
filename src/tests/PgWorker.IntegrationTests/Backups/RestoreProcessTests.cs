@@ -655,6 +655,40 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Should().Contain("receiver-unavailable");
     }
 
+    // AAA (arch/19 §3.5): 409 при запуске — в общем ops-реестре приёмника
+    // ЧУЖАЯ ops-операция (verify свежего полного); снимок 409 не различает
+    // свою/чужую, и принять 409 за «свою живую» нельзя — воркер уходил бы в
+    // REJOINING от чужого succeeded без system_id. 409 — transient: фаза
+    // остаётся "demolished", повтор следующим тиком до освобождения реестра.
+    [Fact]
+    public async Task LaunchPostConflictTransientPhaseStaysDemolished()
+    {
+        // Arrange — RUNNING на шаге запуска; приёмник отвечает 409 (реестр занят)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        _receiver.StartReply = new ReceiverReply(409, null, null);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60,
+            phase: "demolished");
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — InProgress, статус RUNNING, фаза "demolished" (не launching!):
+        // чужая операция не выдаётся за свою, запуск отложен до свободы реестра
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        alive.State.Should().Be(RestoreStatus.Running);
+        alive.Phase.Should().Be("demolished", "a foreign ops op must not be adopted as ours");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("receiver-busy");
+    }
+
     // AAA: succeeded → REJOINING с чистой фазой (рестарта ноды нет: операция
     // ноды) + RestoredToLsn/SystemId из статуса API; volume первой ноды с
     // восстановленным PGDATA не трогается (docker-сносов нет — итог ТОЛЬКО по API).
