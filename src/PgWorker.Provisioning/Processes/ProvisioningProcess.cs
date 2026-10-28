@@ -603,12 +603,15 @@ public sealed class ProvisioningProcess(
     }
 
     // Д3: чистка HA-scope (Patroni бутстрапится заново): точечные initialize/leader/
-    // sync + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
-    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). Одна чистка на scope за бюджет —
+    // sync/failover + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
+    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). failover обязателен: остаточный маркер
+    // с scheduled_at в прошлом гонит Patroni новой жизни в accelerated failover на
+    // неинициализированного кандидата — лидерство недостижимо (arch/14 §5 C).
+    // Одна чистка на scope за бюджет —
     // трекер сброшен, следующая не раньше нового бюджета.
     private async Task<Result> ResetScopeAsync(string scope, CancellationToken ct)
     {
-        foreach (var key in new[] { "initialize", "leader", "sync" })
+        foreach (var key in new[] { "initialize", "leader", "sync", "failover" })
         {
             var del = await DeleteAsync($"/service/{scope}/{key}", prefix: false, ct);
             if (!del.IsSuccess)

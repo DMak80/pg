@@ -350,8 +350,11 @@ public sealed class RestoreProcess(
         //   Phase="demolished".
         // "demolished" → EnsureNode первой ноды (щит "restore-in-progress"
         //   удерживает Patroni от bootstrap пустого PGDATA) + POST /api/ops/restore
-        //   → Phase="launching". Повтор тика (краш между POST и put) —
-        //   идемпотентен (ensure no-op; 409 — операция уже жива).
+        //   → Phase="launching". 409 (чужая ops-операция — verify, arch/19 §3.5)
+        //   — transient: фаза остаётся "demolished", повтор следующим тиком.
+        //   Краш между POST и put фазы — редкое окно: повторный POST получает
+        //   409, пока операция жива, и доезжает до перезапуска операции после
+        //   её терминала (резюмов нет — скачивание заново, идемпотентно).
         // "launching"/"downloading"/"recovering" → только GET-поллинг: повтор
         //   команды на каждом тике супервиза НЕБЕЗОПАСЕН — когда операция
         //   приёмника достигла терминала, 409-гвард принимает новую команду
@@ -444,7 +447,20 @@ public sealed class RestoreProcess(
                     Bucket: options.S3Bucket,
                     Prefix: $"{SrcCluster(op)}/{SrcShard(op)}",
                     CaPem: BackupCaPem.ReadIfConfigured(options.S3CaBundlePath))), ct);
-        if (!launch.IsAccepted && !launch.IsConflict)
+        if (launch.IsConflict)
+        {
+            // 409 — в общем ops-реестре приёмника ЧУЖАЯ ops-операция (verify
+            // свежего полного; одна ops-операция на процесс, arch/19 §5).
+            // Снимок 409 не различает свою/чужую — принять 409 за «свою живую»
+            // НЕЛЬЗЯ: verify затирает снимки общего реестра, и воркер уходит в
+            // REJOINING от чужого succeeded БЕЗ system_id (щит-заполнитель
+            // навсегда запирает bootstrap, firstReady недостижим). Запуск
+            // откладывается: фаза остаётся «demolished», повтор следующим
+            // тиком до освобождения реестра (arch/19 §3.5).
+            return await TransientAsync(cluster, $"receiver-busy/{shard.Name}/{op.Id}",
+                "restore launch deferred: the receiver ops-registry is busy (verify/drill in flight)", ct);
+        }
+        if (!launch.IsAccepted)
         {
             // Транспортный отказ/5xx команды — transient: статус не меняем
             // (фаза "demolished" остаётся — команда повторится), следующий тик
@@ -694,7 +710,12 @@ public sealed class RestoreProcess(
         // status чистим ОБЯЗАТЕЛЬНО: в нём optime прошлой жизни лидера; без чистки
         // восстановленная нода (LSN = точке restore, ниже старого optime при PITR-откате)
         // «отстаёт» больше maximum_lag_on_failover и навечно отказывается избираться
-        foreach (var key in new[] { "initialize", "leader", "sync", "status" })
+        // failover чистим ОБЯЗАТЕЛЬНО: остаточный маркер (надзор успел ускорить
+        // failover в окне демонтажа — гвард на шаге мутации, arch/19 §3.5) с
+        // scheduled_at в прошлом для Patroni новой жизни — «accelerated failover»
+        // на неинициализированного кандидата: восстановленная нода не лидерится
+        // (первыйReady-гейт rejoin недостижим).
+        foreach (var key in new[] { "initialize", "leader", "sync", "status", "failover" })
         {
             var del = await etcd.DeleteAsync(endpoints[0], $"/service/{scope}/{key}", prefix: false, ct);
             if (!del.IsSuccess)
@@ -796,6 +817,20 @@ public sealed class RestoreProcess(
                 "backup-restore {Cluster}/{Shard}/{Op}: system_id not received from the job — initialize keeps the placeholder",
                 cluster, shard.Name, op.Id);
         }
+
+        // Санитизация failover-маркера (прецедент NodeSupervisor — «хвост
+        // failover-first ускорения»): демонтаж чистит HA-scope с failover
+        // (arch/19 §3.5), а гвард надзора на шаге мутации закрывает гонку
+        // «долгий тик надзора, начавшийся до заявки»; маркер, всё же
+        // положенный в окне демонтаж→rejoin, для Patroni восстановленной
+        // ноды — «accelerated failover» на неинициализированного кандидата:
+        // она не лидерится, firstReady ждёт бюджет впустую. Удаление на
+        // КАЖДОМ тике rejoin (идемпотентно, отсутствие ключа = успех) —
+        // лечит и поздние маркеры; P2.2-проба ниже читает scope после чистки.
+        var delFailover = await etcd.DeleteAsync(endpoints[0],
+            $"/service/{cluster}-{shard.Name}/failover", prefix: false, ct);
+        if (!delFailover.IsSuccess)
+            return Result<ProcessOutcome>.Failed(delFailover.Error!);
 
         // Поллинг create/start (arch/14 §6 инвариант поллинга): одиночный вызов
         // таймаутом короче окна проверки (половина), идемпотентный повтор;

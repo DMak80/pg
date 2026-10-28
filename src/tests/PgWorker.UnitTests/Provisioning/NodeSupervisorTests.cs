@@ -228,6 +228,32 @@ public class NodeSupervisorTests
         outcome.Value.DeadShards.Should().BeEmpty("shard in restore — not an evacuation candidate");
     }
 
+    // AAA (arch/19 §3.5 «Гвард исключения» — свежая сверка на шаге мутации):
+    // restore-заявка, записанная в etcd ПОСЛЕ чтения снапшота тика (гонка
+    // «долгий тик надзора, начавшийся до заявки»), тоже гвардит: шард с
+    // ключом в etcd не пересоздаётся и не пробуется, даже когда
+    // снапшот-параметр тика его не несёт (иначе надзор ускорял failover
+    // посреди демонтажа и клал residual failover-маркер в чистый HA-scope).
+    [Fact]
+    public async Task Tick_RestoreKeyWrittenAfterSnapshot_ShardStillSkipped()
+    {
+        // Arrange — ноды снесены (иначе EnsureDeclared восстановил бы);
+        // restore-заявка живёт ТОЛЬКО в etcd — снапшот-параметр тика null
+        var rig = await NewRig(_ => Ok(), nodeObjects: []);
+        var op = new RestoreOperationState("20260911120000Z", RestoreStatus.Planned,
+            "", "shop/shard1", "latest", "shard1a", 1760000000, "operator");
+        rig.Etcd.Seed("/pgworker/backups/shop/shard1/restore/20260911120000Z",
+            PgWorker.Backups.Restore.RestoreStatusJson.Serialize(op));
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert — свежее чтение гварда увидело заявку: пересозданий нет
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Driver.EnsuredNodes.Should().BeEmpty("fresh restore guard must skip the shard");
+        outcome.Value.DeadShards.Should().BeEmpty("fresh restore guard must not count shard dead");
+    }
+
     [Fact]
     public async Task Tick_ManuallyRemovedContainer_EnsureNodeRestores()
     {

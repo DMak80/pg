@@ -59,12 +59,23 @@ public sealed class NodeSupervisor(
         // t05 §3.4 гвард-множество: шарды с активной restore-заявкой
         // (PLANNED/RUNNING/REJOINING) — надзор их НЕ трогает (шард демонтируется
         // restore-процессом; пробы/rebuild/TO_RECREATE/deadShards-кандидат — мимо).
-        var restoring = new HashSet<string>();
+        var restoringSnapshot = new HashSet<string>();
         if (backups?.FirstOrDefault(b => b.Cluster == cluster) is { } mineBackups)
             foreach (var (restoreShard, sb) in mineBackups.Shards)
                 if (sb.Restores.Any(r => r.State
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
-                    restoring.Add(restoreShard);
+                    restoringSnapshot.Add(restoreShard);
+        // Свежее чтение объединяется со снапшот-множеством (arch/19 §3.5
+        // «Гвард исключения»): снапшот тика отстаёт от записи заявки, и долгий
+        // тик надзора со старым множеством исполнял мутации посреди
+        // демонтажа/REJOINING. Для «не трогать»-гварда консервативен union:
+        // шард пропускается, если restore видит ЛЮБОЙ из источников. etcd
+        // недоступен — снапшот-множество (transient: следующий тик перепроверит).
+        var freshRestoring = await ReadRestoringShardsAsync(cluster, ct);
+        var restoring = freshRestoring is null
+            ? restoringSnapshot
+            : new HashSet<string>(freshRestoring, StringComparer.Ordinal);
+        restoring.UnionWith(restoringSnapshot);
 
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
@@ -297,6 +308,14 @@ public sealed class NodeSupervisor(
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
 
+            // Свежая сверка restore-гварда на шаге мутации (arch/19 §3.5):
+            // шард с активной restore-заявкой — ни ускорения failover, ни
+            // recreate (снапшот тика отстаёт от записи заявки); etcd недоступен
+            // — null → действует снапшот-множество тика.
+            var freshRestoring = await ReadRestoringShardsAsync(cluster, ct);
+            if (freshRestoring?.Contains(shard.Name) == true)
+                continue;
+
             // Заявка ресурсов читается лениво: только если ноду правда recreate'им;
             // тюнинг — один расчёт на шард, сразу после загрузки заявки
             // (пересчёт на каждый EnsureNode-путь, arch/14 §2.1/§5 C).
@@ -480,6 +499,15 @@ public sealed class NodeSupervisor(
         string cluster, ShardSpec shard, string missing,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
+        // Свежая сверка restore-гварда перед мутацией DCS (arch/19 §3.5):
+        // маркер, положенный ускорением шарда в restore, переживает чистку
+        // HA-scope демонтажём и для Patroni новой жизни — «accelerated
+        // failover» на неинициализированного кандидата (лидерство
+        // недостижимо). NotLeader — «не событие» у наблюдателей.
+        var restoring = await ReadRestoringShardsAsync(cluster, ct);
+        if (restoring?.Contains(shard.Name) == true)
+            return Result<FailoverAcceleration>.Success(FailoverAcceleration.NotLeader);
+
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
         if (!scopeKvs.IsSuccess)
@@ -946,10 +974,10 @@ public sealed class NodeSupervisor(
                         cluster, shard, name, addresses, ct);
                     if (!accelerated.IsSuccess)
                         return accelerated;
-                    // В этой ветке NotLeader невозможен (isLeader по свежему
-                    // leader-ключу тика): Applied → accelerated, NoCandidate →
-                    // elections (spec §3.1).
-                    if (!shard.ToRemove)
+                    // Applied → accelerated, NoCandidate → elections (spec §3.1);
+                    // NotLeader — шард в restore (свежая сверка гварда внутри
+                    // ускорения, arch/19 §3.5) — факта нет, маркер не ставился.
+                    if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
                         haFacts.FailoverDetected(shard.Name, name,
                             accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
                             track[trackKey]);
@@ -967,6 +995,12 @@ public sealed class NodeSupervisor(
                 // Rebuild (эталон rebuild-node.sh): удалить контейнер+volume,
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
                 if (addr is null)
+                    continue;
+                // Свежая сверка restore-гварда перед сносом volume (arch/19
+                // §3.5): снос — невозвратная мутация, гвард снапшота тика
+                // отстаёт от записи заявки.
+                var rebuildingShard = await ReadRestoringShardsAsync(cluster, ct);
+                if (rebuildingShard?.Contains(shard.Name) == true)
                     continue;
                 // Живая сверка клэйма перед сносом/пересозданием ноды (arch/17 S5).
                 if (!await ClaimAliveAsync(cluster, $"rebuild/{shard.Name}/{name}", ct))
@@ -1086,4 +1120,31 @@ public sealed class NodeSupervisor(
 
     private Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
         => EtcdEndpointFailover.CallAsync(endpoints, (endpoint, token) => etcd.RangeAsync(endpoint, prefix, token), ct);
+
+    // Свежее чтение restore-гварда (arch/19 §3.5 «Гвард исключения»): множество
+    // шардов с активной (PLANNED/RUNNING/REJOINING) restore-заявкой — из etcd,
+    // НЕ из снапшота тика: снапшот отстаёт от записи заявки, и долгий тик
+    // надзора со старым множеством исполнял мутации посреди демонтажа/REJOINING
+    // (ускорение failover клало residual failover-маркер в чистый HA-scope,
+    // recreate — пустую ноду поверх восстанавливаемой). null — etcd/парсинг
+    // недоступны: вызывающий откатывается к снапшот-множеству тика (transient —
+    // следующий тик перепроверит).
+    private async Task<HashSet<string>?> ReadRestoringShardsAsync(string cluster, CancellationToken ct)
+    {
+        var kvs = await RangeAsync($"/pgworker/backups/{cluster}/", ct);
+        if (!kvs.IsSuccess)
+            return null;
+        var parsed = BackupsParser.Parse(kvs.Value, out _);
+        if (!parsed.IsSuccess)
+            return null;
+        var mine = parsed.Value.FirstOrDefault(b => b.Cluster == cluster);
+        var restoring = new HashSet<string>();
+        if (mine is null)
+            return restoring;
+        foreach (var (shard, sb) in mine.Shards)
+            if (sb.Restores.Any(r => r.State
+                    is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+                restoring.Add(shard);
+        return restoring;
+    }
 }

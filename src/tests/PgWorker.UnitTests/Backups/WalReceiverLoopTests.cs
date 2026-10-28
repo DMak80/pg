@@ -675,6 +675,63 @@ public class WalReceiverLoopTests
         }
     }
 
+    // AAA (граница сессии, arch/19 §3 «Агент»): факт pool_exhausted наблюдала
+    // СЕССИЯ A (put отказал маркером исчерпания); после смены сессии (STOPPED
+    // → пауза → гейт снят) новая сессия B на idle-источнике НЕ ДЕЛАЕТ ни
+    // одного put — «снятый первым успешным put» не наступает никогда, и без
+    // якоря границы сессии здоровый пул держал бы шард в DEGRADED неограниченно
+    // (факт прогона AC5: promote-мастер без записи, wal-ключ DEGRADED весь
+    // бюджет). Новая итерация цикла перепубликует флаг фактическим состоянием.
+    [Fact]
+    public async Task PoolExhausted_SessionBoundary_RepublishedFromFreshSession()
+    {
+        // Arrange — сессия A: сегмент …000000 доставлен, put отказывает
+        // маркером исчерпания (write-список «мертв»); сессию рвёт STOPPED
+        var etcd = new FakeEtcd();
+        SeedHappyPath(etcd);
+        var s3 = new FakeS3();
+        s3.FailKeys.Add($"{Cluster}/{Shard}/wal/000000010000000000000000");
+        var firstSource = true;
+        var (loop, cts, sources) = StartLoop(
+            etcd, WalReceiverRole.Master,
+            () =>
+            {
+                if (firstSource)
+                {
+                    firstSource = false;
+                    var source = new FakeXLogSource();
+                    source.Chunks.Enqueue(Chunk(0));
+                    return source;
+                }
+
+                return new FakeXLogSource(); // сессии B+: пустой поток (idle-мастер)
+            },
+            s3: s3,
+            probePeriod: TimeSpan.FromSeconds(1));
+
+        try
+        {
+            // Act/Assert — флаг исчерпания опубликован живым (сессия в put-ретрае)
+            await WaitStatusAsync(etcd, s => s.PoolExhausted, "pool_exhausted=true in session A");
+
+            // Act — STOPPED рвёт сессию A (проба из стрима), цикл уходит в paused;
+            // гейт снимаем — сессия B стартует на idle-источнике (put'ов нет)
+            etcd.Kvs[WalKey] = $$"""{"cluster":"{{Cluster}}","shard":"{{Shard}}","state":"STOPPED"}""";
+            await WaitStatusAsync(etcd, s => s.State == WalReceiverState.Paused, "paused (session A torn)");
+            etcd.Kvs.Remove(WalKey);
+
+            // Assert — на границе сессии факт перепубликован фактическим
+            // состоянием новой сессии (исчерпания нет), БЕЗ единого put'а
+            await WaitStatusAsync(
+                etcd, s => !s.PoolExhausted && s.State == WalReceiverState.Streaming,
+                "pool_exhausted=false at the session boundary (no puts in session B)");
+        }
+        finally
+        {
+            await StopLoopAsync(loop, cts);
+        }
+    }
+
     [Fact]
     public async Task TliJump_FactPublishedToStatus()
     {
