@@ -81,6 +81,13 @@ public class E2eRestoreScenarios
             // Послебакапные данные (накатятся WAL'ом до latest)
             await ExecAsync(adminDsn,
                 "INSERT INTO e2e_restore_probe SELECT g, 'post' FROM generate_series(6, 10) g", ct);
+            // t13-телеметрия + гейт: сегмент послебакапного коммита — точка, до
+            // которой recovery обязан докатиться (архив закрывается ниже switch-циклом).
+            var t1Segment = (await ScalarAsync(adminDsn,
+                "SELECT pg_walfile_name(pg_current_wal_lsn())", ct)).Trim();
+            Console.WriteLine($"[PITR] {cluster}: wal_start={walStartSeg}, post-insert LSN=" +
+                await ScalarAsync(adminDsn,
+                    "SELECT pg_current_wal_lsn() || '|' || pg_walfile_name(pg_current_wal_lsn())", ct));
             // Закрываем сегменты до НЕПРЕРЫВНОЙ цепочки от wal_start полного —
             // условие restore-валидации. Точная позиция текущего сегмента не важна
             // (pg_basebackup в конце сам делает switch): emit+switch по одному,
@@ -97,9 +104,21 @@ public class E2eRestoreScenarios
             chainOk.Should().BeTrue("the chain from wal_start must converge before the request: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
+            // Гейт содержания архива (t13): сегмент послебакапного коммита обязан
+            // лежать в архиве ДО заявки. Приёмник выгружает сегмент только когда
+            // поток добил его до полной границы (закрытый switch'ем «короткий»
+            // сегмент добивается позже), а непрерывность цепочки этого не покрывает:
+            // заявка раньше выгрузки давала restore по усечённому архиву
+            // («pre»-строки без «post» при зелёном COMPLETED).
+            var t1Archived = await WalArchivedAsync(cluster, "shard1", WalPosOf(t1Segment), ct);
+            t1Archived.Should().BeTrue("the post-backup commit segment must land in the archive: "
+                + await DumpDiagnosticsAsync(cluster, "shard1"));
+
             // Act — «погиб диск»: полный docker-снос нод шарда (контейнеры+тома) +
             // restore-заявка latest (backup_id пуст → валидация возьмёт новейший
             // COMPLETED из etcd); FAILED «дыра» — ретрай новой заявкой (гонка t03)
+            Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
+                string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
             await KillShardAsync(cluster, "shard1", ct);
             var done = await RestoreWithRetryAsync(cluster, "shard1", target: "latest", ct: ct);
 
@@ -204,12 +223,23 @@ public class E2eRestoreScenarios
             var wsSeg = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(completedFull2.Value)!
                 ["wal_start_segment"].GetString();
             wsSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
-            var ws = WalPosOf(wsSeg!);
+            Console.WriteLine($"[PITR] {cluster}: wal_start={wsSeg}");
             await ExecAsync(adminDsn,
                 "INSERT INTO pitr_probe SELECT g, 't1' FROM generate_series(6, 10) g", ct);
+            // t13-телеметрия + гейт: сегмент коммита T1 — точка, ДО которой
+            // recovery с target=tCut обязан докатиться (сегмент закрывается
+            // ниже switch'ами, попадание в архив ждёт гейт).
+            var t1Segment = (await ScalarAsync(adminDsn,
+                "SELECT pg_walfile_name(pg_current_wal_lsn())", ct)).Trim();
+            Console.WriteLine($"[PITR] {cluster}: T1-insert LSN=" +
+                await ScalarAsync(adminDsn,
+                    "SELECT pg_current_wal_lsn() || '|' || pg_walfile_name(pg_current_wal_lsn())", ct));
             await SwitchWalsAsync(adminDsn, 6, ct); // закрыты ws..ws+5
-            var t1Archived = await WalArchivedAsync(cluster, "shard1", ws + 5, ct);
-            t1Archived.Should().BeTrue("the segments from T1 must land in the archive: "
+            // Гейт от ФАКТИЧЕСКОГО сегмента коммита T1 (не от ws+5): приёмник
+            // выгружает сегмент только добитым до полной границы — заявка до
+            // выгрузки давала recovery по усечённому архиву (t13).
+            var t1Archived = await WalArchivedAsync(cluster, "shard1", WalPosOf(t1Segment), ct);
+            t1Archived.Should().BeTrue("the T1 commit segment must land in the archive: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
             // Пауза ДО фиксации tCut выносит коммиты T1 из секунды фиксации:
             // target-time округляется ВНИЗ до секунды — коммит T1 в той же
@@ -218,15 +248,25 @@ public class E2eRestoreScenarios
             // позже ⇒ дальше от DROP — DROP-защита не слабеет.
             await Task.Delay(5000, ct);
             var tCut = DateTime.UtcNow;
+            Console.WriteLine($"[PITR] {cluster}: tCut={tCut:O} (target \"time:{tCut:yyyy-MM-ddTHH:mm:ssZ}\")");
 
             // Arrange 4 — порча: DROP уходит в последующие (заархивированные) сегменты
             await ExecAsync(adminDsn, "DROP TABLE pitr_probe", ct);
+            var dropSegment = (await ScalarAsync(adminDsn,
+                "SELECT pg_walfile_name(pg_current_wal_lsn())", ct)).Trim();
+            Console.WriteLine($"[PITR] {cluster}: post-DROP LSN=" +
+                await ScalarAsync(adminDsn,
+                    "SELECT pg_current_wal_lsn() || '|' || pg_walfile_name(pg_current_wal_lsn())", ct));
             await SwitchWalsAsync(adminDsn, 3, ct); // закрыты ws+6..ws+8
-            var dropArchived = await WalArchivedAsync(cluster, "shard1", ws + 8, ct);
+            // Гейт от ФАКТИЧЕСКОГО сегмента DROP (не от ws+8 — фактическая позиция
+            // DROP дальше счётной): порча обязана быть в архиве до заявки (t13).
+            var dropArchived = await WalArchivedAsync(cluster, "shard1", WalPosOf(dropSegment), ct);
             dropArchived.Should().BeTrue("the segment with DROP must land in the archive: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
             // Act — заявка PITR на T_cut (до порчи); ретрай на гонку t03 (дыра)
+            Console.WriteLine($"[PITR] {cluster}: archive before request: [" +
+                string.Join(",", await ListWalNamesAsync(cluster, "shard1")) + "]");
             var chainOk2 = await WalChainContinuousAsync(cluster, "shard1", wsSeg!, ct);
             chainOk2.Should().BeTrue("the chain before the PITR request must be continuous: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));

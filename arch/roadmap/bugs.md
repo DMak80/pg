@@ -75,65 +75,38 @@
   Оставшееся: проверить, нужен ли WalReceiver'у ASP.NET-рантайм вообще
   (разрыв транзитивной ссылки метрик — задача владельца свипера/метрик).
 
-- **`t10-pgw-e2e-series-fails`** — пачка красных PgWorker.IntegrationTests
-  E2E в полных сериях solutionx (2026-10-24, команда:
-  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx
-  -c Release --no-build --filter "FullyQualifiedName~IntegrationTests"`):
-  серия A2 (HEAD `7448fdd1`) — 17
-  фейлов (Restore/Drill/WalStream/Pool…, 8–16 м, артефакты контуров —
-  `$TMPDIR/pgw-e2e-artifacts-<guid>/`); приёмочная серия — 55 мгновенных
-  fail-fast «sources are newer than the preparation» (процедурный эпизод —
-  прогон с устаревшим штампом E2ePrepare, не баг кода); серия D2
-  (HEAD `71fff40f`) — 17 фейлов (Pool/TliSwitch/WalStream/Drill/Restore…,
-  10–15 м; прогон оборван внешним лимитом хоста на PgWorker-фазе ПОСЛЕ
-  зелёного KafkaWorker-прогона, MSB4166 «Child node exited prematurely»).
-  Списки фейлов и выжимки — `arch/roadmap/bugs/t08-pgw-e2e-series-fails/`;
-  полные логи серий — `/tmp/pgw-kfw-t01-series-1.log`,
-  `/tmp/pgw-kfw-t01-d2-series.log` (временные). Гипотезы: PgWorker E2E под
-  параллельной нагрузкой полной series solutionx — нагрузочный класс,
-  разбирать по артефактам контуров (docker-логи, timing).
-- **`t11-walreceiver-restapi-ca-probe`** — PatroniRoleProbe в приёмнике WAL
-  не поднимает роль из CA-материала: `X509Certificate2.CreateFromPemFile`
-  требует пару cert+key, а env `SSL_RESTAPI_CA` (RestCertificateCache.CaPem —
-  `caCertPem`) несёт ТОЛЬКО сертификат → CryptographicException «The key
-  contents do not contain a PEM…» → роль навсегда none → приёмник замирает в
-  `waiting_role`, доставка WAL не идёт. Найдено в мерж-гейте t25
-  (2026-10-24, ветка `feat-t25-wal-receiver-in-pgnode`, Worktree-прогон
-  wal/pool/tli): 10/10 фейлов серий `E2eWalStream|E2eTliSwitch|E2eBackupPool`
-  (8–18 мин, каскады «both receivers must stream»), офлайн-контур
-  pgworker-node:dev воспроизвёл и подтвердил (логи в подпапке). Исправление
-  сделано в t25 (`X509CertificateLoader.LoadCertificateFromFile` —
-  сертификат-онли); пункт закрывает собой объяснение пачки фейлов t08
-  (WalStream/Pool/TliSwitch — те же ассерты «both agents/receivers …»):
-  при разборе t08 проверить её серии на этот корень и закрыть пункт t08
-  как дубликат, если подтверждается. Дополнительный угол t25-серии (логи в
-  подпапке): двойной промоут 2→3→4 в `E2eTliSwitchScenarios` —
-  `00000003.history` отсутствует в S3 (transition не наблюдён приёмником —
-  по spec §3.1 п.6 это легитимный `history_missing`-факт), restore
-  `target_time` честно FAILED «TLI transition 2→3 without 00000003.history»;
-  гарантия доставки .history при ПРОПУСКЕ перехода (промоут-гонка) — вне
-  контракта t25, лечение (периодический ре-доклад истории приёмником или
-  иной канал) — отдельная задача.
-  Логи: `arch/roadmap/bugs/t11-walreceiver-restapi-ca-probe/`
-  (выжимка серии walpool2: 10 фейлов, [PHASE]-хвосты, `[TIMING]`,
-  diag-фрагменты; повторные прогоны после фикса — там же).
-- **`t13-restore-pitr-recovery-short-of-archive`** — E2E restore PITR
-  (`E2eRestoreScenarios.Restore_TargetTime_PitrRollback`,
-  `Restore_Latest_RebuildsDestroyedShard`, 2026-10-25, ветка
-  `feat-t25-wal-receiver-in-pgnode`, серия right1 Шага 12 t25): оба факта —
-  «Expected "10"… but "5"» — recovery применил только T0-порцию (до полного),
-  восстановлено 5 контрольных строк из 10; архив ПЕРЕД заявкой полон
-  (сценарные гейты WalArchivedAsync ws+5/ws+8 и WalChainContinuous прошли,
-  restore COMPLETED, восстановленный LSN — внутри сегмента), т.е. recovery
-  НЕ докатился по FULL архиву. Restore-джобы и архивация t25 не менялись;
-  restore-джоб-логи невозможно разобрать: демонтаж сносит джоб-контейнеры
-  ДО телеметрии teardown (docker logs недоступны; etcd-journal сносит
-  teardown) — телеметрия restore-сценариев подлежит починке (лог джоба в
-  артефакты до сноса). Прогон/логи:
-  `arch/roadmap/bugs/t13-restore-pitr-recovery-short-of-archive/`
-  (right1-лог, runner.log, host.log воркеров rs-time/rs-latest). Гипотезы:
-  (а) restore-джоб скачивает WAL-список снимком на старте и не докачивает
-  поздние сегменты (restore_command retry-цикл); (б) recovery_target_time
-  останавливается на конце скачанного архива (promote без target);
-  (в) гонка «архивация приёмником ↔ PLANNED-заявка». Разобрать по
-  телеметрии джоба.
+- **`t14-restore-rejoin-patroni-boot-flake`** — rejoin-фаза restore-заявки:
+  Patroni ноды не приходит в бюджет 120 c при живой restore-операции
+  (2026-10-28, ветка `bugs-t10-t11-t13`, база main `8b160759`; команда — как
+  в t10, фильтры `FullyQualifiedName~E2eRestoreScenarios` и
+  `FullyQualifiedName~E2eTliSwitch`). Тесты:
+  `E2eRestoreScenarios.Restore_Latest_RebuildsDestroyedShard` (2/2 последних
+  прогонов), `E2eTliSwitchScenarios.Restore_TargetTimeThroughTliSwitch_StopsAtGoal`
+  и `Restore_LatestThroughTliSwitch_PicksUpWholeTail` (класс-фейл tlsw).
+  Восстановление честно COMPLETED (restored_to_lsn корректен, послебакапные
+  коммиты применены), дальше REJOINING → permanent-FAILED
+  `Patroni did not come up within 120s` в двух видах: (а) probe
+  «The SSL connection could not be established» — проба Patroni ноды не
+  отвечает всё окно; (б) `members=shard1a:replica:running,shard1b:replica:stopped`
+  — восстановленная первая нода поднялась РЕПЛИКОЙ (лидера нет), вторая —
+  uninitialized при живом контейнере; в HA-scope остаточный ключ
+  `failover={"leader":"shard1a","member":"shard1b","scheduled_at":<момент
+  демонтажа>}`, last_failover cause=accelerated. Гипотезы: (1) демонтаж
+  (arch/19 §3.5) чистит initialize/leader/sync/status, но НЕ `failover` —
+  запланированный switchover прошлой жизни выполняется Patroni
+  восстановленной ноды accelerated → лидерство уходит на неинициализированную
+  ноду → гейт firstReady (лидер на первой ноде) недостижим; (2) источник
+  failover-ключа уточнить (кто пишет его в момент демонтажа). Логи:
+  `arch/roadmap/bugs/t14-restore-rejoin-patroni-boot-flake/`.
+- **`t15-walstream-promote-ac5-chain-glue`** — AC5 промоут-сценария стрима:
+  `E2eWalStreamPromoteScenarios.WalStream_Promote_TliHistory_ChainGlued`,
+  2026-10-28, ветка `bugs-t10-t11-t13` (та же серия, что t14; команда — как
+  в t10, фильтр `FullyQualifiedName~E2eWalStreamPromote`). После останова
+  мастера (docker stop, промоут shard1b, tli=2) гейт «wal-chain-glued»
+  (WalChain.CheckWithRestart continuous + wal-ключ ACTIVE, бюджет 300 c)
+  не сходится: objects=36, maxTli=0x2, history=present, ok=False — цепочка
+  TLI2 с дырой, wal-ключ в WAL_CHAIN_ERROR весь бюджет. Класс t097
+  (досыпка старого TLI при смене таймлайна), но t097-фикс (CHECKPOINT на
+  мастере) неприменим — мастер stopнут docker'ом. Ожидаемое: CheckWithRestart
+  перезапускается от первого сегмента maxTli, цепь непрерывна, ключ ACTIVE.
+  Логи: `arch/roadmap/bugs/t15-walstream-promote-ac5-chain-glue/`.

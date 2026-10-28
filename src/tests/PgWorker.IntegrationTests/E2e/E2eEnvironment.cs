@@ -1564,6 +1564,34 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 }
             }));
 
+            // Джоб-файлы нод (t13-телеметрия): restore-лог постгреса и
+            // recovery-конфиги PGDATA снимаются docker cp ДО сноса/стопа
+            // контейнеров — restore-pg.log живёт только в volume джоб-ноды,
+            // docker-логи его не содержат, после демонтажа не восстанавливается.
+            // Отсутствие файла (не джоб-нода / операция не стартовала) — не
+            // ошибка: копия «лучшими усилиями».
+            foreach (var (id, name) in own)
+            {
+                foreach (var (path, suffix) in new[]
+                {
+                    ("/tmp/restore-pg.log", "restore-pg.log"),
+                    ("/home/postgres/pgdata/pgroot/data/postgresql.auto.conf", "auto.conf"),
+                    ("/home/postgres/pgdata/pgroot/data/backup_label", "backup_label"),
+                })
+                {
+                    try
+                    {
+                        var dest = Path.Combine(ArtifactsDir, $"job-{name}-{suffix}");
+                        await E2eFixture.RunProcessAsync("docker", ["cp", $"{id}:{path}", dest],
+                            CancellationToken.None, TimeSpan.FromSeconds(60));
+                    }
+                    catch
+                    {
+                        // файла нет (не джоб-нода) — нормально
+                    }
+                }
+            }
+
             Console.Error.WriteLine($"e2e[{Slug}]: telemetry \"{reason}\" -> {ArtifactsDir}");
         }
         catch (Exception e)
