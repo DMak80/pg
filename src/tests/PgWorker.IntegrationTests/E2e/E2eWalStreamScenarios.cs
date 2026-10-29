@@ -53,7 +53,7 @@ public class E2eWalStreamScenarios
         await using var app = await StartWalHostAsync("walstream", ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
 
         // Мастер shard1 (published pg-порт) + admin/superuser-DSN: нагрузка и
@@ -509,7 +509,7 @@ public class E2eWalStreamScenarios
         await SeedThreeReplicaShardAsync(cluster);
         await using var appOwner = await StartWalHostAsync("wal-3r", ct);
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)),
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)),
             TimeSpan.FromSeconds(600), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (3-replica shard)");
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
@@ -1011,7 +1011,7 @@ public class E2eWalStreamScenarios
         // 7–8 попыток (ноды живы, но readiness-пробы patroni прогреваются дольше
         // бюджета); зелёный путь не меняется — опрос выходит по факту DONE.
         var provisioned = await E2eFixture.WaitForAsync(
-            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(600), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(600), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");

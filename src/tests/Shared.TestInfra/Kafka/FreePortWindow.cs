@@ -10,7 +10,7 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // (стенд живёт в зоне 15000–17000: kfw-брокеры 16xxx + portalloc PgWorker) и от
 // параллельных прогонов тестов. Зоны тестов не пересекаются между сборками:
 // kafka — 21–26xxx, valkey — 26–31xxx, S3 — 31–41xxx.
-internal static class FreePortWindow
+public static class FreePortWindow
 {
     // Поиск выше порт-зоны dev-станда: 21000+ (16xxx занят стендовыми
     // kafka-брокерами, 15xxx — portalloc PgWorker-нод стенда).
@@ -20,7 +20,7 @@ internal static class FreePortWindow
 
     // Окно с запасом: коллекция kafka-e2e держит несколько кластеров по 1–4
     // брокера одновременно (itlifecycle*, re2, it1 — пик ~10 контейнеров).
-    internal const int Size = 64;
+    public const int Size = 64;
 
     // Шаг с запасом: соседние кандидаты не перекрываются.
     private const int Step = 128;

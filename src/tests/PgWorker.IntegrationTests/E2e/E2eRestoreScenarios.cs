@@ -52,7 +52,7 @@ public class E2eRestoreScenarios
             await using var app = await StartRestoreHostAsync("rslatest", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — контрольные данные ДО полного (RPO-полный)
@@ -200,7 +200,7 @@ public class E2eRestoreScenarios
             await using var app = await StartRestoreHostAsync("rstime", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
 
             // Arrange 2 — данные T0 → полный COMPLETED

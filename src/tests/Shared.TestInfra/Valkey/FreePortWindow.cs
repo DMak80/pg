@@ -9,7 +9,7 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 // никакой зависимости от поднятого dev-стенда (стендовая зона valkey-копии
 // 15000–18000) и от параллельных прогонов тестов. Зоны тестов не пересекаются
 // между сборками: kafka — 21–26xxx, valkey — 26–31xxx, S3 — 31–41xxx.
-internal static class FreePortWindow
+public static class FreePortWindow
 {
     // Valkey-зона тестов: 26000–31000. Ниже — 21000–26000 у kafka-тестов.
     private const int SearchFrom = 26000;
@@ -17,7 +17,7 @@ internal static class FreePortWindow
     private const int SearchTo = 31000;
 
     // Окно с запасом: сценарии держат несколько кластеров по 1 ноде.
-    internal const int Size = 64;
+    public const int Size = 64;
 
     // Шаг с запасом: соседние кандидаты не перекрываются.
     private const int Step = 128;
@@ -71,7 +71,7 @@ internal static class FreePortWindow
     // docker-proxy занятого порта держит LISTEN, зонд его видит (голый курсор
     // «From+2+n» в полной серии выдавал занятый порт → docker 500 «port is
     // already allocated»).
-    internal static int NextFreePort()
+    public static int NextFreePort()
     {
         lock (Gate)
         {

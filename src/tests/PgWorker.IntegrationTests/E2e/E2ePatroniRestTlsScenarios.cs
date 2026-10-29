@@ -52,7 +52,7 @@ public class E2ePatroniRestTlsScenarios
             await using (var p1 = await Fx.StartHostAsync("rtls-p1", extraEnv: extraEnv, ct: ct))
             {
                 var provisioned = await E2ePhase.WaitAsync(fx, "rtls-provisioning",
-                    E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
+                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 provisioned.Should().BeTrue($"provisioning must reach Active; work={await WorkDumpAsync(cluster, ct)}");
 
                 var addresses = await PortallocAsync(cluster);
@@ -176,7 +176,7 @@ public class E2ePatroniRestTlsScenarios
 
                 // Кластер снова Active после миграции.
                 var activeAgain = await E2ePhase.WaitAsync(fx, "rtls-active-again",
-                    E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
+                    E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 activeAgain.Should().BeTrue($"the cluster is Active after the migration; work={await WorkDumpAsync(cluster, ct)}");
             }
         }

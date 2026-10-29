@@ -74,7 +74,7 @@ public class E2eSecondInstanceScenarios
             // ---------- Arrange: живой кластер + add-декларация shard3 ----------
             await SeedClusterAsync(cluster);
             var provisioned = await E2ePhase.WaitAsync(Fx, "si2-provisioning",
-                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active before add starts");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);

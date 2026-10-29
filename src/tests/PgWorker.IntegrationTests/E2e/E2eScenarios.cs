@@ -57,7 +57,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
         var provisioned = await E2ePhase.WaitAsync(Fx,
-            "ac2-provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
+            "ac2-provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster, () => ProvisionedAsync(Cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE (dsn/RUNNING/no status/state)");
 
         await AssertProvisioningResultAsync(Cluster, ct);
@@ -72,7 +72,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2ePhase.WaitAsync(Fx,
-            "ac3-takeover-done", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(360), ct);
+            "ac3-takeover-done", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, Cluster2, () => ProvisionedAsync(Cluster2)), TimeSpan.FromSeconds(360), ct);
         taken.Should().BeTrue($"the second instance must carry {Cluster2} to DONE (takeover)");
 
         var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");

@@ -59,7 +59,7 @@ public class E2eSupervisorSelfHealScenarios
         // Arrange 2 — provisioning DONE; генерация WAL ДО полного (цепочка длиннее
         // одного сегмента), реальный COMPLETED полный; wal-ключ ACTIVE
         var provisioned = await WaitPhaseAsync("provisioning",
-            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
         var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,

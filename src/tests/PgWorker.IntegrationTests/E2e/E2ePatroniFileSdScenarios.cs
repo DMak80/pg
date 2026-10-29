@@ -141,7 +141,7 @@ public class E2ePatroniFileSdScenarios
             });
 
             var provisioned = await E2eFixture.WaitForAsync(
-                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning of the cluster must reach Active (dsn/RUNNING/no status)");
 
             // ---------- сетевая идентичность (Д1-контур в E2E) ----------

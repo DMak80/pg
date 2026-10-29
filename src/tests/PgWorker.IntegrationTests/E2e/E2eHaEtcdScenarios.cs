@@ -35,7 +35,7 @@ public class E2eHaEtcdScenarios
             await SeedClusterAsync(cluster);
             await using var h1 = await Fx.StartHostAsync("ha1", ct: ct);
             var provisioned = await E2ePhase.WaitAsync(Fx, "haetcd-provisioning",
-                E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning must reach Active on the 3-node contour");
             Fx.EtcdEndpoints.Should().HaveCount(3);
             (await Fx.EtcdctlAsync("member", "list")).Split('\n', StringSplitOptions.RemoveEmptyEntries)

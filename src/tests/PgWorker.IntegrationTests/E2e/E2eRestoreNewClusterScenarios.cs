@@ -54,7 +54,7 @@ public class E2eRestoreNewClusterScenarios
             await using var app = await StartRestoreHostAsync("rsdr", ct);
 
             var provisioned = await WaitPhaseAsync(
-                "provisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "provisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
             var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
             var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
@@ -95,7 +95,7 @@ public class E2eRestoreNewClusterScenarios
             // (source-override; ретрай на гонку t03 — дыры цепочки source-префикса)
             await SeedClusterAsync(cluster);
             var reprovisioned = await WaitPhaseAsync(
-                "reprovisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+                "reprovisioning", E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
             reprovisioned.Should().BeTrue("the cluster must come up anew (empty shards)");
             var drDone = await RestoreWithRetryAsync(cluster, "shard1",
                 target: "latest", source: $"{cluster}/shard1", ct: ct);

@@ -664,7 +664,7 @@ public class E2eWalStreamTliScenarios
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
-            E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning must reach DONE before the WAL load");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s from start");

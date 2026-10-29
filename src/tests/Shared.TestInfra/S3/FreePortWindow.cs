@@ -8,7 +8,7 @@ namespace S3Worker.IntegrationTests.S3;
 // окно зондится TcpListener'ом на старте фикстуры — никаких литералов портов
 // и никаких пересечений с dev-стендом (pg 15xxx / kfw 16xxx / valkey 17xxx /
 // owns3+s3 стенды и valkey-тесты 26–31xxx: наша зона — 31–41xxx).
-internal static class FreePortWindow
+public static class FreePortWindow
 {
     // Поиск выше зоны valkey-тестов (26–31xxx).
     private const int SearchFrom = 31000;
@@ -16,7 +16,7 @@ internal static class FreePortWindow
     private const int SearchTo = 41000;
 
     // Окно с запасом: сценарии держат несколько кластеров по 1–2 ноды.
-    internal const int Size = 64;
+    public const int Size = 64;
 
     // Шаг с запасом: соседние кандидаты не перекрываются.
     private const int Step = 128;

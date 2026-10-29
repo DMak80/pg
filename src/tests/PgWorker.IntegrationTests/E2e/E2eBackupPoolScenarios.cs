@@ -178,7 +178,7 @@ public abstract class E2eBackupPoolScenarios
     protected Task<bool> WaitProvisionedAsync(string cluster, CancellationToken ct)
         // Fail-fast застрявшего провижининга — общий хелпер (E2eFixture):
         // серии переводятся на него с локальных копий поэтапно.
-        => E2eFixture.WaitProvisionedAsync(Fx, GetOrNullAsync, cluster, ct);
+        => E2eEnvironment.WaitProvisionedAsync(Fx, GetOrNullAsync, cluster, ct);
 
     protected static async Task ExecAsync(string adminDsn, string sql, CancellationToken ct)
     {

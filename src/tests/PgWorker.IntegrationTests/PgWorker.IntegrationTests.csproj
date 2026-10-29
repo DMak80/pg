@@ -36,6 +36,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\Shared.TestInfra\Shared.TestInfra.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Core\PgWorker.Core.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Docker\PgWorker.Docker.csproj"/>
