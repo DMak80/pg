@@ -6,6 +6,7 @@ using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using S3Worker.IntegrationTests.S3;
 using Shared.Etcd.Client;
+using Shared.TestInfra;
 using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
@@ -31,8 +32,35 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
     private const string OwnS3Image = "owns3:dev";
-    private const string S3WPublishDir = "artifacts/e2e/s3worker";
-    private const string WorkerImageFallback = "s3worker:e2e"; // NOBUILD-бисект
+
+    // Per-branch тег (docs/e2e-isolation.md §9); per-run тег e2e-{runId} и
+    // NOBUILD-фоллбек s3worker:e2e упразднены.
+    private static readonly string WorkerImageTag =
+        $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
+    private static readonly string WorkerImage = $"s3worker:{WorkerImageTag}";
+
+    // Per-process publish-каталог записи: абсолютный
+    // {root}/artifacts/e2e/s3worker-{pid}-{s6}; s6 — 6 hex криптослучайных
+    // (защита от переиспользования pid). Конкурентные процессы одной ветки
+    // пишут в разные каталоги и собирают один тег идентичного контента.
+    private static string NewPublishDir()
+    {
+        var s6 = Convert.ToHexString(
+            System.Security.Cryptography.RandomNumberGenerator.GetBytes(3)).ToLowerInvariant();
+        return Path.Combine(FindRepoRoot(), "artifacts", "e2e", $"s3worker-{Environment.ProcessId}-{s6}");
+    }
+
+    private static readonly SemaphoreSlim BuildGate = new(1, 1);
+    private static bool _imageReady;
+
+    /// <summary>Ретрай-маска старта окружения: гонки сети И занятость
+    /// зондируемого хост-порта — docker «…port is already allocated», proxy
+    /// bind «address already in use». Прочие причины не ретраются (3 попытки,
+    /// новые FreePort при каждой — бюджет без изменений).</summary>
+    internal static bool IsRetryableStartException(Exception ex)
+        => ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
     // Креды кластеров — per-cluster secrets-ключ etcd /s3/clusters/<C>/secrets
     // (генерирует воркер; arch/23 §2/§6): сценарии читают root-пару хелпером
@@ -153,7 +181,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         // Статические ассеты процесса: owns3:dev — ВНЕШНИЙ образ (репозиторий
         // ../OwnS3, freshness контролирует разработчик пересборкой там) и
         // s3worker:e2e-{runId} (свежий Release, узкий COPY-контекст).
-        var workerImage = await BuildImagesAsync(runId);
+        var workerImage = await BuildImagesAsync();
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты).
         var (caPem, caKeyPem) = GenerateCa("s3w-e2e");
@@ -206,8 +234,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                     + $"docker network rm {netName}\n");
                 return environment;
             }
-            catch (Exception ex) when (attempt < 3
-                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (attempt < 3 && IsRetryableStartException(ex))
             {
                 // ретрай только на распознанную гонку сети — подъём заново
                 await SafeStopAsync(worker, remove: true);
@@ -237,7 +264,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
         var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
         Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
 
-        var workerImage = await BuildImagesAsync(runId);
+        var workerImage = await BuildImagesAsync();
 
         // TLS-пакет окружения общий для обоих инстансов — один mTLS-клиент
         // годит обоим (takeover: mTLS-клиент к выжившему).
@@ -305,8 +332,7 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
                     + $"docker network rm {netName}\n");
                 return environment;
             }
-            catch (Exception ex) when (attempt < 3
-                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (attempt < 3 && IsRetryableStartException(ex))
             {
                 // ретрай только на распознанную гонку сети — подъём заново
                 await SafeStopAsync(worker2, remove: true);
@@ -357,31 +383,54 @@ public sealed class S3E2eEnvironment : IAsyncDisposable
     // не собирает — fail-fast с командой); s3worker:e2e-{runId} — self-build:
     // publish S3Worker.App + build (тег per-прогон — свежесть каждого прогона).
     // NOBUILD=1 — только бисект: s3worker берётся из ручного тега s3worker:e2e.
-    private static async Task<string> BuildImagesAsync(string runId)
+    /// <summary>Сборка образа ONCE-per-process (docs/e2e-isolation.md §9):
+    /// owns3:dev — внешний ассет (fail-fast с командой ../OwnS3);
+    /// s3worker — publish в СВОЙ per-process каталог + docker build per-branch
+    /// тега; NOBUILD — существующий тег обязателен (fail-fast с подсказкой);
+    /// после успешного build — авто-уборка тегов репозитория старше 24 ч.</summary>
+    private static async Task<string> BuildImagesAsync()
     {
         await EnsureImageAsync(OwnS3Image, "bash ../OwnS3/deploy/build-image.sh");
-
-        var noBuild = Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1";
-        if (noBuild)
+        if (!_imageReady)
         {
-            await EnsureImageAsync(WorkerImageFallback,
-                $"dotnet publish src/S3Worker.App/S3Worker.App.csproj -c Release -o {S3WPublishDir} && "
-                + $"docker build -f docker/S3Worker.Dockerfile -t {WorkerImageFallback} {S3WPublishDir}");
-            return WorkerImageFallback;
+            await BuildGate.WaitAsync(CancellationToken.None);
+            try
+            {
+                if (!_imageReady)
+                {
+                    if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
+                    {
+                        await EnsureImageAsync(WorkerImage,
+                            $"dotnet publish src/S3Worker.App/S3Worker.App.csproj -c Release -o artifacts/e2e/s3worker && "
+                            + $"docker build -f docker/S3Worker.Dockerfile -t {WorkerImage} artifacts/e2e/s3worker");
+                    }
+                    else
+                    {
+                        var root = FindRepoRoot();
+                        var publishDir = NewPublishDir();
+                        Directory.CreateDirectory(publishDir);
+                        var ct = CancellationToken.None;
+                        var t0 = Stopwatch.GetTimestamp();
+                        Console.WriteLine($">>> [PHASE] e2e publish S3Worker.App ({DateTime.Now:HH:mm:ss})");
+                        await RunHostAsync(root, "dotnet",
+                            ["publish", "src/S3Worker.App/S3Worker.App.csproj", "-c", "Release", "-o", publishDir, "--nologo"], ct);
+                        await RunHostAsync(root, "docker",
+                            ["build", "-q", "-f", "docker/S3Worker.Dockerfile", "-t", WorkerImage, publishDir], ct);
+                        Console.WriteLine($">>> [PHASE] e2e {WorkerImage} ready ({Elapsed(t0)})");
+                        await E2eTagCleanup.CleanupAsync(
+                            ["s3worker"], WorkerImageTag,
+                            (file, args, token) => RunProcessAsync(file, args, token, TimeSpan.FromMinutes(2)),
+                            ct);
+                    }
+                    _imageReady = true;
+                }
+            }
+            finally
+            {
+                BuildGate.Release();
+            }
         }
-
-        var root = FindRepoRoot();
-        var ct = CancellationToken.None;
-
-        var workerImage = $"s3worker:e2e-{runId}";
-        var s3wT0 = Stopwatch.GetTimestamp();
-        Console.WriteLine($">>> [PHASE] e2e publish S3Worker.App ({DateTime.Now:HH:mm:ss})");
-        await RunHostAsync(root, "dotnet",
-            ["publish", "src/S3Worker.App/S3Worker.App.csproj", "-c", "Release", "-o", S3WPublishDir, "--nologo"], ct);
-        await RunHostAsync(root, "docker",
-            ["build", "-q", "-f", "docker/S3Worker.Dockerfile", "-t", workerImage, S3WPublishDir], ct);
-        Console.WriteLine($">>> [PHASE] e2e {workerImage} ready ({Elapsed(s3wT0)})");
-        return workerImage;
+        return WorkerImage;
     }
 
     private static string Elapsed(long startedTimestamp)

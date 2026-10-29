@@ -5,6 +5,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using Shared.Etcd.Client;
+using Shared.TestInfra;
 using ValkeyWorker.IntegrationTests.Valkey;
 using Xunit;
 
@@ -26,7 +27,10 @@ namespace ValkeyWorker.IntegrationTests.E2e;
 public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    private const string WorkerImage = "valkeyworker:e2e";
+    // Per-branch тег (docs/e2e-isolation.md §9): одна ветка — один набор образов.
+    private static readonly string WorkerImageTag =
+        $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
+    private static readonly string WorkerImage = $"valkeyworker:{WorkerImageTag}";
 
     private readonly IContainer _etcd;
     private readonly IContainer _worker;
@@ -128,7 +132,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
 
         // Статический ассет процесса: образ valkeyworker:e2e (Release из Dockerfile).
-        await BuildImageAsync();
+        await EnsureWorkerImageAsync();
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты).
         var (caPem, caKeyPem) = GenerateCa("vwk-e2e");
@@ -189,8 +193,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                     + $"docker network rm {netName}\n");
                 return environment;
             }
-            catch (Exception ex) when (attempt < 3
-                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (attempt < 3 && IsRetryableStartException(ex))
             {
                 // ретрай только на распознанную гонку сети — подъём заново
                 await SafeStopAsync(worker, remove: true);
@@ -221,7 +224,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
 
         // Статический ассет процесса: образ valkeyworker:e2e (Release из Dockerfile).
-        await BuildImageAsync();
+        await EnsureWorkerImageAsync();
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты);
         // пакет ОБЩИЙ для обоих инстансов — один mTLS-клиент годит обоим
@@ -301,8 +304,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                     + $"docker network rm {netName}\n");
                 return environment;
             }
-            catch (Exception ex) when (attempt < 3
-                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (attempt < 3 && IsRetryableStartException(ex))
             {
                 // ретрай только на распознанную гонку сети — подъём заново
                 await SafeStopAsync(worker2, remove: true);
@@ -322,10 +324,70 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         }
     }
 
-    private static async Task BuildImageAsync()
+    private static readonly SemaphoreSlim BuildGate = new(1, 1);
+    private static bool _imageReady;
+
+    /// <summary>Ретрай-маска старта окружения: гонки сети И занятость
+    /// зондируемого хост-порта — docker «…port is already allocated», proxy
+    /// bind «address already in use». Прочие причины не ретраются (3 попытки,
+    /// новые FreePort при каждой — бюджет без изменений).</summary>
+    internal static bool IsRetryableStartException(Exception ex)
+        => ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Сборка per-branch образа ONCE-per-process (docs/e2e-isolation.md
+    /// §9): параллельные классы ждут SemaphoreSlim-гейт; повторным StartAsync
+    /// образ не пересобирается. Способ сборки (прод-Dockerfile, ProcessStartInfo)
+    /// не меняется — [PHASE]-меток нет, logFile нет. NOBUILD — существующий тег
+    /// обязателен (fail-fast с подсказкой). После успешного build — авто-уборка
+    /// тегов репозитория старше 24 ч (текущий исключён).</summary>
+    private static async Task EnsureWorkerImageAsync()
     {
-        if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
+        if (_imageReady)
             return;
+        await BuildGate.WaitAsync(CancellationToken.None);
+        try
+        {
+            if (_imageReady)
+                return;
+            if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
+            {
+                if (!await ImageExistsAsync(WorkerImage))
+                    throw new ApplicationException(
+                        $"image {WorkerImage} is missing — run without PGW_TEST_E2E_NOBUILD "
+                        + $"(or docker build -f docker/ValkeyWorker.Dockerfile -t {WorkerImage} .)");
+            }
+            else
+            {
+                await BuildValkeyImageAsync();
+                await E2eTagCleanup.CleanupAsync(
+                    ["valkeyworker"], WorkerImageTag,
+                    (file, args, token) => RunProcessAsync(file, args, token, TimeSpan.FromMinutes(2)),
+                    CancellationToken.None);
+            }
+            _imageReady = true;
+        }
+        finally
+        {
+            BuildGate.Release();
+        }
+    }
+
+    private static async Task<bool> ImageExistsAsync(string image)
+    {
+        var psi = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true };
+        psi.ArgumentList.Add("image");
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add(image);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0;
+    }
+
+    private static async Task BuildValkeyImageAsync()
+    {
         var root = FindRepoRoot();
         // Список аргументов без shell: тег образа не попадает в строку команды.
         var build = new ProcessStartInfo("docker")

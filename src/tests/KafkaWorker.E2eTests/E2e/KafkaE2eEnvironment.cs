@@ -4,6 +4,7 @@ using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
 using Shared.Etcd.Client;
+using Shared.TestInfra;
 using KafkaWorker.IntegrationTests.Kafka;
 using Xunit;
 
@@ -25,7 +26,10 @@ namespace KafkaWorker.IntegrationTests.E2e;
 public sealed class KafkaE2eEnvironment : IAsyncDisposable
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";
-    private const string WorkerImage = "kafkaworker:e2e";
+    // Per-branch тег (docs/e2e-isolation.md §9): одна ветка — один набор образов.
+    private static readonly string WorkerImageTag =
+        $"e2e-{E2eImageTags.SuffixFor(FindRepoRoot())}";
+    private static readonly string WorkerImage = $"kafkaworker:{WorkerImageTag}";
 
     private readonly IContainer _etcd;
     private readonly IContainer _worker1;
@@ -103,7 +107,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
         Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
 
         // Статический ассет процесса: образ kafkaworker:e2e (продовый Dockerfile).
-        await BuildImageAsync(runId, artifactsDir);
+        await EnsureWorkerImageAsync(runId, artifactsDir);
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты);
         // пакет ОБЩИЙ для обоих инстансов и клиентских проб.
@@ -184,8 +188,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
                     + $"docker network ls --format {{{{.Name}}}} --filter name={environment.ClusterTag} | grep kfw-net | xargs -r docker network rm\n");
                 return environment;
             }
-            catch (Exception ex) when (attempt < 3
-                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            catch (Exception ex) when (attempt < 3 && IsRetryableStartException(ex))
             {
                 // ретрай только на распознанную гонку сети — подъём заново
                 await SafeStopAsync(worker2, remove: true);
@@ -208,19 +211,73 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
     // ── Сборка образа (прецедент E2eSecondInstanceScenarios): [PHASE]-метки
     // ДО/ПОСЛЕ с таймингом (тихая фаза запрещена), полный вывод — в
     // process-build-{tag}.log, бюджет CLI 120 c; гейт NOBUILD — пропустить.
-    private static async Task BuildImageAsync(string runId, string artifactsDir)
+    private static readonly SemaphoreSlim BuildGate = new(1, 1);
+    private static bool _imageReady;
+
+    /// <summary>Ретрай-маска старта окружения: гонки сети И занятость
+    /// зондируемого хост-порта — docker «…port is already allocated», proxy
+    /// bind «address already in use». Прочие причины не ретраятся (3 попытки,
+    /// новые FreePort при каждой — бюджет без изменений).</summary>
+    internal static bool IsRetryableStartException(Exception ex)
+        => ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
+           || ex.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Сборка per-branch образа ONCE-per-process (docs/e2e-isolation.md
+    /// §9): параллельные классы ждут SemaphoreSlim-гейт; повторным StartAsync
+    /// образ не пересобирается. NOBUILD (бисект) — сборка скипается, требуется
+    /// существующий тег (отсутствие — fail-fast с подсказкой). После успешного
+    /// build — авто-уборка тегов репозитория старше 24 ч (текущий исключён).</summary>
+    private static async Task EnsureWorkerImageAsync(string runId, string artifactsDir)
     {
-        if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
+        if (_imageReady)
             return;
-        var root = FindRepoRoot();
-        Console.WriteLine($"[PHASE] build {WorkerImage}: start (prod Dockerfile, budget 120 s)…");
-        var sw = Stopwatch.StartNew();
-        await RunProcessAsync("docker",
-            ["build", "-f", "docker/KafkaWorker.Dockerfile", "-t", WorkerImage, "."],
-            CancellationToken.None, TimeSpan.FromSeconds(120),
-            workingDirectory: root,
-            logFile: Path.Combine(artifactsDir, $"process-build-{runId[..8]}.log"));
-        Console.WriteLine($"[PHASE] build {WorkerImage}: {sw.Elapsed.TotalSeconds:F0} s");
+        await BuildGate.WaitAsync(CancellationToken.None);
+        try
+        {
+            if (_imageReady)
+                return;
+            if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
+            {
+                if (!await ImageExistsAsync(WorkerImage))
+                    throw new ApplicationException(
+                        $"image {WorkerImage} is missing — run without PGW_TEST_E2E_NOBUILD "
+                        + $"(or docker build -f docker/KafkaWorker.Dockerfile -t {WorkerImage} .)");
+            }
+            else
+            {
+                var root = FindRepoRoot();
+                Console.WriteLine($"[PHASE] build {WorkerImage}: start (prod Dockerfile, budget 120 s)…");
+                var sw = Stopwatch.StartNew();
+                await RunProcessAsync("docker",
+                    ["build", "-f", "docker/KafkaWorker.Dockerfile", "-t", WorkerImage, "."],
+                    CancellationToken.None, TimeSpan.FromSeconds(120),
+                    workingDirectory: root,
+                    logFile: Path.Combine(artifactsDir, $"process-build-{runId[..8]}.log"));
+                Console.WriteLine($"[PHASE] build {WorkerImage}: {sw.Elapsed.TotalSeconds:F0} s");
+                await E2eTagCleanup.CleanupAsync(
+                    ["kafkaworker"], WorkerImageTag,
+                    (file, args, token) => RunProcessAsync(file, args, token, TimeSpan.FromMinutes(2)),
+                    CancellationToken.None);
+            }
+            _imageReady = true;
+        }
+        finally
+        {
+            BuildGate.Release();
+        }
+    }
+
+    private static async Task<bool> ImageExistsAsync(string image)
+    {
+        var psi = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true };
+        psi.ArgumentList.Add("image");
+        psi.ArgumentList.Add("inspect");
+        psi.ArgumentList.Add(image);
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0;
     }
 
     private static string FindRepoRoot()
