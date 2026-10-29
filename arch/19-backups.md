@@ -89,7 +89,9 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   исполняется ЛОКАЛЬНО в контейнере ноды — подключение `127.0.0.1:5432`
   под ролью `backup_exec` (пароль — env `PGPASSWORD` child-процесса, в
   argv НЕ передаётся); серверные бинари PG (нужны restore/verify-операциям
-  приёмника, §3.5/§5) несёт образ `pgworker-node`.
+  приёмника, §3.5/§5) несёт образ `pgworker-node`. Тем же процессом
+  исполняются node-операции `/api/node/*`: обеспечение pg_hba (§7),
+  pg_dump схемы (arch/14 §Move M1), проба данных ноды (arch/14 Д3).
   Статус операции — IMMUTABLE-снимок в памяти приёмника (фазы
   `basebackup|uploading`, `wal_start_segment`, `size_bytes`,
   однострочный `error`); `wal_start_segment` — из `backup_label`,
@@ -1216,10 +1218,17 @@ s3://<bucket>/<C>/<X>/
   bucket_mover (иная зона доверия/ротации).
 - **pg_hba-гвард**: дефолтный Spilo-pg_hba разрешает replication-соединения
   только роли `standby` — физический WAL-стриминг `pg_basebackup` под
-  `backup_exec` отсекается. Гвард G2 (каждый тик) дополняет `pg_hba.conf`
-  нод шарда идемпотентной строкой `hostssl replication backup_exec all
-  scram-sha-256` (docker-exec; прецедент — patch_hba стенда) + `pg_reload_conf()`;
-  строка живёт в PGDATA-volume и переживает рестарты нод.
+  `backup_exec` отсекается. Гвард G2 (каждый тик) командует приёмнику КАЖДОЙ
+  ноды шарда `POST /api/node/hba-ensure` (канал [25](25-component-communications.md)
+  №22): приёмник в своём контейнере добавляет идемпотентную строку
+  `hostssl replication backup_exec all scram-sha-256` в ИСТОЧНИК конфига
+  Patroni `/run/postgres.yml` (секция `postgresql.pg_hba`) и будит Patroni
+  SIGHUP'ом — тот сам перегенерирует `pg_hba.conf` при каждом старте postgres
+  уже с этой строкой (правка самого `pg_hba.conf` бессмысленна: файл
+  перегенерируется Patroni). Ожидание применения — поллинг `$PGDATA/pg_hba.conf`
+  (нода без PG_VERSION ещё бутстрапится — ждать нечего, строка применится при
+  первом старте). Отказ операции — transient: шард skip, следующий тик
+  дообеспечит (запуск на непатченной ноде карался бы FAILED-циклом с бэкоффом).
 
 ## 8. Карта разделов
 

@@ -8,8 +8,9 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
-/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — доказано
-/// exec-пробой PG_VERSION; Unknown — транспорт недоступен (НЕ доказательство утраты).</summary>
+/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — факт
+/// PG_VERSION пробой приёмника ноды (arch/25 №22); Unknown — транспорт
+/// недоступен (НЕ доказательство утраты).</summary>
 public enum DataPresence { Present, Absent, Unknown }
 
 // Унифицированное управление нодой кластера в обоих режимах (spec §5.2/§5.3).
@@ -49,15 +50,8 @@ public interface IClusterDriver
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
 
-    // Данные ноды (Д3, spec §3.7): docker-exec test -f PG_VERSION; контейнера
-    // нет/exec-сбой/нечитаемый stdout → Unknown (утрата не доказана).
-    Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct);
-
-    // Выполнить команду в контейнере ноды (t01: pg_dump внутри мастер-контейнера
-    // источника), вернуть stdout. Идемпотентности не требует (read-only утилита).
-    Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
-
+    // Данные ноды (Д3, spec §3.7) — пробой приёмника ноды (arch/25 №22),
+    // шов INodeDataProbe: docker-exec в продукте не применяется.
     // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1; live-Ф7
     // 2026-09-01): по именам нод вернуть DiscoveredNode (host/object/порты).
     // Контейнеры ЧУЖИХ pgw-кластеров исключаются ДО матчинга — имена нод
@@ -68,10 +62,6 @@ public interface IClusterDriver
     Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
         string cluster,
         IReadOnlyCollection<string> nodeNames, CancellationToken ct);
-
-    // Exec в контейнер по имени (docker-exec fallback для pg_dump усыновлённых
-    // нод, spec §3.3): 404/не найден — Failed.
-    Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct);
 
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
@@ -469,54 +459,6 @@ public sealed class PlainClusterDriver(
         return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
     }
 
-    // Данные ноды (Д3): docker-exec test -f PG_VERSION; контейнера нет/exec-сбой/
-    // нечитаемый stdout → Unknown (утрата не доказана — arch/14 R11).
-    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-    {
-        // PGDATA Spilo (arch/14 §2.1): volume-корень /home/postgres/pgdata,
-        // данные — pgroot/data/PG_VERSION.
-        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
-        var exec = await ExecNodeAsync(cluster, shard, node,
-            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
-        if (!exec.IsSuccess)
-            return Result<DataPresence>.Success(DataPresence.Unknown);
-        return Result<DataPresence>.Success(exec.Value.Trim() switch
-        {
-            "present" => DataPresence.Present,
-            "absent" => DataPresence.Absent,
-            _ => DataPresence.Unknown,
-        });
-    }
-
-    // Контейнер ноды по имени pgw-<C>-<X>-<n>: перебор хостов (аналог StopNode),
-    // на первом, где найден running-контейнер — exec (t01: pg_dump-транспорт).
-    public async Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var name = NodeName(cluster, shard, node);
-            foreach (var engine in _engines.Values)
-            {
-                var containers = await engine.ListContainersAsync(name, all: false, ct);
-                if (!containers.IsSuccess)
-                    throw containers.Error!;
-
-                var running = containers.Value.FirstOrDefault(c =>
-                    c.Names.Contains(name) && c.State == "running");
-                if (running is null)
-                    continue; // контейнера нет на этом хосте — следующий
-
-                var exec = await engine.ExecAsync(running.Id, cmd, ct);
-                if (!exec.IsSuccess)
-                    throw exec.Error!;
-                return exec.Value;
-            }
-
-            throw new ApplicationException($"node container {name} not found (no running container on any host)");
-        });
-    }
-
     // Docker-инспекция нод усыновления (spec §3.1): по каждому хосту собираем
     // пары (контейнер, инспект) КЛАСТЕРА и зовём NodeMatcher.Match один раз на
     // хост — только так работают merge patroni-порта из сайдкара (env NODE_NAME)
@@ -575,30 +517,6 @@ public sealed class PlainClusterDriver(
     private static bool IsForeignPgw(DockerContainer c, string ownPrefix)
         => c.Names.Any(n => n.StartsWith("pgw-", StringComparison.Ordinal))
             && c.Names.All(n => !n.StartsWith(ownPrefix, StringComparison.Ordinal));
-
-    // Exec в контейнер по имени (docker-exec fallback pg_dump усыновлённых нод,
-    // spec §3.3): перебор хостов, первый running-контейнер с точным именем.
-    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            foreach (var engine in _engines.Values)
-            {
-                var list = await engine.ListContainersAsync(containerName, all: false, ct);
-                if (!list.IsSuccess)
-                    throw list.Error!;
-                if (list.Value.FirstOrDefault(c => c.Names.Contains(containerName)) is not { } hit)
-                    continue;
-
-                var exec = await engine.ExecAsync(hit.Id, cmd, ct);
-                if (!exec.IsSuccess)
-                    throw exec.Error!;
-                return exec.Value;
-            }
-
-            throw new ApplicationException($"container '{containerName}' not found on driver hosts");
-        });
-    }
 
     public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
     {
@@ -865,75 +783,12 @@ public sealed class SwarmClusterDriver(
         => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
             (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
 
-    // Данные ноды (Д3): через exec running-таска сервиса (свой ExecNodeAsync);
-    // утрата не доказана → Unknown (arch/14 R11).
-    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-    {
-        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
-        var exec = await ExecNodeAsync(cluster, shard, node,
-            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
-        if (!exec.IsSuccess)
-            return Result<DataPresence>.Success(DataPresence.Unknown);
-        return Result<DataPresence>.Success(exec.Value.Trim() switch
-        {
-            "present" => DataPresence.Present,
-            "absent" => DataPresence.Absent,
-            _ => DataPresence.Unknown,
-        });
-    }
-
-    // Контейнер ноды — running-таск сервиса (ContainerID уже в ответе /tasks).
-    public async Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var tasks = await _engine.ListTasksAsync(PlainClusterDriver.NodeName(cluster, shard, node), ct);
-            if (!tasks.IsSuccess)
-                throw tasks.Error!;
-
-            var running = tasks.Value.FirstOrDefault(t =>
-                t.State == "running" && t.ContainerId is { Length: > 0 });
-            if (running is null)
-                throw new ApplicationException(
-                    $"node container {cluster}/{shard}/{node} not found (no running task)");
-
-            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
-            if (!exec.IsSuccess)
-                throw exec.Error!;
-            return exec.Value;
-        });
-    }
-
     // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
     // spec §3.1); при необходимости — инспект тасков сервисов.
     public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
         string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
             (IReadOnlyDictionary<string, DiscoveredNode>)new Dictionary<string, DiscoveredNode>()));
-
-    // Exec в контейнент по имени сервиса (образец ExecNodeAsync): running-таск
-    // сервиса → ContainerId → engine.ExecAsync.
-    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        return await Result<string>.FromAsync(async () =>
-        {
-            var tasks = await _engine.ListTasksAsync(containerName, ct);
-            if (!tasks.IsSuccess)
-                throw tasks.Error!;
-
-            var running = tasks.Value.FirstOrDefault(t =>
-                t.State == "running" && t.ContainerId is { Length: > 0 });
-            if (running is null)
-                throw new ApplicationException(
-                    $"container '{containerName}' not found (no running task)");
-
-            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
-            if (!exec.IsSuccess)
-                throw exec.Error!;
-            return exec.Value;
-        });
-    }
 
     // Объекты нод кластера в swarm — СЕРВИСЫ (rework №4): GET /services с
     // префиксом pgw-<C>-. Ранее возвращался пустой список → drift-сверка

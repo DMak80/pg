@@ -27,7 +27,6 @@ namespace PgWorker.Backups;
 public sealed class BackupProcess(
     IEtcdGateway etcd,
     string[] endpoints,
-    IClusterDriver driver,
     ShardEndpoints shardEndpoints,
     ISqlExecutor db,
     IClusterSecretEnsurer secrets,
@@ -169,59 +168,34 @@ public sealed class BackupProcess(
             // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
             // роли standby — физический WAL-стриминг pg_basebackup для backup_exec
             // отсекается («no pg_hba.conf entry for replication»).
-            // Инцидент 2026-09-13: прежний гвард дописывал строку прямо в
-            // $PGDATA/pg_hba.conf (docker exec под root) — это ДВЕ дефекта:
-            // (1) exec под root в ноду, чей PGDATA pg_basebackup ещё копирует
-            //     (Patroni REST отвечает уже в фазе «creating replica», нода
-            //     получает state=RUNNING до конца bootstrap), создавал root-овый
-            //     pg_hba.conf → «could not create file pg_hba.conf: Permission
-            //     denied» и цикл переснятий bootstrap;
-            // (2) pg_hba.conf управляется Patroni (секция postgresql.pg_hba
-            //     локального конфига): при КАЖДОМ старте postgres Patroni
-            //     перегенерирует файл и дописанная строка молча исчезала
-            //     («no pg_hba.conf entry» у wal-агентов после любого рестарта).
-            // Гвард теперь добавляет строку в ИСТОЧНИК — /run/postgres.yml
-            // (postgresql.pg_hba, симлинк /home/postgres/postgres.yml) — и будит
+            // Гвард командует приёмнику КАЖДОЙ ноды шарда POST /api/node/hba-ensure
+            // (канал arch/25 №22): приёмник в СВОЁМ контейнере правит ИСТОЧНИК
+            // конфига Patroni — /run/postgres.yml (postgresql.pg_hba) — и будит
             // Patroni SIGHUP'ом: тот сам перегенерирует pg_hba.conf при каждом
-            // старте postgres УЖЕ С нашей строкой. Ожидание применения — опрос
-            // $PGDATA/pg_hba.conf (нода без PG_VERSION ещё бутстрапится — ждать
-            // нечего, применится при первом старте). Отказ — transient: шард
-            // skip, следующий тик дообеспечит (запуск на непатченной ноде карался
-            // бы FAILED-циклом с бэкоффом). Усвоенные ноды (object) — exec в их
-            // контейнер (pgw-имени у них нет). Паттерн pkill — «patro[n]i»:
-            // -f матчит ПОЛНЫЙ cmdline, а команда скрипта — его собственный
-            // argv — содержала литерал «local/bin/patroni» и pkill убивал
-            // скрипт SIGHUP'ом (exit 129) до опроса применения (t097).
+            // старте postgres УЖЕ С нашей строкой. Правка самого pg_hba.conf
+            // бессмысленна: Patroni перегенерирует файл при каждом старте postgres
+            // и дописанная строка молча исчезала («no pg_hba.conf entry» у
+            // wal-агентов после любого рестарта). Ожидание применения — на
+            // приёмнике (поллинг pg_hba.conf; нода без PG_VERSION ещё
+            // бутстрапится — ждать нечего, применится при первом старте).
+            // Отказ — transient: шард skip, следующий тик дообеспечит (запуск на
+            // непатченной ноде карался бы FAILED-циклом с бэкоффом).
             var hbaPatched = true;
             foreach (var nodeKey in addresses.Value.Keys
                          .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
             {
                 var addr = addresses.Value[nodeKey];
                 var nodeName = nodeKey.Split('/')[1];
-                string[] hbaCmd =
-                [
-                    "sh", "-c",
-                    """
-                    F=/run/postgres.yml; S='replication backup_exec'
-                    grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && grep -q "$S" "$F" 2>/dev/null && exit 0
-                    grep -q "$S" "$F" 2>/dev/null || { sed -i 's/^  pg_hba:$/  pg_hba:\n  - hostssl replication backup_exec all scram-sha-256/' "$F" && chown postgres:root "$F" && chmod 644 "$F"; }
-                    pkill -HUP -f 'local/bin/patro[n]i' 2>/dev/null
-                    [ -f "$PGDATA/PG_VERSION" ] || exit 0
-                    grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0
-                    i=0; while [ $i -lt 10 ]; do grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done
-                    exit 1
-                    """,
-                ];
-                var patched = addr.Object is { Length: > 0 } objectContainer
-                    ? await driver.ExecContainerAsync(objectContainer, hbaCmd, ct)
-                    : await driver.ExecNodeAsync(cluster, shard.Name, nodeName, hbaCmd, ct);
+                var patched = await receiver.EnsureHbaAsync(
+                    WalReceiverAddress.ForNode(cluster, shard.Name, nodeName, addr.Object), ct);
                 if (!patched.IsSuccess)
                 {
                     // Диагностика «почему пересъёмы молчат» (тик не валим — так
                     // задумано; лог, не etcd-журнал — condition персистентный).
                     logger.LogWarning(
                         "backups {Cluster}/{Shard}: hba-guard skipped — node {Node}: {Error}",
-                        cluster, shard.Name, nodeName, patched.Error!.Message);
+                        cluster, shard.Name, nodeName,
+                        patched.Error ?? $"receiver status {(int)patched.StatusCode}");
                     hbaPatched = false;
                     break;
                 }

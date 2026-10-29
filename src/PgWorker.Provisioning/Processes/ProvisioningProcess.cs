@@ -29,6 +29,7 @@ public sealed class ProvisioningProcess(
     IEtcdGateway etcd,
     string[] endpoints,
     IClusterDriver driver,
+    INodeDataProbe nodeProbe,
     ISqlExecutor db,
     ShardProbe probe,
     ClaimStore claims,
@@ -567,8 +568,8 @@ public sealed class ProvisioningProcess(
                 var presences = new List<DataPresence>();
                 foreach (var node in shard.Nodes)
                 {
-                    var presence = await driver.NodeDataPresenceAsync(cluster, shard.Name, node.Name, ct);
-                    presences.Add(presence.IsSuccess ? presence.Value : DataPresence.Unknown);
+                    var presence = await nodeProbe.ProbeAsync(cluster, shard.Name, node.Name, ct);
+                    presences.Add(presence.ToPresence());
                 }
 
                 if (presences.All(p => p == DataPresence.Absent))

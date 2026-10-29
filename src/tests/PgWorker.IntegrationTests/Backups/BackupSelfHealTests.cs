@@ -105,6 +105,13 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             => throw new NotSupportedException();
         public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
             => throw new NotSupportedException();
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(true, false), null));
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
     }
 
     // Тест-опции (позиционник BackupsRuntimeOptions — паттерн WalStreamProcessTests).
@@ -180,7 +187,6 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         var receiver = new FakeReceiverClient();
         var backupProcess = new BackupProcess(
             fixture.Gateway, [fixture.Endpoint],
-            new SelfHealDriver(driver, new FakeBackupEngine()),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             new StubDb(), new StubSecrets(), _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
@@ -223,29 +229,6 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         var healed = await ReadWalAsync("sh1");
         healed!.State.Should().Be(WalStreamStatus.Active);
         healed.ChainStartSegment.Should().Be("000000010000000000000005");
-    }
-
-    // Драйвер-композит (паттерн RestoreProcessTests.TestDriver): агентные вызовы —
-    // StubScaleDriver, движок EngineFor — FakeBackupEngine (tool-джобов больше
-    // нет — операции бэкапов исполняют приёмники нод).
-    private sealed class SelfHealDriver(IClusterDriver inner, IDockerEngine engine) : IClusterDriver
-    {
-        public bool SupportsRunningInspection => inner.SupportsRunningInspection;
-        public IDockerEngine? EngineFor(string host) => engine;
-        public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
-        public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
-        public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
-        public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);
-        public Task<Result<string>> ExecNodeAsync(string c, string sh, string node, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecNodeAsync(c, sh, node, cmd, ct);
-        public Task<Result<string>> ExecContainerAsync(string container, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecContainerAsync(container, cmd, ct);
-        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
-            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
-        string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);
-
-public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string c, CancellationToken ct) => inner.ListNodeObjectsAsync(c, ct);
-        public Task<Result> RemoveBackupAgentsAsync(string c, string? sh, CancellationToken ct) => inner.RemoveBackupAgentsAsync(c, sh, ct);
     }
 
     // SQL-двойник: скаляр-гвард «роль уже есть» (паттерн BackupProcessTests.FakeSql).

@@ -60,6 +60,45 @@ internal sealed class FakeMoveSql : IMoveSqlExecutor
     }
 }
 
+/// <summary>Мок клиента приёмника для MoveDdl: адрес и тело pgdump-вызова
+/// в Dumps; ответ настраивается (default — 200 «-- ddl»).</summary>
+internal sealed class FakeReceiverMove : IWalReceiverApiClient
+{
+    public readonly List<(string Url, StartPgDumpRequest Body)> Dumps = [];
+    public Func<StartPgDumpRequest, NodeReply<PgDumpResponse>>? DumpResult { get; set; }
+
+    public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+    {
+        Dumps.Add((baseUrl, body));
+        return Task.FromResult(DumpResult is { } f
+            ? f(body)
+            : new NodeReply<PgDumpResponse>(200, new PgDumpResponse("-- ddl"), null));
+    }
+
+    public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(false, false), null));
+
+    public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new NodeReply<PgDataResponse>(200, new PgDataResponse("present"), null));
+
+    public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(202, null, null));
+    public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(404, null, null));
+    public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(202, null, null));
+    public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(202, null, null));
+    public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(404, null, null));
+    public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(202, null, null));
+    public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(404, null, null));
+    public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+        => Task.FromResult(new ReceiverReply(202, null, null));
+}
+
 /// <summary>
 /// Общий стенд MoveProcess-тестов: кластер shop из двух шардов (bucket_42 живёт на
 /// shard1, заявки едут на shard2), portalloc/master-ключи для ShardEndpoints,
@@ -207,6 +246,7 @@ internal static class MoveRig
         Fakes.FakeEtcd Etcd,
         FakeMoveSql Sql,
         Fakes.FakeDriver Driver,
+        FakeReceiverMove Receiver,
         ClaimStore Claims,
         WorkJournal Journal,
         MoveProcess Process,
@@ -229,7 +269,8 @@ internal static class MoveRig
             etcd.Seed(MoveNames.StatusKey("shop", status.Bucket), status.Serialize());
 
         var sql = SqlOf(preflight);
-        var driver = new Fakes.FakeDriver { ExecResult = (_, _) => Result<string>.Success("-- ddl") };
+        var driver = new Fakes.FakeDriver();
+        var receiver = new FakeReceiverMove();
         var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         if (claim)
         {
@@ -242,7 +283,7 @@ internal static class MoveRig
         var snapshots = new List<int>();
         var queue = new Queue<Result>(snapshotResults);
         var process = new MoveProcess(
-            etcd, [Ep], sql, new MoveDdl(driver, sql), driver, shards, claims, journal, Secrets,
+            etcd, [Ep], sql, new MoveDdl(receiver, sql), driver, shards, claims, journal, Secrets,
             runtime ?? new MovesRuntimeOptions(FailoverSlots: failoverSlots),
             clock ?? TimeProvider.System,
             logger: logger,
@@ -252,7 +293,7 @@ internal static class MoveRig
                 return Task.FromResult(queue.Count > 0 ? queue.Dequeue() : Result.Success());
             });
 
-        return new Rig(etcd, sql, driver, claims, journal, process,
+        return new Rig(etcd, sql, driver, receiver, claims, journal, process,
             new MoveStatusStore(etcd, [Ep]), new MoveRequestsStore(etcd, [Ep]), snapshots);
     }
 }

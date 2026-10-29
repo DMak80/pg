@@ -7,8 +7,9 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveProcess M1–M3 (t01 задача 13, spec §6.1): DDL-перенос (pg_dump через exec,
-// применение, гранты, сверка инвентаря P5), pub/sub идемпотентно (copy_data=true,
+// MoveProcess M1–M3 (t01 задача 13, spec §6.1): DDL-перенос (pgdump-команда
+// приёмнику источника, применение, гранты, сверка инвентаря P5), pub/sub
+// идемпотентно (copy_data=true,
 // failover-флаг конфигурируем, remote_apply), copy-wait с перезаписью статус-ключа
 // КАЖДЫЙ тик (updated_unix — фундамент защиты abort, ревью №4) и логом готовности
 // с лагом слота (ревью №7). Сид — статус SYNCING/ddl (M0 пройден, снапшот взят).
@@ -17,8 +18,8 @@ public class MoveProcessPhasesTests
     private static MoveStatus DdlStatus() => new(
         "bucket_42", MoveStates.Syncing, "shard1", "shard2", 111, 122, MovePhases.Ddl);
 
-    // AAA: схемы на приёмнике нет — pg_dump из мастер-контейнера источника, применение,
-    //      гранты app-роли; тик доезжает до copy-wait (M2-резолверы зелёные)
+    // AAA: схемы на приёмнике нет — pgdump-команда приёмнику ноды-источника,
+    //      применение, гранты app-роли; тик доезжает до copy-wait (M2-резолверы зелёные)
     [Fact]
     public async Task M1_SchemaMissing_DumpsAppliesGrants()
     {
@@ -31,10 +32,11 @@ public class MoveProcessPhasesTests
 
         // Assert
         tick.Value.Should().Be(ProcessOutcome.InProgress, "after M3 the copy is still running");
-        rig.Driver.Executed.Should().ContainSingle().Which.Cmd.Should().BeEquivalentTo(
-            ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"],
-            "DDL is taken by pg_dump from the source master container");
-        rig.Driver.Executed[0].Node.Should().Be("shard1/shard1a", "exec goes to the source master node");
+        rig.Receiver.Dumps.Should().ContainSingle();
+        rig.Receiver.Dumps[0].Url.Should().Be("http://pgw-shop-shard1-shard1a:8080",
+            "the dump is taken by the receiver of the source master node");
+        rig.Receiver.Dumps[0].Body.Schema.Should().Be("bucket_42");
+        rig.Receiver.Dumps[0].Body.DbName.Should().Be("shop");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql == "-- ddl",
             "DDL is applied as a batch on the target");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql.Contains("GRANT USAGE ON SCHEMA bucket_42 TO app"),
@@ -191,34 +193,6 @@ public class MoveProcessPhasesTests
             "adopted source: the mover probe goes to the master address from portalloc");
         rig.Sql.Calls.Should().NotContain(c => c.Dsn == MoveRig.MoverDsn,
             "the multi-host dsn key is not resolvable from the worker for object shards");
-    }
-
-    // AAA (adopt-repair §3.3, exec-fallback): мастер источника — object-нода:
-    // pg_dump идёт в её фактический контейнер (ExecContainerAsync), не в pgw-имя
-    [Fact]
-    public async Task M1_AdoptedSourceMaster_DumpsInObjectContainer()
-    {
-        // Arrange — источник shard1 = object-ноды (усыновленный кластер).
-        var rig = await MoveRig.NewAsync(
-            new MoveRig.PreflightSql(SubSyncReady: "1/3"), seededStatus: DdlStatus());
-        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
-        {
-            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 0, 0), "as-shard1a"),
-            ["shard1/shard1b"] = new("h2", new NodePorts(15001, 0, 0), "as-shard1b"),
-            ["shard2/shard2a"] = new("h1", new NodePorts(15002, 18002, 16502)),
-            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 18003, 16503)),
-        }));
-
-        // Act
-        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
-
-        // Assert: exec ушёл в object-контейнер мастера, канонический exec не звался.
-        tick.Value.Should().Be(ProcessOutcome.InProgress);
-        rig.Driver.ContainerExecs.Should().ContainSingle();
-        rig.Driver.ContainerExecs[0].Container.Should().Be("as-shard1a");
-        rig.Driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
-            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_42", "shop"]);
-        rig.Driver.Executed.Should().BeEmpty("the canonical ExecNodeAsync is not called for an object node");
     }
 
     // AAA: подписка не готова («1/3») — тик ждёт: InProgress, статус SYNCING/copy-wait

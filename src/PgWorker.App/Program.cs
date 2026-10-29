@@ -136,6 +136,8 @@ builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5
 builder.Services.AddHttpClient("walreceiver", c => c.Timeout = TimeSpan.FromSeconds(10));
 builder.Services.AddSingleton<IWalReceiverApiClient>(sp =>
     new WalReceiverApiClient(sp.GetRequiredService<IHttpClientFactory>().CreateClient("walreceiver")));
+builder.Services.AddSingleton<PgWorker.Provisioning.Probes.INodeDataProbe>(sp =>
+    new WalNodeDataProbe(sp.GetRequiredService<IWalReceiverApiClient>()));
 // Клиент Patroni REST (t22, arch/14 §5 C): https к host:patroni-port portalloc;
 // верификация цепочки к per-install CA без hostname-проверки (канон P17
 // «require, не verify-full»: адрес ноды — из реплицированного portalloc;
@@ -425,7 +427,9 @@ builder.Services.AddSingleton(sp =>
     var job = sp.GetRequiredService<SnapshotJob>();
     return new ProvisioningProcess(
         sp.GetRequiredService<IEtcdGateway>(), endpoints,
-        sp.GetRequiredService<IClusterDriver>(), sp.GetRequiredService<ISqlExecutor>(),
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<PgWorker.Provisioning.Probes.INodeDataProbe>(),
+        sp.GetRequiredService<ISqlExecutor>(),
         sp.GetRequiredService<ShardProbe>(), sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
@@ -565,13 +569,14 @@ builder.Services.AddSingleton(sp => new RemoveShardProcess(
     sp.GetRequiredService<WorkJournal>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
-// Переезды бакетов (t01 задача 17): SQL-слой Npgsql+Polly, DDL через docker exec,
+// Переезды бакетов (t01 задача 17): SQL-слой Npgsql+Polly, DDL — pgdump-операцией
+// приёмника источника (канал arch/25 №22),
 // машина состояний MoveProcess (M0–M6/rollback/finalize/abort); runtime-опции —
 // склейка секций Moves + Thresholds; TimeProvider/System — источник unix-времени
 // статусов; снапшот-делегат — точки «до/после» P12.
 builder.Services.AddSingleton<IMoveSqlExecutor, NpgsqlMoveSqlExecutor>();
 builder.Services.AddSingleton(sp => new MoveDdl(
-    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<IWalReceiverApiClient>(),
     sp.GetRequiredService<IMoveSqlExecutor>()));
 builder.Services.AddSingleton(sp =>
 {
@@ -624,7 +629,6 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
 builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<ISqlExecutor>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),

@@ -893,8 +893,10 @@ P2 на каждый шард X:
         НЕ успех: фальш-RUNNING/фальш-dsn на чужие данные исключены;
         бюджет 10 мин, транзиент-толерантно); nodes/<n>/state=RUNNING.
         При исчерпании бюджета (лидера нет) — проверка данных scope (Д3):
-        docker-exec `test -f …/PG_VERSION` по каждой ноде → Present/Absent/
-        Unknown; ВСЕ Absent (доказанная утрата) → чистка HA-scope (точечные
+        проба данных `GET /api/node/pgdata` приёмнику каждой ноды (канал
+        [25](25-component-communications.md) №22; приёмник проверяет
+        `PG_VERSION` файловой системой своего контейнера) → Present/Absent/
+        Unknown (транспортный отказ); ВСЕ Absent (доказанная утрата) → чистка HA-scope (точечные
         initialize/leader/sync/failover + префиксы optime//members/;
         `failover` обязателен — остаточный маркер с `scheduled_at` в прошлом
         гонит Patroni новой жизни в accelerated failover на
@@ -1166,10 +1168,11 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
   приёмника P8/остатки `_rb`; отказы — перманентные, недоступность —
   transient) → статус `SYNCING/ddl` + снапшот `move-<bucket>-start`
   **обязателен** (сбой → фаза waiting-snapshot, ретрай); M1 DDL-перенос
-  (`pg_dump --schema-only` через docker exec → применение → гранты app →
-  сверка инвентаря P5; docker exec — отклонение от
-  [25](25-component-communications.md) №23, переход: pgworker
-  `t03-orchestration-exec-transition`); M2 `CREATE PUBLICATION pub_<b>` на источнике +
+  (pg_dump-операция приёмника ноды-источника: воркер командует приёмнику
+  `/api/node/pgdump` (канал [25](25-component-communications.md) №22), тот
+  снимает `pg_dump --schema-only` локально в контейнере ноды (локальный
+  socket-коннект, без секретов) → применение на приёмнике → гранты app →
+  сверка инвентаря P5); M2 `CREATE PUBLICATION pub_<b>` на источнике +
   `CREATE SUBSCRIPTION sub_<b>` на приёмнике (`copy_data = true`,
   `failover` (PG17+, конфиг `FailoverSlots`), `synchronous_commit =
   remote_apply` — P3/P8); M3 copy-wait (поллинг готовности таблиц, каждый
@@ -1716,7 +1719,7 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R8 | Усыновление: master-ключ внешнего формата `node:port` vs reconciler `host:doorman` — война писателей | MasterKeyReconciler пропускает усыновлённые шарды (§5 C); master-ключ пишет внешний HA-контур, резолв мастера понимает оба формата (§5 F) |
 | R9 | Rebuild усыновлённой ноды поднял бы дубль (второй Patroni на scope, конфликт портов) | self-healing для `object`-нод отключён (§5 C): UNREACHABLE + journal, разбор оператором |
 | R10 | Репарация прибивает живой скриптовый переезд (скрипт не тикает updated_unix в copy-wait) | порог RepairStaleSec = панельному stale (панель уже считает это аномалией); правило «не смешивать скрипты и заявки в одном окне» (§1); заявка репарации помечена requested_by=pgworker-repair |
-| R11 | Чистка HA-scope (Д3) при живых данных = потеря кластера | трёхуровневая проба данных (Present/Absent/Unknown через docker-exec `test -f PG_VERSION`): чистка ТОЛЬКО при Absent у ВСЕХ нод scope; Unknown (транспорт docker) и хоть одна Present — не лечить (Present → журнал-фейл «разбор оператора»); одна чистка на scope за бюджет (новый бюджет после чистки); journal phase=reset-scope — оператор видит каждую чистку |
+| R11 | Чистка HA-scope (Д3) при живых данных = потеря кластера | трёхуровневая проба данных (Present/Absent/Unknown — `GET /api/node/pgdata` приёмнику ноды, канал arch/25 №22; Unknown — транспортный отказ): чистка ТОЛЬКО при Absent у ВСЕХ нод scope; Unknown и хоть одна Present — не лечить (Present → журнал-фейл «разбор оператора»); одна чистка на scope за бюджет (новый бюджет после чистки); journal phase=reset-scope — оператор видит каждую чистку |
 | R12 | Перепланирование портов (Д1/Д2) меняет dsn — клиенты держат старые адреса | dsn-ключ — единственная точка входа (клиенты перечитывают etcd, паттерн app_password-ротации §5 I); репарация только при расхождении с фактом (стабильный кластер не трогается); journal repaired-dsn — событие видно |
 | R13 | SAN серверного серта API не покрывает фактический advertise-хост → строгие клиенты (curl, Prometheus server_name) получают TLS-отказ | канон SAN-набора пакета: `pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1` (§1.1); генерация — `deploy/tls/gen.sh` с полным SAN; панель валидирует цепочку (CustomRootTrust) — hostname-check не ломает её даже при расхождении, строгие клиенты защищены каноном SAN |
 | R14 | SSH-туннель без pinned host-key — MITM на первичном подключении (TOFU) | `PgWorker:Docker:Ssh:FingerprintSha256` — pin строго; не задан → accept + warning-лог при старте хоста (диагностируемое ослабление); канон прода — pin задан |

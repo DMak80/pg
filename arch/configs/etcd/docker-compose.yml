@@ -6,7 +6,10 @@
 #   sudo mkdir -p /opt/etcd && cd /opt/etcd
 #   cp configs/etcd/docker-compose.yml .
 #   cp configs/etcd/etcd.env .       # отредактировать NODE_NAME/NODE_IP под ноду
-#   docker compose up -d
+#   docker compose --env-file etcd.env up -d
+#                                    # --env-file обязателен: ${…} в этом YAML
+#                                    # интерполируются из env compose (env_file
+#                                    # передаёт переменные только внутрь контейнера)
 
 services:
   etcd:

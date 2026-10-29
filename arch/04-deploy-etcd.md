@@ -125,7 +125,9 @@ services:
 cd /opt/etcd
 # ПЕРВЫЙ запуск кластера — все три ноды стартуют с INITIAL_CLUSTER_STATE=new.
 # Важно стартовать в пределах election-timeout друг от друга (можно почти одновременно).
-docker compose up -d
+# --env-file обязателен: интерполяция ${…} в YAML идёт из env compose, а не из env_file
+# (тот передаёт переменные только внутрь контейнера) — без него up падает на пустых значениях.
+docker compose --env-file etcd.env up -d
 docker compose logs -f etcd | head -40      # смотрим, что raft сошёлся
 ```
 
@@ -156,7 +158,7 @@ etcdctl --endpoints=http://pg1:2379 member list -w table
 ```bash
 # на каждой ноде:
 sed -i 's/^INITIAL_CLUSTER_STATE=new/INITIAL_CLUSTER_STATE=existing/' /opt/etcd/etcd.env
-docker compose up -d      # применить (контейнер перезапустится с новым флагом)
+docker compose --env-file etcd.env up -d      # применить (контейнер перезапустится с новым флагом)
 ```
 
 > Подробно о том, что делать при крахе всего etcd-кластера — в `09-troubleshooting.md`.
@@ -181,7 +183,7 @@ docker compose up -d      # применить (контейнер переза�
 [ ] На всех 3 нодах: /opt/etcd/{docker-compose.yml,etcd.env} (со своими NODE_NAME/NODE_IP)
 [ ] etcd.env: PEERS, CLUSTER_TOKEN одинаковые на всех; DATA_DIR=/data/etcd
 [ ] INITIAL_CLUSTER_STATE=new на момент первого старта
-[ ] docker compose up -d на всех трёх
+[ ] docker compose --env-file etcd.env up -d на всех трёх
 [ ] etcdctl endpoint health --cluster → все 3 healthy
 [ ] etcdctl member list → 3 started
 [ ] INITIAL_CLUSTER_STATE переключён в existing на всех нодах
