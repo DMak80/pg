@@ -72,7 +72,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // pretty-JSON с пробелами, подстрочный поиск ненадёжен).
             var addresses = await PortallocAsync(Cluster);
             var shard1a = addresses["shard1/shard1a"];
-            (await PatroniSyncStrictAsync($"pgw-{Cluster}-shard1-shard1a", ct)).Should().BeTrue("bootstrap brought strict into the DCS");
+            (await PatroniSyncStrictAsync(shard1a.Patroni, ct)).Should().BeTrue("bootstrap brought strict into the DCS"); // localhost:{порт из portalloc}
 
             // Акт подготовки к ассерту «без рестартов»: StartedAt нод кластера
             // и набор контейнеров фиксируются ДО мутации.
@@ -82,7 +82,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // Act 3 (мутация): PUT к API воркера — URL и thumbprint серта из
             // дискавери-ключа /pgworker/api/<id>, mTLS-клиент (серт от install
             // CA, доверие серверу — по thumbprint дискавери).
-            var (apiUrl, serverThumb) = await WaitForDiscoveryAsync(ct);
+            var (apiUrl, serverThumb) = await WaitForDiscoveryAsync(app.ApiUrl, ct);
             using var client = ApiClient(serverThumb);
             var put = await client.PutAsJsonAsync($"{apiUrl}/api/clusters/{Cluster}/config",
                 new { synchronousModeStrict = false }, ct);
@@ -94,7 +94,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             // dcs-converge с патчем по strict. Patroni-проба — ТОЛЬКО условие
             // фазы (т29 §3.10: в тиках — etcd-чтения, гигиена нагрузки).
             var converged = await E2ePhase.WaitAsync(Fx, "strict-dcs-converged", async () =>
-                await PatroniSyncStrictAsync($"pgw-{Cluster}-shard1-shard1a", ct) == false,
+                await PatroniSyncStrictAsync(shard1a.Patroni, ct) == false, // localhost:{порт из portalloc}
                 TimeSpan.FromSeconds(90), ct,
                 progress: async () =>
                 {
@@ -174,7 +174,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             active.Should().BeTrue("the cluster became Active (config without state)");
 
             // Act — включение strict кластеру с однорепликным шардом.
-            var (apiUrl, serverThumb) = await WaitForDiscoveryAsync(ct);
+            var (apiUrl, serverThumb) = await WaitForDiscoveryAsync(app.ApiUrl, ct);
             using var client = ApiClient(serverThumb);
             var put = await client.PutAsJsonAsync($"{apiUrl}/api/clusters/{Cluster}/config",
                 new { synchronousModeStrict = true }, ct);
@@ -266,9 +266,11 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
     // GET /config живого Patroni (образец E2eScenarios:523): порт из portalloc.
     // Ответ Patroni — pretty-JSON (пробелы после двоеточий), поэтому strict
     // читается разбором JSON, а не подстрочным поиском; null — поля нет/не-bool.
-    private async Task<bool?> PatroniSyncStrictAsync(string patroniHost, CancellationToken ct)
+    private async Task<bool?> PatroniSyncStrictAsync(int patroniPort, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/config", ct);
+        // Хостовая модель: проба — https://localhost:{порт из portalloc} (имя
+        // контейнера ноды с хоста не резолвится).
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/config", ct);
         response.IsSuccessStatusCode.Should().BeTrue("Patroni /config is reachable");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         return doc.RootElement.TryGetProperty("synchronous_mode_strict", out var strict)
@@ -303,7 +305,7 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
     // ждём ключ /pgworker/api/<id>, возвращаем ФАКТИЧЕСКИЙ url и thumbprint
     // применённого серверного серта (новейший инстанс по since_unix). Фаза
     // strict-discovery (t29 §3.10): прогресс — лёгкий range-подсчёт api-ключей.
-    private async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(CancellationToken ct)
+    private async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(string hostApiUrl, CancellationToken ct)
     {
         string? url = null;
         string? thumb = null;
@@ -342,6 +344,10 @@ public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture
             progress: async () => $"api-keys={(await G.RangeAsync(Endpoint, "/pgworker/api/", ct)).Value.Count}");
         found.Should().BeTrue("the worker API discovery key must appear");
         thumb.Should().NotBeNullOrEmpty("the worker publishes the thumbprint of the applied certificate");
+        // Хостовая модель: advertise воркера — внутрисетевой alias (pgw-ew-<name>),
+        // с хоста не резолвится — тест ходит по host-публикации (HostInstance.ApiUrl,
+        // localhost:{динамический порт}); SAN серта включает localhost.
+        url = hostApiUrl;
         return (url!, thumb!);
     }
 
