@@ -39,36 +39,42 @@ public sealed class E2eBackupFailsOnBadS3Scenarios(E2eBackupFailsOnBadS3Scenario
     public async Task Backup_FailsOnBadS3_RetriesWithNewId()
     {
         // Arrange — S3-endpoint на заведомо закрытом порт 1 (tcpmux; НЕ тестовый
-        // хардкод: фиксированный протокольный «всегда закрыт»)
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
-            TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
-        var ct = cts.Token;
+        // хардкод: фиксированный протокольный «всегда закрыт»).
+        // ДВА бюджета по 3 мин (приказ владельца, тест не умещается в один):
+        // часть 1 (provisioning 4 нод + FAILED первой попытки) — ct1,
+        // часть 2 (переснятие новым id) — ct2. Воркер вне бюджетов.
         var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
         // (tcpmux; НЕ тестовый хардкод: фиксированный протокольный «всегда закрыт»).
-        await Fx.SeedS3PoolAsync(Pool, ct, ["e2e-broken-s3:1"]);
+        await Fx.SeedS3PoolAsync(Pool, TestContext.Current.CancellationToken, ["e2e-broken-s3:1"]);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
-        await using var app = await StartBackupHostAsync("bkbads3", ct);
+            $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, TestContext.Current.CancellationToken);
+        await using var app = await StartBackupHostAsync("bkbads3", TestContext.Current.CancellationToken);
 
-        // Act/Assert 1 — первая попытка FAILED с error ≤ 480 c: окно включает
-        // provisioning (4 ноды, минуты) + джоб (pg_basebackup со spread-чекпоинтом
-        // может ждать ближайший чекпоинт) + мгновенный mc-отказ (connection refused
-        // mc не ретраит). 300 c на загруженном хосте не хватает (факт t04-гейта).
+        // Часть 1 — ct1: provisioning (4 ноды, минуты) + джоб (pg_basebackup со
+        // spread-чекпоинтом может ждать ближайший чекпоинт) + мгновенный mc-отказ
+        // (connection refused, mc не ретраит) → FAILED с error.
+        using var cts1 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts1.CancelAfter(TimeSpan.FromMinutes(3)); // потолок части 1 — 3 мин
+        var ct1 = cts1.Token;
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
-            TimeSpan.FromSeconds(90), ct);
+            TimeSpan.FromSeconds(150), ct1);
         failed.Should().BeTrue("an attempt with an unavailable S3 must fail into FAILED");
         var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
         status["error"].GetString().Should().NotBeNullOrEmpty("the reason is recorded in the status");
 
-        // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
+        // Часть 2 — ct2: переснятие — вторая попытка с ДРУГИМ id (Retry BaseSec=2)
+        using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts2.CancelAfter(TimeSpan.FromMinutes(3)); // потолок части 2 — 3 мин
+        var ct2 = cts2.Token;
         var retried = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
-            TimeSpan.FromSeconds(90), ct);
+            TimeSpan.FromSeconds(90), ct2);
         retried.Should().BeTrue("the 2 s backoff must trigger a retake with a new id");
     }
 
