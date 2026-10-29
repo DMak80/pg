@@ -1,47 +1,30 @@
-using PgWorker.Core;
-using PgWorker.Docker.Drivers;
+using PgWorker.Backups;
 
 namespace PgWorker.Moves;
 
 /// <summary>
-/// DDL-перенос бакета (t01 задача 10, решение Д3): pg_dump --schema-only через
-/// docker exec в мастер-контейнере источника (Spilo: утилиты под postgres;
-/// exec от root → su postgres -c), применение батчем на приёмнике, гранты
-/// app-роли, сверка инвентаря P5 (relkind×relname источник/приёмник равны).
+/// DDL-перенос бакета (t01 задача 10, решение Д3): pg_dump --schema-only
+/// командой приёмнику ноды-источника (канал arch/25 №22 — приёмник снимает
+/// дамп локально в контейнере ноды, arch/14 §Move M1), применение батчем на
+/// приёмнике, гранты app-роли, сверка инвентаря P5 (relkind×relname
+/// источник/приёмник равны).
 /// </summary>
-public sealed class MoveDdl(IClusterDriver driver, IMoveSqlExecutor sql)
+public sealed class MoveDdl(IWalReceiverApiClient receiver, IMoveSqlExecutor sql)
 {
-    // Dump схемы бакета из мастер-контейнера узла-источника: флаги 1:1 со
-    // скриптом шага 1 (--schema-only --no-owner --no-privileges). Имя бакета
-    // валидируется до подстановки в shell-команду (SQL/shell-инъекции).
-    // containerOverride (adopt-repair spec §3.3): у усыновлённой ноды pg_dump
-    // идёт в её фактический docker-контейнер (postgres-образ несёт утилиты),
-    // а не в каноническое pgw-имя; null — обычное поведение.
-    public Task<Result<string>> DumpAsync(
+    /// <summary>Dump схемы бакета из ноды-мастера источника: приёмник ноды
+    /// запускает pg_dump локально (socket-коннект, без секретов); имя бакета
+    /// валидируется до подстановки (SQL/shell-инъекции) и на стороне
+    /// приёмника — дубль контракта PgDumpOperation.</summary>
+    public Task<NodeReply<PgDumpResponse>> DumpAsync(
         string cluster, string shard, string node, string dbname, string bucket,
-        CancellationToken ct, string? containerOverride = null)
+        CancellationToken ct)
     {
         if (!MoveNames.ValidateIdentifier(bucket))
             throw new ArgumentException($"invalid bucket name: '{bucket}' (pattern ^[a-z][a-z0-9_]*)");
 
-        // Канонический pgw-контейнер (Spilo) — exec от root, утилиты под postgres
-        // → su postgres. Усыновлённый postgres:18-контейнер работает ОТ юзера
-        // postgres — su требует пароль (e2e-факт), зовём pg_dump напрямую.
-        var cmd = containerOverride is { Length: > 0 }
-            ? new[]
-            {
-                "pg_dump", "--schema-only", "--no-owner", "--no-privileges",
-                $"--schema={bucket}", dbname
-            }
-            : new[]
-            {
-                "su", "postgres", "-c",
-                $"pg_dump --schema-only --no-owner --no-privileges --schema={bucket} {dbname}"
-            };
-
-        return containerOverride is { Length: > 0 }
-            ? driver.ExecContainerAsync(containerOverride, cmd, ct)
-            : driver.ExecNodeAsync(cluster, shard, node, cmd, ct);
+        return receiver.PgDumpAsync(
+            WalReceiverAddress.ForNode(cluster, shard, node),
+            new StartPgDumpRequest(bucket, dbname), ct);
     }
 
     // Применение DDL на приёмнике: батч Npgsql (ON_ERROR_STOP-эквивалент —

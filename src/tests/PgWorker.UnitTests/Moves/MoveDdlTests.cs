@@ -1,17 +1,53 @@
+using PgWorker.Backups;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Endpoints;
-using PgWorker.UnitTests.Provisioning;
 using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveDdl (t01 задача 10, Д3): DDL-перенос — pg_dump --schema-only через docker
-// exec в мастер-контейнере источника, применение Npgsql-батчем, гранты app-роли,
-// сверка инвентаря P5. StubSql — записывающий мок (в задаче 11 станет FakeMoveSql).
+// MoveDdl (t01 задача 10, Д3): DDL-перенос — pg_dump --schema-only командой
+// приёмнику ноды-источника (канал arch/25 №22), применение Npgsql-батчем,
+// гранты app-роли, сверка инвентаря P5. StubSql — записывающий мок.
 public class MoveDdlTests
 {
+    // Записывающий мок клиента приёмника: адрес и тело pgdump-вызова в Calls.
+    private sealed class StubReceiver : IWalReceiverApiClient
+    {
+        public readonly List<(string Url, StartPgDumpRequest Body)> Dumps = [];
+        public Func<StartPgDumpRequest, NodeReply<PgDumpResponse>>? DumpResult { get; set; }
+
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+        {
+            Dumps.Add((baseUrl, body));
+            return Task.FromResult(DumpResult is { } f ? f(body) : new NodeReply<PgDumpResponse>(200, new PgDumpResponse("-- ddl"), null));
+        }
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(false, false), null));
+
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<PgDataResponse>(200, new PgDataResponse("present"), null));
+
+        public Task<ReceiverReply> StartFullAsync(string baseUrl, string id, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> GetFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> CancelFullAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> StartVerifyAsync(string baseUrl, StartVerifyRequest body, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> GetVerifyAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+        public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(404, null, null));
+        public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new ReceiverReply(202, null, null));
+    }
+
     // Записывающий мок SQL-исполнителя: все вызовы в Calls, ответы конфигурируются.
     private sealed class StubSql : IMoveSqlExecutor
     {
@@ -44,46 +80,29 @@ public class MoveDdlTests
         }
     }
 
-    // AAA: команда pg_dump — флаги как в скрипте шага 1 (schema-only, no-owner, no-privileges)
+    // AAA: pgdump-команда приёмнику ноды-источника — адрес по имени ноды
+    // (pgw-<C>-<X>-<n>:8080), схема и БД — в теле (канон arch/25 №22)
     [Fact]
-    public async Task DumpAsync_ExecsPgDumpInNodeContainer()
+    public async Task DumpAsync_RequestsReceiverOfSourceNode()
     {
         // Arrange
-        var driver = new Fakes.FakeDriver { ExecResult = (_, cmd) => Result<string>.Success("-- ddl") };
-        var ddl = new MoveDdl(driver, new StubSql());
+        var receiver = new StubReceiver();
+        var ddl = new MoveDdl(receiver, new StubSql());
 
         // Act
         var dump = await ddl.DumpAsync("shop", "shard1", "shard1a", "shop", "bucket_42", CancellationToken.None);
 
         // Assert
-        dump.Value.Should().Be("-- ddl");
-        driver.Executed.Should().ContainSingle().Which.Cmd.Should().BeEquivalentTo(
-            ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"]);
-    }
-
-    // AAA (adopt-repair §3.3): pg_dump усыновлённой ноды — exec в её фактический
-    // object-контейнер (postgres-образ несёт утилиты), не в каноническое pgw-имя
-    [Fact]
-    public async Task DumpAsync_WithOverride_ExecsInObjectContainer()
-    {
-        // Arrange: драйвер-фейк записывает ExecContainerAsync-вызовы.
-        var driver = new Fakes.FakeDriver();
-        var ddl = new MoveDdl(driver, new StubSql());
-
-        // Act
-        var dump = await ddl.DumpAsync("demo", "s2", "s2a", "demo", "bucket_13", CancellationToken.None,
-            containerOverride: "as-s2a");
-
-        // Assert: exec ушёл в object-контейнер, а не в pgw-имя.
         dump.IsSuccess.Should().BeTrue();
-        driver.ContainerExecs.Should().ContainSingle();
-        driver.ContainerExecs[0].Container.Should().Be("as-s2a");
-        driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
-            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_13", "demo"]);
-        driver.Executed.Should().BeEmpty("the canonical ExecNodeAsync was not called");
+        dump.Body!.Ddl.Should().Be("-- ddl");
+        receiver.Dumps.Should().ContainSingle();
+        receiver.Dumps[0].Url.Should().Be("http://pgw-shop-shard1-shard1a:8080");
+        receiver.Dumps[0].Body.Schema.Should().Be("bucket_42");
+        receiver.Dumps[0].Body.DbName.Should().Be("shop");
     }
 
-    // AAA (adopt-repair §3.3): внешний ли исполнитель подписок — object-нода в portalloc
+    // AAA (усвоение §5 J): object-нода в portalloc — адрес приёмника по имени
+    // её контейнера (WalReceiverAddress.ForNode)
     [Fact]
     public void HasAdoptedNodes_MixedShard_True()
     {
@@ -99,22 +118,22 @@ public class MoveDdlTests
         ShardEndpoints.HasAdoptedNodes("s1", addresses).Should().BeFalse();
     }
 
-    // AAA: невалидное имя бакета — исключение до docker exec (SQL/shell-инъекция)
+    // AAA: невалидное имя бакета — исключение до HTTP-вызова (SQL/shell-инъекция)
     [Theory]
     [InlineData("B;DROP TABLE x")]
     [InlineData("bucket-42")]
     public async Task DumpAsync_RejectsInvalidBucket(string bad)
     {
         // Arrange
-        var driver = new Fakes.FakeDriver { ExecResult = (_, cmd) => Result<string>.Success("-- ddl") };
-        var ddl = new MoveDdl(driver, new StubSql());
+        var receiver = new StubReceiver();
+        var ddl = new MoveDdl(receiver, new StubSql());
 
         // Act
         var act = () => ddl.DumpAsync("shop", "shard1", "shard1a", "shop", bad, CancellationToken.None);
 
         // Assert
-        await act.Should().ThrowAsync<ArgumentException>("the bucket name is substituted into a shell command");
-        driver.Executed.Should().BeEmpty("exec must not go out with an invalid identifier");
+        await act.Should().ThrowAsync<ArgumentException>("the bucket name is substituted into the dump request");
+        receiver.Dumps.Should().BeEmpty("invalid identifiers must not reach the receiver");
     }
 
     // AAA: psql-метакоманды (\restrict/\unrestrict — pg_dump PG17.2+/18) вырезаются
@@ -124,7 +143,7 @@ public class MoveDdlTests
     {
         // Arrange — дамп PG18 с охранными метакомандами pg_dump
         var sql = new StubSql();
-        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var ddl = new MoveDdl(new StubReceiver(), sql);
         var dump = """
             \restrict 01f0f4c6
             SET statement_timeout = 0;
@@ -143,16 +162,16 @@ public class MoveDdlTests
         sent.Should().Contain("CREATE SCHEMA bucket_42;", "the dump SQL is preserved");
     }
 
-    // AAA: dump-провал драйвера прокидывается (shard недоступен — transient тика)
+    // AAA: pgdump-провал приёмника — неуспех (transient тика), DDL не применён
     [Fact]
-    public async Task DumpAsync_DriverFails_Propagates()
+    public async Task DumpAsync_ReceiverFails_Propagates()
     {
         // Arrange
-        var driver = new Fakes.FakeDriver
+        var receiver = new StubReceiver
         {
-            ExecResult = (_, cmd) => Result<string>.Failed(new ApplicationException("docker exec failed")),
+            DumpResult = _ => new NodeReply<PgDumpResponse>(500, null, "pg_dump failed"),
         };
-        var ddl = new MoveDdl(driver, new StubSql());
+        var ddl = new MoveDdl(receiver, new StubSql());
 
         // Act
         var dump = await ddl.DumpAsync("shop", "shard1", "shard1a", "shop", "bucket_42", CancellationToken.None);
@@ -167,7 +186,7 @@ public class MoveDdlTests
     {
         // Arrange
         var sql = new StubSql();
-        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var ddl = new MoveDdl(new StubReceiver(), sql);
 
         // Act
         var applied = await ddl.ApplyAsync("Host=dst", "-- ddl", CancellationToken.None);
@@ -183,7 +202,7 @@ public class MoveDdlTests
     {
         // Arrange
         var sql = new StubSql();
-        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var ddl = new MoveDdl(new StubReceiver(), sql);
 
         // Act
         var granted = await ddl.GrantAppOnSchemaAsync("Host=dst", "bucket_42", CancellationToken.None);
@@ -206,7 +225,7 @@ public class MoveDdlTests
         {
             ListResult = dsn => Result<IReadOnlyList<string>>.Success(["r|items", "S|seq1"]),
         };
-        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var ddl = new MoveDdl(new StubReceiver(), sql);
 
         // Act
         var equal = await ddl.InventoryMatchesAsync("Host=src", "Host=dst", "bucket_42", CancellationToken.None);
@@ -235,7 +254,7 @@ public class MoveDdlTests
         {
             ListResult = dsn => Result<IReadOnlyList<string>>.Failed(new ApplicationException("shard down")),
         };
-        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var ddl = new MoveDdl(new StubReceiver(), sql);
 
         // Act
         var match = await ddl.InventoryMatchesAsync("Host=src", "Host=dst", "bucket_42", CancellationToken.None);

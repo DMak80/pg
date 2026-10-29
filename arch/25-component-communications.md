@@ -83,18 +83,11 @@ docker-логи и inspect — [docs/e2e-launch.md](../docs/e2e-launch.md)) и
 | 19 | PgWorker → docker (ноды, джобы) | create/start/stop/kill/remove, сети, тома; list/inspect (состояние, exit-код, порты, env/cmd, лейблы, StartedAt) | канон (§2) |
 | 20 | S3Worker → docker/swarm (ownS3) | сервисы/placement, тома; list/inspect | канон (§2) |
 | 21 | WalReceiver → PgWorker | etcd-ключ приёмника `/pgworker/backups/<C>/<X>/agent/<N>` (lease-живость, фазы, `tli_jump`, `pool_exhausted` — arch/19 §3/§4); воркер читает, приёмник пишет только свой ключ | канон |
-| 22 | PgWorker → WalReceiver (операции бэкапов) | HTTP API приёмника `alias:8080` по имени ноды в общей сети воркера и нод, без публикации на хост (docker и swarm); ОДИН процесс приёмника исполняет ВСЕ операции: полный (`/api/backup/full*`) и verify/restore/drill (`/api/ops/*`); статусы — GET того же API (arch/19 §2/§3.5/§3.6/§5) | канон |
-| 23 | PgWorker → PostgreSQL-ноды | docker exec: `pg_dump --schema-only` (DDL-переезда), правка `pg_hba` перед бэкапом, управление wal-слотом | отклонение → pgworker `t03-orchestration-exec-transition` |
+| 22 | PgWorker → WalReceiver (операции ноды) | HTTP API приёмника `alias:8080` по имени ноды в общей сети воркера и нод, без публикации на хост (docker и swarm). ОДИН процесс приёмника исполняет ВСЕ операции ноды: полный (`/api/backup/full*`) и verify/restore/drill (`/api/ops/*`) — arch/19 §2/§3.5/§3.6/§5; обеспечение pg_hba (`/api/node/hba-ensure`), pg_dump схемы (`/api/node/pgdump`, DDL-переезд arch/14 §Move M1), проверка данных ноды (`/api/node/pgdata`, arch/14 Д3) — `/api/node/*`; статусы — GET того же API | канон |
 | 24 | KafkaWorker → Kafka (reassignment партиций) | Kafka-протокол: Describe — AdminClient, подача — AlterReassignments/KIP-455 (миниклиент, arch/16 §2.4) | канон |
 
 ## 5. Отклонения и переход
 
-Отклонения — исторические механизмы, канонизированные до этого
-документа; их перевод на штатные каналы оформлен в `arch/roadmap/`:
-
-- **№23** — `pgworker.md` `t03-orchestration-exec-transition`: каждый
-  exec-сценарий переходит на сетевой канал (SQL/HTTP/джоба) либо получает
-  отдельный апрув владельца.
-
-Новые отклонения не вводятся без явного апрува владельца проекта (§2).
+Отклонений нет: все каналы продукта соответствуют §§1–2. Новые отклонения не
+вводятся без явного апрува владельца проекта (§2).
 Расхождение кода с этим реестром — блокирующее замечание ревью.

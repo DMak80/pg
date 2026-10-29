@@ -149,8 +149,6 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         result.IsSuccess.Should().BeTrue();
         // Слот ensured на DSN мастера (адресация ShardEndpoints.AdminDsn)
         sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_c1_shard1"));
-        // t25: контрольный тик БЕЗ docker-exec (history-доклад удалён)
-        driver.ExecNodeCalls.Should().Be(0);
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
         wal.Value.Should().BeNull("the key is not written until the first observation (spec §3.2 item 8)");

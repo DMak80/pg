@@ -113,6 +113,12 @@ public class BackupVerifyProcessTests
             => throw new NotSupportedException();
         public Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct)
             => throw new NotSupportedException();
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(true, false), null));
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
     }
 
     private BackupVerifyProcess BuildProcess(

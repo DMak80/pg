@@ -136,6 +136,13 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             => throw new NotSupportedException();
         public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
             => throw new NotSupportedException();
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+            => Task.FromResult(new NodeReply<HbaEnsureResponse>(200, new HbaEnsureResponse(true, false), null));
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
     }
 
     // SQL-фейк гейта мастера (t10): Scalar — ответ pg_is_in_recovery()
@@ -478,9 +485,6 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
                 : inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);
-        public Task<Result<string>> ExecNodeAsync(string c, string sh, string node, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecNodeAsync(c, sh, node, cmd, ct);
-        public Task<Result<string>> ExecContainerAsync(string container, IReadOnlyList<string> cmd, CancellationToken ct) => inner.ExecContainerAsync(container, cmd, ct);
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(string c, IReadOnlyCollection<string> names, CancellationToken ct) => inner.InspectNodesAsync(c, names, ct);
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
             string cluster, string shard, string nodeName, CancellationToken ct) => inner.InspectNodeEnvAsync(cluster, shard, nodeName, ct);

@@ -53,6 +53,7 @@ internal partial class Program
         builder.Services.AddAppMetrics(WalReceiverMetrics.MeterName, builder.Configuration.GetSection("Metrics"));
         builder.Services.AddSingleton<OperationRegistry>();
         builder.Services.AddSingleton<OpsOperationRegistry>();
+        builder.Services.AddSingleton<IProcessRunner, ProcessRunner>();
 
         // Identity обязана быть валидной (env ноды — невалидный набор: лог в
         // stdout + exit 1; supervisord с exitcodes=0 не перезапускает —
@@ -103,9 +104,57 @@ internal partial class Program
 
         var app = builder.Build();
         app.MapAppMetrics();
+        MapNodeRoutes(app);
         MapFullBackupRoutes(app, identity, endpoints);
         MapOpsRoutes(app);
         await app.RunAsync();
+    }
+
+    // Node-операции приёмника (arch/25 №22): обеспечение pg_hba (arch/19 §7),
+    // pg_dump схемы (arch/14 §Move M1), проба данных ноды (arch/14 Д3) —
+    // синхронные короткие операции: ответ 200 — итог, 500 — отказ (transient
+    // для тиков воркера). Исполняются локально в контейнере ноды.
+    private static void MapNodeRoutes(WebApplication app)
+    {
+        app.MapPost("/api/node/hba-ensure", async (
+            IProcessRunner runner, CancellationToken ct) =>
+        {
+            try
+            {
+                var response = await new HbaEnsureOperation(runner).RunAsync(ct);
+                return Results.Json(response, JsonOpts);
+            }
+            catch (Exception e)
+            {
+                return Results.Json(
+                    new ErrorResponse(e.Message.Split('\n')[0]), JsonOpts, statusCode: 500);
+            }
+        });
+
+        app.MapPost("/api/node/pgdump", async (
+            StartPgDumpRequest body, IProcessRunner runner, CancellationToken ct) =>
+        {
+            try
+            {
+                var response = await new PgDumpOperation(runner)
+                    .RunAsync(body.Schema, body.DbName, ct);
+                return Results.Json(response, JsonOpts);
+            }
+            catch (Exception e)
+            {
+                return Results.Json(
+                    new ErrorResponse(e.Message.Split('\n')[0]), JsonOpts, statusCode: 500);
+            }
+        });
+
+        app.MapGet("/api/node/pgdata", () =>
+        {
+            // Проба данных (arch/14 Д3): факт PG_VERSION файловой системой
+            // контейнера (user=postgres — доступ к PGDATA ноды).
+            var present = File.Exists(Path.Combine(NodePaths.Pgdata, "PG_VERSION"));
+            return Results.Json(
+                new PgDataResponse(present ? "present" : "absent"), JsonOpts);
+        });
     }
 
     // Маршруты ops-операций (arch/19 §5/§3.5/§3.6): POST /api/ops/verify —

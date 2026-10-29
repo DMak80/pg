@@ -139,7 +139,7 @@ public class ProvisioningProcessTests
         => new("ignored", host, obj, pg, patroni, doorman);
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
-        ClaimStore Claims, WorkJournal Journal, ProvisioningProcess Process);
+        ClaimStore Claims, WorkJournal Journal, ProvisioningProcess Process, Fakes.FakeNodeDataProbe Probe);
 
     private static async Task<Rig> NewRig(
         Func<int, HttpResponseMessage> patroniResponse, List<int>? trace = null, PlacementOptions? opts = null,
@@ -151,16 +151,17 @@ public class ProvisioningProcessTests
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
         var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
+        var probe = new Fakes.FakeNodeDataProbe();
         var sql = new Fakes.FakeSql();
         var appSecret = new ClusterSecretEnsurer(etcd, [Ep]);
         var portAlloc = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
+            etcd, [Ep], driver, probe, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
             opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
             new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
-        return new Rig(etcd, driver, sql, claims, journal, process);
+        return new Rig(etcd, driver, sql, claims, journal, process, probe);
     }
 
     [Fact]
@@ -326,7 +327,7 @@ public class ProvisioningProcessTests
         var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
+            etcd, [Ep], driver, new Fakes.FakeNodeDataProbe(), new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
             claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
@@ -854,7 +855,7 @@ public class ProvisioningProcessTests
         rig.Etcd.Store.Remove("/service/shop-shard1/leader");
         rig.Etcd.Store.Remove("/service/shop-shard2/leader");
         rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
-        rig.Driver.DataPresenceByNode = _ => DataPresence.Absent;
+        rig.Probe.PresenceByNode = _ => DataPresence.Absent;
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -883,7 +884,7 @@ public class ProvisioningProcessTests
             identityByEndpoint: EmptyIdentity);
         rig.Etcd.Store.Remove("/service/shop-shard1/leader");
         rig.Etcd.Store.Remove("/service/shop-shard2/leader");
-        rig.Driver.DataPresenceByNode = node => node == "shard1a" ? DataPresence.Present : DataPresence.Absent;
+        rig.Probe.PresenceByNode = node => node == "shard1a" ? DataPresence.Present : DataPresence.Absent;
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -904,7 +905,7 @@ public class ProvisioningProcessTests
             identityByEndpoint: EmptyIdentity);
         rig.Etcd.Store.Remove("/service/shop-shard1/leader");
         rig.Etcd.Store.Remove("/service/shop-shard2/leader");
-        rig.Driver.DataPresenceByNode = _ => DataPresence.Unknown;
+        rig.Probe.PresenceByNode = _ => DataPresence.Unknown;
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);

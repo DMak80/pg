@@ -51,6 +51,33 @@ public sealed record ReceiverStatus(
     [property: JsonPropertyName("started_unix")] long? StartedUnix = null,
     [property: JsonPropertyName("error")] string? Error = null);
 
+/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/14 §Move M1).</summary>
+public sealed record StartPgDumpRequest(
+    [property: JsonPropertyName("schema")] string Schema,
+    [property: JsonPropertyName("dbname")] string DbName);
+
+/// <summary>Ответ 200 /api/node/pgdump — текст дампа схемы.</summary>
+public sealed record PgDumpResponse([property: JsonPropertyName("ddl")] string Ddl);
+
+/// <summary>Ответ 200 /api/node/hba-ensure: applied — вставлял ли строку
+/// (и будил Patroni); bootstrap — нода ещё без PG_VERSION (арх/19 §7).</summary>
+public sealed record HbaEnsureResponse(
+    [property: JsonPropertyName("applied")] bool Applied,
+    [property: JsonPropertyName("bootstrap")] bool Bootstrap);
+
+/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/14 Д3).</summary>
+public sealed record PgDataResponse([property: JsonPropertyName("pg_version")] string PgVersion);
+
+/// <summary>Исход node-операции (синхронный контракт): StatusCode 0 —
+/// транспортный отказ/таймаут; 5xx — приёмник ответил ошибкой; оба —
+/// transient для тиков воркера (как ReceiverReply).</summary>
+public sealed record NodeReply<TBody>(int StatusCode, TBody? Body, string? Error)
+    where TBody : class
+{
+    public bool IsTransient => StatusCode is 0 or >= 500;
+    public bool IsSuccess => StatusCode is >= 200 and < 300;
+}
+
 /// <summary>Исход вызова API приёмника: StatusCode 0 = транспортный отказ/таймаут;
 /// 5xx = приёмник ответил ошибкой; оба — transient для тиков воркера.</summary>
 public sealed record ReceiverReply(int StatusCode, ReceiverStatus? Status, string? Error)
@@ -61,6 +88,11 @@ public sealed record ReceiverReply(int StatusCode, ReceiverStatus? Status, strin
     public bool IsGated => StatusCode == 503;
     public bool IsAccepted => StatusCode == 202;
 }
+
+/// <summary>Тело 5xx node-операций приёмника (дубль контракта ErrorResponse
+/// ApiContracts.cs приёмника — дублирование записей между проектами
+/// осознанное, запрет цикла ссылок).</summary>
+public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);
 
 /// <summary>Клиент HTTP API приёмника WalReceiver (spec t26 §3.2):
 /// baseUrl — базовый URL приёмника (нода — alias:8080, tool — host:порт);
@@ -76,6 +108,9 @@ public interface IWalReceiverApiClient
     Task<ReceiverReply> StartRestoreAsync(string baseUrl, StartRestoreRequest body, CancellationToken ct);
     Task<ReceiverReply> GetRestoreAsync(string baseUrl, CancellationToken ct);
     Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct);
+    Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct);
+    Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct);
+    Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct);
 }
 
 /// <summary>Прод-клиент (HttpClient с Timeout 10 с — per-вызов ~10 с, spec
@@ -116,6 +151,79 @@ public sealed class WalReceiverApiClient(HttpClient http) : IWalReceiverApiClien
     // (arch/19 §6); restore-таймаут сносит первую ноду (операция уходит с ней).
     public async Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
         => await PostAsync<object?>($"{baseUrl}/api/ops/cancel", null, ct);
+
+    // Node-операции (arch/25 №22): синхронный контракт — 200 несёт тело
+    // итога, 5xx/0 — transient-исход (причина — поле Error).
+    public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+        => PostNodeAsync<object?, HbaEnsureResponse>($"{baseUrl}/api/node/hba-ensure", null, ct);
+
+    public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+        => PostNodeAsync<StartPgDumpRequest, PgDumpResponse>($"{baseUrl}/api/node/pgdump", body, ct);
+
+    public async Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await http.GetAsync($"{baseUrl}/api/node/pgdata", ct);
+            var body = await ReadBodyAsync<PgDataResponse>(resp);
+            return new NodeReply<PgDataResponse>((int)resp.StatusCode, body, null);
+        }
+        catch (Exception e)
+        {
+            return new NodeReply<PgDataResponse>(0, null, e.Message.Split('\n')[0]);
+        }
+    }
+
+    private async Task<NodeReply<TBody>> PostNodeAsync<TReq, TBody>(
+        string url, TReq? body, CancellationToken ct)
+        where TBody : class
+    {
+        try
+        {
+            using var resp = body is null
+                ? await http.PostAsync(url, content: null, ct)
+                : await http.PostAsJsonAsync(url, body, JsonOpts, ct);
+            var parsed = await ReadBodyAsync<TBody>(resp);
+            var error = parsed is null && (int)resp.StatusCode >= 500
+                ? await ReadErrorAsync(resp)
+                : null;
+            return new NodeReply<TBody>((int)resp.StatusCode, parsed, error);
+        }
+        catch (Exception e)
+        {
+            return new NodeReply<TBody>(0, null, e.Message.Split('\n')[0]);
+        }
+    }
+
+    // Тело 200 — итог node-операции; прочие коды тела не несут.
+    private static async Task<TBody?> ReadBodyAsync<TBody>(HttpResponseMessage resp)
+        where TBody : class
+    {
+        if ((int)resp.StatusCode is not (200 or 201))
+            return null;
+        try
+        {
+            return await resp.Content.ReadFromJsonAsync<TBody>(JsonOpts, default(CancellationToken));
+        }
+        catch
+        {
+            return null; // битое тело — код важнее
+        }
+    }
+
+    // Причина 5xx — однострочный error приёмника (диагностика тика).
+    private static async Task<string?> ReadErrorAsync(HttpResponseMessage resp)
+    {
+        try
+        {
+            var err = await resp.Content.ReadFromJsonAsync<ErrorResponse>(JsonOpts, default(CancellationToken));
+            return err?.Error;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private async Task<ReceiverReply> GetAsync(string url, CancellationToken ct)
     {
@@ -172,7 +280,7 @@ public static class WalReceiverAddress
 {
     /// <summary>Базовый URL API приёмника ноды: имя docker-контейнера :8080
     /// (канонические — pgw-&lt;C&gt;-&lt;X&gt;-&lt;n&gt;; object — NodeAddress.Object).</summary>
-    public static string ForNode(string cluster, string shard, string node, string? objectContainer)
+    public static string ForNode(string cluster, string shard, string node, string? objectContainer = null)
     {
         var container = objectContainer is { Length: > 0 } o
             ? o

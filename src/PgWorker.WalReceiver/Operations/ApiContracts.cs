@@ -50,3 +50,23 @@ public sealed record OpsStatusResponse(
     [property: JsonPropertyName("error")] string? Error = null);
 
 public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);
+
+/// <summary>Тело POST /api/node/pgdump (pg_dump схемы — arch/14 §Move M1):
+/// имя схемы-бакета и БД кластера; секретов нет — локальный socket-коннект.</summary>
+public sealed record StartPgDumpRequest(
+    [property: JsonPropertyName("schema")] string Schema,
+    [property: JsonPropertyName("dbname")] string DbName);
+
+/// <summary>Ответ 200 /api/node/pgdump — текст дампа схемы (stdout pg_dump).</summary>
+public sealed record PgDumpResponse([property: JsonPropertyName("ddl")] string Ddl);
+
+/// <summary>Ответ 200 /api/node/hba-ensure (arch/19 §7): applied — вставлял ли
+/// приёмник строку (и будил Patroni); bootstrap — нода ещё без PG_VERSION
+/// (строка применится при первом старте postgres, ожидания не было).</summary>
+public sealed record HbaEnsureResponse(
+    [property: JsonPropertyName("applied")] bool Applied,
+    [property: JsonPropertyName("bootstrap")] bool Bootstrap);
+
+/// <summary>Ответ 200 GET /api/node/pgdata — проба данных ноды (arch/14 Д3):
+/// факт PG_VERSION файловой системой контейнера ноды.</summary>
+public sealed record PgDataResponse([property: JsonPropertyName("pg_version")] string PgVersion);

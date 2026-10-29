@@ -10,6 +10,7 @@ using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
 using PgWorker.Provisioning.Sql;
 using PgWorker.Provisioning.Processes;
+using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
@@ -333,13 +334,11 @@ internal sealed class FakeDriver : IClusterDriver
         public readonly Dictionary<string, string> EnsuredRestPasswords = new();
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
-        public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
         public List<string> NodeObjects = [];
         public Func<string, Result>? EnsureResultByNode { get; set; }
         // Исход StopNodeAsync по ноде "<shard>/<node>" (null — успех); вызов
         // фиксируется в StoppedNodes ДО исхода (порядок событий теста).
         public Func<string, Result>? StopResultByNode { get; set; }
-        public Func<string, IReadOnlyList<string>, Result<string>>? ExecResult { get; set; }
         public bool RemoveFailsOnce { get; set; }
         private bool _removeFailed;
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
@@ -457,19 +456,6 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(StopResultByNode is { } stopResult ? stopResult(key) : Result.Success());
         }
 
-        public Task<Result<string>> ExecNodeAsync(
-            string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                Executed.Add(($"{shard}/{node}", cmd));
-            }
-
-            return Task.FromResult(ExecResult is { } f
-                ? f(node, cmd)
-                : Result<string>.Success(string.Empty));
-        }
-
         // Инспекция усыновления (adopt-repair T3): фиксированная карта находок;
         // пустая карта = docker-хосты не видят ни одной ноды (тихий skip).
         public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
@@ -477,8 +463,6 @@ internal sealed class FakeDriver : IClusterDriver
 
         // сбой-инъекция: docker-хост недоступен (Д2: transport-провал инспекции — transient).
         public Exception? InspectFault { get; set; }
-
-        public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
 
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
@@ -488,22 +472,6 @@ internal sealed class FakeDriver : IClusterDriver
                     (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                         .Where(p => nodeNames.Contains(p.Key))
                         .ToDictionary(p => p.Key, p => p.Value)));
-
-        // Д3: карта присутствия данных по имени ноды (default Present — чистка запрещена).
-        public Func<string, DataPresence> DataPresenceByNode { get; set; } = _ => DataPresence.Present;
-
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-            => Task.FromResult(Result<DataPresence>.Success(DataPresenceByNode(node)));
-
-        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            lock (_gate)
-            {
-                ContainerExecs.Add((containerName, cmd));
-            }
-
-            return Task.FromResult(Result<string>.Success(string.Empty));
-        }
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         {
@@ -523,6 +491,25 @@ internal sealed class FakeDriver : IClusterDriver
 
         public IDockerEngine? Engine { get; set; }
         public IDockerEngine? EngineFor(string host) => Engine;
+    }
+
+    // Проба данных ноды (Д3): карта вердиктов по имени ноды (default Present —
+    // чистка scope запрещена). Unknown — ответ 500 (транспорт-отказ приёмника).
+    internal sealed class FakeNodeDataProbe : INodeDataProbe
+    {
+        public Func<string, DataPresence> PresenceByNode { get; set; } = _ => DataPresence.Present;
+
+        public Task<NodeDataProbeReply> ProbeAsync(
+            string cluster, string shard, string node, CancellationToken ct)
+        {
+            var reply = PresenceByNode(node) switch
+            {
+                DataPresence.Present => new NodeDataProbeReply(200, "present", null),
+                DataPresence.Absent => new NodeDataProbeReply(200, "absent", null),
+                _ => new NodeDataProbeReply(500, null, "receiver status 500"),
+            };
+            return Task.FromResult(reply);
+        }
     }
 
     // Мок SQL: запоминает DSN/SQL вызовов (порядок journal-before-SQL проверяют тесты).

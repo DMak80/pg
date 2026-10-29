@@ -97,17 +97,6 @@ public sealed class StubScaleDriver : IClusterDriver
     public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         => Task.FromResult(Result.Success());
 
-    // t27 Task 13: конфигурируемый stdout exec (history-fallback) + счётчик вызовов.
-    public string ExecNodeResult { get; set; } = string.Empty;
-    public int ExecNodeCalls;
-
-    public Task<Result<string>> ExecNodeAsync(
-        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-    {
-        ExecNodeCalls++;
-        return Task.FromResult(Result<string>.Success(ExecNodeResult));
-    }
-
     // Инспекция усыновления (adopt-repair T3): фиксированная карта находок.
     public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
         = new Dictionary<string, DiscoveredNode>();
@@ -118,13 +107,6 @@ public sealed class StubScaleDriver : IClusterDriver
             (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                 .Where(p => nodeNames.Contains(p.Key))
                 .ToDictionary(p => p.Key, p => p.Value)));
-
-    // Д3 вне контрактных сценариев scale (t06 §8): утрата не доказана — не лечим.
-    public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
-        => Task.FromResult(Result<DataPresence>.Success(DataPresence.Unknown));
-
-    public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(string.Empty));
 
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
         string cluster, string shard, string nodeName, CancellationToken ct)

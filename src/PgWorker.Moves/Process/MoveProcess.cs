@@ -361,7 +361,8 @@ public sealed class MoveProcess(
         // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
         if (!subOnDst && !schemaOnDst)
         {
-            // Имя ноды мастера для docker exec (pg_dump): формат master-ключа —
+            // Имя ноды мастера для адреса приёмника pg_dump-операции (канал
+            // arch/25 №22): формат master-ключа —
             // <host>:<doormanPort> (писатели — Patroni-callback/reconciler),
             // поэтому резолвим адрес через ShardEndpoints и ищем ноду шарда по
             // её PG-порту (уникален) — Split(':')[0] давал бы host, не имя (e2e t01).
@@ -379,11 +380,13 @@ public sealed class MoveProcess(
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
                     $"master '{owner}' (pg:{master.Ports.Pg}) not found among shard nodes in portalloc"), ct);
-            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct,
-                containerOverride: master.Object); // усыновлённая нода: exec в object-контейнер (spec §3.3)
+            // pg_dump — операция приёмника ноды-источника (канал arch/25 №22);
+            // приёмник снимает дамп локально в контейнере ноды.
+            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
             if (!dump.IsSuccess)
-                return await FailTransientAsync(cluster, dump.Error!, ct);
-            var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
+                return await FailTransientAsync(cluster, new ApplicationException(
+                    $"pgdump receiver {entry}: {dump.Error ?? $"status {(int)dump.StatusCode}"}"), ct);
+            var applied = await ddl.ApplyAsync(dstDsn, dump.Body!.Ddl, ct);
             if (!applied.IsSuccess)
                 return await FailTransientAsync(cluster, applied.Error!, ct);
         }

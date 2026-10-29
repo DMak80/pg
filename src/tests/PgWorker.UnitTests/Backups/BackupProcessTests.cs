@@ -141,22 +141,6 @@ public class BackupProcessTests
 
     internal sealed class FakeBackupDriver(FakeBackupEngine engine) : IClusterDriver
     {
-        public readonly List<(string Node, string[] Cmd)> ExecNodeCalls = [];
-        public readonly List<(string Container, string[] Cmd)> ContainerExecCalls = [];
-
-        public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
-            IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            ExecNodeCalls.Add((node, [.. cmd]));
-            return Task.FromResult(Result<string>.Success(""));
-        }
-
-        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
-        {
-            ContainerExecCalls.Add((containerName, [.. cmd]));
-            return Task.FromResult(Result<string>.Success(""));
-        }
-
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
@@ -168,7 +152,6 @@ public class BackupProcessTests
             PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
-        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
@@ -272,6 +255,22 @@ public class BackupProcessTests
             => throw new NotSupportedException();
         public Task<ReceiverReply> CancelOpsAsync(string baseUrl, CancellationToken ct)
             => throw new NotSupportedException();
+
+        // hba-гвард (arch/19 §7): ответ программируется, вызовы — в журнал URL.
+        public NodeReply<HbaEnsureResponse> HbaReply { get; set; }
+            = new(200, new HbaEnsureResponse(true, false), null);
+        public readonly List<string> HbaUrls = [];
+
+        public Task<NodeReply<HbaEnsureResponse>> EnsureHbaAsync(string baseUrl, CancellationToken ct)
+        {
+            HbaUrls.Add(baseUrl);
+            return Task.FromResult(HbaReply);
+        }
+
+        public Task<NodeReply<PgDumpResponse>> PgDumpAsync(string baseUrl, StartPgDumpRequest body, CancellationToken ct)
+            => throw new NotSupportedException();
+        public Task<NodeReply<PgDataResponse>> GetPgDataAsync(string baseUrl, CancellationToken ct)
+            => throw new NotSupportedException();
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, FakeSql Sql, FakeBackupEngine Engine,
@@ -299,7 +298,7 @@ public class BackupProcessTests
         var journal = new WorkJournal("/pgworker", store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var process = new BackupProcess(
-            store, [Ep], driver,
+            store, [Ep],
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
             claims, journal, Secrets, options ?? new BackupsRuntimeOptions { Enabled = true },
             TestPoolFactory.Single(),
@@ -390,8 +389,10 @@ public class BackupProcessTests
         rig.Receiver.StartFullUrls.Should().ContainSingle().Which.Should().Be(ReceiverUrlMaster);
         rig.Receiver.StartFullIds.Should().ContainSingle().Which.Should().Be(id);
 
-        // pg_hba-гвард прошёл по обеим нодам шарда (G2 каждый тик)
-        rig.Driver.ExecNodeCalls.Select(c => c.Node).Should().BeEquivalentTo(["shard1a", "shard1b"]);
+        // pg_hba-гвард прошёл по обеим нодам шарда (G2 каждый тик) — команды
+        // приёмникам нод по alias:8080 (канал arch/25 №22)
+        rig.Receiver.HbaUrls.Select(u => u.Split("//")[^1].TrimEnd('/')).Should().BeEquivalentTo(
+            ["pgw-shop-shard1-shard1a:8080", "pgw-shop-shard1-shard1b:8080"]);
 
         // journal-before-manipulations: phase started/shard1/<id>
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
@@ -972,10 +973,10 @@ public class BackupProcessTests
         rig.Etcd.Txns.Should().BeEmpty();
     }
 
-    // AAA: pg_hba-гвард на усвоенной ноде (object) — exec в её контейнер,
-    // а не по pgw-имени (у стендовых/усвоенных нод pgw-контейнера нет)
+    // AAA: pg_hba-гвард на усвоенной ноде (object) — команда приёмнику по имени
+    // её фактического контейнера (WalReceiverAddress.ForNode), не по pgw-имени
     [Fact]
-    public async Task AdoptedNodes_HbaGuard_ExecsObjectContainer()
+    public async Task AdoptedNodes_HbaGuard_AddressesObjectContainer()
     {
         // Arrange — portalloc с object-именами (усвоенные ноды, arch/14 §5 J);
         // сид поверх NewRig (иначе SeedCluster перезапишет portalloc/master)
@@ -994,12 +995,12 @@ public class BackupProcessTests
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(etcd), [], CancellationToken.None);
 
-        // Assert — exec ушёл в object-контейнеры, pgw-путь не звался
+        // Assert — команды ушли приёмникам object-контейнеров, pgw-путь не звался
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.Scalars.Should().NotBeEmpty("the G2 guard executed (master is resolved byName)");
-        rig.Driver.ContainerExecCalls.Select(c => c.Container).Should().BeEquivalentTo(["as-shard1a", "as-shard1b"]);
-        rig.Driver.ExecNodeCalls.Should().BeEmpty();
+        rig.Receiver.HbaUrls.Should().BeEquivalentTo(
+            ["http://as-shard1a:8080", "http://as-shard1b:8080"]);
     }
 
     // ─── Хелперы ───

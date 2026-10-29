@@ -481,59 +481,6 @@ public class ClusterDriverTests
         factory.Engines.Should().ContainSingle().Which.HostAlias.Should().Be("host.docker.internal");
     }
 
-    // AAA: Д3 — проба данных ноды: docker-exec test -f PG_VERSION → Present/Absent;
-    // контейнера нет → Unknown (транспорт ≠ доказательство утраты, arch/14 R11)
-    [Fact]
-    public async Task NodeDataPresence_StdoutPresent_Present()
-    {
-        // Arrange: running-контейнер ноды; exec вернул "present" (PG_VERSION есть).
-        var engine = new FakeEngine
-        {
-            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
-            ExecStdout = "present",
-        };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: данные доказанно есть.
-        result.IsSuccess.Should().BeTrue();
-        result.Value.Should().Be(DataPresence.Present);
-    }
-
-    [Fact]
-    public async Task NodeDataPresence_StdoutAbsent_Absent()
-    {
-        // Arrange: контейнер жив, PG_VERSION нет (volume пуст — доказанная утрата).
-        var engine = new FakeEngine
-        {
-            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
-            ExecStdout = "absent",
-        };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: данных доказанно нет.
-        result.Value.Should().Be(DataPresence.Absent);
-    }
-
-    [Fact]
-    public async Task NodeDataPresence_NoRunningContainer_Unknown()
-    {
-        // Arrange: контейнера нет — утрата НЕ доказана.
-        var engine = new FakeEngine { Containers = [] };
-        var driver = NewPlainDriver(engine);
-
-        // Act
-        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
-
-        // Assert: Unknown — чистка scope запрещена.
-        result.Value.Should().Be(DataPresence.Unknown);
-    }
-
     [Fact]
     public async Task EnsureNode_ExistingContainer_DoesNotRecreate()
     {
