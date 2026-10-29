@@ -1,0 +1,92 @@
+using Shared.Etcd.Client;
+using Xunit;
+
+namespace PgWorker.IntegrationTests.E2e;
+
+// E2E per-node app_params (spec §7.2/§7.3): provisioning обеспечивает ключ
+// каждой ноды дефолтом; значение стабильно между тиками; ручная правка не
+// перезаписывается (put-if-absent, миграция надзора).
+public class E2eAppParamsScenarios
+{
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
+    private string Cluster => $"appparams{Fx.ClusterTag}";
+
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
+    private E2eEnvironment Fx = null!;
+
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
+
+    [Fact]
+    public async Task AppParams_Provisioning_AllNodesGetDefaultAndStable()
+    {
+        // Arrange — сид NOT_INITIALIZED без app_params-ключей (генерирует PgWorker)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("app-params", ct: ct);
+        Fx = fx;
+        await SeedClusterAsync(Cluster);
+        await using var app = await Fx.StartHostAsync("appparams", ct: ct);
+
+        // Act — ждать SQL-фазы обоих шардов (dsn записан)
+        var provisioned = await E2eFixture.WaitForAsync(async () =>
+            await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
+            && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
+            TimeSpan.FromSeconds(360), ct);
+
+        // Assert 1 (критерий 2): у КАЖДОЙ ноды обоих шардов app_params = дефолт
+        // конфига ("sslmode=require"), без user/password в значении.
+        provisioned.Should().BeTrue("provisioning reached the SQL phase (the dsn of both shards)");
+        foreach (var shard in new[] { "shard1", "shard2" })
+            foreach (var node in new[] { "a", "b" })
+            {
+                var kv = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}{node}/app_params");
+                kv.Should().NotBeNull($"the app_params of node {shard}{node} are provisioned");
+                kv!.Value.Should().Be("sslmode=require");
+                kv.Value.Should().NotContainAny(["user=", "password="], "client parameters are not included (spec §3.1)");
+            }
+
+        // Assert 2 (критерий 2): стабильность между тиками + ручная правка жива
+        // (миграция/ensure не перезаписывают существующее — put-if-absent).
+        await G.PutAsync(Endpoint,
+            $"/clusters/{Cluster}/shards/shard1/nodes/shard1a/app_params",
+            "sslmode=verify-full", null, ct);
+        await Task.Delay(TimeSpan.FromSeconds(5), ct); // ≥2 тика scan
+        (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/nodes/shard1a/app_params"))!.Value
+            .Should().Be("sslmode=verify-full", "the manual value is not overwritten (spec §3.1)");
+        (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/nodes/shard1b/app_params"))!.Value
+            .Should().Be("sslmode=require", "the other nodes are stable");
+    }
+
+    // Сид кластера в стиле панели (копия E2eAppSecretScenarios.SeedClusterAsync).
+    private async Task SeedClusterAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var config = $$"""
+            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
+            """;
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
+            // Заявки ресурсов панель-создания (arch/14 §2.1 п.4): pgtune-фаза
+            // provisioning требует их обязательно (f6d4574: дефолтов нет).
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
+        }
+
+        for (var i = 0; i < 2; i++)
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
+                """{"state":"NOT_INITIALIZED"}""", null, ct);
+        }
+    }
+
+    private async Task<Kv?> GetOrNullAsync(string key)
+        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+}

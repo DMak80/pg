@@ -1,0 +1,305 @@
+using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
+using Shared.Etcd.Client;
+using Xunit;
+
+namespace PgWorker.IntegrationTests.E2e;
+
+// E2E полного цикла управляемого серта API (spec §5 Ф4, §7 кр.1/2/6/7):
+// генерация пары → ключ /workers/api_tls/pgworker → старт воркера на etcd-серте
+// → замена ключа → pending (факт на грани старый) → POST /api/restart →
+// повторный подъём на новом серте → DELETE ключа → рестарт → env-фоллбек
+// (unmanaged). Отдельный сценарий: битый ключ — fail-fast старта.
+// Изоляция: per-сценарный E2eEnvironment (своя сеть/etcd, guid-имена, полный
+// teardown при любом исходе — docs/e2e-isolation.md). Прод-«политика docker
+// restart: unless-stopped» имитируется повторным StartHostAsync того же
+// extraEnv — E2E-хосты не контейнеры, перезапускает их сам сценарий.
+[Collection("e2e-serial")]
+public class E2eWorkerCertScenarios
+{
+    private const string ManagedKey = "/workers/api_tls/pgworker";
+    private const string DiscoveryPrefix = "/pgworker/api/";
+
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+
+    // ===== Сценарий 1: полный жизненный цикл =====
+
+    [Fact]
+    public async Task WorkerCert_Lifecycle_AppliedPendingRestartEnvFallback()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("worker-cert", ct: ct);
+        var p1San = WorkerAlias("cert-p1"); // SAN сертов управляемого ключа = алиас воркера
+        try
+        {
+            // Arrange: ДВЕ пары (старая/новая) для управляемого ключа + env-пара
+            // для фоллбека. PGW_API_TLS_CERT/KEY перекрываются extraEnv: env-пару
+            // выбираем СВОЮ (её thumbprint знает тест). CLIENT_CA НЕ перекрываем —
+            // клиентский серт mTLS выпускаем от фикстурного CA (иначе проба
+            // готовности фикстуры перестаёт проходить хендшейк).
+            var (clientPem, clientKeyPem) = E2eTestPki.Issue(
+                fx.CaPem, fx.CaKeyPem,
+                "certsc-client", ["certsc-client"], ip: null);
+            // Серты управляемого ключа: SAN = алиас воркера в сети контура
+            // (тест ходит по https://pgw-ew-…:8443 — доверие по thumbprint).
+            var (oldPem, oldKey) = SelfSignedPair("pgworker-old", p1San);
+            var (newPem, newKey) = SelfSignedPair("pgworker-new", p1San);
+            var (envPem, envKey) = SelfSignedPair("pgworker-env", p1San);
+            var oldThumb = ThumbprintOf(oldPem);
+            var newThumb = ThumbprintOf(newPem);
+            var envThumb = ThumbprintOf(envPem);
+            var extraEnv = new Dictionary<string, string>
+            {
+                ["PGW_API_TLS_CERT"] = envPem,
+                ["PGW_API_TLS_KEY"] = envKey,
+            };
+
+            // ---------- Act 1: ключ со СТАРОЙ парой → старт воркера ----------
+            await PutManagedKeyAsync(fx, oldPem, oldKey, ct);
+            await using var p1 = await fx.StartHostAsync("cert-p1", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
+
+            // Assert 1: грань на etcd-серте — /healthz 200 ТОЛЬКО при доверии
+            // старому thumbprint; дискавери-ключ сообщает старый thumbprint.
+            var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, p1, ct);
+            discoveryOld.Should().Be(oldThumb, "the discovery key must carry the thumbprint of the applied certificate");
+            using (var client = TlsClient(clientPem, clientKeyPem, oldThumb))
+            {
+                var response = await client.GetAsync($"{oldUrl}/healthz", ct);
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+            }
+
+            // ---------- Act 2: ключ заменён на НОВУЮ пару ----------
+            await PutManagedKeyAsync(fx, newPem, newKey, ct);
+
+            // Assert 2: применение — только рестартом (spec §2 п.2): грань всё
+            // ещё на старом серте — хендшейк с доверием НОВОМУ thumb отказан,
+            // со СТАРЫМ — проходит.
+            using (var trustNew = TlsClient(clientPem, clientKeyPem, newThumb))
+                await Assert.ThrowsAnyAsync<Exception>(
+                    () => trustNew.GetAsync($"{oldUrl}/healthz", ct));
+            using (var trustOld = TlsClient(clientPem, clientKeyPem, oldThumb))
+            {
+                var still = await trustOld.GetAsync($"{oldUrl}/healthz", ct);
+                still.StatusCode.Should().Be(HttpStatusCode.OK, "the endpoint lives on the old certificate until the restart");
+            }
+
+            // ---------- Act 3: POST /api/restart → self-stop → подъём ----------
+            using (var restartClient = TlsClient(clientPem, clientKeyPem, oldThumb))
+            {
+                restartClient.DefaultRequestHeaders.Add("X-Requested-By", "e2e-cert-scenario");
+                using var response = await restartClient.PostAsync($"{oldUrl}/api/restart", null, ct);
+                response.StatusCode.Should().Be(HttpStatusCode.Accepted);
+                var body = await response.Content.ReadAsStringAsync(ct);
+                body.Should().Contain("restarting");
+            }
+
+            var exited = await E2ePhase.WaitAsync(fx, "cert-restart-exit",
+                async () => (await p1.InspectStateAsync(ct)).Status != "running",
+                TimeSpan.FromSeconds(30), ct);
+            exited.Should().BeTrue("the graceful self-stop must end the process after ~1 s");
+            var (state, exitCode) = await p1.InspectStateAsync(ct);
+            exitCode.Should().Be(0, $"a normal graceful stop — exit 0 (state={state})");
+
+            // docker-политика restart: unless-stopped в e2e имитируется новым
+            // инстансом с тем же контуром: при старте перечитан etcd-ключ.
+            await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
+            var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, p2, ct);
+            discoveryNew.Should().Be(newThumb, "the discovery key re-seated itself with the new thumbprint");
+            using (var client = TlsClient(clientPem, clientKeyPem, newThumb))
+            {
+                var response = await client.GetAsync($"{newUrl}/healthz", ct);
+                response.StatusCode.Should().Be(HttpStatusCode.OK, "the endpoint came up on the new certificate");
+            }
+
+            // ---------- Act 4: DELETE ключа → рестарт → env-фоллбек ----------
+            var deleted = await fx.Gateway.DeleteAsync(fx.EtcdEndpoint, ManagedKey, prefix: false, ct);
+            deleted.IsSuccess.Should().BeTrue("the managed certificate key must be removable");
+            p2.Kill(); // рестарт: смерть процесса + повторный подъём = политика docker
+            await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct,
+                readinessThumbprint: $"{envThumb},{oldThumb},{newThumb}");
+
+            var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, p3, ct);
+            discoveryEnv.Should().Be(envThumb, "after the key removal the worker is on the env certificate (unmanaged)");
+            using (var client = TlsClient(clientPem, clientKeyPem, envThumb))
+            {
+                var response = await client.GetAsync($"{envUrl}/healthz", ct);
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+            }
+        }
+        catch (Exception)
+        {
+            // Телеметрия E2E (docs/e2e-launch.md): упавший сценарий оставляет
+            // окружение для разбора (teardown остановит, но не удалит).
+            fx.MarkFailed();
+            throw;
+        }
+    }
+
+    // ===== Сценарий 2: битый ключ — fail-fast старта =====
+
+    [Fact]
+    public async Task WorkerCert_BrokenKey_StartFails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("worker-cert-broken", ct: ct);
+        var brokenSan = WorkerAlias("cert-broken");
+        try
+        {
+            // Arrange: ключ с битым JSON — явное намерение оператора, тихий
+            // fallback на env запрещён (spec §3.2 п.1).
+            var put = await fx.Gateway.PutAsync(
+                fx.EtcdEndpoint, ManagedKey, "{not-json", null, ct);
+            put.IsSuccess.Should().BeTrue();
+            var (clientPem, clientKeyPem) = E2eTestPki.Issue(
+                fx.CaPem, fx.CaKeyPem,
+                "certbroken-client", ["certbroken-client"], ip: null);
+            var (envPem, envKey) = SelfSignedPair("pgworker-broken-env", brokenSan);
+            var extraEnv = new Dictionary<string, string>
+            {
+                ["PGW_API_TLS_CERT"] = envPem,
+                ["PGW_API_TLS_KEY"] = envKey,
+            };
+
+            // Act: старт воркера — читатель ДО Kestrel обязан уронить процесс.
+            var started = await Record.ExceptionAsync(()
+                => fx.StartHostAsync("cert-broken", extraEnv: extraEnv, ct: ct));
+
+            // Assert: процесс упал с сообщением про ключ (exit != 0, ≤30 с —
+            // бюджет readiness фикстуры).
+            started.Should().BeOfType<ApplicationException>(
+                "a broken managed key must fail-fast the start");
+            started!.Message.Should().Contain("did not come up within",
+                "the worker does not serve the API (start fail-fast)");
+            // Текст fail-fast («/workers/api_tls/pgworker») — в логах воркера:
+            // container-{...}.log артефактов (stdout контейнера буферизуется,
+            // хвост в исключении не гарантирован).
+        }
+        catch (Exception)
+        {
+            fx.MarkFailed();
+            throw;
+        }
+    }
+
+    // ===== Хелперы =====
+
+    // DNS-алиас воркера в сети контура (тот же формат, что StartHostAsync).
+    private static string WorkerAlias(string name) => $"pgw-ew-{name}";
+
+    // Самоподписанный лист-пара (SAN = алиас воркера в сети контура, EKU
+    // serverAuth): материалы управляемого ключа сценария — доверие по thumbprint.
+    private static (string CertPem, string KeyPem) SelfSignedPair(string commonName, string dnsName)
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            $"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddDnsName(dnsName);
+        request.CertificateExtensions.Add(san.Build());
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+            [new Oid("1.3.6.1.5.5.7.3.1")], critical: false));
+        using var cert = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(30));
+        return (cert.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
+    }
+
+    private static string ThumbprintOf(string certPem)
+    {
+        using var cert = X509Certificate2.CreateFromPem(certPem);
+        return Convert.ToHexString(SHA256.HashData(cert.RawData)).ToLowerInvariant();
+    }
+
+    // PUT ключа /workers/api_tls/pgworker — панельный путь имитируем прямым
+    // put: панель — единственный писатель, формат value идентичен spec §3.1.
+    private static async Task PutManagedKeyAsync(
+        E2eEnvironment fx, string certPem, string keyPem, CancellationToken ct)
+    {
+        var value = JsonSerializer.Serialize(new { cert_pem = certPem, key_pem = keyPem });
+        var put = await fx.Gateway.PutAsync(fx.EtcdEndpoint, ManagedKey, value, null, ct);
+        put.IsSuccess.Should().BeTrue();
+    }
+
+    // Дискавери-ключи /pgworker/api/<id>: ждём появления ключа (lease-подстановка
+    // после старта) и возвращаем ФАКТИЧЕСКИЙ url+thumbprint НОВЕЙШЕГО инстанса
+    // (максимум since_unix — старый ключ мог доживать по TTL lease): ассерты
+    // наверху сверяют факт с ожиданием, а не эхируют вход. Фаза cert-discovery
+    // (t29 §3.7): прогресс — живость процесса + число api-ключей в range.
+    private static async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(
+        E2eEnvironment fx, HostInstance host, CancellationToken ct)
+    {
+        string? url = null;
+        string? actualThumb = null;
+        var found = await E2ePhase.WaitAsync(fx, "cert-discovery", async () =>
+        {
+            var range = await fx.Gateway.RangeAsync(fx.EtcdEndpoint, DiscoveryPrefix, ct);
+            if (!range.IsSuccess)
+                return false;
+            long bestSince = -1;
+            foreach (var kv in range.Value)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (!root.TryGetProperty("cert_thumbprint", out var thumb)
+                        || thumb.GetString() is not { Length: > 0 } t
+                        || !root.TryGetProperty("url", out var jsonUrl)
+                        || jsonUrl.GetString() is not { Length: > 0 } u)
+                        continue;
+                    var since = root.TryGetProperty("since_unix", out var s)
+                        && s.ValueKind == JsonValueKind.Number
+                        ? s.GetInt64()
+                        : 0;
+                    if (since > bestSince)
+                    {
+                        bestSince = since;
+                        url = u;
+                        actualThumb = t;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // чужой/переходный формат — пропускаем
+                }
+            }
+
+            return bestSince >= 0;
+        }, TimeSpan.FromSeconds(30), ct,
+            progress: async () =>
+                $"alive={await host.IsRunningAsync(ct)}, api-keys={await CountApiKeysAsync(fx, ct)}");
+        found.Should().BeTrue("the discovery key with cert_thumbprint must appear");
+        return (url!, actualThumb!);
+    }
+
+    // Лёгкий range-подсчёт api-ключей (etcd-чтение, без docker) для прогресс-тиков.
+    private static async Task<int> CountApiKeysAsync(E2eEnvironment fx, CancellationToken ct)
+    {
+        var range = await fx.Gateway.RangeAsync(fx.EtcdEndpoint, DiscoveryPrefix, ct);
+        return range.IsSuccess ? range.Value.Count : 0;
+    }
+
+    // mTLS-клиент, доверяющий серверу ТОЛЬКО по SHA-256 thumbprint (панель
+    // сама записала серт — spec §3.3 п.3); клиентский серт — от scenario-CA.
+    private static HttpClient TlsClient(string clientPem, string clientKeyPem, string trustedThumb)
+    {
+        var pair = X509Certificate2.CreateFromPem(clientPem, clientKeyPem);
+        var clientCert = X509CertificateLoader.LoadPkcs12(pair.Export(X509ContentType.Pkcs12), null);
+        return new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                // TLS 1.2: macOS SslStream не шлёт клиентские серты в TLS 1.3.
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                ClientCertificates = [clientCert],
+                RemoteCertificateValidationCallback = (_, cert, _, _) =>
+                    cert is X509Certificate2 c2
+                    && Convert.ToHexString(SHA256.HashData(c2.RawData)).ToLowerInvariant() == trustedThumb,
+            },
+        })
+        { Timeout = TimeSpan.FromSeconds(5) };
+    }
+}

@@ -1,0 +1,346 @@
+using System.Text.Json;
+using Npgsql;
+using PgWorker.Core.Templates;
+using Shared.Etcd.Client;
+using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Sql;
+using Xunit;
+
+namespace PgWorker.IntegrationTests.E2e;
+
+// E2E ретенции (t06, spec §4 Ф6): изолированное окружение E2eEnvironment (своя
+// сеть/etcd/ownS3, динамические порты, полный teardown в DisposeAsync) +
+// provisioned-кластер с включёнными бэкапами → реальный COMPLETED полный →
+// синтетика (etcd-ключ старого COMPLETED ~40 дней назад с wal_start ниже
+// реального + его объекты full/<old-id>/ + WAL-объекты ниже cutoff) →
+// policy days=1/weeks=0/months=0, маленький Retention:IntervalSec →
+// ассерты: старые префиксы/ключи удалены, реальный полный жив, WAL ниже
+// cutoff удалён, всё живое ≥ cutoff, ключ /pgworker/backups/storage пишется.
+public class E2eRetentionScenarios
+{
+    private const string Bucket = "pgworker-backups";
+
+    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    private const string Pool = "bkpool";
+
+    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
+    private E2eEnvironment Fx = null!;
+
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
+
+    // AAA: GFS-чистка на живом кластере — guard реального COMPLETED, удаление
+    // старого через DELETING, WAL-trim ниже cutoff, ключ storage
+    [Fact]
+    public async Task Retention_TrimsToGfs()
+    {
+        // Arrange 1 — окружение + кластер bkret<тег прогона> + policy 1/0/0 + воркер
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-ret", withS3Node: true, ct: ct);
+        Fx = fx;
+        // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
+        // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
+        var cluster = $"bkret{Fx.ClusterTag}";
+        try
+        {
+            await ScenarioAsync(cluster, ct);
+        }
+        catch
+        {
+            // Канон e2e-launch: упавший сценарий помечается MarkFailed — teardown
+            // снимает телеметрию и ОСТАНАВЛИВАЕТ контур, не удаляя его (разбор
+            // по живым данным; зачистка вручную по README-cleanup.txt).
+            Fx.MarkFailed();
+            throw;
+        }
+    }
+
+    private async Task ScenarioAsync(string cluster, CancellationToken ct)
+    {
+        await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            $$"""{"retention":{"days":1,"weeks":0,"months":0},"full_max_age_sec":600,"verify":{"on_create":false},{{E2eEnvironment.PoolS3(Pool)}}}""",
+            null, ct);
+        await using var app = await StartRetentionHostAsync(cluster, ct);
+
+        // Arrange 2 — provisioning DONE
+        var provisioned = await E2eFixture.WaitForAsync(
+            E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
+        provisioned.Should().BeTrue("provisioning must reach DONE before the backups");
+
+        // Arrange 3 — генерация WAL ДО первого полного: позиция wal_start
+        // обязана оставить минимум 5 сегментов ниже cutoff для посева
+        var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
+        var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
+            new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+        await GenerateWalAsync(adminDsn, 6, ct);
+
+        // Arrange 4 — реальный COMPLETED полный; при слишком низком wal_start
+        // (гонка старта джоба с генерацией) — переснимаем: чистим ключи,
+        // планировщик снимает новый (позиция к тому времени выше)
+        var real = await WaitForHighWalStartFullAsync(cluster, adminDsn, ct);
+
+        // Arrange 5 — синтетика: старый COMPLETED (40 дней назад, wal_start
+        // = realWalStart−2) + его объекты full/<old-id>/ + WAL-объекты
+        // realWalStart−4 и realWalStart−3 (mc-посев)
+        var realStart = PgWorker.Backups.WalFileName.TryParse(real.WalStart)!.Value;
+        var realPos = (long)realStart.Log * 256 + realStart.Seg;
+        var at = (long p) => new PgWorker.Backups.WalFileName(1, (uint)(p / 256), (uint)(p % 256));
+        var oldWalStart = at(realPos - 2).Name;
+        var seededWal = new[] { at(realPos - 4).Name, at(realPos - 3).Name };
+        var oldId = $"{DateTimeOffset.UtcNow.AddDays(-40):yyyyMMddHHmmss}Z";
+        var oldStarted = DateTimeOffset.UtcNow.AddDays(-40).ToUnixTimeSeconds();
+        await G.PutAsync(Endpoint,
+            PgWorker.Backups.BackupNames.FullKey(cluster, "shard1", oldId),
+            PgWorker.Backups.Job.BackupStatusJson.Serialize(new PgWorker.Etcd.Parsing.FullBackupState(
+                oldId, FullBackupStatus.Completed, "shard1a", BackupSourceRole.Replica,
+                oldStarted, oldStarted + 300, oldWalStart, 1024, null, null)), null, ct);
+        await McCpAsync($"{cluster}/shard1/full/{oldId}/base.tar", "synthetic-old-full");
+        foreach (var seg in seededWal)
+            await McCpAsync($"{cluster}/shard1/wal/{seg}", "synthetic-wal");
+
+        // Act — ретенционный проход (расписание ≤ 60 c): DELETING-доводка
+        // старого полного (один кандидат — один проход) + WAL-чистка ниже cutoff
+        var trimmed = await E2eFixture.WaitForAsync(
+            async () => await GetOrNullAsync(PgWorker.Backups.BackupNames.FullKey(cluster, "shard1", oldId)) is null,
+            TimeSpan.FromSeconds(240), ct);
+        if (!trimmed)
+        {
+            // диагностика: журнал воркера + ключи полных + ключ storage
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var fulls = await FullKeysAsync(cluster, "shard1");
+            throw new ApplicationException(
+                $"retention did not remove the old full: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"fulls=[{string.Join(";", fulls.Select(f => f.Key))}]");
+        }
+        trimmed.Should().BeTrue("the old COMPLETED (the only GFS candidate) must go");
+
+        // Assert 1 — ключи: старый исчез (WaitFor выше), реальный жив
+        (await GetOrNullAsync(PgWorker.Backups.BackupNames.FullKey(cluster, "shard1", real.Id)))
+            .Should().NotBeNull("guard: the newest COMPLETED is not removed");
+
+        // Assert 2 — S3: префикс старого пуст, реального жив, посевные WAL
+        // ниже cutoff удалены, всё живое в wal/ ≥ cutoff
+        var hostEndpoint = Fx.S3Endpoint;
+        await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
+        var oldPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{oldId}/", ct: ct);
+        oldPrefix.Value.Should().BeEmpty("the old full objects are removed (the DELETING finalization)");
+        var realPrefix = await backupS3.ListPrefixAsync($"{cluster}/shard1/full/{real.Id}/", ct: ct);
+        realPrefix.Value.Should().NotBeEmpty("the real full objects are untouched");
+        // Посевные ниже cutoff удаляет WAL-trim — ПОСЛЕ verify-OK реального
+        // полного (cutoff = wal_start verify-OK; периодика verify 7 дней, но
+        // verify null due сразу). Удаление старого полного и trim — РАЗНЫЕ
+        // проходы: verify мог ещё идти к моменту доводки — ждём удаление
+        // посевных с бюджетом (ретенционный интервал 60 c + verify-джоб).
+        var seedsGone = await E2eFixture.WaitForAsync(async () =>
+        {
+            var listed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
+            if (!listed.IsSuccess)
+                return false;
+            var keys = listed.Value.Select(o => o.Key).ToList();
+            return seededWal.All(s => !keys.Contains($"{cluster}/shard1/wal/{s}"));
+        }, TimeSpan.FromSeconds(300), ct);
+        seedsGone.Should().BeTrue("the seed segments strictly below the cutoff are removed");
+        var walListed = await backupS3.ListPrefixAsync($"{cluster}/shard1/wal/", ct: ct);
+        walListed.Value.Should().NotBeNull();
+        walListed.Value
+            .Select(o => o.Key.Split('/')[^1])
+            .Where(n => PgWorker.Backups.WalFileName.TryParse(n) is not null)
+            .Select(n => (long)PgWorker.Backups.WalFileName.TryParse(n)!.Value.Log * 256
+                         + PgWorker.Backups.WalFileName.TryParse(n)!.Value.Seg)
+            .Should().OnlyContain(p => p >= realPos, "everything alive in wal/ is not below the cutoff");
+
+        // Assert 3 — ключ storage: существует, used > 0, state OK (квота не задана)
+        var storage = await GetOrNullAsync("/pgworker/backups/storage");
+        storage.Should().NotBeNull("the retention pass writes the occupancy monitor");
+        var storageDoc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(storage!.Value)!;
+        storageDoc["used_bytes"].GetInt64().Should().BeGreaterThan(0);
+        storageDoc["state"].GetString().Should().Be("OK");
+        storageDoc.Should().NotContainKey("quota_bytes", "no quota is set in E2E");
+    }
+
+    // ===== Хелперы (копии образца E2eBackupScenarios — файлы сценариев
+    // независимы, паттерн репо) =====
+
+    // Реальный COMPLETED с позицией wal_start ≥ 5 (посев строго ниже cutoff
+    // должен существовать). Позиция мала → чистим ключи полных: планировщик
+    // видит «COMPLETED нет» и снимает новый полный (RetryBaseSec=2).
+    private async Task<(string Id, string WalStart)> WaitForHighWalStartFullAsync(
+        string cluster, string adminDsn, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var completed = await E2eFixture.WaitForAsync(
+                async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
+                TimeSpan.FromSeconds(300), ct);
+            completed.Should().BeTrue("the real full must reach COMPLETED");
+            var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
+            var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
+            var walSeg = status["wal_start_segment"].GetString();
+            walSeg.Should().NotBeNullOrEmpty("wal_start_segment is filled from UPLOADING");
+            var parsed = PgWorker.Backups.WalFileName.TryParse(walSeg!);
+            if (parsed is { } w && (long)w.Log * 256 + w.Seg >= 5)
+                return (done.Key.Split('/').Last(), walSeg!);
+
+            // Позиция мала (рестартпоинт реплики ещё не взял позицию нагрузки) —
+            // дожимаем генерацией и переснимаем полный с чистого листа
+            Assert.True(attempt < 3, "the full never got above position 5 by wal_start");
+            await GenerateWalAsync(adminDsn, 6, ct);
+            await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/full/",
+                prefix: true, ct);
+        }
+    }
+
+    // Воркер с включённой подсистемой: S3 на ownS3-ноду, образ джобов
+    // операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф, ретенция раз в 60 c (минимум
+    // валидации IntervalSec ≥ 60; первый проход — сразу, далее по расписанию).
+    private Task<HostInstance> StartRetentionHostAsync(string name, CancellationToken ct)
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        {
+            ["PgWorker__Backups__Enabled"] = "true",
+            ["PgWorker__Backups__S3__Bucket"] = Bucket,
+            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
+            ["PgWorker__Backups__Retry__BaseSec"] = "2",
+            ["PgWorker__Backups__Retry__MaxSec"] = "4",
+            ["PgWorker__Backups__Policy__FullMaxAgeSec"] = "600",
+            ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
+            ["PgWorker__Backups__Retention__IntervalSec"] = "60",
+        }, ct: ct);
+
+    private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
+        => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
+            TestContext.Current.CancellationToken)).Value;
+
+    private async Task<Kv?> GetOrNullAsync(string key)
+        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // mc-посев объекта с фиксированным телом (mc в сети ownS3-ноды окружения).
+    private async Task McCpAsync(string key, string content)
+        => await Fx.RunDockerAsync(
+        [
+            "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
+            "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
+                  + $" && echo {content} >/tmp/f && mc cp /tmp/f t/{Bucket}/{key}",
+        ], TestContext.Current.CancellationToken);
+
+    // Сид кластера (копия E2eRotateScenarios.SeedClusterAsync).
+    private async Task SeedClusterAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var config = $$"""
+            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
+            """;
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
+        }
+
+        for (var i = 0; i < 2; i++)
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
+                """{"state":"NOT_INITIALIZED"}""", null, ct);
+        }
+
+        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // ниже (с секцией s3 — без неё подсистема кластера молчит).
+        await Fx.SeedS3PoolAsync(Pool, ct);
+    }
+
+    // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
+    // резолв фактического primary по пробам Patroni /primary).
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
+
+    private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        kv.Value.Should().NotBeNull("portalloc is written at provisioning");
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        string? primary = null;
+        var resolved = await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var (key, addr) in entries
+                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                         .OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        primary = key.Split('/')[1];
+                        return true;
+                    }
+                }
+                catch (Exception)
+                {
+                    // проба (рестарт/ещё не готова) — следующая нода
+                }
+            }
+
+            return false;
+        }, TimeSpan.FromSeconds(120), ct);
+        resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
+        var entry = entries[$"{shard}/{primary}"];
+        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
+    }
+
+    // pg_switch_wal × n (superuser-only): форсированное закрытие пустых
+    // сегментов 16 МБ — wal_start будущего полного уходит выше позиции посева.
+    // Гарантированная генерация WAL под standby-съём полных: START WAL LOCATION
+    // backup_label'а = REDO последнего рестартпоинта sync-реплики, а рестартпоинт
+    // подтягивается только checkpoint-записью мастера — серия pg_switch_wal
+    // записей не создаёт, и wal_start полных «прилипает» к рестартпоинту
+    // provisioning-эпохи (E2E-факт t27: 4 полных подряд с wal_start < 5).
+    // INSERT-нагрузка (каждый коммит синхронно подтверждён репликой — WAL
+    // физически в pg_wal обеих нод) + CHECKPOINT форсируют запись выше
+    // переключений → рестартпоинт реплики берёт позицию нагрузки.
+    private static async Task GenerateWalAsync(string adminDsn, int iterations, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        try
+        {
+            await using (var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+                await create.ExecuteNonQueryAsync(ct);
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+        {
+            // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблица
+            // создаётся другой сессией — не ошибка нагрузки.
+        }
+        for (var i = 0; i < iterations; i++)
+        {
+            await using var insert = new NpgsqlCommand(
+                "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
+            await insert.ExecuteNonQueryAsync(ct);
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
+        await using var checkpoint = new NpgsqlCommand("CHECKPOINT", conn);
+        await checkpoint.ExecuteNonQueryAsync(ct);
+    }
+
+    // Условие готовности provisioning: config без state + dsn + нода RUNNING.
+    private async Task<bool> ProvisionedAsync(string cluster)
+    {
+        var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+        if (config is null)
+            return false;
+        if (JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!.ContainsKey("state"))
+            return false;
+        var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
+        var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+        return dsn is not null && node is { Value: "RUNNING" };
+    }
+}

@@ -69,15 +69,19 @@
         <Project Path="tests/Shared.Docker.UnitTests/Shared.Docker.UnitTests.csproj" />
         <Project Path="tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj" />
         <Project Path="tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj" />
+        <Project Path="tests/PgWorker.E2eTests/PgWorker.E2eTests.csproj" />
         <Project Path="tests/PgWorker.E2ePrepare/PgWorker.E2ePrepare.csproj" />
         <Project Path="tests/Shared.TestInfra/Shared.TestInfra.csproj" />
         <Project Path="tests/AdminPanel.UnitTests/AdminPanel.UnitTests.csproj" />
         <Project Path="tests/AdminPanel.IntegrationTests/AdminPanel.IntegrationTests.csproj" />
         <Project Path="tests/KafkaWorker.UnitTests/KafkaWorker.UnitTests.csproj" />
         <Project Path="tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj" />
+        <Project Path="tests/KafkaWorker.E2eTests/KafkaWorker.E2eTests.csproj" />
         <Project Path="tests/ValkeyWorker.UnitTests/ValkeyWorker.UnitTests.csproj" />
         <Project Path="tests/ValkeyWorker.IntegrationTests/ValkeyWorker.IntegrationTests.csproj" />
+        <Project Path="tests/ValkeyWorker.E2eTests/ValkeyWorker.E2eTests.csproj" />
         <Project Path="tests/S3Worker.UnitTests/S3Worker.UnitTests.csproj" />
         <Project Path="tests/S3Worker.IntegrationTests/S3Worker.IntegrationTests.csproj" />
+        <Project Path="tests/S3Worker.E2eTests/S3Worker.E2eTests.csproj" />
     </Folder>
 </Solution>

@@ -17,7 +17,6 @@ public class ProvisioningTests(S3ClusterFixture fx)
     public async Task Seed_ProvisioningTick_NodeAndDiscovery()
     {
         // Arrange: сид NOT_INITIALIZED + клэйм.
-        DockerTrait.SkipIfUnavailable();
         var cluster = fx.Cluster("prov");
         await fx.SeedClusterAsync(cluster);
         var claims = fx.NewClaimStore();
@@ -84,7 +83,6 @@ public class ProvisioningTests(S3ClusterFixture fx)
     {
         // Arrange: поднятый кластер (первый тест серии — reuse запрещён;
         // поднимаем свой).
-        DockerTrait.SkipIfUnavailable();
         var cluster = fx.Cluster("idem");
         await fx.SeedClusterAsync(cluster);
         var claims = fx.NewClaimStore();

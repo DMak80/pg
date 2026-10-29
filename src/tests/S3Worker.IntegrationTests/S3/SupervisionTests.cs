@@ -19,7 +19,6 @@ public class SupervisionTests(S3ClusterFixture fx)
     public async Task ContainerRemoval_RecreateOnSameHost_VolumeAlive()
     {
         // Arrange: поднятый кластер N=1 + объект-метка в bucket.
-        DockerTrait.SkipIfUnavailable();
         var cluster = fx.Cluster("sup");
         await fx.SeedClusterAsync(cluster);
         var claims = fx.NewClaimStore();

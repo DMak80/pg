@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // KEY=VALUE-файл не переносится. Прогон скрипта ДО supervisord: заглушка
 // supervisord bind-mount'ится ПОВЕРХ /usr/bin/supervisord (exec идёт по
 // абсолютному пути — PATH-подмена не работает), adduser добавляет postgres
-// (alpine образа ноды его не имеет). Гейт PGW_TEST_DOCKER=1.
+// (alpine образа ноды его не имеет).
 [Collection(NonE2eCollection.Name)]
 public class NodeEntrypointRestCaTests
 {
@@ -22,7 +22,6 @@ public class NodeEntrypointRestCaTests
     [Fact]
     public async Task Entrypoint_MaterializesRestCaFileAndPathLine()
     {
-        DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         var tag = Guid.NewGuid().ToString("N")[..8];
 
