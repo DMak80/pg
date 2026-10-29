@@ -16,6 +16,7 @@ Infrastructure скопирован из референса `Puzzle` (его doc
 | [03 — Пробы и алерты](03-probes-alerts.md) | `AdminPanel.Probes` + `Core/Alerting` | Patroni/SQL live-пробы, HostMap, `AlertEngine` — 25 правил. |
 | [04 — Фронтенд](04-frontend.md) | `frontend/` | Сборка SPA в wwwroot, api-слой, polling, guard; TS7-css и registry-грабли. |
 | [05 — Dev-стенд](05-dev-stand.md) | `dev-stand/` | Один контур одна сеть, канонический demo через `POST /api/clusters`, owns3, e2e-чеки и их порядок. |
+| [06 — Анализ и целевая модель UI](06-ui-analysis.md) | вся система | Карта секций и зависимостей; параметры по этапам; состояния/события/алертинг; целевая структура интерфейса; задачи на доработку (u01–u20). |
 
 ## Соглашения
 
