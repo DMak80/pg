@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Образ S3Worker (arch/24 §8): dotnet publish НА ХОСТЕ, в контейнер — ТОЛЬКО
 # publish-вывод (runtime-слой; канон E2E-образов AGENTS.md — без sdk-стадии).
 # CLI: dotnet publish src/S3Worker.App -c Release -o artifacts/s3worker/publish

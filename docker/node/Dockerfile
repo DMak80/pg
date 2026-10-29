@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # Образ узла кластера pgworker-node (Д4, spec §5.1, arch/14 §2.1):
 # Spilo (PG18+Patroni; R1/Д11 закрыт: failover-слоты поддерживаются с PG17)

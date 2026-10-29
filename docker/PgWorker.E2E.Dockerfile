@@ -1,5 +1,4 @@
-# syntax=docker/dockerfile:1
-
+# 
 # Образ SUT-воркера PgWorker для E2E-контура (канон E2E-образов AGENTS.md):
 # сборка НА ХОСТЕ (dotnet publish PgWorker.App → artifacts/e2e/app), в образ —
 # ТОЛЬКО готовый publish-вывод; sdk-стадий и COPY исходников нет.
