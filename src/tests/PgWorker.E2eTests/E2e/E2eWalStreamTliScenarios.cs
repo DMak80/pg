@@ -391,7 +391,11 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 var control = PgWorker.Backups.WalFileName.FromLsn(
                     checkTli, controlLsn!);
                 return string.CompareOrdinal(chainLastSegment, control.Name) >= 0;
-            }, TimeSpan.FromSeconds(90), ct, progress: ConvergenceProgressAsync);
+            },
+            // Канонический бюджет сходимости после прыжка — до 900 с (пересъём
+            // полного + доставка); секция converged имеет свой 3-мин потолок —
+            // wait внутри неё 170 с.
+            TimeSpan.FromSeconds(170), ct, progress: ConvergenceProgressAsync);
 
             // Жёсткие ассерты по факту сходимости (детали — в debug-дампе фазы).
             // Сначала общий факт сходимости: при несходимости тест падает с
