@@ -90,38 +90,58 @@ public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : I
     [Fact]
     public async Task Backup_Verify_Corruption_Fails()
     {
-        // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(
-            TestContext.Current.CancellationToken);
-        cts.CancelAfter(TimeSpan.FromMinutes(3)); // потолок теста 3 мин: неверное ожидание не может длиться дольше (приказ владельца)
-        var ct = cts.Token;
+        // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку.
+        // ДВА бюджета по 3 мин (приказ владельца, где тест не умещается в один):
+        // часть 1 (первый verify OK + corrupt) — ct1, часть 2 (перепроверка
+        // FAILED + error) — ct2; любая часть при неверном ожидании задержит
+        // не более 3 мин. Воркер вне бюджетов (старт fail-fast, не ожидание).
         var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3.
-        await Fx.SeedS3PoolAsync(Pool, ct);
+        await Fx.SeedS3PoolAsync(Pool, TestContext.Current.CancellationToken);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
-            $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
-        await using var app = await StartBackupHostAsync("bkcorrupt", ct);
+            $$"""{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5},{{E2eEnvironment.PoolS3(Pool)}}}""", null, TestContext.Current.CancellationToken);
+        // Переснятие отложено (Retry 300/600): иначе воркер мгновенно переснимает
+        // полный после verify-FAILED и перезаписывает статус-ключ — FAILED живёт
+        // секунды, кейс не успевает его увидеть. С отложенным ретраем FAILED
+        // устоит в ключе до конца кейса (Assert 3 честный: одна COMPLETED).
+        await using var app = await StartBackupHostAsync("bkcorrupt", TestContext.Current.CancellationToken,
+            extraEnv: new Dictionary<string, string>
+            {
+                ["PgWorker__Backups__Retry__BaseSec"] = "300",
+                ["PgWorker__Backups__Retry__MaxSec"] = "600",
+            });
 
-        // Assert 1 — первый verify OK (как в маркере)
+        // Часть 1 — ct1: первый verify OK (скачивание набора) + corrupt.
+        using var cts1 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts1.CancelAfter(TimeSpan.FromMinutes(3)); // потолок части 1 — 3 мин
+        var ct1 = cts1.Token;
         var firstOk = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
-            TimeSpan.FromSeconds(90), ct);
+            TimeSpan.FromSeconds(90), ct1);
         firstOk.Should().BeTrue("the original set is valid");
         var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
         var id = done.Key.Split('/').Last();
 
-        // Act — портим: mc rm один объект из full/<id>/ (PG_VERSION из листинга набора)
+        // Act — портим МАНИФЕСТ: перезаписываем backup_manifest мусором
+        // (pg_verifybackup обязан валидировать манифест набора — битый манифест
+        // = гарантированный FAILED; base.tar pg_verifybackup не сверяет, verify
+        // оставался OK — перепроверки шли, порча не ловилась)
         await Fx.RunDockerAsync(
             ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
                 "-c", $"mc alias set t http://e2e-owns3:9000 {E2eEnvironment.S3RootUser} {E2eEnvironment.S3RootPassword} >/dev/null"
-                      + $" && mc rm t/{Bucket}/{cluster}/shard1/full/{id}/PG_VERSION"], ct);
+                      + $" && echo corrupted | mc pipe t/{Bucket}/{cluster}/shard1/full/{id}/backup_manifest"], ct1);
 
-        // Assert 2 — перепроверка по interval → FAILED + error (бюджет 180 c:
-        // interval 5 c + тик + джоб со скачиванием)
+        // Часть 2 — ct2: перепроверка по interval → FAILED + error (бюджет 120 c —
+        // джоб скачивает набор при verify).
+        using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        cts2.CancelAfter(TimeSpan.FromMinutes(3)); // потолок части 2 — 3 мин
+        var ct2 = cts2.Token;
         var failed = await E2eFixture.WaitForAsync(async () =>
             (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"FAILED"""")),
-            TimeSpan.FromSeconds(90), ct);
+            TimeSpan.FromSeconds(170), ct2);
         failed.Should().BeTrue("corrupting the set must yield verify FAILED (AC2)");
         var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;
