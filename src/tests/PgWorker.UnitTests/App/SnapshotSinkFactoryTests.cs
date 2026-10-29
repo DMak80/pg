@@ -3,7 +3,7 @@ using PgWorker.Backups.EtcdExport;
 
 namespace PgWorker.UnitTests.App;
 
-// Фабрика цели слепков (t36, arch/14 §6/§8): S3ClientOptions собирается из
+// Фабрика цели слепков (arch/14 §6/§8): S3ClientOptions собирается из
 // ОТДЕЛЬНОЙ пары Snapshots:Export:S3 (env PGW_SNAPSHOTS_S3_*) — не из
 // Backups:S3 (источник правды о DR-слепках не живёт в восстанавливаемом etcd).
 public class SnapshotSinkFactoryTests

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Раздача SPA и fallback-семантика /api/* (spec t07 §9): guard раньше fallback,
+// Раздача SPA и fallback-семантика /api/* (spec §9): guard раньше fallback,
 // авторизованный unknown-API-путь — 404 ProblemDetails, статика — без auth.
 [Collection("api")]
 public class SpaHostingTests

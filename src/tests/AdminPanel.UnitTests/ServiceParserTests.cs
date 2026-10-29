@@ -115,7 +115,7 @@ public class ServiceParserTests
         master.Port.Should().BeNull();
         master.Role.Should().Be("master");
         master.State.Should().Be("running");
-        // probe-поля — t06
+        // probe-поля — 
         master.Timeline.Should().BeNull();
         master.LagBytes.Should().BeNull();
         members.Should().Contain(m => m.Name == "s1b" && m.Role == "replica");

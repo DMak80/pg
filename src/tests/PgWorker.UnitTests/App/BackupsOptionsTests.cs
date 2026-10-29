@@ -2,9 +2,9 @@ using PgWorker.App;
 
 namespace PgWorker.UnitTests.App;
 
-// Каркас конфигурации бэкапов (arch/19 §9, t01): default выключен и валиден,
+// Каркас конфигурации бэкапов (arch/19 §9): default выключен и валиден,
 // включение требует полный S3-комплект — fail-fast старта (образец TLS
-// arch/14 §2.2.1). Процессной логики в t01 нет — только options.
+// arch/14 §2.2.1). Процессной логики в нет — только options.
 public class BackupsOptionsTests
 {
     [Fact]
@@ -66,8 +66,7 @@ public class BackupsOptionsTests
     [Fact]
     public void Defaults_JobRetry_CanonValues()
     {
-        // Arrange / Act — дефолты t02 (arch/19 §9): бэкофф 300/3600 (образ
-        // джоба упразднён t26 — tool-контейнеры образа нод).
+        // Arrange / Act — дефолты (arch/19 §9): бэкофф 300/3600.
         var options = new BackupsOptions();
 
         // Assert
@@ -98,7 +97,7 @@ public class BackupsOptionsTests
         // Arrange / Act — дефолты каркаса (арх/19 §4/§9).
         var options = new BackupsOptions();
 
-        // Assert — GFS 1/1/1 — целевая схема (t18: последний + недельная +
+        // Assert — GFS 1/1/1 — целевая схема (: последний + недельная +
         // месячная позиции), суточное окно, verify при создании; staging-каталог.
         options.Policy.Retention.Days.Should().Be(1);
         options.Policy.Retention.Weeks.Should().Be(1);
@@ -133,7 +132,7 @@ public class BackupsOptionsTests
         runtime.StagingDir.Should().Be("/st");
     }
 
-    // t36: endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
+    // endpoint/креды в runtime не переносятся — цели даёт пул per-cluster.
     [Fact]
     public void ToRuntime_WithoutEndpointCreds_IsValid()
     {
@@ -153,7 +152,7 @@ public class BackupsOptionsTests
         runtime.WalStaleSec.Should().Be(300);
     }
 
-    // AAA: CaBundlePath прокидывается в runtime (t42, arch/19 §7) — null по умолчанию
+    // AAA: CaBundlePath прокидывается в runtime (arch/19 §7) — null по умолчанию
     [Fact]
     public void ToRuntime_Carries_CaBundlePath()
     {
@@ -170,7 +169,7 @@ public class BackupsOptionsTests
         new BackupsOptions().ToRuntime().S3CaBundlePath.Should().BeNull();
     }
 
-    // ---- t06: ретенция/квота ----
+    // ---: ретенция/квота ----
 
     [Fact]
     public void Quota_WarnAboveCrit_Invalid()
@@ -214,7 +213,7 @@ public class BackupsOptionsTests
     [Fact]
     public void KeepFailedBelow5_Invalid()
     {
-        // Arrange — слишком мелкая FAILED-глубина (риск бэкофф-сдвига t02).
+        // Arrange — слишком мелкая FAILED-глубина (риск бэкофф-сдвига).
         var options = new BackupsOptions
         {
             Retention = new BackupsRetentionPassOptions { IntervalSec = 600, KeepFailed = 4 },
@@ -230,7 +229,7 @@ public class BackupsOptionsTests
         // Arrange — дефолтная секция (appsettings без ретенции/квоты).
         var options = new BackupsOptions();
 
-        // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
+        // Act / Assert — дефолты (arch/19 §9) валидны и соответствуют канону.
         options.IsValid().Should().BeTrue();
         options.Retention.IntervalSec.Should().Be(600);
         options.Retention.KeepFailed.Should().Be(20);
@@ -269,7 +268,7 @@ public class BackupsOptionsTests
         runtime.QuotaCritPercent.Should().Be(95);
     }
 
-    // ---- t07: супервизор и бюджеты зависших джобов ----
+    // ---: супервизор и бюджеты зависших джобов ----
 
     // AAA (spec §3.6): отрицательные таймауты/TTL супервизора — fail-fast старта
     [Theory]
@@ -313,7 +312,7 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue("OrphanTtlSec=0 — alert-only mode, the config is valid");
     }
 
-    // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
+    // AAA: дефолты каноничны (arch/19 §9) и ToRuntime их проксирует
     [Fact]
     public void Supervisor_AndBudgets_Defaults_Canonical()
     {
@@ -336,7 +335,7 @@ public class BackupsOptionsTests
         runtime.JobRestoreTimeoutSec.Should().Be(86400);
     }
 
-    // ---- reliability t02: дрилл восстановимости (arch/19 §9) ----
+    // ---- reliability : дрилл восстановимости (arch/19 §9) ----
 
     // AAA: Drill-секция склеивается в runtime (дефолты 1/21600)
     [Fact]

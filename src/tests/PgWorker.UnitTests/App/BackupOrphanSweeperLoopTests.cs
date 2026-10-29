@@ -99,7 +99,7 @@ public sealed class BackupOrphanSweeperLoopTests
             => throw new NotSupportedException();
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
             => throw new NotSupportedException();
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
@@ -286,7 +286,7 @@ public sealed class BackupOrphanSweeperLoopTests
         seen.Should().Contain(s => s.Loop == "orphan-sweep" && !s.Ok);
     }
 
-    // ── t25: лидерская поддержка/стирание стоп-ключа /pgworker/backups-disabled ──
+    // ── : лидерская поддержка/стирание стоп-ключа /pgworker/backups-disabled ──
 
     // Сборка цикла с управляемыми режимом/лидерством (FakeEtcd-Store — истина).
     private static (BackupOrphanSweeperLoop Loop, Fakes.FakeEtcd Etcd, CancellationTokenSource Cts) CreateGateLoop(
@@ -322,7 +322,7 @@ public sealed class BackupOrphanSweeperLoopTests
     private static async Task<string?> DisabledKeyRaw(Fakes.FakeEtcd etcd)
         => etcd.Store.TryGetValue(BackupsDisabledGate.Key, out var e) ? e.Value : null;
 
-    // AAA (t25, arch/19 §4): лидер при Backups:Enabled=false поддерживает
+    // AAA (arch/19 §4): лидер при Backups:Enabled=false поддерживает
     // /pgworker/backups-disabled на КАЖДОМ тике лидера — updated_unix ключа
     // растёт между тиками (не разовая запись).
     [Fact]
@@ -355,7 +355,7 @@ public sealed class BackupOrphanSweeperLoopTests
         second.Should().NotBeNull().And.NotBe(first, "each leader tick refreshes updated_unix");
     }
 
-    // AAA (t25, arch/19 §4): лидер при Backups:Enabled=true стирает
+    // AAA (arch/19 §4): лидер при Backups:Enabled=true стирает
     // /pgworker/backups-disabled идемпотентно в каждом тике — stale-ключ от
     // прежнего лидера/режима не выживает takeover/reload.
     [Fact]
@@ -375,7 +375,7 @@ public sealed class BackupOrphanSweeperLoopTests
             "the leader with Enabled=true must idempotently delete the stale disabled key");
     }
 
-    // AAA (t25, arch/19 §4): не-лидер стоп-ключ НЕ пишет и НЕ стирает —
+    // AAA (arch/19 §4): не-лидер стоп-ключ НЕ пишет и НЕ стирает —
     // единственный писатель/стирающий глобального ключа — держатель лидера.
     [Fact]
     public async Task NonLeader_DoesNotTouchBackupsDisabled()
@@ -396,7 +396,7 @@ public sealed class BackupOrphanSweeperLoopTests
             "a non-leader must not take over the occupied leadership");
     }
 
-    // AAA (t25, решение spec §7 №7): инстанс при СТАРТЕ с Enabled=true снимает
+    // AAA (решение spec §7 №7): инстанс при СТАРТЕ с Enabled=true снимает
     // /pgworker/backups-disabled сразу (до захвата лидерства) — включение
     // подсистемы не ждёт тика лидера.
     [Fact]
@@ -432,7 +432,7 @@ public sealed class BackupOrphanSweeperLoopTests
             => throw new NotSupportedException();
         public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
             => throw new NotSupportedException();
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));

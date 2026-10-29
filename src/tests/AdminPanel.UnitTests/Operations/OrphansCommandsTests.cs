@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests.Operations;
 
-// Прокси-команды сирот (t04, adminpanel/02 §9.10): панель не пишет в etcd —
+// Прокси-команды сирот (adminpanel/02 §9.10): панель не пишет в etcd —
 // hold/unhold/delete уходят в API PgWorker; ответы/ошибки проксируются 1:1
 // (ProblemDetails как есть, 202 — DTO воркера camelCase).
 public class OrphansCommandsTests

@@ -18,7 +18,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Планировщик полных бэкапов (t02/t26, arch/19 §2): G0 выключен → no-op; G1
+// Планировщик полных бэкапов (/, arch/19 §2): G0 выключен → no-op; G1
 // ensure backup_password; G2 гвард роли backup_exec — КАЖДЫЙ тик (до
 // due-гвардов); G3 при due+бэкоффе: PLANNED → StartFullAsync приёмнику ноды
 // (alias:8080) → RUNNING (journal-before-manipulations). Супервизия —
@@ -325,7 +325,7 @@ public class BackupProcessTests
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/"));
     }
 
-    // AAA: t14 — тик передаёт наблюдателю набор бэкапимых шардов: валидный
+    // AAA: — тик передаёт наблюдателю набор бэкапимых шардов: валидный
     // COMPLETED → LastValidUnix его finished; verify-FAILED → null; max_age —
     // эффективная политика тика (дефолт конфига при отсутствии policy-ключа)
     [Fact]
@@ -530,7 +530,7 @@ public class BackupProcessTests
         entry.LastError.Should().Contain("20250101000000Z");
     }
 
-    // AAA: неклассифицированный код (404 — нода на до-t26 образе) в G3 —
+    // AAA: неклассифицированный код (404 — нода на до образе) в G3 —
     // НЕ теряется молча: journal receiver-rejected с кодом, PLANNED остаётся
     [Fact]
     public async Task StartFull_Unclassified404_G3JournalsAndStaysPlanned()
@@ -721,7 +721,7 @@ public class BackupProcessTests
             .Should().HaveCount(2, "a reshoot uses a NEW id — the old FAILED record is history");
     }
 
-    // AAA (t13 AC2): нода исчезла из portalloc навсегда, RUNNING старше бюджета:
+    // AAA (AC2): нода исчезла из portalloc навсегда, RUNNING старше бюджета:
     // FAILED job-timeout — самостоятельный факт etcd; cancel пропущен (ноды нет
     // — адрес не собрать) с journal-пометкой в той же записи
     [Fact]
@@ -746,7 +746,7 @@ public class BackupProcessTests
         entry.LastError.Should().Contain("job-timeout").And.Contain("cancel skipped");
     }
 
-    // AAA (t13 AC3): возраст свыше бюджета + cancel-транспортный отказ — FAILED
+    // AAA (AC3): возраст свыше бюджета + cancel-транспортный отказ — FAILED
     // всё равно ставится; journal-пометка «cancel пропущен» в той же записи
     [Fact]
     public async Task CancelFails_AgeOverBudget_FailedAndCancelSkipped()
@@ -791,7 +791,7 @@ public class BackupProcessTests
         rig.Receiver.GetCalls.Should().Be(1);
     }
 
-    // AAA: restore-гвард (t05 §3.4) — шард с активной restore-заявкой при due-
+    // AAA: restore-гвард (§3.4) — шард с активной restore-заявкой при due-
     // условиях новый полный НЕ планирует (шард демонтируется restore-процессом)
     [Fact]
     public async Task ActiveRestore_SkipsShard_NoNewFull()
@@ -819,7 +819,7 @@ public class BackupProcessTests
     }
 
     // AAA: свежий COMPLETED + живой wal-ключ — не due, новых записей нет, но
-    // гвард backup_exec исполнен (G2 — каждый тик, до due-гвардов). t05 §3.5:
+    // гвард backup_exec исполнен (G2 — каждый тик, до due-гвардов). §3.5:
     // без wal-ключа свежий полный — уже due (инвариант цепочки).
     [Fact]
     public async Task FreshCompleted_NotDue_RoleStillEnsured()
@@ -888,7 +888,7 @@ public class BackupProcessTests
         rig.Receiver.StartFullUrls.Should().ContainSingle("the reshoot is started via the receiver API");
     }
 
-    // AAA (t07): COMPLETED-полный с wal_start ≥ границы разрыва УЖЕ покрывает
+    // AAA : COMPLETED-полный с wal_start ≥ границы разрыва УЖЕ покрывает
     // WAL_CHAIN_ERROR — повторный пересъём не планируется (иначе шторм пересъёмов)
     [Fact]
     public async Task Tick_OnBrokenCoveredByFull_NoReshoot()

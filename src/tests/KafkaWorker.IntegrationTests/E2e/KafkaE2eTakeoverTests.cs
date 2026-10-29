@@ -6,7 +6,7 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.E2e;
 
-// Takeover-E2E KafkaWorker (spec t20 §6): kill ДЕРЖАТЕЛЯ клэйма посреди
+// Takeover-E2E KafkaWorker (spec §6): kill ДЕРЖАТЕЛЯ клэйма посреди
 // provisioning 3-брокерного KRaft-кластера — выживший инстанс доигрывает
 // операцию (K3..K5 → done) без дублей, с целым контроль-плейном и живым
 // датаплейном (инварианты I1–I7). Держатель резолвится по etcd-фактам ПЕРЕД

@@ -2,9 +2,9 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace Shared.Tls;
 
-// Валидация цепочки серта против приватных per-install CA (t08: 4 копии слиты;
+// Валидация цепочки серта против приватных per-install CA (: 4 копии слиты;
 // сигнатура — как DockerTlsMaterial.ValidateChain: принимает X509Certificate?).
-// Перегрузка anchors — CA-bundle (окно ротации: OLD+NEW одновременно, t01):
+// Перегрузка anchors — CA-bundle (окно ротации: OLD+NEW одновременно):
 // доверие цепочке, подписанной ЛЮБЫМ якорем bundle.
 public static class TlsChain
 {

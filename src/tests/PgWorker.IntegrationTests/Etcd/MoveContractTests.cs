@@ -3,7 +3,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Etcd;
 
-// Контракт заявок/статуса переездов на реальном etcd (t01 задача 18, spec §10
+// Контракт заявок/статуса переездов на реальном etcd (spec §10
 // AC7): старейшая заявка по requested_unix, конкурентный flip-txn, атомарное
 // удаление статус-ключа. Ключи тестов — в своих кластерах /pgworker/moves/.
 [Collection(NonE2eCollection.Name)]

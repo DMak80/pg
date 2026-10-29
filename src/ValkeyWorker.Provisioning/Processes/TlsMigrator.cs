@@ -9,7 +9,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// TlsMigrator (t06, arch/21 §5 T): авто-миграция plain→TLS — первый шаг
+/// TlsMigrator (arch/21 §5 T): авто-миграция plain→TLS — первый шаг
 /// Active-ветки (до надзора C; образец kafka M). Детект — чистая функция
 /// NeedsMigration (ca_pem/ca_key в etcd отсутствуют ИЛИ args живого контейнера
 /// без --tls-port). Фазы: T0 journal-before-manipulations + снапшот «до»;

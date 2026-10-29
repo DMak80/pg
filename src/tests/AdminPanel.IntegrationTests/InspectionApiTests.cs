@@ -62,7 +62,7 @@ internal static class InspectionSnapshots
             [],
             [],
             [],
-            [], // Backups (t02/t03)
+            [], // Backups (/)
             [],
             [],
             [],
@@ -106,7 +106,7 @@ internal static class InspectionSnapshots
                 new HealRecord("bucket_5", "s2", "s1", "restore-heal", unix - 3600),
                 new HealRecord("bucket_9", "s1", "s2", "restore-heal", unix - 7200),
             ]);
-        // t08 spec §8: реестр /cluster/nodes/ — 2 ноды, у второй адрес пуст.
+        //  spec §8: реестр /cluster/nodes/ — 2 ноды, у второй адрес пуст.
         return Fixture(builtAt) with
         {
             Clusters = [cluster],
@@ -171,7 +171,7 @@ public class InspectionApiTests
     [Fact]
     public async Task Endpoints_NoSnapshot_Return503ProblemDetails()
     {
-        // Arrange: до первого тика снапшота нет (t03 §3.13).
+        // Arrange: до первого тика снапшота нет (§3.13).
         _factory.Snapshot = null;
         using var client = await LoginAsync();
 
@@ -371,7 +371,7 @@ public class InspectionApiTests
     }
 }
 
-// Путь данных «живой etcd → API» (spec §3.17): реальный refresher (EtcdTestHarness t03 + AlertEngine)
+// Путь данных «живой etcd → API» (spec §3.17): реальный refresher (EtcdTestHarness + AlertEngine)
 // строит снапшот против контейнера, снапшот переносится в TestSnapshotStore хоста.
 // Только НЕмутирующие проверки чистого сида: мутирующий сценарий — отдельный класс ниже
 // (порядок выполнения тестов xunit не гарантирован).
@@ -418,7 +418,7 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         detailsDto.GetProperty("buckets")[3].GetProperty("state").GetString().Should().Be("SYNCING");
         detailsDto.GetProperty("buckets")[3].GetProperty("move").GetProperty("target").GetString().Should().Be("s2");
 
-        // t06: HA-эндпоинты против живого сида (без проб — обогащение только через стор, §3.1).
+        // HA-эндпоинты против живого сида (без проб — обогащение только через стор, §3.1).
         using var haList = await client.GetAsync("/api/ha", TestContext.Current.CancellationToken);
         var haScopes = await haList.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         haScopes.GetArrayLength().Should().Be(2);
@@ -434,7 +434,7 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
 
 // Сценарий с мутацией сида (kv/put без удаления — необратим для контейнера): отдельный класс
 // со СВОИМ контейнером (IClassFixture — экземпляр на класс), чтобы строгий «чистый» тест выше
-// не зависел от порядка выполнения (прецедент t03 — EtcdFailureTests с собственным fixture).
+// не зависел от порядка выполнения (прецедент — EtcdFailureTests с собственным fixture).
 [Collection("api")]
 public class InspectionSeededAnomaliesApiTests(AuthWebFactory factory, EtcdContainerFixture fixture)
     : IClassFixture<EtcdContainerFixture>

@@ -24,7 +24,7 @@ public enum TopicDeleteOutcome
 // Факт топика из DescribeTopics: партиции и реплики каждой партиции — данные
 // для guard'а RemoveBroker «на брокере нет реплик» (arch/16 §5 G) и планов
 // reassigner'а (arch/16 §5 I). IsrPerPartition — ISR каждой партиции
-// (USR-критерий завершения drain, spec t02 §5.2 D4); опционален (= null —
+// (USR-критерий завершения drain, spec §5.2 D4); опционален (= null —
 // «ISR не задан», фейк без ISR): реальный адаптер заполняет всегда.
 public sealed record KafkaTopicView(
     string Topic,
@@ -71,13 +71,13 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // Увеличение партиций топика до итогового числа (уменьшение Kafka не умеет).
     Task<Result> CreatePartitionsAsync(string topic, int totalPartitions, CancellationToken ct);
 
-    // Создание топика с начальными управляемыми конфигами (lifecycle create, t01):
+    // Создание топика с начальными управляемыми конфигами (lifecycle create):
     // AlreadyExists = исполнено ранее (идемпотентность, arch/15 §3.1).
     Task<Result<TopicCreateOutcome>> CreateTopicAsync(
         string topic, int partitions, short replicationFactor,
         IReadOnlyDictionary<string, string>? configs, CancellationToken ct);
 
-    // Удаление топика (lifecycle delete, t01): NotFound = исполнено ранее
+    // Удаление топика (lifecycle delete): NotFound = исполнено ранее
     // (идемпотентность, arch/15 §3.1).
     Task<Result<TopicDeleteOutcome>> DeleteTopicAsync(string topic, CancellationToken ct);
 
@@ -92,13 +92,13 @@ public interface IKafkaAdminClient : IAsyncDisposable
     Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListOffsetsAsync(
         IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct);
 
-    // Все ACL кластера (ACL-converge E, t03): фильтрацию делает AclPlan.Diff.
+    // Все ACL кластера (ACL-converge E): фильтрацию делает AclPlan.Diff.
     Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct);
 
-    // Создание недостающих ACL плана (CreateAcls, t03).
+    // Создание недостающих ACL плана (CreateAcls).
     Task<Result> CreateAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
 
-    // Удаление лишних ACL роли app (DeleteAcls exact-match, t03).
+    // Удаление лишних ACL роли app (DeleteAcls exact-match).
     Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
 
     // Подача reassignment-батча (KIP-455, arch/16 §2.4): план принят либо
@@ -124,9 +124,9 @@ public sealed record KafkaAclBinding(
     KafkaAclPermission Permission);
 
 /// <summary>
-/// Фабрика клиентов по bootstrap+кредам кластера (t03: SASL_SSL/PLAIN + доверие
+/// Фабрика клиентов по bootstrap+кредам кластера (: SASL_SSL/PLAIN + доверие
 /// per-cluster CA arch/15 §5; caPem null — без TLS-доверия, тесты/fake).
-/// t05: ШАРЕНАЯ — возвращает кэшированный адаптер per
+/// ШАРЕНАЯ — возвращает кэшированный адаптер per
 /// (bootstrap, user, password, caPem); Create — не «новый клиент», а «получить
 /// клиент ключа». DisposeAsync возвращённого адаптера — no-op (владение у
 /// фабрики-кэша); реальный Dispose — вытеснение из кэша (фон) и остановка

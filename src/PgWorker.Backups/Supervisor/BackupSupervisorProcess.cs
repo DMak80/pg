@@ -8,16 +8,16 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (t07, arch/19
+/// <summary>BackupSupervisorProcess — per-cluster сверка S3↔etcd (arch/19
 /// §4) под клэймом &lt;C&gt; по расписанию Supervisor:IntervalSec: префиксы
 /// full/&lt;id&gt;/ живого шарда БЕЗ etcd-ключа — мусор (выбора кандидатов
 /// restore нет) — немедленный batch-delete с list-подтверждением и journal-фактом
-/// swept-full. WAL-префикс НЕ трогаем (владельцы — контроль цепочки t03 и
-/// ретенция t06). Гварды: клэйм, Enabled (runtime()==null — no-op), Active;
+/// swept-full. WAL-префикс НЕ трогаем (владельцы — контроль цепочки и
+/// ретенция). Гварды: клэйм, Enabled (runtime()==null — no-op), Active;
 /// шард в активном restore — skip (гвард владельца). Таймауты операций — в их
 /// процессах (§3.3), здесь только сверка хранилища. Ошибка шарда не роняет
 /// остальные (образец WalStreamProcess); повторный проход — no-op
-/// (list подтверждает пустоту, образец FinishDeletionAsync t06).</summary>
+/// (list подтверждает пустоту, образец FinishDeletionAsync).</summary>
 public sealed class BackupSupervisorProcess(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -64,7 +64,7 @@ public sealed class BackupSupervisorProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         _lastPassUnix[cluster] = nowUnix;
 
-        // t36 (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
+        //  (arch/19 §5): пул-клиент кластера (удаления сирот full/<id>/ —
         // первая доступная нода: put/delete-семантика пула). null (пул не
         // выбран) → проход молчит; Failed → journal, ретраи проходом.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -88,13 +88,13 @@ public sealed class BackupSupervisorProcess(
             {
                 var shardBackups = backups?.Shards.GetValueOrDefault(shard.Name);
 
-                // Гвард владельца (t05 §3.4): шард в активном restore — контуры
+                // Гвард владельца (§3.4): шард в активном restore — контуры
                 // бэкапов его не трогают (объекты качает restore-джоб).
                 if (shardBackups?.Restores.Any(r => r.State
                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
                     continue;
 
-                // Возрастной гейт мусора (t100, arch/19 §4 «Гейты мусора»):
+                // Возрастной гейт мусора (arch/19 §4 «Гейты мусора»):
                 // policy-ключ кластера перекрывает дефолт конфига.
                 var garbageMinAgeSec = backups?.Policy?.GarbageMinAgeSec ?? options.GarbageMinAgeSec;
                 await SweepShardAsync(cluster, shard.Name, shardBackups, garbageMinAgeSec, s3, ct);
@@ -130,7 +130,7 @@ public sealed class BackupSupervisorProcess(
         var unowned = SupervisorPlanner.SelectUnownedFulls(listed.Value, shardBackups?.Full ?? []);
         foreach (var id in unowned)
         {
-            // Гейт 1 (t100): свежее чтение etcd-ключа — снапшот тика снят ДО
+            // Гейт 1 : свежее чтение etcd-ключа — снапшот тика снят ДО
             // планирования; планировщик этого же тика мог запланировать и
             // запустить полный ПОСЛЕ снапшота (заливка уже в S3, ключа в
             // снапшоте нет — ложный unowned). Ключ появился → живой полный.
@@ -147,7 +147,7 @@ public sealed class BackupSupervisorProcess(
                 throw new ApplicationException($"list {prefix}: {objects.Error!.Message}");
             if (objects.Value.Count > 0)
             {
-                // Гейт 2 (t100): самый старый объект префикса моложе порога →
+                // Гейт 2 : самый старый объект префикса моложе порога →
                 // заливка in-flight (снапшот мог отстать, гейт 1 — страховка
                 // фантомов) — не мусор, остаётся следующему проходу.
                 var oldest = objects.Value.Min(o => o.LastModified);
@@ -169,7 +169,7 @@ public sealed class BackupSupervisorProcess(
                         $"deletion of {prefix} did not complete — next pass will retry");
             }
 
-            // Объектов не было (пустой префикс) или удалены — журнал-факт.
+            // Объектов не было (пустой префикс) или удалены — запись журнала.
             await journal.WritePhaseAsync(cluster, Op, $"swept-full/{shard}/{id}",
                 claims.InstanceId, null, ct);
             logger?.LogInformation("{Op} {Cluster}/{Shard}: prefix {Id} without etcd key deleted",
@@ -177,7 +177,7 @@ public sealed class BackupSupervisorProcess(
         }
     }
 
-    // Свежее чтение ключа полного (t100, failover по endpoints — образец
+    // Свежее чтение ключа полного (failover по endpoints — образец
     // BackupOrphanSweeper.ReadRegistryAsync): снапшот тика мог отстать от
     // планировщика этого же тика; все endpoints недоступны → Failed (transient).
     private async Task<Result<Kv?>> GetFullKeyAsync(
@@ -196,7 +196,7 @@ public sealed class BackupSupervisorProcess(
             ?? new ApplicationException($"fresh key {cluster}/{shard}/{id}: no live etcd endpoints"));
     }
 
-    /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон t19):
+    /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон):
     /// прямой вызов на недоступном endpoint висит до HttpClient-таймаута без
     /// отметок — watchdog (порт сноса 30 c) гасил reconcile посреди сверки
     /// (bad-S3 — штатный прод-контур, arch/19 §4 «transient — следующий проход»).</summary>

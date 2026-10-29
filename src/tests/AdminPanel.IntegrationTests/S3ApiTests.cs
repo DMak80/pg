@@ -16,7 +16,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Сквозной путь s3-домена (arch/03 §12.1, t34): панель (WAF на PanelHostBuilder) →
+// Сквозной путь s3-домена (arch/03 §12.1): панель (WAF на PanelHostBuilder) →
 // реальный etcd-контейнер (сид guid-ключей; refresher тикает вручную — hosted
 // сняты) → стаб IWorkerApiGateway (коды/тела/ProblemDetails API воркера 1:1).
 public sealed class S3ApiFactory : WebApplicationFactory<Program>

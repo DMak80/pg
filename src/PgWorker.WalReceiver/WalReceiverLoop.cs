@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.WalReceiver;
 
-/// <summary>Главный цикл приёмника WAL (t25, arch/19 §3, spec §3.1) — hosted-сервис
+/// <summary>Главный цикл приёмника WAL (arch/19 §3, spec §3.1) — hosted-сервис
 /// WebApplication-хоста. Старт: идентичность из env (`WalReceiverIdentity`) —
 /// невалидный набор → лог в stdout контейнера + exit 1 (supervisord с
 /// `exitcodes=0` не перезапускает). Каждая итерация (~5 c при ожидании):
@@ -302,7 +302,7 @@ public sealed class WalReceiverLoop : BackgroundService
                 metrics.SetRole(RoleName(currentRole));
                 await PublishStateAsync(status, metrics, state, currentRole, ct);
 
-                // Ре-доклад инвентаря .history (t25, spec §3.1 п.6): раз за цикл
+                // Ре-доклад инвентаря.history (spec §3.1 п.6): раз за цикл
                 // подключения (каждая итерация, дошедшая до сессии) — pg_wal своей
                 // ноды → отсутствующие в S3 put'ятся; вне hot-path (отказ —
                 // diagnostic-log, доставит следующий цикл); старту сессии не мешает.
@@ -327,7 +327,7 @@ public sealed class WalReceiverLoop : BackgroundService
                     Confirmed = lsn => confirmedBase = lsn,
                     HistoryDelivered = count => metrics.HistoryDelivered(count),
                     RoleChangedProbe = token => ProbeRoleChangedAsync(token, roleAtStart),
-                    // Стоп-гейт из стрима (t25/arch/19 §3): живой стрим замирает
+                    // Стоп-гейт из стрима (/arch/19 §3): живой стрим замирает
                     // по ЛЮБОМУ гейту — /pgworker/backups-disabled ИЛИ wal-ключ
                     // шарда STOPPED/WAL_CHAIN_ERROR — ≤ 5 c, не ждёт обрыва транспорта;
                     // etcd-моргание проба глотает (false).

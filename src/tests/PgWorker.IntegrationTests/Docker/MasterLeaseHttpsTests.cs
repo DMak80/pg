@@ -9,7 +9,7 @@ using HostConfig = global::Docker.DotNet.Models.HostConfig;
 namespace PgWorker.IntegrationTests.Docker;
 
 // pgwnodetool master-lease: local_role() по https /primary с верификацией
-// серта по ca-файлу ноды (t22, arch/14 §2.1: REST :8008 — TLS-only, IP
+// серта по ca-файлу ноды (arch/14 §2.1: REST :8008 — TLS-only, IP
 // 127.0.0.1 — в SAN). Alpine-раннер содержит мини-https-сервер на
 // 127.0.0.1:8008; CLI запускается без роли (ветка on_start → local_role);
 // etcd мёртв — демон не может писать ключ, факт распознавания роли —

@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-s3-unreachable (warning, t08, каталог 03 §4): грань «Хранилище
+// backup-s3-unreachable (warning, каталог 03 §4): грань «Хранилище
 // бэкапов» настроена (Endpoint задан), но S3-инвентарь-тик падал ≥ 2
 // подряд — панель не видит содержимое bucket бэкапов. Инвентарь устаревает
 // (UpdatedAtUnix не растёт), etcd-часть грани (статусы/квота/сироты)
@@ -25,7 +25,7 @@ public sealed class BackupS3UnreachableRule : IAlertRule
         if (s3 is not { Configured: true } || s3.ConsecutiveFailures < Threshold)
             yield break; // грань выключена или порог не достигнут — молчание
 
-        // t36: цель в заголовке — первая из списка (клиент перебирает с неё).
+        // цель в заголовке — первая из списка (клиент перебирает с неё).
         var target = $"{s3.Endpoints.FirstOrDefault() ?? ""}/{s3.Bucket}";
         yield return new Alert(
             $"{KindName}:{target}",

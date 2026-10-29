@@ -11,12 +11,12 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// SecurityMigrator (t03, arch/16 §5 M): converge-миграция премиграционного
-/// кластера (SASL_PLAINTEXT) в канон t03 (SASL_SSL + authorizer). Детект —
+/// SecurityMigrator (arch/16 §5 M): converge-миграция премиграционного
+/// кластера (SASL_PLAINTEXT) в канон (SASL_SSL + authorizer). Детект —
 /// чистая функция NeedsMigration (etcd-поля CA/admin отсутствуют ИЛИ env
 /// живого контейнера без KAFKA_SSL_TRUSTSTORE_TYPE). Фазы: M0 guard'ы НАЧАТЫХ
 /// операций (живые прогресс-ключи reassignments/regens и открытое CA-окно
-/// staging → journal-waiting; живые ЗАЯВКИ миграцию не гейтят, t10);
+/// staging → journal-waiting; живые ЗАЯВКИ миграцию не гейтят);
 /// M1 ensure секретов (CA+admin+app одной txn); M2 rolling-пересоздание ВСЕХ
 /// живых брокеров разом (том сохраняется; порты/сеть/roles из portalloc — без
 /// изменений); M3 ожидание готовности (DescribeCluster с admin-кредом по CLIENT
@@ -217,7 +217,7 @@ public sealed class SecurityMigrator(
             : Result<MigrationOutcome>.Failed(done.Error!);
     }
 
-    // M0: передёргивают только НАЧАТЫЕ операции (t10): живые прогресс-ключи
+    // M0: передёргивают только НАЧАТЫЕ операции : живые прогресс-ключи
     // (reassignments/regens) и открытое CA-окно (staging ca_next_*). Живые ЗАЯВКИ
     // (rotations/admin_rotations/ca_rotations/rebalances) миграцию НЕ гейтят:
     // на премиграционном кластере их исполнение не могло начаться (H/K сами

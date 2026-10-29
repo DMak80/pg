@@ -76,7 +76,7 @@ public sealed class EtcdFixture : IAsyncLifetime
         return port;
     }
 
-    // Put-хелпер etcd-only тестов (t05 churn): ключ → значение.
+    // Put-хелпер etcd-only тестов (churn): ключ → значение.
     public Task PutAsync(string key, string value)
         => Gateway.PutAsync(Endpoint, key, value, null, TestContext.Current.CancellationToken);
 
@@ -122,4 +122,4 @@ public sealed class EtcdFixture : IAsyncLifetime
 
 // EtcdFixture — per-class etcd-контур: каждый etcd-only тест-класс объявляет
 // собственную коллекцию со своим инстансом фикстуры (spec 2026-10-17 §6.3.6,
-// канон t24/AGENTS.base §13); бывшая общая коллекция упразднена.
+// канон /AGENTS.base §13); бывшая общая коллекция упразднена.

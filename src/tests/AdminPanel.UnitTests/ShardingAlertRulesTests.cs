@@ -316,7 +316,7 @@ public class ShardingAlertRulesTests
         var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster] };
         var engine = new AlertEngine(AlertTestRules.All());
 
-        // Act: previous без этого id → sinceUnix = unix оценки (механика t04 §3.4).
+        // Act: previous без этого id → sinceUnix = unix оценки (механика §3.4).
         var alerts = engine.Evaluate(snapshot, snapshot with { Alerts = [] }, Now, 3);
 
         // Assert: 3 critical (no-master, frozen-long, lost) + 1 warning (no-routing),
@@ -479,7 +479,7 @@ public class ShardingAlertRulesTests
         // Act
         var alerts = Evaluate(new ShardNoLeaderRule(), snapshot);
 
-        // Assert: лидера нет потому, что ноды не подняты (spec t12 §3.7)
+        // Assert: лидера нет потому, что ноды не подняты (spec §3.7)
         alerts.Should().BeEmpty();
     }
 }

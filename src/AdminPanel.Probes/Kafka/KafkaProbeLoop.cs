@@ -28,7 +28,7 @@ public sealed class KafkaProbeStore : IKafkaProbeStore
 // Результат пробы одного кластера: live-данные + ProbeResult (kind "kafka").
 internal sealed record KafkaProbeOutcome(KafkaClusterLive? Live, ProbeResult Result);
 
-// Backoff недоступного кластера (t11): сколько проб подряд упало, когда
+// Backoff недоступного кластера : сколько проб подряд упало, когда
 // разрешена следующая и текст последней ошибки (живёт в ProbeResult.skip-тика).
 internal sealed record ClusterBackoffState(
     int ConsecutiveFailures,
@@ -38,7 +38,7 @@ internal sealed record ClusterBackoffState(
 /// <summary>
 /// Фоновый тик kafka-пробы (план B6): per-кластерный DescribeCluster по
 /// endpoints из etcd (через HostMap) с admin-кредами/CA из internal-стора
-/// (t03: SASL_SSL/PLAIN, arch/15 §5); пароль в результаты не попадает.
+/// (: SASL_SSL/PLAIN, arch/15 §5); пароль в результаты не попадает.
 /// Ошибка пробы не роняет etcd-часть панели.
 /// </summary>
 public sealed class KafkaProbeLoop(
@@ -52,7 +52,7 @@ public sealed class KafkaProbeLoop(
     ILogger<KafkaProbeLoop> logger,
     IKafkaProbeRuntimeClient? runtimeClient = null) : BackgroundService
 {
-    // Backoff per-кластер (t11): писатель один — тик loop; success сбрасывает.
+    // Backoff per-кластер : писатель один — тик loop; success сбрасывает.
     private readonly Dictionary<string, ClusterBackoffState> _backoff = [];
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -102,7 +102,7 @@ public sealed class KafkaProbeLoop(
 
         foreach (var cluster in targets)
         {
-            // Backoff недоступного кластера (t11): окно не истекло — тик
+            // Backoff недоступного кластера : окно не истекло — тик
             // пропускается, последняя ошибка остаётся в состоянии с пометкой
             // (кластер не мерцает, мёртвые endpoints не штурмуются каждые 15 c).
             if (_backoff.TryGetValue(cluster.Name, out var backoff)
@@ -163,7 +163,7 @@ public sealed class KafkaProbeLoop(
                 cluster.Name, "kafka", false, null, view.Error!.Message, at));
         }
 
-        // Живой брокер — backoff снят (t11), runtime-уровень можно звать.
+        // Живой брокер — backoff снят, runtime-уровень можно звать.
         _backoff.Remove(cluster.Name);
 
         var brokers = view.Value.Brokers
@@ -188,7 +188,7 @@ public sealed class KafkaProbeLoop(
     }
 
     // Неудачная проба брокеров: растит счётчик и раздвигает окно повтора
-    // (15 c → 60 c → 300 c) — мёртвый кластер не штурмуется каждый тик (t11).
+    // (15 c → 60 c → 300 c) — мёртвый кластер не штурмуется каждый тик.
     private void TrackFailure(string cluster, string error, DateTimeOffset at)
     {
         var failures = (_backoff.TryGetValue(cluster, out var state)
@@ -203,7 +203,7 @@ public sealed class KafkaProbeLoop(
     }
 
     // Окно после N-й подряд неудачной пробы: первая — обычный тик (интервал),
-    // вторая → 60 c, дальше 300 c (t11: 15 → 60 → 300, сброс при успехе).
+    // вторая → 60 c, дальше 300 c (: 15 → 60 → 300, сброс при успехе).
     internal static TimeSpan BackoffAfter(int consecutiveFailures, TimeSpan interval)
         => consecutiveFailures switch
         {

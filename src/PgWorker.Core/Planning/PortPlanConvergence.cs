@@ -53,7 +53,7 @@ public static class PortPlanConvergence
         return confirmed;
     }
 
-    /// <summary>Быстрый пред-выход (t90): все wanted-записи закреплены и detach
+    /// <summary>Быстрый пред-выход : все wanted-записи закреплены и detach
     /// их снять не может — object-записи не трогаются (R9), прочие подтверждены
     /// фактом своего живого контейнера (MatchesFact). Чтение busy под глобальным
     /// portalloc-клэймом ничего бы не изменило — лок можно не брать (тики

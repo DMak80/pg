@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Юнит-тесты ValkeyMetricsState (t05, arch/18 §2.6): затирание ушедших нод
+// Юнит-тесты ValkeyMetricsState (arch/18 §2.6): затирание ушедших нод
 // UpdateCluster, перезапись значений, консервативный LastSuccess, DebugSnapshot.
 public sealed class ValkeyMetricsStateTests
 {

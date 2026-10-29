@@ -2,8 +2,8 @@ using System.Text.RegularExpressions;
 
 namespace PgWorker.Backups.Restore;
 
-// Разбор backup_label полного бэкапа (t05 §3.6): стартовый WAL-сегмент цепочки
-// — sed-эквивалент прецедента entrypoint t02 (START WAL LOCATION: <lsn>
+// Разбор backup_label полного бэкапа (§3.6): стартовый WAL-сегмент цепочки
+// — sed-эквивалент прецедента entrypoint (START WAL LOCATION: <lsn>
 // (file <segment>)). Нет совпадения → null (битый/чужой формат).
 public static partial class BackupLabel
 {

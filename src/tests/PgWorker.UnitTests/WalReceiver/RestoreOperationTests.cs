@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.WalReceiver;
 
-// Инцидентная механика restore/drill в .NET (arch/19 §3.5, spec t26 §3.4,
+// Инцидентная механика restore/drill в.NET (arch/19 §3.5, spec §3.4,
 // Р15 — перенос 1:1): сигналы (standby.signal →
 // recovery.signal), override-строки auto.conf (в т.ч. target_time только при
 // цели; latest — без строки), trust-строка pg_hba, порядок runner-вызовов
@@ -122,7 +122,7 @@ public class RestoreOperationTests
     /// наследие источника), pg_hba.conf, standby.signal (набор с реплики).</summary>
     private static string NewPgdata()
     {
-        var pgdata = Path.Combine(Path.GetTempPath(), $"t26-restore-{Guid.NewGuid():N}");
+        var pgdata = Path.Combine(Path.GetTempPath(), $"restore-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Path.Combine(pgdata, "pgroot", "data"));
         File.WriteAllText(
             Path.Combine(pgdata, "pgroot", "data", "postgresql.auto.conf"),

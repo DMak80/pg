@@ -13,15 +13,15 @@
 ## Пробы
 
 - **Patroni REST** (`PatroniRestProbe`): `GET http://<host>:8008/cluster` на каждый
-  member scope'а; ответ парсит `PatroniClusterParser` (роль/state/timeline/lag).
+ member scope'а; ответ парсит `PatroniClusterParser` (роль/state/timeline/lag).
 - **SQL** (`SqlProbe`): Npgsql по DSN шарда из etcd (`host=s1a,s1b port=5432 …`);
-  **один коннект на шард**; каталог arch/03 §5 (слоты, sync-standby, подписки,
-  инвентарь `bucket_%`); пароль — `Probes.Password` (DSN его не несёт).
+ **один коннект на шард**; каталог arch/03 §5 (слоты, sync-standby, подписки,
+ инвентарь `bucket_%`); пароль — `Probes.Password` (DSN его не несёт).
 - **HostMap** (`HostMapResolver.Resolve(hostMap, host, port)`): override адреса
-  «etcd-адрес ноды `host:port`» → «достижимый с панели»; точное совпадение,
-  применяется к каждой цели до подключения. В `appsettings*.json` ключ словаря —
-  `host__port` (`:` в ключах режут конфиг-провайдеры .NET); в памяти/ENV —
-  канонический `host:port`, он приоритетен при наличии обоих.
+ «etcd-адрес ноды `host:port`» → «достижимый с панели»; точное совпадение,
+ применяется к каждой цели до подключения. В `appsettings*.json` ключ словаря —
+ `host__port` (`:` в ключах режут конфиг-провайдеры .NET); в памяти/ENV —
+ канонический `host:port`, он приоритетен при наличии обоих.
 
 ## AlertEngine — 25 правил
 
@@ -41,35 +41,35 @@
 (`inventory-mismatch` сверяет инвентарь SQL-пробы с routing, только ACTIVE-бакеты.)
 
 - `slot-wal-lost` — страховка: lost-слот пересоздаёт воркер автоматически
-  (recreate + возврат агента от хвоста S3); ремеди `WorkerAuto`, алерт гаснет
-  после лечения; висящий алерт = воркер не лечит (журнал backup-wal / healthz).
+ (recreate + возврат агента от хвоста S3); ремеди `WorkerAuto`, алерт гаснет
+ после лечения; висящий алерт = воркер не лечит (журнал backup-wal / healthz).
 
 ## Чек-лист «добавить правило/поле пробы»
 
 1. Контракт arch/03 §4 (kind, severity, условие) — первой; порог — в `AlertsOptions`
-   + `appsettings.json`.
+ + `appsettings.json`.
 2. Правило: `Rules/<Kind>Rule.cs : IAlertRule` (+ `[InjectAsSingleton(typeof(IAlertRule))]`);
-   `Evaluate(snapshot, ctx)` возвращает алерты со стабильным `kind:target`.
+ `Evaluate(snapshot, ctx)` возвращает алерты со стабильным `kind:target`.
 3. Unit-сценарий: fixture-снапшот (`TestSnapshots`) → ожидаемые алерты; при правке
-   порога — `AlertTestRules`.
+ порога — `AlertTestRules`.
 4. Порог/поле наружу: DTO (`AlertsDto`/`HaDto`…), фронт `api/dto.ts` — по arch/03 §2.
 5. Живой прогон: интеграционный сценарий или чек стенда (20-alerts) на появление/гашение.
 
 ## Грабли
 
 - **`TargetSessionAttributes=read-write`** (Npgsql 10) работает **только на multi-host
-  DSN**; read-only-защита — сессионный `SET` **после** выбора мастера: обе
-  степени нужны, ни одну не выкидывать.
+ DSN**; read-only-защита — сессионный `SET` **после** выбора мастера: обе
+ степени нужны, ни одну не выкидывать.
 - **Пробы мимо DSN из etcd не настроить** адрес хоста руками: только HostMap (прод —
-  пуст; стенд — `appsettings.Development.json`, порты 5433–5436/8011–8022).
+ пуст; стенд — `appsettings.Development.json`, порты 5433–5436/8011–8022).
 - **Тайминги ожиданий**: тик проб 15 c — e2e-чеки ждут поля проб с запасом (≤40 c),
-  алерты — ≤2 KV-тиков; «не дождались за 5 c» — не баг, а недостаток таймаута.
+ алерты — ≤2 KV-тиков; «не дождались за 5 c» — не баг, а недостаток таймаута.
 - **`probe-failed` ≠ пустые данные**: отказ пробы оставляет etcd-часть (поля null),
-  SQL-поля в UI скрываются с пометкой (arch/01 §8).
-- **`probe-failed` — severity по цели (2026-09-01)**: SQL-проба Active-шарда
-  упала = critical («кластер не работает»); Patroni одного члена — warning,
-  все члены скопа — один critical; NOT_INITIALIZED/TO_REMOVE не алертятся
-  (подъём/демонтаж — не авария), но пробы по ним ходят и runtime-ошибки
-  остаются в деталях.
+ SQL-поля в UI скрываются с пометкой (arch/01 §8).
+- **`probe-failed` — severity по цели **: SQL-проба Active-шарда
+ упала = critical («кластер не работает»); Patroni одного члена — warning,
+ все члены скопа — один critical; NOT_INITIALIZED/TO_REMOVE не алертятся
+ (подъём/демонтаж — не авария), но пробы по ним ходят и runtime-ошибки
+ остаются в деталях.
 - **HostMap в тестах**: интеграционные проверки резолва — на обоих форматах ключа
-  (`host:port` и `host__port`, `HostMapResolverTests`).
+ (`host:port` и `host__port`, `HostMapResolverTests`).

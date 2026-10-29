@@ -1,6 +1,6 @@
 namespace PgWorker.Backups;
 
-/// <summary>Материал CA https S3-endpoint (t42, arch/19 §7): воркер читает PEM
+/// <summary>Материал CA https S3-endpoint (arch/19 §7): воркер читает PEM
 /// из CaBundlePath (TLS-пакет установки) — S3-клиенты с фабрикой доверия по
 /// корню цепочки; tool-операции получают PEM в POST-команде (материализация на
 /// приёмнике), приёмник ноды — env ноды (PGW_BACKUP_S3_CA_PEM).</summary>
@@ -11,7 +11,7 @@ public static class BackupCaPem
     public static string? ReadIfConfigured(BackupsRuntimeOptions opts)
         => ReadIfConfigured(opts.S3CaBundlePath);
 
-    // t36: строковый путь (цель S3ClientOptions — пул/слепки), механика та же.
+    // строковый путь (цель S3ClientOptions — пул/слепки), механика та же.
     public static string? ReadIfConfigured(string? caBundlePath)
     {
         if (string.IsNullOrWhiteSpace(caBundlePath))

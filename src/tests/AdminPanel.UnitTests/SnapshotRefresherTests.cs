@@ -19,7 +19,7 @@ internal static class RefresherTestHarness
     public static SnapshotRefresher New(FakeEtcdGateway gateway, ISnapshotStore store, params string[] endpoints)
         => New(gateway, store, null, endpoints);
 
-    // Расширенная: с стором проб (spec §10.8 — конструктор refresher'а t06).
+    // Расширенная: с стором проб (spec §10.8 — конструктор refresher'а).
     public static SnapshotRefresher New(
         FakeEtcdGateway gateway,
         ISnapshotStore store,
@@ -27,7 +27,7 @@ internal static class RefresherTestHarness
         params string[] endpoints)
         => New(gateway, store, probes, null, endpoints);
 
-    // С стором S3-инвентаря (t08 — конструктор refresher'а): null → пустой стор.
+    // С стором S3-инвентаря (— конструктор refresher'а): null → пустой стор.
     public static SnapshotRefresher New(
         FakeEtcdGateway gateway,
         ISnapshotStore store,
@@ -113,7 +113,7 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
     public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success(Alarms));
 
-    // Write-методы (t12): refresher не пишет — заглушки ради интерфейса.
+    // Write-методы : refresher не пишет — заглушки ради интерфейса.
     public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         => Task.FromResult(Result<TxnResult>.Failed(new EtcdUnreachableException(endpoint)));
 
@@ -513,7 +513,7 @@ public class SnapshotRefresherTests
         store.Current.PgWorkerWork.Should().ContainSingle().Which.Cluster.Should().Be("demo");
     }
 
-    // AAA (t08): успешный RefreshOnceAsync переносит store.Current в snapshot.S3Storage
+    // AAA : успешный RefreshOnceAsync переносит store.Current в snapshot.S3Storage
     // (по образцу WorkerHealth — готовым состоянием из стора).
     [Fact]
     public async Task Refresh_Success_CarriesS3InventoryIntoSnapshot()
@@ -537,7 +537,7 @@ public class SnapshotRefresherTests
         store.Current.S3Storage.UpdatedAtUnix.Should().Be(42);
     }
 
-    // AAA (t08): FailTick сохраняет прежний S3Storage (инвентарь переживает отказ etcd).
+    // AAA : FailTick сохраняет прежний S3Storage (инвентарь переживает отказ etcd).
     [Fact]
     public async Task Refresh_FailTick_PreservesS3Inventory()
     {

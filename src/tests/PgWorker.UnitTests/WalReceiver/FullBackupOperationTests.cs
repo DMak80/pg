@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.WalReceiver;
 
-// Операция полного бэкапа приёмника (arch/19 §2, spec t26 §3.4) на фейках
+// Операция полного бэкапа приёмника (arch/19 §2, spec §3.4) на фейках
 // IProcessRunner/IBackupS3: порядок фаз running/basebackup → uploading (+
 // wal_start_segment из backup_label) → succeeded; put-ключи 1:1 full/<id>/…
 // + wal/<seg> без *.partial/*.history; пароль — ТОЛЬКО env PGPASSWORD (не
@@ -206,7 +206,7 @@ public class FullBackupOperationTests
     public async Task HappyPath_PhasesAndUploadKeys_ThenStagingCleaned()
     {
         // Arrange: фейки etcd/runner/S3 + временный staging.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var etcd = Etcd();
         var runner = new FakeRunner();
@@ -256,7 +256,7 @@ public class FullBackupOperationTests
     {
         // Arrange: фейки etcd/runner/S3 + временный staging (сегмент 0AB —
         // ВЕРХНИМ в наборе, как кладёт pg_basebackup).
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var etcd = Etcd();
         var runner = new FakeRunner();
@@ -286,7 +286,7 @@ public class FullBackupOperationTests
     public async Task BasebackupFails_FailedWithOneLineError()
     {
         // Arrange: runner отвечает pg_basebackup exit 1 + многострочный stderr.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var runner = new FakeRunner
         {
@@ -313,7 +313,7 @@ public class FullBackupOperationTests
     public async Task UploadFails_FailedWithExhaustedMarker()
     {
         // Arrange: S3-фейк отказывает на put.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var s3 = new FakeS3 { FailPut = true };
         var registry = new OperationRegistry();
@@ -333,7 +333,7 @@ public class FullBackupOperationTests
     public async Task Cancel_MidOperation_FailedCancelledAndCleaned()
     {
         // Arrange: runner «висит» на pg_basebackup до отмены.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-full-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"full-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var started = new TaskCompletionSource();
         var runner = new FakeRunner

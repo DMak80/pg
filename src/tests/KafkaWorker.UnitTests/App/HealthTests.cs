@@ -11,7 +11,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.App;
 
-// Catch-all проб и чека (t09; spec §3.2): сетевое исключение шлюза → Result.Failed
+// Catch-all проб и чека ( spec §3.2): сетевое исключение шлюза → Result.Failed
 // (Degraded с секциями), чек никогда не падает исключением (DefaultHealthCheckService[103]).
 public class HealthTests
 {
@@ -69,7 +69,7 @@ public class HealthTests
         hosts.Should().BeEmpty();
     }
 
-    // Фабрика docker-клиентов, бросающая при создании (t09; spec §3.2: пер-хостовая
+    // Фабрика docker-клиентов, бросающая при создании ( spec §3.2: пер-хостовая
     // проба оборачивает исключение в Failed — структура, не бросок).
     private sealed class ThrowingFactory : DockerEngineFactory
     {

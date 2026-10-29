@@ -4,7 +4,7 @@ using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
-/// <summary>Исход одной стрим-сессии приёмника (t25, arch/19 §3): одна сессия =
+/// <summary>Исход одной стрим-сессии приёмника (arch/19 §3): одна сессия =
 /// «открытие → резолв хвоста → START_REPLICATION → приём до обрыва/смены роли».
 /// Reconnect — обрыв источника/transient (переподключение с повторным резолвом
 /// хвоста); WaitingSlot — слота нет на пустом префиксе S3 (transient-ожидание,
@@ -87,7 +87,7 @@ public sealed class WalSessionEvents
     /// <summary>Проба роли из стрима (5 c): true — роль сменилась, сессия прерывается.</summary>
     public Func<CancellationToken, Task<bool>>? RoleChangedProbe;
 
-    /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, t25/arch/19 §3): true —
+    /// <summary>Проба ПОЛНОГО стоп-гейта из стрима (5 c, /arch/19 §3): true —
     /// глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ шарда в
     /// STOPPED/WAL_CHAIN_ERROR — сессия чисто завершается (Reconnect): цикл
     /// перепроверит гейты и уйдёт в waiting_disabled/paused; живой стрим
@@ -101,21 +101,21 @@ public sealed class WalSessionEvents
     public Action<string>? Diagnostic;
 }
 
-/// <summary>Ядро WAL-приёмника как управляемая сессия (t27 → t25, arch/19 §3):
+/// <summary>Ядро WAL-приёмника как управляемая сессия (→ wal-агент, arch/19 §3):
 /// подключение со сверкой wal_segment_size, резолв старта от хвоста S3 (пустой
 /// префикс — от restart_lsn слота), приём XLogData → сборка сегментов → put в
 /// S3 → подтверждение слота ТОЛЬКО после успешного put (инвариант RPO:
 /// write=flush=applied = конец последнего доставленного сегмента, никогда
 /// дальше). Backpressure: при невозможности put чтение потока не двигается —
 /// сервер ждёт подтверждения, слот удерживает WAL. Выходных кодов процесса
-/// больше нет (t25): permanent-условия — исход FailedPermanent (состояние
+/// больше нет : permanent-условия — исход FailedPermanent (состояние
 /// статус-ключа), ожидания — Reconnect/WaitingSlot (цикл ретраит), смену роли
 /// детектирует проба (RoleChanged).</summary>
 public sealed class WalReceiverCore
 {
     private static readonly TimeSpan DefaultRetry = TimeSpan.FromSeconds(5);
 
-    // R3 (t36-разбор AC4): пер-попытка таймаут put — остановленная/перегруженная
+    // R3 (разбор AC4): пер-попытка таймаут put — остановленная/перегруженная
     // нода пула «молча принимает» TCP и не отвечает — ПЕР-ЦЕЛЬНЫЙ бюджет: это
     // значение уходит requestTimeout'ом в КАЖДУЮ цель PoolBackupS3 (цикл),
     // чтобы висящая первая цель НЕ съедала бюджет перебора и фейловер доезжал
@@ -167,7 +167,7 @@ public sealed class WalReceiverCore
         // Проба роли из стрима: фоновая задача (5 c); true → roleCts.Cancel —
         // обрыв Stream трактуется сессией как чистая смена роли (RoleChanged).
         var roleTriggered = false;
-        // Проба ПОЛНОГО стоп-гейта из стрима (5 c, t25): true → тот же Cancel —
+        // Проба ПОЛНОГО стоп-гейта из стрима (5 c): true → тот же Cancel —
         // исход Reconnect: цикл перепроверит гейты (waiting_disabled/paused) немедленно.
         var gateTriggered = false;
         using var roleCts = new CancellationTokenSource();
@@ -422,7 +422,7 @@ public sealed class WalReceiverCore
                             }
                             finally
                             {
-                                // Сегментный буфер (пул LOH, t25 hot-path) возвращается
+                                // Сегментный буфер (пул LOH, hot-path) возвращается
                                 // после обработки сегмента: put/подтверждение завершены
                                 // (или сессия прервана отменой) — байты никому не нужны.
                                 SegmentBufferPool.Return(segment.Data);
@@ -684,7 +684,7 @@ public sealed class WalReceiverCore
         }
     }
 
-    /// <summary>Ре-доклад инвентаря .history (t25, arch/19 §3): перечисляет
+    /// <summary>Ре-доклад инвентаря.history (arch/19 §3): перечисляет
     /// .history-файлы pg_wal своей ноды и кладёт в S3 wal/ отсутствующие —
     /// страховка TLI-переходов вне окна стрима (промоут, пока приёмник не
     /// стримил: после промоута файл лежит в pg_wal нового мастера, после

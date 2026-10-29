@@ -143,7 +143,7 @@ public static class MoveSql
     }
 
     // Разморозка: симметричные GRANT; БЕЗ GRANT CREATE — его app-роли никогда
-    // не выдавалось (дефолт скриптов APP_GRANT_CREATE=0, глобальное ограничение t01).
+    // не выдавалось (дефолт скриптов APP_GRANT_CREATE=0, глобальное ограничение).
     public static string Unfreeze(string schema, string appRole)
         => $"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};\n" +
            $"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};";
@@ -165,8 +165,8 @@ public static class MoveSql
     // кавычки экранируются удвоением); failover-флаг конфигурируем (PG17+),
     // synchronous_commit=remote_apply — всегда (P8).
     // failover=true — только PG17+ (R1/Д11); при false опция ОПУСКАЕТСЯ: в PG16
-    // параметра failover нет вовсе («unrecognized subscription parameter», e2e-факт
-    // t01 на spilo-16), а в PG17 отсутствие опции семантически равно false.
+    // параметра failover нет вовсе («unrecognized subscription parameter», факт стенда
+    //  на spilo-16), а в PG17 отсутствие опции семантически равно false.
     public static string CreateSubscription(
         string sub, string conninfo, string pub, bool copyData, bool failover)
     {

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-wal-tli-gap (t24, spec §3.5): живое поле gap wal-ключа живого
+// backup-wal-tli-gap (spec §3.5): живое поле gap wal-ключа живого
 // Active-кластера — critical (Remedy WorkerAuto, границы зазора в тексте и
 // атрибутах); DEGRADED без gap — молчание (домен существующих правил);
 // мёртвый кластер / шард вне кластера — молчание.
@@ -62,7 +62,7 @@ public class BackupWalTliGapRuleTests
         alert.Details["gap_tli"].Should().Be("2");
     }
 
-    // AAA: DEGRADED без Gap — молчание (домен wal-chain-broken/лагов, t03/t07)
+    // AAA: DEGRADED без Gap — молчание (домен wal-chain-broken/лагов, /)
     [Fact]
     public void NoGap_Silent()
     {

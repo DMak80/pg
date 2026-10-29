@@ -15,7 +15,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests.Workers;
 
-// valkeyworker в общем каркасе воркеров (t03; arch/adminpanel/02 §2.3.3):
+// valkeyworker в общем каркасе воркеров ( arch/adminpanel/02 §2.3.3):
 // грань «Воркеры» — третья карточка, gateway резолвит /valkeyworker/api/,
 // health-поллер пробует valkey-инстансы тем же тиком.
 public class ValkeyWorkersInfraTests
@@ -154,11 +154,11 @@ public class ValkeyWorkersInfraTests
             pg ?? new SettablePgStore(),
             kafka ?? new SettableKafkaStore(),
             valkey ?? new SettableValkeyStore(),
-            // t34: s3-стор нейтрален для valkey-сценариев (пустой).
+            // s3-стор нейтрален для valkey-сценариев (пустой).
             new SettableS3Store());
     }
 
-    // t34: стор s3-снапшота (в этих тестах живых s3-ключей нет).
+    // стор s3-снапшота (в этих тестах живых s3-ключей нет).
     private sealed class SettableS3Store : IS3SnapshotStore
     {
         public S3Snapshot? Current { get; set; }
@@ -195,7 +195,7 @@ public class ValkeyWorkersInfraTests
         card.Instances.Should().ContainSingle().Which.Instance.Should().Be("i1");
         card.TargetCert.Should().NotBeNull();
         card.TargetCert!.Thumbprint.Should().Be("abc123");
-        // kafka-карточка не пострадала (порядок pg→kafka→valkey; s3 — t34).
+        // kafka-карточка не пострадала (порядок pg→kafka→valkey; s3).
         result.Value.Workers.Select(w => w.Worker).Should()
             .Equal("pgworker", "kafkaworker", "valkeyworker", "s3worker");
     }
@@ -282,7 +282,7 @@ public class ValkeyWorkersInfraTests
             new KafkaWorkerHealthStore(),
             valkeyReader,
             valkeyStore,
-            // t34: s3-пара нейтральна для valkey-сценариев.
+            // s3-пара нейтральна для valkey-сценариев.
             new StubS3Reader(),
             new S3WorkerHealthStore(),
             new StubHttpClientFactory(handler),
@@ -292,7 +292,7 @@ public class ValkeyWorkersInfraTests
         return poller;
     }
 
-    // t34: s3-двойник поллера (в этих тестах s3-ключей нет).
+    // s3-двойник поллера (в этих тестах s3-ключей нет).
     private sealed class StubS3Reader : IS3SnapshotReader
     {
         public S3Snapshot? Current { get; }

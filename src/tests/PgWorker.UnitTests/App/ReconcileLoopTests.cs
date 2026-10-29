@@ -154,7 +154,7 @@ public class ReconcileLoopTests
         processes.Provisioned.Should().BeEmpty();
     }
 
-    // AAA: кластер Active после надзора обрабатывает заявки переездов (t01, spec §5.3)
+    // AAA: кластер Active после надзора обрабатывает заявки переездов (spec §5.3)
     [Fact]
     public async Task Tick_ActiveCluster_CallsProcessMoves()
     {
@@ -173,7 +173,7 @@ public class ReconcileLoopTests
         processes.Calls.Should().ContainInOrder("supervise/shop", "moves/shop");
     }
 
-    // AAA: scale-проход Active-ветки — после надзора, до эвакуаций/moves (t06 §5.1)
+    // AAA: scale-проход Active-ветки — после надзора, до эвакуаций/moves (§5.1)
     [Fact]
     public async Task Tick_ActiveCluster_ScaleShardsAfterSuperviseBeforeMoves()
     {
@@ -205,7 +205,7 @@ public class ReconcileLoopTests
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
 
         // Assert — ротация вызвана между scale и moves (порядок §4.3); WAL-архивация
-        // (t03) — после ротации, до repair/moves
+        //  — после ротации, до repair/moves
         tick.IsSuccess.Should().BeTrue();
         processes.Rotated.Should().Equal("shop");
         processes.WalStreamed.Should().Equal("shop");
@@ -257,7 +257,7 @@ public class ReconcileLoopTests
         processes.Calls.Should().NotContain(c => c.StartsWith("backups/"));
     }
 
-    // AAA: verify-бэкапов (t04) — после backup-wal, до ретенции и repair (spec §3.3)
+    // AAA: verify-бэкапов — после backup-wal, до ретенции и repair (spec §3.3)
     [Fact]
     public async Task Tick_ActiveClusterWithBackupsEnabled_VerifyBetweenWalAndRepair()
     {
@@ -282,7 +282,7 @@ public class ReconcileLoopTests
         calls.IndexOf("backup-wal/shop").Should().Be(calls.IndexOf("backup-verify/shop") - 1);
     }
 
-    // AAA: ретенция (t06) — при Backups.Enabled=true вызывается после backup-wal/verify,
+    // AAA: ретенция — при Backups.Enabled=true вызывается после backup-wal/verify,
     // до repair (spec §3.3)
     [Fact]
     public async Task Tick_ActiveClusterWithBackupsEnabled_RetentionCalledAfterWalStreamBeforeRepair()
@@ -326,7 +326,7 @@ public class ReconcileLoopTests
         processes.Calls.Should().NotContain(c => c.StartsWith("backups-retention/"));
     }
 
-    // AAA: restore (t05) — при Backups.Enabled=true вызывается после backup-wal,
+    // AAA: restore — при Backups.Enabled=true вызывается после backup-wal,
     // до repair (§3.4: агент снесён демонтажём — процесс сам стопает)
     [Fact]
     public async Task Tick_ActiveClusterWithBackupsEnabled_RestoreCalledAfterWalStreamBeforeRepair()
@@ -675,7 +675,7 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        // reliability t02 (arch/19 §3.6): дрилл — после backup-restore, до repair.
+        // reliability (arch/19 §3.6): дрилл — после backup-restore, до repair.
         public Task<Result<ProcessOutcome>> DrillAsync(
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
@@ -683,7 +683,7 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        // t07 (arch/19 §4): per-cluster сверка S3↔etcd — между retention и restore.
+        //  (arch/19 §4): per-cluster сверка S3↔etcd — между retention и restore.
         public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {

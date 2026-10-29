@@ -24,7 +24,7 @@ namespace PgWorker.Provisioning.Processes;
 /// фиксируется в журнале (QUARANTINED + returned_unix) ДО docker-стопов (P7);
 /// docker stop БЕЗ удаления (данные целы), сбой стопа не отменяет возврат —
 /// retry тиком; state=QUARANTINED, returned_unix.
-/// Адресация мастеров — общий сервис ShardEndpoints (t01 задача 9).
+/// Адресация мастеров — общий сервис ShardEndpoints.
 /// </summary>
 public sealed class BucketEvacuator(
     IEtcdGateway etcd,
@@ -51,7 +51,7 @@ public sealed class BucketEvacuator(
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"evacuate {cluster}/{deadShard}: claim is not ours (or lost) — mutations forbidden"));
 
-        // t05 §3.4 второй рубеж: надзор не отдаёт шардов в restore, но DONE-журнал
+        //  §3.4 второй рубеж: надзор не отдаёт шардов в restore, но DONE-журнал
         // прошлой эвакуации / гонка снапшота не должны привести к эвакуации или
         // E3-карантину восстанавливаемого шарда (риск «ложная эвакуация» §7).
         // Возврат БЕЗ записи /pgworker/evacuations/<C>/<X> и БЕЗ HandleReturnedShard.

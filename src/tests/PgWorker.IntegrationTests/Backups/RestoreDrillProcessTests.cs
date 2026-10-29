@@ -13,7 +13,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции RestoreDrillProcess (reliability t02, spec §3.3 п.2): у КАЖДОГО
+// Интеграции RestoreDrillProcess (reliability, spec §3.3 п.2): у КАЖДОГО
 // Fact своё etcd-окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт,
 // own-only teardown с ассертом чистоты — docs/e2e-isolation.md). Drill-операцию
 // исполняет WalReceiver ПЕРВОЙ ноды шарда по HTTP API (POST/GET /api/ops/restore)
@@ -898,7 +898,7 @@ public class RestoreDrillProcessTests
         (await ReadDrillAsync(cluster)).Should().Contain("\"RUNNING\"");
     }
 
-    // AAA: t14 — оба пути чистого терминального итога зовут наблюдателя:
+    // AAA: — оба пути чистого терминального итога зовут наблюдателя:
     // FAILED-валидация без операции ("failed") и доведённый SUCCEEDED ("ok").
     [Fact]
     public async Task TerminalOutcomesCallObserver()

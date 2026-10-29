@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace KafkaWorker.UnitTests.App;
 
 // IOptionsMonitor-дабл (порт PgWorker.UnitTests/App/TestSupport.cs): фиксированные
-// настройки KafkaWorkerOptions для тестов циклов/health (t09).
+// настройки KafkaWorkerOptions для тестов циклов/health.
 internal sealed class FixedOptionsMonitor(KafkaWorkerOptions value) : IOptionsMonitor<KafkaWorkerOptions>
 {
     public KafkaWorkerOptions CurrentValue => value;
@@ -15,7 +15,7 @@ internal sealed class FixedOptionsMonitor(KafkaWorkerOptions value) : IOptionsMo
     public KafkaWorkerOptions Get(string? name) => value;
 }
 
-// Шлюз, бросающий сетевые исключения (t09; spec §3.2): .NET DNS-флейп
+// Шлюз, бросающий сетевые исключения ( spec §3.2).NET DNS-флейп
 // «Name or service not known» летит из HttpClient наружу.
 internal sealed class ThrowingEtcd : IEtcdGateway
 {

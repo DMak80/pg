@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-orphan (t07, spec §3.5): запись реестра → warning с prefix/size и
+// backup-orphan (spec §3.5): запись реестра → warning с prefix/size и
 // остатком TTL; OrphanTtlSec=0 → «удаление вручную» (OperatorRunbook);
 // DELETING → «идёт удаление»; ключа нет — молчание.
 public class BackupOrphanRuleTests
@@ -95,7 +95,7 @@ public class BackupOrphanRuleTests
         Evaluate(SnapshotWith(null)).Should().BeEmpty();
     }
 
-    // ── DR-hold (reliability t04): fate-приоритет DELETING → hold → полный →
+    // ── DR-hold (reliability): fate-приоритет DELETING → hold → полный →
     // заявка → TTL — AAA ——
 
     // AAA (AC7): OBSERVED+hold → «защищён hold-флагом (<by>) — удаление только

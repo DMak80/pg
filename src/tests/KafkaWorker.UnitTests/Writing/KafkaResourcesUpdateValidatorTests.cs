@@ -5,7 +5,7 @@ using Xunit;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.UnitTests.Writing;
 
-// Валидация мутации №15 (t06, spec §4.2): границы §10.3, null = не менять,
+// Валидация мутации №15 (spec §4.2): границы §10.3, null = не менять,
 // хотя бы одно поле обязательно; эффективные значения = new ?? current.
 public class KafkaResourcesUpdateValidatorTests
 {

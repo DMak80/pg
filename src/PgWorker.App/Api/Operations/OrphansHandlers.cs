@@ -51,7 +51,7 @@ internal static partial class OrphanGuards
     }
 }
 
-// POST /api/backups/orphans/{c}/{x}/hold и DELETE ... (t04, arch/19 §4):
+// POST /api/backups/orphans/{c}/{x}/hold и DELETE... (arch/19 §4):
 // hold-флаг сироты «до разбора». Put делает ТОЛЬКО API (атомарный put/del
 // одного ключа, без read-modify-write); повторный hold идемпотентен (put
 // поверх), unhold идемпотентен (del, ключа нет — тоже успех). Реестр не пишет.
@@ -88,7 +88,7 @@ public sealed class OrphanHoldHandler(
     }
 }
 
-// POST /api/backups/orphans/{c}/{x}/delete (t04, arch/19 §4): заявка явного
+// POST /api/backups/orphans/{c}/{x}/delete (arch/19 §4): заявка явного
 // удаления сироты — единственный путь удалить защищённую (hold/валидный
 // полный): минует оба гварда отбора. Повторная заявка — put поверх (не 409:
 // заявка — состояние, не эксклюзивный клэйм). Исполняет sweeper ближайшим

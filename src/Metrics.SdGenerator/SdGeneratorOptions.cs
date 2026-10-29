@@ -18,7 +18,7 @@ public sealed class SdGeneratorOptions
     /// <summary>Путь file_sd-файла (volume Prometheus, маунт /sd).</summary>
     public string OutputPath { get; set; } = "/sd/patroni-nodes.json";
 
-    /// <summary>Путь второго file_sd-файла — приёмники WAL в нодах (t25,
+    /// <summary>Путь второго file_sd-файла — приёмники WAL в нодах (
     /// arch/18 §5.4/§8): те же записи per-node, порт 8080 (http).</summary>
     public string WalOutputPath { get; set; } = "/sd/walreceiver-nodes.json";
 

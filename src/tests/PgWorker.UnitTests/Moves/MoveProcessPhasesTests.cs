@@ -7,7 +7,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveProcess M1–M3 (t01 задача 13, spec §6.1): DDL-перенос (pgdump-команда
+// MoveProcess M1–M3 (spec §6.1): DDL-перенос (pgdump-команда
 // приёмнику источника, применение, гранты, сверка инвентаря P5), pub/sub
 // идемпотентно (copy_data=true,
 // failover-флаг конфигурируем, remote_apply), copy-wait с перезаписью статус-ключа
@@ -71,7 +71,7 @@ public class MoveProcessPhasesTests
 
     // AAA: pub/sub отсутствуют — создаются: pub на источнике, sub на приёмнике с
     //      mover-conninfo, copy_data=true, remote_apply; failover=true только при
-    //      конфиге (false опускает опцию — PG16 не знает параметра, e2e-факт t01)
+    //      конфиге (false опускает опцию — PG16 не знает параметра, факт стенда)
     [Theory]
     [InlineData(true, "failover = true, ")]
     [InlineData(false, "")]

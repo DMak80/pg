@@ -12,7 +12,7 @@ public interface IAdminAuthenticator
     bool Authenticate(string? username, string? password);
 }
 
-// Constant-time-проверка username+password по настройкам AdminPanel:Auth (spec t02 §7.1).
+// Constant-time-проверка username+password по настройкам AdminPanel:Auth (spec §7.1).
 [InjectAsSingleton]
 public sealed class AdminAuthenticator(IOptions<AuthOptions> options, ILogger<AdminAuthenticator> logger)
     : IAdminAuthenticator

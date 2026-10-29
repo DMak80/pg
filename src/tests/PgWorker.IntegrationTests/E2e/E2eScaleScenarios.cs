@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E-сценарии масштабирования шардов (t06 spec §8-1..5, критерии §9.2–9.4) на
+// E2E-сценарии масштабирования шардов (spec §8-1..5, критерии §9.2–9.4) на
 // живом стенде (изолированное окружение E2eEnvironment — своя сеть/etcd на Fact):
 // add ПУСТОГО шарда в Active-кластер (routing/schema-мир не тронут — главная
 // граница §2.1), G3-блокировка remove с бакетами, авто-демонтаж после явных
@@ -120,7 +120,7 @@ public class E2eScaleScenarios
 
             // ---------- §8-3: явные переезды → демонтаж завершается сам ----------
             // Act: увозим оставшиеся бакеты shard1 (bucket_0 → shard3, 2/4 → shard2) +
-            // finalize каждого (заявки t01; повторную команду демонтажа НЕ подаём).
+            // finalize каждого (заявки; повторную команду демонтажа НЕ подаём).
             await PutMoveRequestAsync(cluster, "bucket_0",
                 $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
             await PutMoveRequestAsync(cluster, "bucket_2",
@@ -366,7 +366,7 @@ public class E2eScaleScenarios
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        // Детерминизация (t09, тот же дефект-класс, что E1-seed в Move): fresh-
+        // Детерминизация (тот же дефект-класс, что E1-seed в Move): fresh-
         // проброс порта Docker Desktop даёт разовый RST на SSL-рукопожатии
         // (TCP принят docker-proxy, PG-контейнер ещё не готов) — ждём готовность
         // ретраем, SQL-ошибки (PostgresException) не ретраим — валидный провал.
@@ -401,12 +401,12 @@ public class E2eScaleScenarios
 
     private sealed record MasterInfo(string Node, string Host, string Dsn);
 
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
     // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-    // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+    // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
     // FirstOrDefault по такому матчу отдавал произвольную ноду шарда — seed
     // уходил на реплику (25006 read-only). Приём E2eMoveScenarios.
     private async Task<MasterInfo> MasterInfoAsync(string cluster, string shard, CancellationToken ct)
@@ -488,7 +488,7 @@ public class E2eScaleScenarios
         string patchError = "not attempted";
         for (var attempt = 1; attempt <= 3 && !patched; attempt++)
         {
-            // t22: мутация Patroni — https с доверием CA контура + basic-auth
+            // мутация Patroni — https с доверием CA контура + basic-auth
             // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
             var master = await MasterInfoAsync(cluster, shard, ct);
             try

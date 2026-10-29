@@ -112,7 +112,7 @@ public class CreateClusterApiTests(PgApiFixture fixture)
         problem.GetProperty("errors").GetProperty("buckets").GetArrayLength().Should().BeGreaterThan(0);
     }
 
-    // AAA (t06, spec §6.2): без поля → strict-кластер; strict+replicas=1 → 400;
+    // AAA (spec §6.2): без поля → strict-кластер; strict+replicas=1 → 400;
     // strict=false+replicas=1 → 201. Wire-имя поля — synchronousModeStrict
     // (сквозная проверка camelCase-биндинга — критерий спеки §6.2).
     [Fact]

@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Per-cluster секреты безопасности (arch/15 §2, t03): креды ролей
+/// Per-cluster секреты безопасности (arch/15 §2): креды ролей
 /// app (приложения, ACL) и admin (воркер/панель/CLI) + per-cluster PKI
 /// (публичный серт CA и приватный ключ CA, PEM одной строкой).
 /// </summary>
@@ -19,7 +19,7 @@ public sealed record ClusterSecrets(
     string CaKey);
 
 /// <summary>
-/// Ensure per-cluster секретов кластера (arch/16 §4, t03): чтение
+/// Ensure per-cluster секретов кластера (arch/16 §4): чтение
 /// /kafka/clusters/&lt;C&gt;/{app_user,app_password,admin_user,admin_password,ca_pem,ca_key};
 /// отсутствующие ключи генерируются и кладутся ОДНОЙ txn put-if-absent
 /// (compare NotExists только на отсутствующие). Проигрыш txn (гонка/re-run)

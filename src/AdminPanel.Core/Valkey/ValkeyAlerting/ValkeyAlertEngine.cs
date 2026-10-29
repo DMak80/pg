@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Core.Valkey.ValkeyAlerting;
 
 // Чистая функция (ValkeySnapshot next, prev) → Alert[] — каталог arch/03 §8.4
-// (t10 — stale-ротации и ticket-expired).
+// (— stale-ротации и ticket-expired).
 // sinceUnix — по стабильному id из prev.Alerts (механика KafkaAlertEngine);
 // сортировка severity → kind → target.
 public interface IValkeyAlertEngine
@@ -132,7 +132,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertRemedy.WorkerAuto,
                 "the rotation is executed by the worker, the key will disappear; if it hangs, the worker is stuck — check the journal");
 
-        // ===== t10 (arch/03 §8.4): видимость зависших ротационных заявок =====
+        // ===== (arch/03 §8.4): видимость зависших ротационных заявок =====
 
         var rotationNowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
 
@@ -151,7 +151,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 yield return RotationStaleAlert("valkey-ca-rotation-stale", ca.Cluster, age, "CA/cert rotation");
         }
 
-        // valkey-ticket-expired (warning, t10): заявка снята возрастным таймаутом
+        // valkey-ticket-expired (warning): заявка снята возрастным таймаутом
         // воркера — устранить причину и повторить; гаснет перезаписью исхода done.
         foreach (var outcome in (next.TicketOutcomes ?? []).Where(
                      o => o.Outcome == "expired" && alive.Contains(o.Cluster)))
@@ -187,7 +187,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 "fix the source of the malformed entry (external writer) and bring the value to the arch/20 canon; the next tick will parse the key");
     }
 
-    // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
+    // Stale-алерт ротационной заявки : warning с возрастом и остатком до
     // возрастного снятия (связность stale = RotationTicketTimeoutSec/2 — spec §2).
     private Alert RotationStaleAlert(string kind, string cluster, long age, string what)
         => new(
@@ -204,7 +204,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
             null,
             $"the request has not been started for more than {_options.RotationStaleSeconds} s — {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} s left until the worker age-drop; check the journal (waiting phase)",
             AlertRemedy.WorkerAuto,
-            "the worker will drop the request by the age timeout (t10); if it hangs, check the worker journal and cluster availability");
+            "the worker will drop the request by the age timeout ; if it hangs, check the worker journal and cluster availability");
 
     // valkey-endpoints-missing + valkey-security-missing + valkey-node-not-running
     // (только Active-кластер).
@@ -223,7 +223,7 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertRemedy.WorkerAuto,
                 "the worker will append endpoints after provisioning; if it hangs, the node is unreachable for the worker — check the vwk-<C>-node1 container");
 
-        // valkey-security-missing (critical, t06): Active-кластер без ca_pem —
+        // valkey-security-missing (critical): Active-кластер без ca_pem —
         // миграция TLS не доиграна либо ключ потерян (arch/20 §5).
         if (!cluster.HasCaPem)
             yield return new Alert(

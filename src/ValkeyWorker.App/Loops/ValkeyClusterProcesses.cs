@@ -117,7 +117,7 @@ internal sealed class ValkeyClusterProcesses(
                     break;
 
                 case ValkeyClusterKind.Active:
-                    // t06: миграция TLS — ПЕРВЫМ шагом Active-ветки (arch/21 §5):
+                    // миграция TLS — ПЕРВЫМ шагом Active-ветки (arch/21 §5):
                     // InProgress ⇒ надзор/converge/ротация в этом тике не идут
                     // (миграция доиграет тиками; узкое окно plain→TLS).
                     await RunClusterOpAsync(cluster, "active", async () =>
@@ -128,7 +128,7 @@ internal sealed class ValkeyClusterProcesses(
                         if (migration.Value == TlsMigrator.MigrationOutcome.InProgress)
                             return Result.Success();
 
-                        // t07: ротация CA — ВТОРОЙ шаг Active-ветки (arch/21 §5 K):
+                        // ротация CA — ВТОРОЙ шаг Active-ветки (arch/21 §5 K):
                         // окно открыто (InProgress) ⇒ надзор/converge/ротация в
                         // этом тике не идут (узкое окно двойного доверия);
                         // Waiting/NotNeeded — ветка продолжается (ждущие исходы

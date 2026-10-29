@@ -3,7 +3,7 @@ using Shared.Core;
 using Shared.Core.Planning;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
-// t07: NodeLimits здесь — доменная запись (docker-факт конвертируется драйвером).
+// NodeLimits здесь — доменная запись (docker-факт конвертируется драйвером).
 using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
 using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Core.Writing;
@@ -159,7 +159,7 @@ public sealed class ProvisioningProcess(
     // занятости → выбор портов → запись portalloc»: без него два параллельных
     // кластера читают пустую занятость до первой записи соседа и выбирают
     // одни и те же порты (docker create второго падает, portalloc закреплён
-    // за коллизией — вечный failing-тик). Образец — PlanAsync kfw (t91-паттерн):
+    // за коллизией — вечный failing-тик). Образец — PlanAsync kfw (паттерн):
     // чтение закрепления ДО клэйма + ранний выход «всё закреплено» (тики
     // waiting-* не соперничают за глобальный клэйм); занятость и аллокация —
     // ВНУТРИ секции.
@@ -325,7 +325,7 @@ public sealed class ProvisioningProcess(
             }
 
             // Ленивая сборка env: только здесь — сверка провалена, решено
-            // пересоздавать ноду (свежий серт, spec t20 §4.1).
+            // пересоздавать ноду (свежий серт, spec §4.1).
             var env = NodeTlsProvisioner.BuildNodeTlsEnv(creds.CaPem, creds.CaKey, node, advertised);
 
             var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
@@ -402,7 +402,7 @@ public sealed class ProvisioningProcess(
             var address = addresses[node];
             // Проба по advertised-адресу (правило arch/21 §2) — тот же хост,
             // что попадёт в endpoints (V5); placement-имя клиентам не видно.
-            // PING — по TLS с CA из ensure (t06, V4).
+            // PING — по TLS с CA из ensure (V4).
             var endpoint = new ValkeyEndpoint(
                 options.AdvertisedClientHost ?? address.Host, address.ClientPort,
                 "admin", creds.AdminPassword, creds.CaPem);

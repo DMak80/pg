@@ -68,7 +68,7 @@ public class NodeSupervisorTests
         etcd.Seed("/clusters/shop/shards/shard1/dsn", "host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard1");
-        // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
+        // per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
         etcd.Seed("/clusters/shop/rest_password", RestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed("/service/shop-shard1/request_cpu", "2");
@@ -105,7 +105,7 @@ public class NodeSupervisorTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
-        // t06: переопределение config-ключа кластера (семантика strict и др.).
+        // переопределение config-ключа кластера (семантика strict и др.).
         if (configOverride is not null)
             etcd.Seed("/clusters/shop/config", configOverride);
         if (addresses is not null)
@@ -165,7 +165,7 @@ public class NodeSupervisorTests
         work!.Value.Should().Contain("claim-lost/declared-nodes");
     }
 
-    // AAA (t06, spec §6.4): strict=false в config кластера — конвергенция ведёт
+    // AAA (spec §6.4): strict=false в config кластера — конвергенция ведёт
     // DCS к false (per-cluster ожидание, не константа).
     [Fact]
     public async Task Tick_DcsConvergence_StrictFalseCluster_PatchesStrictFalse()
@@ -197,7 +197,7 @@ public class NodeSupervisorTests
         patches.Should().ContainSingle().Which.Should().Contain("\"synchronous_mode_strict\":false");
     }
 
-    // AAA (t05 §3.4): шард с активной restore-заявкой надзор НЕ трогает:
+    // AAA (§3.4): шард с активной restore-заявкой надзор НЕ трогает:
     // EnsureDeclared не пересоздаёт снесённые ноды, пробы не зовутся,
     // deadShards пуст даже при «мёртвых» нодах (ShardDead не тикает).
     [Fact]
@@ -531,7 +531,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
-    // AAA (t09, arch/14 §5 C): проба лидера глухая, НО контейнер running
+    // AAA (arch/14 §5 C): проба лидера глухая, НО контейнер running
     // (инспекция видит) — свидетельства смерти процесса нет (рестарт Patroni/
     // транспортный флап): ускорение failover НЕ запускается, только честный
     // UNREACHABLE; docker и HA-ключи не тронуты.
@@ -563,7 +563,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
-    // AAA (t09, arch/14 §5 C): лидер не отвечает И контейнер не running
+    // AAA (arch/14 §5 C): лидер не отвечает И контейнер не running
     // (инспекция running-only его не видит — docker stop/жёсткая смерть) —
     // положительное свидетельство смерти: ускорение failover (маркер+снятие
     // лидер-лока) БЕЗ ожидания NodeDeadSec и БЕЗ docker-мутаций; rebuild
@@ -594,7 +594,7 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
-    // AAA (t09→t11): DCS-конфиг на дефолтах Patroni — патч несёт ВСЕ канонические
+    // AAA (→): DCS-конфиг на дефолтах Patroni — патч несёт ВСЕ канонические
     // тайминги И полный желаемый набор параметров (живой конфиг без блока
     // parameters → все desired добавляются; заявка в сиде полная).
     [Fact]
@@ -631,13 +631,13 @@ public class NodeSupervisorTests
             .Which.Should().Contain("\"ttl\":20")
             .And.Contain("\"loop_wait\":1").And.Contain("\"retry_timeout\":3")
             .And.Contain("\"synchronous_mode\":true")
-            .And.Contain("\"synchronous_mode_strict\":true") // t06: strict — часть таймингового патча
+            .And.Contain("\"synchronous_mode_strict\":true") // strict — часть таймингового патча
             .And.Contain("\"postgresql\":{\"parameters\":{")
             .And.Contain("\"shared_buffers\":\"2GB\"")
             .And.Contain("\"wal_level\":\"logical\"");
     }
 
-    // AAA (t09→t11): конвергентный конфиг (тайминги + полный желаемый набор
+    // AAA (→): конвергентный конфиг (тайминги + полный желаемый набор
     // от заявки сида) — ноль мутаций (не второй регулярный писатель).
     [Fact]
     public async Task Regression_T09_DcsConfigConvergence_CanonicalConfig_NoPatch()
@@ -676,7 +676,7 @@ public class NodeSupervisorTests
         patches.Should().BeEmpty("the config is already canonical — no mutations");
     }
 
-    // AAA (t11, spec §4.4): живой /config расходится по ПАРАМЕТРАМ (заявка 8Gi,
+    // AAA (spec §4.4): живой /config расходится по ПАРАМЕТРАМ (заявка 8Gi,
     // живой конфиг от прежней 4Gi) → ровно ОДИН PATCH за тик, документ несёт
     // пересчитанные значения (shared_buffers 2GB/effective_cache_size 6GB от 8Gi)
     // и добавляет отсутствующие desired-ключи; фаза dcs-converge в журнале.
@@ -719,7 +719,7 @@ public class NodeSupervisorTests
             .Should().Contain("dcs-converge").And.Contain("updated:").And.Contain("added:");
     }
 
-    // AAA (t11, решение 2026-09-14 «неполная заявка — SKIP»): заявка НЕПОЛНАЯ —
+    // AAA (решение 2026-09-14 «неполная заявка — SKIP»): заявка НЕПОЛНАЯ —
     // request_mem удалён при живом request_cpu (ReadShardResourcesAsync вернёт
     // NodeResources(CpuCores:2, MemoryBytes:null), НЕ null) → патч ТОЛЬКО
     // таймингов + warning-лог; тик надзора НЕ фейлится.
@@ -759,7 +759,7 @@ public class NodeSupervisorTests
             && e.Message.Contains("request_", StringComparison.Ordinal));
     }
 
-    // AAA (t11, симметричный кейс полного отсутствия): ОБЕ заявки отсутствуют
+    // AAA (симметричный кейс полного отсутствия): ОБЕ заявки отсутствуют
     // (ReadShardResourcesAsync == null) — тот же исход: тайминги + warning, тик Done.
     [Fact]
     public async Task Tick_DcsConfigConvergence_NoResourceRequests_TimingsOnlyWithWarning()
@@ -797,7 +797,7 @@ public class NodeSupervisorTests
             && e.Message.Contains("request_", StringComparison.Ordinal));
     }
 
-    // AAA (t11): /config недоступен (транспорт/5xx) → мутаций нет, тик не
+    // AAA : /config недоступен (транспорт/5xx) → мутаций нет, тик не
     // фейлится (транзиент — конвергенция повторится следующим тиком).
     [Fact]
     public async Task Tick_DcsConfigConvergence_ConfigUnavailable_NoMutation()
@@ -859,7 +859,7 @@ public class NodeSupervisorTests
         outcome.Value.DeadShards.Should().BeEmpty();
     }
 
-    // ---------- Границы надзора (t06 spec §5.4) ----------
+    // ---------- Границы надзора (spec §5.4) ----------
 
     // Дозасев второго шарда в существующий сид (порты не пересекаются с shard1).
     private static void SeedShard2(Fakes.FakeEtcd etcd, bool withDsn, bool markedToRemove)
@@ -902,7 +902,7 @@ public class NodeSupervisorTests
     public async Task Tick_ShardWithoutDsn_DockerRm_NotRecreated()
     {
         // Arrange — declared-шард без dsn (add идёт): контейнер снесён руками;
-        // восстановление — домен AddShardProcess, не надзора (t06 §5.4)
+        // восстановление — домен AddShardProcess, не надзора (§5.4)
         var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a",
             "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         SeedShard2(rig.Etcd, withDsn: false, markedToRemove: false);
@@ -920,7 +920,7 @@ public class NodeSupervisorTests
     {
         // Arrange — declared-шард без dsn с НЕ_INITIALIZED-нодами, пробы глухие
         // (Patroni поднимается): state нод — вход A1-гварда AddShardProcess,
-        // UNREACHABLE-перезапись ломала бы декларацию (waiting-keys, t06 §5.4)
+        // UNREACHABLE-перезапись ломала бы декларацию (waiting-keys, §5.4)
         var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
         [
             "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
@@ -946,7 +946,7 @@ public class NodeSupervisorTests
         // Arrange — эвакуированный шард: все ноды QUARANTINED (E3), REST глухой
         // (остановлены намеренно), журнал эвакуации DONE; docker-объекты на месте
         // (stop без удаления). Пробы надзора не должны затирать QUARANTINED на
-        // UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06 §5.4).
+        // UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (§5.4).
         var rig = await NewRig(_ => Down());
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Seed($"/clusters/shop/shards/shard1/nodes/{node}/state", "QUARANTINED");
@@ -997,7 +997,7 @@ public class NodeSupervisorTests
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert — пустой мёртвый шард не попадает в DeadShards (t06 §5.4)
+        // Assert — пустой мёртвый шард не попадает в DeadShards (§5.4)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         outcome.Value.DeadShards.Should().NotContain("shard2");
     }
@@ -1006,7 +1006,7 @@ public class NodeSupervisorTests
     public async Task Tick_DeadShardWithoutDsn_NotEvacuationCandidate()
     {
         // Arrange — мёртвый declared-шард БЕЗ dsn, routing аномально указывает на
-        // него: add ещё идёт — эвакуировать нечего (t06 §5.4)
+        // него: add ещё идёт — эвакуировать нечего (§5.4)
         var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
         [
             "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
@@ -1248,7 +1248,7 @@ public class NodeSupervisorTests
         etcd.Seed($"/clusters/{cluster}/shards/shard1/dsn", "host=h1,h2 port=15000,15001 dbname=x user=bucket_admin");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_0", "shard1");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
-        // t22: per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
+        // per-cluster REST-пара (эффективный пароль EnsureNode-путей надзора)
         etcd.Seed($"/clusters/{cluster}/rest_password", RestPassword);
         // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
         etcd.Seed($"/service/{cluster}-shard1/request_cpu", "2");
@@ -1797,7 +1797,7 @@ public class NodeSupervisorTests
             .Should().Be("REMOVING");
     }
 
-    // ── t22: общий шаг пересоздания нод REST-TLS (арх/14 §5 C) ──
+    // ── : общий шаг пересоздания нод REST-TLS (арх/14 §5 C) ──
 
     // AAA (а): вход конвергенции — легаси-контейнер без серта пересоздан;
     // пароль EnsureNode — из РЕЗУЛЬТАТА ensure (легаси-кластер: снапшот без
@@ -1806,7 +1806,7 @@ public class NodeSupervisorTests
     public async Task RestTlsStep_LegacyContainer_RecreatedWithEnsuredPair()
     {
         // Arrange: легаси-контейнер shard1a без SSL_RESTAPI_CERTIFICATE;
-        // ключа rest_password в снапшоте нет (кластер до t22).
+        // ключа rest_password в снапшоте нет (кластер до).
         var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
         rig.Etcd.Store.Remove("/clusters/shop/rest_password");
         rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>(); // легаси
@@ -2024,7 +2024,7 @@ public class NodeSupervisorTests
         work.Value!.Phase.Should().BeOneOf("dcs-converge-skipped-rest-window", "recreate-skipped-rest-window");
     }
 
-    // AAA (t22 рев.3, П1): окно ротации + ЖИВОЙ лидер с hash(OLD) —
+    // AAA (рев.3, П1): окно ротации + ЖИВОЙ лидер с hash(OLD) —
     // SwitchoverAsync получает пару ФАКТИЧЕСКОГО поколения ноды (ключ etcd,
     // до txn R3 — OLD: ensured), EnsureNodeAsync — NEW (pending).
     [Fact]
@@ -2081,7 +2081,7 @@ public class NodeSupervisorTests
             .Should().Be(NewRestPassword, "the new generation env is pending");
     }
 
-    // AAA (t22 рев.3, П1): 401-отказ switchover в окне НЕ роняет окно навсегда —
+    // AAA (рев.3, П1): 401-отказ switchover в окне НЕ роняет окно навсегда —
     // тиковый ретрай (return Failed → цикл повторяет), pending живёт.
     [Fact]
     public async Task RestTlsStep_RotationPending_Switchover401_WindowAliveTickRetry()
@@ -2130,7 +2130,7 @@ public class NodeSupervisorTests
         attempts.Should().BeGreaterOrEqualTo(2, "tick-level switchover retry");
     }
 
-    // AAA (t22 рев.3, §5.10): легаси-http лидер входа конвергенции — https-проба
+    // AAA (рев.3, §5.10): легаси-http лидер входа конвергенции — https-проба
     // отказывает; БЕЗ DCS-свидетеля (нет members state running) шаг ЖДЁТ.
     [Fact]
     public async Task RestTlsStep_LegacyLeader_NoDcsWitness_Waits()
@@ -2156,7 +2156,7 @@ public class NodeSupervisorTests
         engine.Stopped.Should().BeEmpty();
     }
 
-    // AAA (t22 рев.3, §5.10): легаси-http лидер + DCS-свидетель (реплика
+    // AAA (рев.3, §5.10): легаси-http лидер + DCS-свидетель (реплика
     // state running по /service/<scope>/members — heartbeat мимо REST) —
     // жёсткий снос с пересозданием в TLS.
     [Fact]

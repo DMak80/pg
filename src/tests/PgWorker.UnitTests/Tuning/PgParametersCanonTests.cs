@@ -2,7 +2,7 @@ using PgWorker.Core.Tuning;
 
 namespace PgWorker.UnitTests.Tuning;
 
-// PgParametersCanon (t11, spec §4.1): единый желаемый набор merge(PGTune ∪
+// PgParametersCanon (spec §4.1): единый желаемый набор merge(PGTune ∪
 // канон) — один источник для bootstrap (SpiloEnvBuilder) и конвергенции
 // (DcsConfigConvergence). Значения — СЫРЫЕ строки без YAML/JSON-обвязки.
 public class PgParametersCanonTests

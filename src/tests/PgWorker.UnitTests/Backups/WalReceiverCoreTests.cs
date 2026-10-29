@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Ядро приёмника как управляемая сессия (t25, arch/19 §3, spec §3.1 п.6):
+// Ядро приёмника как управляемая сессия (arch/19 §3, spec §3.1 п.6):
 // инвариант подтверждения — SetConfirmed ТОЛЬКО после успешного S3-put
 // (feedback-инвариант AC1), backpressure при отказе S3 (AC6-ядро), рестарт от
 // хвоста S3, TLI/.history-fallback ФС ноды, исходы сессии (WaitingSlot /
@@ -86,7 +86,7 @@ public class WalReceiverCoreTests
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));

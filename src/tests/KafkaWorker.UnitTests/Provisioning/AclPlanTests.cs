@@ -4,7 +4,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// ACL-план роли app (t03 Ф3, arch/16 §2.3/E): канонические 7 binding'ов;
+// ACL-план роли app (Ф3, arch/16 §2.3/E): канонические 7 binding'ов;
 // diff — создать недостающие, удалить лишние у app, чужих принципалов не трогать.
 public class AclPlanTests
 {

@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Детекция кандидатов scale-прохода Active-ветки (t06 spec §5.1).
+// Детекция кандидатов scale-прохода Active-ветки (spec §5.1).
 public class ShardScaleClassifierTests
 {
     private static ShardSpec Shard(string name, bool toRemove = false, string? dsn = null, int nodes = 2)

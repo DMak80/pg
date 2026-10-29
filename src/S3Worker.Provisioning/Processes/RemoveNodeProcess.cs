@@ -193,7 +193,7 @@ public sealed class RemoveNodeProcess(
         }
     }
 
-    // Исключение ноды из portalloc: под глобальным клэймом (t91), put-if-... —
+    // Исключение ноды из portalloc: под глобальным клэймом, put-if-... —
     // RMW txn по mod_revision (не NotExists: запись уже есть, меняем состав).
     private async Task<Result> RemoveFromPortAllocAsync(
         S3ClusterSnapshot snap, string node, CancellationToken ct)

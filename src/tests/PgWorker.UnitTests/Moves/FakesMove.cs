@@ -9,7 +9,7 @@ using PgWorker.UnitTests.Provisioning;
 
 namespace PgWorker.UnitTests.Moves;
 
-// Тест-даблы процессов переезда (t01 задача 11): записывающий мок SQL-исполнителя
+// Тест-даблы процессов переезда : записывающий мок SQL-исполнителя
 // с резолвером по тексту SQL + общий стенд MoveProcess-тестов (задачи 11/13).
 
 /// <summary>

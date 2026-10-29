@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// restore-failed (critical, t05, arch/19 §3.5/§8): FAILED restore-заявки живого
+// restore-failed (critical, arch/19 §3.5/§8): FAILED restore-заявки живого
 // шарда Active-кластера — восстановление не удалось, разбор по runbook
 // (docs/backup-restore.md) и повтор заявки. Активные фазы
 // (PLANNED/RUNNING/REJOINING) без алерта — прогресс виден в статусе ключа.

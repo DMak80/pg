@@ -14,7 +14,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Patroni-проба против локального Kestrel https-стаба (t22, arch/02 §6.1):
+// Patroni-проба против локального Kestrel https-стаба (arch/02 §6.1):
 // верификация цепочки к per-install ServerCA (hostname не сверяется —
 // P17-канон), серт из ЧУЖОГО CA — транспортный отказ TLS, отсутствие записи
 // member — PatroniProbeException-путь. HostMap e2e, User-Agent «AdminPanel».

@@ -5,7 +5,7 @@ using Xunit;
 namespace PgWorker.UnitTests.Backups;
 
 // JSON-контракт статус-ключа агента /pgworker/backups/<C>/<X>/agent/<N>
-// (t25, arch/19 §4): ToJson — формат значения (имена полей snake_case, node
+// (arch/19 §4): ToJson — формат значения (имена полей snake_case, node
 // по факту identity); Parse — полный round-trip всех полей + толерантность
 // к чужому/битому JSON (null, не исключение).
 public class WalReceiverAgentStatusJsonTests

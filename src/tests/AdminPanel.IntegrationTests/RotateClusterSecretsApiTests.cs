@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// POST /api/clusters/{c}/secrets/rotate (t02) — прокси в API PgWorker (task
+// POST /api/clusters/{c}/secrets/rotate — прокси в API PgWorker (task
 // etcd-via-worker-api): стаб-воркер; 201/409/404/503 прежние тела, оператор
 // сессии уходит заголовком X-Requested-By (spec §3.7).
 [Collection("api")]

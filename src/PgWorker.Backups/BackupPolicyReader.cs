@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Backups;
 
-/// <summary>Читатель policy-ключа кластера (t36, arch/19 §4): живое чтение
+/// <summary>Читатель policy-ключа кластера (arch/19 §4): живое чтение
 /// /pgworker/backups/&lt;C&gt;/policy (failover по endpoints — паттерн WalStreamProcess
 /// GetAsync), разбор BackupsParser'ом. Потребители — BackupPoolResolver/фабрика;
 /// ключа нет → null (дефолт-семантика у вызывающего).</summary>

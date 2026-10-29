@@ -32,7 +32,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
 // Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz
-// (t03) — scrape ходит клиентским сертом per-install пакета.
+//  — scrape ходит клиентским сертом per-install пакета.
 builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -47,7 +47,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
-// embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
+// embedded DNS ( arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
 // Поллинг-инвариант (arch/16 §6): одиночный HTTP-вызов к etcd не молчит дольше
@@ -72,7 +72,7 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
 var etcdEndpoints = builder.Configuration.GetSection("KafkaWorker:Etcd:Endpoints").Get<string[]>() ?? [];
 var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworker", CancellationToken.None);
 
-// mTLS HTTP API (arch/16 §1.1, t03): env-секреты TLS → конфиг, Kestrel c
+// mTLS HTTP API (arch/16 §1.1): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом и требованием клиентского серта per-install API-CA.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
@@ -84,7 +84,7 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
     : null;
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
-// Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
+// Единое место литерала префикса etcd-ключей : Shared-координация параметризована.
 const string KeyPrefix = "/kafkaworker";
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
@@ -95,7 +95,7 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
-// t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
+// глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
 // InstanceId единый с ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
     KeyPrefix,
@@ -210,14 +210,14 @@ builder.Services.AddSingleton(sp =>
 
 // Kafka AdminClient (seam + Confluent-адаптер): RequestTimeout короткий —
 // это пробы/конфиги, длинные ожидания — циклы процессов. Фабрика — sharable
-// кэш (t05): клиент per (bootstrap,user,password), не «клиент на тик».
+// кэш : клиент per (bootstrap,user,password), не «клиент на тик».
 builder.Services.AddSingleton<IKafkaAdminClientFactory>(sp =>
     new KafkaAdminClientFactory(
         TimeSpan.FromSeconds(10),
         sp.GetRequiredService<ILogger<KafkaAdminClientFactory>>(),
         TimeProvider.System));
 
-// Backoff недоступного кластера (t05): DI-синглтон; писатели — supervise-проба
+// Backoff недоступного кластера : DI-синглтон; писатели — supervise-проба
 // и коллектор (первые kafka-контакты), читатели — гейты Active-ветки/коллектора.
 builder.Services.AddSingleton(sp =>
     new KafkaClusterBackoff(sp.GetRequiredService<TimeProvider>()));
@@ -225,7 +225,7 @@ builder.Services.AddSingleton(sp =>
 // Кеш серверных сертов нод (R3, arch/16 §2.3): DI-синглтом.
 builder.Services.AddSingleton(new BrokerCertificateCache());
 
-// Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4, t03).
+// Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4).
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
@@ -251,7 +251,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<BrokerCertificateCache>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
-// t91: индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
+// индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
 builder.Services.AddSingleton(sp => new PortAllocIndex(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -263,7 +263,7 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
-// Лестница E9 самолечения portalloc (t05, arch/17): supervise вызывает её для
+// Лестница E9 самолечения portalloc (arch/17): supervise вызывает её для
 // безадресных брокеров ДО любых деструктивных действий.
 builder.Services.AddSingleton(sp => new PortAllocHealer(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -288,7 +288,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     healer: sp.GetRequiredService<PortAllocHealer>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
-// Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
+// Reassignment (I) — перед G: drain TO_REMOVE-брокеров + заявки balance.
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value;
@@ -362,7 +362,7 @@ builder.Services.AddSingleton(sp => new TopicSyncProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Loops.TopicSyncIntervalSec));
 
-// Converge-миграция премиграционных кластеров в канон t03 (arch/16 §5 M).
+// Converge-миграция премиграционных кластеров в канон (arch/16 §5 M).
 builder.Services.AddSingleton(sp => new SecurityMigrator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,

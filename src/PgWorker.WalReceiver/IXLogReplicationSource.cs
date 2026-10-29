@@ -22,7 +22,7 @@ public sealed class WalSlotMissing(string slot)
 /// таймлайн сервера и позиция записи WAL.</summary>
 public sealed record ServerIdentity(uint Tli, ulong XLogPos);
 
-/// <summary>Транспорт физической репликации (t27, arch/19 §3): реализация Npgsql —
+/// <summary>Транспорт физической репликации (arch/19 §3): реализация Npgsql —
 /// Task 5; фейк — юнит-тесты. Семантика: Open — подключение + сверка
 /// wal_segment_size (mismatch → Failed permanent); Start — START_REPLICATION
 /// SLOT <slot> PHYSICAL <startLsn> со СТАРТОВОЙ позицией, отказ 58P01 — наружу

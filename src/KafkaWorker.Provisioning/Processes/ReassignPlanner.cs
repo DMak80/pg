@@ -4,7 +4,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Чистые функции планов reassignment (arch/16 §5 I; spec t02 §3.3/§3.4):
+/// Чистые функции планов reassignment (arch/16 §5 I; spec §3.3/§3.4):
 /// drain (замещение реплик drain-брокера с minISR-guard'ом и автоматическим
 /// снижением RF при нехватке целей) и balance (converge к декларации:
 /// RF = min(configRf, цели) для юзер-топиков, min(3, цели) для internal,

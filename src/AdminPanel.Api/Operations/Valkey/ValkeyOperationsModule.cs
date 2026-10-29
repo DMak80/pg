@@ -67,7 +67,7 @@ public static class ValkeyOperationsModule
         });
 
         // POST /api/valkey/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
-        // (02 §11.2-6, t07): 202; оператор сессии — X-Requested-By.
+        // (02 §11.2-6): 202; оператор сессии — X-Requested-By.
         endpoints.MapPost("/api/valkey/clusters/{cluster}/ca/rotate", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {

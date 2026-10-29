@@ -9,9 +9,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// docker-E2E file_sd-канала (t15, spec §4 Ф4/Д4, §6.3): реальный кластер PgWorker
+// docker-E2E file_sd-канала (spec §4 Ф4/Д4, §6.3): реальный кластер PgWorker
 // в изолированном окружении + настоящий Prometheus + sd-generator в ЕДИНОЙ сети
-// окружения класса (t15 ревизия 3): etcd/sd-generator/prometheus/ноды вместе,
+// окружения класса (ревизия 3): etcd/sd-generator/prometheus/ноды вместе,
 // воркер с PgWorker__Docker__ScrapeNetwork = сеть окружения, скрейп
 // patroni-nodes по <alias>:8008, host-форвардинга в контуре нет
 // (кластер → таргеты up → канон-минимум patroni_* в TSDB → демонтаж →
@@ -84,7 +84,7 @@ public class E2ePatroniFileSdScenarios
                         - targets: ["sd-generator:8080"]
                 """, ct);
 
-            // Контур мониторинга — единая сеть окружения класса (t15 ревизия 3):
+            // Контур мониторинга — единая сеть окружения класса (ревизия 3):
             // sd-generator читает etcd по alias e2e-etcdN:2379, prometheus скрейпит
             // ноды по <alias>:8008 — host-форвардинга в контуре НЕТ вообще
             // (WithExtraHost отсутствует: регрессия ловится конструктивно —
@@ -116,7 +116,7 @@ public class E2ePatroniFileSdScenarios
                 // Bind — ХОСТОВЫЕ пути факта (раннер: hostArtifacts ↔ /artifacts,
                 // файлы факта — в подкаталоге <runId>; bind несуществующего
                 // корневого пути docker подменяет каталогом — «not a directory»).
-                // CA контура для https-скрейпа patroni-nodes (t22: rest-ca.pem
+                // CA контура для https-скрейпа patroni-nodes (: rest-ca.pem
                 // фаза 1 пишет в каталог артефактов при старте окружения).
                 "-v", $"{Path.Combine(hostArtifactsDir, "prometheus.yml")}:/etc/prometheus/prometheus.yml:ro",
                 "-v", $"{Path.Combine(hostArtifactsDir, "rest-ca.pem")}:/etc/prometheus/ca.pem:ro",
@@ -132,7 +132,7 @@ public class E2ePatroniFileSdScenarios
             // ---------- кластер ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: seeding cluster {cluster} + provisioning (≤360 s)…");
             await SeedClusterAsync(cluster);
-            // ScrapeNetwork = имя сети окружения класса (t15 ревизия 3, spec §3.5):
+            // ScrapeNetwork = имя сети окружения класса (ревизия 3, spec §3.5):
             // движок Ensure-attach'ит ноды к сети окружения поверх pgw-net-<C>,
             // portalloc несёт alias/net, генератор строит <alias>:8008.
             await using var p1 = await Fx.StartHostAsync("s1", ct: ct, extraEnv: new Dictionary<string, string>
@@ -171,7 +171,7 @@ public class E2ePatroniFileSdScenarios
             var allUrls = await AllScrapeUrlsAsync(promHttp, promUrl);
             allUrls.Should().NotBeEmpty("the prometheus activeTargets are not empty");
             allUrls.Should().NotContain(u => u.Contains("host.docker.internal", StringComparison.Ordinal),
-                "no target is on host forwarding (t15 revision 3 canon)");
+                "no target is on host forwarding (canon)");
 
             // ---------- канон-минимум серий (M3-факт) ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: fixing the actual patroni_* dictionary + generator self-scrape…");
@@ -350,7 +350,7 @@ public class E2ePatroniFileSdScenarios
     private sealed record PortallocEntry(string Host, int Pg, int Patroni, int Doorman,
         string? Alias = null, string? Net = null);
 
-    // Сетевые alias живых нод из portalloc (t15 ревизия 3): записи канонического
+    // Сетевые alias живых нод из portalloc (ревизия 3): записи канонического
     // провижининга при заданном ScrapeNetwork несут alias = pgw-<C>-<X>-<n> и
     // net = имя сети окружения класса — доказательство Д1-контура в E2E.
     private async Task<List<string>> PatroniAliasesAsync(string cluster)

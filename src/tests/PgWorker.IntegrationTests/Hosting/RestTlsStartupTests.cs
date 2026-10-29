@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Hosting;
 
-// Валидация старта воркера по REST-TLS (t22, arch/14 §4 гр.3): WAF-хост с
+// Валидация старта воркера по REST-TLS (arch/14 §4 гр.3): WAF-хост с
 // тестовым CA поднимается (env PGW_REST_TLS_* фикстуры), битый PEM —
 // fail-fast с diagnose. Коллекция NonE2e — последовательность с Api-серией
 // (общий глобальный env процесса).

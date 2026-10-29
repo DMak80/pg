@@ -32,7 +32,7 @@ public class MoveSqlPart2Tests
     }
 
     // AAA: подписка — failover=true только PG17+ (R1/Д11); false опускает опцию
-    // (в PG16 параметра нет вовсе — e2e-факт t01), remote_apply всегда (P3/P8)
+    // (в PG16 параметра нет вовсе — факт стенда), remote_apply всегда (P3/P8)
     [Theory]
     [InlineData(true, "copy_data = true, failover = true, synchronous_commit = remote_apply")]
     [InlineData(false, "copy_data = true, synchronous_commit = remote_apply")]

@@ -164,7 +164,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
+    // AAA (ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
     // <alias>:8008 (контейнерный порт Patroni REST); порты host-публикации
     // записи НЕ участвуют (patroni=18008, таргет — :8008).
     [Fact]
@@ -183,7 +183,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3): запись без alias (легаси/усыновлённая) — advertised
+    // AAA (ревизия 3): запись без alias (легаси/усыновлённая) — advertised
     // host:patroni по host-публикации (деградационная ветка той же функции).
     [Fact]
     public void Map_WithoutAlias_AdvertisedTarget()
@@ -200,7 +200,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3): смешанный контур — per-node правило покомпонентно
+    // AAA (ревизия 3): смешанный контур — per-node правило покомпонентно
     // (alias-запись сетевая, без-alias — advertised).
     [Fact]
     public void Map_MixedContour_PerNode()
@@ -219,7 +219,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3): фильтр patroni <= 0 (усыплены) действует и в сетевой
+    // AAA (ревизия 3): фильтр patroni <= 0 (усыплены) действует и в сетевой
     // ветке — alias не оживляет усыпленную ноду, warn не вызывается.
     [Fact]
     public void Map_AliasSuspended_Skipped()
@@ -236,7 +236,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3): пустой alias (""/whitespace) — отсутствие:
+    // AAA (ревизия 3): пустой alias (""/whitespace) — отсутствие:
     // advertised-ветка (запись не несёт сетевой идентичности).
     [Fact]
     public void Map_AliasEmpty_FallsBack()
@@ -253,7 +253,7 @@ public class TargetMappingTests
         warnings.Should().BeEmpty();
     }
 
-    // AAA (t15 ревизия 3): сетевой таргет сериализуется тем же file_sd-форматом.
+    // AAA (ревизия 3): сетевой таргет сериализуется тем же file_sd-форматом.
     [Fact]
     public void Serialize_NetworkTarget_Format()
     {

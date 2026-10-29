@@ -21,7 +21,7 @@ public class ShardsApiTests(PgApiFixture fixture)
     public async Task AddShard_ActiveCluster_201ShardMaxPlusOne()
     {
         // Arrange — кластер 4×2 в каноне после provisioning (config без state;
-        // strict выключен — механика max+1 не про strict-гвард, t06)
+        // strict выключен — механика max+1 не про strict-гвард)
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "scale", buckets: 4, shards: 2, syncStrict: false);
         var ct = TestContext.Current.CancellationToken;
 
@@ -69,7 +69,7 @@ public class ShardsApiTests(PgApiFixture fixture)
     public async Task AddShard_NameTakenByOrphanReplicas_409()
     {
         // Arrange — shard3 «существует» только replicas-ключом (не anchored);
-        // strict выключен — кейс про 409-механику клэйма, не про strict-гвард (t06)
+        // strict выключен — кейс про 409-механику клэйма, не про strict-гвард 
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "orphan", buckets: 4, shards: 2, syncStrict: false);
         var ct = TestContext.Current.CancellationToken;
         await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/clusters/orphan/shards/shard3/replicas",
@@ -125,7 +125,7 @@ public class ShardsApiTests(PgApiFixture fixture)
         problem.GetProperty("detail").GetString().Should().Contain("buckets");
     }
 
-    // AAA (t06, spec §6.6): strict-кластер + replicas=1 → 400 errors.replicas.
+    // AAA (spec §6.6): strict-кластер + replicas=1 → 400 errors.replicas.
     [Fact]
     public async Task AddShard_StrictCluster_RejectsSingleReplica()
     {
@@ -145,7 +145,7 @@ public class ShardsApiTests(PgApiFixture fixture)
             .GetArrayLength().Should().BeGreaterThan(0);
     }
 
-    // AAA (t06, spec §6.6 — легаси, решение №3): config БЕЗ поля + replicas=1
+    // AAA (spec §6.6 — легаси, решение №3): config БЕЗ поля + replicas=1
     // → 400 — гвард работает по умолчанию, а не только при явном true.
     [Fact]
     public async Task AddShard_LegacyConfigWithoutStrictField_AlsoRejectsSingleReplica()
@@ -168,7 +168,7 @@ public class ShardsApiTests(PgApiFixture fixture)
             .GetArrayLength().Should().BeGreaterThan(0);
     }
 
-    // AAA (t06): strict=false → 201 (выключенный strict — без изменений).
+    // AAA : strict=false → 201 (выключенный strict — без изменений).
     [Fact]
     public async Task AddShard_StrictOffCluster_AcceptsSingleReplica()
     {

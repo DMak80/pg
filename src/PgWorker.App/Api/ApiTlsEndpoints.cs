@@ -8,7 +8,7 @@ using Shared.Tls;
 
 namespace PgWorker.App.Api;
 
-// mTLS HTTP-грани PgWorker (arch/14 §1.1, t03): вся грань (вкл. /healthz и
+// mTLS HTTP-грани PgWorker (arch/14 §1.1): вся грань (вкл. /healthz и
 // /metrics) — только TLS; клиентские серты — per-install API-CA (единая пакета
 // с KafkaWorker, решение О1). Вызывается на WebApplicationBuilder ДО Build().
 // Сертификаты живут всё приложение: ClientCertificateValidation — на каждом

@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Индекс занятости портов из etcd (t91, arch/16 §2.1): busy = docker-публикации
+/// Индекс занятости портов из etcd (arch/16 §2.1): busy = docker-публикации
 /// (добавляет вызывающий) ∪ записи portalloc ВСЕХ чужих кластеров. Свои записи
 /// исключает вызывающий (exceptCluster) — свой portalloc переиспользуется
 /// аллокатором как закрепление, а не занятость. Чужой мусор любой формы — битый

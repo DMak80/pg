@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/clusters (arch/02 §9.1; DTO панельный 1:1 — дубль осознан, t08).
+// Ответ 201 POST /api/clusters (arch/02 §9.1; DTO панельный 1:1 — дубль осознан).
 public sealed record ClusterCreatedDto(
     string Name,
     string DbName,
@@ -32,7 +32,7 @@ public sealed class CreateClusterHandler(IEtcdGateway gateway, string[] endpoint
         //    ДО Validate — валидатор и план работают с каноническим запросом.
         request = request.Normalize();
 
-        // 1) Валидация (сервер — источник истины, spec t12 §2)
+        // 1) Валидация (сервер — источник истины, spec §2)
         var errors = CreateClusterValidator.Validate(request);
         if (errors.Count > 0)
             return Result<ClusterCreatedDto>.Failed(new CreateClusterValidationException(errors));

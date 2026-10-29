@@ -13,7 +13,7 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, long LastModifiedU
 /// <summary>Страница list-v2.</summary>
 public sealed record S3Page(IReadOnlyList<S3ObjectInfo> Items, string? NextContinuationToken);
 
-/// <summary>Read-only клиент S3-хранилища (ownS3) панели (t08, adminpanel/02 §2.5): контракт
+/// <summary>Read-only клиент S3-хранилища (ownS3) панели (adminpanel/02 §2.5): контракт
 /// уровня кода — только ListBuckets/ListObjectsV2 и публичные health-эндпоинты;
 /// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/19 §4/§5).
 /// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*).</summary>
@@ -58,7 +58,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, AmazonS3Client> _targetClients = new();
 
     // Единственный ctor (DI): health-пробы идут через именованный HttpClient
-    // "s3-health" — фикс интеграции AC2/AC3 (t08): DI выбирал 1-арговый ctor
+    // "s3-health" — фикс интеграции AC2/AC3 : DI выбирал 1-арговый ctor
     // (BackupsS3Options не резолвится) и клиент жил с _httpClientFactory = null,
     // health-пробы молча не выполнялись (LiveOk всегда false).
     public S3StorageClient(IOptions<BackupsS3Options> options, IHttpClientFactory httpClientFactory)
@@ -66,7 +66,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     {
     }
 
-    // Юнит-шов (t36): подмена клиента per-цели — тесты перебора строят
+    // Юнит-шов : подмена клиента per-цели — тесты перебора строят
     // фейк-подкласс AmazonS3Client (методы виртуальные) вместо транспорта.
     internal S3StorageClient(
         BackupsS3Options options, IHttpClientFactory httpClientFactory,
@@ -109,7 +109,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     private static Result<T> NotConfigured<T>() => Result<T>.Failed(
         new InvalidOperationException("S3 endpoint not set — the «Backup Storage» facet is disabled"));
 
-    // t36: перебор целей с первого доступного (list-семантика 02 §2.5) —
+    // перебор целей с первого доступного (list-семантика 02 §2.5) —
     // первая Success выигрывает; исчерпание — последняя ошибка (алерт
     // backup-s3-unreachable видит текст).
     private async Task<Result<T>> AnyTargetAsync<T>(
@@ -150,7 +150,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     {
         if (_targets is not { } targets)
             return NotConfigured<IReadOnlyList<string>>();
-        // t36: первая доступная цель (перебор Endpoints, 02 §2.5).
+        // первая доступная цель (перебор Endpoints, 02 §2.5).
         return await AnyTargetAsync(targets, async (_, client) =>
         {
             try
@@ -172,7 +172,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
     {
         if (_targets is not { } targets)
             return NotConfigured<S3Page>();
-        // t36: первая доступная цель; токен страницы валиден в рамках ОДНОЙ
+        // первая доступная цель; токен страницы валиден в рамках ОДНОЙ
         // цели — перебор идёт только до первого успеха (дальше цель фикс).
         return await AnyTargetAsync(targets, async (_, client) =>
         {
@@ -235,7 +235,7 @@ public sealed class S3StorageClient : IS3StorageClient, IAsyncDisposable
 
     // GET {endpoint}{relativePath}; отсутствие ответа — null-статус; тело
     // (только cluster) парсится толерантно — битый JSON → drives null.
-    // t36: перебор целей с первого ответившего (list-семантика 02 §2.5) —
+    // перебор целей с первого ответившего (list-семантика 02 §2.5) —
     // мёртвая первая цель не роняет live/cluster-грань; фолбэк live→healthz
     // остаётся пробой по статусу (мёртвый endpoint вторую пробу не крутит).
     private async Task<(int? StatusCode, S3Drives? Drives)> ProbeHealthAsync(

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Чистый отбор мусора (t07, arch/19 §4): full/<id>/ в S3 без etcd-ключа —
+// Чистый отбор мусора (arch/19 §4): full/<id>/ в S3 без etcd-ключа —
 // мусор (восстановление не выберет — выбора кандидатов нет); с ключом
 // (любой state) — не мусор.
 public class SupervisorPlannerTests
@@ -50,7 +50,7 @@ public class SupervisorPlannerTests
             .Should().ContainSingle().Which.Should().Be("20260911120000Z");
     }
 
-    // AAA (t100, arch/19 §4 «Гейты мусора»): возрастной гейт — самый старый
+    // AAA (arch/19 §4 «Гейты мусора»): возрастной гейт — самый старый
     // объект префикса моложе порога → не дозрел (заливка in-flight); достиг
     // порога → дозрел; порог <= 0 — гейт снят (мгновенное удаление)
     [Fact]

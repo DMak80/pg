@@ -48,6 +48,6 @@ public sealed record PlacementOptions(
 /// Пороги надзора (spec §10 Thresholds → задача 23): нода мертва дольше
 /// NodeDeadSec → rebuild (при кворуме и не-лидере); шард целиком мертв дольше
 /// ShardDeadSec → эвакуация (arch/14 §5 C); PatroniBootSec — бюджет ожидания
-/// Patroni после ensure нод (P2.2) и после restore-rejoin (t05 §3.5).
+/// Patroni после ensure нод (P2.2) и после restore-rejoin (§3.5).
 /// </summary>
 public sealed record ThresholdsOptions(int NodeDeadSec, int ShardDeadSec, int PatroniBootSec = 300);

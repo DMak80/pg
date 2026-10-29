@@ -5,7 +5,7 @@ using Shared.Core.DI;
 namespace Shared.Core;
 
 // Модуль каркаса: регистрирует все типы сборки через attribute-DI
-// (замена панельного AdminPanel.Infrastructure.AddInfrastructure, t08).
+// (замена панельного AdminPanel.Infrastructure.AddInfrastructure).
 public static class ModuleExtensions
 {
     private static Assembly Assembly => typeof(ModuleExtensions).Assembly;

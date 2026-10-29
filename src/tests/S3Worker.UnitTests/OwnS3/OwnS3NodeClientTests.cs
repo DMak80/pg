@@ -440,7 +440,7 @@ public class OwnS3NodeClientTests
         ok.PeerName.Should().Be(orchestrator.Certificate.Name);
     }
 
-    // ============ расширения зонда t33 (arch/24 §5 F, spec §3.6) ============
+    // ============ расширения зонда (arch/24 §5 F, spec §3.6) ============
 
     // AAA: probe 200 → парсинг camelCase-отчёта; rttMs отсутствует у непинганутого
     // пира → null (owns3/07 §2 — rttMs только при полученном ответе).

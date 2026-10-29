@@ -6,7 +6,7 @@ namespace AdminPanel.Api.Auth;
 // Решение лимитера: разрешено ли и сколько секунд ждать до конца окна.
 public sealed record LoginRateDecision(bool Allowed, int RetryAfterSeconds);
 
-// Fixed-window лимитер попыток логина: 5 за 60 c на ключ клиента (spec t02 §3.6).
+// Fixed-window лимитер попыток логина: 5 за 60 c на ключ клиента (spec §3.6).
 public interface ILoginRateLimiter
 {
     LoginRateDecision TryAcquire(string clientKey);

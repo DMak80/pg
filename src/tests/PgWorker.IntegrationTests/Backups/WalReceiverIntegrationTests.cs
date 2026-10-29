@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции WAL-приёмника против живого PG + ownS3-ноды (t25, docker, динамические
+// Интеграции WAL-приёмника против живого PG + ownS3-ноды (docker, динамические
 // порты, guid-окружение OwnPostgres/OwnS3, полный teardown при любом исходе).
 // AC1: restart_lsn ≤ доставленного в S3 хвоста; AC6: обрыв S3 → backpressure →
 // восстановление без дыр; рестарт — дозасылка от хвоста; segment-size mismatch —
@@ -79,7 +79,7 @@ public class WalReceiverIntegrationTests
     private static BackupS3 HostS3(OwnS3 s3Node) => new(s3Node.S3());
 
     /// <summary>Запуск ядра приёмника в фоне (in-process, host-клиенты). Сессия
-    /// (t25): выход — только отмена (код 0, SIGTERM-семантика); внезапный исход
+    /// выход — только отмена (код 0, SIGTERM-семантика); внезапный исход
     /// сессии — код 1 (фейл ассерта .Be(0) — неожиданное завершение ядра).
     /// Диагностика ядра — в живой лог теста (TeeWriter).</summary>
     private async Task<(CancellationTokenSource Cts, Task<int> Run)> StartCoreAsync(
@@ -408,7 +408,7 @@ public class WalReceiverIntegrationTests
         var shard = "shard1";
 
         // Act — запуск приёмника: сверка wal_segment_size → исход FailedPermanent
-        // (состояние, НЕ exit процесса — t25)
+        // (состояние, НЕ exit процесса)
         var options = postgres.ReceiverOptions(
             s3Node.HostEndpoint, cluster, shard, OwnS3.AccessKey, OwnS3.SecretKey);
         await using var s3 = HostS3(s3Node);

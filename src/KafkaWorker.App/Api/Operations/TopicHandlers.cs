@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
-// ===== DTO топиковых мутаций (арх-канон arch/03 §7.2; дубль панельных осознан, t08) =====
+// ===== DTO топиковых мутаций (арх-канон arch/03 §7.2; дубль панельных осознан) =====
 
 // Ответ 200 PUT /api/kafka/clusters/{c}/topics/{t}.
 public sealed record KafkaTopicDesiredDto(

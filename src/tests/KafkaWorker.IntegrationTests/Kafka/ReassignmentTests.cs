@@ -10,11 +10,11 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Reassignment против реального Kafka (t02; Docker required, spec §11.2/§11.3/
+// Reassignment против реального Kafka ( Docker required, spec §11.2/§11.3/
 // §11.5/§11.7): drain непустого broker-only со снижением RF 4→3 (данные целы,
 // internal-топики уехали), идемпотентность повторной подачи того же assignment.
 
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -141,7 +141,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
         await rig.Claims.DisposeAsync();
     }
 
-    // describe-all через адаптер воркера (включая __-топики, t02).
+    // describe-all через адаптер воркера (включая __-топики).
     private async Task<IReadOnlyList<KafkaTopicView>> DescribeAllAsync(Creds creds)
     {
         await using var admin = fixture.AdminFactory.Create(
@@ -153,7 +153,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     // Produce коротких сообщений (ключи → разные партиции). Канон клиента
-    // t03: SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
+    // SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
     private static async Task ProduceAsync(Creds creds, string topic, int count)
     {
         var config = new ProducerConfig

@@ -9,7 +9,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// On-demand objects (AC7, t08 spec §7.7): пагинация list-v2 (maxKeys +
+// On-demand objects (AC7, spec §7.7): пагинация list-v2 (maxKeys +
 // nextContinuationToken), гварды prefix (форма + принадлежность кластерам
 // снапшота/S3-дерева — Решение 11) и maxKeys, 401 без cookie.
 [Collection("backups")]
@@ -143,7 +143,7 @@ public class BackupsObjectsApiTests(
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// Секреты (AC8, t08 spec §7.8): ни один ответ API грани не несёт AccessKey/
+// Секреты (AC8, spec §7.8): ни один ответ API грани не несёт AccessKey/
 // SecretKey и их значений — проверка сериализованных тел всех трёх эндпоинтов.
 [Collection("backups")]
 public class BackupsSecretsApiTests(

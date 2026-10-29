@@ -5,13 +5,13 @@ using PgWorker.Backups;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Fallback доверия CA (t42, spec §5): AWSSDK.Core не читает env AWS_CA_BUNDLE —
+// Fallback доверия CA (spec §5): AWSSDK.Core не читает env AWS_CA_BUNDLE —
 // BackupS3 при S3CaBundlePath доверяет per-install CA фабрикой HttpClient.
 // Нечитаемый файл — исключение конструктора с диагностикой; без пути — прежнее
 // поведение. Валидация фабрики принимает цепочку настроенного CA, чужой — нет.
 public class BackupS3CaTests
 {
-    // t36: цель S3ClientOptions (bucket+CA; endpoint/креды фиктивны).
+    // цель S3ClientOptions (bucket+CA; endpoint/креды фиктивны).
     private static S3ClientOptions Opts(string? caPath = null) => new(
         "http://s3a:9000", "bkt", "ak", "sk", CaBundlePath: caPath);
 

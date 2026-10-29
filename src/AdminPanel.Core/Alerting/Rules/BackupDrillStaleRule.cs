@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-drill-stale (warning, reliability t02, arch/19 §3.6): у шарда
+// backup-drill-stale (warning, reliability, arch/19 §3.6): у шарда
 // Active-кластера есть COMPLETED-полные и интервал дрилов включён
 // (policy.drill.interval_days, нет — панельный дефолт 1, канон arch/19 §9),
 // а успешного дрилла нет вовсе либо он старше 2×интервала — «восстановимость

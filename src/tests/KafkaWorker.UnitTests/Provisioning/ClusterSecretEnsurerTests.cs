@@ -6,7 +6,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Тесты ensure per-cluster секретов (arch/16 §4, t03 Ф2): CA + креды admin/app
+// Тесты ensure per-cluster секретов (arch/16 §4, Ф2): CA + креды admin/app
 // одной txn put-if-absent; существующие ключи не переписываются; проигранная
 // txn → re-read; генерация паролей 32 симв [A-Za-z0-9].
 

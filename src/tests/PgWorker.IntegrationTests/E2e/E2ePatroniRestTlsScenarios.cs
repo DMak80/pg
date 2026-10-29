@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E REST-TLS Patroni (t22, spec §8 п.3): :8008 https-only (серт ноды из
+// E2E REST-TLS Patroni (spec §8 п.3): 8008 https-only (серт ноды из
 // per-contour CA), basic-auth мутаций (401 без креда / 200 с per-cluster
 // парой), P11 мастер-ключ через https /primary после рестарта мастера, шаг
 // конвергенции легаси-контейнера (без SSL_RESTAPI_*) с сохранением volume.
@@ -152,7 +152,7 @@ public class E2ePatroniRestTlsScenarios
             await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
             {
                 // Тик надзора обязан пересоздать легаси-ноду с REST-TLS env.
-                // t41-фикс гоночного окна: env читается и у Created-контейнера
+                // фикс гоночного окна: env читается и у Created-контейнера
                 // (между create и start recreate-пути) — критерий конвергенции
                 // обязан требовать ЖИВУЮ ноду, иначе marker-exec ниже падает
                 // на незапущенном контейнере.

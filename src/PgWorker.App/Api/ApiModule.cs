@@ -71,7 +71,7 @@ public static class ApiModule
             };
         });
 
-        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (t06,
+        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (
         // 02 §9.10): 204; 400 валидация/битое тело; 404; 409 не-Active; 503 etcd/гонка.
         endpoints.MapPut("/api/clusters/{cluster}/config", async (
             string cluster, UpdateClusterConfigRequest request, UpdateClusterConfigHandler handler, CancellationToken ct) =>
@@ -196,7 +196,7 @@ public static class ApiModule
             };
         });
 
-        // POST /api/clusters/{cluster}/moves/rollback — заявки на откат (t07, 02 §9.7.2):
+        // POST /api/clusters/{cluster}/moves/rollback — заявки на откат (02 §9.7.2):
         // направление определяет воркер по обратной подписке; общий протокол §9.7 п.1–5.
         endpoints.MapPost("/api/clusters/{cluster}/moves/rollback", async (
             string cluster, RollbackBucketsRequest request, HttpRequest http, RollbackBucketsHandler handler, CancellationToken ct) =>
@@ -230,7 +230,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/moves/finalize — заявка уборки артефактов
-        // (t07, 02 §9.7.3): DROP SCHEMA СО ДАННЫМИ на oldShard — необратимо.
+        // (02 §9.7.3): DROP SCHEMA СО ДАННЫМИ на oldShard — необратимо.
         endpoints.MapPost("/api/clusters/{cluster}/moves/finalize", async (
             string cluster, FinalizeBucketRequest request, HttpRequest http, FinalizeBucketHandler handler, CancellationToken ct) =>
         {
@@ -262,7 +262,7 @@ public static class ApiModule
             };
         });
 
-        // POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда (t07,
+        // POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда (
         // 02 §9.7.4): force ломает защиты свежести/routing==target.
         endpoints.MapPost("/api/clusters/{cluster}/moves/abort", async (
             string cluster, AbortBucketRequest request, HttpRequest http, AbortBucketHandler handler, CancellationToken ct) =>
@@ -296,7 +296,7 @@ public static class ApiModule
             };
         });
 
-        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (t07,
+        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (
         // 02 §9.7.5): 204; ключа нет/имена неканонические → 404; сбой etcd → 503.
         endpoints.MapDelete("/api/clusters/{cluster}/moves/{bucket}", async (
             string cluster, string bucket, CancelMoveHandler handler, CancellationToken ct) =>
@@ -315,7 +315,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
-        // секретов (02 §9.8, t02): здесь только клэйм заявки; выполнение —
+        // секретов (02 §9.8): здесь только клэйм заявки; выполнение —
         // ClusterSecretRotator.
         endpoints.MapPost("/api/clusters/{cluster}/secrets/rotate", async (
             string cluster, HttpRequest http, RotateClusterSecretsHandler handler, CancellationToken ct) =>
@@ -343,7 +343,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/backups/policy — per-cluster политика
-        // ретенции/бэкапов (t06, arch/19 §4): валидация + put policy-ключа;
+        // ретенции/бэкапов (arch/19 §4): валидация + put policy-ключа;
         // применяется следующим тиком планировщика/ретенции. Мусорный JSON — 400.
         endpoints.MapPost("/api/clusters/{cluster}/backups/policy", async (
             string cluster, HttpRequest http, BackupsPolicyHandler handler, CancellationToken ct) =>
@@ -420,7 +420,7 @@ public static class ApiModule
         });
 
         // POST /api/clusters/{cluster}/shards/{shard}/restore — заявка восстановления
-        // шарда из бэкапа (t05, arch/19 §3.5/§4): 202 Accepted (не 201 — операция
+        // шарда из бэкапа (arch/19 §3.5/§4): 202 Accepted (не 201 — операция
         // разрушающая, долгая; воркер пишет PLANNED-ключ сам, исполняет держатель
         // клэйма). Гварды: confirm/активная заявка/RFC3339/Active/шард заявлен.
         endpoints.MapPost("/api/clusters/{cluster}/shards/{shard}/restore", async (
@@ -457,7 +457,7 @@ public static class ApiModule
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
-        // (reliability t04, arch/19 §4): put per-префиксного ключа orphan-holds;
+        // (reliability, arch/19 §4): put per-префиксного ключа orphan-holds;
         // 204; 404 не-сирота/мусорные имена; 409 DELETING; 503 etcd/выключено.
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, HttpRequest http, OrphanHoldHandler handler, CancellationToken ct) =>
@@ -482,7 +482,7 @@ public static class ApiModule
         });
 
         // DELETE /api/backups/orphans/{cluster}/{shard}/hold — снятие hold-флага
-        // (t04): del ключа, идемпотентен (ключа нет — тоже 204); 503 etcd/выключено.
+        // del ключа, идемпотентен (ключа нет — тоже 204); 503 etcd/выключено.
         endpoints.MapDelete("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, OrphanHoldHandler handler, CancellationToken ct) =>
         {
@@ -500,7 +500,7 @@ public static class ApiModule
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/delete — заявка явного
-        // удаления сироты (t04): body {"confirm":"<C>/<X>"}; 202
+        // удаления сироты : body {"confirm":"<C>/<X>"}; 202
         // {prefix,requestedUnix,requestedBy}; 400 confirm-мисматч/нет тела;
         // 404/409/503 — маппинг как у hold.
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/delete", async (

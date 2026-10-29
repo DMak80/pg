@@ -7,13 +7,13 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups.Supervisor;
 
-/// <summary>Глобальный проход сверки bucket↔etcd (t07, arch/19 §4): list ВСЕГО
+/// <summary>Глобальный проход сверки bucket↔etcd (arch/19 §4): list ВСЕГО
 /// bucket → префиксы «&lt;C&gt;/&lt;X&gt;/» без владельца (кластер ToRemove/исчез,
 /// шард удалён) — сироты: реестр /pgworker/backups/orphans (merge first_seen и
-/// has_valid_full, гвард воскресения) + отбор кандидата с приоритетом (t04,
-/// arch/19 §4): доводка первого DELETING → первая заявка /orphan-deletes/ (t04,
+/// has_valid_full, гвард воскресения) + отбор кандидата с приоритетом (
+/// arch/19 §4): доводка первого DELETING → первая заявка /orphan-deletes/ (
 /// обходит hold и автоправило) → TTL-кандидат без валидного полного и без
-/// hold-ключа (DR-hold t04). Санитар прохода (t04): hold/заявки с префиксом вне
+/// hold-ключа (DR-hold). Санитар прохода : hold/заявки с префиксом вне
 /// merged-реестра (воскрес/исчез/уже удалён) гасятся. ОДИН префикс за проход:
 /// DELETING → batch-delete → list-подтверждение → del записи (+ del заявки).
 /// Перед удалением — перепроверка (arch/19 §4): лидерство, владельцы /clusters/
@@ -51,7 +51,7 @@ public sealed class BackupOrphanSweeper(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // (1) t36 (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
+        // (1) (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/
         // (первый доступный endpoint каждого; дедуп по (пул, ключ)) → группировка.
         var poolNames = await pools.ListPoolNamesAsync(ct);
         if (!poolNames.IsSuccess)
@@ -240,7 +240,7 @@ public sealed class BackupOrphanSweeper(
         await WriteJournalAsync($"orphan-deleting/{candidate}", ct);
 
         // batch-delete префикса + list-подтверждение пустоты — через КАЖДЫЙ
-        // доступный пул (t36: префикс <C>/<X> может лежать в любом пуле;
+        // доступный пул (: префикс <C>/<X> может лежать в любом пуле;
         // удаление идемпотентно, mesh разносит tombstone — arch/19 §5).
         var delPrefix = $"{candidate}/";
         foreach (var poolName in poolNames.Value)
@@ -265,7 +265,7 @@ public sealed class BackupOrphanSweeper(
             }
         }
 
-        // Объекты удалены — del записи из реестра + журнал-факт.
+        // Объекты удалены — del записи из реестра + запись журнала.
         var done = deleting with
         {
             Orphans = deleting.Orphans.Where(e => e.Prefix != candidate).ToList(),

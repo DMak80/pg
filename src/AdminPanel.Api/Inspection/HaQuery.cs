@@ -47,7 +47,7 @@ public sealed record HaMemberDto(
     string? ProbeError,
     string? NodeState);
 
-// Core → DTO: чистые функции; порядок — как в снапшоте (парсер Scope Ordinal, t03).
+// Core → DTO: чистые функции; порядок — как в снапшоте (парсер Scope Ordinal).
 public static class HaMappers
 {
     public static IReadOnlyList<HaScopeSummaryDto> MapSummaries(IReadOnlyList<HaScope> scopes)

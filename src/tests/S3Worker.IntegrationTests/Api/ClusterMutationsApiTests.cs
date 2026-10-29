@@ -10,7 +10,7 @@ namespace S3Worker.IntegrationTests.Api;
 // (201/409/400/422), add-node с именем из запроса (201/409/404), delete-node
 // (202/204/404/409 гвард последнего), PUT links (202/400/404), deny/allow
 // (202/204/404), rotations 201/200/404, метрика операций API, секретность
-// ответов. sync-probe (t33) — SyncProbeApiTests.
+// ответов. sync-probe — SyncProbeApiTests.
 [Collection(S3ApiCollection.Name)]
 public class ClusterMutationsApiTests(S3ApiFixture fx)
 {

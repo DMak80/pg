@@ -6,7 +6,7 @@ using ValkeyWorker.Core.Valkey;
 
 namespace ValkeyWorker.App;
 
-// Коллектор valkey-метрик (t05, arch/18 §4.2; зеркало KafkaMetricsCollector):
+// Коллектор valkey-метрик (arch/18 §4.2; зеркало KafkaMetricsCollector):
 // hosted-сервис с тиком ValkeyWorker:Metrics:CollectIntervalSec; по Active-кластерам
 // (снапшот /valkey/clusters/) и адресам из /valkeyworker/portalloc/ — ОДНА проба
 // INFO all на ноду за тик. Сбор read-only вне клэймов, без backoff (лёгкая

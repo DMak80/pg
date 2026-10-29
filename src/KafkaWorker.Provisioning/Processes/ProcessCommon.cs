@@ -33,7 +33,7 @@ public sealed record ProvisioningOptions(
 /// <summary>
 /// Параметры процесса reassign I (arch/16 §8): интервал тиков, размер батча
 /// подач, бюджет reassign-подачи батча (§2.4) и окно дедупа переподачи одного
-/// батча. RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия (t10).
+/// батча. RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия.
 /// </summary>
 public sealed record ReassignOptions(
     int IntervalSec,

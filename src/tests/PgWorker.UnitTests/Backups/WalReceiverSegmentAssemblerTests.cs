@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Математика сегментов от LSN (t27, arch/19 §3): границы/имена 1:1 с WalFileName,
+// Математика сегментов от LSN (arch/19 §3): границы/имена 1:1 с WalFileName,
 // отбрасывание неполного головного сегмента, TLI из long page header, разрыв LSN —
 // внутренняя ошибка (протокол физической репликации дыр не даёт).
 public class WalReceiverSegmentAssemblerTests
@@ -186,7 +186,7 @@ public class WalReceiverSegmentAssemblerTests
         assembler.ServerWalEnd.Should().Be(99UL);
     }
 
-    // AAA (пул буферов, hot-path t25): сегментные буферы — SegmentBytes ровно,
+    // AAA (пул буферов, hot-path): сегментные буферы — SegmentBytes ровно,
     // переиспользуются из пула; повторное использование НЕ оставляет байтов
     // прежнего сегмента (закрытый сегмент полностью перезаписан).
     [Fact]

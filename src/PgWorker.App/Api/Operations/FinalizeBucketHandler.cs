@@ -25,7 +25,7 @@ public static class FinalizeBucketValidator
     }
 }
 
-// Заявка уборки пост-переездных артефактов на старом шарде (t07): DROP SCHEMA
+// Заявка уборки пост-переездных артефактов на старом шарде : DROP SCHEMA
 // СО ДАННЫМИ на oldShard — необратимо (UI предупреждает). Общий протокол
 // постановки — MoveTickets (§9.7 п.3–5); guard'ы — Д4 (перепроверит процесс).
 public sealed class FinalizeBucketHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)

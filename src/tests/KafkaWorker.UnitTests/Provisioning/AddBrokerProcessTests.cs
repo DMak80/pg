@@ -208,7 +208,7 @@ public class AddBrokerProcessTests
         result.Error!.Message.Should().Contain("claim is not ours");
     }
 
-    // AAA (t91): клэйм занят чужим инстансом при недоборе портов broker4 →
+    // AAA : клэйм занят чужим инстансом при недоборе портов broker4 →
     // журнальная фаза waiting-portalloc-lock, успех тика, без мутаций.
     [Fact]
     public async Task Run_PortLockBusy_WaitingPhase_NoMutations()
@@ -232,7 +232,7 @@ public class AddBrokerProcessTests
             .Should().Be("h1:16000,h1:16001,h1:16002");
     }
 
-    // AAA (t91): чужая portalloc-запись — занятость добора: broker4 не получает
+    // AAA : чужая portalloc-запись — занятость добора: broker4 не получает
     // порт, закреплённый соседом (окно «сосед записал, контейнеров нет»).
     [Fact]
     public async Task Run_ForeignPortAllocRecord_PortIsNotReused()

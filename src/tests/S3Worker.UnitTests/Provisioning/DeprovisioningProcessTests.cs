@@ -69,7 +69,7 @@ public class DeprovisioningProcessTests
             .Should().BeEmpty();
         etcd.Store.Keys.Should().NotContain($"{Prefix}/portalloc/demo");
         etcd.Store.Keys.Should().NotContain($"{Prefix}/rotations/demo");
-        etcd.Store.ContainsKey(S3ProcessCommon.ProbeRequestKey("demo")).Should().BeFalse(); // заявка зонда t33 снесена X3
+        etcd.Store.ContainsKey(S3ProcessCommon.ProbeRequestKey("demo")).Should().BeFalse(); // заявка зонда снесена X3
         driver.Removed.Should().Contain(["demo/node1", "demo/node2"]);
         etcd.Store.Keys.Where(k => k.StartsWith($"{Prefix}/claims/", StringComparison.Ordinal))
             .Should().NotContain($"{Prefix}/claims/demo");

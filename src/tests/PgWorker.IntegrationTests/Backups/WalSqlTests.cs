@@ -9,7 +9,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Слот-SQL против живого postgres (testcontainers, динамический порт): идемпотентный
-// ensure + LSN-зонд — t03 spec Ф3 (шаги 3/7).
+// ensure + LSN-зонд — spec Ф3 (шаги 3/7).
 [Collection(NonE2eCollection.Name)]
 public class WalSqlTests
 {

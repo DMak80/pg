@@ -211,7 +211,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         }
     }
 
-    /// <summary>Подъём ДВУХИНСТАНСНОГО контура (spec t20 §5.2): тот же каркас,
+    /// <summary>Подъём ДВУХИНСТАНСНОГО контура (spec §5.2): тот же каркас,
     /// что StartAsync (TLS-пакет, сеть, etcd, образ, retry), но ДВА контейнера
     /// vwk-ew1/ew2-{runId} с общими TLS/etcd/PortRange (гонки portalloc закрывает
     /// клэйм кластера) и УНИКАЛЬНЫМ Api__AdvertiseUrl каждому (одинаковые URL
@@ -231,7 +231,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты);
         // пакет ОБЩИЙ для обоих инстансов — один mTLS-клиент годит обоим
-        // (спека t20 §8 — mTLS-клиент к выжившему).
+        // (спека §8 — mTLS-клиент к выжившему).
         var (caPem, caKeyPem) = GenerateCa("vwk-e2e");
         var (serverCert, serverKey) = IssueCert(caPem, caKeyPem, "valkeyworker");
         var (clientCert, clientKey) = IssueCert(caPem, caKeyPem, "e2e-client");
@@ -268,7 +268,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
                     {
                         ["ValkeyWorker__Etcd__Endpoints__0"] = $"http://host.docker.internal:{etcdPort}",
                         ["ValkeyWorker__AdvertisedClientHost"] = "host.docker.internal",
-                        // Уникальный AdvertiseUrl каждому инстансу (t07): одинаковые
+                        // Уникальный AdvertiseUrl каждому инстансу : одинаковые
                         // URL гасят оба дискавери-ключа.
                         ["ValkeyWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{apiPort}",
                         ["ValkeyWorker__Docker__PortRange__From"] = portRange.From.ToString(),
@@ -473,7 +473,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         { BaseAddress = new Uri(ApiBaseUrl) };
     }
 
-    // Перегрузка для двухинстансного контура (спека t20 §8 — mTLS-клиент к выжившему): тот же mTLS-клиент
+    // Перегрузка для двухинстансного контура (спека §8 — mTLS-клиент к выжившему): тот же mTLS-клиент
     // (TLS-пакет общий — один клиент годится ЛЮБОМУ из двух инстансов), но с
     // заданным BaseAddress (базовый URL выжившего резолвится по факту kill).
     public HttpClient CreateApiHttpClient(string baseUrl)
@@ -511,7 +511,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0 && output.Trim() == "true";
     }
 
-    // Args контейнера как compact-JSON ({{json .Args}}) — маркер TLS t06:
+    // Args контейнера как compact-JSON ({{json.Args}}) — маркер TLS :
     // в args ноды обязаны быть --tls-port 6379/--port 0; пусто = объекта нет.
     public async Task<string> ContainerArgsJsonAsync(string name)
     {

@@ -6,8 +6,8 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Probes;
 
-// Модуль live-проб (t06): attribute-DI + именованный HttpClient "patroni" с таймаутом
-// из настроек — паттерн и порядок регистраций Etcd ModuleExtensions (t03).
+// Модуль live-проб : attribute-DI + именованный HttpClient "patroni" с таймаутом
+// из настроек — паттерн и порядок регистраций Etcd ModuleExtensions.
 public static class ModuleExtensions
 {
     private static Assembly Assembly => typeof(ModuleExtensions).Assembly;
@@ -17,7 +17,7 @@ public static class ModuleExtensions
         services.AutoRegistration(Assembly);
 
         // Порядок важен: AddHttpClient после AutoRegistration — typed-фабрика перекрывает
-        // дескриптор автоскана, и PatroniRestProbe получал HttpClient из фабрики (t03 §4).
+        // дескриптор автоскана, и PatroniRestProbe получал HttpClient из фабрики (§4).
         services
            .AddHttpClient<PatroniRestProbe>(PatroniRestProbe.HttpClientName)
            .ConfigureHttpClient((sp, client) =>
@@ -32,7 +32,7 @@ public static class ModuleExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             })
-           // TLS Patroni REST (t22): цепочка к per-install ServerCA из WorkerTls —
+           // TLS Patroni REST : цепочка к per-install ServerCA из WorkerTls —
            // тот же корень доверия, что обращениям в API воркеров.
            .ConfigurePrimaryHttpMessageHandler(sp =>
                 PatroniRestProbe.BuildTlsHandler(
@@ -46,7 +46,7 @@ public static class ModuleExtensions
         // Live-состояние проб — читатель снапшот-цикла (USR/группы, волна C).
         services.AddSingleton<AdminPanel.Etcd.IKafkaProbeReader>(sp =>
             new ProbeReaderAdapter(sp.GetRequiredService<Kafka.IKafkaProbeStore>()));
-        // Кэш нативных клиентов пробы (t11): один AdminClient/Consumer на
+        // Кэш нативных клиентов пробы : один AdminClient/Consumer на
         // (bootstrap, креды) — без churn'а rd_kafka-инстансов; Disposable-
         // синглтон закрывается контейнером при выключении.
         services.AddSingleton<Kafka.KafkaClientCache>();
@@ -57,7 +57,7 @@ public static class ModuleExtensions
         services.AddSingleton<Kafka.KafkaProbeLoop>();
         services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
 
-        // Valkey-проба (t03, arch/03 §8): отдельный тик PING, состояние — свой стор
+        // Valkey-проба (arch/03 §8): отдельный тик PING, состояние — свой стор
         // (в снапшот вносит ValkeySnapshotRefresher через IValkeyProbeReader).
         services.AddSingleton<Valkey.IValkeyProbeStore, Valkey.ValkeyProbeStore>();
         services.AddSingleton<Valkey.IValkeyProbeClient, Valkey.ValkeyConnection>();
@@ -67,7 +67,7 @@ public static class ModuleExtensions
         services.AddSingleton<AdminPanel.Etcd.IValkeyProbeReader>(sp =>
             new ValkeyProbeReaderAdapter(sp.GetRequiredService<Valkey.IValkeyProbeStore>()));
 
-        // S3-грань «Хранилище бэкапов» (t08, adminpanel/02 §2.5): read-only
+        // S3-грань «Хранилище бэкапов» (adminpanel/02 §2.5): read-only
         // S3-клиент (создаётся всегда — ходит только при конфигурации) + именованный
         // health-HttpClient без SigV4 с таймаутом из настроек.
         services

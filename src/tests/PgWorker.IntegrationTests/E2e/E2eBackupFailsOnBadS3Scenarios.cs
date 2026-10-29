@@ -9,9 +9,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E отказа S3 (t24/ревизия 8 — разбиение E2eBackupScenarios): монолитный
+// E2E отказа S3 (/ревизия 8 — разбиение E2eBackupScenarios): монолитный
 // одиночный факт (критический путь ~7 мин, §7) — отдельный класс.
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
@@ -25,7 +25,7 @@ public class E2eBackupFailsOnBadS3Scenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый; etcd у Fact'а свой).
+    // пул E2E (однонодовый; etcd у Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -47,7 +47,7 @@ public class E2eBackupFailsOnBadS3Scenarios
         Fx = fx;
         var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
+        // «недоступный S3» = пул из одной ноды на заведомо закрытом порту 1
         // (tcpmux; НЕ тестовый хардкод: фиксированный протокольный «всегда закрыт»).
         await Fx.SeedS3PoolAsync(Pool, ct, ["e2e-broken-s3:1"]);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -57,7 +57,7 @@ public class E2eBackupFailsOnBadS3Scenarios
         // Act/Assert 1 — первая попытка FAILED с error ≤ 480 c: окно включает
         // provisioning (4 ноды, минуты) + джоб (pg_basebackup со spread-чекпоинтом
         // может ждать ближайший чекпоинт) + мгновенный mc-отказ (connection refused
-        // mc не ретраит). 300 c на загруженном хосте не хватает (факт t04-гейта).
+        // mc не ретраит). 300 c на загруженном хосте не хватает (факт гейта).
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
             TimeSpan.FromSeconds(480), ct);
@@ -74,7 +74,7 @@ public class E2eBackupFailsOnBadS3Scenarios
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
-    // env-профиль кредов — env (t36); операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
+    // env-профиль кредов — env; операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)

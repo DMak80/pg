@@ -5,7 +5,7 @@ using System.Text;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
-// Протокольный миниклиент AlterPartitionReassignments (arch/16 §2.4; spec t01
+// Протокольный миниклиент AlterPartitionReassignments (arch/16 §2.4; spec 
 // §4.2): одна подача = одно короткоживущее TCP+TLS-соединение (паттерн
 // ValkeyConnection.ExecuteAsync), диалог ApiVersions v0 → SaslHandshake v1 →
 // SaslAuthenticate v0 (PLAIN) → AlterPartitionReassignments v0 (KIP-455).

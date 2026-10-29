@@ -10,7 +10,7 @@ namespace ValkeyWorker.App.Loops;
 /// <summary>
 /// Главный цикл воркера (arch/21 §5; порт ReconcileLoop KafkaWorker): тик =
 /// обработка снапшота /valkey/clusters/ → классификация → клэйм → процесс.
-/// В каркасе (t02 фаза 2) тело тика делегирует IValkeyClusterProcesses (пусто).
+/// В каркасе (фаза 2) тело тика делегирует IValkeyClusterProcesses (пусто).
 /// Ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// </summary>
 internal sealed class ReconcileLoop(

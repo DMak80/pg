@@ -59,7 +59,7 @@ public sealed class MetricsEndpointTests
             sut.ProcessPhase("demo", "provision", "started", now);
             sut.Operation("provision", ok: true);
             sut.SnapshotTaken(now);
-            // t17 (arch/18 §2.7): RTO-длительности — пин обоих гейджей
+            //  (arch/18 §2.7): RTO-длительности — пин обоих гейджей
             sut.HaDurations("demo", new Dictionary<string, (long?, long?)> { ["s1"] = (12, 34) });
 
             // Act: первый запрос — прогрев, второй — фактическая проверка экспорта

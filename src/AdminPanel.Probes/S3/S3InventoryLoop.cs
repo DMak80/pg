@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Probes.S3;
 
-// Фоновый S3-инвентарь-тик (t08, adminpanel/02 §2.5, spec §4.3): раз в
+// Фоновый S3-инвентарь-тик (adminpanel/02 §2.5, spec §4.3): раз в
 // IntervalSec — health + ListBuckets + ОДИН полный list-v2 bucket постранично →
 // S3Inventory.Build → атомарная замена в сторе (KV-тик refresher'а не
 // блокируется). Сбой любого шага: ConsecutiveFailures +1, прежний инвентарь

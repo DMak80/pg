@@ -5,16 +5,16 @@ namespace PgWorker.Backups;
 public sealed record ChainResult(bool IsContinuous, string? GapError, WalFileName? LastSegment);
 
 /// <summary>Gap-детектор непрерывности WAL-цепочки от chain_start (arch/19 §3,
-/// правила t03 spec §3.1): последовательность Next() без пропусков; TLI-переход
+/// правила spec §3.1): последовательность Next() без пропусков; TLI-переход
 /// валиден при наличии загруженного `&lt;newTLI&gt;.history` и первом сегменте нового
 /// TLI ∈ {последний сегмент старого TLI, Next(последний)}; `.partial` игнорируется.
-/// Полный LSN-разбор history — t04 (verify, CheckRange).</summary>
+/// Полный LSN-разбор history — (verify, CheckRange).</summary>
 public static class WalChain
 {
     public static ChainResult Check(WalFileName chainStart, IEnumerable<string> objectNames)
         => Walk(chainStart, null, objectNames, null);
 
-    /// <summary>Стартовая точка контроля цепочки с ratchet (t18, arch/19 §3):
+    /// <summary>Стартовая точка контроля цепочки с ratchet (arch/19 §3):
     /// кандидат — wal_start новейшего verify-OK полного
     /// (RetentionPlanner.LatestVerifiedWalStart); ratchet — точка НИКОГДА не
     /// понижается ниже записанной границы разрыва (кандидаты ниже игнорируются:
@@ -27,7 +27,7 @@ public static class WalChain
             ? start
             : recorded;
 
-    /// <summary>Check с перезапуском от нового TLI (t05 AC4): promote восстановленного
+    /// <summary>Check с перезапуском от нового TLI (AC4): promote восстановленного
     /// шарда открывает новый timeline, а сегменты старого TLI легитимно обрезаны
     /// (restore откатил LSN назад — старый хвост не дописывается). Дыра на
     /// TLI-границе при таком профиле — не деградация: если от первого сегмента
@@ -52,12 +52,12 @@ public static class WalChain
         return retried.IsContinuous ? retried : first;
     }
 
-    /// <summary>Проверка диапазона [chainStart..end] (t04, arch/19 §3): end —
+    /// <summary>Проверка диапазона [chainStart..end] (arch/19 §3): end —
     /// последний сегмент набора full/&lt;id&gt;/pg_wal/ (точка бэкапа); сегмент end
-    /// ОБЯЗАН присутствовать среди объектов wal/ (дублирование t02). TLI-переходы
+    /// ОБЯЗАН присутствовать среди объектов wal/ (дублирование). TLI-переходы
     /// в диапазоне: при наличии содержимого history (TLI → текст) — строго по
-    /// switchWALLSN; без содержимого — эвристика t03 (Check). Сегменты выше end
-    /// игнорируются (дальше — домен wal-статуса t03).</summary>
+    /// switchWALLSN; без содержимого — эвристика (Check). Сегменты выше end
+    /// игнорируются (дальше — домен wal-статуса).</summary>
     public static ChainResult CheckRange(
         WalFileName chainStart, WalFileName end, IEnumerable<string> objectNames,
         IReadOnlyDictionary<uint, string>? historyContents = null)
@@ -94,7 +94,7 @@ public static class WalChain
             }
             else if (segment.Tli > expected.Tli)
             {
-                // переход: строго по содержимому history, иначе эвристика t03.
+                // переход: строго по содержимому history, иначе эвристика.
                 // Проверку «segment == end» делаем ПОСЛЕ валидации перехода —
                 // end может быть первым сегментом нового TLI.
                 if (historyContents is not null
@@ -117,7 +117,7 @@ public static class WalChain
                 }
                 else
                 {
-                    // эвристика t03 (Check): history-объект + первый сегмент ∈ {last, Next(last)}
+                    // эвристика (Check): history-объект + первый сегмент ∈ {last, Next(last)}
                     if (!histories.Contains(segment.Tli))
                         return new ChainResult(false,
                             $"TLI transition {expected.Tli}→{segment.Tli} without {segment.Tli:x8}.history", last);
@@ -146,7 +146,7 @@ public static class WalChain
             return new ChainResult(true, null, last);
 
         // список кончился, end не достигнут: цепочка шла сплошно, но сегмент набора
-        // не продублирован в wal/ (дублирование t02, spec §3.4)
+        // не продублирован в wal/ (дублирование, spec §3.4)
         return new ChainResult(false,
             $"segment {reached.Name} from the backup set is missing in wal/ (expected after " +
             $"{(last is { } l2 ? l2.Name : chainStart.Name)})", last);

@@ -4,7 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// PKI-хелпер транспортных интеграционных тестов (t03): фикстурная CA + выпуски
+// PKI-хелпер транспортных интеграционных тестов : фикстурная CA + выпуски
 // сертов с SAN — копия механики ClusterPki воркера (KafkaWorker.Core), локально
 // в тестовой сборке (тесты PgWorker не тянут зависимость от KafkaWorker.Core).
 public static class EngineProxyTestPki

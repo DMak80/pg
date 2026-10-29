@@ -3,7 +3,7 @@ using PgWorker.Core;
 namespace PgWorker.Moves;
 
 /// <summary>
-/// Срез подписки с fallback при недоступном источнике (t01 задача 15, ревью №3;
+/// Срез подписки с fallback при недоступном источнике (ревью №3;
 /// перенос drop_sub abort-move.sh): DROP SUBSCRIPTION → при сбое (источник
 /// недоступен — срез слота удалённо невозможен): ALTER … DISABLE →
 /// SET (slot_name = NONE) → DROP. Слот на источнике остаётся сиротой (имя слота =

@@ -12,9 +12,9 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (t02,
+/// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (
 /// arch/14 §5 I / arch/19 §7): app + bucket_admin + bucket_mover + backup_exec
-/// + rest_password (t22: basic-auth Patroni REST — rolling-пересоздание нод
+/// + rest_password (: basic-auth Patroni REST — rolling-пересоздание нод
 /// общим шагом надзора, пара NEW «в полёте» — rest_pending журнала; txn-коммит
 /// R3 после применения на всех нодах; гварды окна — в NodeSupervisor).
 /// R1 ensure кредов → R2 ALTER ROLE ролей на мастере каждого шарда с dsn
@@ -77,7 +77,7 @@ public sealed partial class ClusterSecretRotator(
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
-        // R1: ensure тройки кредов (t02) — OLD-значения после этого существуют.
+        // R1: ensure тройки кредов — OLD-значения после этого существуют.
         var credsResult = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!credsResult.IsSuccess)
             return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
@@ -94,7 +94,7 @@ public sealed partial class ClusterSecretRotator(
         var newBackupPassword = AppSecretGenerator.Generate();
         var addresses = await ReadPortAllocAsync(cluster, ct);
 
-        // R2-rest (t22, arch/14 §5 I): пара NEW «в полёте» — rest_pending
+        // R2-rest (arch/14 §5 I): пара NEW «в полёте» — rest_pending
         // журнала: повторные тики ПРОДОЛЖАЮТ проход с той же парой (регенерация
         // обнуляла бы прогресс rolling); потери поля (битый журнал) — свежая
         // пара, повторный rolling идемпотентен.
@@ -142,7 +142,7 @@ public sealed partial class ClusterSecretRotator(
                     return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
             }
 
-            // backup_exec (t02, arch/19 §7): роли может не быть (подсистема
+            // backup_exec (arch/19 §7): роли может не быть (подсистема
             // бэкапов выключена — G2 не выполнялся) → gexec-гвард вместо голого
             // ALTER: нет роли — CREATE с NEW-паролем; есть — ALTER (идемпотентная
             // перезапись, семантика «четвёртого ALTER» сохранена, spec §3.4).
@@ -167,7 +167,7 @@ public sealed partial class ClusterSecretRotator(
             }
         }
 
-        // R2-rest rolling-гейт (t22, arch/14 §5 I): ноды dsn-шардов обязаны нести
+        // R2-rest rolling-гейт (arch/14 §5 I): ноды dsn-шардов обязаны нести
         // hash(NEW) до txn — катит общий шаг надзора (≤1 нода/тик; вход ротации).
         // Гварды зеркалят надзор (§5 C): restore-шард (демонтаж — restore-процесс,
         // его ноды создадутся с новой парой) и TO_REMOVE — skip; усыновлённые
@@ -175,7 +175,7 @@ public sealed partial class ClusterSecretRotator(
         // Драйвер БЕЗ честной инспекции (Swarm-заглушка SupportsRunningInspection=
         // false) — окно НЕ удерживаем: сам rolling-шаг там no-op (заглушка), вечное
         // ожидание лишь блокировало бы ротацию четвёрки; приведение env Swarm-нод к
-        // ключу — домен t11 (реализация running-inspection). Есть расхождение →
+        // ключу — домен (реализация running-inspection). Есть расхождение →
         // окно открыто: тик ЖДЁТ (Done — ретрай тиком; заявка и pending живы).
         // Rotator сам REST-мутаций не делает (гварды окна — надзор).
         var restoring = await ReadRestoringShardsAsync(cluster, ct);
@@ -274,7 +274,7 @@ public sealed partial class ClusterSecretRotator(
     private static string DsnKey(string cluster, string shard) => $"/clusters/{cluster}/shards/{shard}/dsn";
 
     // restore-шарды кластера (PLANNED/RUNNING/REJOINING) — те же факты, что
-    // гварды надзора (t05 §3.4): демонтажем владеет restore-процесс, окно
+    // гварды надзора (§3.4): демонтажем владеет restore-процесс, окно
     // REST-ротации такие шарды не удержывают (ноды создадутся с новой парой).
     private async Task<Result<HashSet<string>>> ReadRestoringShardsAsync(string cluster, CancellationToken ct)
     {
@@ -314,7 +314,7 @@ public sealed partial class ClusterSecretRotator(
     // ХОСТУ недопустимо: при EnableDoorman=false ключ вырождается в host:0,
     // и все ноды одного хоста равнозначны — резолв вернул бы произвольную
     // (первую/случайный порядок portalloc) ноду, ALTER ROLE на реплике падает
-    // 25006 (read-only) — ротация зацикливалась в фазе started (e2e-факт t04).
+    // 25006 (read-only) — ротация зацикливалась в фазе started (факт стенда).
     private async Task<NodeAddress?> ResolveMasterAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {

@@ -193,7 +193,7 @@ public class EtcdGatewayTests
     public async Task Snapshot_DecodesGrpcGatewayJsonFrame()
     {
         // Arrange — grpc-gateway (etcd 3.5.x) отдаёт конверт {"result":{"blob":"<base64>"}},
-        // не сырые байты (t08: сырой конверт, сохранённый как слепок, — не bbolt-файл)
+        // не сырые байты (: сырой конверт, сохранённый как слепок, — не bbolt-файл)
         var bytes = new byte[] { 0x1a, 0x2b, 0x3c, 0x00, 0xff };
         var frame = "{\"result\":{\"blob\":\"" + Convert.ToBase64String(bytes) + "\"}}\n";
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -287,7 +287,7 @@ public class EtcdGatewayTests
         body.GetProperty("lease").GetInt64().Should().Be(555);
     }
 
-    // --- Панельные кейсы (t08, объединение gateway-тестов; ассерты прежние) ---
+    // --- Панельные кейсы (объединение gateway-тестов; ассерты прежние) ---
 
     [Fact]
     public async Task Range_DecodesBase64Kvs()
@@ -326,7 +326,7 @@ public class EtcdGatewayTests
     [Fact]
     public async Task Status_ParsesFields()
     {
-        // Arrange — payload 6-арный (t08: + Revision из header.revision)
+        // Arrange — payload 6-арный (: + Revision из header.revision)
         var handler = new FakeHandler(_ => Json(
             """{ "header": { "member_id": "13820473277879079085", "raft_term": "3" }, "version": "3.5.21", "dbSize": "20480", "leader": "13820473277879079085", "raftIndex": "17", "raftTerm": "3" }"""));
         var gateway = NewGateway(handler);
@@ -491,7 +491,7 @@ public class EtcdGatewayTests
         body.GetProperty("success")[0].GetProperty("request_put").GetProperty("key").GetString().Should().Be("L2NsdXN0ZXJzL3Nob3AvY29uZmln");
     }
 
-    // --- Новые кейсы t08 ---
+    // --- Новые кейсы --
 
     [Fact]
     public async Task Status_ParsesRevision_FromHeader()

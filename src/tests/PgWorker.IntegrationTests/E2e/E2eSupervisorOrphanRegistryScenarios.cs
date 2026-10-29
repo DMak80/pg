@@ -11,7 +11,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 
-// E2E orphan-реестра супервизора (t24/ревизия 8 — разбиение
+// E2E orphan-реестра супервизора (/ревизия 8 — разбиение
 // E2eSupervisorScenarios; хелперы — копии): OrphanRegistry_TtlDelete.
 // E2eEnvironment (своя сеть/etcd/ownS3, динамические порты, полный teardown
 // в DisposeAsync — docs/e2e-isolation.md; телеметрия — docs/e2e-launch.md).
@@ -24,7 +24,7 @@ public class E2eSupervisorOrphanRegistryScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
@@ -159,7 +159,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -176,7 +176,7 @@ public class E2eSupervisorOrphanRegistryScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Policy__VerifyOnCreate"] = "false",
             ["PgWorker__Backups__Supervisor__IntervalSec"] = "60",
@@ -250,7 +250,7 @@ public class E2eSupervisorOrphanRegistryScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -259,7 +259,7 @@ public class E2eSupervisorOrphanRegistryScenarios
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveProcess M0 (t01 задача 11, spec §6.1 M0): выбор старейшей заявки, гвард
+// MoveProcess M0 (spec §6.1 M0): выбор старейшей заявки, гвард
 // клэйма, валидация заявки/статус-ключа, SQL-префлайт источника/приёмника с
 // классификацией permanent (del заявки + журнал rejected) / transient (заявка
 // жива), пробы mover-роли по mover-DSN (ревью №2), SYNCING + обязательный
@@ -348,7 +348,7 @@ public class MoveProcessPreflightTests
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "request deleted");
     }
 
-    // ---------- Отказы M0 t06 (spec §5.5) ----------
+    // ---------- Отказы M0 (spec §5.5) ----------
 
     // Снапшот с параметризованными шардами (bucket_42 у shard1 — как в MoveRig.Snap).
     private static ClusterSnapshot SnapWith(params ShardSpec[] shards) => new(
@@ -360,7 +360,7 @@ public class MoveProcessPreflightTests
         name, 2, dsn, name + "a:18000",
         [new NodeSpec(name, name + "a", NodeState.Running), new NodeSpec(name, name + "b", NodeState.Running)]);
 
-    // AAA: цель переезда помечена TO_REMOVE — перманентный отказ с подсказкой (t06 §5.5)
+    // AAA: цель переезда помечена TO_REMOVE — перманентный отказ с подсказкой (§5.5)
     [Fact]
     public async Task Move_ToMarkedShard_RejectedPermanently()
     {

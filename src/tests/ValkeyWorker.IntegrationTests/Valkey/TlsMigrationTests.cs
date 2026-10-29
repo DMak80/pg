@@ -4,7 +4,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// TlsMigrator на реальном valkey/valkey:9.1.2 (t06, spec §4.9): премиграционный
+// TlsMigrator на реальном valkey/valkey:9.1.2 (spec §4.9): премиграционный
 // plain-контейнер (аргументы старого канона, ca-ключей нет) → тик мигратора →
 // контейнер пересоздан с cmd-обёрткой TLS-канона и env VALKEY_TLS_* на ТОМ ЖЕ
 // host-порту, ca_pem/ca_key появились, PING по TLS отвечает, journal

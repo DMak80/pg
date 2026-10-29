@@ -16,7 +16,7 @@ public class ClusterDriverTests
     private sealed class FakeEngine : IDockerEngine
     {
 
-        // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
+        // ── union-члены (kfw/vwk-методы): pg-доменом не используются — стабы ──
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
         {
             Calls.Add(("delete-network", name));
@@ -50,7 +50,7 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-        // t41: ensure сети контура — сеть уже существует у поставки (движок
+        // ensure сети контура — сеть уже существует у поставки (движок
         // отвечает 409 already exists) → драйвер трактует как успех.
         public bool EnsureNetworkFailure = false;
 
@@ -62,9 +62,9 @@ public class ClusterDriverTests
                 : Result.Success());
         }
 
-        // t24 (arch/14 §2.1): подключение контейнера к сети кластера —
+        //  (arch/14 §2.1): подключение контейнера к сети кластера —
         // ensure-инвариант; записываем для юнит-проверок лечения ноды.
-        // t15: scrape-сеть — единственный потребитель с отказом «сети нет»
+        // scrape-сеть — единственный потребитель с отказом «сети нет»
         // (fail-fast провижининга) — override результата по сетям.
         public Func<string, Result>? NetworkConnectFailure = null;
 
@@ -138,7 +138,7 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
-        // t02: логи джобов бэкапов — стаб не нужен драйверным тестам, трекаем вызов.
+        // логи джобов бэкапов — стаб не нужен драйверным тестам, трекаем вызов.
         public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
         {
             Calls.Add(("logs", idOrName));
@@ -232,7 +232,7 @@ public class ClusterDriverTests
         return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
     }
 
-    // Тестовый кеш сертов REST-TLS (t22): пер-install CA юнит-фикстуры —
+    // Тестовый кеш сертов REST-TLS : пер-install CA юнит-фикстуры —
     // BuildSpec выпускает серт ноды (HTTP-режима не существует).
     private static readonly (string CaPem, string CaKeyPem) RestCaPair = TestRestCa.Generate();
     private static readonly RestCertificateCache RestCache = new(RestCaPair.CaPem, RestCaPair.CaKeyPem);
@@ -243,7 +243,7 @@ public class ClusterDriverTests
             advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, contourNetwork: contourNetwork,
             restCertificates: RestCache, nodeBackupEnv: nodeBackupEnv);
 
-    // Бэкап-цели приёмника WAL (t25, arch/19 §7): NodeBackupEnv задан — env
+    // Бэкап-цели приёмника WAL (arch/19 §7): NodeBackupEnv задан — env
     // ноды несёт PGW_BACKUP_S3_BUCKET/PGW_BACKUP_S3_CA_PEM (per-install).
     [Fact]
     public void BuildSpec_NodeBackupEnv_CarriesBucketAndCa()
@@ -686,7 +686,7 @@ public class ClusterDriverTests
         engine.Calls.Should().Contain(c => c.Call == "delete-network" && c.Arg!.Equals("pgw-net-shop"));
     }
 
-    // AAA (t24, arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
+    // AAA (arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
     // префикс + имя кластера; единая сеть делала DNS-зону общей для всех
     // кластеров docker-хоста (перекрёстная видимость чужих алиасов).
     [Fact]
@@ -698,7 +698,7 @@ public class ClusterDriverTests
         PlainClusterDriver.NodesNetworkPrefix.Should().Be("pgw-net-");
     }
 
-    // AAA (t24, arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
+    // AAA (arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
     // pgw-net-<C>, спека контейнера несёт её же — «нода в сети кластера».
     [Fact]
     public async Task EnsureNode_Network_AndSpec_PerCluster()
@@ -717,7 +717,7 @@ public class ClusterDriverTests
         engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
     }
 
-    // AAA (t24, arch/14 §2.1): ensure-инвариант — существующая нода с планом
+    // AAA (arch/14 §2.1): ensure-инвариант — существующая нода с планом
     // портов, но в ЧУЖОЙ сети (наследие единой pgw-net) подключается к сети
     // кластера docker network connect; пересоздание недопустимо (нода с данными).
     [Fact]
@@ -747,7 +747,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t24, arch/14 §2.1): нода уже в сети кластера — идемпотентность,
+    // AAA (arch/14 §2.1): нода уже в сети кластера — идемпотентность,
     // никаких connect/create.
     [Fact]
     public async Task EnsureNode_NodeInClusterNetwork_IsIdempotent()
@@ -775,7 +775,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t15 ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
+    // AAA (ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
     // нода с планом портов Ensure-attach'ится к сети контура мониторинга
     // (поверх pgw-net-<C>, идемпотентно по inspect).
     [Fact]
@@ -805,7 +805,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t15 ревизия 3): нода уже в scrape-сети — идемпотентность, connect не вызывается.
+    // AAA (ревизия 3): нода уже в scrape-сети — идемпотентность, connect не вызывается.
     [Fact]
     public async Task EnsureNode_ScrapeNetwork_AlreadyAttached_NoConnect()
     {
@@ -831,7 +831,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
     }
 
-    // AAA (t15 ревизия 3): новый контейнер — attach к scrape-сети после старта.
+    // AAA (ревизия 3): новый контейнер — attach к scrape-сети после старта.
     [Fact]
     public async Task EnsureNode_ScrapeNetwork_NewContainer_AfterStart()
     {
@@ -850,7 +850,7 @@ public class ClusterDriverTests
             c.Call == "network-connect" && c.Arg!.Equals("pgw-metrics:pgw-shop-shard1-shard1a"));
     }
 
-    // AAA (t15 ревизия 3): ключ не задан — ни одного network-connect сверх
+    // AAA (ревизия 3): ключ не задан — ни одного network-connect сверх
     // кластер-инварианта (поведение бинарно базе).
     [Fact]
     public async Task EnsureNode_NoScrapeNetwork_NoConnect()
@@ -869,7 +869,7 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
     }
 
-    // AAA (t15 ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
+    // AAA (ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
     // fail-fast с diagnose (имя сети в ошибке), не молчаливый пропуск.
     [Fact]
     public async Task EnsureNode_ScrapeNetworkMissing_FailsFast()
@@ -891,7 +891,7 @@ public class ClusterDriverTests
         result.Error!.Message.Should().Contain("pgw-metrics");
     }
 
-    // AAA (t15 ревизия 3, R9): усыновлённая нода (object) — чужой контейнер,
+    // AAA (ревизия 3, R9): усыновлённая нода (object) — чужой контейнер,
     // scrape-attach не выполняется.
     [Fact]
     public async Task EnsureNode_AdoptedObject_NoScrapeAttach()
@@ -914,13 +914,13 @@ public class ClusterDriverTests
         engine.Calls.Should().NotContain(c => c.Call == "create");
     }
 
-    // AAA (t25): санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* —
+    // AAA : санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* —
     // stop + rm + rm -staging-тома; пустой листинг — no-op (идемпотентность,
     // 404-семантика: вызов в начале каждого тика WalStreamProcess).
     [Fact]
     public async Task RemoveBackupAgents_RemovesLegacyContainersAndVolumes()
     {
-        // Arrange — legacy агент на хосте (per-node имя t27) + staging-том
+        // Arrange — legacy агент на хосте (per-node имя) + staging-том
         var engine = new FakeEngine
         {
             Containers = [new DockerContainer("id-ag", ["pgw-backup-wal-shop-shard1-shard1a"], "running", "wal-img")],
@@ -942,7 +942,7 @@ public class ClusterDriverTests
         engine2.Calls.Should().NotContain(c => c.Call == "rm-container", "empty listing is a no-op");
     }
 
-    // AAA (t24, arch/14 §2.1): демонтаж сети кластера — только когда объектов
+    // AAA (arch/14 §2.1): демонтаж сети кластера — только когда объектов
     // кластера не осталось; чужие контейнеры кластера держат сеть живой.
     [Fact]
     public async Task RemoveNode_LiveClusterObjects_KeepNetwork()
@@ -1025,7 +1025,7 @@ public class ClusterDriverTests
         spec.NodeConstraint.Should().Be("node-id-1");
         spec.Template.Ports.Should().Contain(p => p.ContainerPort == 5432 && p.HostPort == 15432);
         spec.Template.VolumeName.Should().Be("pgw-shop-shard1-shard1a-data");
-        // t22: внутренний plain BuildSpec несёт REST-TLS материал (кеш передан)
+        // внутренний plain BuildSpec несёт REST-TLS материал (кеш передан)
         spec.Template.Env.Should().ContainKey("SSL_RESTAPI_CERTIFICATE");
         spec.Template.Env.Should().ContainKey(RestRotation.EnvPasswordHash);
     }
@@ -1178,7 +1178,7 @@ public class ClusterDriverTests
     public async Task ListNodeObjects_Filter_AgentsAreNotNodes()
     {
         // Arrange — legacy агент + нода кластера: ListNodeObjectsAsync обязан
-        // вернуть ТОЛЬКО ноду (t25: агентов больше нет; legacy-остатки — не ноды,
+        // вернуть ТОЛЬКО ноду (: агентов больше нет; legacy-остатки — не ноды,
         // их сносит санитарный вызов WalStreamProcess).
         var engine = new FakeEngine
         {
@@ -1198,7 +1198,7 @@ public class ClusterDriverTests
             .And.NotContain(n => n.StartsWith("pgw-backup-wal-", StringComparison.Ordinal));
     }
 
-    // AAA (t41): сеть ноды/ensure по режиму — контур поставки или per-cluster
+    // AAA : сеть ноды/ensure по режиму — контур поставки или per-cluster
     // pgw-net-<C> (прод); alias'ы спеки (nodeName, pgw-<C>-<X>-<n>) не меняются.
     [Theory]
     [InlineData(null, "pgw-net-shop")]                           // прод-режим
@@ -1221,7 +1221,7 @@ public class ClusterDriverTests
             .Should().Contain(new[] { "shard1a", "pgw-shop-shard1-shard1a" });
     }
 
-    // AAA (t41): полный демонтаж ноды — per-cluster сеть удаляется ТОЛЬКО в
+    // AAA : полный демонтаж ноды — per-cluster сеть удаляется ТОЛЬКО в
     // прод-режиме; сеть контура принадлежит поставке — движок её не трогает.
     [Theory]
     [InlineData(null, "pgw-net-shop")]
@@ -1244,7 +1244,7 @@ public class ClusterDriverTests
             deleted.Should().Contain(c => (string)c.Arg! == expectedDeletedNetwork);
     }
 
-    // AAA (t41): ensure сети контура идемпотентен — сеть уже существует у
+    // AAA : ensure сети контура идемпотентен — сеть уже существует у
     // поставки (движок отвечает 409 already exists) → успех, не ошибка.
     [Fact]
     public async Task EnsureNode_ContourNetworkAlreadyExists409_Success()

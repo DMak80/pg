@@ -8,10 +8,10 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Маркер-кейс мерж-гейта t03 (spec §8.3): поднятие TLS-кластера канона t03 —
+// Маркер-кейс мерж-гейта (spec §8.3): поднятие TLS-кластера канона —
 // provisioning → SASL_SSL endpoints, приложение производит/потребляет через
 // ca_pem + app-кред, ACL: app отказ на админ-операции, admin выполняет.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.

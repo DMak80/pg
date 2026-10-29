@@ -175,7 +175,7 @@ public sealed class ThresholdsOptions
     public int NodeDeadSec { get; set; } = 90;
 
     /// <summary>Возраст не-начатой заявки (ротации кредов/CA valkey), после
-    /// которого воркер снимает её в waiting-точке (t10, arch/21 §8).</summary>
+    /// которого воркер снимает её в waiting-точке (arch/21 §8).</summary>
     public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 

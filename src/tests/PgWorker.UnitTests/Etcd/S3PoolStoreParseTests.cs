@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// S3PoolStore (t36, arch/23 §7): сборка пула из словаря Kv-заглушек —
+// S3PoolStore (arch/23 §7): сборка пула из словаря Kv-заглушек —
 // имена нод из ключей заявки, адреса из portalloc; нода без portalloc-записи
 // не выпадает из пула (Host=null); нет config → null.
 public class S3PoolStoreParseTests

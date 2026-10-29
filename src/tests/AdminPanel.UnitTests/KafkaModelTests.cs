@@ -95,7 +95,7 @@ public class KafkaModelTests
         UnknownKeyCount: 1);
 }
 
-// Маппинг lifecycle-тикетов в DTO (t01, arch/03 §7.2): delete — к существующей
+// Маппинг lifecycle-тикетов в DTO (arch/03 §7.2): delete — к существующей
 // строке, create без топика — «виртуальная» строка с факт-полями null/0.
 public class KafkaMappersLifecycleTests
 {
@@ -243,7 +243,7 @@ public class KafkaMappersLifecycleTests
     }
 }
 
-// Маппинг rebalance/reassignment в DTO деталей и сводки (t02, 03 §7.2).
+// Маппинг rebalance/reassignment в DTO деталей и сводки (03 §7.2).
 public class KafkaRebalanceDtoMappingTests
 {
     private static KafkaClusterInfo Cluster(string name = "events")
@@ -311,7 +311,7 @@ public class KafkaRebalanceDtoMappingTests
     }
 }
 
-// Маппинг ca-ротации и исходов заявок в DTO (t10, arch/adminpanel/03 §7.2):
+// Маппинг ca-ротации и исходов заявок в DTO (arch/adminpanel/03 §7.2):
 // бейдж сводки, детали по кластеру, null при отсутствии.
 public class KafkaTicketOutcomeDtoMappingTests
 {

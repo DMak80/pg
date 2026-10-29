@@ -270,7 +270,7 @@ public class ProvisioningProcessTests
         broker4.Env["KAFKA_LISTENERS"].Should().NotContain("CONTROLLER");
     }
 
-    // AAA (t91): клэйм занят чужим инстансом при НЕДОБОРЕ портов → журнальная
+    // AAA : клэйм занят чужим инстансом при НЕДОБОРЕ портов → журнальная
     // фаза waiting-portalloc-lock, успех тика (InProgress), никаких мутаций
     // portalloc и docker.
     [Fact]
@@ -292,13 +292,13 @@ public class ProvisioningProcessTests
         rig.Driver.Ensured.Should().BeEmpty();
     }
 
-    // AAA (t91): чужая portalloc-запись — занятость (окно «сосед записал,
+    // AAA : чужая portalloc-запись — занятость (окно «сосед записал,
     // контейнеры ещё не созданы» закрыто): выделенные порты обходят соседские.
     [Fact]
     public async Task Run_ForeignPortAllocRecord_PortIsNotReused()
     {
         // Arrange: сосед shop1 закрепил h1:16000, его контейнеров ещё нет
-        // (docker-busy пуст — окно K1→K3 гонки t91).
+        // (docker-busy пуст — окно K1→K3 гонки).
         var rig = await NewRig();
         ReadyCluster(rig.Admin, 3);
         rig.Etcd.Seed("/kafkaworker/portalloc/shop1",
@@ -316,7 +316,7 @@ public class ProvisioningProcessTests
             .Should().Be("h1:16001,h1:16002,h1:16003");
     }
 
-    // AAA (t91): всё закреплено (rebuild) — пред-выход ДО клэйма: занятый чужим
+    // AAA : всё закреплено (rebuild) — пред-выход ДО клэйма: занятый чужим
     // клэйм не мешает довести provisioning до done, portalloc не перезаписывается.
     [Fact]
     public async Task Run_AllPinnedEarlyExit_IgnoresPortLock()

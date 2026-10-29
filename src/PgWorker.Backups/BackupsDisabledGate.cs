@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Backups;
 
-/// <summary>Глобальный стоп-ключ /pgworker/backups-disabled (t25, arch/19 §4,
+/// <summary>Глобальный стоп-ключ /pgworker/backups-disabled (arch/19 §4,
 /// решение spec §7 №7): plain (TTL нет, вне per-cluster префиксов — пустой
 /// per-cluster префикс панели трактовали бы как «подсистема не включена»).
 /// Писатель/стирающий — PgWorker: держатель глобального лидера при каждом тике

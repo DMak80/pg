@@ -30,11 +30,11 @@ public static class ClusterSnapshotParser
         public string? ConfigRaw;
         public string? AppUser;
         public string? AppPassword;
-        // Per-cluster креды mover/bucket_admin (t02, arch/14 §3.3)
+        // Per-cluster креды mover/bucket_admin (arch/14 §3.3)
         public string? MoverPassword;
         public string? BucketAdminUser;
         public string? BucketAdminPassword;
-        // rest_password (t22, arch/14 §4 гр.1): basic-auth Patroni REST :8008
+        // rest_password (arch/14 §4 гр.1): basic-auth Patroni REST :8008
         public string? RestPassword;
         public readonly Dictionary<string, ShardAcc> Shards = [];
         public readonly Dictionary<int, string> Routing = [];
@@ -70,7 +70,7 @@ public static class ClusterSnapshotParser
                     && segments[4].Length > 0
                     && segments[5] == "state":
                 {
-                    // Маркер демонтажа шарда (t06 §4.2): единственное значение "TO_REMOVE";
+                    // Маркер демонтажа шарда (§4.2): единственное значение "TO_REMOVE";
                     // иное/битое — не ошибка, ToRemove=false (значение одно — parseError не пишем).
                     var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
                     shard.StateRaw = kv.Value;
@@ -255,7 +255,7 @@ public static class ClusterSnapshotParser
                 },
                 ReadString(root, "bucket_admin_user"),
                 ReadString(root, "bucket_admin_password"),
-                // t06: отсутствие поля или не-bool = true (durability-first, arch/14 §3).
+                // отсутствие поля или не-bool = true (durability-first, arch/14 §3).
                 SyncStrict: root.TryGetProperty("synchronous_mode_strict", out var strict)
                     && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
                         ? strict.GetBoolean()
@@ -357,7 +357,7 @@ public static class ClusterSnapshotParser
             if (state is null)
                 return false;
 
-            // owner/target из СТАТУС-ключа (guard G4 t06): после flip статус-owner
+            // owner/target из СТАТУС-ключа (guard G4): после flip статус-owner
             // отличается от routing-owner; у NOT_INITIALIZED — owner без target (02 §9).
             source = ReadString(root, "owner");
             target = state == BucketMoveState.NotInitialized ? null : ReadString(root, "target");

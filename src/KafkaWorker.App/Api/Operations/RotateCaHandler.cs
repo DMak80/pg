@@ -7,7 +7,7 @@ namespace KafkaWorker.App.Api.Operations;
 // Ответ 201 POST /api/kafka/clusters/{c}/ca/rotate (арх-канон; дубль осознан).
 public sealed record CaRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации per-cluster CA/сертов через API воркера (arch/02 §10.2-17, t07):
+// Заявка ротации per-cluster CA/сертов через API воркера (arch/02 §10.2-17):
 // клэйм-txn /kafkaworker/ca_rotations/<C>; исполнение — CaRotator воркера
 // (фазы P/D/R/C, arch/16 §5 K). Порт панельного RotateCaCommandHandler.
 // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback

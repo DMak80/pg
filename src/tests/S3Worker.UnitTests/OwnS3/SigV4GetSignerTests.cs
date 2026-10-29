@@ -123,7 +123,7 @@ public class SigV4GetSignerTests
 
     // AAA: подпись с canonical query проходит серверный SigV4HeaderVerifier
     // (roundtrip — CanonicalRequestBuilder включает RawQuery в подпись; sync-report
-    // с marker требует канонизации query, spec t33 §3.6).
+    // с marker требует канонизации query, spec §3.6).
     [Fact]
     public void SignRequest_WithCanonicalQuery_PassesServerVerifier()
     {

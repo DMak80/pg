@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// AbortSequence (t01 задача 16, spec §6.5 — порт abort-move.sh): журнал ABORTING
+// AbortSequence (spec §6.5 — порт abort-move.sh): журнал ABORTING
 // ДО манипуляций (blocked → db-cleanup → failed/done), защита свежести
 // AbortMinAgeSec/force, идемпотентная уборка subs → slots → pubs → re-GRANT →
 // [доведение sequences при routing==target] → DROP SCHEMA не-владельцев,

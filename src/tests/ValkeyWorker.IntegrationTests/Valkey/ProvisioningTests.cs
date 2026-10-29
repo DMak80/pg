@@ -78,7 +78,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().Contain("done");
     }
 
-    // t06: новый кластер TLS-only — ca-ключи в etcd, env VALKEY_TLS_* у ноды,
+    // новый кластер TLS-only — ca-ключи в etcd, env VALKEY_TLS_* у ноды,
     // app-кред roundtrip по TLS, plain-подключение отклонено, ACL-матрица прежняя.
     [Fact]
     public async Task NewCluster_TlsOnly_PlainRejected()

@@ -5,10 +5,10 @@ using Shared.Etcd.Client;
 namespace PgWorker.Etcd.Parsing;
 
 // Парсер префикса /pgworker/backups/ в модель подсистемы бэкапов (arch/19
-// §4, t01) по образцу ClusterSnapshotParser: чистые функции Kv[] → модель;
+// §4) по образцу ClusterSnapshotParser: чистые функции Kv[] → модель;
 // битые значения — в parseErrors с пропуском записи (не исключение), неизвестные
 // ключи — игнор (обратная совместимость). Подключение к снапшоту воркера —
-// чтение без изменений поведения (потребители — t02+).
+// чтение без изменений поведения (потребители — +).
 public static class BackupsParser
 {
     public static Result<IReadOnlyList<ClusterBackups>> Parse(
@@ -45,7 +45,7 @@ public static class BackupsParser
                         .Fulls.Add((segments[6], kv.Value));
                     break;
 
-                // "/pgworker/backups/<C>/<X>/restore/<id>" (t05)
+                // "/pgworker/backups/<C>/<X>/restore/<id>" 
                 case 7 when segments[4].Length > 0
                     && segments[5] == "restore"
                     && segments[6].Length > 0:
@@ -58,7 +58,7 @@ public static class BackupsParser
                     GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc()).WalRaw = kv.Value;
                     break;
 
-                // "/pgworker/backups/<C>/<X>/drill" (reliability t02)
+                // "/pgworker/backups/<C>/<X>/drill" (reliability)
                 case 6 when segments[4].Length > 0 && segments[5] == "drill":
                     GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc()).DrillRaw = kv.Value;
                     break;
@@ -160,7 +160,7 @@ public static class BackupsParser
                 verifyOnCreate = flag.ValueKind is JsonValueKind.True or JsonValueKind.String
                     && flag.ToString() is "true" or "True";
 
-            // t04: период перепроверки — verify.interval_sec policy-ключа
+            // период перепроверки — verify.interval_sec policy-ключа
             // (перекрывает дефолт конфига); отсутствие → null (дефолт — потребитель).
             long? verifyIntervalSec = null;
             if (root.TryGetProperty("verify", out var verifyObj)
@@ -172,7 +172,7 @@ public static class BackupsParser
                         ? parsed
                         : null;
 
-            // reliability t02: период дрилов — drill.interval_days policy-ключа
+            // reliability : период дрилов — drill.interval_days policy-ключа
             // (перекрывает дефолт конфига); отсутствие/невалидное → null.
             int? drillIntervalDays = null;
             if (root.TryGetProperty("drill", out var drill)
@@ -182,7 +182,7 @@ public static class BackupsParser
                 && drillDays.TryGetInt32(out var daysValue))
                 drillIntervalDays = daysValue;
 
-            // t100: возрастной гейт мусора супервизора — garbage_min_age_sec
+            // возрастной гейт мусора супервизора — garbage_min_age_sec
             // policy-ключа (перекрывает дефолт конфига); отсутствие/невалидное →
             // null (дефолт — потребитель); 0 — гейт снят.
             long? garbageMinAgeSec = null;
@@ -191,7 +191,7 @@ public static class BackupsParser
                 && garbage.TryGetInt64(out var garbageValue))
                 garbageMinAgeSec = garbageValue;
 
-            // t36: секция s3 — пул + списки по роли источника. Отсутствие/битая
+            // секция s3 — пул + списки по роли источника. Отсутствие/битая
             // секция = пул не выбран — как drill, толерантность парсеров
             // (arch/19 §4): parseError не валид, S3=null, policy читается.
             var s3 = TryParsePolicyS3(root);
@@ -208,7 +208,7 @@ public static class BackupsParser
         }
     }
 
-    // Секция s3 (t36, arch/19 §4): pool — непустая строка, списки — массивы
+    // Секция s3 (arch/19 §4): pool — непустая строка, списки — массивы
     // строк; любое несоответствие формы → null (пул не выбран).
     private static BackupPolicyS3? TryParsePolicyS3(JsonElement root)
     {
@@ -247,7 +247,7 @@ public static class BackupsParser
     }
 
     // full/<id>: обязательны state/node/role/started_unix; wal_start_segment —
-    // с фазы UPLOADING (§4, t02), до этого null; неизвестное state/role —
+    // с фазы UPLOADING (§4), до этого null; неизвестное state/role —
     // пропуск записи с диагностикой; verify — опциональный (битный
     // verify.state → Verify=null, запись жива).
     private static FullBackupState? TryParseFull(
@@ -311,7 +311,7 @@ public static class BackupsParser
         }
     }
 
-    // restore/<id> (t05): обязательны state (PLANNED|RUNNING|REJOINING|COMPLETED|
+    // restore/<id> : обязательны state (PLANNED|RUNNING|REJOINING|COMPLETED|
     // FAILED)/backup_id/source/target/node/requested_unix/requested_by;
     // опциональны started_unix/finished_unix/phase/phase_unix/restored_to_lsn/
     // error; битое/неизвестное state — пропуск записи с диагностикой.
@@ -332,7 +332,7 @@ public static class BackupsParser
                 "FAILED" => RestoreStatus.Failed,
                 _ => (RestoreStatus?)null,
             };
-            // backup_id опционален (t05 §3.5): PLANNED-заявка API/E2E может не
+            // backup_id опционален (§3.5): PLANNED-заявка API/E2E может не
             // указывать полный — воркер-исполнитель резолвит новейший COMPLETED
             // (etcd → S3-list); RUNNING/финальные статусы пишут его всегда.
             var backupId = ReadString(root, "backup_id") ?? "";
@@ -355,7 +355,7 @@ public static class BackupsParser
                 ReadLong(root, "started_unix"), ReadLong(root, "finished_unix"),
                 ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
                 ReadString(root, "error"),
-                // t36: пул DR-источника (arch/14 §1.1); отсутствие — свой пул.
+                // пул DR-источника (arch/14 §1.1); отсутствие — свой пул.
                 ReadString(root, "source_pool"))
             {
                 SystemId = ReadString(root, "system_id"),
@@ -371,7 +371,7 @@ public static class BackupsParser
         }
     }
 
-    // drill (reliability t02): обязательны state (RUNNING|SUCCEEDED|FAILED)/id/
+    // drill (reliability): обязательны state (RUNNING|SUCCEEDED|FAILED)/id/
     // backup_id/started_unix; опциональны finished_unix/phase/restored_to_lsn/
     // error; битое/неизвестное state → error + null (шард жив, ключа нет).
     private static DrillState? TryParseDrill(
@@ -420,7 +420,7 @@ public static class BackupsParser
         string cluster, string shard, string? raw, List<string> errors)
     {
         if (raw is null)
-            return null; // нет ключа — агент не поднимался (t03), не ошибка
+            return null; // нет ключа — агент не поднимался, не ошибка
 
         var key = $"/pgworker/backups/{cluster}/{shard}/wal";
         try
@@ -432,12 +432,12 @@ public static class BackupsParser
                 "ACTIVE" => WalStreamStatus.Active,
                 "DEGRADED" => WalStreamStatus.Degraded,
                 "STOPPED" => WalStreamStatus.Stopped,
-                // t07 (arch/19 §4): WAL_CHAIN_ERROR обязан читаться СНАПШОТНЫМ
+                //  (arch/19 §4): WAL_CHAIN_ERROR обязан читаться СНАПШОТНЫМ
                 // парсером. Прогон 2026-09-13: неизвестное состояние разрыва
                 // давало Wal=null → контроль шёл от ratchet=null (min COMPLETED,
                 // ниже границы разрыва), дыра «вечно свежая», ключ замерал в
                 // разрыве, планировщик штормовал пересъёмами
-                // (walKeyExists=false). Интеграционные тесты t07 это
+                // (walKeyExists=false). Интеграционные тесты это
                 // пропустили: они читают ключ через WalStatusWriter.ReadAsync
                 // (там состояние разрыва добавлено), а не через снапшотный
                 // BackupsParser.
@@ -458,9 +458,9 @@ public static class BackupsParser
                 return null;
             }
 
-            // t24 (arch/19 §4): границы RPO-зазора tli-прыжка — обязательны для
+            //  (arch/19 §4): границы RPO-зазора tli-прыжка — обязательны для
             // СНАПШОТНОГО чтения (планировщик переснимает полный по
-            // walGapUncovered из снапшота, arch/19 §2). Прогон t097
+            // walGapUncovered из снапшота, arch/19 §2). Прогон 
             // (2026-10-27): снапшотный парсер Gap терял — живой непокрытый
             // зазор для планировщика не существовал, пересъём не планировался
             // (wal-ключ вечно DEGRADED+gap), а WalStreamProcess (свой парсер)
@@ -491,7 +491,7 @@ public static class BackupsParser
     }
 
     // Толерантное чтение полей JSON-значений: строки-числа, отсутствующие поля
-    // (копия хелперов ClusterSnapshotParser — общие утилиты не рефакторим в t01).
+    // (копия хелперов ClusterSnapshotParser — общие утилиты не рефакторим в).
     private static string? ReadString(JsonElement root, string name)
         => root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty(name, out var element)

@@ -17,11 +17,11 @@ public class KafkaAlertsOptions
     // kafka-group-lag-high (волна C): порог totalLag группы в сообщениях.
     public long GroupLagMessages { get; set; } = 100000;
 
-    // kafka-reassignment-stale (t02): partitions_remaining не двигается дольше
+    // kafka-reassignment-stale : partitions_remaining не двигается дольше
     // N секунд — reassignment буксует.
     public int ReassignStaleSec { get; set; } = 900;
 
-    // Stale-ротации (t10): живая ротационная заявка старше N секунд — видимость
+    // Stale-ротации : живая ротационная заявка старше N секунд — видимость
     // зависания ДО возрастного снятия воркером. Половина RotationTicketTimeoutSec
     // воркеров (3600/2) — полчаса видимости; связность stale < timeout (spec §2).
     public int RotationStaleSeconds { get; set; } = 1800;

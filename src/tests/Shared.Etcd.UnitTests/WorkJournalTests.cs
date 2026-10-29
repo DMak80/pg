@@ -3,8 +3,8 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests;
 
-// WorkJournal: событие PhaseWritten (t04, seam S2 — arch/18 §2.2), JSON-контракт
-// {prefix}/work/<C>, серия ретраев и unreachable-трек. t09: объединение копий
+// WorkJournal: событие PhaseWritten (seam S2 — arch/18 §2.2), JSON-контракт
+// {prefix}/work/<C>, серия ретраев и unreachable-трек. : объединение копий
 // WorkJournalPhaseEventTests (Pg/Kfw) и journal-кейсов CoordinationTests +
 // новые регресс-кейсы сохранения трека (§7.1 — фазовая запись не сбрасывает трек).
 public class WorkJournalTests
@@ -189,7 +189,7 @@ public class WorkJournalTests
         state.Value.RetryNotBeforeUnix.Should().BeNull();
     }
 
-    // --- Unreachable-трек (новые регресс-кейсы t09 §7.1) ---
+    // --- Unreachable-трек (новые регресс-кейсы §7.1) ---
 
     [Fact]
     public async Task WritePhaseAsync_WithoutTrack_PreservesExistingUnreachableTrack()
@@ -200,7 +200,7 @@ public class WorkJournalTests
         await journal.WriteSupervisionAsync("demo", "i1",
             new Dictionary<string, long> { ["b1"] = 100 }, null, TestContext.Current.CancellationToken);
 
-        // Act: фазовая запись процесса БЕЗ трека (путь Kfw-процессов до t09)
+        // Act: фазовая запись процесса БЕЗ трека (путь Kfw-процессов до)
         var result = await journal.WritePhaseAsync("demo", "reassign", "running", "i1", null, TestContext.Current.CancellationToken);
 
         // Assert: трек сохранён — пороги NodeDead/BrokerDead не сбрасываются фазами
@@ -373,7 +373,7 @@ public class WorkJournalTests
         var state = await journal.ReadAsync("demo", TestContext.Current.CancellationToken);
         state.Value!.LastRebuild!.DetectedUnix.Should().Be(500);
     }
-    // --- rest_pending (t22, arch/14 §5 I: пара REST-ротации «в полёте») ---
+    // --- rest_pending (arch/14 §5 I: пара REST-ротации «в полёте») ---
 
     [Fact]
     public async Task WritePhaseAsync_WithRestPending_RoundTrip()
@@ -471,7 +471,7 @@ public class WorkJournalTests
     [Fact]
     public async Task ReadAsync_LegacyKeyWithoutRestPending_Null()
     {
-        // Arrange: старый журнал без поля (до t22).
+        // Arrange: старый журнал без поля (до).
         var gateway = new FakeCoordinationGateway();
         gateway.Store[$"{Prefix}/work/old"] =
             """{"op":"provision","phase":"planned","instance":"i","updated_unix":1756000000}""";

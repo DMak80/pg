@@ -6,7 +6,7 @@ using KafkaWorker.UnitTests.Provisioning;
 
 namespace KafkaWorker.UnitTests.Kafka;
 
-// Кэш AdminClient'ов (t05, spec §3.1): sharable-фабрика per
+// Кэш AdminClient'ов (spec §3.1): sharable-фабрика per
 // (bootstrap,user,password) — «клиент на тик» давал churn rd_kafka-инстансов
 // и 100% ядра на лежащем кластере (инцидент as-kafkaworker 2026-09-04).
 // Адаптер строит нативный клиент лениво (первая операция) — юниты кэша
@@ -48,8 +48,8 @@ public class KafkaAdminClientFactoryTests
     }
 
     // AAA: пины librdkafka в конфиге (reconnect-шторм дефолтных 100 мс)
-    // + t03-канон соединения: SASL_SSL, per-cluster CA — только при caPem.
-    // t07: доверие ФАЙЛОМ ssl.ca.location (inline ssl.ca.pem у librdkafka
+    // + канон соединения: SASL_SSL, per-cluster CA — только при caPem.
+    // доверие ФАЙЛОМ ssl.ca.location (inline ssl.ca.pem у librdkafka
     // читает один серт — bundle окна ротации CA требует файла).
     [Fact]
     public void BaseAdminConfig_PinsLibrdkafkaBackoffs()
@@ -72,7 +72,7 @@ public class KafkaAdminClientFactoryTests
         File.ReadAllText(location!).Should().Contain("-----BEGIN CERTIFICATE-----");
     }
 
-    // AAA: caPem — часть ключа кэша (t03×t05): клиенты кластеров с разным
+    // AAA: caPem — часть ключа кэша (×): клиенты кластеров с разным
     // per-cluster CA не шарятся (разный TLS-контекст нативного клиента).
     [Fact]
     public void Create_DifferentCaPem_DifferentClient()

@@ -1,17 +1,17 @@
 namespace AdminPanel.Core;
 
-// Бэкапы кластера из /pgworker/backups/ (arch/19 §4, t02; дубль воркерной модели
-// осознанный — бэкапные модели выведены за скоуп унификации t08). FullMaxAgeSec — null,
+// Бэкапы кластера из /pgworker/backups/ (arch/19 §4; дубль воркерной модели
+// осознанный — бэкапные модели выведены за скоуп унификации). FullMaxAgeSec — null,
 // если policy-ключа нет (правило берёт панельный дефолт). В словаре — шарды,
 // у которых есть ХОТЯ БЫ ОДИН ключ полных: значение null = COMPLETED не было
 // («полного никогда не было»); «шарда нет в словаре» = подсистема не включена
 // для него → правило молчит.
 
-/// <summary>Последний проваленный verify шарда (t04): полный невалиден — вход
+/// <summary>Последний проваленный verify шарда : полный невалиден — вход
 /// правила backup-verify-failed (текст алерта — Error).</summary>
 public sealed record ShardVerifyFailure(string Shard, string Id, string Error, long? CheckedUnix);
 
-/// <summary>Статус дрилла шарда (reliability t02, ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill):
+/// <summary>Статус дрилла шарда (reliability, ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill):
 /// панель читает, панель в etcd не пишет (пишет воркер под клэймом). Phase —
 /// downloading|recovering; снятая фаза у терминального = чистый итог
 /// (scratch чистит приёмник при любом исходе, arch/19 §3.6).</summary>
@@ -19,13 +19,13 @@ public sealed record DrillInfo(
     string Cluster, string Shard, string Id, string State, string BackupId,
     long StartedUnix, long? FinishedUnix, string? Phase, string? RestoredToLsn, string? Error);
 
-/// <summary>Полная per-cluster политика бэкапов (arch/19 §4; reliability t02 —
+/// <summary>Полная per-cluster политика бэкапов (arch/19 §4; reliability —
 /// drill.interval_days): null-поля = отсутствуют в policy-ключе — форма фронта
 /// читает и дефолтирует (панель PUTит полный набор через policy-API воркера).</summary>
 public sealed record BackupsPolicyInfo(
     int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
     long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays,
-    // t36 (arch/19 §4): секция s3 policy; null — пул не выбран (алерт
+    //  (arch/19 §4): секция s3 policy; null — пул не выбран (алерт
     // backup-pool-missing), списки — имена нод пула по приоритету записи.
     BackupsPolicyS3Info? S3 = null);
 
@@ -38,39 +38,39 @@ public sealed record ClusterBackupsInfo(
     string Cluster,
     long? FullMaxAgeSec,
     IReadOnlyDictionary<string, long?> ShardLastCompletedUnix,
-    // t03: WAL-статусы шардов (ключи /pgworker/backups/<C>/<X>/wal) — вход
+    // WAL-статусы шардов (ключи /pgworker/backups/<C>/<X>/wal) — вход
     // правил wal-chain-broken/wal-stream-lag/wal-stream-stopped; null = ключей
     // wal нет (агент не поднимался).
     IReadOnlyDictionary<string, WalStreamInfo?>? Shards = null,
-    // t06: DELETING-полные per-shard (застарелые → алерт backup-deleting-stuck).
+    // DELETING-полные per-shard (застарелые → алерт backup-deleting-stuck).
     IReadOnlyDictionary<string, IReadOnlyList<DeletingFullInfo>>? DeletingFulls = null,
-    // t04: последний verify-FAILED по шарду (по checked_unix); пустой словарь =
+    // последний verify-FAILED по шарду (по checked_unix); пустой словарь =
     // невалидных полных нет.
     IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null,
-    // t05: restore-заявки per-shard (вход правила restore-failed).
+    // restore-заявки per-shard (вход правила restore-failed).
     IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null,
-    // t08: все etcd-полные per-shard — вход S3Reconciler; null = парсер t08
+    // все etcd-полные per-shard — вход S3Reconciler; null = парсер 
     // их не собрал.
     IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null,
-    // reliability t02: последний/текущий дрилл per-shard (вход правил
+    // reliability : последний/текущий дрилл per-shard (вход правил
     // backup-drill-failed/stale и статуса грани); null = drill-ключей нет.
     IReadOnlyDictionary<string, DrillInfo>? ShardsDrills = null,
-    // reliability t02: полная policy кластера (форма мутации интервала дрилов);
+    // reliability : полная policy кластера (форма мутации интервала дрилов);
     // null = policy-ключа нет.
     BackupsPolicyInfo? Policy = null);
 
-/// <summary>Один etcd-ключ полного /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt; (t08):
+/// <summary>Один etcd-ключ полного /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt; :
 /// полный факт state/verify/size для сверки с S3 и деталей шарда.</summary>
 public sealed record BackupFullInfo(
     string Id, string State, string? Error,
     long StartedUnix, long? FinishedUnix, long? SizeBytes,
     string? VerifyState, long? VerifyCheckedUnix, string? VerifyError);
 
-/// <summary>DELETING-полный (t06): возраст для backup-deleting-stuck.</summary>
+/// <summary>DELETING-полный : возраст для backup-deleting-stuck.</summary>
 public sealed record DeletingFullInfo(string Id, long StartedUnix, long? FinishedUnix);
 
-/// <summary>Операция восстановления шарда (t05, arch/19 §4): только поля статусов
-/// — UI restore-операций t08; RequestedUnix обязателен, остальное — по факту.</summary>
+/// <summary>Операция восстановления шарда (arch/19 §4): только поля статусов
+/// — UI restore-операций ; RequestedUnix обязателен, остальное — по факту.</summary>
 public sealed record RestoreOperationInfo(
     string Cluster,
     string Shard,
@@ -82,7 +82,7 @@ public sealed record RestoreOperationInfo(
     long? FinishedUnix,
     string? Phase);
 
-/// <summary>Статус одного полного в сверке S3↔etcd (t08, arch/02 §2.5):
+/// <summary>Статус одного полного в сверке S3↔etcd (arch/02 §2.5):
 /// Ok — объекты+ключ; S3Only — объекты без ключа; EtcdOnly — ключ без объектов
 /// (COMPLETED/FAILED); InProgress — активный PLANNED/RUNNING/UPLOADING без
 /// объектов (ожидаемо); Deleting — DELETING-ключ + остатки объектов.</summary>

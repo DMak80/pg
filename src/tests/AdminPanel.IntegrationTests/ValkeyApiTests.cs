@@ -16,7 +16,7 @@ namespace AdminPanel.IntegrationTests;
 
 // Сквозной путь valkey-домена (spec §5.2): панель (WAF на PanelHostBuilder) →
 // реальный etcd-контейнер (сид guid-ключей; refresher тикает вручную — hosted
-// сняты) → стаб IWorkerApiGateway (коды/тела/ProblemDetails API воркера t02).
+// сняты) → стаб IWorkerApiGateway (коды/тела/ProblemDetails API воркера).
 public sealed class ValkeyApiFactory : WebApplicationFactory<Program>
 {
     // Тестовый пароль админа хоста (литералы — только в константах).

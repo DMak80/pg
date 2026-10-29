@@ -419,7 +419,7 @@ public class PasswordRotatorTests
         rig.Etcd.Store[$"/valkey/clusters/junk/app_password"].Value.Should().Be(OldApp);
     }
 
-    // ===== t10: waiting-cluster-семантика + экспирация при незнающем кластере =====
+    // ===== : waiting-cluster-семантика + экспирация при незнающем кластере =====
 
     [Fact]
     public async Task Tick_ClusterDownNoState_OldTicket_Expired()

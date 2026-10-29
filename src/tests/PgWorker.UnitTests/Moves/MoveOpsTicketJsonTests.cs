@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// Канонический JSON заявок (t07, спека §7): тело, которое пишет handler,
+// Канонический JSON заявок (спека §7): тело, которое пишет handler,
 // парсится процессом (MoveRequest.Parse) — контракт постановки ↔ исполнения.
 public class MoveOpsTicketJsonTests
 {

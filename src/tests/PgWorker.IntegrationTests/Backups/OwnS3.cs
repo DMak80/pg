@@ -12,7 +12,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 /// <summary>
-/// СОБСТВЕННАЯ ownS3-нода одного Fact (t36: хранилище — пул ownS3; e2e-isolation
+/// СОБСТВЕННАЯ ownS3-нода одного Fact (: хранилище — пул ownS3; e2e-isolation
 /// §1/§3, docs/e2e-isolation.md): guid-имя pgw-eo-{guid}, динамический хост-порт,
 /// свой bucket — тесты не делят хранилище ни с соседними классами, ни с чужими
 /// прогонами, посев одного теста физически не виден другому. Готовность —
@@ -151,7 +151,7 @@ public sealed class OwnS3 : IAsyncDisposable
         }
     }
 
-    /// <summary>S3-цель своего окружения (t36: S3ClientOptions для BackupS3).</summary>
+    /// <summary>S3-цель своего окружения (: S3ClientOptions для BackupS3).</summary>
     public S3ClientOptions S3() => new(HostEndpoint, Bucket, AccessKey, SecretKey);
 
     /// <summary>Runtime-опции подсистемы на своё окружение (bucket per-install).</summary>

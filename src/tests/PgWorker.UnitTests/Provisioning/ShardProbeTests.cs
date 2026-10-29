@@ -30,7 +30,7 @@ public class ShardProbeTests
     private static string PatroniClusterSyncJson()
         => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "ProbesFixtures", "patroni-cluster-sync.json"));
 
-    // AAA: sync-статус члена (t02: выбор реплики-источника полного бэкапа)
+    // AAA: sync-статус члена (: выбор реплики-источника полного бэкапа)
     [Fact]
     public async Task GetCluster_SyncStandby_Parsed()
     {
@@ -157,7 +157,7 @@ public class ShardProbeTests
         b.Value.Should().BeNull();
         c.Value.Should().BeNull();
     }
-    // ── t22: https-транспорт + basic-auth мутаций (arch/14 §5 C) ──
+    // ── : https-транспорт + basic-auth мутаций (arch/14 §5 C) ──
 
     // AAA: все URI — https (REST :8008 — TLS-only; HttpClient сам не строит схему)
     [Fact]

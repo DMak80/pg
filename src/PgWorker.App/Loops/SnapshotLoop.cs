@@ -13,7 +13,7 @@ namespace PgWorker.App.Loops;
 /// глобальный лидер (Д2) снимает слепок раз в SnapshotIntervalMin; не-лидер
 /// периодически пытается захватить лидерство (takeover ≤ TTL 15 с + тик).
 /// Внеочередные снапшоты в точках изменений снимают сами процессы.
-/// t08: перед снятием — доводка отстающей выгрузки в S3 (CatchUpAsync); сон
+/// перед снятием — доводка отстающей выгрузки в S3 (CatchUpAsync); сон
 /// при отставании — RetryIntervalSec (иначе SnapshotIntervalMin).
 /// </summary>
 internal sealed class SnapshotLoop(
@@ -58,7 +58,7 @@ internal sealed class SnapshotLoop(
                             stoppingToken, claims.LeaderToken);
                         var tick = leaderLease.Token;
 
-                        // t08 (spec §3.5 п.1/п.3): доводка отстающей выгрузки ДО снятия — транзиент S3
+                        //  (spec §3.5 п.1/п.3): доводка отстающей выгрузки ДО снятия — транзиент S3
                         // не растягивает RPO-окно до планового тика. CatchUpAsync возвращает отставание
                         // ПО СТАТУС-ключу (IsBehind: FAILED/ключа нет/локальный новее — включая FAILED
                         // при пустом томе, без re-export); ошибка доводки — как ошибка экспорта
@@ -95,7 +95,7 @@ internal sealed class SnapshotLoop(
 
                         health.MarkSnapshotTick();
                         metrics.LoopTick("snapshot", ok: true);
-                        // t08 (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
+                        //  (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
                         // транзиент S3 в тике TakeAsync переводит статус-ключ в FAILED уже ПОСЛЕ
                         // расчёта «до»; без пере-расчёта лидер ушёл бы в полный SnapshotIntervalMin
                         // с невыгруженным слепком (запрещено §3.5 п.3). Считаем по свежему

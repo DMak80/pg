@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E ротации per-cluster секретов (t02, spec §7.5): заявка etcdctl-формой →
+// E2E ротации per-cluster секретов (spec §7.5): заявка etcdctl-формой →
 // заявка исчезла, app/mover/bucket_admin изменились, dsn перезаписан, новый
 // пароль подключается, старый отвергается, пишущая нагрузка переживает ротацию.
 public class E2eRotateScenarios
@@ -78,7 +78,7 @@ public class E2eRotateScenarios
         var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
 
-        // Assert 1b (t02): mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
+        // Assert 1b : mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
         // dsn-ключи шардов перезаписаны новым bucket_admin-паролем.
         var newMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
         var newAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
@@ -87,7 +87,7 @@ public class E2eRotateScenarios
         var newDsn = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
         newDsn.Should().Contain($"password={newAdmin}").And.NotContain(oldAdmin);
 
-        // Assert 2b (t02, критерий «без остановки записи»): writer — DSN-точка
+        // Assert 2b (критерий «без остановки записи»): writer — DSN-точка
         // входа bucket_admin — перечитывает креды из etcd на каждую попытку
         // (поведение клиента по arch/14) и продолжает писать после ротации.
         var inserts = 0;

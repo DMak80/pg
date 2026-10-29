@@ -25,7 +25,7 @@ public class HostMapResolverTests
     public void Resolve_ConfigStyleKey_Overrides()
     {
         // Arrange — appsettings: ключ host__port, т.к. ':' в ключах режется
-        // конфиг-провайдерами .NET (t10: arch/04 §2.3).
+        // конфиг-провайдерами.NET (: arch/04 §2.3).
         var map = new Dictionary<string, string> { ["s1a__8008"] = "127.0.0.1:8011" };
 
         // Act

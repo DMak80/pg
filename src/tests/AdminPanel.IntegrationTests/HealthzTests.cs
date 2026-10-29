@@ -7,7 +7,7 @@ using Xunit;
 namespace AdminPanel.IntegrationTests;
 
 // Смоук живости панели: /api/healthz без авторизации отвечает контрактом {"status":"ok"}.
-// t02: тест в общей коллекции "api" — второй хост в процессе невозможен (кеш DI-скана сборок).
+// тест в общей коллекции "api" — второй хост в процессе невозможен (кеш DI-скана сборок).
 [Collection("api")]
 public class HealthzTests
 {

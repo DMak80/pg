@@ -58,7 +58,7 @@ public class PortallocTests
         Assert.Null(parsed.Value["s1/s1a"].Object);
     }
 
-    // AAA (t15 ревизия 3): сетевая идентичность записи — alias (docker-имя ноды,
+    // AAA (ревизия 3): сетевая идентичность записи — alias (docker-имя ноды,
     // резолвится DNS сети контура) и net (имя сети, информационное); сериализуются
     // только при наличии (WhenWritingNull).
     [Fact]
@@ -79,7 +79,7 @@ public class PortallocTests
         Assert.Contains("\"net\":\"pgw-metrics\"", json);
     }
 
-    // AAA (t15 ревизия 3): RMW-цикл parse→serialize БЕЗ Decorate сохраняет поля —
+    // AAA (ревизия 3): RMW-цикл parse→serialize БЕЗ Decorate сохраняет поля —
     // это и есть preserve remove-shard/чужих read-modify-write (симметричная
     // сериализация, arch/14 §2.4).
     [Fact]
@@ -103,7 +103,7 @@ public class PortallocTests
         Assert.Contains("\"net\":\"pgw-metrics\"", back);
     }
 
-    // AAA (t15 ревизия 3): ключ ScrapeNetwork не задан — записи НЕ содержат полей
+    // AAA (ревизия 3): ключ ScrapeNetwork не задан — записи НЕ содержат полей
     // (бинарно базе: поведение без ключа идентично).
     [Fact]
     public void Serialize_WithoutScrapeFields_NoFields()
@@ -122,7 +122,7 @@ public class PortallocTests
         Assert.DoesNotContain("\"net\"", json);
     }
 
-    // AAA (t15 ревизия 3): Parse толерантен к записям с alias/net (переходный
+    // AAA (ревизия 3): Parse толерантен к записям с alias/net (переходный
     // контур: генератор и панель читают один ключ).
     [Fact]
     public void Parse_LegacyJsonWithAlias_StillWorks()

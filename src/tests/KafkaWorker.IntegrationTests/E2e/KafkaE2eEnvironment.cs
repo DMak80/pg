@@ -93,7 +93,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
 
     public void MarkFailed() => _failed = true;
 
-    /// <summary>Подъём двухинстансного контура (spec t20 §5.1): сеть + etcd +
+    /// <summary>Подъём двухинстансного контура (spec §5.1): сеть + etcd +
     /// ew1/ew2 (общие TLS-пакет/etcd/PortRange — гонки portalloc закрывает
     /// клэйм кластера; УНИКАЛЬНЫЙ Api__AdvertiseUrl каждому). 3 попытки —
     /// против гонок глобального prune.</summary>
@@ -145,7 +145,7 @@ public sealed class KafkaE2eEnvironment : IAsyncDisposable
                     {
                         ["KafkaWorker__Etcd__Endpoints__0"] = $"http://host.docker.internal:{etcdPort}",
                         ["KafkaWorker__AdvertisedClientHost"] = "host.docker.internal",
-                        // Уникальный AdvertiseUrl каждому инстансу (t07): одинаковые
+                        // Уникальный AdvertiseUrl каждому инстансу : одинаковые
                         // URL гасят оба дискавери-ключа.
                         ["KafkaWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{apiPort}",
                         ["KafkaWorker__Docker__Mode"] = "Plain",

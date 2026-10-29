@@ -72,7 +72,7 @@ public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory
         var changes = ConvergeDecider.Decide(config, current.Value);
 
         // Раннего выхода при no-op НЕТ: после конфиг-шага всегда выполняется
-        // ACL-converge (t03).
+        // ACL-converge.
         if (changes.Count > 0)
         {
             foreach (var broker in view.Value.Brokers)
@@ -83,7 +83,7 @@ public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory
             }
         }
 
-        // ACL-converge (arch/16 §5 E, t03): идемпотентная сходимость роли app.
+        // ACL-converge (arch/16 §5 E): идемпотентная сходимость роли app.
         var acls = await admin.DescribeAclsAsync(ct);
         if (!acls.IsSuccess)
             return Result.Failed(acls.Error!);

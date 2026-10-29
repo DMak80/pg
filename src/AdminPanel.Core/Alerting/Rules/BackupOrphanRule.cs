@@ -4,9 +4,9 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-orphan (warning, t07, arch/19 §4): запись реестра сирот
+// backup-orphan (warning, arch/19 §4): запись реестра сирот
 // /pgworker/backups/orphans — S3-префикс без владельца в etcd. Fate-приоритет
-// (reliability t04, spec §3.5): DELETING «идёт удаление» (включая по заявке) →
+// (reliability, spec §3.5): DELETING «идёт удаление» (включая по заявке) →
 // hold «защищён hold-флагом (<by>) — удаление только явной командой» →
 // автозащита «защищён автоправилом (есть валидный полный) — удаление только
 // явной командой» → заявка «к удалению заявкой оператора — ближайший проход» →
@@ -35,7 +35,7 @@ public sealed class BackupOrphanRule(IOptions<AlertsOptions> options) : IAlertRu
             : DefaultOrphanTtlSec;
         foreach (var entry in orphans.Orphans)
         {
-            // Джойн защиты (reliability t04): hold-ключ/заявка по префиксу.
+            // Джойн защиты (reliability): hold-ключ/заявка по префиксу.
             OrphanHoldInfo? held = null;
             if (orphans.Holds is not null && orphans.Holds.TryGetValue(entry.Prefix, out var hold))
                 held = hold;

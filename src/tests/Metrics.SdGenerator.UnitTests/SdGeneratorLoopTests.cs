@@ -104,7 +104,7 @@ public class SdGeneratorLoopTests : IDisposable
         metrics.LastSuccessUnix.Should().NotBeNull().And.BeGreaterThanOrEqualTo(before);
     }
 
-    // AAA (t25, arch/18 §5.4/§8): второй file_sd — те же записи per-node одним
+    // AAA (arch/18 §5.4/§8): второй file_sd — те же записи per-node одним
     // тиком, таргет приёмника WAL — контейнерный :8080 (http): сетевая часть
     // (alias/advertised host) сохраняется, порт Patroni заменяется на :8080.
     [Fact]

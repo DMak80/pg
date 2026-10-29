@@ -10,7 +10,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Backups;
 
-/// <summary>Ретенционный проход (t06, arch/19 §4): под клэймом &lt;C&gt; по
+/// <summary>Ретенционный проход (arch/19 §4): под клэймом &lt;C&gt; по
 /// расписанию Retention:IntervalSec для каждого шарда — доводка DELETING,
 /// GFS-отбор (один кандидат-полный в DELETING за проход), чистка WAL ниже
 /// cutoff оставляемых, гигиена FAILED; после шардов — монитор занятости
@@ -27,7 +27,7 @@ public sealed class RetentionProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<RetentionProcess> logger,
-    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (канон t19)
+    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (канон)
 {
     private const string Op = "backups-retention";
 
@@ -59,7 +59,7 @@ public sealed class RetentionProcess(
 
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // t36 (arch/19 §4): per-cluster проход — гвард policy.s3. null (пул не
+        //  (arch/19 §4): per-cluster проход — гвард policy.s3. null (пул не
         // выбран) → кластер молчит (не чистит; алерт missing — проекция панели);
         // Failed → journal, ретраи проходом (retention-interval).
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -89,7 +89,7 @@ public sealed class RetentionProcess(
             foreach (var shard in snap.Shards)
             {
                 if (!shards.TryGetValue(shard.Name, out var shardBackups))
-                    continue; // шард без ключей бэкапов → skip (сироты — t07)
+                    continue; // шард без ключей бэкапов → skip (сироты)
 
                 try
                 {
@@ -142,7 +142,7 @@ public sealed class RetentionProcess(
             await FinishDeletionAsync(cluster, shard, marked, s3, ct);
         }
 
-        // (4) Чистка WAL (t18, arch/19 §4 п.5): cutoff = wal_start новейшего
+        // (4) Чистка WAL (arch/19 §4 п.5): cutoff = wal_start новейшего
         // (по started_unix) verify-OK COMPLETED-полного из оставляемых — ОДНА
         // точка с chain_start контроля (§3). ГВАРД verify: OK-полного нет
         // (PENDING/FAILED/отсутствует) → шаг no-op — прунинг без успешного
@@ -218,7 +218,7 @@ public sealed class RetentionProcess(
     // сравнение не входит: меняющийся now делал бы put каждым проходом, а
     // свежесть прохода видна по возрасту updated_unix (arch/19 §4 «при
     // изменении»; строковое сравнение — образец WalStatusWriter.WriteIfChangedAsync).
-    // Недоступный пул (t36) — used_bytes был бы занижен: частичный вердикт НЕ
+    // Недоступный пул — used_bytes был бы занижен: частичный вердикт НЕ
     // публикуется (ключ остаётся с последним ПОЛНЫМ значением — квота-алерт
     // не молчит зря), неполнота — в лог; полный проход повторится (transient).
     // Отдельное поле-расписание, не словарь кластеров (коллизия "storage" — см.
@@ -231,7 +231,7 @@ public sealed class RetentionProcess(
             return Result.Success();
         _lastStoragePassUnix = nowUnix;
 
-        // t36 (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/ —
+        //  (arch/19 §5): union по ВСЕМ существующим пулам /s3/clusters/ —
         // по первому доступному endpoint каждого (CreateForPoolAsync: write=read=
         // все ноды; листинг с первой доступной); дедуп ключей — по (пул, ключ)
         // (mesh-дубликат в разных пулах учтён один раз).

@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Meta-JSON слепка etcd (t08, spec §3.2): полный формат с revision, пропуск
+// Meta-JSON слепка etcd (spec §3.2): полный формат с revision, пропуск
 // опциональной ревизии, круговорот сериализация→парсинг, битый JSON → null.
 public class EtcdExportMetaJsonTests
 {

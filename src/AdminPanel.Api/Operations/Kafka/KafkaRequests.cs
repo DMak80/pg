@@ -3,7 +3,7 @@ namespace AdminPanel.Api.Operations.Kafka;
 // ===== Тела запросов kafka-мутаций (arch/02 §10.3; arch/03 §7.2) =====
 // Биндятся Minimal API как JSON и уходят в API KafkaWorker как есть (панель
 // не валидирует — источник истины воркер, spec §3.4). Дубль воркерских DTO
-// осознан (t08).
+// осознан.
 
 // Тело POST /api/kafka/clusters: nullable-поля с дефолтами 3/3/2/12/7д/2/2/20.
 public sealed record CreateKafkaClusterRequest(

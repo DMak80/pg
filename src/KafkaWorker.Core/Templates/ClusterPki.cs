@@ -23,7 +23,7 @@ public static class ClusterPki
         // Subject уникален на генерацию (отпечаток ключа): в бандле двойного
         // доверия OLD+NEW openssl/librdkafka проверяет подпись серта против
         // ПЕРВОГО якоря по subject без перебора кандидатов — одинаковые CN
-        // поколений ломали верификацию сертов второй генерации (t07).
+        // поколений ломали верификацию сертов второй генерации.
         var fingerprint = Convert.ToHexString(
             SHA256.HashData(rsa.ExportSubjectPublicKeyInfo()), 0, 4).ToLowerInvariant();
         var request = new CertificateRequest(
@@ -66,7 +66,7 @@ public static class ClusterPki
         return (certificate.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
     }
 
-    // Bundle-валидация (t07, arch/15 §4): ca_pem в окне ротации — конкатенация
+    // Bundle-валидация (arch/15 §4): ca_pem в окне ротации — конкатенация
     // PEM-сертов (OLD+NEW); валидно, если КАЖДЫй кусок — валидный сертификат.
     public static bool TryParseCertificateBundle(string pem)
     {

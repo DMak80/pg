@@ -3,7 +3,7 @@ using Shared.Core;
 namespace ValkeyWorker.Core.Valkey;
 
 // Точка подключения + креды + CA (admin-пробы воркера / converge).
-// CaPem — per-cluster CA (t06): PEM якоря для TLS-валидации сервера;
+// CaPem — per-cluster CA : PEM якоря для TLS-валидации сервера;
 // обязательный — plain-ветки нет (plain-порт закрыт).
 public sealed record ValkeyEndpoint(string Host, int Port, string User, string Password, string CaPem);
 
@@ -28,6 +28,6 @@ public interface IValkeyConnection
     // ACL SETUSER <user> <args…> (ротация E1/E3, converge D) — args целиком.
     Task<Result> AclSetUserAsync(ValkeyEndpoint ep, IReadOnlyList<string> args, CancellationToken ct);
 
-    // INFO all → плоский словарь ключ → значение (коллектор метрик t05, arch/18 §4.2).
+    // INFO all → плоский словарь ключ → значение (коллектор метрик, arch/18 §4.2).
     Task<Result<IReadOnlyDictionary<string, string>>> InfoAllAsync(ValkeyEndpoint ep, CancellationToken ct);
 }

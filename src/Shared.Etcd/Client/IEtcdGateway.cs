@@ -2,7 +2,7 @@ using Shared.Core;
 
 namespace Shared.Etcd.Client;
 
-// Клиент etcd через HTTP JSON gateway /v3/*: union воркеров (Pg/Kfw) и панели (t08).
+// Клиент etcd через HTTP JSON gateway /v3/*: union воркеров (Pg/Kfw) и панели.
 // Методы принимают endpoint явно: выбор/ротация «активного» — задача цикла App/refresher.
 // Все мутации /clusters/ — только держателем клэйма и только через txn-compare (spec §4.3).
 public interface IEtcdGateway
@@ -72,7 +72,7 @@ public sealed record TxnCompare(string Key, TxnTarget Target, TxnPredicate Pred,
     public static TxnCompare NotExists(string key)
         => new(key, TxnTarget.Version, TxnPredicate.Equal, string.Empty, 0);
 
-    // Ключ существует (version > 0) — примитив условного снятия заявок (t10).
+    // Ключ существует (version > 0) — примитив условного снятия заявок.
     public static TxnCompare Exists(string key)
         => new(key, TxnTarget.Version, TxnPredicate.Greater, string.Empty, 0);
 

@@ -9,14 +9,14 @@ using System.Diagnostics;
 
 namespace PgWorker.App.Loops;
 
-/// <summary>Лидерный фоновый цикл сирот S3 (t07, arch/19 §4, паттерн
+/// <summary>Лидерный фоновый цикл сирот S3 (arch/19 §4, паттерн
 /// SnapshotLoop упрощённый; тики живости — HealthState.MarkOrphanSweepTick):
 /// глобальный лидер /pgworker/leader выполняет BackupOrphanSweeper.SweepAsync
 /// раз в Supervisor:IntervalSec; не-лидер периодически пытается захватить
 /// лидерство (takeover ≤ TTL 15 с + тик) и ждёт Loops:ScanIntervalSec.
 /// Backups:Enabled=false — лидерство поддерживается, сверки не выполняются
 /// (no-op), лидер каждый тик поддерживает стоп-ключ /pgworker/backups-disabled
-/// (t25, arch/19 §4); при Enabled=true лидер зеркально стирает ключ в каждом
+/// (arch/19 §4); при Enabled=true лидер зеркально стирает ключ в каждом
 /// тике (идемпотентный del), каждый инстанс при старте с Enabled=true тоже
 /// снимает ключ (решение spec §7 №7).</summary>
 internal sealed class BackupOrphanSweeperLoop(
@@ -29,7 +29,7 @@ internal sealed class BackupOrphanSweeperLoop(
     IEtcdGateway etcd,
     string[] etcdEndpoints) : BackgroundService
 {
-    // t25 (arch/19 §4): писатель/стирающий глобального стоп-ключа приёмников.
+    //  (arch/19 §4): писатель/стирающий глобального стоп-ключа приёмников.
     private readonly BackupsDisabledGate _disabledGate = new(etcd);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -60,7 +60,7 @@ internal sealed class BackupOrphanSweeperLoop(
                             "leadership acquired (orphan-sweeper): {InstanceId}", claims.InstanceId);
                 }
 
-                // t25 (arch/19 §4): держатель глобального лидера при
+                //  (arch/19 §4): держатель глобального лидера при
                 // Backups:Enabled=false поддерживает /pgworker/backups-disabled
                 // на КАЖДОМ тике лидера (plain-ключ — TTL нет, период тика
                 // достаточен); при Enabled=true лидер ЗЕРКАЛЬНО стирает ключ в

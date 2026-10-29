@@ -18,13 +18,13 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции RestoreProcess (t05 spec Ф2): реальный etcd (статусы/журнал) +
+// Интеграции RestoreProcess (spec Ф2): реальный etcd (статусы/журнал) +
 // фейки docker/S3. Снапшот кластера и бэкапы строятся руками. PLANNED-фаза:
 // валидация (усыновление/полный/manifest/цепочка) и гвард дублей.
 // RUNNING: фазы ЯВНЫЕ в Phase заявки — null/"" демонтаж (Phase="demolished"),
 // "demolished" EnsureNode первой ноды + POST /api/ops/restore на её приёмник
 // (alias:8080, Phase="launching"), "launching"/"downloading"/"recovering" —
-// только GET-супервиз; ephemeral tool-контейнеров restore больше нет.
+// только GET-супервиз.
 // REJOINING: Patroni-пробы/SQL-гейт.
 // Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
@@ -73,7 +73,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         // Изоляция (канон docs/e2e-isolation.md §1): etcd один на коллекцию,
         // соседние тесты класса оставляют /clusters/<C>/... (состояния нод
         // REBUILDING/RUNNING) — без чистки ассерты BeNull флакуют от порядка
-        // (прецедент t07: литеральные имена кластеров в общей коллекции).
+        // (прецедент : литеральные имена кластеров в общей коллекции).
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
             Portalloc.Serialize(alloc ?? new Dictionary<string, NodeAddress>
@@ -145,10 +145,10 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             => throw new NotSupportedException();
     }
 
-    // SQL-фейк гейта мастера (t10): Scalar — ответ pg_is_in_recovery()
+    // SQL-фейк гейта мастера : Scalar — ответ pg_is_in_recovery()
     // (boxed-bool от Npgsql: false — готова, дефолт: старые кейсы ведут себя
     // как раньше; true — висит в recovery), FailScalar — транспорт рвётся.
-    // Оба transient-вида гейта идут одним путём ожидания (spec t10 §8).
+    // Оба transient-вида гейта идут одним путём ожидания (spec §8).
     private sealed class FakeDb : ISqlExecutor
     {
         public object? Scalar { get; set; } = false;
@@ -328,7 +328,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
     public async Task ValidationFullWithoutBackupManifestPermanentFailed()
     {
         // Arrange — префикс полного есть (etcd-статус + backup_label), манифеста
-        // НЕТ: имитация упавшего на середине upload t02
+        // НЕТ: имитация упавшего на середине upload 
         const string fullId = "20260910120000Z";
         await SeedAsync("c1");
         await SeedFullAsync("c1", "shard1", fullId);
@@ -458,7 +458,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var result = await process.TickAsync(BuildSnap(),
             await BackupsFromEtcdAsync("c1"), TestContext.Current.CancellationToken);
 
-        // Assert — тик Ok (InProgress), заявка осталась PLANNED, журнал-факт
+        // Assert — тик Ok (InProgress), заявка осталась PLANNED, запись журнала
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         result.Value.Should().Be(ProcessOutcome.InProgress);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
@@ -986,7 +986,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .IsSuccess.Should().BeTrue();
 
         // Assert 1 — статус RUNNING не тронут, фаза "demolished", нода жива,
-        // журнал-факт download-retry
+        // запись журнала download-retry
         inner.RemovedNodes.Should().BeEmpty("a download failure is transient — the node stays");
         _receiver.StartCalls.Should().Be(0, "the supervise tick does not re-post");
         var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
@@ -1075,7 +1075,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         failed.Error.Should().Be("boom");
     }
 
-    // AAA (регрессия t26): команда запуска — только тиком запуска. Повтор
+    // AAA (регрессия): команда запуска — только тиком запуска. Повтор
     // команды на каждом тике супервиза при терминальном снимке приёмника давал
     // 202 (TryBegin перезаписывает терминал) РАНЬШЕ, чем тик читал GET
     // succeeded, — операция перезапускалась вечно, статус etcd висел в RUNNING
@@ -1183,7 +1183,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
 
         // Assert — InProgress, статус RUNNING (фаза "demolished" — повтор),
-        // журнал-факт docker-unavailable
+        // запись журнала docker-unavailable
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());
         result.Value.Should().Be(ProcessOutcome.InProgress);
         var alive = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
@@ -1248,7 +1248,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         result.Value.Should().Be(ProcessOutcome.InProgress);
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
-        // t22: без окна ротации — ключ кластера (эффективная пара restore-пути)
+        // без окна ротации — ключ кластера (эффективная пара restore-пути)
         inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be(RestPassword);
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
@@ -1442,9 +1442,9 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             "replicas start only after a leader is elected");
     }
 
-    // ── REJOINING: SQL-гейт мастера перед COMPLETED (t10) ──
+    // ── REJOINING: SQL-гейт мастера перед COMPLETED ──
 
-    // AAA (t10-а): Patroni-пробы готовы, но мастер «висит в recovery»
+    // AAA (а): Patroni-пробы готовы, но мастер «висит в recovery»
     // (pg_is_in_recovery=true) → гейт не пускает: статус REJOINING, ноды не
     // переводятся в RUNNING, wal-ключ жив; тик InProgress, журнал —
     // master-sql-wait (без мутаций — тик повторит).
@@ -1478,14 +1478,14 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .State.Should().Be(RestoreStatus.Rejoining);
         (await fixture.Gateway.GetAsync(fixture.Endpoint,
             "/clusters/c1/shards/shard1/nodes/shard1a/state", ct)).Value
-            .Should().BeNull("RUNNING is set only after the SQL gate (t10)");
+            .Should().BeNull("RUNNING is set only after the SQL gate (SQL gate)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
             .Value.Should().NotBeNull("the wal key is removed only on COMPLETED");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("master-sql-wait/shard1/");
     }
 
-    // AAA (t10-б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
+    // AAA (б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
     // → гейт пропускает: ноды RUNNING, COMPLETED, wal-ключ удалён.
     [Fact]
     public async Task RejoinMasterAcceptedSqlGateProceedsToCompleted()
@@ -1519,7 +1519,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .Value.Should().BeNull("COMPLETED resets the chain (AC4)");
     }
 
-    // AAA (t10-в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
+    // AAA (в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
     // «мастер не принял SQL» (фиксированные часы: тик 1 фиксирует since, тик 2
     // после +700 с > 600).
     [Fact]
@@ -1552,7 +1552,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         failed.Error.Should().Contain("members=", "Patroni diagnostics snapshot in the reason");
     }
 
-    // AAA (t10-г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
+    // AAA (г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
     // etcd — истина), инстанс B (свежий, без in-memory трекера) продолжает по
     // статусу: мастер принял SQL → COMPLETED (waitKey стабилен:
     // {cluster}/{shard}/{op.Id} — от инстанса не зависит).
@@ -1631,7 +1631,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             .State.Should().Be(RestoreStatus.Planned);
     }
 
-    // AAA: t14 — оба терминальных исхода restore: permanent-FAILED ("failed")
+    // AAA: — оба терминальных исхода restore: permanent-FAILED ("failed")
     // в точке записи статуса и COMPLETED ("ok") после успешного putDone
     // (симметрия drill-теста; обе точки вставки 3b/3c)
     [Fact]

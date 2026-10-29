@@ -21,7 +21,7 @@ public sealed record KafkaNodeSpec(
     decimal? CpuCores,
     long? MemoryBytes);
 
-// Инспекция размещения брокера (E9-реконструкция portalloc, t05): Host — хост
+// Инспекция размещения брокера (E9-реконструкция portalloc): Host — хост
 // размещения, ClientHostPort — published host-порт CLIENT (9094),
 // AdvertisedClient — клиентская пара из env KAFKA_ADVERTISED_LISTENERS
 // (контрольная сверка; null — источник недоступен, swarm).
@@ -30,7 +30,7 @@ public sealed record NodeEndpointInspection(string Host, int ClientHostPort, str
 // Унифицированное управление брокером в обоих режимах (arch/16 §2.3). Порт
 // драйверов PgWorker с заменой pgw-→kfw- и выносом env-генерации в NodeEnvBuilder:
 // объекты — контейнер/сервис kfw-<C>-<b>, volume kfw-<C>-<b>-data, сеть
-// kfw-net-<C> (per-cluster, t09-фикс).
+// kfw-net-<C> (per-cluster, фикс).
 // Идемпотентность: существующий объект сверяется по имени и не пересоздаётся;
 // 404 на удалении / 409 на создании — успех (движок).
 public interface IClusterDriver
@@ -56,11 +56,11 @@ public interface IClusterDriver
     // недопустимы).
     Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct);
 
-    // Фактические лимиты контейнера/сервиса брокера (t06, spec §5.3): null =
+    // Фактические лимиты контейнера/сервиса брокера (spec §5.3): null =
     // объекта нет; ошибка инспекта → Failed (регенератор не решает вслепую).
     Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct);
 
-    // Инспекция размещения брокера для E9-реконструкции portalloc (t05):
+    // Инспекция размещения брокера для E9-реконструкции portalloc :
     // null = docker-объекта нет — положительное свидетельство смерти, arch/17 S7;
     // ошибка инспекта → Failed — надзор не решает вслепую.
     Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
@@ -69,7 +69,7 @@ public interface IClusterDriver
     // Имена объектов брокеров кластера (kfw-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // Env живого контейнера ноды (t03, SecurityMigrator): plain — перебор хостов
+    // Env живого контейнера ноды (SecurityMigrator): plain — перебор хостов
     // InspectContainerEnvAsync(kfw-<C>-<b>), swarm — env сервиса; null = объекта нет.
     Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string nodeName, CancellationToken ct);
 }
@@ -80,7 +80,7 @@ public sealed class PlainClusterDriver(
     DockerEngineFactory factory) : IClusterDriver
 {
     // Сеть брокеров кластера: KRaft-кворум и межброкерный трафик по
-    // внутренним адресам (alias = имя ноды). Per-cluster (t09-фикс, arch/16
+    // внутренним адресам (alias = имя ноды). Per-cluster (фикс, arch/16
     // §2.1): короткие алиасы broker<N> уникальны в своей сети — единая сеть
     // с общими алиасами ломала Raft-голоса через docker-DNS round-robin
     // (INCONSISTENT_CLUSTER_ID), на docker-хосте собирался максимум один
@@ -92,7 +92,7 @@ public sealed class PlainClusterDriver(
     // Контейнерный порт CLIENT-listener → выделенный host-порт.
     public const int ClientContainerPort = 9094;
 
-    // Label-ключ контейнеров/сервисов kfw-домена (t07: ключ — параметр спеки
+    // Label-ключ контейнеров/сервисов kfw-домена (: ключ — параметр спеки
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
     internal const string LabelKey = "kafkaworker";
 
@@ -148,7 +148,7 @@ public sealed class PlainClusterDriver(
         {
             var name = NodeName(spec.Cluster, spec.NodeName);
 
-            // Сеть брокеров кластера — per-cluster (t09-фикс, arch/16 §2.1);
+            // Сеть брокеров кластера — per-cluster (фикс, arch/16 §2.1);
             // идемпотентно; 409 already exists = успех.
             var network = await engine.EnsureNetworkAsync(NetworkName(spec.Cluster), ct);
             if (!network.IsSuccess)
@@ -220,7 +220,7 @@ public sealed class PlainClusterDriver(
             }
 
             // Последний брокер кластера демонтирован — удаляем per-cluster
-            // сеть (t09-фикс, arch/16 §2.5) на КАЖДОМ хосте таблицы:
+            // сеть (фикс, arch/16 §2.5) на КАЖДОМ хосте таблицы:
             // EnsureNodeAsync создаёт её на каждом хосте размещения нод —
             // чистка не зависит от того, где был последний демонтируемый
             // брокер (multi-host plain, анти-аффинити arch/16 §2.1); 404 =
@@ -299,7 +299,7 @@ public sealed class PlainClusterDriver(
         return Result<NodeLimits?>.Success(null);
     }
 
-    // Env живого контейнера ноды (t03): перебор хостов, первый найденный.
+    // Env живого контейнера ноды : перебор хостов, первый найденный.
     public async Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
@@ -316,9 +316,9 @@ public sealed class PlainClusterDriver(
         return Result<IReadOnlyDictionary<string, string>?>.Success(null);
     }
 
-    // E9-реконструкция (t05): перебор хостов — первый, где контейнер есть,
+    // E9-реконструкция : перебор хостов — первый, где контейнер есть,
     // отдаёт host-порт + host-алиас этого движка. AdvertisedClient — из env
-    // живого контейнера через NodeEnvAsync (t07 §7.5: парсер KAFKA_ADVERTISED_
+    // живого контейнера через NodeEnvAsync (§7.5: парсер KAFKA_ADVERTISED_
     // LISTENERS переехал из движка в драйвер — движок нейтрален к доменам;
     // значение то же).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
@@ -342,7 +342,7 @@ public sealed class PlainClusterDriver(
         return Result<NodeEndpointInspection?>.Success(null);
     }
 
-    // env KAFKA_ADVERTISED_LISTENERS → сегмент CLIENT://host:port (t07: парсер
+    // env KAFKA_ADVERTISED_LISTENERS → сегмент CLIENT://host:port (: парсер
     // из kfw-движка; null — env недоступен/сегмента нет — «источник недоступен»).
     internal static string? ReadAdvertisedClient(IReadOnlyDictionary<string, string>? env)
     {
@@ -439,15 +439,15 @@ public sealed class SwarmClusterDriver(
     public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
-    // Env сервиса ноды (t03): Spec.TaskTemplate.ContainerSpec.Env (KEY=VALUE).
+    // Env сервиса ноды : Spec.TaskTemplate.ContainerSpec.Env (KEY=VALUE).
     public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
         string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
-    // E9-реконструкция (t05): published-порт и хост таска отдаёт одна инспекция
+    // E9-реконструкция : published-порт и хост таска отдаёт одна инспекция
     // движка (swarm-фолбэк по running-таску; ревью Ф7-3 — один HTTP-раунд
     // ListTasks, второй вызов драйвера удалён). AdvertisedClient — null: env
-    // шаблона не читаем, сверка advertised — plain-only (как сегодня; t07 —
+    // шаблона не читаем, сверка advertised — plain-only (как сегодня; —
     // движок нейтрален к доменам, advertised читает только драйвер).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)

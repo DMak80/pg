@@ -10,9 +10,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E тренировочных восстановлений (t24/ревизия 8 — разбиение
+// E2E тренировочных восстановлений (/ревизия 8 — разбиение
 // E2eBackupScenarios): Drill_Succeeds/Drill_Failed (~2,5 мин суммарно).
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + drill-операции в приёмнике WalReceiver первой ноды (arch/19 §3.6) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
@@ -26,7 +26,7 @@ public class E2eDrillScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -183,7 +183,7 @@ public class E2eDrillScenarios
         await GenerateWalAsync(adminDsn, ct);
 
         // Act — жертва = САМ wal_start COMPLETED-полного (валидация дрилла идёт
-        // от него; он гарантированно в wal/ — дублирование t02). Дыра обязана
+        // от него; он гарантированно в wal/ — дублирование). Дыра обязана
         // иметь «найдено» — сегмент позже wal_start (гвард ниже). ВАЖНО: сегменты
         // НИЖЕ wal_start (агент начинает поток раньше бэкапа) цепью не являются —
         // дыра «второй объект списка» может лечь ниже chain_start и Check её не
@@ -234,7 +234,7 @@ public class E2eDrillScenarios
                 $"journal=[{workKvDiag?.Value[..Math.Min(400, workKvDiag?.Value.Length ?? 0)]}] " +
                 $"receivers=[{string.Join("; ", receiversDiag.Select(f => $"{f.Node}:{f.State}"))}]");
         }
-        // Останавливаем walreceiver ВСЕХ нод шарда ДО порчи (t25: приёмник —
+        // Останавливаем walreceiver ВСЕХ нод шарда ДО порчи (: приёмник —
         // supervisord-программа контейнера ноды): живой приёмник доставляет
         // сегмент раньше контрольного тика — дыра заживает до валидации дрилла.
         // Supervisord не перезапускает остановленную программу (stop = admin stop),
@@ -271,7 +271,7 @@ public class E2eDrillScenarios
         var suppressSw = Stopwatch.StartNew();
         while (!failed && suppressSw.Elapsed < TimeSpan.FromSeconds(60))
         {
-            // t25: глушим приёмники нод (supervisord-программа) — идемпотентно
+            // глушим приёмники нод (supervisord-программа) — идемпотентно
             foreach (var nodeName in nodeNames)
                 await Fx.RunDockerAsync(["exec", nodeName, "supervisorctl", "stop", "walreceiver"], ct);
             var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
@@ -388,7 +388,7 @@ public class E2eDrillScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // пул сидится до старта воркера; policy кластера кладёт факт строкой
         // ниже (с секцией s3 — без неё подсистема кластера молчит).
         await Fx.SeedS3PoolAsync(Pool, ct);
     }
@@ -408,10 +408,10 @@ public class E2eDrillScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

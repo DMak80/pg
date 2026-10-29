@@ -10,12 +10,12 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Converge-миграция PLAINTEXT→SASL_SSL (t03 Ф6, spec §8.2): «премиграционный»
+// Converge-миграция PLAINTEXT→SASL_SSL (Ф6, spec §8.2): «премиграционный»
 // кластер (старый env — локальная копия прежней таблицы NodeEnvBuilder; старого
 // кода в src больше нет, единственное допустимое место SASL_PLAINTEXT) → тики
 // SecurityMigrator до NotNeeded → endpoints/данные живы, admin+ACL в новом
 // каноне, app производит/потребляет по SASL_SSL.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -75,7 +75,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/endpoints",
             $"localhost:{legacyPort}", null, ct);
 
-        // Старый env (SASL_PLAINTEXT-канон, до t03) + локальный порт публикации.
+        // Старый env (SASL_PLAINTEXT-канон, до) + локальный порт публикации.
         var plainEnv = LegacyPlainEnv(cluster, "broker1", legacyPort);
         var spec = new KafkaNodeSpec(
             cluster, "broker1", "local", legacyPort, fixture.Options.NodeImage, plainEnv,
@@ -223,7 +223,7 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
     }
 
     // Локальная копия прежней таблицы NodeEnvBuilder (SASL_PLAINTEXT-канон,
-    // до t03): старый код в src больше не существует — тест фиксирует «как было».
+    // до): старый код в src больше не существует — тест фиксирует «как было».
     private static IReadOnlyDictionary<string, string> LegacyPlainEnv(
         string cluster, string broker, int clientPort)
     {

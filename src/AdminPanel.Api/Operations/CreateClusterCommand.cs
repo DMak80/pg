@@ -9,7 +9,7 @@ namespace AdminPanel.Api.Operations;
 // воркер, spec §3.4). Sharded: отсутствует/null = true — совместимость
 // старых клиентов (arch/02 §9.3; нормализует воркер). SynchronousModeStrict:
 // camelCase-биндинг/сериализация Web даёт wire-имя synchronousModeStrict
-// 1:1 с воркером (t06, arch/03 §1.1).
+// 1:1 с воркером (arch/03 §1.1).
 public sealed record CreateClusterRequest(
     string Name,
     int Buckets,

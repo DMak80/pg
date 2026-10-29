@@ -1,5 +1,5 @@
 // Порт Puzzle-модуля Infrastructure.App.Metrics (arch/18 §1; паттерн
-// Shared.Core — порт с паттерна Puzzle, бывший AdminPanel.Infrastructure, унифицирован t08).
+// Shared.Core — порт с паттерна Puzzle, бывший AdminPanel.Infrastructure, унифицирован).
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;

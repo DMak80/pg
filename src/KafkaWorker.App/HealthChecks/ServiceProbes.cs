@@ -20,7 +20,7 @@ public sealed class ServiceProbes(
     private readonly Dictionary<string, IDockerEngine> _engines = []; // кэш клиентов
 
     /// <summary>etcd жив: хотя бы один endpoint отвечает на range по /kafkaworker/.
-    /// Catch-all (t09, arch/16 §7): сетевое исключение — тоже Failed-результат,
+    /// Catch-all (arch/16 §7): сетевое исключение — тоже Failed-результат,
     /// чек получает структуру, а не исключение (DNS-флейп не роняет health).</summary>
     public async Task<Result> EtcdReachableAsync(CancellationToken ct)
     {
@@ -75,7 +75,7 @@ public sealed class ServiceProbes(
         }
         catch (Exception ex)
         {
-            // Catch-all (t09): непредвиденный отказ вне per-host-вызовов — структура, не бросок.
+            // Catch-all : непредвиденный отказ вне per-host-вызовов — структура, не бросок.
             results["all"] = Result.Failed(new ApplicationException($"docker probe: {ex.Message}", ex));
         }
 

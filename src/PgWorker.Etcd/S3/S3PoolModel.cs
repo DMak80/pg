@@ -3,7 +3,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Etcd.S3;
 
-// Модель пула S3 для воркера (t36, arch/23 §2/§7): PgWorker — ЧИТАТЕЛЬ /s3/,
+// Модель пула S3 для воркера (arch/23 §2/§7): PgWorker — ЧИТАТЕЛЬ /s3/,
 // участником контракта не становится. Имена инстансов — из ключей заявки
 // nodes/<I>/state|placement; portalloc — ТОЛЬКО источник адресов.
 

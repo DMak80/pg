@@ -12,7 +12,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// API-контракт маршрутов WalReceiver (spec t26 §3.2) через
+// API-контракт маршрутов WalReceiver (spec §3.2) через
 // WebApplicationFactory над internal-Program (InternalsVisibleTo):
 // POST full — 202 / 409 (вторая активная) / 503 (стоп-гейты, в т.ч.
 // Unknown — транспортный отказ etcd: операция не стартовала, fail-closed);

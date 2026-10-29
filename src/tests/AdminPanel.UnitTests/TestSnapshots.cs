@@ -17,7 +17,7 @@ internal static class TestSnapshots
         [],
         [],
         [],
-        [],             // Backups (t02)
+        [],             // Backups 
         [new WorkerEndpoint("w1", "http://pgworker:8080", builtAt.ToUnixTimeSeconds())],
         [],
         [],
@@ -55,7 +55,7 @@ internal static class TestSnapshots
         [.. Enumerable.Range(0, 16).Select(i => new BucketInfo(i, "s1", BucketState.Active, null))],
         []);
 
-    // Кластер без config-ключа: Incomplete = true (t03 §3.6).
+    // Кластер без config-ключа: Incomplete = true (§3.6).
     public static ClusterInfo GhostCluster() => new("ghost", null, 0, null, ClusterState.Active, [], [], []);
 
     // Кластер с динамикой переездов и аномалиями (spec §10.5): 2 шарда (s2 — без master),
@@ -88,7 +88,7 @@ internal static class TestSnapshots
             ]);
     }
 
-    // HA-фикстуры t06: matched-скоп с пробами членов и unmatched без лидера (spec §10).
+    // HA-фикстуры : matched-скоп с пробами членов и unmatched без лидера (spec §10).
     public static HaScope HaScopeDemo(DateTimeOffset now) => new(
         "demo-s1", "demo", "s1", true, "s1a", 738273634528L, true, null, null, null,
         [

@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations;
 
-// Заявка ротации per-cluster секретов (app + bucket_admin + bucket_mover, t02) —
+// Заявка ротации per-cluster секретов (app + bucket_admin + bucket_mover) —
 // прокси в API PgWorker (арх-канон arch/02 §9.8): заявку клэймит воркер, выполняет
 // ClusterSecretRotator. Панель сама в SQL ноды не ходит и креды не пишет/не читает.
 public sealed record RotateClusterSecretsCommand(string Cluster, string RequestedBy)

@@ -9,7 +9,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// RemoveShardProcess — демонтаж ОТДЕЛЬНОГО шарда Active-кластера по маркеру
-/// shards/&lt;X&gt;/state=TO_REMOVE (t06 spec §5.3; arch/14 §5 H; эталон remove-shard.sh
+/// shards/&lt;X&gt;/state=TO_REMOVE (spec §5.3; arch/14 §5 H; эталон remove-shard.sh
 /// + DeprovisioningProcess scoped-to-shard). Guard'ы G1–G7 в S1 перед любым
 /// разрушающим действием; порядок «сначала docker, потом etcd» — мёртвые ключи
 /// при сбое безвредны (маркер стоит, повторный тик продолжает). Кластер живёт.
@@ -71,14 +71,14 @@ public sealed class RemoveShardProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
-        // S1.55 (t05 §3.4): активные restore-заявки шарда — permanent-FAILED
+        // S1.55 (§3.4): активные restore-заявки шарда — permanent-FAILED
         // «cancelled-by-remove» (finished_unix + причина), restore-джоб-контейнеры
         // шарда — вниз (volume НЕ трогаем — data-volume ноды, снесёт RemoveNodeAsync).
         var cancelled = await CancelRestoresAsync(cluster, shardName, ct);
         if (!cancelled.IsSuccess)
             return await FailAsync(cluster, cancelled.Error!, "cancelling-restore", ct);
 
-        // S1.5 (t03/t25, arch/19 §3 «Стоп-семантика»): санитарный снос legacy
+        // S1.5 (/, arch/19 §3 «Стоп-семантика»): санитарный снос legacy
         // wal-контейнеров шарда ДО нод (идемпотентно; приёмники WAL живут в
         // контейнерах нод — гаснут вместе с нодами на S2); ключ wal
         // /pgworker/backups/<C>/<X>/ удаляет CleanKeysAsync (шаг 4) вместе с
@@ -114,7 +114,7 @@ public sealed class RemoveShardProcess(
         return await Finish(cluster, "done", ProcessOutcome.Done, ct);
     }
 
-    // Отмена активных restore-заявок шарда (t05 §3.4): FAILED «cancelled-by-remove»
+    // Отмена активных restore-заявок шарда (§3.4): FAILED «cancelled-by-remove»
     // + чистка джобов. Идемпотентно: пустой префикс/нет активных — no-op.
     private async Task<Result> CancelRestoresAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -143,7 +143,7 @@ public sealed class RemoveShardProcess(
     // Сериализация FAILED-статуса (канон arch/19 §4). Локальная копия структуры
     // RestoreStatusJson (PgWorker.Backups): обратная ссылка Provisioning→Backups
     // невозможна (Backups ссылается на Provisioning); прецедент — имена
-    // BackupNames в ClusterDriver.BackupJobsCleaner. Roundtrip с парсером t01
+    // BackupNames в ClusterDriver.BackupJobsCleaner. Roundtrip с парсером 
     // покрыт юнит-тестами RestoreStatusJsonTests (тот же набор полей).
     private static string SerializeCancelled(RestoreOperationState op)
     {
@@ -190,10 +190,10 @@ public sealed class RemoveShardProcess(
     {
         "G2" => "shard is not declared — nothing to remove",
         "G3" => $"shard has {snap.Routing.Count(r => r.Owner == shard.Name)} buckets (routing) — " +
-                "move them explicitly first (requests /pgworker/moves/, moves UI — t07)",
+                "move them explicitly first (requests /pgworker/moves/, moves UI)",
         "G4" => "unfinished bucket move — finish or cancel it first", // FLAG: ассертится в RemoveShardProcessTests.cs:163
         "G5" => "there are move requests referencing the shard — wait for them to be resolved",
-        "G6" => "shard is quarantined after evacuation — investigate the data first (t05 runbook)",
+        "G6" => "shard is quarantined after evacuation — investigate the data first (runbook)",
         "G7" => "cannot remove the last shard — delete the cluster for a full teardown",
         _ => $"guard {guardId}",
     };
@@ -220,7 +220,7 @@ public sealed class RemoveShardProcess(
             }
             catch (JsonException)
             {
-                // битая заявка — разберёт MoveProcess (t01: логируется, не молчит);
+                // битая заявка — разберёт MoveProcess (: логируется, не молчит);
                 // демонтажу она не мешает
             }
         }
@@ -293,7 +293,7 @@ public sealed class RemoveShardProcess(
         if (!delScope.IsSuccess)
             return delScope;
 
-        // t03 (arch/19 §4): ключи бэкапов шарда (wal-статус; full-ключи — t02)
+        //  (arch/19 §4): ключи бэкапов шарда (wal-статус; full-ключи)
         // не переживают демонтаж — S-аналог D2-чистки deprovisioning.
         var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/{shardName}/", prefix: true, ct);
         if (!delBackups.IsSuccess)

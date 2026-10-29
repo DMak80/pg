@@ -8,7 +8,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Тесты constant-time проверки учётных данных админа (spec t02 §9.1).
+// Тесты constant-time проверки учётных данных админа (spec §9.1).
 public class AdminAuthenticatorTests
 {
     // Тестовые креды (литералы — только в константах).
@@ -103,7 +103,7 @@ public class AdminAuthenticatorTests
     [InlineData("$pbkdf2-sha256$1000$c2FsdA==$c2hvcnQ=")]
     public void PasswordHash_Malformed_ReturnsFalse(string hash)
     {
-        // Arrange: битый формат — fail-closed (spec t02 §3.4).
+        // Arrange: битый формат — fail-closed (spec §3.4).
         var authenticator = Make(new AuthOptions { Username = "admin", PasswordHash = hash });
 
         // Act
@@ -116,7 +116,7 @@ public class AdminAuthenticatorTests
     [Fact]
     public void EmptyConfig_ReturnsFalse()
     {
-        // Arrange: пароль не сконфигурирован вовсе — fail-closed (spec t02 §3.5).
+        // Arrange: пароль не сконфигурирован вовсе — fail-closed (spec §3.5).
         var authenticator = Make(new AuthOptions { Username = "admin" });
 
         // Act

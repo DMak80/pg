@@ -10,8 +10,8 @@ namespace PgWorker.IntegrationTests.Backups;
 // S3-листер против живого ownS3: у КАЖДОГО Fact своё окружение OwnS3
 // (guid-имя pgw-em-*, динамический порт, свой bucket, own-only teardown с
 // ассертом чистоты — docs/e2e-isolation.md §1/§3): посев одного теста не виден
-// другому. Сценарии: list/пагинация/отсутствие префикса (t03 spec Ф2),
-// ретенционные list/delete (t06), verify-листинг/GET history (t04 Ф2).
+// другому. Сценарии: list/пагинация/отсутствие префикса (spec Ф2),
+// ретенционные list/delete, verify-листинг/GET history (Ф2).
 [Collection(NonE2eCollection.Name)]
 public class BackupS3Tests
 {
@@ -132,7 +132,7 @@ public class BackupS3Tests
         listed.Value[0].LastModified.Should().BeWithin(TimeSpan.FromMinutes(1)).After(DateTimeOffset.UtcNow.AddMinutes(-1));
     }
 
-    // ---- t06: ListPrefixAsync / DeleteKeysAsync ----
+    // ---: ListPrefixAsync / DeleteKeysAsync ----
 
     [Fact]
     public async Task ListPrefixSizesAndFullKeys()
@@ -300,7 +300,7 @@ public class BackupS3Tests
         listed.Value.Should().BeEmpty();
     }
 
-    // ---- t04: ListAsync / GetObjectAsync (verify) ----
+    // ---: ListAsync / GetObjectAsync (verify) ----
 
     // AAA: ListAsync произвольного префикса full/<id>/pg_wal/ — только объекты префикса
     [Fact]
@@ -382,9 +382,9 @@ public class BackupS3Tests
         got.IsSuccess.Should().BeFalse();
     }
 
-    // ---- t05: ListFullsAsync / DownloadTextAsync ----
+    // ---: ListFullsAsync / DownloadTextAsync ----
 
-    // ListFulls (t05): id полных по CommonPrefixes, сортировка, чужие шарды не попадают.
+    // ListFulls : id полных по CommonPrefixes, сортировка, чужие шарды не попадают.
     [Fact]
     public async Task ListFullsReturnsFullIds()
     {
@@ -437,7 +437,7 @@ public class BackupS3Tests
         listed.Value.Should().HaveCount(3);
     }
 
-    // DownloadText (t05): маленький текстовый объект; отсутствующий — Failed (не исключение).
+    // DownloadText : маленький текстовый объект; отсутствующий — Failed (не исключение).
     [Fact]
     public async Task DownloadTextBackupLabelAndNotfound()
     {
@@ -463,7 +463,7 @@ public class BackupS3Tests
         missing.IsSuccess.Should().BeFalse();
     }
 
-    // AAA (t08): put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)
+    // AAA : put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)
     [Fact]
     public async Task PutObjectBytesDeliveredOneToOne()
     {
@@ -485,8 +485,8 @@ public class BackupS3Tests
         ms.ToArray().Should().Equal(data);
     }
 
-    // AAA (t08): несовпадающий sha256 — сервер отвергает put (BadDigest) → Failed.
-    // SKIP: продуктовый пробел ownS3 ВНЕ зоны t36 — сервер не верифицирует
+    // AAA : несовпадающий sha256 — сервер отвергает put (BadDigest) → Failed.
+    // SKIP: продуктовый пробел ownS3 ВНЕ зоны — сервер не верифицирует
     // x-amz-checksum-sha256 (пут проходит, BadDigest не возвращается).
     // Возврат теста в строй — задача t91-owns3-checksum-verify
     // (arch/roadmap/owns3.md).

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests.Operations;
 
-// Прокси-команды move-ops (t07): панель не пишет в etcd — команды уходят в API
+// Прокси-команды move-ops : панель не пишет в etcd — команды уходят в API
 // PgWorker; ответы/ошибки проксируются 1:1 (ProblemDetails как есть).
 public class MoveOpsProxyCommandTests
 {

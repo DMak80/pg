@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Статус-райтер WAL-потока: JSON 1:1 с каркасным форматом t01 (парсер читает без
+// Статус-райтер WAL-потока: JSON 1:1 с каркасным форматом (парсер читает без
 // parseErrors), идемпотентность — безделье не пишет; failover по endpoints.
 public class WalStatusWriterTests
 {
@@ -53,7 +53,7 @@ public class WalStatusWriterTests
         degradedJson.Should().Contain("\"error\":\"WAL chain gap: expected X\"");
     }
 
-    // AAA: WAL_CHAIN_ERROR пишется как "WAL_CHAIN_ERROR" и читается обратно (контракт arch/19 §4, t07)
+    // AAA: WAL_CHAIN_ERROR пишется как "WAL_CHAIN_ERROR" и читается обратно (контракт arch/19 §4)
     [Fact]
     public void ToJson_StateWalChainError_WritesWalChainError()
     {
@@ -93,7 +93,7 @@ public class WalStatusWriterTests
     }
 
     [Fact]
-    public async Task WriteIfChanged_NewKey_WrittenAndReadByParser_t01()
+    public async Task WriteIfChanged_NewKey_WrittenAndReadByParser()
     {
         // Arrange
         var gateway = new FakeEtcdGateway();
@@ -124,7 +124,7 @@ public class WalStatusWriterTests
         gateway.Store["/pgworker/backups/c1/shard1/wal"].Should().Be(WalStatusWriter.ToJson(Sample()));
     }
 
-    // ---- t24: поле gap (RPO-зазор tli-прыжка, arch/19 §4) ----
+    // ---: поле gap (RPO-зазор tli-прыжка, arch/19 §4) ----
 
     // AAA: writer с Gap → JSON содержит gap с границами и tli
     [Fact]
@@ -192,7 +192,7 @@ public class WalStatusWriterTests
         read.Value.Gap.Should().BeEquivalentTo(state.Gap);
     }
 
-    // ---- t27: поле agents (супервиз-факты per-node, arch/19 §4, AC7) ----
+    // ---: поле agents (супервиз-факты per-node, arch/19 §4, AC7) ----
 
     // AAA: writer с Agents → JSON содержит agents в канонической форме
     [Fact]

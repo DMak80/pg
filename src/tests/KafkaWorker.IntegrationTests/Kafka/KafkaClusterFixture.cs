@@ -53,7 +53,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     public IKafkaAdminClientFactory AdminFactory => _adminFactory;
 
-    // Кеш сертов нод (R3): для процессов, конструируемых в тестах (t03).
+    // Кеш сертов нод (R3): для процессов, конструируемых в тестах.
     public BrokerCertificateCache Certificates { get; } = new();
 
     // Advertised-хост CLIENT-listener для ХОСТ-процесса теста: localhost
@@ -84,7 +84,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     // Кластеры, созданные тестами этого прогона (регистрирует Cluster) —
     // DisposeAsync демонтирует их целиком: per-cluster сети не копятся,
-    // пул subnet'ов docker-хоста конечен (t09-фикс).
+    // пул subnet'ов docker-хоста конечен (фикс).
     private readonly List<string> _clusters = [];
 
     // Имя кластера с тегом прогона: fixture.Cluster("re1") → "re1a1b2c3d4".
@@ -209,7 +209,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         => Gateway.PutAsync(Endpoint, key, value, null, TestContext.Current.CancellationToken);
 
     // Вероятно-свободный закрытый порт (зонд: слушаем 0 → отдаём и закрываем) —
-    // endpoints репро-кластеров без литералов портов (t05 churn/gate).
+    // endpoints репро-кластеров без литералов портов (churn/gate).
     public static int ReserveClosedPort()
     {
         var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
@@ -219,11 +219,11 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         return port;
     }
 
-    // Del-хелпер тестов (точечное удаление, t05 healing: утеря portalloc).
+    // Del-хелпер тестов (точечное удаление, healing: утеря portalloc).
     public Task DelAsync(string key)
         => Gateway.DeleteAsync(Endpoint, key, prefix: false, TestContext.Current.CancellationToken);
 
-    // Снос контейнеров брокеров кластера БЕЗ томов (t05 healing ветка 3:
+    // Снос контейнеров брокеров кластера БЕЗ томов (healing ветка 3:
     // S7-свидетельство смерти при живых данных).
     public async Task RemoveBrokerContainersAsync(string cluster)
     {
@@ -251,9 +251,9 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         return store;
     }
 
-    // Риг надзора для healing-тестов (t05): клэйм + NodeSupervisor со всеми
+    // Риг надзора для healing-тестов : клэйм + NodeSupervisor со всеми
     // зависимостями (construction-сайт Program.cs; healer/backoff — новые;
-    // certificates — t03 per-cluster PKI).
+    // certificates — per-cluster PKI).
     public async Task<NodeSupervisor> SupervisorRigAsync(string cluster)
     {
         var ct = TestContext.Current.CancellationToken;
@@ -273,7 +273,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     // Риг provisioning для подъёма кластера в healing-тесте (конструкция —
     // как в ProvisioningTests; клэйм — общий store фикстуры; секреты/серты —
-    // t03: ClusterSecretEnsurer + BrokerCertificateCache).
+    // ClusterSecretEnsurer + BrokerCertificateCache).
     public async Task<ProvisioningProcess> ProvisionRigAsync(string cluster)
     {
         var claims = await ClaimsAsync(cluster);
@@ -287,7 +287,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
             Options, Certificates, snapshot: null);
     }
 
-    // Дискавери-клиент (spec §9.2, t03): bootstrap/endpoints, креды по роли
+    // Дискавери-клиент (spec §9.2): bootstrap/endpoints, креды по роли
     // (app|admin) и ca_pem — ТОЛЬКО из ключей etcd; SASL_SSL + ssl.ca.pem.
     public async Task<AdminClientBuilder> DiscoveryAdminBuilderAsync(string cluster, string role = "app")
     {
@@ -310,7 +310,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         return new AdminClientBuilder(config);
     }
 
-    // Дискавери-части для клиентских сценариев теста (t03): bootstrap (localhost-
+    // Дискавери-части для клиентских сценариев теста : bootstrap (localhost-
     // замена advertised), ca_pem и app-креды — всё из etcd.
     public async Task<(string Bootstrap, string CaPem, string AppUser, string AppPassword)> DiscoveryPartsAsync(string cluster)
     {

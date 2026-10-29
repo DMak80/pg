@@ -3,7 +3,7 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests.Coordination;
 
-// ClaimStore (клэймы/лидерство) — t09: перенос Pg-копии с параметризацией
+// ClaimStore (клэймы/лидерство): перенос Pg-копии с параметризацией
 // префикса (ключи /unit/… вместо /pgworker/…).
 public class CoordinationTests
 {

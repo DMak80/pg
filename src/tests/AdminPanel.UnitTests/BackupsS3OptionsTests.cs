@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// BackupsS3Options — конфиг-POCO без кредов и целей (t31): цели инвентаря
+// BackupsS3Options — конфиг-POCO без кредов и целей : цели инвентаря
 // резолвятся из снапшота S3 (S3TargetsResolver → S3StorageClient.UpdateTargets);
 // в options остались только bucket/region/path-style и периодика тика.
 public class BackupsS3OptionsTests

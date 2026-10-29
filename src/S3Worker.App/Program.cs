@@ -14,7 +14,7 @@ using Shared.Etcd.Client;
 // (вкл. /healthz), конфигурация appsettings+env, DI слоёв. Per-install
 // env-секреты — TLS API (S3W_API_TLS_*), docker-транспорт (S3W_DOCKER_*),
 // спец-ключ бэкапа etcd (S3W_ETCD_BACKUP_{ACCESSKEY,SECRETKEY}, arch/23 §6).
-// Каркас t32 Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
+// Каркас Task 3: координация/циклы — Task 4, драйвер docker — Task 6,
 // процессы — Tasks 10–13, API-эндпоинты — Task 14 (каждая задача правит свой
 // блок DI; инкрементальный рост Program).
 
@@ -44,7 +44,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
-// embedded DNS (t09): PooledConnectionLifetime + IPv4-first резолв.
+// embedded DNS : PooledConnectionLifetime + IPv4-first резолв.
 // Поллинг-инвариант (arch/24 §6): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
@@ -110,7 +110,7 @@ builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.SyncProbeHan
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
-// Граф репликации и отзыв ключей (arch/24 §1.1, t40): put-links, deny/allow.
+// Граф репликации и отзыв ключей (arch/24 §1.1): put-links, deny/allow.
 builder.Services.AddSingleton(sp => new S3Worker.App.Api.Operations.PutLinksHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints));
@@ -224,7 +224,7 @@ builder.Services.AddSingleton(ToProvisioningOptions(
 // done/aborted-state-changed выводит из provisioning, демонтаж начинается с нуля.
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.BootWaitBudget(
     sp.GetRequiredService<TimeProvider>()));
-// PKI репликации per-cluster + единая сборка env инстанса (arch/24 §4/§5, t40);
+// PKI репликации per-cluster + единая сборка env инстанса (arch/24 §4/§5);
 // процесс G — доводка состава mesh (arch/24 §5 G).
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.PkiStore(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -241,7 +241,7 @@ builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.MeshGove
     sp.GetRequiredService<S3Worker.Core.OwnS3.IOwnS3NodeClient>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value),
     sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
-// Процесс F — зонд связности/синхронности (arch/24 §5 F, t33).
+// Процесс F — зонд связности/синхронности (arch/24 §5 F).
 builder.Services.AddSingleton(sp => new S3Worker.Provisioning.Processes.SyncProbeProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<S3WorkerOptions>>().Value.Etcd.Endpoints,

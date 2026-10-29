@@ -130,7 +130,7 @@ public sealed class SnapshotRefresher(
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
-        // Префикс-запрос точечный: ровно один ключ /pgworker/etcd-snapshots (t08, паттерн WorkerApiCert).
+        // Префикс-запрос точечный: ровно один ключ /pgworker/etcd-snapshots (паттерн WorkerApiCert).
         var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
         var workParsed = WorkJournalParser.Parse(workKv.Value);
 
@@ -171,7 +171,7 @@ public sealed class SnapshotRefresher(
             with
         {
             WorkerHealth = workerHealthStore.Current ?? [],
-            // t08: live-S3-инвентарь — готовым состоянием из стора (по образцу
+            // live-S3-инвентарь — готовым состоянием из стора (по образцу
             // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
             S3Storage = inventoryStore.Current,
         };
@@ -235,19 +235,19 @@ public sealed class SnapshotRefresher(
             previous?.HaScopes ?? [],
             previous?.StandNodes ?? [],
             previous?.MoveTickets ?? [],  // очередь заявок не теряется на отказном тике — как Clusters
-            previous?.Backups ?? [],      // префикс бэкапов переживает отказный тик — как moves (t02)
+            previous?.Backups ?? [],      // префикс бэкапов переживает отказный тик — как moves 
             previous?.PgWorkerEndpoints ?? [], // ключи доступа воркера переживают отказ etcd
             previous?.PgWorkerWork ?? [], // журналы процессов воркера переживают отказ etcd (R4)
             previous?.WorkerHealth ?? [], // health-пробы переживают отказ etcd (poller независим)
-            previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
+            previous?.Probes ?? [],   // пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
             previous?.UnknownKeyCount ?? 0,
-            previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
-            previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
-            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (t08, как WorkerHealth)
+            previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups 
+            previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage 
+            previous?.S3Storage, // S3-инвентарь переживает отказ etcd (как WorkerHealth)
             null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
-            previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик (t08)
+            previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик 
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
@@ -271,7 +271,7 @@ public sealed class SnapshotRefresher(
             && uri.Scheme is "http" or "https"
             && !string.IsNullOrEmpty(uri.Host);
 
-    // Эффективный интервал тика: RefreshIntervalSeconds или fallback 3 c (t03 §3.3);
+    // Эффективный интервал тика: RefreshIntervalSeconds или fallback 3 c (§3.3);
     // тот же порог ×3 кормит snapshot-stale (spec §3.3).
     private double EffectiveIntervalSeconds()
     {

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// Перебор endpoints lease-скриптом мастер-ключа (t09, spec §6): PGW_ETCD —
+// Перебор endpoints lease-скриптом мастер-ключа (spec §6): PGW_ETCD —
 // СПИСОК URL; при отказе активного endpoint pgwnodetool продолжает писать/
 // продлевать мастер-ключ через следующий живой. CLI запускается ПРОЦЕССОМ в
 // контейнере mcr.microsoft.com/dotnet/runtime:10.0 (тестовый glibc-раннер;

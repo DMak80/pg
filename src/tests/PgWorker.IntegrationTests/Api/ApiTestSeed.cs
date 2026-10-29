@@ -7,7 +7,7 @@ namespace PgWorker.IntegrationTests.Api;
 internal static class ApiTestSeed
 {
     /// <summary>Кластер в каноне ПОСЛЕ provisioning (config без state = Active);
-    /// syncStrict — per-cluster опция synchronous_mode_strict в config (t06;
+    /// syncStrict — per-cluster опция synchronous_mode_strict в config (;
     /// true — пишется явленно, false — выключенный strict, add-shard без ограничений).</summary>
     public static async Task SeedActiveClusterAsync(
         EtcdFixture etcd, string name, int buckets = 4, int shards = 2, int replicas = 1,

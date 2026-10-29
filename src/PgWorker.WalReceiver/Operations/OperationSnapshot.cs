@@ -1,6 +1,6 @@
 namespace PgWorker.WalReceiver.Operations;
 
-/// <summary>IMMUTABLE-снимок статуса операции бэкапов (arch/19 §2, spec t26 §3.2):
+/// <summary>IMMUTABLE-снимок статуса операции бэкапов (arch/19 §2, spec §3.2):
 /// публикация — атомарная замена ссылки (паттерн LiveFacts); поля — контракт
 /// GET-статусов (snake_case имена в JSON). Error — однострочная причина
 /// (JSON-безопасность). Маркер транзиента скачивания — пара State=failed +
@@ -18,7 +18,7 @@ public sealed record OperationSnapshot(
     long? StartedUnix = null,
     string? Error = null);
 
-/// <summary>Константы состояний операций (spec t26 §3.2): running | succeeded |
+/// <summary>Константы состояний операций (spec §3.2): running | succeeded |
 /// failed; у полного дополнительно uploading (фаза фиксации); у ops-операций
 /// (verify/restore/drill) дополнительно cancelled — операторская отмена
 /// (cancel API, внешний канал): НЕ failed — отмена не суждение о данных
@@ -33,7 +33,7 @@ public static class OperationStates
     public const string Cancelled = "cancelled";
 }
 
-/// <summary>Константы фаз операций (spec t26 §3.2): полный — basebackup |
+/// <summary>Константы фаз операций (spec §3.2): полный — basebackup |
 /// uploading; verify — downloading | verifying; restore — downloading |
 /// recovering.</summary>
 public static class OperationPhases

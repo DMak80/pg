@@ -76,7 +76,7 @@ public class SdGeneratorIntegrationTests
         file.Should().Contain("\"cluster\":\"c1\"");
         file.Should().Contain("\"shard\":\"shard1\"");
         file.Should().Contain("\"node\":\"shard1a\"");
-        // t25 (arch/18 §5.4): второй file_sd симметричен — те же лейблы, порт 8080
+        //  (arch/18 §5.4): второй file_sd симметричен — те же лейблы, порт 8080
         var walFile = await File.ReadAllTextAsync(harness.WalPath, ct);
         walFile.Should().Contain("h1:8080");
         walFile.Should().Contain("\"cluster\":\"c1\"");
@@ -84,7 +84,7 @@ public class SdGeneratorIntegrationTests
         harness.Metrics.LastSuccessUnix.Should().NotBeNull();
     }
 
-    // AAA (t15 ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
+    // AAA (ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
     // <alias>:8008 в файле; host-публикация записи в таргет НЕ попадает.
     [Fact]
     public async Task Put_PortallocWithAlias_NetworkTarget()

@@ -36,7 +36,7 @@ public sealed class ProbeOrchestrator(
             seconds = 15;
         }
 
-        // Первый тик сразу (прецедент t03 §7.2), далее по периоду.
+        // Первый тик сразу (прецедент §7.2), далее по периоду.
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(seconds));
         do
         {

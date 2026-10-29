@@ -10,7 +10,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E tli-механики приёмника WAL (t24): переживание 58P01 после фейловера —
+// E2E tli-механики приёмника WAL : переживание 58P01 после фейловера —
 // досыпка старого таймлайна (RPO=0, AC1) и прыжок-fallback (RPO-зазор, AC2).
 // Изолированное окружение E2eEnvironment (своя docker-сеть, свой etcd, СВОЯ
 // ownS3-нода — withS3Node:true; порт динамический) + живой кластер воркером
@@ -22,7 +22,7 @@ public class E2eWalStreamTliScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -53,7 +53,7 @@ public class E2eWalStreamTliScenarios
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
-            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            // факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
@@ -107,7 +107,7 @@ public class E2eWalStreamTliScenarios
             Console.WriteLine($"[PHASE] wal-t24a: docker start {Fx.S3NodeContainerName}");
             await Fx.RunDockerAsync(["start", Fx.S3NodeContainerName], ct);
 
-            // Прогресс листинга S3 (t29 §3.4): размер, max-TLI сегментов, наличие .history
+            // Прогресс листинга S3 (§3.4): размер, max-TLI сегментов, наличие.history
             Func<Task<string>> walListingProgress = async () =>
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -209,7 +209,7 @@ public class E2eWalStreamTliScenarios
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
-            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            // факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
@@ -257,7 +257,7 @@ public class E2eWalStreamTliScenarios
             var newMasterDsn = DatabaseProvisioner.BuildAdminDsn(newMasterHost, newMasterPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             var slot = PgWorker.Backups.BackupNames.Slot(cluster, "shard1");
-            // t25: слот активен, пока приёмник новой мастер-ноды стримит — на время
+            // слот активен, пока приёмник новой мастер-ноды стримит — на время
             // индукции среза удержания приёмник останавливается (supervisord-программа
             // ноды) и возвращается после пересоздания слота воркером (waiting_slot).
             var newMasterContainer = $"pgw-{cluster}-shard1-{newMasterNode}";
@@ -275,7 +275,7 @@ public class E2eWalStreamTliScenarios
             // Переработка сегментов постгресом выполняется ТОЛЬКО на
             // checkpoint: без явного CHECKPOINT pg_wal продолжает держать
             // сегменты старого TLI, досыпка приёмника проходит успешно и
-            // прыжка не происходит (разбор t097).
+            // прыжка не происходит (разбор).
             await using (var cpConn = new NpgsqlConnection(newMasterDsn))
             {
                 await cpConn.OpenAsync(ct);
@@ -313,7 +313,7 @@ public class E2eWalStreamTliScenarios
             controlLsn.Should().NotBeNullOrEmpty("the control-insert LSN is the catch-up marker");
             Console.WriteLine($"[PHASE] wal-t24b: control insert done, controlLsn={controlLsn}");
 
-            // Прогресс-делегат: листинг S3 + ключ wal + ключи full (t29 §3.4)
+            // Прогресс-делегат: листинг S3 + ключ wal + ключи full (§3.4)
             async Task<string> ConvergenceProgressAsync()
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
@@ -399,7 +399,7 @@ public class E2eWalStreamTliScenarios
                 .Should().BeGreaterThanOrEqualTo(0,
                     "delivery caught up: last chain segment ≥ control-insert segment (§3.7 inv.5)");
 
-            // 9.4 (t25-ревью): факт tli-прыжка наблюдаем в статус-ключе живого
+            // 9.4 (ревью): факт tli-прыжка наблюдаем в статус-ключе живого
             // приёмника (arch/19 §4): from — хвостовой сегмент старого TLI в S3,
             // to — сегмент прыжка, tli — новый таймлайн. Факт персистентен в
             // живом процессе до следующего прыжка, но нода-свидетель не
@@ -533,7 +533,7 @@ public class E2eWalStreamTliScenarios
     {
         try
         {
-            // t25: факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            // факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
             var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
                 TestContext.Current.CancellationToken);
             var receiversDump = string.Join("; ", agentFacts.Select(f =>
@@ -605,7 +605,7 @@ public class E2eWalStreamTliScenarios
                 $"fulls={fullsDump.Count}:\n" +
                 string.Join("\n", fullsDump.Select(k => $"  {k.Key}: {k.Value}")) + "\n" +
                 $"patroni={patroni}\nHOST.LOG:{hostLog}\n";
-            // Дамп — в каталог телеметрии прогона (t29 §3.4): рядом с
+            // Дамп — в каталог телеметрии прогона (§3.4): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
             await File.WriteAllTextAsync(dumpPath, dump);
@@ -674,7 +674,7 @@ public class E2eWalStreamTliScenarios
         return (fx, app, cluster, adminDsn, masterNode);
     }
 
-    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
+    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: комплект джобов + Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
     // (host.docker.internal); пороги WAL-контроля — короткие.
     private Task<HostInstance> StartWalHostAsync(string name, CancellationToken ct)
@@ -682,7 +682,7 @@ public class E2eWalStreamTliScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -755,7 +755,7 @@ public class E2eWalStreamTliScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -763,10 +763,10 @@ public class E2eWalStreamTliScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

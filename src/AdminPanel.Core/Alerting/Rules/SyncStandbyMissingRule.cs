@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// sync-standby-missing (strict ? critical : warning, t06): у мастера нет standby
+// sync-standby-missing (strict ? critical : warning): у мастера нет standby
 // с sync_state IN ('sync','quorum') — предусловие переездов не выполнено (P8,
 // arch/03 §4); у strict-кластера запись блокирована — инцидент (critical).
 // Проверяется только на мастере без ошибки пробы.
@@ -26,7 +26,7 @@ public sealed class SyncStandbyMissingRule : IAlertRule
             if (runtime.Standbies.Any(s => s.SyncState is "sync" or "quorum"))
                 continue;
 
-            // t06: strict-кластер без sync-standby БЛОКИРУЕТ запись — critical
+            // strict-кластер без sync-standby БЛОКИРУЕТ запись — critical
             // (инцидент); не-strict — прежний warning (доступность переездов).
             var strict = cluster.SynchronousModeStrict;
             yield return new Alert(

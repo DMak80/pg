@@ -91,7 +91,7 @@ public class ValkeySnapshotParserTests
     [Fact]
     public void CaPem_CaKey_AreRead()
     {
-        // Arrange: ключи CA в префиксе кластера (валидный PEM от ValkeyPki, t06).
+        // Arrange: ключи CA в префиксе кластера (валидный PEM от ValkeyPki).
         var (caPem, caKeyPem) = ValkeyPki.GenerateCa("demo");
         var snap = ParseOne(
             Kv("/valkey/clusters/demo/config",

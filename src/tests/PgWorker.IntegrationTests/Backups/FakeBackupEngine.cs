@@ -4,12 +4,12 @@ using PgWorker.Docker.Drivers;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Публичная копия юнит-двойника BackupProcessTests.FakeBackupEngine (t05 Task 9):
+// Публичная копия юнит-двойника BackupProcessTests.FakeBackupEngine (Task 9):
 // in-memory docker-движок для супервиза джобов RestoreProcess против реального etcd.
 public sealed class FakeBackupEngine : IDockerEngine
 {
 
-        // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
+        // ── union-члены (kfw/vwk-методы): pg-доменом не используются — стабы ──
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(false));
@@ -66,8 +66,7 @@ public sealed class FakeBackupEngine : IDockerEngine
         if (InspectFails)
             return Task.FromResult(Result<DockerContainerInspect>.Failed(
                 new ApplicationException("docker: inspect failed")));
-        // Поиск по Id ИЛИ по имени (t26: инспекция публикации :8080 идёт по
-        // детерминированному имени tool-контейнера).
+        // Поиск по Id ИЛИ по имени (инспекция публикации :8080 идёт по имени).
         var found = Containers.FirstOrDefault(p => p.Value.Id == id || p.Key == id);
         return Task.FromResult(found.Key is null
             ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))

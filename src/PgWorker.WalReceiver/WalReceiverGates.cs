@@ -42,7 +42,7 @@ public static class WalReceiverGates
             Unknown: false);
     }
 
-    /// <summary>Проба ПОЛНОГО стоп-гейта из живого стрима (t25, arch/19 §3):
+    /// <summary>Проба ПОЛНОГО стоп-гейта из живого стрима (arch/19 §3):
     /// true — глобальный ключ /pgworker/backups-disabled жив ИЛИ wal-ключ
     /// шарда в STOPPED/WAL_CHAIN_ERROR: живой стрим обязан замирать по ЛЮБОМУ из
     /// гейтов (исход Reconnect — цикл перепроверит и уйдёт в

@@ -5,7 +5,7 @@ using Shared.Core;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Фабрика per-cluster пула-клиента (t36): резолв policy+пула (резолвер) +
+/// Фабрика per-cluster пула-клиента : резолв policy+пула (резолвер) +
 /// КЭШ пул-клиентов per-контекст (arch/19 §5 «Кэш пул-клиентов»): клиент
 /// живёт в фабрике ДО КОНЦА ПРОЦЕССА, пока не сменился контекст пула
 /// (endpoints/креды/bucket/CA) — circuit-breaker-стейт отказных целей

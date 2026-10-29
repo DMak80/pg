@@ -48,18 +48,18 @@ public static class InstallSecretsGuard
 }
 
 /// <summary>
-/// REST-TLS материал ноды (t22, arch/14 §2.1): PEM серта/ключа/CA
+/// REST-TLS материал ноды (arch/14 §2.1): PEM серта/ключа/CA
 /// REST-эндпоинта (выпускает воркер из per-install CA, кеш процесса) +
 /// эффективная per-cluster REST-пара (rest_password; окно ротации — pending).
 /// </summary>
 public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, string RestPassword);
 
-/// <summary>Env бэкап-целей ноды для приёмника WAL (t25, arch/19 §7):
+/// <summary>Env бэкап-целей ноды для приёмника WAL (arch/19 §7):
 /// bucket/CA https S3 — per-install константы (не секреты, не дрейфуют);
 /// ставит BuildSpec драйвера из Backups-опций воркера. Bucket null/пуст ⇒
 /// env не ставится — приёмник старт-фейлится (подсистема выключена
 /// валидацией старта: Enabled=true ⇒ Bucket непустой). StagingDir — путь
-/// staging полного в data-volume ноды (t26, arch/19 §9; null/пуст ⇒ env не
+/// staging полного в data-volume ноды (arch/19 §9; null/пуст ⇒ env не
 /// ставится — приёмник возьмёт дефолт /home/postgres/pgdata/backup-staging).</summary>
 public sealed record NodeBackupEnv(string? Bucket, string? CaPem, string? StagingDir = null);
 
@@ -67,19 +67,19 @@ public sealed record NodeBackupEnv(string? Bucket, string? CaPem, string? Stagin
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
 /// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
 /// P11 (канонические тайминги PatroniTimings: ttl=20/loop_wait=1/
-/// retry_timeout=3 — полы Patroni 4.x, t09; применяется при первой
+/// retry_timeout=3 — полы Patroni 4.x; применяется при первой
 /// инициализации DCS-кластера, далее гарантируется конвергенцией §5 C) +
 /// callback on_role_change → lease-скрипт мастер-ключа
 /// /clusters/&lt;C&gt;/shards/&lt;X&gt;/master,
 /// P3 (wal_level=logical, sync_replication_slots, max_slot_wal_keep_size),
 /// P15 (максимальные соединения и бюджет doorman — синхронизированы).
 /// При tuning != null параметры PG — merge(PGTune ∪ канон), построение набора —
-/// в PgParametersCanon.Desired (единый источник с конвергенцией t11, arch/14
+/// в PgParametersCanon.Desired (единый источник с конвергенцией, arch/14
 /// §2.1/§5 C); SpiloEnvBuilder только цитирует значения для YAML (все — в
 /// двойных кавычках, КРОМЕ wal_level — исторический raw-string; порядок §5.2,
 /// канон поверх без дубликатов). tuning == null — прежний хардкод-набор (тесты
 /// драйвера, изолированные пути). syncStrict — per-cluster опция
-/// synchronous_mode_strict из config кластера (t06, arch/14 §2.1/§3):
+/// synchronous_mode_strict из config кластера (arch/14 §2.1/§3):
 /// bootstrap.dcs несёт значение кластера, живые кластеры приводит конвергенция
 /// DCS (§5 C). Per-нода PGW_NODE_HOST добавляет драйвер при
 /// создании контейнера.
@@ -108,7 +108,7 @@ public static class SpiloEnvBuilder
             ["SCOPE"] = topology.Scope,
             ["ETCD3_HOSTS"] = etcdHosts,
 
-            // REST-TLS ноды (t22, арх/14 §2.1): PEM с реальными переносами строк
+            // REST-TLS ноды (арх/14 §2.1): PEM с реальными переносами строк
             // (Spilo пишет значение в файл буквально); хеш эффективной пары —
             // факт для инспекции (rolling-ротация), сам пароль — в YAML ниже.
             ["SSL_RESTAPI_CERTIFICATE"] = rest.CertPem,
@@ -130,7 +130,7 @@ public static class SpiloEnvBuilder
             ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
-            // Идентичность приёмника WAL (t25, arch/19 §3 + arch/14 §2.1): СТРОГО
+            // Идентичность приёмника WAL (arch/19 §3 + arch/14 §2.1): СТРОГО
             // всегда, независимо от Backups:Enabled — приёмник гейтится
             // etcd-стоп-ключами; включение подсистемы не требует пересоздания нод.
             ["PGW_BACKUP_CLUSTER"] = topology.Cluster,
@@ -149,9 +149,9 @@ public static class SpiloEnvBuilder
 
             // Patroni-конфигурация: эталон pg.env; параметры PG — merge(PGTune ∪
             // канон) при tuning != null, иначе прежний хардкод-набор; тайминги —
-            // из канона PatroniTimings (полы Patroni 4.x, t09); strict —
-            // per-cluster опция из config кластера (t06, arch/14 §2.1/§3).
-            // restapi (t22): connect_address DNS-именем (перекрывает шаблонный
+            // из канона PatroniTimings (полы Patroni 4.x); strict —
+            // per-cluster опция из config кластера (arch/14 §2.1/§3).
+            // restapi : connect_address DNS-именем (перекрывает шаблонный
             // IP контейнера; api_url в DCS = DNS из SAN), authentication —
             // per-cluster REST-пара (мутационные эндпоинты); listen не задаём.
             // REST-пароль подставляется из runtime-секрета; ключ YAML собирается
@@ -222,9 +222,9 @@ public static class SpiloEnvBuilder
     ]);
 
     // Канон PgWorker поверх PGTune (P3 + лог-блок) переехал в
-    // PgParametersCanon.CanonParameters (t11) — единый источник с конвергенцией.
+    // PgParametersCanon.CanonParameters — единый источник с конвергенцией.
 
-    // Merge PGTune ∪ канон — единый источник PgParametersCanon.Desired (t11);
+    // Merge PGTune ∪ канон — единый источник PgParametersCanon.Desired ;
     // YAML-цитирование — деталь ЭТОГО сериализатора: все значения в двойных
     // кавычках, КРОМЕ wal_level (исторический стиль raw-string, инвариант
     // байт-в-байт SPILO_CONFIGURATION).

@@ -10,7 +10,7 @@ namespace AdminPanel.Api.Inspection;
 // Запрос сводки дашборда (arch/03 §1 GET /api/overview).
 public sealed record OverviewQuery : IQuery<OverviewDto>;
 
-// Ответ GET /api/overview: etcd-часть реальна, кластерная часть — t05 (spec §3.15).
+// Ответ GET /api/overview: etcd-часть реальна, кластерная часть — (spec §3.15).
 public sealed record OverviewDto(
     int AlertsCritical,
     int AlertsWarning,
@@ -40,8 +40,8 @@ public sealed record OverviewS3Dto(
 
 public sealed record OverviewEtcdDto(bool Reachable, int EndpointsOk, int EndpointsTotal);
 
-// Заглушки контракта t05 (arch/03 §2): поля полные, значения — всегда пусто в t04.
-// Наполнены из снапшота в t05 (spec §6.2).
+// Заглушки контракта (arch/03 §2): поля полные, значения — всегда пусто в.
+// Наполнены из снапшота в (spec §6.2).
 public sealed record OverviewClusterDto(
     string Name, int Shards, int Buckets, int ActiveMoves, int MasterlessShards, bool NotInitialized);
 
@@ -65,7 +65,7 @@ public static class OverviewMapper
                 c.Name,
                 c.Shards.Count,
                 c.BucketsCount,
-                // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec t12 §3.6)
+                // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec §3.6)
                 c.Buckets.Count(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting),
                 c.State == ClusterState.NotInitialized
                     ? 0 // без мастера у не поднятого кластера — норма (arch/03 §2)
@@ -79,8 +79,8 @@ public static class OverviewMapper
                         c.Name, b.Id, BucketStates.Name(b.State),
                         b.Move?.Owner, b.Move?.Target, b.Move?.UpdatedUnix)))],
             null, // kafka-сводка — хендлер дополняет из KafkaSnapshot (B5)
-            null, // valkey-сводка — хендлер дополняет из ValkeySnapshot (t03)
-            null, // s3-сводка — хендлер дополняет из S3Snapshot (t34)
+            null, // valkey-сводка — хендлер дополняет из ValkeySnapshot 
+            null, // s3-сводка — хендлер дополняет из S3Snapshot 
             Math.Max(0L, (long)Math.Round(age.TotalMilliseconds)),
             age > TimeSpan.FromSeconds(SnapshotStaleRule.Multiplier * refreshIntervalSeconds));
     }
@@ -98,7 +98,7 @@ public static class OverviewMapper
                 valkey.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical
                     && a.Kind is "valkey-node-not-running" or "valkey-endpoints-missing"));
 
-    // s3-сводка (t34, arch/03 §12.1): кластеры + critical-алерты кластерных
+    // s3-сводка (arch/03 §12.1): кластеры + critical-алерты кластерных
     // kinds s3-node-not-running/s3-endpoints-missing/s3-connectivity-down/
     // s3-sync-diverged (симметрия MapValkey — worker-api-unreachable не считаем);
     // null до первого тика s3-refresher'а. Public static — юнит-тесты.
@@ -148,7 +148,7 @@ public sealed class OverviewQueryHandler(
                 kafka.Clusters.Count,
                 kafka.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical));
 
-    // Эффективный интервал: fallback 3 c при опечатке конфига — как в refresher (t03 §3.3).
+    // Эффективный интервал: fallback 3 c при опечатке конфига — как в refresher (§3.3).
     private static double EffectiveInterval(IOptions<EtcdOptions> options)
         => options.Value.RefreshIntervalSeconds > 0
             ? options.Value.RefreshIntervalSeconds

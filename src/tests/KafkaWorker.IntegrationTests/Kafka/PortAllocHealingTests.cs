@@ -3,11 +3,11 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Лестница E9 интеграционно (t05, spec §7.6): утеря portalloc живого
+// Лестница E9 интеграционно (spec §7.6): утеря portalloc живого
 // кластера → реконструкция из inspect (ветка 2, без пересозданий); утеря
 // portalloc + снос контейнеров → новая аллокация + RMW endpoints + подъём
 // (ветка 3). Порты — окно фикстуры (FreePortWindow, литералов нет).
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.

@@ -6,12 +6,12 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// PUT /api/clusters/{c}/config (t06, spec §6.5, 02 §9.10) на WAF-хосте воркера
+// PUT /api/clusters/{c}/config (spec §6.5, 02 §9.10) на WAF-хосте воркера
 // с реальным etcd: 204 и поле в etcd; идемпотентность (повтор 204, mod_revision
 // не растёт); включение при replicas=1 → 400; не-Active → 409; нет кластера →
 // 404; битое тело (без поля) → 400. Гонка mod_revision → 503 верифицируется
 // юнит-формой (UpdateClusterConfigHandlerTests, Задача 8 шаг 3б — примечание
-// в плане t06): инъекция конкурентной записи внутри одного вызова на реальном
+// в плане): инъекция конкурентной записи внутри одного вызова на реальном
 // etcd детерминированно невоспроизводима.
 [Collection(NonE2eCollection.Name)]
 public class UpdateClusterConfigApiTests(PgApiFixture fixture)
@@ -76,7 +76,7 @@ public class UpdateClusterConfigApiTests(PgApiFixture fixture)
     [Fact]
     public async Task PutClusterConfig_EnableWithSingleReplicaShard_400()
     {
-        // Arrange — дефолтный сид: replicas=1 (strict=false в сид-конфиге, t06).
+        // Arrange — дефолтный сид: replicas=1 (strict=false в сид-конфиге).
         await ApiTestSeed.SeedActiveClusterAsync(Etcd, "cfg3", buckets: 4, shards: 2,
             replicas: 1, syncStrict: false);
         var ct = TestContext.Current.CancellationToken;

@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Цикл процессов (t06): Active-ветка — миграция TLS ПЕРВЫМ шагом, InProgress
+// Цикл процессов : Active-ветка — миграция TLS ПЕРВЫМ шагом, InProgress
 // ⇒ надзор/converge/ротация в этом тике не идут (журнал work/<C> остаётся
 // op=migrate-tls done — не перезаписан надзором).
 public class ValkeyClusterProcessesTests
@@ -74,7 +74,7 @@ public class ValkeyClusterProcessesTests
                 NullLogger<ValkeyClusterProcesses>.Instance);
         }
 
-        // Канонический TLS-кластер (миграция t06 уже отработала): креды, CA-ключи,
+        // Канонический TLS-кластер (миграция уже отработала): креды, CA-ключи,
         // endpoints, portalloc, state RUNNING, контейнер с TLS-args (порт CaRotator).
         public void SeedTlsCanonical(string cluster, int port = 17001)
         {
@@ -184,7 +184,7 @@ public class ValkeyClusterProcessesTests
         // состояние журнала «rotate done», а НЕ waiting-фаза K.
         var rig = new Rig();
         rig.SeedTlsCanonical("gate2");
-        // t10: K0.5-точка экспирационная — заявка СВЕЖАЯ (возраст < порога),
+        // K0.5-точка экспирационная — заявка СВЕЖАЯ (возраст < порога),
         // интент кейса — семантика вентиля (K waiting не блокирует E), не возраст.
         rig.Etcd.Seed("/valkeyworker/ca_rotations/gate2",
             $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");

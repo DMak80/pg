@@ -61,7 +61,7 @@ public static class ClustersParser
                     && segments[4].Length > 0
                     && segments[5] == "state":
                 {
-                    // Маркер демонтажа шарда (t06 §9.6): уходит из unknown-счётчика в модель.
+                    // Маркер демонтажа шарда (§9.6): уходит из unknown-счётчика в модель.
                     var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
                     shard.StateRaw = kv.Value;
                     break;
@@ -183,7 +183,7 @@ public static class ClustersParser
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
             var buckets = JsonValues.ReadLong(root, "buckets");
-            // t06: отсутствие/не-bool = true (arch/02 §2.1) — тернарник, не &&-свёртка.
+            // отсутствие/не-bool = true (arch/02 §2.1) — тернарник, не &&-свёртка.
             var syncStrict = root.TryGetProperty("synchronous_mode_strict", out var strict)
                 && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
                     ? strict.GetBoolean()
@@ -238,7 +238,7 @@ public static class ClustersParser
             replicas,
             string.IsNullOrWhiteSpace(shard.Master) ? null : shard.Master.Trim(),
             nodes,
-            null, // Runtime — SQL-проба t06
+            null, // Runtime — SQL-проба 
             shard.StateRaw?.Trim() == "TO_REMOVE" ? ShardState.ToRemove : ShardState.Active,
             dsn.Ports,
             dsn.Password);
@@ -248,7 +248,7 @@ public static class ClustersParser
     {
         // ids: полный диапазон 0..N-1 из config (все N, включая ACTIVE — arch/02 §2.1)
         // ∪ фактические ключи (out-of-range routing вида bucket_99 остаются видимыми для
-        // алерта t04 bucket-out-of-range; incomplete-кластер — только фактические, spec §3.7).
+        // алерта bucket-out-of-range; incomplete-кластер — только фактические, spec §3.7).
         var ids = bucketsCount > 0
             ? Enumerable.Range(0, bucketsCount).Union(acc.Routing.Keys).Union(acc.StatusRaw.Keys)
             : acc.Routing.Keys.Union(acc.StatusRaw.Keys);

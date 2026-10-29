@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Резолв стартовой позиции приёмника от хвоста S3 (t27, arch/19 §3): хвост —
+// Резолв стартовой позиции приёмника от хвоста S3 (arch/19 §3): хвост —
 // конец последнего сегмента непрерывной части цепочки (WalChain), дыра — старт
 // от конца непрерывной части (повторная доставка выше дыры идемпотентна), пустой
 // префикс — null (старт от restart_lsn слота).
@@ -45,7 +45,7 @@ public class WalReceiverTailTests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => throw new NotSupportedException();
 
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));

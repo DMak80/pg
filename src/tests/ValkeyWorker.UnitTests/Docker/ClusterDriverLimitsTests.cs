@@ -7,7 +7,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Docker;
 
-// Конверсия лимитов в драйвере (t07 §4.6.2, шаг 6.6 плана): движок возвращает
+// Конверсия лимитов в драйвере (§4.6.2, шаг 6.6 плана): движок возвращает
 // docker-факт Shared.Docker.NodeLimits(long NanoCpus, long MemoryBytes),
 // доменная запись NodeLimits(decimal? CpuCores, long? MemoryBytes). 0 = без
 // лимита → null (семантика значений прежнего vwk-движка — сверено с ассертами

@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 namespace Shared.Etcd.Coordination;
 
 /// <summary>
-/// Глобальный portalloc-клэйм (t90, arch/14 §2.4/§3.3): взаимоисключение секции
+/// Глобальный portalloc-клэйм (arch/14 §2.4/§3.3): взаимоисключение секции
 /// довыделения портов «чтение занятости → выбор троек → запись portalloc» —
 /// пер-кластерные клэймы кросс-кластерную гонку не закрывают (два параллельно
 /// сеемых кластера читают {prefix}/portalloc/* до первой записи соседа и
@@ -17,7 +17,7 @@ namespace Shared.Etcd.Coordination;
 /// «Занят» (чужим инстансом или параллельным тиком этого же — объект в DI один
 /// на процесс) — не ошибка: вызывающий возвращает InProgress, следующий тик
 /// (~5 с) повторяет; смерть держателя гасит TTL ≤ 15 с — takeover без оператора.
-/// Префикс ключей — параметр конструктора (t09): "/pgworker" / "/kafkaworker".
+/// Префикс ключей — параметр конструктора : "/pgworker" / "/kafkaworker".
 /// </summary>
 public sealed class PortAllocLock(
     string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string instanceId)
@@ -33,14 +33,14 @@ public sealed class PortAllocLock(
     /// параллельным тиком ЭТОГО инстанса — клэйм-объект DI-синглтон; НЕ ошибка).</summary>
     public async Task<Result<bool>> TryAcquireAsync(CancellationToken ct)
     {
-        // t90 (ревью-блокер): объект — DI-синглтон, ReconcileLoop тикает кластеры
+        //  (ревью-блокер): объект — DI-синглтон, ReconcileLoop тикает кластеры
         // ПАРАЛЛЕЛЬНО (MaxClusters) — для второго тика того же инстанса клэйм
         // «занят» так же, как для чужого: пока тик A держит секцию (поля
         // _lease/_payload гасятся только в ReleaseAsync), тик B получает false →
         // PortLockBusyException → waiting-portalloc-lock → следующий тик
         // (тиковая модель spec §2/§3.2). Локальная проверка ДО etcd-раунда, а не
         // reentrant-true: (1) второй конкурент НЕ входит в секцию concurrently —
-        // иначе обе секции читают busy и пишут portalloc (сама гонка t90);
+        // иначе обе секции читают busy и пишут portalloc (сама гонка);
         // (2) не тратим grant+txn на заведомо занятый клэйм; (3) _lease/_payload
         // пишет ровно один держатель инстанса — перехват по истёкшему TTL не
         // перезапишет поля, и release зависшего тика не удалит чужой живой ключ
@@ -158,7 +158,7 @@ public sealed class PortAllocLock(
         [property: JsonPropertyName("since_unix")] long SinceUnix);
 }
 
-/// <summary>Сигнал «глобальный portalloc-клэйм занят другим инстансом» (t90):
+/// <summary>Сигнал «глобальный portalloc-клэйм занят другим инстансом» :
 /// НЕ фейл — без бэкоффа; процесс возвращает InProgress (waiting-portalloc-lock),
 /// следующий тик повторяет. Маркер-тип для ветки обработки рядом с FailAsync.</summary>
 public sealed class PortLockBusyException(string key) : Exception(

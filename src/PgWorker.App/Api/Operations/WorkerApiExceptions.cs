@@ -6,7 +6,7 @@ namespace PgWorker.App.Api.Operations;
 // (src/AdminPanel.Api/Operations/CreateClusterCommand.cs/DeleteClusterCommand.cs),
 // тексты 1:1 — фронт-контракт панели не меняется.
 
-// Валидация policy бэкапов не прошла: 400 с errors по полям (t06, arch/19 §4).
+// Валидация policy бэкапов не прошла: 400 с errors по полям (arch/19 §4).
 public sealed class BackupsPolicyValidationException(
     IReadOnlyList<ValidationError> errors)
     : Exception("backup policy is invalid")
@@ -44,14 +44,14 @@ public sealed class AddShardValidationException(IReadOnlyList<ValidationError> e
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// Валидация мутации config не прошла: 400 с errors по полям (t06, 02 §9.10).
+// Валидация мутации config не прошла: 400 с errors по полям (02 §9.10).
 public sealed class UpdateClusterConfigValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("config mutation parameters are invalid")
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// RMW-txn проигран: config изменился между чтением и записью — 503, retry клиентом (t06).
+// RMW-txn проигран: config изменился между чтением и записью — 503, retry клиентом.
 public sealed class ClusterConcurrentWriteException(string key)
     : Exception($"concurrent write modified {key} between read and write — retry the request");
 
@@ -83,7 +83,7 @@ public sealed class ShardNotFoundException(string cluster, string shard)
 public sealed class ShardRemoveBlockedException(string reason) : Exception(reason)
 {
     public static ShardRemoveBlockedException Buckets(int count)
-        => new($"shard has {count} buckets — move them explicitly first (moves UI — t07)");
+        => new($"shard has {count} buckets — move them explicitly first (moves UI)");
 
     public static ShardRemoveBlockedException UnfinishedMove()
         => new("unfinished bucket move — complete or cancel it");
@@ -198,7 +198,7 @@ public sealed class AllOthersRecreatingException(string scope, string node)
 // за флагом EnableSeedEndpoint, arch/14 §1.1.1).
 public sealed class WorkerApiNotFoundException(string message) : Exception(message);
 
-// ── Restore (t05, arch/19 §3.5) ──
+// ── Restore (arch/19 §3.5) ──
 
 // confirm != имя шарда — 400 (необратимая операция: защита от ошибки оператора).
 public sealed class ConfirmMismatchException(string expected, string got)
@@ -220,7 +220,7 @@ public sealed class RestoreValidationException(IReadOnlyList<ValidationError> er
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
-// ── Сироты бэкапов (reliability t04, arch/19 §4) ──
+// ── Сироты бэкапов (reliability, arch/19 §4) ──
 
 // Префикса нет в реестре сирот / имена неканонические — 404.
 public sealed class OrphanNotFoundException(string prefix)

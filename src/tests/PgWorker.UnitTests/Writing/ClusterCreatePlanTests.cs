@@ -2,7 +2,7 @@
 using PgWorker.Core.Writing;
 namespace PgWorker.UnitTests.Writing;
 
-// Валидация создания кластера: arch/02 §9.3 — сервер источник истины (spec t12 §3.3).
+// Валидация создания кластера: arch/02 §9.3 — сервер источник истины (spec §3.3).
 // Перенос из AdminPanel.UnitTests (task etcd-via-worker-api): фиксстуры значений 1:1.
 public class CreateClusterValidatorTests
 {
@@ -19,7 +19,7 @@ public class CreateClusterValidatorTests
     [Theory]
     [InlineData("Shop")]       // верхний регистр
     [InlineData("1shop")]      // начинается с цифры
-    [InlineData("shop-x")]     // дефис: коллизии ScopeMatcher (spec t12 §8.5)
+    [InlineData("shop-x")]     // дефис: коллизии ScopeMatcher (spec §8.5)
     [InlineData("шоп")]        // не [a-z0-9_]
     [InlineData("")]           // пустое
     public void Validate_BadNames_Rejected(string name)
@@ -55,7 +55,7 @@ public class CreateClusterValidatorTests
     [Fact]
     public void Validate_ShardsWithoutBuckets_Rejected()
     {
-        // Arrange: шардов больше бакетов — задание пользователя (spec t12 §1)
+        // Arrange: шардов больше бакетов — задание пользователя (spec §1)
         var request = Valid with { Shards = 5 };
 
         // Act
@@ -105,7 +105,7 @@ public class ClusterCreatePlanTests
         // Act
         var plan = ClusterCreatePlan.Build(request, nowUnix: 1755900000);
 
-        // Assert: клэйм — конфиг со state NOT_INITIALIZED (t06: strict-поле
+        // Assert: клэйм — конфиг со state NOT_INITIALIZED (: strict-поле
         // присутствует — дефолт true; поле, не точная строка — канон arch/02 §9.1)
         plan.ConfigKey.Should().Be("/clusters/shop/config");
         plan.ConfigValue.Should().Contain("\"state\":\"NOT_INITIALIZED\"");
@@ -169,7 +169,7 @@ public class ClusterCreatePlanTests
         // Act
         var plan = ClusterCreatePlan.Build(request, 1);
 
-        // Assert: буквы a..z; мастер — <X>a (spec t12 §8.4)
+        // Assert: буквы a..z; мастер — <X>a (spec §8.4)
         plan.Puts.Where(p => p.Key.StartsWith("/clusters/big/shards/shard1/nodes/"))
             .Should().HaveCount(26);
         plan.Puts.Should().Contain(p => p.Key == "/clusters/big/shards/shard1/nodes/shard1z/state");

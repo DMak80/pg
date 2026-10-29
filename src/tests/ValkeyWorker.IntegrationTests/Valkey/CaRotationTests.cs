@@ -5,7 +5,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// Интеграция ротации CA (t07): заявка → CaRotator доводит окно двойного
+// Интеграция ротации CA : заявка → CaRotator доводит окно двойного
 // доверия на живом docker-valkey; после коммита ca_pem/ca_key = NEW,
 // staging удалён, заявка снята, PING по NEW отвечает, OLD доверия нет.
 // Контур — реальный etcd + реальный valkey-контейнер (см. примечание задачи).

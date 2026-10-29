@@ -5,10 +5,10 @@ using Shared.Tls;
 
 namespace Shared.Docker;
 
-// Фабрика движков (arch/14 §2.2/§2.2.1, t03): endpoint "unix:///var/run/docker.sock"
+// Фабрика движков (arch/14 §2.2/§2.2.1): endpoint "unix:///var/run/docker.sock"
 // | "tcp://host[:2375]" (+TLS при заданном DockerTlsOptions) | "ssh://[user@]host[:22]"
 // (туннель — SshTunnelOptions). API-версия закреплена v1.44 (docker >= 23).
-// Общая фабрика трёх воркеров (t07): SSH/TLS — опции, доступные всем доменам
+// Общая фабрика трёх воркеров : SSH/TLS — опции, доступные всем доменам
 // (kfw/vwk `new DockerEngineFactory()` валиден — опции optional).
 public class DockerEngineFactory : IAsyncDisposable
 {
@@ -107,7 +107,7 @@ public class DockerEngineFactory : IAsyncDisposable
             ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
             : (_tls is not null
                 ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
-                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
+                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp:
         var httpClient = new HttpClient(CreateHandler(endpoint))
         {
             BaseAddress = new Uri(baseAddress),
@@ -179,7 +179,7 @@ internal sealed class DockerTlsMaterial
     }
 
     // Цепочка серверного серта демона против per-install docker-CA — обёртка
-    // над общим TlsChain.ValidateChain (t08: тело в Shared.Tls).
+    // над общим TlsChain.ValidateChain (: тело в Shared.Tls).
     public static bool ValidateChain(X509Certificate? certificate, X509Certificate2 ca)
         => TlsChain.ValidateChain(certificate, ca);
 }

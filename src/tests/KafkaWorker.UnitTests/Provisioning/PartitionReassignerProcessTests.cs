@@ -8,7 +8,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// PartitionReassignerProcess (arch/16 §5 I; spec t02 §5.1–§5.4): drain
+// PartitionReassignerProcess (arch/16 §5 I; spec §5.1–§5.4): drain
 // TO_REMOVE-брокера (батчи/дедуп/завершение по факту+USR), balance по заявке
 // панели, слепая проба без подач, отмена, клэйм-guard.
 
@@ -251,7 +251,7 @@ public class PartitionReassignerProcessTests
         var rig = await NewRig();
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [1, 2]])];
-        // Свежая заявка: waiting-drain — экспирационная точка (t10), старую сняло бы.
+        // Свежая заявка: waiting-drain — экспирационная точка, старую сняло бы.
         rig.Etcd.Seed(TicketKey,
             $$"""{"requested_unix":{{rig.Time.Utc.ToUnixTimeSeconds() - 10}},"requested_by":"ops"}""");
 
@@ -329,7 +329,7 @@ public class PartitionReassignerProcessTests
         result.Error!.Message.Should().Contain("claim");
     }
 
-    // ===== t10: экспирация заявки rebalances под тройным гвардом §3.1 =====
+    // ===== : экспирация заявки rebalances под тройным гвардом §3.1 =====
 
     private static string OutcomeKey => "/kafkaworker/ticket_outcomes/events";
 

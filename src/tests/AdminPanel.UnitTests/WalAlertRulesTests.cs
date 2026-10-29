@@ -9,7 +9,7 @@ using Shared.Etcd.Client;
 
 namespace AdminPanel.UnitTests;
 
-// Юниты t03: панельный парсер /pgworker/backups/ + правила алертов
+// Юниты : панельный парсер /pgworker/backups/ + правила алертов
 // wal-chain-broken / wal-stream-lag / wal-stream-stopped (arch/19 §3/§8).
 public class WalAlertRulesTests
 {
@@ -25,7 +25,7 @@ public class WalAlertRulesTests
     private static EtcdSnapshot SnapshotWith(ClusterBackupsInfo backups)
         => TestSnapshots.Healthy(Now) with { Backups = [backups] };
 
-    // t02-модель: (Cluster, FullMaxAgeSec, ShardLastCompletedUnix, Wal-словарь t03).
+    // модель: (Cluster, FullMaxAgeSec, ShardLastCompletedUnix, Wal-словарь).
     private static ClusterBackupsInfo Backups(
         string cluster, Dictionary<string, WalStreamInfo?> wal)
         => new(cluster, null, new Dictionary<string, long?>(), wal);
@@ -84,7 +84,7 @@ public class WalAlertRulesTests
     [Fact]
     public void Parser_FullAndPolicyWithoutWal_DoNotBreakWalDictionary()
     {
-        // Arrange — full/policy разбираются t02-семантикой (шард в словаре с null);
+        // Arrange — full/policy разбираются семантикой (шард в словаре с null);
         // wal-словарь шарда при отсутствии wal-ключа пуст → wal-правила молчат
         var kvs = new[]
         {
@@ -95,7 +95,7 @@ public class WalAlertRulesTests
         // Act
         var parsed = BackupsParser.Parse(kvs);
 
-        // Assert — t02-семантика: шард зарегистрирован; wal-инфы нет (null) —
+        // Assert — семантика: шард зарегистрирован; wal-инфы нет (null) —
         // наши wal-правила по null не срабатывают
         parsed.Errors.Should().BeEmpty();
         var cluster = parsed.Clusters.Should().ContainSingle().Subject;

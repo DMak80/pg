@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.Backups;
 
-/// <summary>Факты одного приёмника WAL из статус-ключа agent/&lt;N&gt; (t25,
+/// <summary>Факты одного приёмника WAL из статус-ключа agent/&lt;N&gt; (
 /// arch/19 §4): node/role/state + факты pool_exhausted/tli_jump/error. Роль и
 /// состояние — строковые значения ключа ("master"/"sync"/"none",
 /// "streaming"/...); парсинг DTO дублируется в Backups толерантно (Backups НЕ
@@ -15,7 +15,7 @@ public sealed record WalReceiverAgentFacts(
     string Node, string? Role, string? State, bool PoolExhausted,
     WalGapState? TliJump, string? Error);
 
-/// <summary>Читатель статус-ключей приёмников шарда (t25, arch/19 §4):
+/// <summary>Читатель статус-ключей приёмников шарда (arch/19 §4):
 /// Range /pgworker/backups/&lt;C&gt;/&lt;X&gt;/agent/ — failover-перебор
 /// endpoints (образец WalStatusWriter.ReadAsync). Битые значения — пропуск
 /// записи (толерантность к чужому/легаси-содержимому ключа).</summary>

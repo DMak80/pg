@@ -69,7 +69,7 @@ public class ValkeyE2eLifecycleTests
         }, TimeSpan.FromSeconds(100), ct);
 
         // Act 2: PING admin-кредом по TLS (endpoints из etcd — host-порт
-        // фактический, литералов :17xxx нет; ca_pem — дискавери t06).
+        // фактический, литералов :17xxx нет; ca_pem — дискавери).
         var endpoints = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
             $"/valkey/clusters/{cluster}/endpoints", ct)).Value!.Value;
         endpoints.Should().StartWith("host.docker.internal:");
@@ -123,7 +123,7 @@ public class ValkeyE2eLifecycleTests
         // Act 6: teardown + ассерт чистоты (вкл. тома тега) — в DisposeAsync.
     }
 
-    // t06-маркер мерж-гейта (spec §4.9): TLS-only жизненный цикл (env-модель) —
+    // маркер мерж-гейта (spec §4.9): TLS-only жизненный цикл (env-модель) —
     // нода поднята с env VALKEY_TLS_* и cmd-обёрткой (в args — экранированные
     // '--tls-port' '6379'/'--port' '0'), ca_pem/ca_key в etcd, RESP roundtrip
     // по TLS, plain отклонён, после удаления ни ключей, ни TLS-тома
@@ -253,7 +253,7 @@ public class ValkeyE2eLifecycleTests
         }
     }
 
-    // t07-маркер мерж-гейта (spec §7.4): ротация CA без остановки доверия —
+    // маркер мерж-гейта (spec §7.4): ротация CA без остановки доверия —
     // полный прод-контур заявки (mTLS POST /api/valkey/clusters/{c}/ca/rotate)
     // → окно двойного доверия P→D→R→C тиками живого воркера → journal done;
     // ca_pem/ca_key = NEW (bundle свёрнут), staging/заявки нет, контейнер

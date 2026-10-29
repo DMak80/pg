@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace PgWorker.Backups.EtcdExport;
 
-/// <summary>Метаданные выгрузки слепка etcd (t08, spec §3.2): объект
+/// <summary>Метаданные выгрузки слепка etcd (spec §3.2): объект
 /// etcd/snapshot-&lt;id&gt;.meta.json в bucket бэкапов. UploadedUnix —
 /// фактическое время put'а объекта; TakenUnix — метка снятия из имени файла
 /// (семантика «покрытия» статус-ключа — не здесь). Revision — ревизия etcd

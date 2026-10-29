@@ -3,14 +3,14 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-/// <summary>Итог GFS-отбора (t06, arch/19 §4): Keep — id оставляемых COMPLETED,
+/// <summary>Итог GFS-отбора (arch/19 §4): Keep — id оставляемых COMPLETED,
 /// Delete — кандидаты на удаление в порядке исполнения (verify-FAILED первыми,
 /// далее по возрастанию started_unix — место освобождается от самого старого).</summary>
 public sealed record RetentionSelection(
     IReadOnlySet<string> Keep,
     IReadOnlyList<string> Delete);
 
-/// <summary>Вердикт занятости хранилища: OK/WARN/CRIT относительно квоты (t06).</summary>
+/// <summary>Вердикт занятости хранилища: OK/WARN/CRIT относительно квоты.</summary>
 public enum StorageState
 {
     Ok,
@@ -23,7 +23,7 @@ public enum StorageState
 public sealed record StorageVerdict(
     StorageState State, long UsedBytes, long QuotaBytes, double? UsedPercent);
 
-/// <summary>Чистые функции ретенции (t06, arch/19 §4/§5): без I/O, момент —
+/// <summary>Чистые функции ретенции (arch/19 §4/§5): без I/O, момент —
 /// аргументом (TimeProvider не нужен). Полное юнит-покрытие — риск «удалили
 /// нужное» закрывается тестами детерминированности (spec §2 п.5).</summary>
 public static partial class RetentionPlanner
@@ -86,7 +86,7 @@ public static partial class RetentionPlanner
         return new RetentionSelection(keep, delete);
     }
 
-    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (t18, arch/19
+    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (arch/19
     /// §4 п.5/§3): wal_start новейшего (по started_unix) COMPLETED-полного с
     /// verify.state=OK — ОДНА точка для cutoff-чистки WAL и chain_start.
     /// verify-OK-полного нет (PENDING/FAILED/verify отсутствует) → null:
@@ -109,7 +109,7 @@ public static partial class RetentionPlanner
     /// TLI ниже стартового — на удаление. Сам cutoff, сегменты выше/новее,
     /// `.history` cutoff-TLI и новее, `.partial` и нераспознаваемые имена —
     /// НЕ входят (консервативно: объект TLI&gt;cutoff позицией ниже cutoff не
-    /// трогаем — контроль t03 его игнорирует, удалять незачем).</summary>
+    /// трогаем — контроль его игнорирует, удалять незачем).</summary>
     public static IReadOnlyList<string> SelectWalForDeletion(
         IReadOnlyList<string> objectNames, WalFileName cutoff)
     {
@@ -147,7 +147,7 @@ public static partial class RetentionPlanner
     }
 
     /// <summary>Гигиена FAILED-истории (spec §3.3 п.5): держать последние
-    /// keepFailed по started_unix, старше — del. Бэкофф t02 не ломается: n
+    /// keepFailed по started_unix, старше — del. Бэкофф не ломается: n
     /// остаётся ≤ keepFailed, а BaseSec·2^(n−1) упирается в MaxSec раньше
     /// границы (AC5).</summary>
     public static IReadOnlyList<string> SelectFailedForPrune(
@@ -179,7 +179,7 @@ public static partial class RetentionPlanner
     }
 
     // Универсальная гранула (недели/месяцы): кандидаты — полные ПЕРИОДА
-    // СТРОГО РАНЬШЕ текущего (t18, arch/19 §4 п.1: счётчики считают предыдущие
+    // СТРОГО РАНЬШЕ текущего (arch/19 §4 п.1: счётчики считают предыдущие
     // календарные периоды; полные текущей недели/месяца вне дневного окна
     // точками не удерживаются — текущий период держит только дневная гранула)
     // → группы по календарному периоду UTC → N свежайших групп (сравнение

@@ -274,7 +274,7 @@ public class KafkaParserTests
     [Fact]
     public void Rebalances_ValidAndBroken()
     {
-        // Arrange: две валидные заявки + битый JSON (формат ротаций, t02 §4).
+        // Arrange: две валидные заявки + битый JSON (формат ротаций, §4).
         var kvs = EtcdFixtures.LoadKv("Kafka/kafka-rebalances.json");
 
         // Act
@@ -389,7 +389,7 @@ public class KafkaParserTests
         result.Errors.Should().ContainSingle();
     }
 
-    // ===== t10: ca_rotations + ticket_outcomes (arch/15 §4) =====
+    // ===== : ca_rotations + ticket_outcomes (arch/15 §4) =====
 
     [Fact]
     public void CaRotations_ValidAndBroken()
@@ -428,7 +428,7 @@ public class KafkaParserTests
     public void TicketOutcomes_ValidAndBroken()
     {
         // Arrange: исход expired с reason/requested_by + исход done без
-        // опциональных полей + битый JSON + нет обязательного поля (t10).
+        // опциональных полей + битый JSON + нет обязательного поля.
         var kvs = new List<Kv>
         {
             new("/kafkaworker/ticket_outcomes/events",

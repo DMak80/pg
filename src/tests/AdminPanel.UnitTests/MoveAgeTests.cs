@@ -12,7 +12,7 @@ public class MoveAgeTests
     [Fact]
     public void Seconds_FromUpdatedUnix()
     {
-        // Arrange: SYNCING с обоими штампами — база updated_unix (roadmap t05).
+        // Arrange: SYNCING с обоими штампами — база updated_unix (roadmap).
         var bucket = new BucketInfo(1, "s1", BucketState.Syncing,
             new MoveInfo("s1", "s2", Now - 700, Now - 30, "copy", null));
 

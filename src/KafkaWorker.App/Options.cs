@@ -47,10 +47,10 @@ public sealed class KafkaWorkerMetricsOptions : Shared.Metrics.MetricsOptions
 public sealed class ApiOptions
 {
     /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.
-    /// t03: обязан начинаться с https:// (mTLS-only грань).</summary>
+    /// обязан начинаться с https:// (mTLS-only грань).</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>mTLS-конфигурация HTTP API (arch/16 §1.1, t03).</summary>
+    /// <summary>mTLS-конфигурация HTTP API (arch/16 §1.1).</summary>
     public TlsOptions Tls { get; set; } = new();
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
@@ -58,7 +58,7 @@ public sealed class ApiOptions
 }
 
 /// <summary>
-/// mTLS HTTP API воркера (arch/16 §1.1, t03): серверный серт+ключ и CA клиентских
+/// mTLS HTTP API воркера (arch/16 §1.1): серверный серт+ключ и CA клиентских
 /// сертов per-install API-PKI; env KFW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
 /// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
 /// </summary>
@@ -138,10 +138,10 @@ public sealed class LoopsOptions
     /// <summary>Тик автосинка топиков (волна C, arch/16 §5 D).</summary>
     public int TopicSyncIntervalSec { get; set; } = 15;
 
-    /// <summary>Тик reassignment партиций (t02, arch/16 §5 I: drain/balance).</summary>
+    /// <summary>Тик reassignment партиций (arch/16 §5 I: drain/balance).</summary>
     public int ReassignIntervalSec { get; set; } = 15;
 
-    /// <summary>Максимум партиций в одной подаче reassignment (батчи, t02).</summary>
+    /// <summary>Максимум партиций в одной подаче reassignment (батчи).</summary>
     public int ReassignBatchPartitions { get; set; } = 10;
 
     public int SnapshotIntervalMin { get; set; } = 360;
@@ -168,11 +168,11 @@ public sealed class ThresholdsOptions
     /// AlterReassignments round-trip по всем endpoint-попыткам.</summary>
     public int ReassignSubmitSec { get; set; } = 60;
 
-    /// <summary>Дедуп переподачи одного батча reassignment (t02, KIP-455).</summary>
+    /// <summary>Дедуп переподачи одного батча reassignment (KIP-455).</summary>
     public int ReassignRetrySubmitSec { get; set; } = 120;
 
     /// <summary>Возраст не-начатой заявки (ротации app/admin/CA, ребалансировка),
-    /// после которого воркер снимает её в waiting-точке (t10, arch/16 §5).</summary>
+    /// после которого воркер снимает её в waiting-точке (arch/16 §5).</summary>
     public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 

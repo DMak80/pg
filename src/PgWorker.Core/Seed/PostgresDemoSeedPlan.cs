@@ -2,7 +2,7 @@
 namespace PgWorker.Core.Seed;
 
 // Демо-сид pg-контура (arch/14 §1.1.1, task etcd-via-worker-api): перенос
-// dev-stand/adminpanel/seed.sh + обязательные заявки ресурсов шардов (t25 —
+// dev-stand/adminpanel/seed.sh + обязательные заявки ресурсов шардов (—
 // обязательность EnsureNode-путей введена позже переноса, f6d4574). Чистые
 // (key, value)-пары: порядок/значения каноничны, txn не нужен (скрипт писал
 // плоскими put). Сид СОГЛАСОВАННЫЙ:
@@ -19,7 +19,7 @@ public sealed record PostgresDemoSeedPlan(long NowUnix)
         List<PlanPut> puts =
         [
             // Config (Active-канон: state-поля нет — кластер проинициализирован;
-            // t06: сид пишет strict-поле явленно — durability-first).
+            // сид пишет strict-поле явленно — durability-first).
             new PlanPut("/clusters/demo/config",
                 $"{{\"buckets\":16,\"dbname\":\"demo\",\"created_unix\":{now},\"synchronous_mode_strict\":true}}"),
 
@@ -62,7 +62,7 @@ public sealed record PostgresDemoSeedPlan(long NowUnix)
         foreach (var s in new[] { "s1", "s2" })
         {
             var (a, b) = ($"{s}a", $"{s}b");
-            // Обязательные заявки ресурсов шарда (arch/14 §2.1 п.4, t25): как
+            // Обязательные заявки ресурсов шарда (arch/14 §2.1 п.4): как
             // панель при создании через API (ClusterCreatePlan: CanonicalCpu /
             // CanonicalGiB) — без заявки EnsureNode-пути (adopt-репарация,
             // надзор) фейлят каждый тик. request_disk не сеется — воркером

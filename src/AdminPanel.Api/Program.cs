@@ -30,19 +30,19 @@ Tracing.Init(builder.Environment.ApplicationName);
 builder
    .Services.UseDiBehaviours(builder.Configuration)
    .AddSharedCore()
-   .AddApi() // t02: auth-сервисы и [Config]-POCO Api-сборки
+   .AddApi() // auth-сервисы и [Config]-POCO Api-сборки
    .AddCore()
    .AddEtcd()
    .AddKafka() // [B3] kafka-домен: refresher + стор снапшота (арх/02 §10)
-   .AddValkey() // t03: valkey-домен: refresher + сторы (arch/02 §11)
-   .AddS3() // t34: s3-домен: refresher + стор (arch/02 §12)
+   .AddValkey() // valkey-домен: refresher + сторы (arch/02 §11)
+   .AddS3() // s3-домен: refresher + стор (arch/02 §12)
    .AddProbes()
    .AddOpenApi()
    .AddHealthChecks()
    .AddCheck("self", () => HealthCheckResult.Healthy(), ["live"])
-   .AddCheck<EtcdHealthCheck>("etcd"); // [t03] чек refresher'а; без тега live — healthz не роняет (arch/03 §1)
+   .AddCheck<EtcdHealthCheck>("etcd"); // чек refresher'а; без тега live — healthz не роняет (arch/03 §1)
 
-// t02: cookie-схема аутентификации (настройки — AdminPanel:Auth).
+// cookie-схема аутентификации (настройки — AdminPanel:Auth).
 builder.Services.AddCookieAuth();
 
 // Метрики (arch/18 §2.4/§3): /metrics без cookie-авторизации (guard — только
@@ -68,7 +68,7 @@ var app = builder.Build();
 // старте (ленивый синглтон без потребителей иначе не создаётся никогда).
 _ = app.Services.GetRequiredService<System.Diagnostics.Metrics.ObservableGauge<double>>();
 
-// t02: fail-closed — без пароля в конфиге логин невозможен, предупреждаем на старте.
+// fail-closed — без пароля в конфиге логин невозможен, предупреждаем на старте.
 var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
     app.Logger.LogWarning("AdminPanel:Auth: neither Password nor PasswordHash is set — login is disabled");
@@ -79,12 +79,12 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-// [t07] SPA из wwwroot — без авторизации (в бандле секретов нет, arch/01 §4/§5).
+// SPA из wwwroot — без авторизации (в бандле секретов нет, arch/01 §4/§5).
 // Бандла нет (npm run build не запускался) — хост жив, отдаётся только API.
 if (!Directory.Exists(app.Environment.WebRootPath))
     app.Logger.LogWarning("wwwroot is empty — SPA bundle not built (cd frontend && npm run build)");
 
-// [t07] default-документ и статика; guard /api/* ниже статике не мешает.
+// default-документ и статика; guard /api/* ниже статике не мешает.
 // index.html — no-cache: имена ассетов хешируются (vite), но сам html должен
 // перекачиваться каждый раз, иначе браузер тянет старый бандл после деплоя.
 app.Use(async (context, next) =>
@@ -96,24 +96,24 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-// t02: аутентификация + default-deny guard — всё /api/*, кроме login и healthz, → 401.
+// аутентификация + default-deny guard — всё /api/*, кроме login и healthz, → 401.
 app.UseAuthentication();
 app.UseApiAuthorization();
 app.MapAppMetrics(); // /metrics мимо guard'а (guard матчит только /api/*) — arch/18 §3
 app.MapAuthApi();
-app.MapInspectionApi(); // [t04] эндпоинты инспекции etcd из снапшота (arch/03 §1)
-app.MapBackupsInspectionApi(); // [t08] грань «Хранилище бэкапов» (arch/03 §1)
+app.MapInspectionApi(); // эндпоинты инспекции etcd из снапшота (arch/03 §1)
+app.MapBackupsInspectionApi(); // грань «Хранилище бэкапов» (arch/03 §1)
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)
-app.MapValkeyInspectionApi();  // t03: инспекция valkey-домена (arch/03 §8.1)
-app.MapS3InspectionApi();      // t34: инспекция s3-домена (arch/03 §12.1)
-app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
+app.MapValkeyInspectionApi();  // инспекция valkey-домена (arch/03 §8.1)
+app.MapS3InspectionApi();      // инспекция s3-домена (arch/03 §12.1)
+app.MapOperationsApi(); // единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)
-app.MapValkeyOperationsApi();  // t03: valkey-мутации (arch/02 §11.2)
-app.MapS3OperationsApi();       // t34: s3-мутации (arch/02 §12.2)
+app.MapValkeyOperationsApi();  // valkey-мутации (arch/02 §11.2)
+app.MapS3OperationsApi();       // s3-мутации (arch/02 §12.2)
 app.MapWorkersApi(); // серты API воркеров + рестарт (arch/adminpanel/02 §9.9, 03 §3.7)
 
 // Живость самой панели (liveness, arch/03 §1): только чеки с тегом live.
-// Чек etcd (readiness-семантика) не роняет /api/healthz — его статус отдают t04+ эндпоинты.
+// Чек etcd (readiness-семантика) не роняет /api/healthz — его статус отдают + эндпоинты.
 app.MapHealthChecks(
     "/api/healthz",
     new HealthCheckOptions
@@ -122,12 +122,12 @@ app.MapHealthChecks(
         ResponseWriter = HealthzWriter.WriteStatus,
     });
 
-// [t07] неизвестные /api/* — 404 ProblemDetails, а не SPA-fallback (arch/01 §5).
+// неизвестные /api/* — 404 ProblemDetails, а не SPA-fallback (arch/01 §5).
 app.MapFallback(
     "/api/{**_}",
     () => Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found"));
 
-// [t07] SPA-fallback: клиентская маршрутизация неизвестных путей через index.html.
+// SPA-fallback: клиентская маршрутизация неизвестных путей через index.html.
 app.MapFallbackToFile("index.html");
 
 app.Run();

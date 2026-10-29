@@ -4,7 +4,7 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// RemoveShardProcess S0–S4 (t06 spec §5.3; arch/14 §5 H): таблица guard'ов
+// RemoveShardProcess S0–S4 (spec §5.3; arch/14 §5 H): таблица guard'ов
 // G1–G7, «сначала docker, потом etcd», чистка ключей/portalloc/журнала эвакуации.
 public class RemoveShardProcessTests
 {
@@ -65,7 +65,7 @@ public class RemoveShardProcessTests
         return new Rig(usedEtcd, usedDriver, claims, journal, process, puts);
     }
 
-    // AAA (t05 §3.4): активная restore-заявка снимаемого шарда — permanent-FAILED
+    // AAA (§3.4): активная restore-заявка снимаемого шарда — permanent-FAILED
     // «cancelled-by-remove»; restore-операция уходит с нодой шарда (отдельных
     // restore-джобов нет).
     [Fact]

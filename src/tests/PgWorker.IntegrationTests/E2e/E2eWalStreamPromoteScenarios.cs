@@ -9,9 +9,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E WAL-потока, promote/TLI (t24/ревизия 8 — разбиение E2eBackupScenarios):
+// E2E WAL-потока, promote/TLI (/ревизия 8 — разбиение E2eBackupScenarios):
 // монолитный одиночный факт (2-6 мин) — отдельный класс.
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
@@ -25,7 +25,7 @@ public class E2eWalStreamPromoteScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -50,7 +50,7 @@ public class E2eWalStreamPromoteScenarios
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
         var bothStreaming = await E2ePhase.WaitAsync(Fx, "wal-receivers-up", async () =>
         {
-            // t25: факты приёмников — статус-ключи agent/<N> (state=streaming)
+            // факты приёмников — статус-ключи agent/<N> (state=streaming)
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             return facts.Count(f => f.State == "streaming") >= 2;
         }, TimeSpan.FromSeconds(300), ct);
@@ -77,7 +77,7 @@ public class E2eWalStreamPromoteScenarios
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await SwitchWalsAsync(newMasterDsn, 2, ct);
 
-            // Прогресс листинга S3 (t29 §3.4): размер, max-TLI сегментов, наличие
+            // Прогресс листинга S3 (§3.4): размер, max-TLI сегментов, наличие
             // .history; S3-листинг в тиках — не чаще 1 раза в 5 с (интервал
             // тиков). Делегат общий для фаз history/склейки.
             Func<Task<string>> walListingProgress = async () =>
@@ -199,7 +199,7 @@ public class E2eWalStreamPromoteScenarios
     {
         try
         {
-            // t25: факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            // факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
             var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
                 TestContext.Current.CancellationToken);
             var receiversDump = string.Join("; ", agentFacts.Select(f =>
@@ -256,7 +256,7 @@ public class E2eWalStreamPromoteScenarios
                 $"reason={reason}\nreceivers=[{receiversDump}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
                 $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
-            // Дамп — в каталог телеметрии прогона (t29 §3.4): рядом с
+            // Дамп — в каталог телеметрии прогона (§3.4): рядом с
             // phases.log/docker-логами, а не в /tmp мимо артефактов.
             var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
             await File.WriteAllTextAsync(dumpPath, dump);
@@ -330,7 +330,7 @@ public class E2eWalStreamPromoteScenarios
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
     // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
-    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
+    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: комплект джобов + Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
     // (host.docker.internal); пороги WAL-контроля — короткие.
     private Task<HostInstance> StartWalHostAsync(string name, CancellationToken ct)
@@ -338,7 +338,7 @@ public class E2eWalStreamPromoteScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -391,7 +391,7 @@ public class E2eWalStreamPromoteScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -399,10 +399,10 @@ public class E2eWalStreamPromoteScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

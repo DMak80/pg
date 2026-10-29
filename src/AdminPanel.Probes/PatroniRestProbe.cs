@@ -11,7 +11,7 @@ public sealed record PatroniMemberResult(HaMemberProbe Enrichment, ProbeResult R
 
 // Проба члена HA-скопа: GET https://<host>:8008/cluster (arch/02 §6.1 — TLS
 // per-install CA + basic-auth только unsafe-эндпоинтам; GET /cluster — без
-// кредов, t22).
+// кредов).
 public interface IPatroniRestProbe
 {
     Task<PatroniMemberResult> ProbeAsync(HaScope scope, HaMember member, CancellationToken ct);
@@ -21,7 +21,7 @@ public interface IPatroniRestProbe
 public sealed class PatroniProbeException(string message) : Exception(message);
 
 // Реализация: typed HttpClient "patroni" (таймаут из ProbesOptions — ModuleExtensions,
-// паттерн EtcdGateway t03); адрес host:8008 прогоняется через HostMap (§3.6);
+// паттерн EtcdGateway); адрес host:8008 прогоняется через HostMap (§3.6);
 // из ответа берётся запись name == member.Name (§3.4); User-Agent — §3.22.
 [InjectAsSingleton(typeof(IPatroniRestProbe))]
 public sealed class PatroniRestProbe(
@@ -70,7 +70,7 @@ public sealed class PatroniRestProbe(
         }
     }
 
-    // TLS-handler пробы (t22, arch/adminpanel/02 §6.1): верификация цепочки к
+    // TLS-handler пробы (arch/adminpanel/02 §6.1): верификация цепочки к
     // per-install ServerCA из WorkerTls (ServerCaPem ?? ServerCaPath — env
     // WORKERS_PANEL_TLS_SERVER_CA[_PATH]; ОДИН корень доверия на установку),
     // hostname НЕ сверяется (P17-канон: SAN серта ноды — имена сетей, панель

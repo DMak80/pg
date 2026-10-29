@@ -12,7 +12,7 @@ using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// AddShardProcess A0–A6 (t06 spec §5.2; arch/14 §5 G): подъём ОТДЕЛЬНОГО
+// AddShardProcess A0–A6 (spec §5.2; arch/14 §5 G): подъём ОТДЕЛЬНОГО
 // пустого шарда в Active-кластере. Главный ассерт границы §2.1 — SQL не
 // содержит CREATE SCHEMA bucket_*, routing/status не пишутся.
 public class AddShardProcessTests
@@ -39,7 +39,7 @@ public class AddShardProcessTests
     {
         etcd.Seed("/clusters/shop/config",
             """{"buckets":6,"dbname":"shop","created_unix":1755900000}""");
-        // Per-cluster креды (t02): ensure принимает существующие — dsn с adm-pw
+        // Per-cluster креды : ensure принимает существующие — dsn с adm-pw
         etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/shop/bucket_admin_password", "adm-pw");
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
@@ -62,7 +62,7 @@ public class AddShardProcessTests
         etcd.Seed("/service/shop-shard2/request_cpu", "2");
         etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
 
-        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (t24, arch/14 §2.4 п.2): per-host базы
+        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (arch/14 §2.4 п.2): per-host базы
         // разносятся на ширину тройки — shard1 h1/h2 15000-15002, shard2 15003-15005.
         var existing = new Dictionary<string, NodeAddress>
         {
@@ -142,7 +142,7 @@ public class AddShardProcessTests
     }
 
     // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше:
-    // все тройки живых нод обоих шардов на обоих хостах (последовательные слоты, t24).
+    // все тройки живых нод обоих шардов на обоих хостах (последовательные слоты).
     private static IReadOnlySet<(string Host, int Port)> LiveNodePorts() => new HashSet<(string, int)>
     {
         ("h1", 15000), ("h1", 15001), ("h1", 15002), ("h1", 15003), ("h1", 15004), ("h1", 15005),
@@ -443,7 +443,7 @@ public class AddShardProcessTests
         raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15003");
     }
 
-    // AAA (t90): глобальный portalloc-клэйм занят — add-shard ждёт
+    // AAA : глобальный portalloc-клэйм занят — add-shard ждёт
     // (waiting-portalloc-lock) без мутаций portalloc; после release — доводит.
     // Сид: SeedActiveCluster уже записал /pgworker/portalloc/shop (шарды 1–2),
     // новый шард — shard3 (недобор записей shard3/*).

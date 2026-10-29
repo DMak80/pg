@@ -11,7 +11,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Панель против живого etcd (t10, spec §6 п.13): живая заявка старше
+// Панель против живого etcd (spec §6 п.13): живая заявка старше
 // stale-порога → warning-алерт; после экспирации → ticket-expired; после
 // повторной успешной ротации → исход done, алерт погашен (AC13-тройка).
 // Свои guid-кластеры; teardown чистит владельческие префиксы и ассертит чистоту.
@@ -100,7 +100,7 @@ public class RotationOutcomeSnapshotTests : IClassFixture<RotationOutcomeEtcdFix
 }
 
 // Фикстура: свой etcd-контейнер (динамический порт) + guid-кластеры valkey и
-// kafka с заявками/исходами t10. Teardown при любом исходе: prefix-delete
+// kafka с заявками/исходами. Teardown при любом исходе: prefix-delete
 // владельческих доменов + ассерт чистоты + удаление контейнера.
 public sealed class RotationOutcomeEtcdFixture : IAsyncLifetime
 {
@@ -116,7 +116,7 @@ public sealed class RotationOutcomeEtcdFixture : IAsyncLifetime
     public string Endpoint => _etcd.Endpoint;
 
     // guid-префикс владельческих ключей (изоляция сценариев, AGENTS.md).
-    public string Prefix { get; } = $"t10{Guid.NewGuid():N}";
+    public string Prefix { get; } = $"rot{Guid.NewGuid():N}";
 
     public string ValkeyCluster => $"{Prefix}v";
 

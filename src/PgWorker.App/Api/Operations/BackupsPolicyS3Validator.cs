@@ -4,7 +4,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 
-/// <summary>Тело секции s3 policy (t36, arch/14 §1.1): пул + два списка имён
+/// <summary>Тело секции s3 policy (arch/14 §1.1): пул + два списка имён
 /// инстансов; null-поля валидируются по правилам «задана секция целиком».</summary>
 public sealed record BackupsPolicyS3Body(
     [property: System.Text.Json.Serialization.JsonPropertyName("pool")] string? Pool,
@@ -12,7 +12,7 @@ public sealed record BackupsPolicyS3Body(
     [property: System.Text.Json.Serialization.JsonPropertyName("write_replica")] System.Collections.Generic.IReadOnlyList<string>? WriteReplica);
 
 /// <summary>
-/// Валидация секции s3 policy (t36, arch/14 §1.1): ЖИВОЕ чтение /s3/ (не кэш
+/// Валидация секции s3 policy (arch/14 §1.1): ЖИВОЕ чтение /s3/ (не кэш
 /// снапшота). Ошибки — ValidationError-поля для 400-тела. Правила:
 /// pool существует и не TO_REMOVE; имена списков — инстансы пула
 /// (nodes/&lt;I&gt;/placement существует — заявка; portalloc-записи может НЕ быть —

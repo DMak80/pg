@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Etcd.Workers;
 
-// Стор результатов опроса /healthz инстансов KafkaWorker (t09; arch/adminpanel/02
+// Стор результатов опроса /healthz инстансов KafkaWorker ( arch/adminpanel/02
 // §2.3.2): poller пишет, kafka-refresher вносит готовым в снапшот (паттерн
 // WorkerHealthStore: volatile-замена, KV-тик не блокируется).
 [InjectAsSingleton(typeof(IKafkaWorkerHealthStore))]

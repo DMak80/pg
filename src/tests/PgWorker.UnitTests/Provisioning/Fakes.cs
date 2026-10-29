@@ -27,7 +27,7 @@ internal static class Fakes
 
     // Настройки PgWorker:Pgtune для конструкторов процессов (дефолты опций);
     // отдельная сущность от PgtuneFactory — NodeSupervisor получает её
-    // конструкторно для ExcludeParams (t11 spec §4.3 п.3).
+    // конструкторно для ExcludeParams (spec §4.3 п.3).
     internal static PgtuneSettings PgtuneSettings() => new(
         18, "oltp", "ssd", "mid_ram", 60,
         new HashSet<string>(StringComparer.Ordinal));
@@ -48,10 +48,10 @@ internal static class Fakes
         // когда gateway бросает, а не возвращает Result.Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
-        // Сбой-инъекция txn (t90: ошибка захвата PortAllocLock → Result.Failed).
+        // Сбой-инъекция txn (: ошибка захвата PortAllocLock → Result.Failed).
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
-        // Гонка RMW (t06, образец KafkaWorker Fakes): конкурентная запись ДО compare.
+        // Гонка RMW (образец KafkaWorker Fakes): конкурентная запись ДО compare.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
         private long _rev;
@@ -115,7 +115,7 @@ internal static class Fakes
         {
             if (TxnFault?.Invoke(req) is { } failed)
                 return Task.FromResult(failed);
-            OnTxnBeforeCompare?.Invoke(req); // t06: инжекция гонки до compare
+            OnTxnBeforeCompare?.Invoke(req); // инжекция гонки до compare
             bool succeeded;
             lock (_gate)
             {
@@ -219,7 +219,7 @@ internal static class Fakes
     // Записывающий мок драйвера кластера: порядок вызовов проверяют тесты.
     // Потокобезопасен: EnsureNode идёт параллельно по нодам/шардам —
     // обычные List-ы теряли записи (флaky-тесты).
-    // Стаб ensure кластерных кредов (t22): шаг пересоздания REST-TLS берёт пару
+    // Стаб ensure кластерных кредов : шаг пересоздания REST-TLS берёт пару
 // из РЕЗУЛЬТАТА ensure (легаси-кластер без ключа в снапшоте).
 internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
 {
@@ -243,7 +243,7 @@ internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
             RestPassword)));
 }
 
-// Фейк docker-движка для шага пересоздания REST-TLS (t22): трекер stop/rm
+// Фейк docker-движка для шага пересоздания REST-TLS : трекер stop/rm
 // контейнера (volume НЕ трогается — RemoveVolumeAsync считает вызовы).
 internal sealed class FakeContainerEngine : IDockerEngine
 {
@@ -327,8 +327,8 @@ internal sealed class FakeDriver : IClusterDriver
 
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
-        public readonly List<bool> EnsuredSyncStrict = []; // t06: strict из EnsureNode-вызовов
-        // t22: env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
+        public readonly List<bool> EnsuredSyncStrict = []; // strict из EnsureNode-вызовов
+        // env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
         // записи — пустой) + переданный restPassword каждого EnsureNode-вызова.
         public readonly Dictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs = new();
         public readonly Dictionary<string, string> EnsuredRestPasswords = new();
@@ -344,12 +344,12 @@ internal sealed class FakeDriver : IClusterDriver
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
-        // t25: legacy wal-контейнеры pgw-backup-wal-* — карта живых объектов для
+        // legacy wal-контейнеры pgw-backup-wal-* — карта живых объектов для
         // санитарного сноса + журнал удалённых имён; ensure/list/logs упразднены.
         public readonly List<string> RemovedBackupAgents = [];
         public List<DockerContainer> BackupAgentObjects = [];
 
-        // t25: число вызовов санитарного сноса (тик WalStreamProcess).
+        // число вызовов санитарного сноса (тик WalStreamProcess).
         public int RemoveBackupAgentsCalls;
 
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
@@ -389,7 +389,7 @@ internal sealed class FakeDriver : IClusterDriver
             {
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
-                EnsuredSyncStrict.Add(syncStrict); // t06: значение фиксируется для ассертов
+                EnsuredSyncStrict.Add(syncStrict); // значение фиксируется для ассертов
                 EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
                 // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
                 // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
@@ -403,11 +403,11 @@ internal sealed class FakeDriver : IClusterDriver
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
         }
 
-        // t22: env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
+        // env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
         // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
         // NodeEnvs управляемым env (легаси без серта / чужой hash).
         public bool DefaultNodeEnvIsLegacy { get; set; }
-        // t22-ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
+        // ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
         // тесты ротатора читают журнал напрямую).
         public Func<string, string, IReadOnlyDictionary<string, string>>? InspectEnvOverride { get; set; }
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
@@ -525,7 +525,7 @@ internal sealed class FakeDriver : IClusterDriver
         public Func<string, Result>? ExecuteResultByDsn { get; set; }
         public Func<string, Result<object?>>? ScalarResultByDsn { get; set; }
 
-        // t02: ответ гварда роли зависит от SQL (роль есть → null, нет → CREATE-текст)
+        // ответ гварда роли зависит от SQL (роль есть → null, нет → CREATE-текст)
         public Func<string, string, Result<object?>>? ScalarResultBySql { get; set; }
 
         public Action<string>? OnExecute { get; set; }
@@ -546,7 +546,7 @@ internal sealed class FakeDriver : IClusterDriver
         {
             lock (_gate)
             {
-                Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
+                Scalars.Add((dsn, sql)); // гварды ролей идут скалярами — трекаем их
             }
 
             return Task.FromResult(ScalarResultBySql is { } bySql ? bySql(dsn, sql)
@@ -570,7 +570,7 @@ internal sealed class FakeDriver : IClusterDriver
     }
 
     // Записывающий ILogger: фиксирует отформатированные сообщения — проверка
-    // warning-логов процессов (t11: skip pgtune-конвергенции по заявке).
+    // warning-логов процессов (: skip pgtune-конвергенции по заявке).
     internal sealed class RecordingLogger<T> : ILogger<T>
     {
         public readonly List<(LogLevel Level, string Message)> Entries = [];
@@ -620,7 +620,7 @@ internal sealed class FakeDriver : IClusterDriver
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Off<IReadOnlyList<string>>());
 
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));

@@ -16,7 +16,7 @@ using RestoreStatus = PgWorker.Etcd.Parsing.RestoreStatus;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E восстанавливаемости через точку TLI-переключения (t28, arch/19 §10):
+// E2E восстанавливаемости через точку TLI-переключения (arch/19 §10):
 // полный бэкап на TLI1 → docker stop мастера (Patroni failover, TLI ≥ 2) →
 // контрольные данные на новом TLI → строгий гейт смешанности (точка
 // переключения ВНУТРИ сегмента, объект wal/ с байтами обеих таймлайнов
@@ -30,7 +30,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Поля контура (spec §3.1): заполняются InitializeAsync, читаются Fact'ами.
@@ -156,7 +156,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         // мастера — отставшая реплика промоутнется ВНУТРИ уже закрытого
         // мастером сегмента (точка выйдет из открытого S — профиль не
         // смешанный). Ждём replay_lsn каждой реплики ≥ позиции мастера
-        // (последняя запись — emit «t28» в SeedFullBackupAsync, строго внутри
+        // (последняя запись — emit «» в SeedFullBackupAsync, строго внутри
         // ОТКРЫТОГО сегмента): тогда promote-точка внутри открытого S —
         // единственный носитель позиции S: смешанный объект под именем
         // родителя (§3.3, AC1).
@@ -178,7 +178,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
     }
 
     // Скачивание и разбор wal/<tli>.history (host-клиент GetObjectAsync +
-    // WalHistory.Parse — строгий парсер t04). Последняя запись файла
+    // WalHistory.Parse — строгий парсер). Последняя запись файла
     // описывает сам <tli>: родитель и точка переключения switchWALLSN.
     private async Task<PgWorker.Backups.WalHistoryEntry> HistoryEntryAsync(
         string cluster, string shard, uint tli, CancellationToken ct)
@@ -242,7 +242,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     // Шаг 6 — СТРОГИЙ гейт смешанности (spec §3.3, AC1; решение user-review):
     // (1) switchWALLsn ВНУТРИ сегмента S (не на границе 16 МиБ — «на границе»
-    //     покрытием t28 не считается: накат шёл бы по стыку сегментов);
+    //     покрытием не считается: накат шёл бы по стыку сегментов);
     // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя
     //     (приёмник именует по page header границы; иных имён S нет);
     // (3) ПОБАЙТОВО: page-заголовки объекта S по обе стороны switchWALLSN
@@ -331,7 +331,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         var switchSeg = PgWorker.Backups.WalFileName.FromLsn(0, entry.SwitchLsn);
 
         // (1) точка переключения СТРОГО внутри сегмента S («на границе»
-        // покрытием t28 не считается: накат шёл бы по стыку сегментов).
+        // покрытием не считается: накат шёл бы по стыку сегментов).
         // На границе — НЕ красный ассерт, а предусловие: смешанного объекта
         // не существует, фактам нечего проверять (промоут-тайминг, см. гейт).
         if (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes == 0UL)
@@ -419,7 +419,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     // Шаг 3 (spec §3.2): жёсткая потеря мастера — docker stop (БЕЗ
     // switchover): Patroni сам промоутит выжившую sync-реплику (образец AC4
-    // t27). Ожидание: новый primary (узел ≠ остановленному) + TLI ≥ 2 ≤ 120 с.
+    //. Ожидание: новый primary (узел ≠ остановленному) + TLI ≥ 2 ≤ 120 с.
     private async Task FailoverAsync(CancellationToken ct)
     {
         var (_, _, master) = await MasterPgAsync(Cluster, "shard1", ct);
@@ -460,7 +460,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         return true;
     }
 
-    // Гейт мастера (t10) + DSN чтения: COMPLETED restore не гарантирует
+    // Гейт мастера + DSN чтения: COMPLETED restore не гарантирует
     // закрытия рестарт-окна postmaster — SQL-проба SELECT 1 до возврата DSN
     // (эталон rs-dr; бюджет 120 с согласован с PatroniBootSec хоста).
     public async Task<string> MasterReadyDsnAsync(CancellationToken ct)
@@ -478,7 +478,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 return false; // рестарт-окно — поллинг повторит
             }
         }, TimeSpan.FromSeconds(120), ct);
-        ready.Should().BeTrue("the master must accept SQL before reading data (t10 gate): "
+        ready.Should().BeTrue("the master must accept SQL before reading data (SQL gate): "
             + await DumpDiagnosticsAsync(Cluster, "shard1"));
         var (h, p, _) = await MasterPgAsync(Cluster, "shard1", ct);
         return AdminDsn(h, p);
@@ -629,8 +629,8 @@ public sealed class TliSwitchContext : IAsyncLifetime
         => DatabaseProvisioner.BuildAdminDsn(host, port, Cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
 
-    // Воркер t28: ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
-    // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; t28 нужны и
+    // Воркер : ОБЪЕДИНЁННЫЙ бэкап-комплект (spec §3.1): в образцах комплект
+    // StartWalHostAsync не задаёт Restore:RecoveryTimeoutSec; нужны и
     // полные, и WAL-агент, и restore ОДНОВРЕМЕННО. S3 — один пул из policy.s3,
     // креды в env-профиле, адреса нод воркер резолвит из /s3/ как advertised
     // host.docker.internal (БЕЗ замены на localhost — паттерн
@@ -648,7 +648,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3.
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3.
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
@@ -684,7 +684,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
 
     // PUT PLANNED-заявки restore прямым ключом (принятое отступление образцов:
-    // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант t28):
+    // API-путь покрыт RestoreApiTests). backupId ОБЯЗАТЕЛЕН (инвариант):
     // после первой заявки новейший COMPLETED — уже TLI3-полный, а валидация
     // обязана идти от СТАРОГО полного через точку переключения.
     private async Task<string> PutRestorePlannedAsync(
@@ -822,7 +822,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
         // отвечают «почему фаза не уложилась»; объёмы в e2e — единицы КБ).
         var journal = workKv?.Value ?? "<absent>";
         // PG-лог restore-джоба (/tmp/restore-pg.log в контейнере): какие сегменты
-        // запрашивал restore_command, где сорвалось (t27-разбор: mc-404 существующего).
+        // запрашивал restore_command, где сорвалось (разбор: mc-404 существующего).
         var pgLog = "";
         try
         {
@@ -846,7 +846,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 }
 
                 // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
-                // t27-разбор — restore_command получил 404 на сегмент, который в S3 есть.
+                // разбор — restore_command получил 404 на сегмент, который в S3 есть.
                 try
                 {
                     var live = await E2eFixture.RunProcessAsync("docker", ["exec", name, "bash", "-c",
@@ -944,11 +944,11 @@ public sealed class TliSwitchContext : IAsyncLifetime
         return Convert.ToString(await cmd.ExecuteScalarAsync(ct)) ?? "";
     }
 
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
     public async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
@@ -1069,7 +1069,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 — без неё подсистема кластера молчит.
+        // пул + policy с секцией s3 — без неё подсистема кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
@@ -1132,7 +1132,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
             done["state"].GetString().Should().Be("COMPLETED");
             done["restored_to_lsn"].GetString().Should().NotBeNullOrEmpty();
 
-            // Assert 2 — полный хвост через точку (гейт мастера t10 + ретраи
+            // Assert 2 — полный хвост через точку (гейт мастера + ретраи
             // чтения: переходное окно рестарта postmaster).
             var dsn = await Ctx.MasterReadyDsnAsync(ct);
             var rows = await Ctx.ScalarRetryAsync(dsn,
@@ -1175,7 +1175,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 if (!fulls.Any(f => f.Value.Contains("COMPLETED")
                         && f.Key.Split('/').Last() != Ctx.OldBackupId))
                     return false;
-                // t25: приёмники вернулись — статус-ключи agent/<N> живы (lease)
+                // приёмники вернулись — статус-ключи agent/<N> живы (lease)
                 var facts = await Ctx.Fx.ReadWalAgentFactsAsync(Ctx.Cluster, "shard1", ct);
                 return facts.Count > 0;
             }, TimeSpan.FromSeconds(300), ct);

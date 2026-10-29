@@ -2,7 +2,7 @@ using Shared.Core;
 using Shared.Core.Planning;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
-// t07: NodeLimits в фейке — доменная запись (docker-факт — у реального драйвера).
+// NodeLimits в фейке — доменная запись (docker-факт — у реального драйвера).
 using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
 using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Docker.Drivers;
@@ -40,10 +40,10 @@ internal static class Fakes
             _sharedOps?.Add(op);
         }
 
-        // Транспортный отказ range (живой-Ф7-тесты, t09): префикс → исключение (обёрнуто в Failed).
+        // Транспортный отказ range (живой-Ф7-тесты): префикс → исключение (обёрнуто в Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
-        // Отказ снятия снапшота (SnapshotLoop-тесты, t09).
+        // Отказ снятия снапшота (SnapshotLoop-тесты).
         public Func<Exception?>? SnapshotFault { get; set; }
 
         // Гонка «панель пишет между read и txn»: вызывается ДО compare —
@@ -140,7 +140,7 @@ internal static class Fakes
                 succeeded = req.Compare.All(c => c.Target switch
                 {
                     TxnTarget.Version => c.Pred == TxnPredicate.Greater
-                        ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists (t10)
+                        ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists 
                         : Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
                     TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
                     TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
@@ -438,7 +438,7 @@ internal static class Fakes
 
         public readonly Dictionary<string, string> Config = [];
 
-        // INFO-словарь ноды (коллектор t05): пустой — поля «отсутствуют».
+        // INFO-словарь ноды (коллектор): пустой — поля «отсутствуют».
         public readonly Dictionary<string, string> Info = [];
 
         // Журнал вызовов (тесты сверяют окно двух паролей E1–E3).
@@ -452,7 +452,7 @@ internal static class Fakes
         // неизвестен; true = AUTH принимает любую пару (нода «собрана»).
         public bool TrustAnyPassword { get; set; }
 
-        // t07: якорь CA последнего PING (кейсы AwaitBoot CaRotator — PING
+        // якорь CA последнего PING (кейсы AwaitBoot CaRotator — PING
         // обязан идти с NEW-CA, а не bundle/OLD).
         public string? LastCaPem { get; private set; }
 
@@ -493,7 +493,7 @@ internal static class Fakes
         public Task<Result> PingAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
             BeforeCommand();
-            LastCaPem = ep.CaPem; // фиксируем якорь пробы (t07)
+            LastCaPem = ep.CaPem; // фиксируем якорь пробы 
             if (ConnectionFault)
                 return Task.FromResult(Fail());
             if (Silent)

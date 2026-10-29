@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations.Kafka;
 
-// ===== 13–14. Ребалансировка партиций — заявка и отмена (t02, 02 §10.2-13/14):
+// ===== 13–14. Ребалансировка партиций — заявка и отмена (02 §10.2-13/14):
 // прокси в API KafkaWorker — заявку клэймит воркер, исполняет и снимает =====
 
 public sealed record RequestKafkaRebalanceCommand(string Cluster, string RequestedBy)

@@ -32,7 +32,7 @@ public sealed class KafkaWorkerHealth(
         }
         catch (Exception ex)
         {
-            // Catch-all (t09, arch/16 §7): чек ВСЕГДА отдаёт структуру — неожиданный
+            // Catch-all (arch/16 §7): чек ВСЕГДА отдаёт структуру — неожиданный
             // отказ тела превращается в Degraded с данными, а не исключение чека.
             return HealthCheckResult.Degraded(
                 $"health check failed with an error: {ex.Message}",

@@ -9,7 +9,7 @@ namespace Shared.Etcd.Coordination;
 // + глобальный лидер для singleton-задач. Захват — txn compare version==0 +
 // put-with-lease TTL 15с; держатель продлевает keepalive-тиком (5с); смерть
 // инстанса гасит lease ≤15с — ключ исчезает сам, другой инстанс захватывает (takeover).
-// Префикс ключей — параметр конструктора (t09): "/pgworker" / "/kafkaworker".
+// Префикс ключей — параметр конструктора : "/pgworker" / "/kafkaworker".
 public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)
     : IAsyncDisposable
 {

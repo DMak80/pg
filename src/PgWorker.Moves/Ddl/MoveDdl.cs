@@ -3,7 +3,7 @@ using PgWorker.Backups;
 namespace PgWorker.Moves;
 
 /// <summary>
-/// DDL-перенос бакета (t01 задача 10, решение Д3): pg_dump --schema-only
+/// DDL-перенос бакета (решение Д3): pg_dump --schema-only
 /// командой приёмнику ноды-источника (канал arch/25 №22 — приёмник снимает
 /// дамп локально в контейнере ноды, arch/14 §Move M1), применение батчем на
 /// приёмнике, гранты app-роли, сверка инвентаря P5 (relkind×relname

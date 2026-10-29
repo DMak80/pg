@@ -6,9 +6,9 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-chain-broken (t07, spec §3.5): wal=WAL_CHAIN_ERROR живого Active-кластера —
+// backup-chain-broken (spec §3.5): wal=WAL_CHAIN_ERROR живого Active-кластера —
 // critical с текстом сбоя И действия воркера; DEGRADED/STOPPED/WAL_CHAIN_ERROR мёртвого
-// кластера — молчание (DEGRADED — домен wal-chain-broken t03).
+// кластера — молчание (DEGRADED — домен wal-chain-broken).
 public class BackupChainBrokenRuleTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
@@ -56,7 +56,7 @@ public class BackupChainBrokenRuleTests
         alert.Message.Should().Contain(shardName).And.Contain("hole").And.Contain("re-runs the full backup");
     }
 
-    // AAA: DEGRADED — не правило t07 (домен wal-chain-broken t03); молчание
+    // AAA: DEGRADED — не правило (домен wal-chain-broken); молчание
     [Fact]
     public void Degraded_Silent()
     {

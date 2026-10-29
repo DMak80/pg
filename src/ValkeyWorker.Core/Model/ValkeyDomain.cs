@@ -28,7 +28,7 @@ public sealed record ValkeyNodeSnapshot(string Node, string? State, ValkeyResour
 /// <summary>
 /// Снапшот кластера из etcd (вход процессов A–E/T). Config == null — config-ключа
 /// нет/битый (→ ParseErrors). Неполный набор кредов → null-поля независимо
-/// друг от друга (толерантность arch/20 §5). CA-ключи t06: полный набор —
+/// друг от друга (толерантность arch/20 §5). CA-ключи : полный набор —
 /// оба PEM; неполный/битый → null-поля (parseError на битый PEM).
 /// </summary>
 public sealed record ValkeyClusterSnapshot(

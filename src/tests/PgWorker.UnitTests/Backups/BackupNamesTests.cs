@@ -1,7 +1,7 @@
 namespace PgWorker.UnitTests.Backups;
 
-// Канонические имена restore-подсистемы (t05, arch/19 §2/§4): ключи etcd —
-// детерминированы; docker-имён джобов бэкапов больше нет (t26+: операции
+// Канонические имена restore-подсистемы (arch/19 §2/§4): ключи etcd —
+// детерминированы; docker-имён джобов бэкапов больше нет (+: операции
 // исполняют приёмники WalReceiver нод).
 public class BackupNamesTests
 {

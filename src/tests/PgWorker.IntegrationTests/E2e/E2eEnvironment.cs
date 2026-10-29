@@ -123,7 +123,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // запускается с EnableDoorman=false (Д4, R1).
     public static string NodeImage => $"pgworker-node:e2e-{ImageTagSuffix}";
 
-    /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
+    /// <summary>Образ file_sd-генератора (arch/18 §5.4): собирается ЛЕНИВО —
     /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
     /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
     public static string SdImage => $"sdgenerator:e2e-{ImageTagSuffix}";
@@ -201,7 +201,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// сценарии ходят и по внутренним именам, и по SAN нод).</summary>
     public HttpClient PatroniHttp { get; }
 
-    /// <summary>Мутация Patroni REST сценарием (t22): unsafe-эндпоинт — basic-auth
+    /// <summary>Мутация Patroni REST сценарием : unsafe-эндпоинт — basic-auth
     /// per-cluster (patroni:&lt;rest_password из etcd&gt;); отправляется клиентом
     /// PatroniHttp (https + доверие CA контура).</summary>
     public static HttpRequestMessage PatroniPatch(string url, string restPassword, string json)
@@ -239,7 +239,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     public EtcdGateway Gateway { get; }
 
-    /// <summary>Факт одного приёмника WAL из статус-ключа agent/&lt;N&gt; (t25,
+    /// <summary>Факт одного приёмника WAL из статус-ключа agent/&lt;N&gt; (
     /// arch/19 §4): сценарии сверяют доставку по ключам etcd и объектам S3,
     /// а не по docker ps wal-контейнеров (их больше нет). State/Role — строковые
     /// значения ключа ("streaming"/"waiting_role"/...; "master"/"sync"/"none").</summary>
@@ -247,7 +247,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         string Node, string? State, string? Role, bool PoolExhausted,
         string? JumpFrom, string? JumpTo, uint? JumpTli, string? Error);
 
-    /// <summary>Чтение фактов приёмников шарда (t25): Range
+    /// <summary>Чтение фактов приёмников шарда : Range
     /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/agent/ — толерантный парсинг
     /// arch/19 §4 (битые/чужие значения пропускаются); отсутствующие ключи
     /// (lease истёк) в списке не появляются — «ключ жив = приёмник жив».</summary>
@@ -298,7 +298,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         return facts;
     }
 
-    /// <summary>Имена контейнеров нод шарда из portalloc (t25: приёмник —
+    /// <summary>Имена контейнеров нод шарда из portalloc (: приёмник —
     /// supervisord-программа контейнера ноды; docker exec supervisorctl).
     /// Именование — pgw-&lt;C&gt;-&lt;X&gt;-&lt;N&gt; (канон provisioning).</summary>
     public async Task<IReadOnlyList<string>> ShardNodeContainerNamesAsync(
@@ -319,11 +319,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public string S3Endpoint { get; }
 
     /// <summary>Имя ПЕРВОЙ etcd-ноды окружения (pgw-ee1-{runId}) для docker cp/exec
-    /// etcdctl в restore-verify сценариях (t08). Ноды именуются pgw-ee{i+1}-{runId}
+    /// etcdctl в restore-verify сценариях. Ноды именуются pgw-ee{i+1}-{runId}
     /// (t09ha: 1-3 узла) — имя pgw-ee-{runId} не существует никогда.</summary>
     public string EtcdContainerName => $"pgw-ee1-{_runId}";
 
-    // t36: идентификаторы контейнеров нод пула (сценарии AC4/AC6: stop/start).
+    // идентификаторы контейнеров нод пула (сценарии AC4/AC6: stop/start).
     public string RunId => _runId;
 
     /// <summary>Имя контейнера ownS3-ноды окружения (инстанс node1 пула;
@@ -974,7 +974,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// ноды в контур-сеть), env — внутрисетевые адреса, mTLS-серт с SAN=алиас
     /// (выпускается из per-run CA). Смотрит ТОЛЬКО в etcd этого окружения и
     /// обслуживает только его Active-кластеры. extraEnv — дополнительные
-    /// env-пары поверх базовых (t02: Backups-комплект).
+    /// env-пары поверх базовых (: Backups-комплект).
     /// </summary>
     public async Task<HostInstance> StartHostAsync(
         string name, int snapshotIntervalMin = 360,
@@ -1015,7 +1015,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PgWorker__Thresholds__ShardDeadSec"] = "5",
             ["PgWorker__Thresholds__PatroniBootSec"] = "300",
 
-            // Переезды (t01): spilo-18 → FailoverSlots=true (штатный путь PG17+,
+            // Переезды : spilo-18 → FailoverSlots=true (штатный путь PG17+,
             // R1/Д11); AdvertisedPublisherHost: подписки ходят ИЗ контейнеров
             // приёмников — издатель виден по host-публикации тройки (канон).
             ["PgWorker__Moves__FailoverSlots"] = "true",
@@ -1031,11 +1031,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PgWorker__Snapshots__Dir"] = "/snapshots",
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
 
-            // mTLS HTTP API (t03, arch/14 §1.1): внутрисетевой порт, SAN=алиас.
+            // mTLS HTTP API (arch/14 §1.1): внутрисетевой порт, SAN=алиас.
             ["PGW_API_TLS_CERT"] = serverCertPem,
             ["PGW_API_TLS_KEY"] = serverKeyPem,
             ["PGW_API_TLS_CLIENT_CA"] = _caPem,
-            // REST-TLS нод (t22): per-run CA контура — все E2E-контуры создают
+            // REST-TLS нод : per-run CA контура — все E2E-контуры создают
             // ноды в TLS-режиме (дефолт поставки, http-режима в тестах нет).
             ["PGW_REST_TLS_CA"] = _caPem,
             ["PGW_REST_TLS_CA_KEY"] = _caKeyPem,
@@ -1045,7 +1045,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
-        // HA-контур (t09, arch/04 §8): воркер получает СПИСОК всех узлов
+        // HA-контур (arch/04 §8): воркер получает СПИСОК всех узлов
         // (failover перебирает); Advertised — те же внутрисетевые URL
         // (Patroni-ноды и master-lease живут в той же сети контура).
         for (var i = 0; i < EtcdEndpoints.Count; i++)
@@ -1211,7 +1211,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    // ===== t36: пул S3 (инстансы пула — ownS3-ноды окружения) =====
+    // ===== : пул S3 (инстансы пула — ownS3-ноды окружения) =====
 
     /// <summary>Сид S3-пула: /s3/clusters/&lt;pool&gt;/{config,
     /// nodes/&lt;I&gt;/{state,placement}, secrets, endpoints},
@@ -1564,7 +1564,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 }
             }));
 
-            // Джоб-файлы нод (t13-телеметрия): restore-лог постгреса и
+            // Джоб-файлы нод (телеметрия): restore-лог постгреса и
             // recovery-конфиги PGDATA снимаются docker cp ДО сноса/стопа
             // контейнеров — restore-pg.log живёт только в volume джоб-ноды,
             // docker-логи его не содержат, после демонтажа не восстанавливается.
@@ -1865,7 +1865,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 logFile: "/tmp/pgw-e2e-static-process-runner-e2e.log");
             E2eFixture.StaticPhase($"e2e-image {RunnerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
-            // Образ узла (задача 25): двухшаговая сборка (t25, arch/19 §3) —
+            // Образ узла (задача 25): двухшаговая сборка (arch/19 §3) —
             // (1) publish приёмника WAL и NodeTools self-contained НА ХОСТЕ
             // (RID хоста, без trimming) → artifacts/e2e/node-wal|node-tools;
             // (2) docker build ноды с publish-аргументами (в образ — только
@@ -1877,7 +1877,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             sw = E2eFixture.StaticSw();
             E2eFixture.StaticPhase($"e2e-image {NodeImage}: dotnet publish WalReceiver self-contained {nodeRid} (host)…");
             // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
-            // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
+            // после завершения publish (факт стенда: 11 мин тишины) — без реюза
             // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
             await E2eFixture.RunProcessAsync("dotnet",
             [
@@ -1913,7 +1913,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // Образ ownS3 — ВНЕШНИЙ статический ассет (репозиторий ../OwnS3, сборка —
     // deploy/build-image.sh там): pg его не собирает; freshness контролирует
     // разработчик пересборкой в ../OwnS3 (устаревший образ маскирует
-    // регрессии; урок t09).
+    // регрессии; урок).
     private static async Task EnsureOwnS3ImageAsync(CancellationToken ct)
     {
         // Раннер: образ гарантированно собран фазой 1 (host-сборка — не задача
@@ -1940,7 +1940,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
 
-    // Образ file_sd-генератора (t15, arch/18 §5.4): .NET-сервис — publish НА
+    // Образ file_sd-генератора (arch/18 §5.4).NET-сервис — publish НА
     // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
     // (docker/Metrics.SdGenerator.Dockerfile, runtime-слой; канон AGENTS.md).
     // Вызов — лениво из сценария E2ePatroniFileSd: чужие серии и кейс-маркер

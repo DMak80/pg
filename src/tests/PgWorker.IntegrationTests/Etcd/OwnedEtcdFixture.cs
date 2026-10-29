@@ -23,7 +23,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // (встроенные HTTP-wait шлют GET, а /v3/* требует POST), бюджет ≤ 30 c.
 public sealed class OwnedEtcdFixture : IAsyncLifetime
 {
-    // ЕДИНЫЙ runId окружения (канон per-runId, t24: «все сети частные на один
+    // ЕДИНЫЙ runId окружения (канон per-runId: «все сети частные на один
     // тест класс»): один guid опознаёт и сеть, и контейнер — own-only чистка
     // и ассерт чистоты по этому идентификатору (docs/e2e-isolation.md §2–3).
     // Прежние имена сохранены свойствами-выражениями: конструктор (:43/:45)

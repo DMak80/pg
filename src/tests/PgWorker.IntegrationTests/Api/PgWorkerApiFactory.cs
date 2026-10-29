@@ -44,7 +44,7 @@ public sealed class PgApiFixture : IAsyncLifetime
 
     public PgWorkerApiFactory Factory { get; }
 
-    // Статический тестовый REST-CA (t22, arch/14 §4 гр.3): один RSA-2048 CA
+    // Статический тестовый REST-CA (arch/14 §4 гр.3): один RSA-2048 CA
     // на фикстуру — WAF-хосты получают его через те же env PGW_REST_TLS_*,
     // что и прод (двойной семантики нет; fail-fast не роняет серии).
     public static (string CaPem, string CaKeyPem) RestTestCa => RestCa.Value;

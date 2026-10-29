@@ -79,7 +79,7 @@ public class DeprovisioningProcessTests
     [Fact]
     public async Task Run_RemovesRebalanceKeys()
     {
-        // Arrange: живая заявка ребалансировки и прогресс reassignment (t02
+        // Arrange: живая заявка ребалансировки и прогресс reassignment (
         // §11.9: вечные заявки/прогресс не переживают кластер).
         var rig = await NewRig((etcd, _) =>
         {
@@ -97,7 +97,7 @@ public class DeprovisioningProcessTests
         result.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rebalances/events");
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/reassignments/events");
-        // t06: live-прогресс регенерации тоже не переживает демонтаж (X2)
+        // live-прогресс регенерации тоже не переживает демонтаж (X2)
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/regens/events");
     }
 
@@ -208,7 +208,7 @@ public class DeprovisioningProcessTests
     [Fact]
     public async Task Run_CleansAllRotationTicketsAndOutcomes()
     {
-        // Arrange (t10): полный набор заявок + исходы — демонтаж чистит ВСЁ
+        // Arrange : полный набор заявок + исходы — демонтаж чистит ВСЁ
         // (инвариант «заявка не переживает кластер»).
         var rig = await NewRig((etcd, _) =>
         {

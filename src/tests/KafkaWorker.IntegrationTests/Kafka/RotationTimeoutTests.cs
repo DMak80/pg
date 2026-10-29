@@ -10,13 +10,13 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Интеграция возрастных таймаутов ротационных заявок (t10, spec §6 п.10–12):
+// Интеграция возрастных таймаутов ротационных заявок (spec §6 п.10–12):
 // дедлок H↔K разрывается приоритетом (обе заявки доиграны БЕЗ экспирации),
 // вечный waiting-cluster снимается воркером с исходом expired, заявка
 // rebalances при вечном drain-кандидате снимается, идущий balance не снимается.
 // Все заявки с requested_unix в прошлом (now - 3700) — порог 3600 срабатывает
 // первым тиком, без реального ожидания.
-//
+
 // Примечание к AC12 (отклонение от буквы плана, механика Kafka): план
 // предполагал слепоту DescribeTopics от `docker stop broker1` при 2 брокерах,
 // но bootstrap-список содержит оба брокера — клиент идёт на живой broker2,
@@ -25,7 +25,7 @@ namespace KafkaWorker.IntegrationTests.Kafka;
 // state=TO_REMOVE; drain заблокирован minISR-guard'ом навсегда) → точка
 // waiting-drain; идущий balance — снижением config RF (прецедент
 // ReassignmentTests), подача батчей реальна.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -445,7 +445,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture, ITestOutputHelper
             // затем K исполняет свою»), затем K. Порядок тиков H→K
             // последовательный (не перемежающийся): журнал work/<C> — ОДИН ключ
             // на оба процесса, waiting-writes K затирают маркер хвоста H
-            // (rotated-commit) — известная гонка общего журнала, вне буквы t10.
+            // (rotated-commit) — известная гонка общего журнала, вне буквы.
             var passwordSeenDone = false;
             var journalTexts = new List<string>();
             var phaseTicks = new Dictionary<string, int>(); // "op:phase" → сколько тиков вернули фазу

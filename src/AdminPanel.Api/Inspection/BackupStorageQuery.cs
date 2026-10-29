@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Api.Inspection;
 
-// Запросы грани «Хранилище бэкапов» (t08, arch/03 §1): сводка из снапшота +
+// Запросы грани «Хранилище бэкапов» (arch/03 §1): сводка из снапшота +
 // сверка S3Reconciler; детали шарда (джойн etcd×S3); on-demand objects —
 // единственный прямой выход в ownS3 на запрос. Креды S3 в DTO не отдаются
 // никогда (AC8): только endpoint/bucket.
@@ -69,19 +69,19 @@ public sealed record S3HealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
-// Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
+// Статус выгрузки etcd-снапшотов : ключ /pgworker/etcd-snapshots.
 public sealed record EtcdSnapshotsDto(
     bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
     string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
 
 public sealed record BackupStorageDto(
     bool Configured, string? NotConfiguredReason,
-    IReadOnlyList<string> Endpoints, // t36 (02 §2.5): цели инвентаря списком, без ключей
+    IReadOnlyList<string> Endpoints, //  (02 §2.5): цели инвентаря списком, без ключей
     string? Bucket,
     S3HealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
-    EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (t08, read-only карточка)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот S3Storage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
@@ -90,11 +90,11 @@ public sealed record BackupStorageDto(
 
 public sealed record BackupClusterStorageDto(
     string Cluster, long SizeBytes, IReadOnlyList<BackupShardSummaryDto> Shards,
-    // reliability t02: policy кластера (форма мутации интервала дрилов);
+    // reliability : policy кластера (форма мутации интервала дрилов);
     // null — policy-ключа нет, фронт дефолтирует.
     BackupPolicyDto? Policy = null);
 
-// Полная policy кластера (reliability t02): null-поля = отсутствуют в
+// Полная policy кластера (reliability): null-поля = отсутствуют в
 // policy-ключе — форма фронта читает и дефолтирует.
 public sealed record BackupPolicyDto(
     int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
@@ -104,7 +104,7 @@ public sealed record BackupShardSummaryDto(
     string Cluster, string Shard, long SizeBytes,
     int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan); // пометки сверки
 
-// Сирота грани «Хранилище бэкапов» (t08; защита — reliability t04, arch/19 §4):
+// Сирота грани «Хранилище бэкапов» ( защита — reliability, arch/19 §4):
 // HasValidFull — автозащита (валидный полный), Held — hold-флаг, DeleteRequested
 // — заявка явного удаления; TtlLeftSec — только у незащищённых (защищённым/
 // заявленным TTL-строка не нужна — spec §3.5).
@@ -120,9 +120,9 @@ public sealed record BackupShardStorageDto(
     BackupWalDto? Wal,
     BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/19 §3.5)
     string? ReconcileNote,                // сводная пометка (напр. «объекты без ключа: 2»)
-    BackupDrillBadgeDto? Drill = null);   // последний/текущий дрилл (reliability t02)
+    BackupDrillBadgeDto? Drill = null);   // последний/текущий дрилл (reliability)
 
-// Статус дрилла шарда (reliability t02, arch/19 §3.6): state/фаза/времена/LSN/error.
+// Статус дрилла шарда (reliability, arch/19 §3.6): state/фаза/времена/LSN/error.
 public sealed record BackupDrillBadgeDto(
     string State, string? Phase, long StartedUnix, long? FinishedUnix,
     string? RestoredToLsn, string? Error);
@@ -227,7 +227,7 @@ private static string WalStateName(WalStreamInfoState state) => state switch
             storage.UsedBytes, storage.QuotaBytes, storage.UsedPercent,
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
 
-    // Статус выгрузки etcd-снапшотов (t08): карточка живёт в грани независимо
+    // Статус выгрузки etcd-снапшотов : карточка живёт в грани независимо
     // от настроенности S3-грани панели — ключ etcd читается всегда.
     public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
         => export is null ? null : new EtcdSnapshotsDto(
@@ -264,7 +264,7 @@ private static string WalStateName(WalStreamInfoState state) => state switch
                 : null))];
     }
 
-    // Полная policy → DTO (reliability t02): null-поля как есть — фронт дефолтирует.
+    // Полная policy → DTO (reliability): null-поля как есть — фронт дефолтирует.
     private static BackupPolicyDto? MapPolicy(BackupsPolicyInfo? policy)
         => policy is null ? null : new BackupPolicyDto(
             policy.RetentionDays, policy.RetentionWeeks, policy.RetentionMonths,
@@ -272,7 +272,7 @@ private static string WalStateName(WalStreamInfoState state) => state switch
 
     // Сироты: панельная сверка (с джойном на реестр) ∪ записи реестра без
     // S3-факта (воркер уже удалил — TTL-строка оператору), слияние по Prefix.
-    // Защита (reliability t04): джойн hold/заявок + has_valid_full — бейджи в
+    // Защита (reliability): джойн hold/заявок + has_valid_full — бейджи в
     // DTO; TtlLeftSec — только у незащищённых.
     private static IReadOnlyList<BackupOrphanDto> MergeOrphans(
         IReadOnlyList<BackupOrphanPrefix> panelOrphans,

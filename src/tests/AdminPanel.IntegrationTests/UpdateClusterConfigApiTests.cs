@@ -7,7 +7,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// PUT /api/clusters/{c}/config (t06, 02 §9.10) — прокси в API PgWorker:
+// PUT /api/clusters/{c}/config (02 §9.10) — прокси в API PgWorker:
 // стаб-воркер; 204 при успехе; проксирует коды воркера (400 валидация /
 // 404 / 409 / 503) без изменений; панель не пишет в etcd.
 [Collection("api")]
@@ -18,7 +18,7 @@ public class UpdateClusterConfigApiTests(AuthWebFactory factory)
     private void SetLiveSnapshot()
         => _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.GetUtcNow());
 
-    // AAA (t06): панельный PUT — 204 при успехе; в стаб-гейтвее зафиксированы
+    // AAA : панельный PUT — 204 при успехе; в стаб-гейтвее зафиксированы
     // путь "/api/clusters/shop/config", метод PUT, тело с полем synchronousModeStrict.
     [Fact]
     public async Task PutClusterConfig_ProxiesWorkerCodes()
@@ -46,7 +46,7 @@ public class UpdateClusterConfigApiTests(AuthWebFactory factory)
         _factory.EtcdStub.WriteCalls.Should().Be(0);
     }
 
-    // AAA (t06): коды воркера проксируются телом как есть (400/404/409/503).
+    // AAA : коды воркера проксируются телом как есть (400/404/409/503).
     [Theory]
     [InlineData(400, "Validation failed")]
     [InlineData(404, "Cluster not found")]

@@ -165,7 +165,7 @@ public class PasswordRotatorTests
 
         // Act: первый прогон падает посреди фазы A (broker1 уже пересоздан
         // с [OLD, NEW1]; NEW1 стабилен на жизнь заявки — фиксирован в памяти
-        // ротатора, t03-фикс: регенерация NEW каждым тиком перезкатывала бы
+        // ротатора, фикс: регенерация NEW каждым тиком перезкатывала бы
         // брокеров вечно, не давая кластеру собраться).
         var first = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         first.IsSuccess.Should().BeFalse();
@@ -183,7 +183,7 @@ public class PasswordRotatorTests
         finalPassword.Should().HaveLength(32);
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
 
-        // Assert-2 (специфика повторного прогона, t03-фикс): NEW пароль
+        // Assert-2 (специфика повторного прогона, фикс): NEW пароль
         // СТАБИЛЕН на жизнь заявки — повтор фазы A НЕ пересоздаёт уже
         // перекатившегося broker1 (трек жив), а только добирает оставшихся;
         // после коммита B фаза C перекатывает всех с одиночным NEW — окно
@@ -277,7 +277,7 @@ public class PasswordRotatorTests
         result.Error!.Message.Should().Contain("claim is not ours");
     }
 
-    // ===== t03 Ф4: роль admin (заявка /kafkaworker/admin_rotations/<C>) =====
+    // ===== Ф4: роль admin (заявка /kafkaworker/admin_rotations/<C>) =====
 
     [Fact]
     public async Task RunAsync_AdminTicket_RotatesAdminPasswordKeepsApp()
@@ -333,7 +333,7 @@ public class PasswordRotatorTests
         rig.Etcd.Store.Should().ContainKey("/kafkaworker/admin_rotations/events");
     }
 
-    // ===== t10: приоритет H перед K + экспирация под гвардом =====
+    // ===== : приоритет H перед K + экспирация под гвардом =====
 
     [Fact]
     public async Task Run_CaTicketWithoutStaging_HExecutesOwnTicket()
@@ -541,7 +541,7 @@ public class PasswordRotatorTests
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: Success; журнал НЕ перезаписан waiting-cluster — маркер
-        // хвоста цел (корень t01: затирание делало ротацию вечным no-op).
+        // хвоста цел (корень : затирание делало ротацию вечным no-op).
         result.IsSuccess.Should().BeTrue();
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("rotated-commit");

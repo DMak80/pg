@@ -4,11 +4,11 @@ namespace KafkaWorker.Core.Planning;
 
 /// <summary>
 /// Фактические лимиты контейнера/сервиса брокера из docker inspect
-/// (t06, spec §5.3): 0 = лимит не задан.
+/// (spec §5.3): 0 = лимит не задан.
 /// </summary>
 /// <summary>
 /// Сверка лимитов контейнера с декларацией brokers/&lt;b&gt;/resources
-/// (t06, spec §5.2 J2 / §5.3). Формула cpu ПОКАЗАТЕЛЬНО повторяет
+/// (spec §5.2 J2 / §5.3). Формула cpu ПОКАЗАТЕЛЬНО повторяет
 /// арифметику ЗАПИСИ DockerEngine.BuildContainerBody: spec.CpuCores
 /// (decimal) → KafkaNodeSpec.CpuCores (double) →
 /// (long)(cores * 1_000_000_000). Каст в double ДО умножения обязателен:

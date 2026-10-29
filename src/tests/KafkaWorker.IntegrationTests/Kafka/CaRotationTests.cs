@@ -8,10 +8,10 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Интеграция ротации CA (t07, arch/16 §2.3/§5 K): заявка → CaRotator доводит
+// Интеграция ротации CA (arch/16 §2.3/§5 K): заявка → CaRotator доводит
 // окно двойного доверия на живом docker-кластере; после коммита ca_pem = NEW,
 // staging удалён, клиенты с NEW работают, клиенты со старым CA-кэшем отвергаются.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.
@@ -205,7 +205,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
             MessageTimeoutMs = 20000,
             SocketTimeoutMs = 15000,
         };
-        // Файловый truststore (t07): inline ssl.ca.pem у librdkafka — один серт,
+        // Файловый truststore : inline ssl.ca.pem у librdkafka — один серт,
         // bundle окна ротации требует файла (ssl.ca.location).
         var caPath = Path.Combine(Path.GetTempPath(),
             $"carot-ca-{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(

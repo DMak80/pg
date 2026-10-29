@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Sanity-прогон образа pgworker-node с приёмником WAL (t25, spec §3.2/§6 п.2;
+// Sanity-прогон образа pgworker-node с приёмником WAL (spec §3.2/§6 п.2;
 // docker, динамические порты, guid-окружение, полный teardown при любом исходе
 // + ассерт чистоты). Кейсы:
 // 1. Приёмник жив под supervisord (RUNNING), /metrics внутри контейнера отдаёт
@@ -30,7 +30,7 @@ public class NodeWalReceiverTests
 
     public NodeWalReceiverTests(ITestOutputHelper output) => _output = output;
 
-    // 9.5 (t25-ревью): серия зелёная на чистом хосте и всегда на свежем бинаре —
+    // 9.5 (ревью): серия зелёная на чистом хосте и всегда на свежем бинаре —
     // образ собирается ДВУХШАГОВО на КАЖДЫЙ прогон серии (один раз за ран, канон
     // «publish на хосте, в контейнер — только артефакты»): (1) self-contained
     // publish WalReceiver/NodeTools (RID хоста, без trimming; инкрементальный)
@@ -243,7 +243,7 @@ public class NodeWalReceiverTests
         return parsed?.Status.UpdatedUnix;
     }
 
-    // 9.2 (t25-ревью, arch/19 §4 «ключ жив = приёмник жив»): supervisorctl stop
+    // 9.2 (ревью, arch/19 §4 «ключ жив = приёмник жив»): supervisorctl stop
     // walreceiver — процесс получает SIGTERM (graceful: lease revoke — ключ
     // гаснет сразу), ПОТОЛОК ожидания — lease TTL 15 c; supervisorctl start —
     // ключ возвращается свежим процессом. Смерть процесса не оставляет

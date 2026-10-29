@@ -10,7 +10,7 @@ namespace Metrics.SdGenerator.IntegrationTests;
 // Testcontainers-etcd (паттерн PgWorker.IntegrationTests/Etcd/EtcdFixture):
 // generic-контейнер quay.io/coreos/etcd:v3.5.21, динамический порт публикации,
 // готовность — POST-ретрай (встроенные HTTP-wait шлют GET, а /v3/* требует POST).
-// АДАПТАЦИЯ t15: старт отложен в явный StartAsync (сценарий «мёртвый порт → ожил»:
+// АДАПТАЦИЯ : старт отложен в явный StartAsync (сценарий «мёртвый порт → ожил»:
 // тест недоступности тикает на порт ДО старта контейнера).
 public sealed class EtcdFixture : IAsyncDisposable
 {
@@ -41,7 +41,7 @@ public sealed class EtcdFixture : IAsyncDisposable
         Gateway = new EtcdGateway(_http);
     }
 
-    // Старт контейнера + ожидание готовности (отложен из IAsyncLifetime — адаптация t15).
+    // Старт контейнера + ожидание готовности (отложен из IAsyncLifetime — адаптация).
     public async Task StartAsync(CancellationToken ct)
     {
         await _container.StartAsync(ct);

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-s3-unreachable (t08, spec §4.5): configured && consecutiveFailures >= 2
+// backup-s3-unreachable (spec §4.5): configured && consecutiveFailures >= 2
 // → warning с target endpoint/bucket; выключенная грань/порог не достигнут/
 // успех — молчание (снимается первым успешным тиком).
 public class BackupS3UnreachableRuleTests

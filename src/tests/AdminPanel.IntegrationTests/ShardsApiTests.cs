@@ -183,7 +183,7 @@ public class ShardsApiTests(AuthWebFactory factory)
         SetLiveSnapshot();
         _factory.WorkerApi.Reset();
         _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
-            """{"title":"Shard remove rejected","status":409,"detail":"shard has 4 buckets — move them explicitly first (moves UI — t07)"}""");
+            """{"title":"Shard remove rejected","status":409,"detail":"shard has 4 buckets — move them explicitly first (moves UI)"}""");
         using var client = await LoginAsync();
 
         // Act

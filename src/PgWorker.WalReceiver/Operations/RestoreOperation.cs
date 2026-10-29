@@ -233,7 +233,7 @@ public sealed class RestoreOperation : IReceiverOperation
             //    (arch/19 §3.5). standby.signal снимается повторно ПЕРЕД
             //    стартом: живой Patroni ноды может воссоздать файл в окне
             //    между правками и стартом — postgres уйдёт в standby-ожидание
-            //    WAL вместо recovery и промоута (факт прогона t100).
+            //    WAL вместо recovery и промоута (факт прогона).
             phase = OperationPhases.Recovering;
             Update(OperationStates.Running, phase);
             File.Delete(Path.Combine(pgdata, "standby.signal"));

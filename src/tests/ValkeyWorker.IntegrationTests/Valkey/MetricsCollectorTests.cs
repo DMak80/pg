@@ -12,7 +12,7 @@ using Xunit;
 
 namespace ValkeyWorker.IntegrationTests.Valkey;
 
-// Живой коллектор против docker-ноды (t05, spec §9): provisioning кластера →
+// Живой коллектор против docker-ноды (spec §9): provisioning кластера →
 // CollectOnceAsync → серии словаря со значениями (роль master, maxmemory из
 // декларации); docker stop ноды → тик не падает, LastSuccess стоит, стейт не
 // перезаписан. Отдельный от live-WAF (задача 5) тест: прямой контроль тиков.

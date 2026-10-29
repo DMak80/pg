@@ -6,9 +6,9 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// Docker exec (t01 задача 8): POST /containers/{id}/exec → /exec/{id}/start
+// Docker exec : POST /containers/{id}/exec → /exec/{id}/start
 // (raw-stream демультиплексирование) → /exec/{id}/json.
-// Драйверные PlainDriver-кейсы — в PgWorker.UnitTests (домен pg, t07).
+// Драйверные PlainDriver-кейсы — в PgWorker.UnitTests (домен pg).
 public class DockerEngineExecTests
 {
     private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
@@ -109,7 +109,7 @@ public class DockerEngineExecTests
         result.Error!.Message.Should().Contain("boom: relation not found");
     }
 
-    // Канон-суперсет t07 §7.3: сообщение ошибки содержит И stderr, И stdout
+    // Канон-суперсет §7.3: сообщение ошибки содержит И stderr, И stdout
     // (Kafka-CLI 4.x печатает диагностику, включая stack trace, в stdout).
     [Fact]
     public async Task ExecAsync_NonZeroExit_MessageContainsStdoutAndStderr()

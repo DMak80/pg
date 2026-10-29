@@ -136,13 +136,13 @@ public class WorkerApiGatewayTests
             provider.GetRequiredService<IHttpClientFactory>(),
             pg ?? new SettableSnapshotStore(),
             kafka ?? new SettableKafkaStore(),
-            // t03: valkey-стор нейтрален для kafka/pg-сценариев (пустой).
+            // valkey-стор нейтрален для kafka/pg-сценариев (пустой).
             new SettableValkeyStore(),
-            // t34: s3-стор нейтрален для pg/kafka/valkey-сценариев (пустой).
+            // s3-стор нейтрален для pg/kafka/valkey-сценариев (пустой).
             new SettableS3Store());
     }
 
-    // t34: стор s3-снапшота (в этих тестах живых s3-ключей нет).
+    // стор s3-снапшота (в этих тестах живых s3-ключей нет).
     private sealed class SettableS3Store : IS3SnapshotStore
     {
         public S3Snapshot? Current { get; set; }
@@ -150,7 +150,7 @@ public class WorkerApiGatewayTests
         public void Replace(S3Snapshot snapshot) => Current = snapshot;
     }
 
-    // t03: стор valkey-снапшота (в этих тестах живых valkey-ключей нет).
+    // стор valkey-снапшота (в этих тестах живых valkey-ключей нет).
     private sealed class SettableValkeyStore : IValkeySnapshotStore
     {
         public AdminPanel.Core.Valkey.ValkeySnapshot? Current { get; set; }

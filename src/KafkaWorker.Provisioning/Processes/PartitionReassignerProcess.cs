@@ -24,7 +24,7 @@ public sealed record ReassignProgress(
     [property: JsonPropertyName("last_error")] string? LastError = null);
 
 /// <summary>
-/// PartitionReassignerProcess (arch/16 §5 I; spec t02 §5): перенос реплик
+/// PartitionReassignerProcess (arch/16 §5 I; spec §5): перенос реплик
 /// партиций между брокерами. Drain (приоритет): опустошение брокера
 /// state=TO_REMOVE — каждым тиком план пересчитывается из свежих метаданных
 /// describe-all (включая __-топики), подаются идемпотентные батчи ≤
@@ -34,7 +34,7 @@ public sealed record ReassignProgress(
 /// (панель), заявка снимается по сходимости. Слепая проба — никаких подач
 /// (собственная слепота воркера не повод трогать партиции), прошлый
 /// прогресс-ключ не трогается. Прогресс-ключ пишет только держатель клэйма.
-/// <para>t10: не-начатая заявка rebalances старее порога снимается в трёх
+/// <para>: не-начатая заявка rebalances старее порога снимается в трёх
 /// передержках (waiting-cluster по endpoints / слепой пробе, waiting-drain)
 /// под тройным гвардом §3.1 (прогресс mode=balance не жив ∧ staging ca_next_*
 /// отсутствует — идущая ребалансировка не снимается никогда, её стагнацию
@@ -63,7 +63,7 @@ public sealed class PartitionReassignerProcess(
     private readonly ConcurrentDictionary<string, long> _lastOk = new();
     private readonly ConcurrentDictionary<string, (string Signature, long Unix)> _lastSubmit = new();
 
-    // t10: экспирация не-начатых заявок rebalances + исходы финалов.
+    // экспирация не-начатых заявок rebalances + исходы финалов.
     private readonly TicketExpirator _tickets = new(etcd, endpoints);
 
     // Аудит заявки (для исхода done; рестарт между сходимостью и del теряет
@@ -93,7 +93,7 @@ public sealed class PartitionReassignerProcess(
             _ticketAudit[cluster] = TicketOutcomes.ParseAudit(ticket.Value!.Value);
 
         // Прогресс-ключ: total сохраняется между тиками, submitted — для дедупа.
-        // Чтение ВЫШЕ проверки «кластер не поднят» (t10): решение «идущая
+        // Чтение ВЫШЕ проверки «кластер не поднят» : решение «идущая
         // balance» нужно во всех трёх точках экспирации, включая самую раннюю —
         // endpoints-точку.
         var progressKv = await GetAsync(ProgressKey(cluster), ct);
@@ -102,7 +102,7 @@ public sealed class PartitionReassignerProcess(
         var previous = ParseProgress(progressKv.Value);
 
         // Кластер не поднят (endpoints/креды появляются на K5): жива заявка —
-        // waiting/экспирация под тройным гвардом (t10); иначе нечего двигать.
+        // waiting/экспирация под тройным гвардом; иначе нечего двигать.
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
         {
             if (hasTicket)
@@ -162,7 +162,7 @@ public sealed class PartitionReassignerProcess(
 
         if (drainCandidate is not null)
         {
-            // Заявка balance ждёт/экспирируется (t10) — сначала демонтаж (spec §5.3 B1).
+            // Заявка balance ждёт/экспирируется — сначала демонтаж (spec §5.3 B1).
             if (hasTicket)
             {
                 var expired = await TryExpireRebalanceAsync(
@@ -203,7 +203,7 @@ public sealed class PartitionReassignerProcess(
         return await RunBalanceAsync(snap, admin, all, previous, now, ct);
     }
 
-    // Экспирация заявки rebalances под тройным гвардом §3.1 (t10): заявка старее
+    // Экспирация заявки rebalances под тройным гвардом §3.1 : заявка старее
     // порога и НЕ начата — прогресс-ключ balance не жив (предикат 3: батчи не
     // подаются) И окно ротации не открыто (предикат 2: staging ca_next_* —
     // CA-окно K не смешивается с решением о заявке, гвард общий). Идущая
@@ -286,7 +286,7 @@ public sealed class PartitionReassignerProcess(
         // воркера. Замечание: фактическое СНИЖЕНИЕ minISR internal через
         // AlterTopicConfigs не требуется — controller-ноды не демонтируются,
         // при всех достижимых B' >= 3 min(2,B') = 2 = прежнее значение; при
-        // потере кворума процесс стоит по слепой пробе (спека t02 §10).
+        // потере кворума процесс стоит по слепой пробе (спека §10).
         var minIsr = BuildMinIsrByTopic(snap, all, targets);
 
         var plan = ReassignPlanner.PlanDrain(all, drainId, targets, minIsr);
@@ -332,7 +332,7 @@ public sealed class PartitionReassignerProcess(
         var plan = ReassignPlanner.PlanBalance(all, targets, snap.Config.ReplicationFactor);
         if (ReassignPlanner.Pending(all, plan).Count == 0)
         {
-            // Исход done ДО del заявки (t10): после del ветка сходимости
+            // Исход done ДО del заявки : после del ветка сходимости
             // недостижима (B1-cancelled) — провал etcd между del и исходом
             // терял бы done навсегда; put идемпотентен, повтор ветки перезапишет.
             var outcomeDone = await _tickets.WriteDoneAsync(
@@ -492,7 +492,7 @@ public sealed class PartitionReassignerProcess(
 
     public static string ProgressKey(string cluster) => $"/kafkaworker/reassignments/{cluster}";
 
-    // staging-ключи CA-окна K (t10): предикат 2 гварда экспирации.
+    // staging-ключи CA-окна K : предикат 2 гварда экспирации.
     private static string CaNextKeyKey(string cluster) => $"/kafka/clusters/{cluster}/ca_next_key";
 
     private static string CaNextPemKey(string cluster) => $"/kafka/clusters/{cluster}/ca_next_pem";

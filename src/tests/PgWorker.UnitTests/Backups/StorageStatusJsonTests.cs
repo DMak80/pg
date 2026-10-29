@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Сериализация ключа /pgworker/backups/storage (t06, spec §3.4/AC6):
+// Сериализация ключа /pgworker/backups/storage (spec §3.4/AC6):
 // с квотой — все поля; без квоты — поля квоты опущены, state=OK;
 // имена состояний OK/WARN/CRIT.
 public class StorageStatusJsonTests

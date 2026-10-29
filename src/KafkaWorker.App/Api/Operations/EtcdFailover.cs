@@ -6,7 +6,7 @@ namespace KafkaWorker.App.Api.Operations;
 // успешный ответ выигрывает (паттерн WithFailoverAsync воркерских процессов);
 // все недоступны → EtcdWriteUnavailableException = 503 (замена «активного
 // endpoint из снапшота» панели на собственный список воркера).
-// Порт PgWorker.App/Api/Operations/EtcdFailover.cs (дубль осознан, t08).
+// Порт PgWorker.App/Api/Operations/EtcdFailover.cs (дубль осознан).
 internal static class EtcdFailover
 {
     public static async Task<Result<T>> CallAsync<T>(string[] endpoints, Func<string, Task<Result<T>>> call)

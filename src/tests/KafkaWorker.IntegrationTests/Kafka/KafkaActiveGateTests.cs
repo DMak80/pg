@@ -7,10 +7,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Гейт Active-ветки (t05, spec §7.5/§3.2, ревью F1): кластер в активном
+// Гейт Active-ветки (spec §7.5/§3.2, ревью F1): кластер в активном
 // backoff-окне — ActiveAsync (надзор-гейт + skip E–J/D) исполняется
 // хост-процессом без kafka-контакта: тик Success, фабрика не зовётся.
-// Per-class коллекция (t24/AGENTS.base §13; spec §6.3.2): свой инстанс
+// Per-class коллекция (/AGENTS.base §13; spec §6.3.2): свой инстанс
 // KafkaClusterFixture — свой etcd-контур, свои кластеры/сети (RunTag),
 // своё окно портов и AdminFactory; классы параллельны (потолок —
 // xunit.runner.json), факты класса последовательны.

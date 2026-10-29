@@ -114,9 +114,9 @@ internal sealed class ReconcileLoop(
         if (!serviceKvs.IsSuccess)
             return Result.Failed(serviceKvs.Error!);
 
-        // Бэкапы (t02/t03, arch/19 §4): префикс читаем ВСЕГДА — стоп-семантика t03
+        // Бэкапы (/, arch/19 §4): префикс читаем ВСЕГДА — стоп-семантика 
         // (Enabled=false → финальный STOPPED) обязана видеть живые ключи; пустой
-        // префикс дёшев. Потребители фильтруются по Enabled сами (t02-процесс).
+        // префикс дёшев. Потребители фильтруются по Enabled сами (процесс).
         var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
         if (!backupsKvs.IsSuccess)
             return Result.Failed(backupsKvs.Error!);
@@ -205,7 +205,7 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "adopt",
                         () => processes.AdoptAsync(snap, tick), ct, tick);
 
-                    // Scale-проход (t06 spec §5.1): remove → add, после надзора, до
+                    // Scale-проход (spec §5.1): remove → add, после надзора, до
                     // эвакуаций/moves — демонтаж освобождает хосты/порты для подъёма (Д13).
                     await RunClusterOpAsync(cluster, "scale-shards",
                         () => processes.ScaleShardsAsync(snap, tick), ct, tick);
@@ -215,28 +215,28 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, tick), ct, tick);
 
-                    // Полные бэкапы (t02, arch/19 §2): после коротких плановых
+                    // Полные бэкапы (arch/19 §2): после коротких плановых
                     // операций, до репарации; тик запускает/поллит джобы, не ждёт их.
-                    // Выключенная подсистема не зовётся вовсе (поведение без t02).
+                    // Выключенная подсистема не зовётся вовсе (поведение без).
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backups",
                             () => processes.BackupsAsync(snap, backups, tick), ct, tick);
 
-                    // WAL-архивация (t03, arch/19 §3): после ротации (креды агента —
+                    // WAL-архивация (arch/19 §3): после ротации (креды агента —
                     // свежий пароль в пересоздании) и до repair/moves (короткая).
                     // Зовётся ВСЕГДА: при Enabled=false это стоп-семантика
                     // (агенты вниз + финальный STOPPED в живых ключах).
                     await RunClusterOpAsync(cluster, "backup-wal",
                         () => processes.WalStreamAsync(snap, backups, tick), ct, tick);
 
-                    // Проверки полных бэкапов (t04, arch/19 §5): после WAL-потока,
+                    // Проверки полных бэкапов (arch/19 §5): после WAL-потока,
                     // до ретенции и repair; тик запускает/поллит verify-джобы, не ждёт
                     // их (non-blocking). Выключенная подсистема не зовётся вовсе.
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backup-verify",
                             () => processes.VerifyBackupsAsync(snap, backups, tick), ct, tick);
 
-                    // Ретенция (t06, arch/19 §4): после backup-wal/verify (чистит только
+                    // Ретенция (arch/19 §4): после backup-wal/verify (чистит только
                     // то, что не нужно оставляемым полным; порядок verify→retention канон
                     // не фиксирует — проверяем до удаления), до repair; тик короткий
                     // (один кандидат/проход, batch-чанки). Выключенная подсистема
@@ -245,7 +245,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backups-retention",
                             () => processes.RetentionAsync(snap, backups, tick), ct, tick);
 
-                    // Сверка S3↔etcd (t07, arch/19 §4): мусор full/<id>/ живого шарда
+                    // Сверка S3↔etcd (arch/19 §4): мусор full/<id>/ живого шарда
                     // без etcd-ключа; после ретенции (гигиена FAILED может оставить
                     // объекты), до restore (гвард владельца). Выключенная подсистема
                     // не зовётся.
@@ -253,7 +253,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backup-supervisor",
                             () => processes.SuperviseBackupsAsync(snap, backups, tick), ct, tick);
 
-                    // Restore шардов из бэкапов (t05, arch/19 §3.5): после wal-потока
+                    // Restore шардов из бэкапов (arch/19 §3.5): после wal-потока
                     // (агент снесён демонтажём — процесс сам стопает), до repair/moves.
                     // Выключенная подсистема не зовётся; одна активная заявка за тик —
                     // машина состояний процесса (старейшая по Id).
@@ -261,7 +261,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backup-restore",
                             () => processes.RestoreAsync(snap, backups, tick), ct, tick);
 
-                    // Дрилл восстановимости (reliability t02, arch/19 §3.6): после backup-restore
+                    // Дрилл восстановимости (reliability, arch/19 §3.6): после backup-restore
                     // (гвард restore-владения отработал в отборе), до repair. Зовётся ВСЕГДА:
                     // Backups:Enabled=false / интервал 0 — стоп-семантика в процессе (доводка
                     // активного дрилла и сноса контура, новых запусков нет).
@@ -278,7 +278,7 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",
                             () => processes.EvacuateAsync(snap, deadShard, backups, tick), ct, tick);
 
-                    // Заявки переездов бакетов (t01, spec §5.3): после надзора и
+                    // Заявки переездов бакетов (spec §5.3): после надзора и
                     // эвакуаций; MoveProcess сам держит клэйм-гвард (инвариант §4.3).
                     await RunClusterOpAsync(cluster, "moves",
                         () => processes.ProcessMovesAsync(snap, tick), ct, tick);
@@ -318,7 +318,7 @@ internal sealed class ReconcileLoop(
     private async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken host, CancellationToken ct)
     {
-        // heartbeat (канон t19): завершение каждой операции кластера — активность
+        // heartbeat (канон): завершение каждой операции кластера — активность
         // тика; долгие операции отмечают прогресс сами (provisioning/deprovision/
         // supervisor-S3), стыки между ними закрывает эта отметка — на медленном
         // хосте цепочка операций без отметок давала watchdog-тишину > порога.

@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// GFS-отбор RetentionPlanner.SelectKeep (t06, spec §3.1/AC1): календарь UTC,
+// GFS-отбор RetentionPlanner.SelectKeep (spec §3.1/AC1): календарь UTC,
 // границы недель/месяцев (вкл. годовые границы ISO-недель — с дискриминацией
 // бага на weeks>=2), guard последнего COMPLETED (вкл. verify-FAILED),
 // verify-приоритет порядка удаления.
@@ -423,7 +423,7 @@ public class RetentionPlannerTests
     }
 
     // TLI ниже — удаляются; TLI выше позицией ниже cutoff — НЕ трогаются
-    // (консервативность: контроль t03 объекты чужого TLI игнорирует).
+    // (консервативность: контроль объекты чужого TLI игнорирует).
     [Fact]
     public void TLI_Below_Removed_Above_Untouched()
     {
@@ -523,7 +523,7 @@ public class RetentionPlannerTests
         pruned[^1].Should().Be("f09");
     }
 
-    // AAA: чистка FAILED до KeepFailed не сбрасывает бэкофф t02 — окно попытки
+    // AAA: чистка FAILED до KeepFailed не сбрасывает бэкофф — окно попытки
     // остаётся MaxSec-capped и на полной, и на почищенной истории (AC5).
     [Fact]
     public void Prune_UpToKeepFailed_DoesNotTouchBackoffPassed()
@@ -544,7 +544,7 @@ public class RetentionPlannerTests
         before.Should().Be(after);
     }
 
-    // ---- t18: точность «предыдущих периодов» GFS (AC1) ----
+    // ---: точность «предыдущих периодов» GFS (AC1) ----
 
     // AC1: дефолт 1/1/1 на суточном ряду — ровно ТРИ позиции: последний +
     // последний полный предыдущей ISO-недели + последний полный предыдущего
@@ -625,7 +625,7 @@ public class RetentionPlannerTests
         delete.Should().BeEmpty();
     }
 
-    // ---- t18: LatestVerifiedWalStart — точка отсчёта cutoff/chain_start (AC2/AC3) ----
+    // ---: LatestVerifiedWalStart — точка отсчёта cutoff/chain_start (AC2/AC3) ----
 
     // AC2: точка = wal_start новейшего (по started_unix) OK-полного — недельная/
     // месячная (старые OK) на неё НЕ влияют.

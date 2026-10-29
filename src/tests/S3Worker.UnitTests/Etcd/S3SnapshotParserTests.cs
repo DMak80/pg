@@ -130,7 +130,7 @@ public class S3SnapshotParserTests
     [Fact]
     public void Parse_ConnectivitySync_NotUnknown_ClusterIntact()
     {
-        // Arrange — ключи наблюдения зонда t33 (arch/23 §3) и вовсе неизвестный
+        // Arrange — ключи наблюдения зонда (arch/23 §3) и вовсе неизвестный
         var kvs = new[]
         {
             Kv("/s3/clusters/c/config", """{"platform":"owns3","nodes":1,"created_unix":1}"""),

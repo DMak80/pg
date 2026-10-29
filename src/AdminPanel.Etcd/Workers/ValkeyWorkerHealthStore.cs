@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Etcd.Workers;
 
-// Стор результатов опроса /healthz инстансов ValkeyWorker (t03; arch/adminpanel/02
+// Стор результатов опроса /healthz инстансов ValkeyWorker ( arch/adminpanel/02
 // §2.3.3): poller пишет, valkey-refresher вносит готовым в снапшот (паттерн
 // KafkaWorkerHealthStore: volatile-замена, KV-тик не блокируется).
 [InjectAsSingleton(typeof(IValkeyWorkerHealthStore))]

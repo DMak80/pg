@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// Rollback (t01 задача 15, spec §6.3): зеркальный cutover с DropStatusOnFail
+// Rollback (spec §6.3): зеркальный cutover с DropStatusOnFail
 // («нет ключа = ACTIVE»), поиском sub_rb ровно на одном не-владельце; пост-flip:
 // DROP SUBSCRIPTION sub_rb + DROP PUBLICATION pub_rb + ОБЯЗАТЕЛЬНАЯ разморозка
 // вернувшегося владельца. Finalize (spec §6.4): SubscriptionDrop с fallback

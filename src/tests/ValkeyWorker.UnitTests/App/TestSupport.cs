@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 namespace ValkeyWorker.UnitTests.App;
 
 // IOptionsMonitor-дабл (порт KafkaWorker.UnitTests/App/TestSupport.cs): фиксированные
-// настройки ValkeyWorkerOptions для тестов циклов/health (t09).
+// настройки ValkeyWorkerOptions для тестов циклов/health.
 internal sealed class FixedOptionsMonitor(ValkeyWorkerOptions value) : IOptionsMonitor<ValkeyWorkerOptions>
 {
     public ValkeyWorkerOptions CurrentValue => value;
@@ -15,7 +15,7 @@ internal sealed class FixedOptionsMonitor(ValkeyWorkerOptions value) : IOptionsM
     public ValkeyWorkerOptions Get(string? name) => value;
 }
 
-// Шлюз, бросающий сетевые исключения (t09): .NET DNS-флейп
+// Шлюз, бросающий сетевые исключения.NET DNS-флейп
 // «Name or service not known» летит из HttpClient наружу.
 internal sealed class ThrowingEtcd : IEtcdGateway
 {

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.WalReceiver;
 
-// Операция verify tool-контейнера (arch/19 §5, spec t26 §3.4) на фейках:
+// Операция verify приёмника ноды (arch/19 §5) на фейках:
 // счастливый путь — скачивание всех объектов листинга в staging →
 // pg_verifybackup → succeeded; отказ скачивания → failed + phase=downloading
 // (МАРКЕР ТРАНЗИЕНТА — ретраи воркера); pg_verifybackup ≠ 0 → failed +
@@ -102,7 +102,7 @@ public class VerifyOperationTests
     public async Task HappyPath_DownloadsAll_VerifySucceeds_StagingCleaned()
     {
         // Arrange: staging во временном каталоге; pg_verifybackup exit 0.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var runner = new FakeRunner { VerifyExitCode = 0 };
         var s3 = new FakeS3();
@@ -140,7 +140,7 @@ public class VerifyOperationTests
         // Arrange: два endpoints; набор расщеплён — нода A листит только
         // backup_label, нода B только pg_wal-сегмент (соло-лист любой из них
         // неполон — отказ ноды посреди заливки/лаг mesh); pg_verifybackup ок.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var runner = new FakeRunner { VerifyExitCode = 0 };
         var a = new FakeS3 { Keys = ["backup_label"] };
@@ -173,7 +173,7 @@ public class VerifyOperationTests
     public async Task DownloadFails_FailedWithDownloadingPhase_TransientMarker()
     {
         // Arrange: list от всех нод недоступен.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var registry = new OperationRegistry();
         registry.TryBegin(new OperationSnapshot(Id, "running", "downloading"));
@@ -194,7 +194,7 @@ public class VerifyOperationTests
     public async Task VerifybackupFails_FailedWithVerifyingPhase_Permanent()
     {
         // Arrange: скачивание ок, pg_verifybackup exit 1.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var runner = new FakeRunner
         {
@@ -228,7 +228,7 @@ public class VerifyOperationTests
     {
         // Arrange: pg_verifybackup висит до отмены; операция доходит до
         // verifying-фазы.
-        var staging = Path.Combine(Path.GetTempPath(), $"t26-verify-{Guid.NewGuid():N}");
+        var staging = Path.Combine(Path.GetTempPath(), $"verify-{Guid.NewGuid():N}");
         Directory.CreateDirectory(staging);
         var runner = new FakeRunner { HangVerify = true };
         var registry = new OperationRegistry();

@@ -7,7 +7,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// PortAllocIndex (t91, arch/16 §2.1): busy = клиентские порты записей
+// PortAllocIndex (arch/16 §2.1): busy = клиентские порты записей
 // /kafkaworker/portalloc/* ЧУЖИХ кластеров; свой — исключается (закрепление,
 // не занятость); чужой мусор любой формы (битый JSON, JSON без обязательных
 // полей) — skip без ошибки (порт PgWorker-индекса, spec §3.2/§6).
@@ -76,7 +76,7 @@ public class PortAllocIndexTests
         busy.Value.Should().BeEquivalentTo(new HashSet<(string, int)> { ("h1", 16000) });
     }
 
-    // AAA (ревью t91): валидный JSON соседа БЕЗ обязательных полей (host/client) —
+    // AAA (ревью): валидный JSON соседа БЕЗ обязательных полей (host/client) —
     // skip ключа без ошибки: как и битый JSON, это чужой мусор, не повод ронять
     // наш тик в Failed (spec §3.2/§6 — эталон PgWorker не роняет чтение ни на
     // каком мусоре).

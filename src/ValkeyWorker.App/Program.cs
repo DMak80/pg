@@ -20,7 +20,7 @@ using Shared.Etcd.Client;
 // координация → циклы). Per-install env-секреты — только TLS HTTP API
 // (arch/21 §4); per-cluster секреты (app/admin) — в etcd.
 // Fail-fast: пустые Etcd:Endpoints, не-https AdvertiseUrl.
-// Каркас t02 (фаза 2): циклы живы, процессы A–E — задача 12, API — задача 13.
+// Каркас (фаза 2): циклы живы, процессы A–E — задача 12, API — задача 13.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -48,7 +48,7 @@ builder.Services.AddSingleton(sp =>
 });
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
-// embedded DNS (t09; arch/21 §7): PooledConnectionLifetime + IPv4-first резолв.
+// embedded DNS ( arch/21 §7): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
 // Поллинг-инвариант (arch/21 §6): одиночный HTTP-вызов к etcd не молчит дольше
@@ -127,7 +127,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
             throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm requires ValkeyWorker:Docker:SwarmManager");
         // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени
         // (hostname из /nodes) — TLS-volume пишет серты на ноду размещения
-        // (t06-ревью); пустая таблица (однонодовый контур) — manager.
+        // (ревью); пустая таблица (однонодовый контур) — manager.
         return new SwarmClusterDriver(docker.SwarmManager, factory,
             docker.Hosts.Select(h => new HostEndpoint(h.Name, h.Endpoint)).ToList());
     }
@@ -271,7 +271,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-// Коллектор доменных метрик INFO (arch/18 §4.2, t05): read-only сбор вне клэймов;
+// Коллектор доменных метрик INFO (arch/18 §4.2): read-only сбор вне клэймов;
 // источники — снапшот /valkey/clusters/ (парсер ValkeySnapshotParser) и Range
 // /valkeyworker/portalloc/; только Active + полные дискавери-креды (зеркало
 // Kafka-коллектора: сразу после циклов).

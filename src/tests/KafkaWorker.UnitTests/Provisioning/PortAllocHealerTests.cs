@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Лестница E9 (t05, spec §3.3): portalloc пуст при объявленных брокерах —
+// Лестница E9 (spec §3.3): portalloc пуст при объявленных брокерах —
 // тупик «не закреплён в portalloc» (инцидент as-kafkaworker 2026-09-04)
 // заменён самолечением: инспекция живого контейнера либо новая аллокация
 // под клэймом locks/portalloc + RMW endpoints.
@@ -40,7 +40,7 @@ public class PortAllocHealerTests
         etcd.Seed("/kafka/clusters/events/brokers/broker1/role", "controller");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "AbCdEf0123456789AbCdEf0123456789");
-        etcd.SeedSecurity("events"); // t03: канонический кластер (ветка 3 строит env с PKI)
+        etcd.SeedSecurity("events"); // канонический кластер (ветка 3 строит env с PKI)
         if (pinned is { } addr)
             etcd.Seed("/kafkaworker/portalloc/events",
                 $"{{\"broker1\":{{\"host\":\"{addr.Host}\",\"client\":{addr.ClientPort}}}}}");

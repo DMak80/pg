@@ -10,7 +10,7 @@ using ValkeyWorker.Docker.Drivers;
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// CaRotator (t07, arch/21 §5 K): ротация per-cluster CA и серверного серта
+/// CaRotator (arch/21 §5 K): ротация per-cluster CA и серверного серта
 /// по заявке /valkeyworker/ca_rotations/&lt;C&gt; — окно двойного доверия без
 /// остановки обслуживания. Фазы: P (staging ca_next_* put-if-absent) →
 /// D (ca_pem = bundle OLD+NEW — перечитавшие дискавери доверяют обоим) →
@@ -20,7 +20,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// del staging, del заявки) → K4 (снапшот + done). Эксклюзивный второй шаг
 /// Active-ветки: окно открыто ⇒ InProgress ⇒ надзор/конвергер/ротация
 /// кредов в тике не идут (решение пользователя, spec §2.4). Ждущие исходы
-/// (waiting-*) вентиль НЕ блокируют. t10: K0.3 WindowOpenAsync уводит
+/// (waiting-*) вентиль НЕ блокируют. : K0.3 WindowOpenAsync уводит
 /// открытое окно в доигрывание мимо ждущих точек — K0.5 достижима только
 /// при закрытом окне и экспирационна (не-начатая ca-заявка старее порога
 /// снимается под тройным гвардом §3.1); финал K4 пишет исход done.
@@ -45,7 +45,7 @@ public sealed class CaRotator(
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
 
-    // t10: экспирация не-начатых ca-заявок в K0.5-точках + исходы финалов.
+    // экспирация не-начатых ca-заявок в K0.5-точках + исходы финалов.
     private readonly TicketExpirator _tickets = new(gateway, endpoints);
 
     // Аудит последней живой заявки (для исхода done на финале после del
@@ -104,7 +104,7 @@ public sealed class CaRotator(
         if (ticket.Value is null)
             return Result<RotationOutcome>.Success(RotationOutcome.NotNeeded);
 
-        // K0.5: ждущие причины (экспирационные, t10 — дооконная ветка: K0.3
+        // K0.5: ждущие причины (экспирационные, — дооконная ветка: K0.3
         // уводит открытое окно в доигрывание, staging-предикат гварда истинен
         // по построению; mutationLive — явная проверка журнала).
         if (snap.Endpoints is null || snap.AdminPassword is null || snap.AppPassword is null
@@ -324,7 +324,7 @@ public sealed class CaRotator(
     // Живая (мутационная) фаза пароль-ротации E по журналу: op=rotate в фазе
     // e1-added/e2-committed (e1-pending — фаза стейта, в журнал не пишется).
     // Терминальные (done/expired) и waiting-фазы — НЕ живые: expired пишется
-    // только вне мутаций (инвариант t10) — иначе терминальный expired навечно
+    // только вне мутаций (инвариант) — иначе терминальный expired навечно
     // гейтил бы свежую ca-заявку в waiting-password-rotation.
     private static bool PasswordMutationLive(WorkState? journalState)
         => journalState is { Op: "rotate" } r
@@ -408,7 +408,7 @@ public sealed class CaRotator(
             : Result<(string, string)>.Failed(written.Error!);
     }
 
-    // Финал K4: исход done ДО journal done (t10) — провал put → тик Failed →
+    // Финал K4: исход done ДО journal done — провал put → тик Failed →
     // хвост afterCommit (K0.2) повторит финал; put идемпотентен. Затем
     // снапшот «после» + journal done (идемпотентно).
     private async Task<Result<RotationOutcome>> FinishAsync(string cluster, CancellationToken ct)
@@ -431,7 +431,7 @@ public sealed class CaRotator(
             : Result<RotationOutcome>.Failed(done.Error!);
     }
 
-    // Ждущий исход с экспирацией под гвардом (t10): ca-заявка старее порога и
+    // Ждущий исход с экспирацией под гвардом : ca-заявка старее порога и
     // гвард пройден (K0.5 достижима ТОЛЬКО при закрытом окне — K0.3
     // WindowOpenAsync уводит открытое в доигрывание: staging-предикат истинен
     // по построению; mutationLive — явная проверка журнала) → снятие

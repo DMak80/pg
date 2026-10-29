@@ -2,7 +2,7 @@ namespace Shared.Etcd.Client;
 
 // Данные status-ответа без контекста endpoint (url/latency добавляет refresher панели).
 // Revision — из header.revision (int64 → ulong-decimal-строка protojson; воркеры
-// используют для compaction, t08).
+// используют для compaction).
 public sealed record EtcdStatusPayload(
     string? Version,
     long? DbSizeBytes,
@@ -11,7 +11,7 @@ public sealed record EtcdStatusPayload(
     ulong? RaftTerm,
     ulong? Revision);
 
-// Член etcd-кластера из /v3/cluster/member/list (isLeader в DTO вычисляет API t04 по EtcdStatus).
+// Член etcd-кластера из /v3/cluster/member/list (isLeader в DTO вычисляет API по EtcdStatus).
 public sealed record EtcdMember(
     ulong Id,
     string? Name,

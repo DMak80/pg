@@ -4,7 +4,7 @@ using PgWorker.NodeTools;
 
 namespace PgWorker.NodeTools.UnitTests;
 
-// Контракты pgwnodetool (t25-ревью, п.17): разбор CLI, guard'ы etcd-endpoints
+// Контракты pgwnodetool (ревью, п.17): разбор CLI, guard'ы etcd-endpoints
 // и путей, setdefault-семантика env-файла, классификация адресов. Команды с
 // сетью/демонами — в docker-серии (MasterLeaseFailover/HttpsTests).
 public class ContractTests

@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Гварды и мапперы REST-грани «Хранилище бэкапов» (t08, spec §4.6):
+// Гварды и мапперы REST-грани «Хранилище бэкапов» (spec §4.6):
 // двухступенчатый гвард prefix (форма + принадлежность), диапазон maxKeys,
 // DTO configured=false, слитые сироты, джойн деталей шарда.
 public class BackupStorageQueryTests

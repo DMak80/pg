@@ -101,9 +101,9 @@ public class BucketEvacuatorTests
         return new Rig(etcd, driver, sql, claims, journal, store, evacuator, events, snapshots);
     }
 
-    // AAA (t05 §3.4): шард с активной restore-заявкой эвакуации НЕ подлежит —
+    // AAA (§3.4): шард с активной restore-заявкой эвакуации НЕ подлежит —
     // InProgress, ключа /pgworker/evacuations нет, схемы на целевых шардах не
-    // создавались, журнал-факт skipped-restore (второй рубеж: надзор не отдаёт
+    // создавались, запись журнала skipped-restore (второй рубеж: надзор не отдаёт
     // таких кандидатов, но гонка снапшота/DONE-журнал не должны протащить).
     [Fact]
     public async Task Tick_DeadShardWithActiveRestore_Skipped()

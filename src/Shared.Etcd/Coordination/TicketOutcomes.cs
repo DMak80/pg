@@ -5,11 +5,11 @@ using Shared.Etcd.Client;
 
 namespace Shared.Etcd.Coordination;
 
-// Аудит заявки из payload (t10): возраст — из requested_unix (канон §9.8-протокола,
+// Аудит заявки из payload : возраст — из requested_unix (канон §9.8-протокола,
 // переживает рестарты), не из mod_revision etcd.
 public sealed record TicketRequestAudit(long RequestedUnix, string? RequestedBy);
 
-// Исходы заявок воркеров (t10, arch/15 §4 / arch/20 §3): пишет только воркер,
+// Исходы заявок воркеров (arch/15 §4 / arch/20 §3): пишет только воркер,
 // перезаписывается каждым новым исходом, чистится демонтажом X2.
 public static class TicketOutcomes
 {
@@ -63,7 +63,7 @@ public static class TicketOutcomes
         [property: JsonPropertyName("finished_unix")] long FinishedUnix);
 }
 
-// Возрастная экспирация не-начатой заявки (t10, arch/16 §5 / arch/21 §5).
+// Возрастная экспирация не-начатой заявки (arch/16 §5 / arch/21 §5).
 // Гвард экспирации (spec §3.1) — тройной предикат «не начато»:
 //  1) заявка жива (ticketPayload != null — за вызывающим);
 //  2) окно ротации не открыто (staging ca_next_* отсутствует — за вызывающим:

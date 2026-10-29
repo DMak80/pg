@@ -84,7 +84,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // POST /api/clusters/{cluster}/moves/rollback — заявки на откат (t07, 02 §9.7.2).
+        // POST /api/clusters/{cluster}/moves/rollback — заявки на откат (02 §9.7.2).
         endpoints.MapPost("/api/clusters/{cluster}/moves/rollback", async (
             string cluster, RollbackBucketsRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -97,7 +97,7 @@ public static class OperationsModule
         });
 
         // POST /api/clusters/{cluster}/moves/finalize — заявка уборки старого шарда
-        // (t07, 02 §9.7.3): DROP SCHEMA СО ДАННЫМИ — необратимо (UI предупреждает).
+        // (02 §9.7.3): DROP SCHEMA СО ДАННЫМИ — необратимо (UI предупреждает).
         endpoints.MapPost("/api/clusters/{cluster}/moves/finalize", async (
             string cluster, FinalizeBucketRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -109,7 +109,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда (t07,
+        // POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда (
         // 02 §9.7.4): force ломает защиты свежести/routing==target.
         endpoints.MapPost("/api/clusters/{cluster}/moves/abort", async (
             string cluster, AbortBucketRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
@@ -122,7 +122,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (t07,
+        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (
         // 02 §9.7.5): не останавливает взятую в работу; повтор не идемпотентен (404).
         endpoints.MapDelete("/api/clusters/{cluster}/moves/{bucket}", async (
             string cluster, string bucket, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
@@ -136,7 +136,7 @@ public static class OperationsModule
         });
 
         // POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
-        // секретов (02 §9.8, t02): клэймит заявку воркер; выполнение —
+        // секретов (02 §9.8): клэймит заявку воркер; выполнение —
         // ClusterSecretRotator PgWorker.
         endpoints.MapPost("/api/clusters/{cluster}/secrets/rotate", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
@@ -149,7 +149,7 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (t06,
+        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (
         // 02 §9.10): 204; ошибки воркера — ProblemDetails как есть.
         endpoints.MapPut("/api/clusters/{cluster}/config", async (
             string cluster, UpdateClusterConfigRequest request, IHandler handler, CancellationToken ct) =>
@@ -190,7 +190,7 @@ public static class OperationsModule
         });
 
         // PUT /api/clusters/{cluster}/backups/policy — мутация policy бэкапов
-        // (reliability t02, 02 §9.12): панель НЕ пишет в etcd — команда-прокси
+        // (reliability, 02 §9.12): панель НЕ пишет в etcd — команда-прокси
         // в POST policy-API воркера ПОЛНЫМ телом (retention + full_max_age_sec +
         // verify + drill; канон замещения целиком). Валидация панели — дубль
         // для UX; истина — сервер воркера (400 перечнем проксируется как есть).
@@ -216,7 +216,7 @@ public static class OperationsModule
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
-        // (t04, 02 §9.10): прокси в API PgWorker; 204 (ошибки — ProblemDetails
+        // (02 §9.10): прокси в API PgWorker; 204 (ошибки — ProblemDetails
         // воркера как есть, недоступность API — 503).
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
@@ -227,7 +227,7 @@ public static class OperationsModule
         });
 
         // DELETE /api/backups/orphans/{cluster}/{shard}/hold — снятие hold
-        // (t04, 02 §9.10): прокси; 204 идемпотентен.
+        // (02 §9.10): прокси; 204 идемпотентен.
         endpoints.MapDelete("/api/backups/orphans/{cluster}/{shard}/hold", async (
             string cluster, string shard, IHandler handler, CancellationToken ct) =>
         {
@@ -237,7 +237,7 @@ public static class OperationsModule
         });
 
         // POST /api/backups/orphans/{cluster}/{shard}/delete — заявка явного
-        // удаления сироты (t04, 02 §9.10): confirm подставляет панель (сервер
+        // удаления сироты (02 §9.10): confirm подставляет панель (сервер
         // воркера перепроверит); 202 + DTO воркера.
         endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/delete", async (
             string cluster, string shard, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>

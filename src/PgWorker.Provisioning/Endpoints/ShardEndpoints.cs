@@ -10,7 +10,7 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Endpoints;
 
 /// <summary>
-/// Адресация шардов кластера (t01 задача 9, spec §5.1): чтение portalloc,
+/// Адресация шардов кластера (spec §5.1): чтение portalloc,
 /// резолв мастера (master-ключ → ноды шарда → Patroni /cluster fallback;
 /// вынос ResolveMasterAsync из BucketEvacuator в общий сервис) + DSN-билдеры:
 /// admin-Npgsql (postgres), mover-libpq-conninfo (CREATE SUBSCRIPTION) и
@@ -73,7 +73,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             if (byName.Value is not null)
                 return Result<NodeAddress?>.Success(byName.Value);
             // Формат писателей ключа (Patroni-callback и reconciler): <host>:<doormanPort>.
-            // Ноду различает doorman-порт (уникален per-node, e2e-факт t01 — single-host
+            // Ноду различает doorman-порт (уникален per-node, факт стенда — single-host
             // стенды: все ноды на одном хосте). Хост-часть может расходиться с portalloc
             // (advertised-режим, arch/16: ключ пишут ноды с env-хостом контейнера,
             // portalloc — advertised-имя) — резолв по порту, хост информативен.
@@ -120,7 +120,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
-    // Sync-standby шарда (t27, arch/19 §3.3 п.2): Patroni GET /cluster —
+    // Sync-standby шарда (arch/19 §3.3 п.2): Patroni GET /cluster —
     // member role=replica, state=running, sync=true, имя в portalloc шарда →
     // адрес ноды. Не найден/недоступен → Success(null) БЕЗ fallback на мастера
     // (двойная архивация: второй агент поднимется тиком при появлении sync).
@@ -136,10 +136,10 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             var members = await probe.GetClusterAsync(node.Value, ct);
             if (!members.IsSuccess)
                 continue; // нода недоступна — пробуем следующую
-            // Patroni 3.x роль sync-члена — "sync_standby" (E2E-факт t27; поле sync
+            // Patroni 3.x роль sync-члена — "sync_standby" (поле sync
             // у него ОТСУТСТВУЕТ), старые версии — "replica" + sync-флаг. Обе формы.
             // Живой sync-член: state "streaming" (реплицируется) или "running" —
-            // E2E-факт t27 (sync_standby: state=streaming, фильтр "running" отсекал).
+            // факт стенда (sync_standby: state=streaming, фильтр "running" отсекал).
             var sync = members.Value.FirstOrDefault(m =>
                 m.State is "streaming" or "running"
                 && (m.Role == "sync_standby"
@@ -152,9 +152,9 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
-    // Источник полного бэкапа (t02, arch/19 §2/§6): штатно sync-standby —
+    // Источник полного бэкапа (arch/19 §2/§6): штатно sync-standby —
     // мастер не трогаем; нет sync-реплики/недоступна → fallback мастер
-    // (ResolveMasterAsync, журнал-факт role=master). DRY: sync-резолв общий с t27.
+    // (ResolveMasterAsync, запись журнала role=master).
     public async Task<Result<NodeAddress?>> ResolveBackupSourceAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
@@ -230,11 +230,11 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // конвертация той же libpq-строки — сплит по пробелам → пары key=value →
     // маппинг host→Host, port→Port, dbname→Database, user→Username (mover).
     // Разные порты нод Npgsql принимает ТОЛЬКО парами «Host=h1:p1,h2:p2» —
-    // список в Port= отвергается («Couldn't set port», e2e-факт t01).
+    // список в Port= отвергается («Couldn't set port», факт стенда).
     // Target Session Attributes=read-write — Npgsql-эквивалент target_session_attrs
     // (та же причина, что у MoverConninfo): пробы издателя — про писателя
     // (wal_level/слоты/walsender'ы), первый хост может быть стендбаем. Значение
-    // строго libpq-формой через дефис («ReadWrite» Npgsql отвергает — e2e-факт
+    // строго libpq-формой через дефис («ReadWrite» Npgsql отвергает — факт стенда
     // add-кластера: «Couldn't set target session attributes»).
     public static string MoverNpgsqlDsn(string shardDsn, string moverPassword)
     {

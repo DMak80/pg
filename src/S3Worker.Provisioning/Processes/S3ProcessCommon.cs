@@ -93,7 +93,7 @@ public static class S3ProcessCommon
 
     /// <summary>Клиентские креды кластера (arch/23 §2/§6): ленивая генерация
     /// при provisioning (txn put-if-absent), ротация — замена целиком; читатели
-    /// — S3Worker/PgWorker/панель/etcdworker (t32).</summary>
+    /// — S3Worker/PgWorker/панель/etcdworker.</summary>
     public static string ClusterSecretsKey(string cluster)
         => $"/s3/clusters/{cluster}/secrets";
 
@@ -103,16 +103,16 @@ public static class S3ProcessCommon
     public static string RotationKey(string cluster)
         => $"/s3worker/rotations/{cluster}";
 
-    /// <summary>Заявка внепланового зонда (arch/23 §8, t33): put-if-absent API,
+    /// <summary>Заявка внепланового зонда (arch/23 §8): put-if-absent API,
     /// del зонда по исполнении прогона.</summary>
     public static string ProbeRequestKey(string cluster)
         => $"/s3worker/probes/{cluster}";
 
-    /// <summary>Ключ наблюдения связности (arch/23 §3, t33): ping-матрица настроенных линков.</summary>
+    /// <summary>Ключ наблюдения связности (arch/23 §3): ping-матрица настроенных линков.</summary>
     public static string ConnectivityKey(string cluster)
         => $"/s3/clusters/{cluster}/connectivity";
 
-    /// <summary>Ключ наблюдения синхронности (arch/23 §3, t33): сверка пар/лаги/вердикты.</summary>
+    /// <summary>Ключ наблюдения синхронности (arch/23 §3): сверка пар/лаги/вердикты.</summary>
     public static string SyncKey(string cluster)
         => $"/s3/clusters/{cluster}/sync";
 
@@ -401,7 +401,7 @@ public static class S3ProcessCommon
         return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 
-    /// <summary>Пара сверки зонда (arch/23 §3, t33): from/to — Ordinal-нормализованные
+    /// <summary>Пара сверки зонда (arch/23 §3): from/to — Ordinal-нормализованные
     /// стороны неориентированной пары; lag_bytes — объём недоставленного (missing&gt;0),
     /// lag_objects — fetch-очередь приёмника (&gt;0); null — поле не пишется.</summary>
     public sealed record SyncPairValue(string From, string To, long Missing, long Extra, long? LagBytes, long? LagObjects);

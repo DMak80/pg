@@ -19,7 +19,7 @@ public static class CutoverPhases
 }
 
 /// <summary>
-/// Перманентный отказ cutover (t01 задача 12, ревью №1, spec §6.2 п.6/п.7):
+/// Перманентный отказ cutover (ревью №1, spec §6.2 п.6/п.7):
 /// verify-failed (дефектная копия P8 — разморозка сделана) и flip-conflict
 /// (routing изменился под руками — заморозка ОСТАВЛЕНА). MoveProcess по этому
 /// исключению удаляет заявку и пишет подсказку в журнал; обычные исключения —
@@ -49,7 +49,7 @@ public sealed record CutoverContext(
     string? PostFlipPhase = null);
 
 /// <summary>
-/// Cutover — единый непрерывный блок одного тика (t01 задача 12, spec §6.2; точный
+/// Cutover — единый непрерывный блок одного тика (spec §6.2; точный
 /// перенос cutover_flip move-bucket.sh): заморозка P1/P5 (REVOKE×3 + барьер LOCK в
 /// одной транзакции, до FreezeLockTries) → FROZEN/frozen + пауза роутера → LSN
 /// источника → ожидание слота (лаг 0, таймаут CutoverTimeoutSec) → sequences P6

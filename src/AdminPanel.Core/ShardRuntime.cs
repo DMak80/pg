@@ -1,6 +1,6 @@
 namespace AdminPanel.Core;
 
-// Runtime-обогащение шарда из SQL-пробы (t06): слоты, standby, подписки, инвентарь бакетов.
+// Runtime-обогащение шарда из SQL-пробы : слоты, standby, подписки, инвентарь бакетов.
 public sealed record ShardRuntime(
     string Shard,
     IReadOnlyList<ReplicationSlotInfo> Slots,

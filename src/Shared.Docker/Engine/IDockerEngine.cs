@@ -3,7 +3,7 @@ using Shared.Core;
 namespace Shared.Docker;
 
 // Тонкий клиент Docker Engine API: только нужные endpoints поверх HttpClient.
-// Общий движок трёх воркеров (t07): union методов pg/kfw/vwk, канон-суперсет
+// Общий движок трёх воркеров : union методов pg/kfw/vwk, канон-суперсет
 // семантики. Идемпотентность: 404 на удаление = успех (объекта уже нет);
 // 409 "already exists" на create = успех; 304 start = успех; create при
 // 404 "No such image" — pull образа и повтор.
@@ -25,7 +25,7 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result> DeleteNetworkAsync(string name, CancellationToken ct);
 
     // Подключить работающий контейнер к сети (POST /networks/<net>/connect;
-    // t24/arch/14 §2.1): ensure-инвариант «нода и её wal-агенты в одной сети
+    // /arch/14 §2.1): ensure-инвариант «нода и её wal-агенты в одной сети
     // кластера» — лечение ноды с данными, пересоздание которой недопустимо.
     Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct);
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
@@ -71,14 +71,14 @@ public sealed record DockerService(string Name, IReadOnlyDictionary<string, stri
 
 // Инспект контейнера GET /containers/<id>/json: hostname, сетевые алиасы, env
 // и host-биндинги — вход матчинга усыновления (spec §3.1); Running/ExitCode —
-// runtime-факт джоба бэкапа (t02: exit-код — истина итога, arch/19 §2).
+// runtime-факт джоба бэкапа (: exit-код — истина итога, arch/19 §2).
 public sealed record DockerContainerInspect(
     string Id, string Hostname, string[] Aliases, string[] Env, PortMap[] Ports,
     bool? Running = null, int? ExitCode = null,
-    // t07 (arch/19 §6): docker-факт возраста running-джоба (StartedAt, RFC3339 →
+    //  (arch/19 §6): docker-факт возраста running-джоба (StartedAt, RFC3339 →
     // unix) — бюджет verify-джоба; null при отсутствии/битой строке инспекта.
     long? StartedAtUnix = null,
-    // t24 (arch/14 §2.1): имена сетей контейнера (ключи NetworkSettings.Networks)
+    //  (arch/14 §2.1): имена сетей контейнера (ключи NetworkSettings.Networks)
     // — сверка ensure-инварианта «нода и её wal-агенты в одной сети кластера»;
     // null = инспект без сетей (фейки/урезанный ответ).
     string[]? Networks = null);
@@ -91,7 +91,7 @@ public sealed record DockerSwarmNode(
     IReadOnlyDictionary<string, string>? Labels = null);
 
 // Таск swarm-сервиса; Host — hostname ноды (NodeId → /nodes), PublishedPort —
-// publish mode=host, ContainerId — контейнер running-таска (t01: exec).
+// publish mode=host, ContainerId — контейнер running-таска (: exec).
 // union: vwk-копия без ContainerId — объединена с pg/kfw-вариантом (§7.6).
 public sealed record DockerTask(string Id, string NodeId, string State, string? Host, int? PublishedPort,
     string? ContainerId = null);
@@ -122,7 +122,7 @@ public sealed class DockerHttpException(string method, string path, int statusCo
     public string Body { get; } = body;
 }
 
-// Супер-спека трёх доменов (t07): домены передают своё, отсутствующее — null.
+// Супер-спека трёх доменов : домены передают своё, отсутствующее — null.
 // ResetEntrypoint=true (pg-семантика): при заданном Cmd сбросить ENTRYPOINT
 // образа (Entrypoint=[]) — Cmd выполняется как есть, а не аргументами
 // образного entrypoint; false — Cmd как аргументы entrypoint (kfw/vwk).

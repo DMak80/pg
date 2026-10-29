@@ -27,7 +27,7 @@ public static class RollbackBucketsValidator
     }
 }
 
-// Заявки на откат (t07): откат возвращает бакет на прежний шард по живой
+// Заявки на откат : откат возвращает бакет на прежний шард по живой
 // обратной подписке — куда, определяет воркер (SQL-факт). Общий протокол
 // постановки — MoveTickets (§9.7 п.3–5); guard'ы — Д4 (перепроверит процесс).
 public sealed class RollbackBucketsHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)

@@ -5,8 +5,8 @@ using Amazon.Runtime;
 namespace PgWorker.Backups;
 
 /// <summary>Фабрика HttpClient AWS SDK с доверенным per-install CA
-/// (t42, spec §5 fallback): AWSSDK.Core не читает env AWS_CA_BUNDLE
-/// (доказано E2E t42 — сборка строку не содержит, соединение даёт PartialChain) —
+/// (spec §5 fallback): AWSSDK.Core не читает env AWS_CA_BUNDLE
+/// (доказано E2E — сборка строку не содержит, соединение даёт PartialChain) —
 /// доверие CA https S3-endpoint программное: RemoteCertificateValidationCallback
 /// сверяет корень цепочки с CA из S3CaBundlePath (механизм тот же CA
 /// kfw-install-ca, контракт arch/19 §7 не меняется). null-чек клиента,
@@ -41,8 +41,8 @@ public sealed class S3CaHttpClientFactory : HttpClientFactory
     /// <summary>Валидация цепочки сервера против per-install CA: корень обязан
     /// нести отпечаток CA. CA — в ExtraStore: без доверенного стора (macOS)
     /// цепочка строится одним элементом (leaf) и сверка корня не срабатывает
-    /// (эмпирический факт E2E t42) — с ExtraStore цепочка [leaf, ca].
-    /// Hostname/SAN цели НЕ пиннится (осознанно, п.10 ревью t25): ownS3-leaf
+    /// (эмпирический факт E2E) — с ExtraStore цепочка [leaf, ca].
+    /// Hostname/SAN цели НЕ пиннится (осознанно, п.10 ревью): ownS3-leaf
     /// несёт SAN канона owns3/03 §6 (DNS owns3/owns3-ec/localhost), а ноды
     /// адресуют ownS3 по алиасам контура, в SAN не входящим — hostname-чек
     /// сломал бы штатный https-контур; граница доверия — per-install CA

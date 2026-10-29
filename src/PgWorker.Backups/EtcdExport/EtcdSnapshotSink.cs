@@ -5,7 +5,7 @@ using Shared.Etcd.Maintenance;
 
 namespace PgWorker.Backups.EtcdExport;
 
-/// <summary>S3-sink снапшотов etcd (t08, spec §3.6): путь ОДИН, без сравнения
+/// <summary>S3-sink снапшотов etcd (spec §3.6): путь ОДИН, без сравнения
 /// с прошлым состоянием — каждый снятый слепок уезжает новой парой (§2.7):
 /// put etcd/&lt;имя&gt;.db (серверная SHA256-проверка транспорта) → put
 /// .meta.json → ретенция N пар (EtcdExportRetention) → статус-ключ OK с

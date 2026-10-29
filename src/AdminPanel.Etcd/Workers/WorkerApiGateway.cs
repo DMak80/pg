@@ -14,7 +14,7 @@ namespace AdminPanel.Etcd.Workers;
 /// статус) → результат с телом как есть; живых нет/все молчат →
 /// WorkerApiUnavailableException (503 панели).
 /// Аутентификация — mTLS клиентским сертом (WorkerTlsHandler); X-Api-Key
-/// удалён для ОБОИХ воркеров (t03).
+/// удалён для ОБОИХ воркеров.
 /// </summary>
 public sealed class WorkerApiGateway(
     IOptions<WorkerApiOptions> options,
@@ -123,7 +123,7 @@ public sealed class WorkerApiGateway(
         return await client.SendAsync(request, ct);
     }
 
-    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03; s3 — t34).
+    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — парсинг, s3).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,

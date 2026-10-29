@@ -10,7 +10,7 @@ namespace PgWorker.App.Api.Operations;
 // Ответ 201 POST /api/clusters/{c}/secrets/rotate (арх-канон arch/02 §9.8; дубль осознан).
 public sealed record ClusterSecretsRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
-// Заявка ротации per-cluster секретов через API воркера (t02): порт панельного
+// Заявка ротации per-cluster секретов через API воркера : порт панельного
 // RotateClusterSecretsCommandHandler; выполняет ClusterSecretRotator (ALTER ROLE
 // app/bucket_admin/bucket_mover на всех шардах + атомарная замена кредов с
 // перезаписью dsn). requested_by — заголовок X-Requested-By, fallback "api"

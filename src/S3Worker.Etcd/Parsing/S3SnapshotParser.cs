@@ -48,7 +48,7 @@ public static class S3SnapshotParser
             }
 
             // Ключи домена /s3/ вне схемы кластеров (arch/23 §2: unknownKeys —
-            // не ошибка): /s3/whatever, /s3/clusters/<C>/unknown-t33, ключи t33.
+            // не ошибка): /s3/whatever, /s3/clusters/<C>/unknown, ключи.
             if (segments.Length < 4 || segments[2] != "clusters" || segments[3].Length == 0)
             {
                 unknown.Add(kv.Key);

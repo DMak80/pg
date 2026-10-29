@@ -2,7 +2,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting;
 
-// [Config]-POCO порогов алертов: секция AdminPanel:Alerts (arch/01 §6; заводит t05 — t04 §3.6).
+// [Config]-POCO порогов алертов: секция AdminPanel:Alerts (arch/01 §6; заводит —  §3.6).
 // Регистрация — автоскан AddCore().
 [Config("AdminPanel:Alerts")]
 public class AlertsOptions
@@ -29,26 +29,26 @@ public class AlertsOptions
     // provision-stuck: серия фейлов provision (fail_first_unix) старше N секунд.
     public int ProvisionStuckSec { get; set; } = 300;
 
-    // wal-stream-lag (t03): порог лага в сегментах и порог тишины загрузок
+    // wal-stream-lag : порог лага в сегментах и порог тишины загрузок
     // (arch/19 §3; синхронизированы с воркерными Wal:LagMaxSegments/StaleSec).
     public int WalLagMaxSegments { get; set; } = 1024;
 
     public int WalStaleSec { get; set; } = 300;
 
-    // backup-full-stale (t02): панельный дефолт окна суточного алерта при
+    // backup-full-stale : панельный дефолт окна суточного алерта при
     // отсутствии policy-ключа кластера (arch/19 §4). <= 0 — дефолт каталога 86400.
     public long BackupFullMaxAgeSec { get; set; } = 86400;
 
-    // backup-deleting-stuck (t06): возраст DELETING-полного без завершения
+    // backup-deleting-stuck : возраст DELETING-полного без завершения
     // (ретенция не может довести удаление — S3-отказ и т.п.).
     public BackupsAlertsOptions Backups { get; set; } = new();
 
-    /// <summary>Пороги алертов бэкапов (t06, arch/19 §4).</summary>
+    /// <summary>Пороги алертов бэкапов (arch/19 §4).</summary>
     public sealed class BackupsAlertsOptions
     {
         public int DeletingStaleSec { get; set; } = 21600; // 6 ч
 
-        // backup-orphan (t07): TTL сирот S3 — синхронизирован с воркерным
+        // backup-orphan : TTL сирот S3 — синхронизирован с воркерным
         // Supervisor:OrphanTtlSec (паттерн WalLagMaxSegments); 0 — в панели
         // «удаление вручную» (воркер авто-удаление не выполняет).
         public long OrphanTtlSec { get; set; } = 604800; // 7 сут

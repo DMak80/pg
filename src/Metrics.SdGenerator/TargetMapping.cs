@@ -22,7 +22,7 @@ public static class TargetMapping
     /// (arch/14 §2.1), не host-порт: сетевой таргет едины сети контура.</summary>
     public const int PatroniRestPort = 8008;
 
-    /// <summary>Контейнерный порт /metrics приёмника WAL (t25, arch/14 §2.1):
+    /// <summary>Контейнерный порт /metrics приёмника WAL (arch/14 §2.1):
     /// тот же per-node таргет вторым file_sd (arch/18 §5.4), http.</summary>
     public const int WalReceiverMetricsPort = 8080;
 
@@ -69,7 +69,7 @@ public static class TargetMapping
             labels = new { cluster = g.Cluster, shard = g.Shard, node = g.Node },
         }));
 
-    // Второй file_sd (t25, arch/18 §5.4): ТЕ ЖЕ записи per-node, таргет приёмника
+    // Второй file_sd (arch/18 §5.4): ТЕ ЖЕ записи per-node, таргет приёмника
     // WAL — <alias>:8080 (http; ScrapeNetwork приёмника), у записи без alias —
     // advertised <host>:8080 (скрейп без ScrapeNetwork недоступен — записи
     // пишутся единообразно, arch/18 §5.4). Порт Target (Patroni 8008 / advertised)
@@ -121,7 +121,7 @@ public static class TargetMapping
             if (entry.Patroni <= 0)
                 continue;
 
-            // Per-node правило (t15, arch/18 §2.5): alias есть → сетевой таргет
+            // Per-node правило (arch/18 §2.5): alias есть → сетевой таргет
             // <alias>:<контейнерный порт> (порты host-публикации не участвуют);
             // пустой alias — отсутствие (advertised-ветка, как без поля).
             var target = !string.IsNullOrWhiteSpace(entry.Alias)

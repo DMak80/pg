@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Статус-ключ /pgworker/etcd-snapshots (t08, arch/14 §3.3): сериализация OK/FAILED
+// Статус-ключ /pgworker/etcd-snapshots (arch/14 §3.3): сериализация OK/FAILED
 // (FAILED сохраняет поля последнего успеха), толерантный парсинг, IsBehind-детект.
 public class EtcdExportStatusJsonTests
 {

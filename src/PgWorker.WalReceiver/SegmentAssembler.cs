@@ -5,12 +5,12 @@ namespace PgWorker.WalReceiver;
 
 /// <summary>Кусок XLogData потока физической репликации: LSN начала куска,
 /// serverWalEnd — позиция записи сервера в момент посылки сообщения (база
-/// backlog-гейджа, arch/18 §2.8), байты (t27 → t25, arch/19 §3). WalStart
+/// backlog-гейджа, arch/18 §2.8), байты (→ wal-агент, arch/19 §3). WalStart
 /// обязан продолжать поток без разрывов.</summary>
 public readonly record struct XLogChunk(ulong WalStart, ulong WalEnd, ReadOnlyMemory<byte> Data);
 
 /// <summary>LSN → PG-формат `X/Y`: старшие 32 бита / младшие (hex) — формат
-/// диагностики сообщений приёмника (stdout-маркеры упразднены, t25).</summary>
+/// диагностики сообщений приёмника (stdout-маркеры упразднены).</summary>
 public static class WalLsn
 {
     public static string Text(ulong value)
@@ -23,7 +23,7 @@ public static class WalLsn
 /// (после завершения put байты сегмента никому не нужны).</summary>
 public sealed record ClosedSegment(uint Tli, string Name, byte[] Data, ulong EndLsn);
 
-/// <summary>Пул сегментных буферов hot-path (t25): буфер = wal_segment_size
+/// <summary>Пул сегментных буферов hot-path : буфер = wal_segment_size
 /// байт (16 МиБ — Large Object Heap при прямой аллокации каждого сегмента);
 /// Rent/Return переиспользуют буферы между закрытыми сегментами — закрытие
 /// сегмента отдаёт сам буфер без копии. Потокобезопасён (очередь); владение
@@ -39,7 +39,7 @@ public static class SegmentBufferPool
     public static void Return(byte[] buffer) => Free.Enqueue(buffer);
 }
 
-/// <summary>Сборка WAL-сегментов от LSN (t27 → t25, arch/19 §3, спека §3.1 п.3):
+/// <summary>Сборка WAL-сегментов от LSN (→ wal-агент, arch/19 §3, спека §3.1 п.3):
 /// накопление байтов чанков напрямую в сегментном буфере пула (байт копируется
 /// один раз: чанк → сегмент; закрытый сегмент отдаёт буфер без копии — в
 /// hot-path нет List/ToArray/memmove-сдвигов и LOH-аллокаций на каждый

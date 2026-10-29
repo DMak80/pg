@@ -5,7 +5,7 @@ using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 
-// Общая логика постановки заявок переездов (t07, arch/02 §9.7 п.3–5): чтение
+// Общая логика постановки заявок переездов (arch/02 §9.7 п.3–5): чтение
 // очереди напрямую у etcd, база requested_unix, txn-клэйм per key. Портировано
 // из MoveBucketsHandler без изменения поведения (регресс — MovesApiTests).
 internal static class MoveTickets

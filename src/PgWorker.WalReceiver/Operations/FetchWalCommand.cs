@@ -12,7 +12,7 @@ internal sealed record FetchWalContext(
     string AccessKey, string SecretKey, string? CaPem);
 
 /// <summary>Sub-режим того же бинаря `walreceiver fetch-wal &lt;seg&gt; &lt;dest&gt;`
-/// (arch/19 §3.5, spec t26 §3.4): restore_command postgres — скачивание
+/// (arch/19 §3.5, spec §3.4): restore_command postgres — скачивание
 /// сегмента/.history из wal/-префикса С ПЕРВОЙ ноды пула, ГДЕ ОН ЕСТЬ (перебор
 /// read-списка до найденного — arch/19 §5; лаг mesh допущен); нигде нет →
 /// exit 1 — конец WAL (канон §3.5). Регистр: %f приходит ВЕРХНИМ hex

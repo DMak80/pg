@@ -27,7 +27,7 @@ public sealed record KafkaProbeBroker(int Id, string Host);
 /// <summary>
 /// Seam-интерфейс kafka-пробы (план B6): единственное место с Confluent.Kafka —
 /// адаптер; юнит-тесты работают на fake. Считает кластер по bootstrap+SASL.
-/// t03: SASL_SSL/PLAIN + доверие ca_pem (arch/15 §5); креда — роль admin.
+/// SASL_SSL/PLAIN + доверие ca_pem (arch/15 §5); креда — роль admin.
 /// </summary>
 public interface IKafkaProbeClient
 {
@@ -54,7 +54,7 @@ public sealed record KafkaProbeGroupDetail(
 /// Seam kafka-пробы (B6 + волна C): DescribeCluster — брокеры; DescribeTopics —
 /// топики с USR; группы: ListGroups → DescribeGroups; лаги: EndOffsets +
 /// Committed по партициям назначения (totalLag — чистая KafkaGroupLag).
-/// t03: во всех методах доверие ca_pem после password (SASL_SSL, arch/15 §5).
+/// во всех методах доверие ca_pem после password (SASL_SSL, arch/15 §5).
 /// </summary>
 public interface IKafkaProbeRuntimeClient
 {

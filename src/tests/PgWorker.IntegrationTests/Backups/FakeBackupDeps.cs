@@ -11,9 +11,9 @@ using PgWorker.Core;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Фейковый SQL-слой: слоты в памяти per-инстансу (t27: ключ — adminDsn источника,
+// Фейковый SQL-слой: слоты в памяти per-инстансу (: ключ — adminDsn источника,
 // слоты разных нод независимы), LSN управляется тестом (AAA-Act). LostByDsn —
-// подмножество слотов в wal_status='lost' (t19); Calls — журнал мутаций
+// подмножество слотов в wal_status='lost' ; Calls — журнал мутаций
 // (create/drop) для ассертов идемпотентности.
 public sealed class FakeWalSqlExecutor : IWalSqlExecutor
 {
@@ -63,9 +63,9 @@ public sealed class FakeWalSqlExecutor : IWalSqlExecutor
 }
 
 // Фейковый S3 (поверхность IBackupS3): объекты в памяти, стартовое наполнение —
-// тестом. t06: PrefixObjects — объекты произвольных префиксов (полные ключи),
+// тестом. : PrefixObjects — объекты произвольных префиксов (полные ключи),
 // DeletedKeys — журнал удалений, FailNextDelete — сбой для transient-сценариев.
-// t04: PrefixedObjects — ключи относительно <C>/<X>/ (сид verify-наборов),
+// PrefixedObjects — ключи относительно <C>/<X>/ (сид verify-наборов),
 // Contents — содержимое для GetObjectAsync, Fails/FailsGetObject — транспорт-сбои.
 public sealed class FakeBackupS3 : IBackupS3
 {
@@ -81,7 +81,7 @@ public sealed class FakeBackupS3 : IBackupS3
 
     // Объекты с ключом после <C>/<X>/ (наборы full/<id>/pg_wal/…): сид тестов
     // verify. Содержимое history — в Contents. Голые wal-имена остаются в
-    // Objects (совместимость с тестами t03): ListAsync("wal/") их ОБЪЕДИНЯЕТ с
+    // Objects (совместимость с тестами): ListAsync("wal/") их ОБЪЕДИНЯЕТ с
     // PrefixedObjects-ключами на "wal/" — единая картина wal/-префикса для CheckRange.
     public List<(string Cluster, string Shard, string Key)> PrefixedObjects { get; } = [];
 
@@ -90,17 +90,17 @@ public sealed class FakeBackupS3 : IBackupS3
     public bool Fails { get; set; }           // транспорт-сбой чтений S3 (transient-тест list)
     public bool FailsGetObject { get; set; }  // падает только GET (transient-тест GET history)
 
-    // t05: полные шарда (id) — DR-поиск ListFullsAsync по fake-S3.
+    // полные шарда (id) — DR-поиск ListFullsAsync по fake-S3.
     public List<(string Cluster, string Shard, string Id)> Fulls { get; } = [];
 
-    // t05: тексты маленьких объектов по objectKey внутри префикса шарда
+    // тексты маленьких объектов по objectKey внутри префикса шарда
     // ("full/<id>/backup_label", "full/<id>/backup_manifest").
     public Dictionary<string, string> Texts { get; } = new(StringComparer.Ordinal);
 
     // Один сбой list (transient-сценарий «S3 недоступен»): list не падает в статус.
     public bool FailList { get; set; }
 
-    // Сбой list-prefix (t36, сценарий «пул недоступен» для глобальных сверок —
+    // Сбой list-prefix (сценарий «пул недоступен» для глобальных сверок —
     // MonitorStorage): ListPrefixAsync падает, префиксные list-ы статусов не касаются.
     public bool FailListPrefix { get; set; }
 
@@ -183,7 +183,7 @@ public sealed class FakeBackupS3 : IBackupS3
             (IReadOnlyList<string>)ids));
     }
 
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
     // заглушка (фейк нужен только перечисленным выше операциям).
     public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
         => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
@@ -220,14 +220,14 @@ public sealed class FakeBackupS3 : IBackupS3
         return Task.FromResult(Result.Success());
     }
 
-    // t08: put байтов — объект в память (sha256 не проверяется: фейк не транспорт).
+    // put байтов — объект в память (sha256 не проверяется: фейк не транспорт).
     public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
     {
         if (Fails)
             return Task.FromResult(Result.Failed(new ApplicationException("s3 down")));
         PrefixObjects.Add((key, data.Length));
         // put объекта в wal/-префикс виден листингом wal/ (как реальный S3):
-        // t27 Task 13 (history-fallback) кладёт history прямым put'ом.
+        //  Task 13 (history-fallback) кладёт history прямым put'ом.
         var parts = key.Split('/', 3);
         if (parts.Length == 3 && parts[2].StartsWith("wal/", StringComparison.Ordinal))
         {
@@ -242,10 +242,10 @@ public sealed class FakeBackupS3 : IBackupS3
 
 }
 
-/// <summary>Фейк Patroni REST (t27): Kestrel https на свободном порту (зонд
+/// <summary>Фейк Patroni REST : Kestrel https на свободном порту (зонд
 /// TcpListener(0) — никаких литералов), отдаёт заданный /cluster-JSON; teardown
 /// при любом исходе. Живёт до DisposeAsync — тест управляет появлением sync.
-/// t22: :8008 — TLS; серт из статической тестовой CA, клиенты проб берутся
+/// 8008 — TLS; серт из статической тестовой CA, клиенты проб берутся
 /// CreateProbeClient() (доверие цепочкой, hostname не сверяется).</summary>
 public sealed class FakePatroni : IAsyncDisposable
 {
@@ -318,7 +318,7 @@ public sealed class FakePatroni : IAsyncDisposable
     }
 }
 
-// t36: тестовая фабрика пула — резолвер всегда возвращает контекст с заданным
+// тестовая фабрика пула — резолвер всегда возвращает контекст с заданным
 // write/read-списками (одна fake-цель на все uri — PoolBackupS3 пробрасывает
 // вызовы в FakeBackupS3 теста). AAA-хелпер перевода существующих сценариев
 // WalStreamProcess/Retention на пул-режим без etcd-сида /s3/.

@@ -37,7 +37,7 @@ public interface IWorkerHealthStore
 }
 
 /// <summary>
-/// Стор результатов опроса /healthz инстансов KafkaWorker (t09; arch/adminpanel/02
+/// Стор результатов опроса /healthz инстансов KafkaWorker ( arch/adminpanel/02
 /// §2.3.2): poller пишет, kafka-refresher вносит готовым в снапшот — KV-тик
 /// не блокируется (симметрия IWorkerHealthStore).
 /// </summary>

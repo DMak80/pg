@@ -10,7 +10,7 @@ namespace Shared.Etcd.Maintenance;
 /// SnapshotLoop (лидер) и процессы в точках изменений (до/после).
 /// Обслуживание (MaintainAsync): compact кластера + последовательная
 /// дефрагментация каждой ноды — не чаще раза в MaintenanceIntervalMin.
-/// Опциональный sink (t08): каждый записанный слепок сразу уходит в
+/// Опциональный sink : каждый записанный слепок сразу уходит в
 /// ISnapshotSink.ExportAsync (выгрузка в S3); сбой sink снятие НЕ роняет.
 /// </summary>
 public sealed class SnapshotJob(
@@ -23,7 +23,7 @@ public sealed class SnapshotJob(
 {
     // Локальное время последнего обслуживания (compact + defrag).
     // Статичная переменная: переживает реконструкцию SnapshotJob (singleton),
-    // protects от частых тиков SnapshotLoop. Воркеры — разные процессы (t09),
+    // protects от частых тиков SnapshotLoop. Воркеры — разные процессы,
     // статика остаётся корректной.
     private static DateTimeOffset? _lastMaintenanceUtc;
 
@@ -58,7 +58,7 @@ public sealed class SnapshotJob(
             await File.WriteAllBytesAsync(path, data, ct);
             ApplyRetention();
 
-            // Экспорт слепка в S3 (t08, spec §3.4): каждый слепок — плановый и внеочередной.
+            // Экспорт слепка в S3 (spec §3.4): каждый слепок — плановый и внеочередной.
             // Ревизия — best-effort (failover по endpoints, паттерн MaintainAsync): не
             // снялась — null, слепок не виноват. Сбой sink НЕ роняет снятие (принцип 3
             // spec §2): статус пишет сам sink, доводка SnapshotLoop догонит.

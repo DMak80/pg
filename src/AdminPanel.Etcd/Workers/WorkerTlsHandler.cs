@@ -4,7 +4,7 @@ using Shared.Tls;
 
 namespace AdminPanel.Etcd.Workers;
 
-// HTTP-handler обращений в API ОБОИХ воркеров (arch/02 §2.3.2, t03): клиентский
+// HTTP-handler обращений в API ОБОИХ воркеров (arch/02 §2.3.2): клиентский
 // серт панели — ЕДИНЫЙ на pgworker и kafkaworker (одна per-install API-CA) +
 // доверие ServerCA (валидация цепочки на каждый хендшейк — серты живут время
 // жизни handler'а, БЕЗ using). Для http://-запросов (dev/локальные) TLS-опции

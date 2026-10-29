@@ -8,7 +8,7 @@ using Xunit;
 
 namespace S3Worker.IntegrationTests.E2e;
 
-// Docker-E2E зонда F (spec §8.3, arch/24 §5 F, t33): штатная синхронность,
+// Docker-E2E зонда F (spec §8.3, arch/24 §5 F): штатная синхронность,
 // прогон по команде (заявка put-if-absent → 202), недоступная нода (матрица
 // по канону arch/23 §3: строк нет у неответивших; одиночный offline-линк без
 // живых → DOWN), отставание → догон (lag_objects → SYNCED), deny-инстанс

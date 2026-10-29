@@ -9,19 +9,19 @@ namespace PgWorker.Backups;
 /// последней модификации (для last_uploaded_unix — S3 истина, arch/19 §3).</summary>
 public sealed record WalObject(string Name, DateTimeOffset LastModified);
 
-/// <summary>Объект bucket с размером (ретенционные list'ы t06, arch/19 §5).</summary>
+/// <summary>Объект bucket с размером (ретенционные list'ы, arch/19 §5).</summary>
 public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset LastModified);
 
-/// <summary>Тонкая обёртка S3-клиента (t03): list-objects-v2 с пагинацией по
+/// <summary>Тонкая обёртка S3-клиента : list-objects-v2 с пагинацией по
 /// префиксу `<C>/<X>/wal/` + диагностика старта (BucketExists). Загрузку делает
-/// mc внутри агента — других операций t03 не требует (spec §3.1). PathStyle —
+/// mc внутри агента — других операций не требует (spec §3.1). PathStyle —
 /// ownS3 и облако одним клиентом (ForcePathStyle). Создание bucket — забота
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
-/// t06: ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
+/// ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
-/// t04: ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
-/// и GET history; общий кор пагинации с t06-листом.
-/// t05: ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
+/// ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
+/// и GET history; общий кор пагинации с листом.
+/// ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
 /// чтение маленьких текстовых объектов (backup_label/backup_manifest);
 /// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/19 §3.5).</summary>
 public interface IBackupS3
@@ -34,7 +34,7 @@ public interface IBackupS3
 
     /// <summary>list-objects-v2 с пагинацией по произвольному префиксу (full/&lt;id&gt;/,
     /// wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
-    /// Реализация — общий кор листинга с t04 ListAsync (без дублирования пагинации).</summary>
+    /// Реализация — общий кор листинга с ListAsync (без дублирования пагинации).</summary>
     Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
 
@@ -42,40 +42,40 @@ public interface IBackupS3
     /// отсутствие ключа в ответе не ошибка (повтор прохода безопасен).</summary>
     Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
 
-    /// <summary>put байтов с SHA256-проверкой целостности транспорта (t08:
+    /// <summary>put байтов с SHA256-проверкой целостности транспорта (:
     /// экспорт etcd-слепков): ChecksumSHA256 уходит с запросом — сервер сверяет
     /// содержимое и отвергает put при несовпадении (BadDigest); успех = байты
     /// доставлены целыми. sha256=null — без проверки (мелкие служебные объекты).</summary>
     Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default);
 
-    /// <summary>Листинг произвольного префикса (t04, verify): prefix — относительно
+    /// <summary>Листинг произвольного префикса (verify): prefix — относительно
     /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/" | "full/&lt;id&gt;/pg_wal/"; та же пагинация list-v2
-    /// через общий кор с t06 ListPrefixAsync.</summary>
+    /// через общий кор с ListPrefixAsync.</summary>
     Task<Result<IReadOnlyList<WalObject>>> ListAsync(
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>Содержимое маленького объекта (t04: .history для строгих TLI-переходов);
+    /// <summary>Содержимое маленького объекта (.history для строгих TLI-переходов);
     /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
     Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
 
-    /// <summary>t05: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
+    /// <summary>: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
     /// (CommonPrefixes — каталоги `full/<id>/`), сортировка Ordinal; пагинация по
     /// IsTruncated/NextContinuationToken. DR-путь: etcd-статусов может не быть.</summary>
     Task<Result<IReadOnlyList<string>>> ListFullsAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
-    /// <summary>t05: маленький текстовый объект (`objectKey` — путь внутри
+    /// <summary>: маленький текстовый объект (`objectKey` — путь внутри
     /// префикса шарда, напр. `full/&lt;id&gt;/backup_label`); отсутствующий —
     /// Failed (не исключение наружу — валидация restore разведает transien/permanent).</summary>
     Task<Result<string>> DownloadTextAsync(
         string cluster, string shard, string objectKey, CancellationToken ct = default);
 
-    /// <summary>t26: put файла 1:1 объектом (upload полного — arch/19 §2);
+    /// <summary>: put файла 1:1 объектом (upload полного — arch/19 §2);
     /// key — ПОЛНЫЙ ключ в bucket (&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;/…). Содержимое —
     /// FileStream (файл не читается в память целиком — наборы бывают большими).</summary>
     Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default);
 
-    /// <summary>t26: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
+    /// <summary>: скачивание объекта в файл (verify/restore — arch/19 §5/§3.5);
     /// key — относительно &lt;C&gt;/&lt;X&gt;/, как GetObjectAsync; ответ — через
     /// временный &lt;dest&gt;.part с атомарной заменой по успеху (обрыв не оставляет
     /// частичный файл; dest перезаписывается — ретраи идемпотентны).</summary>
@@ -90,11 +90,11 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
 
     // Пер-попыточный таймаут S3-запроса (arch/14 §6 «пульс конечного внешнего
     // вызова», arch/19 §5): короче окна проверки watchdog — симметрия таймаутов
-    // etcd/patroni/SQL (t19). Дефолт — полокна (10 с при дефолтных опциях);
+    // etcd/patroni/SQL. Дефолт — полокна (10 с при дефолтных опциях);
     // фабрика передаёт производный от Loops:Watchdog:CheckIntervalSec.
     private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
 
-    // t36: цель пула (endpoint+креды одного адреса); PathStyle=true — общий
+    // цель пула (endpoint+креды одного адреса); PathStyle=true — общий
     // ownS3-контур (Region/PathStyle per-цель появятся с external-целями).
     public BackupS3(S3ClientOptions options, TimeSpan? requestTimeout = null, bool pathStyle = true)
     {
@@ -109,8 +109,8 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         };
         if (options.MaxErrorRetry is { } retries)
             config.MaxErrorRetry = retries;
-        // Доверие CA https S3-endpoint (t42, spec §5 fallback): AWSSDK.Core env
-        // AWS_CA_BUNDLE не читает (доказано E2E t42) — per-install CA доверяется
+        // Доверие CA https S3-endpoint (spec §5 fallback): AWSSDK.Core env
+        // AWS_CA_BUNDLE не читает (доказано E2E) — per-install CA доверяется
         // фабрикой HttpClient. Путь не задан (http-endpoint) — прежнее поведение.
         // Нечитаемый/пустой файл CA — исключение с диагностикой (BackupCaPem).
         if (!string.IsNullOrWhiteSpace(options.CaBundlePath))
@@ -186,7 +186,7 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
             .ToList());
     }
 
-    /// <summary>Общий кор листинга (t06 ListPrefixAsync / t04 ListAsync): постраничный
+    /// <summary>Общий кор листинга (ListPrefixAsync / ListAsync): постраничный
     /// list-objects-v2 по абсолютному префиксу bucket'а — сырые S3-объекты,
     /// маппинг в контракт каждого метода — снаружи (без дублирования пагинации).</summary>
     private async Task<Result<IReadOnlyList<S3Object>>> ListPrefixCoreAsync(

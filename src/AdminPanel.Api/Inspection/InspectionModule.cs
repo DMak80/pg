@@ -10,7 +10,7 @@ namespace AdminPanel.Api.Inspection;
 // Композиция эндпоинтов инспекции etcd из снапшота (arch/03 §1; auth-guard уже закрыл /api/*).
 public static class InspectionModule
 {
-    // До первого тика снапшота нет (t03 §3.13): хендлеры возвращают этот отказ → 503 (spec §3.12).
+    // До первого тика снапшота нет (§3.13): хендлеры возвращают этот отказ → 503 (spec §3.12).
     public sealed class SnapshotNotReadyException() : Exception("etcd snapshot has not been collected yet");
 
     // Кластер отсутствует в снапшоте: 404 — отличается от 503 «снапшота нет» (spec §3.10).
@@ -36,7 +36,7 @@ public static class InspectionModule
             return ResultToHttp(result);
         });
 
-        // GET /api/backups/s3-pools (t36, adminpanel/02 §12.4): пулы — из единого
+        // GET /api/backups/s3-pools (adminpanel/02 §12.4): пулы — из единого
         // домена S3 (S3Snapshot, тот же тик) — Select модала «Пул бэкапов»
         // (без ключей/секретов).
         endpoints.MapGet("/api/backups/s3-pools", async (IS3SnapshotReader store, CancellationToken ct) =>
@@ -98,7 +98,7 @@ public static class InspectionModule
         });
 
         // GET /api/ha/{scope} — детали скопа (arch/03 §1); ScopeNotFoundException → 404,
-        // прочий отказ → 503 — маппинг как у /api/clusters/{cluster} (t05 §6.1).
+        // прочий отказ → 503 — маппинг как у /api/clusters/{cluster} (§6.1).
         endpoints.MapGet("/api/ha/{scope}", async (string scope, IHandler handler, CancellationToken ct) =>
         {
             var result = await handler.HandleQuery<HaScopeDetailsQuery, HaScopeDto>(
@@ -226,7 +226,7 @@ public static class InspectionModule
         return endpoints;
     }
 
-    // GET /api/backups/* — грань «Хранилище бэкапов» (t08, arch/03 §1): сводка/
+    // GET /api/backups/* — грань «Хранилище бэкапов» (arch/03 §1): сводка/
     // детали — из снапшота; objects — on-demand list-v2 (единственный выход в ownS3).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
     {
@@ -305,7 +305,7 @@ public static class InspectionModule
         return endpoints;
     }
 
-    // Инспекция s3-домена (t34; arch/03 §12.1): GET /api/s3/clusters — 200/503;
+    // Инспекция s3-домена ( arch/03 §12.1): GET /api/s3/clusters — 200/503;
     // GET /api/s3/clusters/{cluster} — 200 / 404 кластера нет / 503.
     public static IEndpointRouteBuilder MapS3InspectionApi(this IEndpointRouteBuilder endpoints)
     {

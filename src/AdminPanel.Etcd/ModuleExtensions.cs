@@ -35,7 +35,7 @@ public static class ModuleExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             });
-        // Интерфейс IEtcdGateway → typed-клиент (t08): раньше интерфейс давал
+        // Интерфейс IEtcdGateway → typed-клиент : раньше интерфейс давал
         // атрибут [InjectAsSingleton(typeof(IEtcdGateway))] на панельной копии
         // EtcdGateway — в общую сборку атрибут не переносится (воркеры его не
         // сканируют), поэтому forward регистрируется здесь явно, singleton.
@@ -87,7 +87,7 @@ public static class ModuleExtensions
         return services;
     }
 
-    // Модуль valkey-домена (t03, arch/02 §11): hosted-service refresher'а + стор
+    // Модуль valkey-домена (arch/02 §11): hosted-service refresher'а + стор
     // снапшота + стор кредов проб. Отдельный HttpClient не заводится — транспорт
     // общий с pg/kafka-циклами (IEtcdGateway/«etcd», EtcdOptions).
     public static IServiceCollection AddValkey(this IServiceCollection services)

@@ -3,15 +3,15 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Backups;
 
-// Чистые решения планировщика полных бэкапов (arch/19 §2, t02): без I/O,
-// юнит-тестируемы. Записи шарда отсортированы по Id (= время, парсер t01).
+// Чистые решения планировщика полных бэкапов (arch/19 §2): без I/O,
+// юнит-тестируемы. Записи шарда отсортированы по Id (= время, парсер).
 public static class BackupPlanner
 {
     public static bool HasActive(IReadOnlyList<FullBackupState> fulls)
         => fulls.Any(f => f.State
             is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading);
 
-    // Валидный полный (t04, arch/19 §2): COMPLETED и verify ≠ FAILED
+    // Валидный полный (arch/19 §2): COMPLETED и verify ≠ FAILED
     // (null — не проверялся; PENDING — идёт; OK — проверен).
     private static bool IsValid(FullBackupState f)
         => f.State == FullBackupStatus.Completed
@@ -19,7 +19,7 @@ public static class BackupPlanner
 
     // Unix последнего ВАЛИДНОГО полного (finished_unix, толерантно started_unix —
     // образец IsDue); null — валидного нет. Источник возрастной серии
-    // pgworker_backup_full_age_seconds (t14, arch/18 §2.7): метрика не вводит
+    // pgworker_backup_full_age_seconds (arch/18 §2.7): метрика не вводит
     // третьего толкования «валидный».
     public static long? LastValidUnix(IReadOnlyList<FullBackupState> fulls)
     {
@@ -30,29 +30,29 @@ public static class BackupPlanner
         return last is null ? null : last.FinishedUnix ?? last.StartedUnix;
     }
 
-    // Rolling-правило (t02 + t04 + t05 §3.5 + t07 §3.2 + t27): нет ВАЛИДНОГО
+    // Rolling-правило (+ +  §3.5 + §3.2 +): нет ВАЛИДНОГО
     // COMPLETED — true; иначе возраст последнего валидного (finished_unix;
     // толерантно started_unix) больше full_max_age_sec. Инвариант «поднятый
     // шард всегда имеет валидную цепочку или свежий полный» (arch/19 §2):
     // цепочку заведёт контроль (§3) от wal_start_segment свежего COMPLETED,
-    // когда агенты донесут ПЕРВЫЙ ЗАКРЫТЫЙ сегмент — приёмник (t27) выгружает
+    // когда агенты донесут ПЕРВЫЙ ЗАКРЫТЫЙ сегмент — приёмник выгружает
     // только закрытые сегменты, поэтому на шарде без нагрузки ключ wal
     // появляется позже первого полного; прежний сигнал «ключа нет — пересъём»
-    // в этом окне давал серию полных подряд (t27 E2E-факт: 4 COMPLETED за 26 с)
+    // в этом окне давал серию полных подряд (факт стенда: 4 COMPLETED за 26 с)
     // без пользы. Полный также обязан быть НОВЕЕ последней COMPLETED-restore
     // шарда: restore перестраивает шард из бэкапа — до пересъёма «валидный»
     // полный описывает прежнюю жизнь шарда (сигнал — факт restore, не ключ:
-    // WalStream восстанавливает wal-ключ немедленно — инцидент E2E-гейта t05,
+    // WalStream восстанавливает wal-ключ немедленно — инцидент E2E-гейта,
     // 2026-09-13).
     public static bool IsDue(
         IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix,
         long? lastRestoreFinishedUnix = null, bool walChainBroken = false,
-        // t24 (arch/19 §2): живой непокрытый tli-gap wal-ключа — пересъём
+        //  (arch/19 §2): живой непокрытый tli-gap wal-ключа — пересъём
         // безусловно, симметрично WAL_CHAIN_ERROR; правило покрытия и бэкофф — как у
         // walChainBroken.
         bool walGapUncovered = false)
     {
-        // t07 (arch/19 §2): WAL_CHAIN_ERROR wal-ключа — пересъём безусловно (разрыв лечит
+        //  (arch/19 §2): WAL_CHAIN_ERROR wal-ключа — пересъём безусловно (разрыв лечит
         // только новый полный); бэкофф серии FAILED применяется вызывающим как
         // всегда — шторм пересъёмов исключён.
         if (walChainBroken || walGapUncovered)
@@ -70,7 +70,7 @@ public static class BackupPlanner
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
     // COMPLETED с verify=FAILED + НЕпокрывшие COMPLETED (uncovered — предикат
-    // вызывающего: wal_start ниже границы разрыва; arch/19 §2 антишторм t097:
+    // вызывающего: wal_start ниже границы разрыва; arch/19 §2 антишторм :
     // пока redo/restart-точка источника не перешла границу зазора, повторный
     // полный снимается с той же позиции — без пользы; считать попыткой —
     // окно растёт). Окно = min(BaseSec·2^(n−1), MaxSec) от последней попытки
@@ -81,7 +81,7 @@ public static class BackupPlanner
     {
         // Непокрывший COMPLETED сам валиден — исключён из «последнего валидного»
         // (иначе последний ретейк гасит собственный бэкофф: его попытка в tail
-        // не попадает — t097-шторм именно на этом сценарии).
+        // не попадает — шторм именно на этом сценарии).
         var lastValidStarted = fulls
             .Where(f => IsValid(f) && !(uncovered?.Invoke(f) ?? false))
             .Select(f => (long?)f.StartedUnix)

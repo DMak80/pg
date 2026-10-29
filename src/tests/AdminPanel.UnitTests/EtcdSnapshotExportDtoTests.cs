@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Маппер статуса выгрузки etcd-снапшотов в DTO грани (t08, spec §3.7):
+// Маппер статуса выгрузки etcd-снапшотов в DTO грани (spec §3.7):
 // 1:1 перенос полей; null → null (карточка «не включена»).
 public class EtcdSnapshotExportDtoTests
 {

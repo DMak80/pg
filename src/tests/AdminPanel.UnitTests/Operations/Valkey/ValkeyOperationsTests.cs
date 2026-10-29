@@ -196,7 +196,7 @@ public class ValkeyOperationsTests
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();
     }
 
-    // t07 (02 §11.2-6): мутация №6 — заявка ротации CA проксируется в API
+    //  (02 §11.2-6): мутация №6 — заявка ротации CA проксируется в API
     // воркера (POST, тело пустое, оператор — X-Requested-By).
     [Fact]
     public async Task RotateValkeyCa_ProxiesToWorkerApi()

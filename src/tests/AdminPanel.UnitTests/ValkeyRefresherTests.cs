@@ -170,7 +170,7 @@ public class ValkeyRefresherTests
         snapshot.UnknownKeyCount.Should().Be(1); // future_feature
     }
 
-    // t10: исходы заявок /valkeyworker/ticket_outcomes/ читаются в снапшот;
+    // исходы заявок /valkeyworker/ticket_outcomes/ читаются в снапшот;
     // битый исход — ParseErrors (тик не падает).
     [Fact]
     public async Task RefreshOnce_TicketOutcomes_InSnapshot_BrokenIsParseError()
@@ -198,7 +198,7 @@ public class ValkeyRefresherTests
         snapshot.ParseErrors.Should().Contain(e => e.Key == "/valkeyworker/ticket_outcomes/broken");
     }
 
-    // t06: ca_pem попадает в internal-стор (рядом с admin-кредами); запись без
+    // ca_pem попадает в internal-стор (рядом с admin-кредами); запись без
     // ca_pem получает CaPem=null (миграция не доиграна — не ошибка тика).
     [Fact]
     public async Task RefreshOnce_CaPem_ReadToSecretsStore()

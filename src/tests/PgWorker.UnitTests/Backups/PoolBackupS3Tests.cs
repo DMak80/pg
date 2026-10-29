@@ -3,7 +3,7 @@ using Shared.Core;
 
 namespace PgWorker.UnitTests.Backups;
 
-// PoolBackupS3 (t36, arch/19 §5): перебор write/read-целей на фейках
+// PoolBackupS3 (arch/19 §5): перебор write/read-целей на фейках
 // FakeTargetS3 с управляемым отказом (инъекция targetFactory).
 public class PoolBackupS3Tests
 {
@@ -54,7 +54,7 @@ public class PoolBackupS3Tests
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(["id1"]));
 
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
@@ -344,7 +344,7 @@ public class PoolBackupS3Tests
         second.Error!.Message.Should().Contain("conn refused");
     }
 
-    // AAA (t02, arch/19 §5 «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
+    // AAA (arch/19 §5 «где данные есть»): union-листинг ПРОИЗВОЛЬНОГО
     // префикса объединяет ответы ВСЕХ read-целей с дедупом по имени и живёт,
     // пока отвечает хотя бы одна (первая живая может не иметь сегмента,
     // залитого на вторую — прецедент AC4: полный заливается на первую живую
@@ -399,7 +399,7 @@ public class PoolBackupS3Tests
         result.Error!.Message.Should().Contain(S3PoolMarkers.Exhausted);
     }
 
-    // AAA: union list-prefix по всем нодам пула (t26, скачивание набора в
+    // AAA: union list-prefix по всем нодам пула (скачивание набора в
     // verify/restore): пересечение ответов дедупится по ПОЛНОМУ ключу —
     // полный заливается на одну ноду момента заливки, лаг mesh даёт копии.
     [Fact]

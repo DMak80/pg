@@ -13,13 +13,13 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Планировщик полных бэкапов (t02/t26, arch/19 §2): тик под клэймом &lt;C&gt; для
+/// Планировщик полных бэкапов (/, arch/19 §2): тик под клэймом &lt;C&gt; для
 /// каждого шарда Active-кластера с dsn. G0 выключен → no-op; G1 ensure
 /// backup_password; на каждый шард: S-супервизия активного → G2 ensure роли
 /// backup_exec на мастере (КАЖДЫЙ тик — spec §3.1, до due-гвардов: роль обязана
 /// существовать до любого запуска; transient-skip шарда при недоступном
 /// мастере) → G3 при due: PLANNED (journal-before-manipulations) → команда
-/// POST /api/backup/full приёмнику ВЫБРАННОЙ ноды (канал alias:8080, t26) →
+/// POST /api/backup/full приёмнику ВЫБРАННОЙ ноды (канал alias:8080) →
 /// RUNNING. Инвариант: максимум один активный (PLANNED/RUNNING/UPLOADING) на
 /// шард. Тик не блокируется на длинные операции: полный живёт в процессе
 /// приёмника ноды.
@@ -63,12 +63,12 @@ public sealed class BackupProcess(
         var verifyOnCreate = mine.Policy?.VerifyOnCreate ?? options.VerifyOnCreate;
         var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
 
-        // G1: ensure per-cluster пароля backup_exec (P1.5-образец, t02).
+        // G1: ensure per-cluster пароля backup_exec (P1.5-образец).
         var creds = await secrets.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return Result<ProcessOutcome>.Failed(creds.Error!);
 
-        // t36 (arch/19 §2/§4): резолв пула бэкапов — в начале тика кластера.
+        //  (arch/19 §2/§4): резолв пула бэкапов — в начале тика кластера.
         // null (policy без s3) → полный не планируется, journal не пишем
         // (молчание = «пул не выбран», алерт backup-pool-missing — проекция
         // панели по policy); Failed → journal waiting-backup-pool, continue
@@ -108,7 +108,7 @@ public sealed class BackupProcess(
             mine.Shards.TryGetValue(shard.Name, out var shardBackups);
             var fulls = shardBackups?.Full ?? (IReadOnlyList<FullBackupState>)[];
 
-            // restore-гвард (t05 §3.4): шард в restore (PLANNED/RUNNING/REJOINING)
+            // restore-гвард (§3.4): шард в restore (PLANNED/RUNNING/REJOINING)
             // демонтируется restore-процессом — контуры бэкапов его не трогают.
             if (shardBackups?.Restores.Any(r => r.State
                     is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
@@ -206,12 +206,12 @@ public sealed class BackupProcess(
 
             // G3: новый полный — только без активного, при due (возраст, ИЛИ
             // валидного COMPLETED нет вовсе — инвариант «свежий полный заведёт
-            // цепочку от своего wal_start», t27: пересъём в окне до первого
+            // цепочку от своего wal_start»: пересъём в окне до первого
             // закрытого сегмента бессмыслен; ИЛИ полный старее последней
             // restore — WalStream восстанавливает ключ быстрее тика, инцидент
-            // E2E-гейта t05; t07: WAL_CHAIN_ERROR wal-ключа — пересъём безусловно)
+            // E2E-гейта ; : WAL_CHAIN_ERROR wal-ключа — пересъём безусловно)
             // и после бэкоффа.
-            // t07 (прогон 2026-09-13, arch/19 §2): WAL_CHAIN_ERROR-пересъём — только пока
+            //  (прогон 2026-09-13, arch/19 §2): WAL_CHAIN_ERROR-пересъём — только пока
             // разрыв НЕ покрыт: COMPLETED-полный с wal_start ≥ границы разрыва
             // (chain_start WAL_CHAIN_ERROR-записи) уже ждёт заживления контролем (§3),
             // повторный пересъём поверх — шторм (12 полных за 2 мин) без пользы.
@@ -232,7 +232,7 @@ public sealed class BackupProcess(
                     && f.WalStartSegment is { Length: > 0 } walStart
                     && string.CompareOrdinal(walStart, boundary) >= 0);
 
-            // t24 (arch/19 §2): живой непокрытый tli-gap — форс-пересъём (симметрично
+            //  (arch/19 §2): живой непокрытый tli-gap — форс-пересъём (симметрично
             // walChainBroken; покрывший COMPLETED-полный ждёт снятия метки контролем).
             var gapBoundary = shardBackups?.Wal is { Gap: { } liveGap } ? liveGap.To : null;
             var gapCovered = gapBoundary is { Length: > 0 } gapTo
@@ -245,11 +245,11 @@ public sealed class BackupProcess(
                     walGapUncovered: gapBoundary is not null && !gapCovered))
                 continue;
 
-            // Антишторм (arch/19 §2, t097): при живой непокрытой границе (gap или
+            // Антишторм (arch/19 §2): при живой непокрытой границе (gap или
             // chain) COMPLETED-полный с wal_start НИЖЕ границы — тоже ПОПЫТКА
             // бэкоффа: пока redo/restart-точка источника не перешла границу,
             // повторный полный снимается с той же позиции — без пользы (шторм
-            // «полный каждые 10 с» из t07-инцидента). Покрывший не считается —
+            // «полный каждые 10 с» из инцидента). Покрывший не считается —
             // его ждёт снятие метки контролем, а не новый полный.
             Func<FullBackupState, bool>? uncoveredAttempt = null;
             var liveBoundary = gapBoundary is { Length: > 0 } gapBoundary2 && !gapCovered
@@ -299,7 +299,7 @@ public sealed class BackupProcess(
                 ? BackupSourceRole.Master
                 : BackupSourceRole.Replica;
 
-            // t097 (arch/19 §2): при живой непокрытой границе redo/restart-точка
+            //  (arch/19 §2): при живой непокрытой границе redo/restart-точка
             // источника стоит в сегменте ДО границы — pg_basebackup пишет START WAL
             // с неё, и пересъём снимался бы с той же позиции бесконечно. Restartpoint
             // реплики движется ТОЛЬКО по checkpoint-записям МАСТЕРА (idle-мастер их
@@ -319,7 +319,7 @@ public sealed class BackupProcess(
 
             var id = BackupPlanner.NextId(fulls.Select(f => f.Id), time.GetUtcNow().UtcDateTime);
             // node-факт — имя ноды-источника из portalloc; не нашли (рассинхрон
-            // portalloc) — журнал-факт host, тик не валим (spec §3.1).
+            // portalloc) — запись журнала host, тик не валим (spec §3.1).
             var nodeKv = addresses.Value.FirstOrDefault(p =>
                     p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal)
                     && p.Value.Host == source.Value.Host && p.Value.Ports == source.Value.Ports);
@@ -332,7 +332,7 @@ public sealed class BackupProcess(
             if (!put.IsSuccess)
                 return Result<ProcessOutcome>.Failed(put.Error!);
 
-            // Команда запуска приёмнику ВЫБРАННОЙ ноды (t26, spec §3.5): канал
+            // Команда запуска приёмнику ВЫБРАННОЙ ноды (spec §3.5): канал
             // alias:8080 в общей сети воркера и нод (Object — усыновлённая нода).
             // 202 ⇒ RUNNING; 409 — сверка id активной операции (своя — пере-старт
             // прошлого тика ⇒ RUNNING; чужая — transient с журналом); 503
@@ -356,7 +356,7 @@ public sealed class BackupProcess(
             }
         }
 
-        // t14 (arch/18 §2.7): возрастные серии полных — наблюдение тика
+        //  (arch/18 §2.7): возрастные серии полных — наблюдение тика
         // планировщика: набор бэкапимых шардов (dsn, не ToRemove) замещает стейт
         // кластера в instrumentation целиком; возрастной факт — семантика
         // планировщика (BackupPlanner.LastValidUnix), порог — эффективная
@@ -387,7 +387,7 @@ public sealed class BackupProcess(
     //   503 — стоп-гейты (STOPPED/disabled; WAL_CHAIN_ERROR отвечает 202):
     //     молча, стоп-семантика подсистемы (arch/19 §2);
     //   транспортный отказ — journal-факт receiver-unavailable с адресом;
-    //   неклассифицированный код (404 — нода на до-t26 образе, прочее) —
+    //   неклассифицированный код (404 — нода на до образе, прочее) —
     //     journal-факт + LogWarning с кодом и адресом: rolling-upgrade даёт
     //     тихо повторяющийся POST — без диагностики недопустимо (spec §3.1
     //     «диагностика — journal-факт»).
@@ -456,7 +456,7 @@ public sealed class BackupProcess(
     }
 
     // S: супервизия активного через HTTP API приёмника выбранной ноды
-    // (t26, arch/19 §2, spec §3.5). Ветвление по active.State:
+    // (arch/19 §2, spec §3.5). Ветвление по active.State:
     //   возрастной бюджет — ПЕРВЫЙ гвард: FAILED job-timeout + cancel API
     //     best-effort (приёмник гасит child-процессы и чистит staging);
     //   PLANNED — идемпотентный повтор StartFullAsync (202/409-своя ⇒ RUNNING;
@@ -474,7 +474,7 @@ public sealed class BackupProcess(
         foreach (var active in fulls.Where(f => f.State
                      is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading))
         {
-            // t13 (arch/19 §6): возрастной бюджет — ПЕРВЫЙ гвард: вердикт FAILED
+            //  (arch/19 §6): возрастной бюджет — ПЕРВЫЙ гвард: вердикт FAILED
             // по возрасту — самостоятельный факт etcd (started_unix + часы
             // воркера), API/docker-доступ не нужен; transient-пропуск ноды
             // (portalloc) бюджет НЕ откладывает (операции с возрастом > 6 ч

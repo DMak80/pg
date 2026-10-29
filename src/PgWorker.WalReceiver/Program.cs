@@ -13,7 +13,7 @@ using Shared.Metrics;
 
 namespace PgWorker.WalReceiver;
 
-// Точка входа приёмника (t25/t26, arch/19 §2/§3/§3.3): WebApplication — база
+// Точка входа приёмника (/, arch/19 §2/§3/§3.3): WebApplication — база
 // образа требует aspnet-рантайм; Kestrel 0.0.0.0:8080 несёт /metrics
 // (Shared.Metrics, Meter PgWorker.WalReceiver, словарь arch/18 §2.8) и HTTP
 // API операций бэкапов (arch/19 §2/§3.5/§3.6/§5; канал arch/25 №22).
@@ -42,7 +42,7 @@ internal partial class Program
 
     private static async Task Main(string[] args)
     {
-        // Sub-режим restore_command (spec t26 §3.4): `walreceiver fetch-wal
+        // Sub-режим restore_command (spec §3.4): `walreceiver fetch-wal
         // <seg> <dest>` — ДО создания builder; итог — exit-код процесса
         // (0 — объект записан; 1 — объекта нет/отказ — конец WAL для postgres).
         if (args is [{ } sub, ..] && sub == "fetch-wal")

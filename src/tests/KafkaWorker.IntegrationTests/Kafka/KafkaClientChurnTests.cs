@@ -9,7 +9,7 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
-// Churn-интеграция (t05, spec §7.5): Active-кластер с endpoints на ЗАКРЫТЫЙ
+// Churn-интеграция (spec §7.5): Active-кластер с endpoints на ЗАКРЫТЫЙ
 // порт (зонд свободных — рантайм) — воркер-цикл (supervise-проба) не churn'ит
 // клиентов: кэш + backoff держат CreatedClients ≤ 2.
 // Вehicle — проба надзора (DescribeCluster): ListConsumerGroups на недоступном
@@ -32,7 +32,7 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
     {
         // Arrange: Active-кластер, endpoints на закрытый порт + креды, БЕЗ
         // brokers-ключей (лестница/пересоздания вне сценария — гейт пробы
-        // изолирован, паттерн KafkaActiveGateTests). t03-шов (arch/15 §2):
+        // изолирован, паттерн KafkaActiveGateTests). шов (arch/15 §2):
         // проба надзора (DescribeAliveAsync) зряча только при admin-кредах и
         // ВАЛИДНОМ ca_pem — без них она слепая (success, без клиента), клиент
         // не создаётся вовсе и churn-граница теста не исполняется.

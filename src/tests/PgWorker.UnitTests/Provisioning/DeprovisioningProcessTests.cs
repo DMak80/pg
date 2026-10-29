@@ -124,7 +124,7 @@ public class DeprovisioningProcessTests
         rig.Driver.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
     }
 
-    // AAA: D2 чистит и заявки переездов — /pgworker/moves/<C>/ не переживает кластер (t01, spec §5.3)
+    // AAA: D2 чистит и заявки переездов — /pgworker/moves/<C>/ не переживает кластер (spec §5.3)
     [Fact]
     public async Task Deprovision_RemovesMovesPrefix()
     {
@@ -145,7 +145,7 @@ public class DeprovisioningProcessTests
             "move requests do not survive cluster deletion");
     }
 
-    // AAA: журналы эвакуаций не переживают удаление кластера (t06 §5.6, Д12)
+    // AAA: журналы эвакуаций не переживают удаление кластера (§5.6, Д12)
     [Fact]
     public async Task Tick_CleanKeys_RemovesEvacuationJournals()
     {

@@ -1,7 +1,7 @@
 using KafkaWorker.Core.Model;
 using Shared.Core.Planning;
 
-/// <summary>Kfw-инстанс обобщённых планировщиков (t09): одна группа на кластер,
+/// <summary>Kfw-инстанс обобщённых планировщиков : одна группа на кластер,
 /// адрес = один client-порт, ключ результата — имя ноды.</summary>
 public static class KfwPlanning
 {

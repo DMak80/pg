@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-snapshot-export-stale (warning, reliability t08, adminpanel/03 §4):
+// etcd-snapshot-export-stale (warning, reliability, adminpanel/03 §4):
 // «выгрузка молчит» — last_uploaded_unix отсутствует или старше 2×interval_min
 // (панельный дефолт 360 мин). Порог честен благодаря семантике «покрытия»
 // (adminpanel/02 §2.3.1): поле двигается каждым выгруженным слепком — живой
@@ -48,6 +48,6 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
             null,
             "export is silent — control-plane changes accumulate only in the leader's local volume (both worker instances down / eternal transient / snapshot leadership not executing)",
             AlertRemedy.OperatorRunbook,
-            "check healthz of both PgWorker instances and the status key /pgworker/etcd-snapshots; S3 access — runbook t08");
+            "check healthz of both PgWorker instances and the status key /pgworker/etcd-snapshots; S3 access — runbook");
     }
 }

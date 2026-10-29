@@ -16,7 +16,7 @@ namespace PgWorker.IntegrationTests.E2e;
 //    надзором даёт env от НОВОЙ заявки; новых ключей etcd нет;
 // 3) отсутствие request_mem/request_cpu → расчёт от DefaultTotalMemoryBytes,
 //    параллельные параметры в YAML отсутствуют;
-// 4) конвергенция pg-параметров живого шарда (t11): смена заявки → PATCH DCS
+// 4) конвергенция pg-параметров живого шарда : смена заявки → PATCH DCS
 //    без пересоздания, динамика применена живым PG, postmaster → pending_restart.
 public class E2ePgtuneScenarios
 {
@@ -73,7 +73,7 @@ public class E2ePgtuneScenarios
         }
 
         // Assert: env нод одного прохода идентичен по РАСЧЁТУ (SPILO_CONFIGURATION
-        // несёт ровно один пер-нодовый ключ — restapi.connect_address t22
+        // несёт ровно один пер-нодовый ключ — restapi.connect_address 
         // (arch/14 §2.4 п.6); он нормализуется, прочие строки обязаны совпадать).
         var spilos = new List<string>();
         foreach (var shard in new[] { "shard1", "shard2" })
@@ -216,7 +216,7 @@ public class E2ePgtuneScenarios
         }
     }
 
-    // E2E-сценарий конвергенции pg-параметров (t11 spec §4.4, AC §7 п.1–3):
+    // E2E-сценарий конвергенции pg-параметров (spec §4.4, AC §7 п.1–3):
     // живой кластер на заявке 8Gi → перезапись request_mem 16Gi → тик надзора
     // патчит DCS: (а) GET /config несёт пересчитанные параметры (динамика +
     // postmaster); (б) динамический параметр фактически применён живым PG
@@ -251,7 +251,7 @@ public class E2ePgtuneScenarios
         // Бутовое значение postmaster-параметра: Spilo при инициализации
         // пересчитывает shared_buffers из памяти контейнера, поэтому живое
         // значение — НЕ литерал DCS ("2GB"), а автотюнинг (напр. "1983MB";
-        // инцидент первого прогона t11, 2026-09-14). Для проверки «postmaster
+        // инцидент первого прогона, 2026-09-14). Для проверки «postmaster
         // не применён до рестарта» фиксируем фактическое бутовое значение.
         var sharedBuffersAtBoot = await SqlScalarAsync(
             master.Dsn, "SELECT current_setting('shared_buffers')", ct);
@@ -317,7 +317,7 @@ public class E2ePgtuneScenarios
 
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
 
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Сид кластера в стиле панели (02 §9.1): заявки request_* опциональны —
@@ -395,7 +395,7 @@ public class E2ePgtuneScenarios
     // Значение параметра из GET /config Patroni-ноды. JSON разбирается, а не
     // ищется подстрокой: Patroni сериализует ответ json.dumps'ом С ПРОБЕЛАМИ
     // ({"shared_buffers": "4GB"}) — компактные Contains не совпадают никогда
-    // (разбор по инциденту первого прогона t11, 2026-09-14).
+    // (разбор по инциденту первого прогона, 2026-09-14).
     private async Task<string?> GetPatroniParameterAsync(string patroniHost, string name, CancellationToken ct)
     {
         using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/config", ct);

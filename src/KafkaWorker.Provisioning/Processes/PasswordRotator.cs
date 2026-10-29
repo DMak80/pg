@@ -11,7 +11,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// PasswordRotator (arch/16 §5 H, t03): исполнение заявок ротации паролей
+/// PasswordRotator (arch/16 §5 H): исполнение заявок ротации паролей
 /// ролей app (/kafkaworker/rotations/&lt;C&gt;) и admin (/kafkaworker/admin_rotations/&lt;C&gt;).
 /// Обрабатывает не более ОДНОЙ заявки за тик: app — раньше admin (детерминированный
 /// порядок). Фазы без окна недоступности: A) rolling-пересоздание брокеров с JAAS
@@ -22,7 +22,7 @@ namespace KafkaWorker.Provisioning.Processes;
 /// креда валидны; повтор продолжает: заявку — с начала A идемпотентно, после
 /// B — по journal-фазе). Снапшоты P12 «до/после». Вызывается только держателем
 /// клэйма &lt;C&gt;.
-/// <para>Гвард K (t10): H гейтится ТОЛЬКО открытым окном CA-ротации (staging
+/// <para>Гвард K : H гейтится ТОЛЬКО открытым окном CA-ротации (staging
 /// ca_next_{key,pem}) — живая, но не начатая ca-заявка H не гейтит (приоритет H
 /// перед K разрывает дедлок H↔K). Ждущие точки waiting-cluster — экспирационные
 /// под тройным гвардом §3.1 (журнал роли — третий предикат); точка
@@ -71,7 +71,7 @@ public sealed class PasswordRotator(
     // ему собраться; B обязана закоммитить пароль, разосланный НА ВСЕХ брокерах).
     private readonly ConcurrentDictionary<(string Cluster, string Role), string> _newPasswords = new();
 
-    // t10: экспирация не-начатых заявок + исходы финалов.
+    // экспирация не-начатых заявок + исходы финалов.
     private readonly TicketExpirator _tickets = new(etcd, endpoints);
 
     // Аудит последней живой заявки роли (для исхода done на финале после del
@@ -126,7 +126,7 @@ public sealed class PasswordRotator(
             _ticketAudit[(cluster, role.Name)] = TicketOutcomes.ParseAudit(ticket.Value.Value);
 
         // Guard: открытое окно CA-ротации K (staging жив) — rolling-ы не смешиваются.
-        // Живая, но НЕ начатая ca-заявка H НЕ гейтит (приоритет H перед K, t10):
+        // Живая, но НЕ начатая ca-заявка H НЕ гейтит (приоритет H перед K):
         // при обеих живых заявках H доигрывает свою (del в фазе B), затем K — свою.
         var nextKey = await GetAsync($"/kafka/clusters/{cluster}/ca_next_key", ct);
         if (!nextKey.IsSuccess)
@@ -149,7 +149,7 @@ public sealed class PasswordRotator(
         if (snap.Endpoints is null || snap.AppPassword is null || snap.AdminPassword is null)
         {
             // Кластер не поднят. AfterCommit-хвост без заявки — no-op (экспирировать
-            // нечего); живая заявка — waiting/экспирация под гвардом журнала роли (t10).
+            // нечего); живая заявка — waiting/экспирация под гвардом журнала роли.
             if (ticket.Value is null)
                 return Result<bool>.Success(false);
             return await WaitOrExpireAsync(snap, role, ticket.Value, "waiting-cluster",
@@ -256,7 +256,7 @@ public sealed class PasswordRotator(
         _snapshotBeforeDone.TryRemove((cluster, role.Name), out _);
         _newPasswords.TryRemove((cluster, role.Name), out _);
 
-        // Финал (t10): исход done ДО journal done (провал put → тик Failed →
+        // Финал : исход done ДО journal done (провал put → тик Failed →
         // финал повторится по afterCommit-хвосту; исход не теряется).
         var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var kind = role == RotationRole.Admin ? TicketOutcomes.KindPasswordAdmin : TicketOutcomes.KindPasswordApp;
@@ -284,14 +284,14 @@ public sealed class PasswordRotator(
     // Живая (мутационная) фаза пароль-ротации ЛЮБОЙ роли: op=rotate в фазе
     // phase-a/rotated-commit/phase-c (вкл. admin:-префиксы). Терминальные
     // (done/expired) и waiting-фазы — НЕ живые: expired пишется только вне
-    // мутаций (инвариант t10). Гвард K0.5 CaRotator «живая пароль-ротация»
+    // мутаций (инвариант). Гвард K0.5 CaRotator «живая пароль-ротация»
     // обязан считать живой только мутацию — иначе терминальный expired
     // навечно гейтил бы свежую ca-заявку в waiting-password-rotation.
     internal static bool PasswordMutationLive(WorkState? journalState)
         => RoleMutationLive(journalState, RotationRole.App)
            || RoleMutationLive(journalState, RotationRole.Admin);
 
-    // Waiting-исход роли с экспирацией под гвардом (t10): живая заявка старее
+    // Waiting-исход роли с экспирацией под гвардом : живая заявка старее
     // порога И гвард пройден (staging отсутствует — по построению ветки, т.к.
     // ca-window guard стоит РАНЬШЕ обеих waiting-cluster точек; mutationLive —
     // третий предикат) → снятие (journal expired + txn [del][put исход]),

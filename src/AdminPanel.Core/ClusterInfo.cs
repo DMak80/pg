@@ -10,7 +10,7 @@ public sealed record ClusterInfo(
     IReadOnlyList<ShardInfo> Shards,
     IReadOnlyList<BucketInfo> Buckets,
     IReadOnlyList<HealRecord> Heals,
-    bool SynchronousModeStrict = true) // t06: config.synchronous_mode_strict; отсутствие/не-bool = true
+    bool SynchronousModeStrict = true) // config.synchronous_mode_strict; отсутствие/не-bool = true
 {
     // Пометка «incomplete» (arch/02 §7): префикс есть, config отсутствует/пуст.
     public bool Incomplete => DbName is null || BucketsCount <= 0;
@@ -25,7 +25,7 @@ public enum ClusterState
 }
 
 // Шард кластера: dsn, декларативные реплики, master-ключ с lease-семантикой (arch/02 §2.1).
-// State — маркер демонтажа shards/<X>/state (t06 §9.6); отсутствие ключа = Active.
+// State — маркер демонтажа shards/<X>/state (§9.6); отсутствие ключа = Active.
 public sealed record ShardInfo(
     string Name,
     string Dsn,
@@ -45,7 +45,7 @@ public sealed record ShardInfo(
     public bool MasterLeaseAlive => MasterAddress is not null;
 }
 
-// Состояние шарда: shards/<X>/state (t06 §9.6); отсутствие = Active.
+// Состояние шарда: shards/<X>/state (§9.6); отсутствие = Active.
 public enum ShardState
 {
     Active,

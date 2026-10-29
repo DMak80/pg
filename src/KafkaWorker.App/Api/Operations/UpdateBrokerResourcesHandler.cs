@@ -5,11 +5,11 @@ using Shared.Etcd.Client;
 using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
-// Ответ 200 PUT /api/kafka/clusters/{c}/brokers/{b}/resources (t06, spec §4.2).
+// Ответ 200 PUT /api/kafka/clusters/{c}/brokers/{b}/resources (spec §4.2).
 public sealed record KafkaBrokerResourcesDto(
     string Cluster, string Broker, string Cpu, string MemGi, string DiskGi);
 
-// Изменение ресурсов существующего брокера — мутация №15 (t06, adminpanel/02
+// Изменение ресурсов существующего брокера — мутация №15 (adminpanel/02
 // §10.2-15): guard'ы по прямым чтениям etcd → канонизация → put ключа целиком.
 // Применение — автоматическое: NodeRegenerator воркера (arch/16 §5 J) сверяет
 // лимиты живого контейнера и rolling-ит по одному за тик; disk — инфо-поле.

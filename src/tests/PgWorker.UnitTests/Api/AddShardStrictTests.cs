@@ -2,7 +2,7 @@ using PgWorker.App.Api.Operations;
 
 namespace PgWorker.UnitTests.Api;
 
-// t06 (spec §3.6/§6.6, юнит-часть AC): чтение strict из config-JSON —
+//  (spec §3.6/§6.6, юнит-часть AC): чтение strict из config-JSON —
 // отсутствие/не-bool = true (легаси-кластеры strict по умолчанию, решение №3).
 public class AddShardStrictTests
 {

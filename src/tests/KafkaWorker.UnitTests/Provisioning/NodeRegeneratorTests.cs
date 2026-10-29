@@ -12,7 +12,7 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// Процесс J (t06, spec §5.2): автоконверге лимитов — один брокер за тик,
+// Процесс J (spec §5.2): автоконверге лимитов — один брокер за тик,
 // guard'ы передержки, прогресс-ключ /kafkaworker/regens/<C> ТОЛЬКО при живой
 // операции (чужие недоведённые ноды фантома не рисуют), del по сходимости.
 public class NodeRegeneratorTests : IAsyncLifetime

@@ -1,9 +1,9 @@
 namespace Shared.Docker;
 
-// TLS к Docker Engine API (arch/14 §2.2.1, t03): per-install docker-CA + клиентская
+// TLS к Docker Engine API (arch/14 §2.2.1): per-install docker-CA + клиентская
 // пара воркера (deploy/tls/gen-docker.sh). PEM-дуализм env-секретов — значение или
 // _PATH-файл. Частичная конфигурация — fail-fast фабрики (DockerEngineFactory).
-// env-биндинги PGW_DOCKER_TLS_* — pg-специфика, живут в PgWorker.App (t07).
+// env-биндинги PGW_DOCKER_TLS_* — pg-специфика, живут в PgWorker.App.
 public sealed class DockerTlsOptions
 {
     /// <summary>PEM per-install docker-CA (или CA_PATH файл).</summary>

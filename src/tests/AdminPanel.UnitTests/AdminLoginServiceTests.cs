@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Тесты оркестратора логина: rate-limit и учётные данные (spec t02 §9.2).
+// Тесты оркестратора логина: rate-limit и учётные данные (spec §9.2).
 public class AdminLoginServiceTests
 {
     private static (AdminLoginService Service, FixedTimeProvider Time) Make()
@@ -112,7 +112,7 @@ public class AdminLoginServiceTests
         // Arrange
         var (service, _) = Make();
 
-        // Act: пять успешных логинов тоже занимают слоты окна (spec t02 §3.6).
+        // Act: пять успешных логинов тоже занимают слоты окна (spec §3.6).
         for (var i = 0; i < 5; i++)
             service.Login("admin", "pw", "1.1.1.1");
         var sixth = service.Login("admin", "pw", "1.1.1.1");

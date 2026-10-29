@@ -35,7 +35,7 @@ public class ClusterPkiTests
 
         // Assert: subjects различны — в бандле двойного доверия (OLD+NEW)
         // openssl берёт ПЕРВЫЙ якорь по subject без перебора; одинаковые CN
-        // ломали верификацию сертов второй генерации (t07, инцидент интеграции).
+        // ломали верификацию сертов второй генерации (инцидент интеграции).
         using var cert1 = X509Certificate2.CreateFromPem(ca1);
         using var cert2 = X509Certificate2.CreateFromPem(ca2);
         cert1.Subject.Should().NotBe(cert2.Subject);
@@ -127,7 +127,7 @@ public class BrokerCertificateCacheTests
     }
 }
 
-// Bundle (t07): конкатенация OLD+NEW — валидное значение ca_pem в окне ротации;
+// Bundle : конкатенация OLD+NEW — валидное значение ca_pem в окне ротации;
 // одиночный серт и битый PEM — прежняя семантика.
 public class ClusterPkiBundleTests
 {

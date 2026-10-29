@@ -18,7 +18,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Сквозной контур самолечения (t07 AC1, spec §3.2): дыра цепочки → WalStream
+// Сквозной контур самолечения (AC1, spec §3.2): дыра цепочки → WalStream
 // пишет WAL_CHAIN_ERROR → BackupProcess планирует пересъём (IsDue walChainBroken) →
 // симуляция COMPLETED переснятого полного → WalStream контроль заживляет
 // (ACTIVE + агент тем же тиком). Реальный etcd, фейки docker/SQL/S3.
@@ -59,7 +59,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             $"host=shard1a port=5432 dbname={cluster} user=bucket_admin password=x", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/shards/shard1/master",
             "shard1a:17001", null, ct);
-        // t25: приёмник мастера «жив» (статус-ключ lease) — контроль не
+        // приёмник мастера «жив» (статус-ключ lease) — контроль не
         // деградирует not-running; конкретные тесты удаляют/сидируют факты.
         await fixture.Gateway.PutAsync(fixture.Endpoint,
             $"/pgworker/backups/{cluster}/shard1/agent/shard1a",
@@ -123,7 +123,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
 
-    // Полный COMPLETED с wal_start_segment; t18: якорь chain_start — только
+    // Полный COMPLETED с wal_start_segment; : якорь chain_start — только
     // verify-OK полные, поэтому по умолчанию полный валиден (Ok).
     private static ShardBackups FullShard(string walStart, WalStreamState? wal = null) => new(
         [new FullBackupState("20260910120000Z", FullBackupStatus.Completed, "shard1a",
@@ -224,7 +224,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         (await walProcess2.TickAsync(BuildSnap("sh1"), backups2, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — wal.state=ACTIVE, chain_start от нового полного (агентов
-        // больше нет — t25: приёмник живёт в контейнере ноды, ensure-агента
+        // больше нет: приёмник живёт в контейнере ноды, ensure-агента
         // в тике нет)
         var healed = await ReadWalAsync("sh1");
         healed!.State.Should().Be(WalStreamStatus.Active);

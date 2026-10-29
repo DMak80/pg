@@ -6,7 +6,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.App;
 
-// etcd-клиент против DNS-флейпа Docker embedded DNS (t09; spec §3.3, arch/16 §7):
+// etcd-клиент против DNS-флейпа Docker embedded DNS ( spec §3.3, arch/16 §7):
 // PooledConnectionLifetime (пере-резолв после пересоздания etcd-контейнера) +
 // IPv4-first последовательный резолв (параллельные A/AAAA флейпят).
 public class EtcdConnectCallbackTests

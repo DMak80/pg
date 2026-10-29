@@ -28,7 +28,7 @@ public class NodeConfigBuildersTests
     private static readonly HashSet<string> DefaultExclude =
         new(["io_method", "io_workers"], StringComparer.Ordinal);
 
-    // Фабрика тестового REST-TLS-материала ноды (t22): PEM-заглушки + пара.
+    // Фабрика тестового REST-TLS-материала ноды : PEM-заглушки + пара.
     // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
     // Пароль генерируется в рантайме: секрет не зашивается в исходник; поле
     // переиспользуется всеми обращениями.
@@ -57,7 +57,7 @@ public class NodeConfigBuildersTests
         // Act: генерируем env контейнера ноды.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
 
-        // Assert: идентичность приёмника WAL (t25, arch/19 §3/§14 §2.1) — СТРОГО
+        // Assert: идентичность приёмника WAL (arch/19 §3/§14 §2.1) — СТРОГО
         // всегда, независимо от Backups:Enabled (гейтится etcd-стоп-ключами):
         // координаты из topology/nodeName.
         env["PGW_BACKUP_CLUSTER"].Should().Be(Topology.Cluster);
@@ -73,7 +73,7 @@ public class NodeConfigBuildersTests
         // Act: генерируем env контейнера ноды.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
 
-        // Assert: SPILO_CONFIGURATION несёт канон таймингов (t09: полы Patroni
+        // Assert: SPILO_CONFIGURATION несёт канон таймингов (: полы Patroni
         // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
         // P15 (max_connections) и callback мастер-ключа.
         var spilo = env["SPILO_CONFIGURATION"];
@@ -96,7 +96,7 @@ public class NodeConfigBuildersTests
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
 
         // Assert: значения SSL_RESTAPI_* равны входным PEM байт-в-байт
-        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки t22).
+        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки).
         env["SSL_RESTAPI_CERTIFICATE"].Should().Be(rest.CertPem);
         env["SSL_RESTAPI_PRIVATE_KEY"].Should().Be(rest.KeyPem);
         env["SSL_RESTAPI_CA"].Should().Be(rest.CaPem);
@@ -344,7 +344,7 @@ public class NodeConfigBuildersTests
         spilo.Should().Contain("# P15: 55 pg_doorman + 2 admin/mover + 3 reserved");
     }
 
-    // AAA (t06, spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs
+    // AAA (spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs
     // SPILO_CONFIGURATION рядом с synchronous_mode; false сохраняет прежний текст.
     [Theory]
     [InlineData(true, "synchronous_mode_strict: true")]

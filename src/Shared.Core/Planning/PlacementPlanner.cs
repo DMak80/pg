@@ -13,7 +13,7 @@ public sealed record NodePlacement(string Group, string Node, string Host);
 public sealed record PlacementPlan(IReadOnlyList<NodePlacement> Nodes);
 
 /// <summary>
-/// Планировщик размещения по docker-хостам (t09, обобщение Pg/Kfw): анти-аффинити —
+/// Планировщик размещения по docker-хостам (обобщение Pg/Kfw): анти-аффинити —
 /// ноды одной группы на разных хостах, если позволяет топология; иначе least-loaded.
 /// Детерминизм: группы/ноды/кандидаты сортируются StringComparer.Ordinal.
 /// </summary>

@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Api;
 
-// ClusterGuardData.Status.UpdatedUnix (t07, спека §5.3): возраст статус-ключа
+// ClusterGuardData.Status.UpdatedUnix (спека §5.3): возраст статус-ключа
 // для пред-проверки свежести abort; отсутствие поля → null (проверка пропускается).
 public class ClusterGuardDataTests
 {

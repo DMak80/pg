@@ -4,11 +4,11 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Сериализация статуса restore (t05): JSON канона arch/19 §4 — writer/reader
+// Сериализация статуса restore : JSON канона arch/19 §4 — writer/reader
 // согласованы (roundtrip через BackupsParser), опциональные null-поля не пишутся.
 public class RestoreStatusJsonTests
 {
-    // AAA: полный roundtrip Serialize → парсер t05 восстанавливает все поля.
+    // AAA: полный roundtrip Serialize → парсер восстанавливает все поля.
     [Fact]
     public void Serialize_RoundtripThroughParser_AllFieldsRestored()
     {

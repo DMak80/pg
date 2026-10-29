@@ -8,7 +8,7 @@ namespace KafkaWorker.IntegrationTests.Api;
 
 // Интеграционные тесты /metrics KafkaWorker (arch/18 §3): scrape-грань открыта
 // без ApiKey/cookie (symметрия /healthz); защита API — транспортная (mTLS,
-// arch/16 §1.1, t03) — отказ без клиентского серта покрывает MtlsApiTests.
+// arch/16 §1.1) — отказ без клиентского серта покрывает MtlsApiTests.
 [Collection(KafkaMetricsCollection.Name)]
 public sealed class MetricsTests(KafkaMetricsFixture fx)
 {

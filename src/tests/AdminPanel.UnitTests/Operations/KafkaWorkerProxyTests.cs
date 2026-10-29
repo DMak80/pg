@@ -131,7 +131,7 @@ public class KafkaWorkerProxyTests
     [Fact]
     public async Task RotateCa_SendsOperatorIdentity()
     {
-        // Arrange — заявка ротации CA уходит воркеру с оператором сессии (t07)
+        // Arrange — заявка ротации CA уходит воркеру с оператором сессии 
         var api = new StubWorkerApi
         {
             Respond = _ => new WorkerApiResult(201,

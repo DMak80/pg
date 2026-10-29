@@ -56,7 +56,7 @@ public sealed class NodeSupervisor(
     {
         var cluster = snap.Config.Cluster;
 
-        // t05 §3.4 гвард-множество: шарды с активной restore-заявкой
+        //  §3.4 гвард-множество: шарды с активной restore-заявкой
         // (PLANNED/RUNNING/REJOINING) — надзор их НЕ трогает (шард демонтируется
         // restore-процессом; пробы/rebuild/TO_RECREATE/deadShards-кандидат — мимо).
         var restoringSnapshot = new HashSet<string>();
@@ -89,7 +89,7 @@ public sealed class NodeSupervisor(
             return Fail(supervision.Error!);
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
-        // Ensure per-cluster кредов + эффективная REST-пара тика (t22, arch/14
+        // Ensure per-cluster кредов + эффективная REST-пара тика (arch/14
         // §5 I): ensure идемпотентен (put-if-absent) — легаси-кластер без
         // rest_password получает ключ ДО любого EnsureNode-пути тика; пара —
         // pending окна ротации ?? ensure-результат (НЕ снапшот тика: он читан
@@ -107,7 +107,7 @@ public sealed class NodeSupervisor(
 
         // 1) Сверка декларации: каждой плановой ноде — контейнер/сервис по имени;
         //    снесённый руками пересоздаётся (декларативное самовосстановление).
-        //    t05: шарды в restore исключены (EnsureNode поднял бы снесённое обратно).
+        //    шарды в restore исключены (EnsureNode поднял бы снесённое обратно).
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
@@ -131,7 +131,7 @@ public sealed class NodeSupervisor(
                 return Fail(migrated.Error!);
         }
 
-        // 1.7) Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C): вход
+        // 1.7) Общий шаг пересоздания нод REST-TLS (arch/14 §5 C): вход
         // «конвергенция» (легаси-контейнеры без SSL_RESTAPI_*) и вход «ротация»
         // (hash env != hash(pending) журнала) — единая механика, ≤1 пересоздание
         // на тик кластера, volume сохраняется. Ветви лидера (spec §5.5):
@@ -151,13 +151,13 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
-            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // Границы надзора (§5.4): шард без dsn — домен AddShardProcess;
             // пробы/UNREACHABLE-переходы не трогаем (state нод — вход A1-гварда
             // add: ожидаемы только NOT_INITIALIZED/PROVISIONING).
             if (shard.Dsn is null)
                 continue;
 
-            // t05 §3.4: шард в restore — не пробы/не rebuild/не deadShards-кандидат
+            //  §3.4: шард в restore — не пробы/не rebuild/не deadShards-кандидат
             // (не «считает ShardDeadSec» — демонтажём владеет restore-процесс).
             if (restoring.Contains(shard.Name))
                 continue;
@@ -178,7 +178,7 @@ public sealed class NodeSupervisor(
             var allDead = shard.Nodes is { Count: > 0 }
                 && shard.Nodes.All(n => track.ContainsKey($"{shard.Name}/{n.Name}"));
 
-            // Кандидат эвакуации (t06 §5.4): только зарегистрированный шард (dsn
+            // Кандидат эвакуации (§5.4): только зарегистрированный шард (dsn
             // есть — add завершён) И с бакетами по routing (эвакуация пустого
             // шарда бессмысленна и карантинила бы ноды, блокируя демонтаж по G6).
             // Шард с TO_REMOVE-маркером кандидатом БЫТЬ МОЖЕТ — эвакуация
@@ -239,9 +239,9 @@ public sealed class NodeSupervisor(
                 return Fail(keys.Error!);
         }
 
-        // 4) Конвергенция DCS-конфига (arch/14 §5 C, t09): активный динамический
+        // 4) Конвергенция DCS-конфига (arch/14 §5 C): активный динамический
         // конфиг кластера сверяется с каноном PatroniTimings + pg-параметры
-        // merge(PGTune ∪ канон) от актуальных заявок (t11), расхождение
+        // merge(PGTune ∪ канон) от актуальных заявок, расхождение
         // патчится до канона — нода, подтянувшаяся к кластеру с отсутствующим/
         // чужим/дефолтным конфигом, приводится к канону без пересоздания
         // («старое с плохими параметрами» не живёт параллельно канону). Шаг —
@@ -252,7 +252,7 @@ public sealed class NodeSupervisor(
             if (shard.Dsn is null)
                 continue;
             if (restoring.Contains(shard.Name))
-                continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
+                continue; //  §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
                 snap.Config.SyncStrict, track, haFacts, restPassword, supervision.Value.RestPending, ct);
             if (!converged.IsSuccess)
@@ -299,7 +299,7 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
-            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // Границы надзора (§5.4): шард без dsn — домен AddShardProcess;
             // TO_REMOVE — домен RemoveShardProcess (не пересоздавать демонтируемое).
             if (shard.Dsn is null || shard.ToRemove)
                 continue;
@@ -391,8 +391,8 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Конвергенция динамического DCS-конфига (arch/14 §5 C; t09 — тайминги,
-    // t11 — pg-параметры, t06 — strict): GET /config первого канонического
+    // Конвергенция динамического DCS-конфига (arch/14 §5 C; — тайминги,
+    //  — pg-параметры, — strict): GET /config первого канонического
     // Patroni-узла
     // шарда → сверка с каноном (PatroniTimings + synchronous_mode_strict из
     // config кластера — per-cluster ожидание, НЕ константа; динамический
@@ -409,7 +409,7 @@ public sealed class NodeSupervisor(
     // размер ноды по остаточному ресурсу нельзя — решение 2026-09-14), тайминги
     // конвергируются как раньше. Прочие исключения pgtune.Create (неполнота уже
     // отсечена) — фейл фазы тика, транзиент-ретрай (как в EnsureNode-путях).
-    // Транзиент-толерантно (t09): недоступность GET/PATCH — skip этого тика,
+    // Транзиент-толерантно : недоступность GET/PATCH — skip этого тика,
     // патч повторится следующим. Фазовая запись журнала при патче несёт трек
     // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
@@ -449,7 +449,7 @@ public sealed class NodeSupervisor(
             desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
         }
 
-        // Гвард окна REST-ротации (t22, arch/14 §5 I): до txn-коммита воркер не
+        // Гвард окна REST-ротации (arch/14 §5 I): до txn-коммита воркер не
         // инициирует PATCH /config кластера по REST — транзиент-skip тика,
         // конвергенция повторится после закрытия окна.
         if (restPending is not null)
@@ -484,7 +484,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Ускорение failover при доказанно мёртвом лидере (t09, arch/14 §5 C —
+    // Ускорение failover при доказанно мёртвом лидере (arch/14 §5 C —
     // положительное свидетельство смерти процесса, флапа нет: docker-объект
     // ОТсутствует, ИЛИ контейнер есть, но не running — оба варианта означают,
     // что лидер не обслуживает, а его лидер-ключ держал бы lease до истечения
@@ -554,7 +554,7 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
-    // Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C/§5 I): ДВА входа —
+    // Общий шаг пересоздания нод REST-TLS (arch/14 §5 C/§5 I): ДВА входа —
     // (а) конвергенция живых канонических нод, созданных до TLS (нет
     // SSL_RESTAPI_CERTIFICATE в env); (б) rolling-ротация REST-пары (hash env !=
     // hash(pending) журнала). Единая механика: инспекция env контейнера, ≤1
@@ -700,7 +700,7 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // DCS-свидетель жёсткого сноса лидера (t22, spec §5.5 рев.3): реплика scope,
+    // DCS-свидетель жёсткого сноса лидера (spec §5.5 рев.3): реплика scope,
     // живая по ЧЛЕНСТВУ — /service/<scope>/members/<n> со state running.
     // Heartbeat Patroni ходит через etcd (мимо REST), поэтому свидетель жив
     // даже в легаси-http контуре, где REST-проба воркера не работает. Пробелы
@@ -774,7 +774,7 @@ public sealed class NodeSupervisor(
                 // тиком, когда нода уже не лидер (снапшот тика устареет сам собой).
                 if (alive && mode != "hard")
                 {
-                    // Гвард окна REST-ротации (t22, §5.5): switchover через REST до
+                    // Гвард окна REST-ротации (§5.5): switchover через REST до
                     // txn-коммита подавлен — skip тика (журнал), мутация
                     // ретрается после закрытия окна.
                     if (restPending is not null)
@@ -904,7 +904,7 @@ public sealed class NodeSupervisor(
             // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
             // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
             // Deprovisioning. Проба мёртвой карантинной ноды затирала бы state
-            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06).
+            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6.
             if (node.State is NodeState.Quarantined or NodeState.Removing)
                 continue;
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
@@ -936,7 +936,7 @@ public sealed class NodeSupervisor(
             var trackKey = $"{shard.Name}/{name}";
             track.TryAdd(trackKey, Now());
 
-            // Лидер недоступен → ускоряем failover (t09, arch/14 §5 C): если
+            // Лидер недоступен → ускоряем failover (arch/14 §5 C): если
             // его контейнер не running (положительное свидетельство смерти —
             // транспортный флап контейнер не останавливает), удаляем
             // лидер-ключ (lease держал бы до ttl≥20 — мимо бюджета ≤5с) и

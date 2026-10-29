@@ -163,7 +163,7 @@ public class ClustersParserTests
         var result = ClustersParser.Parse(kvs);
 
         // Assert
-        // bucket_99 при N=4 остаётся в списке бакетов — детект out-of-range это алерт t04 (P18)
+        // bucket_99 при N=4 остаётся в списке бакетов — детект out-of-range это алерт (P18)
         var demo2 = result.Clusters.Single(c => c.Name == "demo2");
         demo2.Buckets.Single(b => b.Id == 99).Owner.Should().Be("s9");
         demo2.Buckets.Single(b => b.Id == 0).Owner.Should().Be("s1");
@@ -275,7 +275,7 @@ public class ClustersParserTests
     [Fact]
     public void Parse_ShardStateToRemove_MapsToShardInfoState()
     {
-        // Arrange — маркер демонтажа шарда (t06 §9.6); сегодня ключ уходит в unknown
+        // Arrange — маркер демонтажа шарда (§9.6); сегодня ключ уходит в unknown
         var kvs = new List<Kv>
         {
             Kv("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}"""),
@@ -352,11 +352,11 @@ public class ClustersParserTests
         nodes.Should().HaveCount(2); // app_params не влияет на ноды
     }
 
-    // Хелпер t06: парс одного кластера из config-ключа (механика Kv-сида файла).
+    // Хелпер : парс одного кластера из config-ключа (механика Kv-сида файла).
     private static ClusterInfo ParseSingleCluster(string configRaw)
         => ClustersParser.Parse([Kv("/clusters/shop/config", configRaw)]).Clusters.Single();
 
-    // AAA (t06, spec §6.1/§6.9): config-поле читается в снапшот панели;
+    // AAA (spec §6.1/§6.9): config-поле читается в снапшот панели;
     // отсутствие/не-bool/битый JSON = true (единая семантика с воркером).
     [Theory]
     [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":false}""", false)]

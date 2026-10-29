@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace PgWorker.Backups.EtcdExport;
 
-/// <summary>Значение статус-ключа /pgworker/etcd-snapshots (t08, arch/14 §3.3):
+/// <summary>Значение статус-ключа /pgworker/etcd-snapshots (arch/14 §3.3):
 /// факт последней выгрузки слепка etcd в S3. Наблюдаемость; источник для
 /// восстановления НЕ является (etcd мёртв — ключа нет). LastUploadedUnix —
 /// семантика «покрытия» (§3.1): метка снятия последнего слепка, чьё содержимое

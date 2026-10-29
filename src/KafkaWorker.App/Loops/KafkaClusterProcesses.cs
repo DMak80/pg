@@ -18,8 +18,8 @@ internal interface IKafkaClusterProcesses
 
     /// <summary>
     /// Active-ветка (порядок — arch/16 §5): надзор (C) → converge (E) →
-    /// reassignment (I, t02: drain TO_REMOVE + заявки balance) → scale-проход
-    /// remove (G) → add (F) → ротация (H) → регенерация (J, t06: автоконверге
+    /// reassignment (I: drain TO_REMOVE + заявки balance) → scale-проход
+    /// remove (G) → add (F) → ротация (H) → регенерация (J: автоконверге
     /// лимитов) → автосинк топиков (D, тик TopicSyncIntervalSec —
     /// троттлится внутри процесса).
     /// </summary>
@@ -66,7 +66,7 @@ internal sealed class KafkaClusterProcesses(
         if (!supervised.IsSuccess)
             return supervised;
 
-        // Backoff недоступного кластера (t05, spec §3.2): docker-часть надзора
+        // Backoff недоступного кластера (spec §3.2): docker-часть надзора
         // отработала; kafka-шаги E–J/D пропускаются до истечения окна — лежащий
         // кластер не долбится каждые 5–15 с. Тик — успех (не ошибка).
         if (_backoff.IsBlocked(snap.Cluster))
@@ -104,13 +104,13 @@ internal sealed class KafkaClusterProcesses(
         if (!rotated.IsSuccess)
             return rotated;
 
-        // Ротация CA/сертов (K, t07) — по заявке /kafkaworker/ca_rotations/<C>;
+        // Ротация CA/сертов (K) — по заявке /kafkaworker/ca_rotations/<C>;
         // после H и до J (rolling-ы не смешиваются, arch/16 §5).
         var caRotated = await caRotator.RunAsync(snap, ct);
         if (!caRotated.IsSuccess)
             return caRotated;
 
-        // Регенерация (J, t06): автоконверге лимитов — после ротации (не
+        // Регенерация (J): автоконверге лимитов — после ротации (не
         // смешиваем rolling-ы) и перед TopicSync (реестр — к итогу).
         var regenerated = await regenerator.RunAsync(snap, ct);
         if (!regenerated.IsSuccess)

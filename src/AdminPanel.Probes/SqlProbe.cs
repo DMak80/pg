@@ -17,7 +17,7 @@ public interface ISqlProbe
 }
 
 // Реализация: строка строится из разобранных полей ShardInfo (DSN уже разобран
-// DsnParser t03 — повторный парсинг не нужен, spec §3.6); любой отказ — ошибка
+// DsnParser — повторный парсинг не нужен, spec §3.6); любой отказ — ошибка
 // целиком на шард (§3.7). Хосты — эндпоинт-синтаксис Npgsql host:port после HostMap.
 [InjectAsSingleton(typeof(ISqlProbe))]
 public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time) : ISqlProbe

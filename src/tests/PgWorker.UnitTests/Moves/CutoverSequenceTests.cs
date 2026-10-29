@@ -7,7 +7,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// CutoverSequence (t01 задача 12, spec §6.2 — точный перенос cutover_flip):
+// CutoverSequence (spec §6.2 — точный перенос cutover_flip):
 // заморозка P1/P5 с ретраями → FROZEN → LSN → ожидание слота → sequences P6 →
 // сверка строк P8 → атомарный flip. Классификация отказов: transient
 // (freeze/lsn/catchup/sequences — разморозка + FailState) vs permanent

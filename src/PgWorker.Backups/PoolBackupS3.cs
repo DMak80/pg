@@ -3,7 +3,7 @@ using Shared.Core;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// Пул-клиент IBackupS3 (t36, arch/19 §5): write-цели (список роли источника),
+/// Пул-клиент IBackupS3 (arch/19 §5): write-цели (список роли источника),
 /// read-цели (все ноды пула, порядок endpoints); цель — существующий BackupS3
 /// (endpoint+креды одного адреса), кэш per-цели. Перебор всегда С ПЕРВОЙ цели
 /// («первый доступный по списку»); каждая попытка несёт per-попыточный таймаут
@@ -149,7 +149,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
             uri => Target(uri).ListWalAsync(cluster, shard, maxKeysPerTest, ct),
             "list-wal");
 
-    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (t36, arch/19 §5 «где
+    /// <summary>Union-листинг wal/ по ВСЕМ read-целям (arch/19 §5 «где
     /// данные есть»): дедуп по имени объекта. Для сверки цепочки контроля:
     /// первая доступная нода может отставать (лаг mesh) — её соло-листинг даёт
     /// ЛОЖНУЮ дыру и переводит шард в WAL_CHAIN_ERROR (прецедент AC4: n1 после рестарта
@@ -159,7 +159,7 @@ public sealed class PoolBackupS3 : IBackupS3, IAsyncDisposable
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await ListUnionAsync(cluster, shard, "wal/", maxKeysPerTest, ct);
 
-    /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (t02,
+    /// <summary>Union-листинг ПРОИЗВОЛЬНОГО префикса по ВСЕМ read-целям (
     /// arch/19 §5 «где данные есть»): полный бэкап заливается на первую живую
     /// ноду момента заливки — набор full/&lt;id&gt;/pg_wal/ и wal/-дубли
     /// размещены по нодам; соло-листинг первой живой цели даёт ложное «пусто»

@@ -101,7 +101,7 @@ internal sealed class NpgsqlPhysicalReplicationConnection(string connectionStrin
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
 }
 
-/// <summary>Транспорт физической репликации Npgsql 10 (t27, arch/19 §3.1):
+/// <summary>Транспорт физической репликации Npgsql 10 (arch/19 §3.1):
 /// SQL-коннект — сверка wal_segment_size (permanent при расхождении с
 /// WalFileName.SegmentBytes — математика имён не должна молча врать);
 /// PhysicalReplicationConnection — START_REPLICATION SLOT ... PHYSICAL <lsn>
@@ -315,7 +315,7 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
     public async Task<Result<byte[]?>> ReadTimelineHistoryAsync(uint tli, CancellationToken ct)
     {
         // TIMELINE_HISTORY — replication-команда: сервер обслуживает её ТОЛЬКО до
-        // START_REPLICATION (E2E-факт t27: запрос по стрим-коннекту не работает) —
+        // START_REPLICATION (факт стенда : запрос по стрим-коннекту не работает) —
         // отдельное replication-соединение на каждый запрос (короткоживущее).
         try
         {

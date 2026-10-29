@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/ha/{scope}/nodes/{node}/recreate (дубль панельного DTO осознан, t08).
+// Ответ 201 POST /api/ha/{scope}/nodes/{node}/recreate (дубль панельного DTO осознан).
 public sealed record NodeRecreatedDto(string Scope, string Node, string State, string Mode);
 
 // Тело POST /api/ha/{scope}/nodes/{node}/recreate (mode опционален: soft).

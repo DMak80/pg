@@ -11,7 +11,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// следующий тик повторит демонтаж (томов у домена нет; TLS-материал жил в
 /// env контейнеров). X2 чистит координацию
 /// ВКЛЮЧАЯ заявки ротаций, стейт доигрывания (work/&lt;C&gt;/rotation) и исходы
-/// заявок ticket_outcomes/&lt;C&gt; (t10); финальной
+/// заявок ticket_outcomes/&lt;C&gt;; финальной
 /// journal-записи ПОСЛЕ чистки нет (образец kfw: запись done воскресила бы
 /// удалённый work/&lt;C&gt; — координация &lt;C&gt; обязана остаться пустой).
 /// Успех = пустой префикс домена (verify) + ЯВНО снятый клэйм. Снапшоты P12
@@ -63,7 +63,7 @@ public sealed class DeprovisioningProcess(
 
         // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций,
         // стейт доигрывания ротации (work/<C>/rotation) и исходы заявок
-        // ticket_outcomes/<C> (t10 — иначе вечный алерт с мёртвого кластера).
+        // ticket_outcomes/<C> (— иначе вечный алерт с мёртвого кластера).
         var domainDel = await DeletePrefixAsync($"/valkey/clusters/{cluster}/", ct);
         if (!domainDel.IsSuccess)
             return Fail(cluster, domainDel.Error!, "delete-domain");
@@ -75,7 +75,7 @@ public sealed class DeprovisioningProcess(
                      $"/valkeyworker/portalloc/{cluster}",
                      $"/valkeyworker/rotations/{cluster}",
                      $"/valkeyworker/ca_rotations/{cluster}",
-                     $"/valkeyworker/ticket_outcomes/{cluster}", // исходы заявок не переживают кластер (t10)
+                     $"/valkeyworker/ticket_outcomes/{cluster}", // исходы заявок не переживают кластер 
                  })
         {
             var del = await DeleteKeyAsync(key, ct);

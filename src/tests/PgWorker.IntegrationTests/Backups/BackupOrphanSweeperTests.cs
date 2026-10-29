@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции BackupOrphanSweeper (t07, spec §3.4 глобальная часть): реальный
+// Интеграции BackupOrphanSweeper (spec §3.4 глобальная часть): реальный
 // etcd (реестр/лидерство/кластеры) + FakeBackupS3 + MutableClock (сжатое TTL).
 // Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
@@ -36,7 +36,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, "/pgworker/leader", prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.Key, prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.JournalKey, prefix: false, ct);
-        // hold/заявки кейсов t04 — чистка от предыдущих тестов (изоляция сида).
+        // hold/заявки кейсов — чистка от предыдущих тестов (изоляция сида).
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.HoldsPrefix, prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, OrphanRegistry.DeletesPrefix, prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
@@ -226,7 +226,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         s3.DeletedKeys.Should().BeEmpty();
     }
 
-    // ── DR-hold (reliability t04, arch/19 §4) ──
+    // ── DR-hold (reliability, arch/19 §4) ──
 
     // Хелпер сида: put hold-ключа/заявки канона (AAA-Act общий).
     private async Task PutHoldAsync(string prefix, long unix = 1757764800)
@@ -439,7 +439,7 @@ public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<
         s3.DeletedKeys.Should().BeEmpty("no candidate — no removal");
     }
 
-    // AAA (t36, arch/19 §5): дедуп union-листинга — по (пул, ключ): одинаковый
+    // AAA (arch/19 §5): дедуп union-листинга — по (пул, ключ): одинаковый
     // ключ в двух пулах учитывается КАЖДОЙ пул-копией (размер реестра = сумма
     // по пулам); дедуп по голому ключу схлопывал бы межпулевые дубли
     [Fact]

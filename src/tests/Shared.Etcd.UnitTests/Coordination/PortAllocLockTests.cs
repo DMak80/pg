@@ -3,8 +3,8 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests.Coordination;
 
-// PortAllocLock (t90/t91): глобальный portalloc-клэйм — взаимоисключение секции
-// довыделения портов между кластерами/инстансами. t09: влитие копий Pg и Kfw
+// PortAllocLock (/): глобальный portalloc-клэйм — взаимоисключение секции
+// довыделения портов между кластерами/инстансами. : влитие копий Pg и Kfw
 // (кейсы совпадают поимённо, канон — Pg-копия) с параметризацией префикса.
 public class PortAllocLockTests
 {
@@ -54,10 +54,10 @@ public class PortAllocLockTests
         etcd.Store[second.Key].Should().Contain("inst-2");
     }
 
-    // AAA (ревью-блокер t90): повторный TryAcquire тем же объектом при живом
+    // AAA (ревью-блокер): повторный TryAcquire тем же объектом при живом
     // захвате — false, НЕ true: клэйм-объект DI-синглтон, параллельные тики
     // разных кластеров одного инстанса обязаны взаимоисключаться (reentrant-true
-    // пускал обе секции concurrently — гонка t90 воспроизводилась в дефолтной
+    // пускал обе секции concurrently — гонка воспроизводилась в дефолтной
     // конфигурации). «Занят» — не ошибка: waiting-portalloc-lock, следующий тик.
     [Fact]
     public async Task TryAcquire_AlreadyHeldBySameObject_ReturnsFalse()
@@ -76,7 +76,7 @@ public class PortAllocLockTests
         etcd.Store[locks.Key].Should().Contain("inst-1"); // ключ держателя не тронут
     }
 
-    // AAA (регрессия ревью-блокера t90): два TryAcquireAsync на ОДНОМ объекте
+    // AAA (регрессия ревью-блокера): два TryAcquireAsync на ОДНОМ объекте
     // (один инстанс, параллельные тики двух кластеров) — первый true, второй
     // false; после ReleaseAsync первого — захват снова проходит (следующий тик).
     [Fact]

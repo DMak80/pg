@@ -85,7 +85,7 @@ internal sealed record ClusterGuardData(
     }
 
     // Статус бакета (arch/02 §2.1): state + owner/target переезда + updated_unix
-    // (возраст для пред-проверки свежести abort, t07 §5.3: поле отсутствует/битое →
+    // (возраст для пред-проверки свежести abort, §5.3: поле отсутствует/битое →
     // null — проверка пропускается, авторитетно решит процесс); битый JSON —
     // как у панели: поля отсутствуют → guard'ы трактуют бакет консервативно.
     private static (string? State, string? Owner, string? Target, long? UpdatedUnix) ParseStatus(string raw)

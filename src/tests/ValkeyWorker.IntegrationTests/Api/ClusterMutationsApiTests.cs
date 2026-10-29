@@ -220,7 +220,7 @@ public class ClusterMutationsApiTests(ValkeyApiFixture fx)
         // Act 2: повтор — 409 (заявка жива).
         using var second = await client.PostAsJsonAsync($"/api/valkey/clusters/{cluster}/password/rotate",
             new { role = "app" }, TestContext.Current.CancellationToken);
-        // Act 2b: роль вне канона — валидация 400 с errors.role (t03-фикс, 02 §11.2).
+        // Act 2b: роль вне канона — валидация 400 с errors.role (фикс, 02 §11.2).
         using var wrongRole = await client.PostAsJsonAsync($"/api/valkey/clusters/{cluster}/password/rotate",
             new { role = "wrong" }, TestContext.Current.CancellationToken);
         var wrongBody = await wrongRole.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);

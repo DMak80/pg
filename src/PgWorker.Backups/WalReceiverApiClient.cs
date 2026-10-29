@@ -35,7 +35,7 @@ public sealed record StartRestoreRequest(
     [property: JsonPropertyName("recovery_timeout_sec")] int RecoveryTimeoutSec,
     [property: JsonPropertyName("s3")] S3Context S3);
 
-/// <summary>Снимок статуса из GET (поля spec t26 §3.2 / arch/19 §2/§5); id —
+/// <summary>Снимок статуса из GET (поля spec §3.2 / arch/19 §2/§5); id —
 /// активная операция (тело 409 на POST тоже несёт её снимок) — сверка «своя/
 /// чужая» в 409-ветке запуска: чужой id трактуется как не-наша операция;
 /// started_unix — время TryBegin операции приёмника (возрастной бюджет
@@ -94,7 +94,7 @@ public sealed record ReceiverReply(int StatusCode, ReceiverStatus? Status, strin
 /// осознанное, запрет цикла ссылок).</summary>
 public sealed record ErrorResponse([property: JsonPropertyName("error")] string Error);
 
-/// <summary>Клиент HTTP API приёмника WalReceiver (spec t26 §3.2):
+/// <summary>Клиент HTTP API приёмника WalReceiver (spec §3.2):
 /// baseUrl — базовый URL приёмника (нода — alias:8080, tool — host:порт);
 /// любой транспортный отказ/таймаут/5xx — transient-исход (IsTransient),
 /// исключения наружу не пробрасываются.</summary>

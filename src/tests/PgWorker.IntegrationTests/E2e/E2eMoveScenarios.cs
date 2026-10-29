@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E-сценарий переезда бакета (t01 задача 19, spec §10 e2e / §11 AC3–AC6+AC8)
+// E2E-сценарий переезда бакета (spec §10 e2e / §11 AC3–AC6+AC8)
 // на изолированном окружении E2eEnvironment (своя сеть/etcd на Fact).
 // Один [Fact], 5 этапов вызывают друг друга по цепочке:
 //   E1 → E2 → E3 → E4 → E5
@@ -127,7 +127,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         moved.Should().BeTrue($"the move must finish; routing={await RoutingAsync("bucket_0", ct)}, " +
                               $"status={await StatusAsync("bucket_0", ct) ?? "absent"}, work={await WorkDumpAsync(ct)}");
 
-        // Детерминизация (t09, гонка E2-kill ↔ M6-REPLACE): routing+статус
+        // Детерминизация (гонка E2-kill ↔ M6-REPLACE): routing+статус
         // сменяются РАНЬШЕ, чем воркер допишет REPLACE на finalize — между ними
         // секунды post-flip SQL (pub_rb/sub_rb). Kill до REPLACE оставлял заявку
         // op=move, m2 отклонял её «бакет уже на shard2», и finalize не начинался
@@ -359,7 +359,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             """;
         // Сид идёт сразу после provision DONE: fresh-проброс порта Docker Desktop
         // может дать разовый RST на SSL-рукопожатии (TCP принимает docker-proxy,
-        // PG-контейнер ещё не готов) — детерминизация t09: ждём готовность, а не
+        // PG-контейнер ещё не готов) — детерминизация : ждём готовность, а не
         // полагаемся на мгновенный коннект (паттерн O2-probe в E2eScenarios).
         // SQL-ошибки (PostgresException) НЕ ретраим — это валидный провал.
         (await E2ePhase.WaitAsync(Fx, "move-seed-bucket", async () =>
@@ -438,14 +438,14 @@ public class E2eMoveScenarios(ITestOutputHelper output)
     private sealed record MasterInfo(string Node, string Host, string Dsn);
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<MasterInfo> MasterInfoAsync(string shard, CancellationToken ct)
     {
         // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
         // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
         // FirstOrDefault по такому матчу отдавал произвольную ноду шарда —
         // seed уходил на реплику (25006 read-only).
         for (var i = 0; i < 60; i++)
@@ -484,7 +484,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
     private async Task EnableSyncModeAsync(string shard, CancellationToken ct)
     {
         var master = await MasterInfoAsync(shard, ct);
-        // t22: мутация Patroni — https с доверием CA контура + basic-auth
+        // мутация Patroni — https с доверием CA контура + basic-auth
         // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
         var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{Cluster}/rest_password", ct))
             .Value!.Value;

@@ -50,13 +50,13 @@ public sealed record AppCredentials(string User, string Password);
 public sealed record NodeSpec(string Shard, string Name, NodeState State, string? AppParams = null);
 
 /// <summary>Шард кластера: replicas — плановое число нод, Dsn/Master — runtime;
-/// ToRemove — маркер демонтажа shards/&lt;X&gt;/state=TO_REMOVE (t06; пишет панель).</summary>
+/// ToRemove — маркер демонтажа shards/&lt;X&gt;/state=TO_REMOVE ( пишет панель).</summary>
 public sealed record ShardSpec(string Name, int Replicas, string? Dsn, string? Master,
     IReadOnlyList<NodeSpec> Nodes, bool ToRemove = false);
 
 /// <summary>Маршрут бакета: Owner — владелец по ROUTING (единственный авторитет
 /// «где бакет»); Status — статус переезда (null → ACTIVE); MoveSource/MoveTarget —
-/// owner/target из СТАТУС-ключа (guard G4 t06: после flip статус-owner ≠ routing-owner;
+/// owner/target из СТАТУС-ключа (guard G4 : после flip статус-owner ≠ routing-owner;
 /// null без статуса; у NOT_INITIALIZED — owner без target); MovePhase/MoveUpdatedUnix —
 /// phase/updated_unix из статус-ключа (репарация §3.5); null без статуса.</summary>
 public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
@@ -64,8 +64,8 @@ public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
     string? MovePhase = null, long? MoveUpdatedUnix = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
-/// + per-cluster креды (app — spec §4.1; mover/bucket_admin — t02, arch/14
-/// §3.3; rest — t22 basic-auth Patroni REST; null до первого ensure —
+/// + per-cluster креды (app — spec §4.1; mover/bucket_admin, arch/14
+/// §3.3; rest — basic-auth Patroni REST; null до первого ensure —
 /// потребители применяют env-fallback).</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,
     IReadOnlyList<BucketRoute> Routing, AppCredentials? App = null,
@@ -78,7 +78,7 @@ public sealed record NodePorts(int Pg, int Patroni, int Doorman);
 /// <summary>Адрес ноды: docker-хост + выделенные host-порты; Object — имя
 /// фактического docker-контейнера усыновлённой ноды (arch/14 §2.4/§5 J),
 /// null = каноническая pgw-нода нашего провижининга. ScrapeAlias/ScrapeNetwork
-/// (t15, arch/14 §2.4) — сетевая идентичность ноды для скрейпа (alias =
+/// (arch/14 §2.4) — сетевая идентичность ноды для скрейпа (alias =
 /// docker-имя, резолвится DNS сети контура; net = имя сети, информационное):
 /// пишутся только каноническим нодам при заданном PgWorker:Docker:ScrapeNetwork,
 /// в dsn/endpoints/пробы не попадают.</summary>

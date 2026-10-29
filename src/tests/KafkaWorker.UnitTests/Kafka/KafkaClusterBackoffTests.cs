@@ -3,9 +3,9 @@ using KafkaWorker.UnitTests.Provisioning;
 
 namespace KafkaWorker.UnitTests.Kafka;
 
-// Backoff недоступного кластера (t05, spec §3.2): 15 → 60 → 300 с, сброс при
+// Backoff недоступного кластера (spec §3.2): 15 → 60 → 300 с, сброс при
 // успехе, чистка исчезнувших; лежащий кластер не долбится каждый тик
-// (порт BackoffAfter KafkaProbeLoop t11).
+// (порт BackoffAfter KafkaProbeLoop).
 public class KafkaClusterBackoffTests
 {
     // AAA: шкала после N-й подряд неудачи.

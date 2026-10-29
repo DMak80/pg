@@ -1,7 +1,7 @@
 namespace KafkaWorker.Provisioning.Kafka;
 
 /// <summary>
-/// Backoff недоступного кластера (t05, spec §3.2; паттерн KafkaProbeLoop t11):
+/// Backoff недоступного кластера (spec §3.2; паттерн KafkaProbeLoop):
 /// сколько kafka-проб подряд упало и когда разрешена следующая. Писатели —
 /// supervise-проба и коллектор метрик (первые kafka-контакты конвейера);
 /// успех сбрасывает. Чистая политика частоты: НЕ состояние кластера — в etcd
@@ -36,7 +36,7 @@ public sealed class KafkaClusterBackoff(TimeProvider clock)
     }
 
     // Кластеры исчезли из снапшота — запись удаляется ЦЕЛИКОМ: и окно, и
-    // счётчик (возвращение кластера начинает с первой ступени; t11).
+    // счётчик (возвращение кластера начинает с первой ступени;).
     public void ForgetMissing(IReadOnlySet<string> liveClusters)
     {
         lock (_gate)
@@ -47,7 +47,7 @@ public sealed class KafkaClusterBackoff(TimeProvider clock)
     }
 
     // Окно после N-й подряд неудачи: 1-я → 15 с (база kafka-циклов), 2-я →
-    // 60 с, дальше 300 с (t11: 15 → 60 → 300, сброс при успехе).
+    // 60 с, дальше 300 с (: 15 → 60 → 300, сброс при успехе).
     internal static TimeSpan BackoffAfter(int consecutiveFailures)
         => consecutiveFailures switch
         {

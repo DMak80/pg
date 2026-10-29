@@ -389,7 +389,7 @@ public class NodeSupervisorTests
         doc.RootElement.TryGetProperty("last_error", out _).Should().BeFalse();
     }
 
-    // t06: CA в etcd отсутствует — пересоздание отложено (миграция T доиграет),
+    // CA в etcd отсутствует — пересоздание отложено (миграция T доиграет),
     // warning надзора, без docker-мутаций.
     [Fact]
     public async Task Supervise_NoCaInEtcd_RecreationDeferred()

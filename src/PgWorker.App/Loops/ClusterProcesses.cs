@@ -18,7 +18,7 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> DeprovisionAsync(ClusterSnapshot snap, CancellationToken ct);
 
     /// <summary>Надзор + список полностью мёртвых шардов (событие эвакуации);
-    /// backups — парс /pgworker/backups/ этим же тиком (t05: гварды restore).</summary>
+    /// backups — парс /pgworker/backups/ этим же тиком (: гварды restore).</summary>
     Task<Result<SuperviseOutcome>> SuperviseAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
@@ -26,14 +26,14 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct);
 
     /// <summary>Эвакуация конкретного мёртвого шарда (BucketEvacuator E0–E4);
-    /// backups — гвард restore (t05 §3.4).</summary>
+    /// backups — гвард restore (§3.4).</summary>
     Task<Result<ProcessOutcome>> EvacuateAsync(
         ClusterSnapshot snap, string deadShard, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Обработка заявок переездов бакетов /pgworker/moves/&lt;C&gt;/ (t01, spec §5.3).</summary>
+    /// <summary>Обработка заявок переездов бакетов /pgworker/moves/&lt;C&gt;/ (spec §5.3).</summary>
     Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct);
 
-    /// <summary>Scale-проход Active-ветки (t06, spec §5.1): remove-кандидаты →
+    /// <summary>Scale-проход Active-ветки (spec §5.1): remove-кандидаты →
     /// add-кандидаты, по одному шард-за-тик (Д13: демонтаж освобождает хосты/порты).</summary>
     Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct);
 
@@ -41,18 +41,18 @@ internal interface IClusterProcesses
     /// arch/14 §5 I); no-op без заявки.</summary>
     Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct);
 
-    /// <summary>Планировщик/супервизор полных бэкапов (t02, arch/19 §2):
+    /// <summary>Планировщик/супервизор полных бэкапов (arch/19 §2):
     /// префикс /pgworker/backups/ читается циклом при Enabled; тик non-blocking.</summary>
     Task<Result<ProcessOutcome>> BackupsAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>WAL-архивация шардов (t03, arch/19 §3): ensure слота/агента,
+    /// <summary>WAL-архивация шардов (arch/19 §3): ensure слота/агента,
     /// контроль цепочки по расписанию, статус /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal.
     /// backups — парс префикса /pgworker/backups/ этим же тиком.</summary>
     Task<Result<ProcessOutcome>> WalStreamAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup,
+    /// <summary>Проверки полных бэкапов (arch/19 §5): цепочка + pg_verifybackup,
     /// супервиз verify-джобов; backups — парс префикса /pgworker/backups/ этим же тиком.
     /// Порядок тика — после backup-wal, до ретенции (verify раньше retention:
     /// канон arch/19 порядок не фиксирует; проверка валидирует то, что ретенция
@@ -60,25 +60,25 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> VerifyBackupsAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Ретенция бэкапов (t06, arch/19 §4): после backup-wal/verify, до repair;
+    /// <summary>Ретенция бэкапов (arch/19 §4): после backup-wal/verify, до repair;
     /// guard Enabled — выключенная подсистема no-op.</summary>
     Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Восстановление шарда из бэкапа (t05, arch/19 §3.5): после
+    /// <summary>Восстановление шарда из бэкапа (arch/19 §3.5): после
     /// backup-wal (агент снесён демонтажём — процесс сам стопает), до repair;
     /// guard Enabled — выключенная подсистема не зовётся.</summary>
     Task<Result<ProcessOutcome>> RestoreAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Дрилл восстановимости (reliability t02, arch/19 §3.6): после
+    /// <summary>Дрилл восстановимости (reliability, arch/19 §3.6): после
     /// backup-restore, до repair; зовётся ВСЕГДА — Enabled=false / интервал 0 —
     /// стоп-семантика в процессе (доводка активного дрилла и сноса контура,
     /// новых запусков нет).</summary>
     Task<Result<ProcessOutcome>> DrillAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Per-cluster сверка S3↔etcd (t07, arch/19 §4): мусор full/&lt;id&gt;/
+    /// <summary>Per-cluster сверка S3↔etcd (arch/19 §4): мусор full/&lt;id&gt;/
     /// живого шарда без etcd-ключа удаляется; после backups-retention (гигиена
     /// FAILED может оставить объекты), до backup-restore (гвард владельца).</summary>
     Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
@@ -89,7 +89,7 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
 }
 
-/// <summary>Реализация поверх процессов задач 19–22 + MoveProcess t01 (синглтоны DI).</summary>
+/// <summary>Реализация поверх процессов задач 19–22 + MoveProcess (синглтоны DI).</summary>
 internal sealed class ClusterProcesses(
     ProvisioningProcess provision,
     DeprovisioningProcess deprovision,
@@ -183,13 +183,13 @@ internal sealed class ClusterProcesses(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => restore.TickAsync(snap, backups, ct);
 
-    // reliability t02 (arch/19 §3.6): дрилл шардов кластера — всегда, стоп-
+    // reliability (arch/19 §3.6): дрилл шардов кластера — всегда, стоп-
     // семантика внутри процесса.
     public Task<Result<ProcessOutcome>> DrillAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => drill.TickAsync(snap, backups, ct);
 
-    // t07 (arch/19 §4): бэкапы своего кластера — из аргумента тика (парс
+    //  (arch/19 §4): бэкапы своего кластера — из аргумента тика (парс
     // префикса /pgworker/backups/ этим же тиком), как ретенция/restore.
     public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)

@@ -14,7 +14,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Репро churn-инцидента 2026-09-02 (t11): Active-кластер с endpoints на
+// Репро churn-инцидента 2026-09-02 : Active-кластер с endpoints на
 // закрытые порты — connection refused за миллисекунды. До фикса каждый тик
 // плодил 5–7 нативных клиентов (rd_kafka-инстансы + poll-потоки, ~99% ядра);
 // после — клиент один на попытку, а частоту попыток держит backoff loop'а.
@@ -34,7 +34,7 @@ public class KafkaProbeClosedPortsTests : IDisposable
 
     private readonly KafkaClientCache _cache = new();
 
-    // Валидный PEM CA (t03): librdkafka парсит ssl.ca.pem при Build() — строка-
+    // Валидный PEM CA : librdkafka парсит ssl.ca.pem при Build() — строка-
     // заглушка роняла бы создание клиента до сетевого отказа (в тесте нужен
     // честный connection refused).
     private static string CaPem()
@@ -84,7 +84,7 @@ public class KafkaProbeClosedPortsTests : IDisposable
             clock,
             NullLogger<KafkaProbeLoop>.Instance);
 
-        // Act/Assert: попытка 1 (t0) — честный отказ, ОДИН нативный клиент.
+        // Act/Assert: попытка 1 — честный отказ, ОДИН нативный клиент.
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         _cache.CreatedClients.Should().Be(1);
         var failed = probeStore.Current!.Results.Single();
@@ -93,12 +93,12 @@ public class KafkaProbeClosedPortsTests : IDisposable
         failed.Error.Should().Contain("DescribeCluster");
         probeStore.Current.Clusters.Should().BeEmpty();
 
-        // Попытка 2 (t0+15) — ещё один клиент (фейл → Invalidate → пересоздание).
+        // Попытка 2 (+15) — ещё один клиент (фейл → Invalidate → пересоздание).
         clock.Utc = clock.Utc.AddSeconds(15);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         _cache.CreatedClients.Should().Be(2);
 
-        // Тики t0+30 и t0+60 — окно backoff (60 c): клиентов не создаётся,
+        // Тики +30 и +60 — окно backoff (60 c): клиентов не создаётся,
         // состояние несёт отказ с пометкой backoff.
         foreach (var advance in new[] { 15, 30 })
         {
@@ -112,8 +112,8 @@ public class KafkaProbeClosedPortsTests : IDisposable
         skipped.Error.Should().Contain("backoff");
         skipped.Error.Should().NotContain("SecretPassword");
 
-        // Попытка 3 (t0+75): окно истекло — новый клиент, снова отказ;
-        // дальше окно 300 c: до t0+375 новых клиентов нет.
+        // Попытка 3 (+75): окно истекло — новый клиент, снова отказ;
+        // дальше окно 300 c: до +375 новых клиентов нет.
         clock.Utc = clock.Utc.AddSeconds(15);
         await loop.RunOnceAsync(TestContext.Current.CancellationToken);
         _cache.CreatedClients.Should().Be(3);
@@ -122,6 +122,6 @@ public class KafkaProbeClosedPortsTests : IDisposable
         _cache.CreatedClients.Should().Be(3);
 
         // Итог: 4 нативных клиента за ~4 виртуальные минуты (1 на попытку,
-        // не 5–7 на тик) — churn-бюджет приёмки t11 выдержан.
+        // не 5–7 на тик) — churn-бюджет приёмки выдержан.
     }
 }

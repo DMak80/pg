@@ -21,7 +21,7 @@ public class DockerDriverTests
 
     private static IDockerEngine NewEngine() => Factory.Create("unix:///var/run/docker.sock", hostAlias: Host);
 
-    // REST-TLS кеш драйвера (t22): тестовый CA — выпуск серверных сертов нод.
+    // REST-TLS кеш драйвера : тестовый CA — выпуск серверных сертов нод.
     private static readonly RestCertificateCache RestCertificates = NewRestCache();
 
     private static RestCertificateCache NewRestCache()

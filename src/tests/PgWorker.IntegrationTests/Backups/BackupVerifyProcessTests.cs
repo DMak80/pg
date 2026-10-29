@@ -12,7 +12,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции BackupVerifyProcess (t04 spec Ф3): у КАЖДОГО Fact своё etcd-
+// Интеграции BackupVerifyProcess (spec Ф3): у КАЖДОГО Fact своё etcd-
 // окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт, own-only teardown
 // с ассертом чистоты — docs/e2e-isolation.md §1/§3; ключи умирают с контейнером)
 // + фейки S3 и API приёмника нод (verify-операции исполняет WalReceiver ноды-
@@ -29,7 +29,7 @@ public class BackupVerifyProcessTests
 
     private ClaimStore Claims => _claimsStore ??= new("/pgworker", [Fx.Endpoint], Fx.Gateway, TimeProvider.System);
 
-    // ── t02 (arch/19 §2 «Наблюдаемость итога verify»): spy-логгер — снимает
+    // ── (arch/19 §2 «Наблюдаемость итога verify»): spy-логгер — снимает
     //    форматированные строки (итог verify наблюдаем из host-лога воркера) ──
     internal sealed class SpyLogger : Microsoft.Extensions.Logging.ILogger<BackupVerifyProcess>
     {
@@ -721,7 +721,7 @@ public class BackupVerifyProcessTests
 
         // Assert 3 — НОВЫЙ запуск НЕ выполнен (checked только что; pending due —
         // по interval), cancel не повторялся
-        Receiver.StartBodies.Should().BeEmpty("the live-lock of immediate restarts is excluded (t07)");
+        Receiver.StartBodies.Should().BeEmpty("the live-lock of immediate restarts is excluded (receiver)");
         Receiver.CancelUrls.Should().HaveCount(1);
     }
 
@@ -895,7 +895,7 @@ public class BackupVerifyProcessTests
         outcomes.Should().ContainSingle().Which.Should().Be(("vc8", "shard1", "transient"));
     }
 
-    // AAA: t14 — observe-точки verify: S3 недоступен → transient; битый
+    // AAA: — observe-точки verify: S3 недоступен → transient; битый
     // wal_start → permanent FAILED → failed; succeeded → ok
     // (процесс не меняется — тест фиксирует вызовы всех трёх исходов)
     [Fact]
@@ -958,7 +958,7 @@ public class BackupVerifyProcessTests
         outcomes3.Should().ContainSingle().Which.Should().Be((cluster3, "shard1", "ok"));
     }
 
-    // ---- t02 (arch/19 §2 «Наблюдаемость итога verify»): итог — строка host-лога ----
+    // --- (arch/19 §2 «Наблюдаемость итога verify»): итог — строка host-лога ----
 
     // AAA: итог OK от приёмника (GET succeeded) — строка host-лога воркера с
     // кластером/шардом и id полного (журнал остаётся летописью после

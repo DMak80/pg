@@ -346,7 +346,7 @@ internal static class Fakes
             string host, int port, S3Worker.Core.OwnS3.OwnS3NodeSecrets creds, CancellationToken ct)
         {
             MeshCalls.Add(("status", host, port, null));
-            // Зонд-ветка t33: пер-порт статус с Neighbors (счётчики доставки);
+            // Зонд-ветка : пер-порт статус с Neighbors (счётчики доставки);
             // NeighborNames-ветка G не тронута.
             if (StatusResultByPort.TryGetValue(port, out var withNeighbors))
                 return Task.FromResult(Result<S3Worker.Core.OwnS3.OwnS3ReplicationStatus>.Success(withNeighbors));
@@ -377,7 +377,7 @@ internal static class Fakes
             return Task.FromResult(Result<bool>.Success(DenyListPushed));
         }
 
-        // Зонд F (t33): программируемые probe/sync-report/listing по S3-порту
+        // Зонд F : программируемые probe/sync-report/listing по S3-порту
         // ноды + журнал вызовов (защёлки assertions). Ключ маркера "" = null
         // (первая страница; string? нельзя TKey — notnull-ограничение).
         public readonly Dictionary<int, S3Worker.Core.OwnS3.OwnS3ProbeReport> ProbeByPort = [];

@@ -34,8 +34,8 @@ public interface IClusterDriver
     // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
-    // опция synchronous_mode_strict из config кластера (t06, arch/14 §3).
-    // restPassword — эффективная per-cluster REST-пара (t22, arch/14 §2.1/§5 I:
+    // опция synchronous_mode_strict из config кластера (arch/14 §3).
+    // restPassword — эффективная per-cluster REST-пара (arch/14 §2.1/§5 I:
     // pending окна ротации ?? ключ кластера; резолвор RestRotation.EffectivePassword
     // у вызывающих процессов).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
@@ -66,32 +66,30 @@ public interface IClusterDriver
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // Инспекция env живого контейнера ноды (t22, arch/14 §5 C — шаг пересоздания:
+    // Инспекция env живого контейнера ноды (arch/14 §5 C — шаг пересоздания:
     // критерий кандидата — факт env: SSL_RESTAPI_CERTIFICATE / PGW_REST_PASSWORD_HASH).
     // Нет контейнера — пустой словарь; Swarm — заглушка (шаг пересоздания — no-op,
     // симметрия заглушки InspectNodesAsync).
     Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
         string cluster, string shard, string nodeName, CancellationToken ct);
 
-    // ── WAL-агенты бэкапов (arch/19 §3, t03) ──
+    // ── WAL-агенты бэкапов (arch/19 §3) ──
 
     // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
-    // -staging-тома) — t25: приёмник живёт в контейнере ноды, отдельных
+    // -staging-тома): приёмник живёт в контейнере ноды, отдельных
     // контейнеров больше нет; вызов идемпотентен, 404 = успех.
     Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct);
 
     // Честная running-инспекция нод (arch/14 §5 C): InspectNodesAsync отражает
     // ФАКТ running-процесса, пустой результат = ноды нет. Plain — да; Swarm —
     // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
-    // смерть процесса (ускорение failover, t09), для таких драйверов выключены.
+    // смерть процесса (ускорение failover), для таких драйверов выключены.
     bool SupportsRunningInspection { get; }
 
     // Docker-движок хоста по имени (plain-таблица/advertised; swarm — manager):
-    // джобы бэкапов создаются/супервизируются на docker-хосте источника (t02).
+    // джобы бэкапов создаются/супервизируются на docker-хосте источника.
     // null — хост не известен (вызывающий трактует как transient).
     IDockerEngine? EngineFor(string host);
-
-    // Чистка tool-контейнеров бэкапов кластера (Deprovisioning D1/D2,
 
 }
 
@@ -102,10 +100,10 @@ public interface IClusterDriver
 // нод), несёт advertised-имя — единый namespace адресов с записями portalloc;
 // внутренние имена остаются ключами движков. Внешние находки усыновления
 // (object) advertised не получают — их адресация операторская (R9-симметрия).
-// scrapeNetwork (t15, arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
+// scrapeNetwork (arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
 // поставки — задано → Ensure-attach канонических нод к ней поверх pgw-net-<C>
 // (скрейп Prometheus по alias:8008); пусто → поведение идентично базе.
-// restCertificates (t22, arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
+// restCertificates (arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
 // нод (DI-синглтон из per-install CA); null — только изолированные юнит-пути
 // драйвера без BuildSpec (HTTP-режима не существует — BuildSpec fail-fast).
 public sealed class PlainClusterDriver(
@@ -120,7 +118,7 @@ public sealed class PlainClusterDriver(
     RestCertificateCache? restCertificates = null,
     NodeBackupEnv? nodeBackupEnv = null) : IClusterDriver
 {
-    // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
+    // Label-ключ контейнеров/сервисов pg-домена (: ключ — параметр спеки
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
     internal const string LabelKey = "pgworker";
 
@@ -131,10 +129,10 @@ public sealed class PlainClusterDriver(
     // user-defined сети hostname-резолва нет. Единая сеть делала DNS-зону
     // общей для всех кластеров docker-хоста — перекрёстная видимость чужих
     // алиасов, сетевой изоляции контуров не было; per-cluster сеть даёт её
-    // по построению (уникальное имя кластера ⇒ уникальная DNS-зона, t24).
+    // по построению (уникальное имя кластера ⇒ уникальная DNS-зона).
     public const string NodesNetworkPrefix = "pgw-net-";
 
-    // Сеть контура поставки (t41, arch/14 §2.1): задана → ноды/агенты живут в
+    // Сеть контура поставки (arch/14 §2.1): задана → ноды/агенты живут в
     // ней (pgw-net-<C> не создаётся и не удаляется движком; сеть — владелец
     // поставка).
     private readonly string? contourNetwork = contourNetwork;
@@ -172,7 +170,7 @@ public sealed class PlainClusterDriver(
                 var containers = await engine.ListContainersAsync("pgw-", all: true, ct);
                 if (!containers.IsSuccess)
                     throw containers.Error!; // один хост недоступен — не тихим список
-                // t25: legacy pgw-backup-wal-* (если остались) попадают в счётчик
+                // legacy pgw-backup-wal-* (если остались) попадают в счётчик
                 // хоста СОЗНАТЕЛЬНО — потребляют ресурсы до санитарного сноса
                 // (RemoveBackupAgentsAsync в тике WalStreamProcess); из
                 // ListNodeObjectsAsync фильтруются (там семантика «объекты НОД»).
@@ -246,7 +244,7 @@ public sealed class PlainClusterDriver(
                     throw inspect.Error!;
                 if (PortsMatchPlan(inspect.Value.Ports, addr))
                 {
-                    // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): нода
+                    // Ensure-инвариант кластерной сети (arch/14 §2.1): нода
                     // обязана жить в сети кластера (в контур-режиме — сеть
                     // контура, подключение идемпотентно) — контейнер из старой
                     // единой сети (наследие миграции) подключается к ней;
@@ -259,7 +257,7 @@ public sealed class PlainClusterDriver(
                             throw connected.Error!;
                     }
 
-                    // Ensure-attach к scrape-сети контура мониторинга (t15,
+                    // Ensure-attach к scrape-сети контура мониторинга (
                     // arch/14 §2.1/§2.4): идемпотентно по inspect; сети нет на
                     // хосте — fail-fast с diagnose (владелец сети — поставка).
                     if (scrapeNetwork is { Length: > 0 } && (inspect.Value.Networks ?? []).All(n => n != scrapeNetwork))
@@ -288,7 +286,7 @@ public sealed class PlainClusterDriver(
             if (!started.IsSuccess)
                 throw started.Error!;
 
-            // Attach новой ноды к scrape-сети контура (t15, arch/14 §2.1):
+            // Attach новой ноды к scrape-сети контура (arch/14 §2.1):
             // повторный connect docker принимает как no-op (идемпотентность);
             // сети нет (404) — Result.Failed с diagnose, провижининг несёт
             // ошибку в journal/last_error (fail-fast, а не молчаливый пропуск).
@@ -333,13 +331,13 @@ public sealed class PlainClusterDriver(
             // Демонтаж сети кластера (arch/14 §2.1, kfw-паттерн): когда объектов
             // кластера (ноды) не осталось, per-cluster сеть удаляется — пул
             // subnet'ов хоста конечен, сирот не копим. WAL-агентов в сети больше
-            // нет по построению (t25: приёмник — внутри контейнера ноды); legacy
+            // нет по построению (: приёмник — внутри контейнера ноды); legacy
             // pgw-backup-wal-* сносит санитарный вызов тика WalStreamProcess.
             // «Active endpoints» транзиентен (docker API держит endpoint после
             // force-remove) — ретраи; итоговая неудача НЕ роняет демонтаж (сеть
             // могла быть снесена параллельно) — громкий след в stderr воркера,
             // подберут следующий демонтаж/чистка хоста.
-            // Контур-режим (t41): сеть контура принадлежит поставке — движок
+            // Контур-режим : сеть контура принадлежит поставке — движок
             // её не удаляет (pgw-net-<C> на стенде не существует вовсе).
             if (contourNetwork is not null)
                 return;
@@ -382,10 +380,10 @@ public sealed class PlainClusterDriver(
         });
     }
 
-    // ── WAL-агенты бэкапов (t03, arch/19 §3): те же engine-инстансы, сеть нод ──
+    // ── WAL-агенты бэкапов (arch/19 §3): те же engine-инстансы, сеть нод ──
 
     // Санитарный снос legacy wal-контейнеров pgw-backup-wal-<C>-* (+ их
-    // -staging-тома) — t25: приёмник живёт в контейнере ноды, отдельных
+    // -staging-тома): приёмник живёт в контейнере ноды, отдельных
     // контейнеров больше нет; вызов идемпотентен, 404 = успех.
     // Per-engine tolerate (multi-host): отказ list одного docker-хоста НЕ
     // прерывает снос на остальных — недоступный хост снести нельзя всё равно;
@@ -433,7 +431,7 @@ public sealed class PlainClusterDriver(
     }
 
     // Имена legacy контейнеров-агентов кластера (Names — с ведущим "/"); префикс
-    // pgw-backup-wal-<C>- — приватная константа сноса (t25: отдельных агентов
+    // pgw-backup-wal-<C>- — приватная константа сноса (: отдельных агентов
     // больше нет — только санитарный снос).
     private static string AgentPrefix(string cluster) => $"pgw-backup-wal-{cluster}-";
 
@@ -452,7 +450,7 @@ public sealed class PlainClusterDriver(
     }
 
     // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый одноагентный формат,
-    // миграция t27 §3.6) ИЛИ начинается с <X>- (per-node имя t27).
+    // миграция §3.6) ИЛИ начинается с <X>- (per-node имя).
     private static string AgentShardOf(string cluster, string containerName)
     {
         var tail = containerName[AgentPrefix(cluster).Length..];
@@ -552,9 +550,9 @@ public sealed class PlainClusterDriver(
     // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
     // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
     // (P15); tuning == null → прежний хардкод-набор и бюджет 55. syncStrict —
-    // per-cluster опция synchronous_mode_strict из config кластера (t06).
+    // per-cluster опция synchronous_mode_strict из config кластера.
     // restPassword — эффективная REST-пара; серт ноды выпускается из кеша
-    // (t22): restCertificates == null — fail-fast (HTTP-режима не существует).
+    // restCertificates == null — fail-fast (HTTP-режима не существует).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
         bool syncStrict, string restPassword)
@@ -574,7 +572,7 @@ public sealed class PlainClusterDriver(
             ["PGW_NODE_NAME"] = nodeName,
         };
 
-        // Бэкап-цели приёмника WAL (t25, arch/19 §7): per-install константы
+        // Бэкап-цели приёмника WAL (arch/19 §7): per-install константы
         // (bucket/CA https S3), ставятся ДОКЕР-ДРАЙВЕРОМ из Backups-опций
         // воркера (NodeBackupEnv). Bucket пуст — env не ставится: приёмник
         // стоит в waiting_policy с диагностикой до появления env (рестарт
@@ -586,7 +584,7 @@ public sealed class PlainClusterDriver(
                 env["PGW_BACKUP_S3_BUCKET"] = backupEnv.Bucket;
             if (!string.IsNullOrWhiteSpace(backupEnv.CaPem))
                 env["PGW_BACKUP_S3_CA_PEM"] = backupEnv.CaPem;
-            // Staging полного (t26, arch/19 §2/§9): каталог в data-volume
+            // Staging полного (arch/19 §2/§9): каталог в data-volume
             // ноды; null/пусто → env не ставится — приёмник возьмёт дефолт.
             if (!string.IsNullOrWhiteSpace(backupEnv.StagingDir))
                 env["PGW_BACKUP_STAGING_DIR"] = backupEnv.StagingDir;
@@ -710,7 +708,7 @@ public sealed class SwarmClusterDriver(
             if (target is null)
                 throw new ApplicationException($"swarm node with Hostname={addr.Host} not found");
 
-            // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (t22: без
+            // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (: без
             // кеша внутренний BuildSpec упал бы fail-fast'ом REST-TLS).
             var plain = new PlainClusterDriver(
                 [], new DockerEngineFactory(), enableDoorman, nodeImage,
@@ -745,13 +743,13 @@ public sealed class SwarmClusterDriver(
         return stopped;
     }
 
-    // t25: агентов больше нет (приёмник — в контейнере ноды) — Remove остаётся
+    // агентов больше нет (приёмник — в контейнере ноды) — Remove остаётся
     // санитарным сносом legacy pgw-backup-wal-* (swarm-сервисы старого формата).
     public async Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
-            // Префикс pgw-backup-wal-<C>- — строкой (t25: агентов-контейнеров
+            // Префикс pgw-backup-wal-<C>- — строкой (: агентов-контейнеров
             // больше нет — только санитарный снос legacy).
             const string prefixBase = "pgw-backup-wal-";
             var prefix = $"{prefixBase}{cluster}-";
@@ -769,7 +767,7 @@ public sealed class SwarmClusterDriver(
         });
     }
 
-    // Хвост == <X> (старый формат) ИЛИ начинается с <X>- (per-node, t27) — как Plain.
+    // Хвост == <X> (старый формат) ИЛИ начинается с <X>- (per-node) — как Plain.
     private static string AgentShardOfSwarm(string prefix, string service)
     {
         var tail = service[prefix.Length..];

@@ -31,7 +31,7 @@ public class ProbeEnricherTests
         // Act
         var result = ProbeEnricher.Apply(snapshot, null);
 
-        // Assert: тиков проб не было — снапшот не тронут (Probes уже пуст, t03).
+        // Assert: тиков проб не было — снапшот не тронут (Probes уже пуст).
         result.Should().BeSameAs(snapshot);
         result.HaScopes.Single().Members.Single(m => m.Name == "s1b").LagBytes.Should().BeNull();
     }

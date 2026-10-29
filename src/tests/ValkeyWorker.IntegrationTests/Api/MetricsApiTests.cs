@@ -52,7 +52,7 @@ public sealed class MetricsApiTests(ValkeyMetricsFixture fx)
             "the loops and the journal must write to a single metrics object: {0}", string.Join(" | ", matches));
     }
 
-    // AAA (t05): пустой домен — консервативный успех тика: серия самонаблюдения
+    // AAA : пустой домен — консервативный успех тика: серия самонаблюдения
     // коллектора обязана появиться в экспорте при живом воркере (без docker-нод).
     [Fact]
     public async Task Metrics_ValkeyCollectorLastSuccess_EmptyDomainSuccess()

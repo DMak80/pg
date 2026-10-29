@@ -10,7 +10,7 @@ using PgWorker.Provisioning.Processes;
 namespace PgWorker.Backups;
 
 /// <summary>
-/// BackupVerifyProcess — тиковая машина проверки полных бэкапов (t04/t26,
+/// BackupVerifyProcess — тиковая машина проверки полных бэкапов (/,
 /// arch/19 §5/§8) под клэймом &lt;C&gt;: due-резолв кандидатов (PENDING от
 /// on_create / периодика по verify.interval_sec; FAILED терминален) →
 /// цепочечная проверка list-ами S3 + строгий LSN-разбор .history
@@ -69,7 +69,7 @@ public sealed class BackupVerifyProcess(
         if (!addresses.IsSuccess)
             return Result<ProcessOutcome>.Failed(addresses.Error!);
 
-        // t36 (arch/19 §5): пул чтения per-cluster — точечные GET/листинги с
+        //  (arch/19 §5): пул чтения per-cluster — точечные GET/листинги с
         // перебором ReadAll. null/Failed — transient: journal, ретраи тиком
         // (кандидаты остаются PENDING/OK, статусы не трогаем).
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
@@ -120,7 +120,7 @@ public sealed class BackupVerifyProcess(
         var pending = fulls
             .Where(f => f.State == FullBackupStatus.Completed
                         && f.Verify is { State: BackupVerifyStatus.Pending }
-                        // t07: checked_unix после verify-таймаута — квота попытки:
+                        // checked_unix после verify-таймаута — квота попытки:
                         // повторный due через verify.interval_sec (лив-лок немедленных
                         // перезапусков исключён); null — on_create, due сразу;
                         // interval <= 0 — таймаутнувшийся кандидат не перезапускается
@@ -154,7 +154,7 @@ public sealed class BackupVerifyProcess(
 
         // (3) Цепочка: list wal/ + list набора + строгие TLI-переходы (по содержимому
         //     history при наличии). Transient list/GET → шард-skip, статус не трогаем.
-        //     Листинги — UNION по всем нодам пула (t02, arch/19 §5 «где данные
+        //     Листинги — UNION по всем нодам пула (arch/19 §5 «где данные
         //     есть»): полный заливается на первую живую ноду момента заливки —
         //     соло-лист другой ноды (отказ посреди заливки/лаг mesh) неполон и дал бы
         //     недокачанный набор → ложный permanent verify-FAILED.

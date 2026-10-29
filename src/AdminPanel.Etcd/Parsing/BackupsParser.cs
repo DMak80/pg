@@ -7,15 +7,15 @@ namespace AdminPanel.Etcd.Parsing;
 public sealed record BackupsParseResult(
     IReadOnlyList<ClusterBackupsInfo> Clusters,
     IReadOnlyList<KeyParseError> Errors,
-    // t06: глобальный ключ /pgworker/backups/storage (null — ключа нет/битый).
+    // глобальный ключ /pgworker/backups/storage (null — ключа нет/битый).
     BackupStorageInfo? Storage = null,
-    // t07: глобальный ключ /pgworker/backups/orphans (null — ключа нет/битый).
+    // глобальный ключ /pgworker/backups/orphans (null — ключа нет/битый).
     BackupOrphansInfo? Orphans = null);
 
-// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02+t03):
+// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, +):
 // policy full_max_age_sec + per-shard последний COMPLETED finished_unix
-// (правило backup-full-stale, t02) + WAL-статусы шардов (правила
-// wal-chain-broken/wal-stream-lag/wal-stream-stopped, t03). Битые значения —
+// (правило backup-full-stale) + WAL-статусы шардов (правила
+// wal-chain-broken/wal-stream-lag/wal-stream-stopped). Битые значения —
 // KeyParseError + пропуск записи (паттерн панели). Шард с любыми ключами
 // бэкапов попадает в словари: null = COMPLETED не было («полного никогда
 // не было», spec §3.5); шарда нет в словаре = ключей нет вообще (правила
@@ -27,20 +27,20 @@ public static class BackupsParser
     public static BackupsParseResult Parse(IReadOnlyList<Kv> kvs)
     {
         // "/pgworker/backups/<C>/policy" | "/pgworker/backups/<C>/<X>/full/<id>"
-        // | "/pgworker/backups/<C>/<X>/wal" (t03)
+        // | "/pgworker/backups/<C>/<X>/wal" 
         var policies = new Dictionary<string, long?>();
-        // reliability t02: полная policy (retention/verify/drill) + drill-ключи per-shard.
+        // reliability : полная policy (retention/verify/drill) + drill-ключи per-shard.
         var policiesFull = new Dictionary<string, BackupsPolicyInfo>();
         var drills = new Dictionary<string, Dictionary<string, DrillInfo>>();
         var shards = new Dictionary<string, Dictionary<string, long?>>();
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
-        // t08: все etcd-полные per-shard (вход S3Reconciler и деталей шарда).
+        // все etcd-полные per-shard (вход S3Reconciler и деталей шарда).
         var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;
-        // t04: hold/заявки сирот (arch/19 §4) — per-префиксные ключи; собираем
+        // hold/заявки сирот (arch/19 §4) — per-префиксные ключи; собираем
         // ВСЕГДА, в модель кладём только при валидном orphans-ключе (без реестра
         // не информативны); сборка BackupOrphansInfo — ПОСЛЕ цикла: ключи в
         // списке не упорядочены (hold может идти раньше/позже orphans).
@@ -54,9 +54,9 @@ public static class BackupsParser
         {
             var segments = kv.Key.Split('/');
 
-            // Hold/заявки сирот (t04, arch/19 §4): 6 сегментов — ДО гварда длины
+            // Hold/заявки сирот (arch/19 §4): 6 сегментов — ДО гварда длины
             // (гвард "< 5 → continue" их не пропускает, но ветка orphans-ключа —
-            // раньше; единый ранний разбор глобальных ключей t04). Формат
+            // раньше; единый ранний разбор глобальных ключей). Формат
             // {"set_unix":T,"set_by":"…"} / {"requested_unix":T,"requested_by":"…"};
             // битые — KeyParseError + пропуск (толерантный читатель).
             if (segments.Length == 6 && segments[1] == "pgworker" && segments[2] == "backups"
@@ -87,7 +87,7 @@ public static class BackupsParser
                 continue;
             }
 
-            // Глобальный ключ /pgworker/backups/storage (t06): ДО гварда длины —
+            // Глобальный ключ /pgworker/backups/storage : ДО гварда длины —
             // у него 4 сегмента, гвард "< 5 → continue" его не пропускает.
             if (segments.Length == 4 && segments[3] == "storage")
             {
@@ -119,7 +119,7 @@ public static class BackupsParser
                 continue;
             }
 
-            // Глобальный ключ /pgworker/backups/orphans (t07): реестр сирот S3 —
+            // Глобальный ключ /pgworker/backups/orphans : реестр сирот S3 —
             // 4 сегмента; формат arch/19 §4 (записи prefix/kind/size_bytes/
             // first_seen_unix/state OBSERVED|DELETING). Битая запись → KeyParseError
             // на весь ключ (частичный реестр — ложные алерты).
@@ -155,7 +155,7 @@ public static class BackupsParser
                                 break;
                             }
 
-                            // has_valid_full — t04 (DR-hold): отсутствие поля (старый
+                            // has_valid_full — (DR-hold): отсутствие поля (старый
                             // воркер) — валидно, false (ближайший проход пересчитает).
                             entries.Add(new BackupOrphanInfo(prefix, kind, size.Value, seen.Value, state,
                                 Bool(item, "has_valid_full") ?? false));
@@ -199,7 +199,7 @@ public static class BackupsParser
                         ? value
                         : null;
 
-                    // reliability t02: полный разбор (retention/verify/drill);
+                    // reliability : полный разбор (retention/verify/drill);
                     // битое/отсутствующее поле → null (форма фронта дефолтирует;
                     // панель — толерантный читатель, писатель — policy-API воркера).
                     int? retentionDays = null, retentionWeeks = null, retentionMonths = null;
@@ -224,7 +224,7 @@ public static class BackupsParser
                         && drillEl.ValueKind == JsonValueKind.Object)
                         drillIntervalDays = Int32Of(drillEl, "interval_days");
 
-                    // t36: секция s3 (pool + списки роли источника); битая → null
+                    // секция s3 (pool + списки роли источника); битая → null
                     // (правила backup-pool-* на мусоре молчат — как drill).
                     BackupsPolicyS3Info? s3 = null;
                     if (root.ValueKind == JsonValueKind.Object
@@ -251,7 +251,7 @@ public static class BackupsParser
                 continue;
             }
 
-            // reliability t02: /<X>/drill — статус дрилла шарда (state обязателен:
+            // reliability : /<X>/drill — статус дрилла шарда (state обязателен:
             // RUNNING|SUCCEEDED|FAILED; незнакомое → KeyParseError + пропуск —
             // правила дрилла на мусоре молчат; id/backup_id/started_unix обязательны).
             if (segments.Length == 6 && segments[5] == "drill" && segments[4].Length > 0)
@@ -295,7 +295,7 @@ public static class BackupsParser
 
             if (segments.Length == 6 && segments[5] == "wal" && segments[4].Length > 0)
             {
-                // t03: WAL-статус шарда — state/slot/master_node/last_uploaded_unix
+                // WAL-статус шарда — state/slot/master_node/last_uploaded_unix
                 // обязательны (формат воркера arch/19 §4), lag_segments/error опциональны;
                 // незнакомое state / нет обязательных — KeyParseError + пропуск.
                 try
@@ -316,7 +316,7 @@ public static class BackupsParser
                         continue;
                     }
 
-                    // t24: gap — опциональное поле (толерантно: отсутствует/битое → null,
+                    // gap — опциональное поле (толерантно: отсутствует/битое → null,
                     // parseError не пишется — backwards-compat правила канона arch/19 §4).
                     WalGapInfo? gap = null;
                     if (root.TryGetProperty("gap", out var gapEl) && gapEl.ValueKind == JsonValueKind.Object)
@@ -348,7 +348,7 @@ public static class BackupsParser
                 continue;
             }
 
-            // t05: restore/<id> — заявки восстановления (вход правила restore-failed);
+            // restore/<id> — заявки восстановления (вход правила restore-failed);
             // state/requested_unix обязательны, error/started/finished/phase — по факту;
             // незнакомое state / нет обязательных — KeyParseError + пропуск.
             if (segments.Length == 7 && segments[5] == "restore" && segments[4].Length > 0 && segments[6].Length > 0)
@@ -411,7 +411,7 @@ public static class BackupsParser
                         var perShard = GetOrAdd(shards, cluster);
                         perShard.TryAdd(segments[4], null);
 
-                        // t04: verify-вердикт COMPLETED-полного. FAILED → свежесть
+                        // verify-вердикт COMPLETED-полного. FAILED → свежесть
                         // не даёт и попадает в ShardVerifyFailures (последний по
                         // checked_unix); битое verify.state → диагностика + запись
                         // считается непроверенной (валидной); PENDING/OK → валиден.
@@ -435,7 +435,7 @@ public static class BackupsParser
                                 errors.Add(new(kv.Key, "unknown verify.state — verify ignored"));
                         }
 
-                        // t08: полный факт per-full (BackupFullInfo) — state читается
+                        // полный факт per-full (BackupFullInfo) — state читается
                         // КАК ЕСТЬ (панель — толерантный читатель, писатель — воркер,
                         // незнакомые state'ы терпимы); новой валидации/пути отказа нет.
                         if (!fulls.TryGetValue(cluster, out var perShardFulls))
@@ -476,7 +476,7 @@ public static class BackupsParser
                             }
                         }
 
-                        // t06: DELETING-полные — вход правила backup-deleting-stuck.
+                        // DELETING-полные — вход правила backup-deleting-stuck.
                         // started_unix обязателен по НОВОМУ правилу ретенции
                         // (возраст считается по finished_unix, иначе по нему);
                         // нет/битый → KeyParseError + пропуск записи.
@@ -542,20 +542,20 @@ public static class BackupsParser
                         p => (IReadOnlyList<RestoreOperationInfo>)p.Value
                             .OrderBy(r => r.Id, StringComparer.Ordinal).ToList())
                     : new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>()),
-                // t08: etcd-полные per-shard (пусто → null — парсер их не собрал)
+                // etcd-полные per-shard (пусто → null — парсер их не собрал)
                 fulls.TryGetValue(c, out var perShardFulls) && perShardFulls.Count > 0
                     ? perShardFulls.ToDictionary(
                         p => p.Key,
                         p => (IReadOnlyList<BackupFullInfo>)p.Value
                             .OrderBy(f => f.Id, StringComparer.Ordinal).ToList())
                     : null,
-                // reliability t02: дриллы per-shard (пусто → null — ключей не было)
+                // reliability : дриллы per-shard (пусто → null — ключей не было)
                 drills.TryGetValue(c, out var perShardDrills) && perShardDrills.Count > 0
                     ? perShardDrills.ToDictionary(p => p.Key, p => p.Value)
                     : null,
                 policiesFull.TryGetValue(c, out var policyFull) ? policyFull : null))
             .ToList();
-        // t04: реестр сирот собирается после цикла — с джойном hold/заявок
+        // реестр сирот собирается после цикла — с джойном hold/заявок
         // (ключи произвольного порядка); orphans-ключа нет/битый → null
         // (hold/заявки без реестра не информативны — только errors).
         orphans = orphansEntries is null
@@ -587,15 +587,15 @@ public static class BackupsParser
             ? parsed
             : null;
 
-    // t04 (DR-hold): has_valid_full записи сироты; отсутствие/не-bool — null (валидно).
+    //  (DR-hold): has_valid_full записи сироты; отсутствие/не-bool — null (валидно).
     private static bool? Bool(JsonElement root, string name)
         => root.TryGetProperty(name, out var v)
            && v.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? v.GetBoolean()
             : null;
 
-    // reliability t02: целочисленные поля policy (days/weeks/months/interval_days).
-    // t36: массив строк из секции s3; не-массив/не-строчные элементы → null.
+    // reliability : целочисленные поля policy (days/weeks/months/interval_days).
+    // массив строк из секции s3; не-массив/не-строчные элементы → null.
     private static IReadOnlyList<string>? StringListOf(JsonElement root, string name)
     {
         if (root.ValueKind != JsonValueKind.Object

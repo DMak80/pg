@@ -11,7 +11,7 @@ namespace Shared.Metrics.Worker;
 public sealed class WorkerMetricsInstrumentation : IDisposable
 {
     // Терминальные фазы — фактический словарь журналов обоих воркеров (arch/18 §2.2).
-    // expired — возрастное снятие не-начатой заявки (t10).
+    // expired — возрастное снятие не-начатой заявки.
     public static readonly IReadOnlySet<string> FinalPhases =
         new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
 
@@ -62,7 +62,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         var operations = meter.CreateCounter<long>(
             "worker.operation.total", description: "Completed operations (result: ok/error/expired)");
         var backupVerify = meter.CreateCounter<long>(
-            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5, t04)");
+            "pgworker_backup_verify_total", description: "Full backup verify results (arch/19 §5)");
         var backupRestore = meter.CreateCounter<long>(
             "pgworker_backup_restore_total",
             description: "Terminal outcomes of restore jobs (arch/18 §2.7)");
@@ -103,7 +103,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "{segment}", description: "Backup WAL stream lag, segments (arch/19 §3)");
 
-        // t14 (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
+        //  (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
         // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
         // (паттерн worker_snapshot_age_seconds).
         meter.CreateObservableGauge(
@@ -132,7 +132,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "s", description: "Age of the last WAL segment upload to S3, s (arch/18 §2.7)");
 
-        // t17 (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
+        //  (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
         // (resolved − detected, arch/14 §3.3); открытого события/факта нет — серия
         // не эмитится. Источник — тик NodeSupervisor (наблюдатель haDurations).
         meter.CreateObservableGauge(
@@ -340,7 +340,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (t14, arch/18
+    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (arch/18
     // §2.7): ЕДИНЫЙ марк-метод на тик кластера — набор шардов тика замещает
     // стейт кластера ЦЕЛИКОМ (паттерн UpdateCluster §4.2: шард, не пришедший в
     // наборе, серии больше не эмитит). Элемент набора: LastValidUnix — источник
@@ -414,7 +414,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (t14, arch/18 §2.7):
+    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (arch/18 §2.7):
     // возраст последней доставки закрытого сегмента — наблюдение контрольного
     // прохода WalStreamProcess; null — серия исчезает (симметрия BackupWalLag).
     // Хранится unix-факт (now − age наблюдения), колбэк гейджа пересчитывает
@@ -614,7 +614,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     // Завершённая операция: counter worker_operation_total{operation, result};
-    // result ∈ {"ok","error","expired"} (expired — снята возрастным таймаутом, t10).
+    // result ∈ {"ok","error","expired"} (expired — снята возрастным таймаутом).
     public void Operation(string operation, string result)
     {
         try

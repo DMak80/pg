@@ -28,7 +28,7 @@ public class ProvisioningProcessTests
     {
         etcd.Seed("/clusters/shop/config",
             """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"NOT_INITIALIZED"}""");
-        // Per-cluster креды (t02): ensure принимает существующие — dsn с adm-pw
+        // Per-cluster креды : ensure принимает существующие — dsn с adm-pw
         etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/shop/bucket_admin_password", "adm-pw");
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
@@ -67,7 +67,7 @@ public class ProvisioningProcessTests
     }
 
     // Дефолтная карта идентичностей стандартного сида (Д1б): patroni-порты нод
-    // после аллокации placement (последовательные тройки, t24: shard1a h1:15001,
+    // после аллокации placement (последовательные тройки: shard1a h1:15001,
     // shard1b h2:15001, shard2a h1:15004, shard2b h2:15004).
     private static readonly IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)>
         DefaultIdentity = new Dictionary<(string, int), (string, string)>
@@ -205,7 +205,7 @@ public class ProvisioningProcessTests
         outcome.Value.Should().Be(ProcessOutcome.Done);
 
         // placement: анти-аффинити → ноды шарда на h1,h2; последовательные тройки
-        // per-host (t24): шард1 15000-15002, шард2 15003-15005 — без пересечений
+        // per-host : шард1 15000-15002, шард2 15003-15005 — без пересечений
         rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"].Value.Should()
             .Be("host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin password=adm-pw");
         rig.Etcd.Store["/clusters/shop/shards/shard2/dsn"].Value.Should()
@@ -229,7 +229,7 @@ public class ProvisioningProcessTests
         rig.Etcd.Store.Keys.Should().NotContain(k => k.Contains("/status/bucket_"));
 
         // config перезаписан без state через txn compare mod_revision;
-        // strict-поле (t06) перенесено: в сиде поля нет → семантический true
+        // strict-поле перенесено: в сиде поля нет → семантический true
         // записан явленно
         var configTxn = rig.Etcd.Txns.Should().Contain(t =>
             t.Success.OfType<TxnOp.Put>().Any(put => put.Key == "/clusters/shop/config")).Subject;
@@ -243,7 +243,7 @@ public class ProvisioningProcessTests
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
     }
 
-    // AAA (t06): созданный со strict=false кластер — финальный коммит config
+    // AAA : созданный со strict=false кластер — финальный коммит config
     // provisioning ПЕРЕНОСИТ значение (не стирает): кластер не «молча» становится
     // strict (arch/14 §3.2, спека §2.5 — без вечной блокировки однорепликных).
     [Fact]
@@ -635,7 +635,7 @@ public class ProvisioningProcessTests
         raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15006");
         raw.Should().Contain("\"shard2/shard2b\":{\"host\":\"h2\",\"pg\":15007");
         // Ключ существовал → запись put'ом, НЕ txn (ревью Ф4-1): в тике нет txn
-        // по ключу portalloc (txn захвата/освобождения portalloc-клэйма t90 —
+        // по ключу portalloc (txn захвата/освобождения portalloc-клэйма —
         // чужой ключ /pgworker/locks/portalloc, не запись portalloc).
         rig.Etcd.Txns.Count(t => t.Success.Concat(t.Failure).OfType<TxnOp.Put>()
             .Any(put => put.Key == "/pgworker/portalloc/shop")).Should().Be(0);
@@ -916,7 +916,7 @@ public class ProvisioningProcessTests
         rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/initialize");
     }
 
-    // AAA (t90): глобальный portalloc-клэйм занят чужим инстансом — тик
+    // AAA : глобальный portalloc-клэйм занят чужим инстансом — тик
     // возвращает InProgress (waiting-portalloc-lock), portalloc НЕ пишется,
     // контейнеры не создаются; после освобождения следующий тик проходит.
     [Fact]
@@ -948,7 +948,7 @@ public class ProvisioningProcessTests
         rig.Driver.EnsuredNodes.Should().NotBeEmpty();
     }
 
-    // AAA (t90): всё закреплено и каждая запись подтверждена живым фактом своей
+    // AAA : всё закреплено и каждая запись подтверждена живым фактом своей
     // ноды — быстрый пред-выход ДО лока: занятый чужим лок не мешает тику.
     [Fact]
     public async Task Tick_AllConfirmedByFact_SkipsLock()

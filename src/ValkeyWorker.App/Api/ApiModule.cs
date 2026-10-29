@@ -149,7 +149,7 @@ public static class ApiModule
 
             return result.Error switch
             {
-                // t03 (фикс): роль вне канона app|admin — валидация, как у
+                //  (фикс): роль вне канона app|admin — валидация, как у
                 // create/config/resources: 400 с errors.<field> (02 §11.2).
                 ValkeyValidationException validation => Results.Problem(
                     statusCode: StatusCodes.Status400BadRequest,
@@ -175,7 +175,7 @@ public static class ApiModule
         });
 
         // POST /api/valkey/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
-        // (t07, окно двойного доверия P/D/R/C); 202/404/409/503.
+        // (окно двойного доверия P/D/R/C); 202/404/409/503.
         endpoints.MapPost("/api/valkey/clusters/{cluster}/ca/rotate", async (
             string cluster, HttpRequest http, RotateCaHandler handler, CancellationToken ct) =>
         {

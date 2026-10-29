@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// Ensure per-cluster тройки кредов app/mover/bucket_admin (t02 §3.1, arch/14 §4):
+// Ensure per-cluster тройки кредов app/mover/bucket_admin (§3.1, arch/14 §4):
 // put-if-absent пяти ключей, идемпотентность, частичные состояния, failover txn.
 public class ClusterSecretEnsurerTests
 {
@@ -38,7 +38,7 @@ public class ClusterSecretEnsurerTests
         // Act
         var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
 
-        // Assert — семь ключей созданы (вкл. rest_password t22), креды возвращены
+        // Assert — семь ключей созданы (вкл. rest_password), креды возвращены
         result.IsSuccess.Should().BeTrue();
         result.Value.App.User.Should().Be("app");
         result.Value.App.Password.Should().MatchRegex("^[A-Za-z0-9]{32}$");
@@ -58,7 +58,7 @@ public class ClusterSecretEnsurerTests
     [Fact]
     public async Task Ensure_RestPasswordExists_NotOverwritten()
     {
-        // Arrange — шесть ключей + внешний rest_password (put-if-absent, t22)
+        // Arrange — шесть ключей + внешний rest_password (put-if-absent)
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "OldPassword0000000000000000000A");
@@ -81,8 +81,8 @@ public class ClusterSecretEnsurerTests
     [Fact]
     public async Task Ensure_SixKeysWithoutRest_PutsOnlyRest()
     {
-        // Arrange — шестёрка t02/backup есть, rest_password отсутствует
-        // (кластер, созданный до t22 — добираем только седьмой ключ)
+        // Arrange — шестёрка /backup есть, rest_password отсутствует
+        // (кластер, созданный до — добираем только седьмой ключ)
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");
@@ -206,7 +206,7 @@ public class ClusterSecretEnsurerTests
     [Fact]
     public async Task Ensure_BackupPasswordAbsent_GeneratedPutIfAbsent()
     {
-        // Arrange — пятёрка t02 есть, backup_password отсутствует (t02-секрет, arch/19 §7).
+        // Arrange — пятёрка есть, backup_password отсутствует (секрет, arch/19 §7).
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");

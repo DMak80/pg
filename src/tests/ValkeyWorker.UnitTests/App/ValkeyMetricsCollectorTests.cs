@@ -9,7 +9,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.App;
 
-// Юнит-тесты ValkeyMetricsCollector (t05, arch/18 §4.2) на inline-фейке
+// Юнит-тесты ValkeyMetricsCollector (arch/18 §4.2) на inline-фейке
 // IValkeyConnection: успешный сбор обновляет стейт, ошибка ноды — тик жив и
 // LastSuccess не двигается, пустой домен — успех, пропуски не-Active/без кредов/
 // без portalloc, advertised-приоритет хоста, консервативные null-поля, дефолт <=0.

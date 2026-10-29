@@ -9,14 +9,14 @@ using Shared.Etcd.Client;
 
 namespace KafkaWorker.Provisioning.Processes;
 
-// Лестница источников адреса при утере portalloc (E9, arch/17; t05 spec §3.3):
+// Лестница источников адреса при утере portalloc (E9, arch/17; spec §3.3):
 // 1) portalloc есть → адрес из журнала (advertise стабилен);
 // 2) журнала нет, контейнер есть (положительная инспекция) → реконструкция
 //    из docker inspect (published-порт + host) RMW-merge по mod_revision
 //    (merge с живыми записями соседей); контейнер не трогаем — данные
 //    неприкосновенны;
 // 3) нет ни журнала, ни контейнера → брокер мёртв по S7-свидетельству →
-//    новая аллокация под клэймом locks/portalloc (S5/t90) + пересоздание +
+//    новая аллокация под клэймом locks/portalloc (S5/) + пересоздание +
 //    RMW endpoints — клиенты перечитают дискавери тиком.
 public sealed record HealedAddress(NodeAddress Address, bool Recreated);
 
@@ -217,7 +217,7 @@ public sealed class PortAllocHealer(
 
     // Пересоздание контейнера брокера по адресу (копия NodeSupervisor.EnsureNodeAsync:
     // дублирование осознанное — healer самодостаточен; state=PROVISIONING пишет
-    // вызывающий supervise). Env — t03-канон BrokerEnvBuilder (креды admin/app +
+    // вызывающий supervise). Env — канон BrokerEnvBuilder (креды admin/app +
     // per-cluster PKI через кеш сертов, как в надзоре).
     private async Task<Result> EnsureNodeAsync(
         KafkaClusterSnapshot snap, string broker, NodeAddress addr, CancellationToken ct)

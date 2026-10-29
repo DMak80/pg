@@ -214,7 +214,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
         var dsn = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn", ct);
         dsn.Value!.Value.Should().Be(
             $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} " +
-            "user=bucket_admin password=bapw"); // t02: dsn несёт ensure-кред, не legacy config-пароль
+            "user=bucket_admin password=bapw"); // dsn несёт ensure-кред, не legacy config-пароль
         driver.EnsuredNodes.Should().BeEmpty("the live containers are in place — no recreate needed");
         var entry = await ReadJournalAsync(cluster);
         entry.Op.Should().Be("adopt");
@@ -234,7 +234,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
             => Task.FromResult(Result.Success());
     }
 
-    // Секрет-стаб: пер-кластерные креды «уже есть» (t02: тройка + backup_exec).
+    // Секрет-стаб: пер-кластерные креды «уже есть» (: тройка + backup_exec).
     private sealed class StubAppSecret : IClusterSecretEnsurer
     {
         public Task<Result<ClusterCredentials>> EnsureAsync(

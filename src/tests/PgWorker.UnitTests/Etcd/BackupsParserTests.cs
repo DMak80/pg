@@ -3,7 +3,7 @@ using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Etcd;
 
-// Парсер /pgworker/backups/* (arch/19 §4, t01): полный набор ключей,
+// Парсер /pgworker/backups/* (arch/19 §4): полный набор ключей,
 // битые значения — parseErrors + пропуск записи, неизвестные ключи и чужие
 // префиксы — игнор (толерантность снапшот-парсеров).
 public class BackupsParserTests
@@ -120,7 +120,7 @@ public class BackupsParserTests
             .Which.State.Should().Be(FullBackupStatus.Planned);
     }
 
-    // AAA (t07, arch/19 §4 — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
+    // AAA (arch/19 §4 — прогон 2026-09-13): WAL_CHAIN_ERROR обязан читаться
     // СНАПШОТНЫМ парсером: неизвестное state давало Wal=null → контроль шёл от
     // min COMPLETED (ниже границы разрыва), ключ замерал в WAL_CHAIN_ERROR, планировщик
     // штормовал пересъёмами (walKeyExists=false при живом ключе).
@@ -266,7 +266,7 @@ public class BackupsParserTests
         result.Value.Should().Contain(c => c.Cluster == "s1").Which.Policy.Should().BeNull();
     }
 
-    // restore/<id> (t05, arch/19 §4): полный статус разбирается во все поля.
+    // restore/<id> (arch/19 §4): полный статус разбирается во все поля.
     [Fact]
     public void Parse_RestoreKey_FullStatusParsed()
     {
@@ -376,7 +376,7 @@ public class BackupsParserTests
 
     // AAA: gap wal-ключа (tli-зазор, arch/19 §4) доезжает в СНАПШОТ —
     // планировщик переснимает полный по walGapUncovered из снапшотного
-    // чтения (t097: снапшотный парсер Gap терял — живой непокрытый зазор
+    // чтения (: снапшотный парсер Gap терял — живой непокрытый зазор
     // для планировщика не существовал, пересъём не планировался).
     [Fact]
     public void Parse_WalKeyWithGap_GapStateCollected()
@@ -401,7 +401,7 @@ public class BackupsParserTests
         wal.Gap!.Tli.Should().Be(2u);
     }
 
-    // AAA: СКВОЗНОЙ путь планировщика на живом tli-gap (t097): снапшот из
+    // AAA: СКВОЗНОЙ путь планировщика на живом tli-gap : снапшот из
     // точных JSON etcd прогона (wal с gap.to выше wal_start COMPLETED-полных)
     // → due по walGapUncovered И бэкофф держит (непокрывшие COMPLETED —
     // попытки): пересъём редкий, шторма «полный каждые 10 с» нет.
@@ -584,7 +584,7 @@ public class BackupsParserTests
     }
 }
 
-// t36 (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
+//  (arch/19 §4): секция s3 policy — пул + списки write_master/write_replica.
 public class BackupsParserS3Tests
 {
     // AAA: policy с секцией s3 — пул и списки читаются в порядке JSON.

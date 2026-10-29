@@ -8,7 +8,7 @@ using static KafkaWorker.UnitTests.Provisioning.Fakes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// CaRotator (t07, arch/16 §5 K): фазы P→D→R→C окна двойного доверия — staging
+// CaRotator (arch/16 §5 K): фазы P→D→R→C окна двойного доверия — staging
 // стабилен, bundle до замены сертов, rolling по одному брокеру, атомарный коммит.
 public class CaRotatorTests
 {
@@ -58,7 +58,7 @@ public class CaRotatorTests
     private static FakeEtcd SeedEtcd()
     {
         var etcd = new FakeEtcd();
-        etcd.SeedSecurity(Cluster); // admin/app/CA — канон t03
+        etcd.SeedSecurity(Cluster); // admin/app/CA — канон 
         etcd.Seed($"/kafkaworker/portalloc/{Cluster}",
             """{"broker1":{"host":"h1","client":16001},"broker2":{"host":"h1","client":16002}}""");
         etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
@@ -190,7 +190,7 @@ public class CaRotatorTests
         // Arrange — нет CA/админов (премиграционный): только заявка
         var etcd = new FakeEtcd();
         etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
-            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"admin"}"""); // свежая: старую K0.5-точка сняла бы экспирацией (t10)
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"admin"}"""); // свежая: старую K0.5-точка сняла бы экспирацией 
         var driver = new FakeKafkaDriver();
         var admin = ReadyAdmin();
 
@@ -210,7 +210,7 @@ public class CaRotatorTests
         public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
-    // ===== t10: экспирация дооконных waiting-точек; окно уводит в доигрывание =====
+    // ===== : экспирация дооконных waiting-точек; окно уводит в доигрывание =====
 
     [Fact]
     public async Task Run_ClusterDown_OldCaTicket_Expired()

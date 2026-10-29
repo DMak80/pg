@@ -4,7 +4,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Агрегация list-v2 bucket в дерево <C>/<X> (t08, AC2): полные full/<id>/,
+// Агрегация list-v2 bucket в дерево <C>/<X> (AC2): полные full/<id>/,
 // WAL-сегменты и .history, корни вне формы <C>/<X>/… — foreign-факты.
 public class S3InventoryTests
 {

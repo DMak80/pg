@@ -142,7 +142,7 @@ public class RemoveBrokerProcessTests
     [Fact]
     public async Task Run_BrokerHasPartitions_WaitsInJournal()
     {
-        // Arrange: на broker4 есть реплики партиций (roadmap t02 ещё не умеет
+        // Arrange: на broker4 есть реплики партиций (roadmap ещё не умеет
         // reassignment) — процесс ждёт, не ломая кластер.
         var rig = await NewRig();
         ReadyCluster(rig.Admin, 4);
@@ -169,7 +169,7 @@ public class RemoveBrokerProcessTests
     {
         // Arrange: broker3 broker-only TO_REMOVE, реплики ТОЛЬКО в
         // __consumer_offsets — guard обязан видеть internal-реплики и не
-        // отпускать брокер мимо drain (регресс t02 §1, фикс describe-all).
+        // отпускать брокер мимо drain (регресс §1, фикс describe-all).
         var rig = await NewRig();
         ReadyCluster(rig.Admin, 4);
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker3/role", "broker");

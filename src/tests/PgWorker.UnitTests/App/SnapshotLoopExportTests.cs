@@ -12,7 +12,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Доводка выгрузки в SnapshotLoop (t08, spec §3.5): тик лидера перед снятием
+// Доводка выгрузки в SnapshotLoop (spec §3.5): тик лидера перед снятием
 // догоняет отстающую выгрузку (статус FAILED/ключа нет/локальный новее) —
 // re-export новейшего локального слепка; сон при отставании RetryIntervalSec
 // (наблюдаемо: второй слепок в пределах тестового бюджета, не 360 мин).
@@ -43,7 +43,7 @@ public class SnapshotLoopExportTests
         public Task<Result<IReadOnlyList<WalObject>>> ListAsync(string c, string s, string p, int? m = null, CancellationToken ct = default) => Task.FromResult(Result<IReadOnlyList<WalObject>>.Success([]));
         public Task<Result<string>> GetObjectAsync(string c, string s, string k, CancellationToken ct = default) => Task.FromResult(Result<string>.Success(""));
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(string c, string s, int? m = null, CancellationToken ct = default) => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));

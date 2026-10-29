@@ -24,7 +24,7 @@ public sealed record OwnS3ReplicationStatus(bool Active, IReadOnlyList<string> N
 }
 
 /// <summary>Один сосед из GET /admin/replication/status (owns3/07 §10):
-/// зонд F (t33) — fetch-очередь доставки (lag_objects); остальные счётчики —
+/// зонд F — fetch-очередь доставки (lag_objects); остальные счётчики —
 /// для будущего наблюдения. Null-поля грани → дефолты (0/false/null).</summary>
 public sealed record OwnS3ReplicationNeighbor(
     string Name, long FetchQueueDepth, double? FetchLagSeconds, bool FetchPaused, bool ReconcileRunning);
@@ -110,7 +110,7 @@ public interface IOwnS3NodeClient
 
     // POST /admin/replication/probe (без target — все соседи; owns3/07 §2):
     // 200 → отчёт пинга настроенных линков; транспорт/не-2xx → Failed
-    // (транзиент — нода «не опрошена», зонд t33 §3.6.1).
+    // (транзиент — нода «не опрошена», зонд §3.6.1).
     Task<Result<OwnS3ProbeReport>> ProbeAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct);
 
     // GET /admin/replication/sync-report?bucket=&marker= (owns3/07 §10):
@@ -303,7 +303,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
     }
 
-    // POST /admin/replication/probe (owns3/07 §2, зонд t33 §3.6.1): пинг настроенных
+    // POST /admin/replication/probe (owns3/07 §2, зонд §3.6.1): пинг настроенных
     // линков ноды — синхронный отчёт (probe не меняет состояние). Отказ опроса —
     // Failed (транзиент: нода «не опрошена», реконструкции нет).
     public async Task<Result<OwnS3ProbeReport>> ProbeAsync(string host, int port, OwnS3NodeSecrets creds, CancellationToken ct)
@@ -347,7 +347,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
     }
 
-    // GET /admin/replication/sync-report?bucket=&marker= (owns3/07 §10, зонд t33 §3.6.2):
+    // GET /admin/replication/sync-report?bucket=&marker= (owns3/07 §10, зонд §3.6.2):
     // страница свёртки листинга. Query канонизуется и входит в подпись
     // (серверный CanonicalRequestBuilder включает RawQuery — без этого SignatureDoesNotMatch).
     public async Task<Result<OwnS3SyncReportPage>> GetSyncReportPageAsync(
@@ -387,7 +387,7 @@ public sealed class OwnS3NodeClient(HttpClient http) : IOwnS3NodeClient
         }
     }
 
-    // ListObjectsV2 (зонд t33 §3.6.3): полный постраничный листинг bucket'а для
+    // ListObjectsV2 (зонд §3.6.3): полный постраничный листинг bucket'а для
     // количественного diff при расхождении свёрток. Per-node клиент — как EnsureBucketAsync
     // (ForcePathStyle, retries off, таймаут 7.5 c — поллинг-инвариант).
     public async Task<Result<OwnS3ListPage>> ListObjectEntriesAsync(

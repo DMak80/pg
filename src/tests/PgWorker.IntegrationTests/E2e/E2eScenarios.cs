@@ -266,7 +266,7 @@ public class E2eScenarios(ITestOutputHelper output)
         var container = $"pgw-{cluster}-{shard}-{masterBefore.Node}";
         (await ContainerStatusAsync(container, ct)).Should().Be("running", "the leader works before the failover");
 
-        // t14 (гейт против stale-RUNNING): фиксируем ревизию ключа state ноды
+        //  (гейт против stale-RUNNING): фиксируем ревизию ключа state ноды
         // ДО stop. После docker stop супервизор пишет ключ строго в порядке
         // UNREACHABLE → REBUILDING → RUNNING (NodeSupervisor.SuperviseShardAsync,
         // arch/14 §5 C): каждая запись — PutAsync и растит ModRevision, а
@@ -276,17 +276,17 @@ public class E2eScenarios(ITestOutputHelper output)
         // тайминги опроса. Гипотетический флап между фиксацией и stop лишь
         // увеличит ревизию — гейт остаётся корректным (строже).
         var stateBefore = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
-        (stateBefore?.Value).Should().Be("RUNNING", "leader before the failover: the state key exists and equals RUNNING (t14 gate precondition)");
+        (stateBefore?.Value).Should().Be("RUNNING", "leader before the failover: the state key exists and equals RUNNING (gate precondition)");
         var revAtStop = stateBefore!.ModRevision;
 
-        // Длительность stop-команды — отдельной строкой (t29 §3.1): SIGTERM
+        // Длительность stop-команды — отдельной строкой (§3.1): SIGTERM
         // завершает PG graceful (~3 с) — лидер ФОРМАЛЬНО ЖИВ до конца stop.
         var stopSw = Stopwatch.StartNew();
         await Fx.RunDockerAsync(["stop", container], ct);
         stopSw.Stop();
         output.WriteLine($"[PHASE] ac5-docker-stop: elapsed={stopSw.Elapsed.TotalSeconds:F1}s");
 
-        // Смена лидера (выборы Patroni): бюджет ≤5с (t09, arch/14 §5 C —
+        // Смена лидера (выборы Patroni): бюджет ≤5с (arch/14 §5 C —
         // критическое требование: ускорение failover воркером — не-running
         // контейнер лидера → снятие лидер-лока — + промоушен в пределах
         // loop_wait). T0 жёсткого ассерта — момент СМЕРТИ лидера (завершение
@@ -305,11 +305,11 @@ public class E2eScenarios(ITestOutputHelper output)
             });
         sw.Stop();
         leaderFlipped.Should().BeTrue("the actual primary of the shard changed after the failover (P11)");
-        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
+        // Фактическое время смены лидера — в вывод теста (: журнал фикс-гейта
         // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
         output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
         sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
-            "the leader-switch budget ≤5 s (t09: graceful demote/failover acceleration by the worker, canon ttl=20/loop_wait=1)");
+            "the leader-switch budget ≤5 s (graceful demote/failover acceleration by the worker)");
 
         // Master-ключ (P11: callback + reconciler). При EnableDoorman=false
         // (e2e) portalloc-записи несут doorman:0 (миграция факта инспекции,
@@ -343,7 +343,7 @@ public class E2eScenarios(ITestOutputHelper output)
         // возможна только после реального цикла восстановления: порядок
         // записей строго UNREACHABLE → REBUILDING → RUNNING, RUNNING пишется
         // только живым пробой нодам (NodeSupervisor, arch/14 §5 C). Без гейта
-        // фаза мгновенно истинна на stale-ключе (рейс t07/t14) и одиночный
+        // фаза мгновенно истинна на stale-ключе (рейс /) и одиночный
         // inspect ниже падает на исходном остановленном контейнере.
         var rebuilt = await E2ePhase.WaitAsync(Fx, "ac5-rebuild", async () =>
         {
@@ -494,7 +494,7 @@ public class E2eScenarios(ITestOutputHelper output)
         hasLeader.Should().BeTrue("the snapshots leader must be elected");
 
         // Снапшоты снимает ТОЛЬКО лидер (§11.7). Ретрай-окно на РОСТ ровно
-        // одного каталога (t24, вскрывшийся фейл точечного повтора): после
+        // одного каталога (вскрывшийся фейл точечного повтора): после
         // Kill(previous) оба инстанса могут законно побыть лидерами по очереди
         // (lease-TTL истёк → p3 взял → p4 перебил) — файловый след необратим,
         // «ровно один каталог с файлами» в переходном окне неверен по механике.
@@ -524,8 +524,8 @@ public class E2eScenarios(ITestOutputHelper output)
             "a non-leader does not take snapshots (§11.7): exactly one directory grows per the snapshot window");
 
         // Кластер обрабатывает ровно один инстанс: work.instance стабилен.
-        // Ретрай-окно на СТАБИЛЬНОСТЬ (t24, фейлы №15/№17 при N=5):
-        // previous.Kill() — клэйм убитого инстанса живёт по lease-TTL, новый
+        // Ретрай-окно на СТАБИЛЬНОСТЬ (фейлы №15/№17 при N=5):
+        // previous.Kill — клэйм убитого инстанса живёт по lease-TTL, новый
         // держатель переизбирается не мгновенно; сэмплирование «3×3 с» ловило
         // переходное окно (два разных instance). Устойчивость = подряд идущие
         // сэмплы (3 сэмплa × 3 с, как было) дают ОДИН instance — поллингом
@@ -578,7 +578,7 @@ public class E2eScenarios(ITestOutputHelper output)
     private sealed record MasterAddr(string Node, string Host, int Pg, int Doorman);
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
@@ -610,7 +610,7 @@ public class E2eScenarios(ITestOutputHelper output)
     {
         // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
         // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
-        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5):
         // FirstOrDefault по такому матчу возвращал произвольную ноду шарда.
         for (var i = 0; i < 60; i++)
         {

@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Факты agents wal-ключа из статус-ключей приёмников (t25, arch/19 §4):
+// Факты agents wal-ключа из статус-ключей приёмников (arch/19 §4):
 // WalStreamProcess.BuildAgentFacts — по нодам portalloc шарда: ключ жив (есть в
 // Range) → Running, ключа нет → Absent (exited новыми записями не пишется —
 // легаси-значение панельного парсера). Толерантный парсинг значения ключа —

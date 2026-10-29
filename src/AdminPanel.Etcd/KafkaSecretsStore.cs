@@ -1,6 +1,6 @@
 namespace AdminPanel.Etcd;
 
-// Per-cluster admin-креды + CA (arch/02 §10.1, t03): панель читает
+// Per-cluster admin-креды + CA (arch/02 §10.1): панель читает
 // admin_user/admin_password/ca_pem ТОЛЬКО для SASL_SSL-проб; в модель
 // KafkaClusterInfo/UI/API не выносит никогда. ca_key и app-креды панель
 // не читает (app — роль приложений).

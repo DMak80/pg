@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Контракт идентичности приёмника (t25, arch/19 §3): полный env — объект;
+// Контракт идентичности приёмника (arch/19 §3): полный env — объект;
 // отсутствие обязательного ключа — null + имена отсутствующих; PGW_ETCD без
 // элементов — null. Значения env в тексты ошибок не включаются.
 public class WalReceiverIdentityTests

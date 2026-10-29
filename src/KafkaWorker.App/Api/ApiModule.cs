@@ -172,7 +172,7 @@ public static class ApiModule
         });
 
         // PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация
-        // №15 (t06, 02 §10.2-15): декларация ресурсов; применяет NodeRegenerator
+        // №15 (02 §10.2-15): декларация ресурсов; применяет NodeRegenerator
         // воркера rolling-пересозданием (автоконверге, без заявки). Идемпотентен.
         endpoints.MapPut("/api/kafka/clusters/{cluster}/brokers/{broker}/resources", async (
             string cluster, string broker, KafkaResourcesUpdateRequest request,
@@ -261,7 +261,7 @@ public static class ApiModule
             };
         });
 
-        // POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (t07,
+        // POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (
         // adminpanel/02 §10.2); исполнение — CaRotator (фазы P/D/R/C, arch/16 §5 K).
         // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback "api".
         endpoints.MapPost("/api/kafka/clusters/{cluster}/ca/rotate", async (

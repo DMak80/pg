@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.App;
 
-// Fail-fast включения экспорта etcd-снапшотов (t08, spec §3.3; t36 — собственная
+// Fail-fast включения экспорта etcd-снапшотов (spec §3.3; — собственная
 // пара S3): Enabled=true требует полную пару PgWorker:Snapshots:Export:S3 (env
 // PGW_SNAPSHOTS_S3_* — НЕ креды пулов бэкапов, arch/14 §6/§8); диапазоны —
 // всегда; false — подсистема не активна (нулевое влияние, §2.10).

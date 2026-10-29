@@ -11,12 +11,12 @@ namespace PgWorker.Backups.Process;
 
 /// <summary>
 /// RestoreDrillProcess — тиковая машина планового тестового восстановления
-/// (reliability t02/t26, arch/19 §3.6) под клэймом &lt;C&gt; (Op backup-drill):
+/// (reliability /, arch/19 §3.6) под клэймом &lt;C&gt; (Op backup-drill):
 /// супервиз активной drill-операции WalReceiver ПЕРВОЙ ноды шарда (фазы
 /// downloading|recovering и итог — по API приёмника GetRestoreAsync; команда
 /// уходит в живой приёмник — «заявка → операция работает» за секунды),
 /// отбор «один шард за проход, наименее свежий по дриллу» (DrillPlanner),
-/// валидация кандидата — путь restore-заявки t05 (манифест + WalChain),
+/// валидация кандидата — путь restore-заявки (манифест + WalChain),
 /// запуск POST /api/ops/restore (latest, id дрилла — scratch-каталог на ноде);
 /// таймаут-бюджет DrillTimeoutSec → FAILED drill-timeout (+ cancel best-effort);
 /// операция vanished (GET 404) при молодом ключе — повторный POST, старше
@@ -35,7 +35,7 @@ public sealed class RestoreDrillProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<RestoreDrillProcess> logger,
-    Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed), arch/18 §2.7
     TimeSpan? watchdogWindow = null,
     Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
@@ -95,14 +95,14 @@ public sealed class RestoreDrillProcess(
     }
 
     // ── Валидация кандидата + запуск (arch/19 §3.6 п.4–5) — путь restore-заявки
-    // own-source (RestoreProcess.ValidateAsync t05, чистые функции те же): ──
+    // own-source (RestoreProcess.ValidateAsync, чистые функции те же): ──
 
     private async Task<Result<ProcessOutcome>> ValidateAndStartAsync(
         ClusterSnapshot snap, string shard, ClusterBackups mine, long nowUnix, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
 
-        // t36 (arch/19 §5): пул чтения per-cluster — манифест/label/лист wal с
+        //  (arch/19 §5): пул чтения per-cluster — манифест/label/лист wal с
         // перебором ReadAll. null/Failed — transient: journal, тик повторит.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)
@@ -123,8 +123,8 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // гвард отбора — молча
         var backupId = fresh.Id;
 
-        // 1. Манифест: upload t02 не атомарен — частичный префикс отсеиваем
-        // (t05-образец); отказ — валидационный FAILED без операции.
+        // 1. Манифест: upload не атомарен — частичный префикс отсеиваем
+        // (образец); отказ — валидационный FAILED без операции.
         var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", token), ct, WatchdogWindow / 2);
         if (!manifest.IsSuccess)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
@@ -145,9 +145,9 @@ public sealed class RestoreDrillProcess(
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
                 $"full/{backupId}: wal_start '{walStart}' cannot be parsed", ct);
 
-        // 3. Непрерывность WAL-цепочки (WalChain t03); S3-отказ → transient
+        // 3. Непрерывность WAL-цепочки (WalChain); S3-отказ → transient
         // (статус не трогаем — тик повторит). Листинг — UNION по всем нодам
-        // пула (t02, arch/19 §5 «где данные есть»): соло-лист первой живой
+        // пула (arch/19 §5 «где данные есть»): соло-лист первой живой
         // ноды не содержит сегментов, залитых на другие (полный — на первую
         // живую момента заливки) → ложный gap «expected wal_start, found N+1»
         // и валидационный FAILED — предшественник шторма пересъёмов.
@@ -218,7 +218,7 @@ public sealed class RestoreDrillProcess(
         var put = await PutDrillAsync(cluster, shard, failed, ct);
         if (!put.IsSuccess)
             return Result<ProcessOutcome>.Failed(put.Error!);
-        drillObserver?.Invoke(cluster, shard, "failed"); // t14: FAILED-валидация — итог без операции
+        drillObserver?.Invoke(cluster, shard, "failed"); // FAILED-валидация — итог без операции
         await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{id}", claims.InstanceId, error, ct);
         logger.LogWarning("{Op} {cluster}/{shard}: drill failed validation: {error}",
             Op, cluster, shard, error);
@@ -232,7 +232,7 @@ public sealed class RestoreDrillProcess(
     {
         var cluster = snap.Config.Cluster;
 
-        // t36: пул чтения для повторного POST (vanished-ветка); null/Failed —
+        // пул чтения для повторного POST (vanished-ветка); null/Failed —
         // transient: тик повторит, статус ключа не трогаем.
         var poolRead = await s3Factory.ResolveAsync(cluster, ct);
         if (!poolRead.IsSuccess || poolRead.Value is not { } poolCtx)

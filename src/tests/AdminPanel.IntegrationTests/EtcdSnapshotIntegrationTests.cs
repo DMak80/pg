@@ -12,7 +12,7 @@ using Xunit;
 namespace AdminPanel.IntegrationTests;
 
 // Конструирование модуля напрямую (без attribute-DI/WAF): статический кеш сборок
-// должен остаться чистым для Program-хостов t04+ (spec §3.15).
+// должен остаться чистым для Program-хостов + (spec §3.15).
 public static class EtcdTestHarness
 {
     private sealed class RealTimeProvider : TimeProvider
@@ -22,7 +22,7 @@ public static class EtcdTestHarness
     public static EtcdGateway NewGateway()
         => new(new HttpClient { Timeout = TimeSpan.FromSeconds(2) });
 
-    // probes — стор состояния проб t06: по умолчанию пустой (существующие сценарии без правок).
+    // probes — стор состояния проб : по умолчанию пустой (существующие сценарии без правок).
     public static SnapshotRefresher NewRefresher(ISnapshotStore store, params string[] endpoints)
         => NewRefresher(store, null, endpoints);
 
@@ -34,7 +34,7 @@ public static class EtcdTestHarness
             NewGateway(),
             new AlertEngine(
             [
-                // t04+t05: 15 правил (список как раньше, без изменений)
+                // +: 15 правил (список как раньше, без изменений)
                 new EtcdUnreachableRule(),
                 new EtcdNoQuorumRule(),
                 new EtcdEndpointDownRule(),
@@ -51,7 +51,7 @@ public static class EtcdTestHarness
                 new BucketLostRule(),
                 new BucketNoRoutingRule(),
                 new BucketOutOfRangeRule(),
-                // t06: 9 HA-правил (spec §5)
+                // 9 HA-правил (spec §5)
                 new ShardNoLeaderRule(),
                 new HaMemberNotStreamingRule(),
                 new ReplicaLagHighRule(Options.Create(new AlertsOptions())),
@@ -65,7 +65,7 @@ public static class EtcdTestHarness
             store,
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
-            // t08: стор S3-инвентаря (в сценариях без S3-тика — пустой).
+            // стор S3-инвентаря (в сценариях без S3-тика — пустой).
             new AdminPanel.Probes.S3.S3InventoryStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
@@ -177,7 +177,7 @@ public class EtcdSnapshotIntegrationTests(EtcdContainerFixture fixture) : IClass
         scope.Members.Should().HaveCount(2);
         snapshot.StandNodes.Should().HaveCount(4);
         snapshot.Etcd.Members.Should().ContainSingle(m => m.Name == "test");
-        // t05: сид demo несёт 3 статус-ключа с протухшими штампами → ровно 5 move-алертов (spec §3.15);
+        // сид demo несёт 3 статус-ключа с протухшими штампами → ровно 5 move-алертов (spec §3.15);
         // сортировка: critical (frozen-long) → warnings по kind/target (Ordinal).
         string.Join("|", snapshot.Alerts.Select(a => a.Id))
             .Should().Be("move-frozen-long:demo/bucket_11|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
@@ -295,7 +295,7 @@ public class EtcdFailureTests(EtcdContainerFixture fixture) : IClassFixture<Etcd
         store.Current.Clusters.Should().BeSameAs(clusters);
         store.Current.Etcd.Reachable.Should().BeFalse();
         store.Current.Etcd.ConsecutiveFailures.Should().Be(2);
-        // t04: алерты вычислены и на отказном тике — unreachable на пороге 2 (spec §3.5).
+        // алерты вычислены и на отказном тике — unreachable на пороге 2 (spec §3.5).
         store.Current.Alerts.Should().Contain(a => a.Id == "etcd-unreachable:etcd");
         health.Status.Should().Be(Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy);
     }
@@ -303,7 +303,7 @@ public class EtcdFailureTests(EtcdContainerFixture fixture) : IClassFixture<Etcd
 
 // Мутационные сценарии — отдельный класс со СВОИМ контейнером (по образцу EtcdFailureTests):
 // перевладение routing bucket_0 меняет ACTIVE-раскладку s1 и ломает ожидание инвентаря
-// "чётные bucket_0..14" в EnrichesSnapshot-тесте общего класса (t90: order-dependent
+// "чётные bucket_0..14" в EnrichesSnapshot-тесте общего класса (: order-dependent
 // флак "лишний bucket_0" → inventory-mismatch). Мутации сида — только здесь.
 public class EtcdRoutingMutationTests(EtcdContainerFixture fixture) : IClassFixture<EtcdContainerFixture>
 {

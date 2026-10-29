@@ -53,7 +53,7 @@ public sealed class AdoptionProcess(
         if (!existing.IsSuccess)
             return Result<ProcessOutcome>.Failed(existing.Error!);
 
-        // Ensure per-cluster тройки кредов (t02) — ДО репарации dsn: dsn-rewrite
+        // Ensure per-cluster тройки кредов — ДО репарации dsn: dsn-rewrite
         // ниже использует ensured-значения (ключи etcd), а не env-fallback.
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
@@ -140,7 +140,7 @@ public sealed class AdoptionProcess(
             merged[$"{shard}/{name}"] = node.ToAddress();
         }
 
-        // t15 (arch/14 §2.4): decorate сетевой идентичности при заданном ключе —
+        //  (arch/14 §2.4): decorate сетевой идентичности при заданном ключе —
         // merge-записи здесь object-факты усыновления, Decorate их пропускает
         // (единообразие всех точек записи portalloc).
         var put = await PutAsync($"/pgworker/portalloc/{cluster}",
@@ -268,7 +268,7 @@ public sealed class AdoptionProcess(
                 }
             }
 
-        // t90: пред-выход ДО глобального portalloc-клэйма (spec §3.2 п.3 «без
+        // пред-выход ДО глобального portalloc-клэйма (spec §3.2 п.3 «без
         // изменений (changed=false) — до лока»): merge ничего не изменил И каждый
         // ключ-кандидат "{shard}/{name}" (candidatesByShard: nodes ∪ members) имеет
         // запись, подтверждённую фактом своей ноды либо object (AllConfirmed).
@@ -282,7 +282,7 @@ public sealed class AdoptionProcess(
             .ToList();
         if (changed || !PortPlanConvergence.AllConfirmed(merged, selfFactByNode, allWanted))
         {
-            // t90: глобальный portalloc-клэйм — чтение кросс-картины занятости,
+            // глобальный portalloc-клэйм — чтение кросс-картины занятости,
             // пере-allocate и ЗАПИСЬ portalloc взаимоисключающи между кластерами/
             // инстансами (инвариант arch/14 §2.4: порты выбираются под локом —
             // публикация до release, иначе конкурент успевает выбрать те же порты).
@@ -330,7 +330,7 @@ public sealed class AdoptionProcess(
 
                 if (changed)
                 {
-                    // t15: repair-put несёт decorate — новые канонические записи
+                    // repair-put несёт decorate — новые канонические записи
                     // после переаллокации detached-нод ПОЛУЧАЮТ alias/net.
                     var put = await PutAsync($"/pgworker/portalloc/{cluster}",
                         Portalloc.Serialize(PortallocIdentity.Decorate(merged, cluster, scrapeNetwork)), ct);
@@ -381,12 +381,12 @@ public sealed class AdoptionProcess(
         // расхождение Created-контейнера (или контейнер отсутствует) → stop+rm+
         // create по плану (план уже без дубликатов — detach выше). «Воркер —
         // хозяин»: сломали контейнер/план → тик сам чинит, без оператора.
-        // Граница с эвакуацией (arch/14 §5 D, t09): шард, в котором НЕ жив ни
+        // Граница с эвакуацией (arch/14 §5 D): шард, в котором НЕ жив ни
         // один контейнер, — сценарий всего-шарда-мёртв: его судьба — BucketEvacuator
         // (E0–E4 после NodeDeadSec+ShardDeadSec), а не recreate-гонка: мгновенное
         // пересоздание стопнутых нод не давало supervise досчитать до порога и
         // эвакуация не стартовала вовсе.
-        // Гонка с эвакуацией (t09, AC6 фикс-гейта): гвард «весь шард без живых»
+        // Гонка с эвакуацией (AC6 фикс-гейта): гвард «весь шард без живых»
         // недостаточен — при поочерёдной остановке нод кворового шарда каждая
         // следующая нода пересоздавалась здесь, пока предыдущая жива, и шард
         // никогда не оставался мёртвым на ShardDeadSec. Нода в unreachable-треке

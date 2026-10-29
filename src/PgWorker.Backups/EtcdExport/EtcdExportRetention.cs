@@ -2,7 +2,7 @@ using PgWorker.Backups;
 
 namespace PgWorker.Backups.EtcdExport;
 
-/// <summary>Чистый отбор ретенции S3-выгрузки etcd (t08, arch/19 §5): из list
+/// <summary>Чистый отбор ретенции S3-выгрузки etcd (arch/19 §5): из list
 /// префикса etcd/ выбирает ключи к batch-delete — объекты пар, старше N последних
 /// (сортировка id по Ordinal = хронология), и одиночные .meta.json без .db (мусор).
 /// Guard по построению: удаляется только старее оставляемых — ≥1 полная пара

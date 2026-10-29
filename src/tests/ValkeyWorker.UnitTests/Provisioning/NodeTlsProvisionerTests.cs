@@ -97,7 +97,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: нормализация \n → переносы на границе сборки — CA-пара в etcd-каноне
     // «одной строкой с \n» даёт многострочный PEM во всех значениях env
-    // (единый хелпер со сверкой, симметрии — spec t20 §4.1)
+    // (единый хелпер со сверкой, симметрии — spec §4.1)
     [Fact]
     public void BuildNodeTlsEnv_EscapedNewlines_MultilineEnv()
     {

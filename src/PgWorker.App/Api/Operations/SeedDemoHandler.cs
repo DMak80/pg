@@ -9,7 +9,7 @@ public sealed record SeedDemoDto(bool Seeded);
 
 // Демо-сид pg-контура через API воркера (task etcd-via-worker-api): перенос
 // dev-stand/adminpanel/seed.sh + обязательные заявки request_{cpu,mem} шардов
-// (t25). Идемпотентен
+// . Идемпотентен
 // по живому /clusters/demo/config (образец скрипта: существующий config =>
 // состояние засеяно, НЕ перезаписываем). Пакет плоских PutAsync без txn —
 // как скрипт; флаг EnableSeedEndpoint=false → псевдо-404 до любых чтений.

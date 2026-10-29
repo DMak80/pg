@@ -166,7 +166,7 @@ public abstract class E2eBackupPoolScenarios
             return keys.Count > 0;
         }, TimeSpan.FromSeconds(480), ct);
 
-    // t25: «оба агента живы» = статус-ключи agent/<N> обеих нод шарда с
+    // «оба агента живы» = статус-ключи agent/<N> обеих нод шарда с
     // state=streaming (lease жив = приёмник жив; docker-контейнеров агентов нет).
     protected async Task<bool> WaitBothWalAgentsAsync(string cluster, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
@@ -792,7 +792,7 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             }, TimeSpan.FromSeconds(60), ct)).Should().BeTrue("receivers paused before the copy");
 
             // Act — копия bucket node1 → node2, затем стоп node1.
-            // Прогон t100-3…7 (2026-10-27): S3→S3 копии (mc mirror/cp --recursive)
+            // Прогон 3…7 (2026-10-27): S3→S3 копии (mc mirror/cp --recursive)
             // под параллельной записью приёмника СТАБИЛЬНО теряли объекты набора
             // (корневые backup_manifest/label на node2 отсутствовали, mc exit 0) —
             // restore закономерно FAILED «no backup_manifest». Прямая проверка
@@ -803,14 +803,14 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
             var node2Container = Fx.ExtraS3NodeContainerName(Node2Alias);
             // tar-пайп контейнер→контейнер (docker cp … - | docker exec -i tar -x):
             // без host-файлов (docker cp на macOS раскладывал host-копию
-            // непредсказуемо — прогон t100-11) и с чисткой целевого корня: слияние
+            // непредсказуемо — прогон 11) и с чисткой целевого корня: слияние
             // со собственными объектами node2 даёт смешанные каталоги, на которых
-            // LIST ownS3 отдаёт 500 (t100-9). У node2 собственных записей нет:
+            // LIST ownS3 отдаёт 500 (9). У node2 собственных записей нет:
             // write-списки пула — [node1]. docker cp кладёт basename каталога в
             // корень tar («pgworker-backups/…»): без --strip-components=1 распаковка
             // даёт вложенный дубль /data/pgworker-backups/pgworker-backups/… — S3-API
             // node2 пуст (fs-объекты на уровень ниже), restore честно 404 (прогон
-            // t100 run4; fs-ассерт тогда давал ложный PRESENT: его шаблон
+            //  run4; fs-ассерт тогда давал ложный PRESENT: его шаблон
             // /data/pgworker-backups/<Bucket>/… совпал с вложенным путём).
             // ФС-путь объекта — <OWNS3_DATA_DIR=…>/pgworker-backups/<key> (env
             // ownS3-нод E2E), поэтому ассерт ниже проверяет <data>/pgworker-backups/
@@ -820,7 +820,7 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
                 + $" | docker exec -i {node2Container} sh -c"
                 + $" 'rm -rf /data/pgworker-backups && mkdir -p /data/pgworker-backups"
                 + $" && tar -xf - -C /data/pgworker-backups --strip-components=1'"], ct);
-            // ownS3 индексирует /data при СТАРТЕ (прогон t100-8: fs-файлы, дописанные
+            // ownS3 индексирует /data при СТАРТЕ (прогон 8: fs-файлы, дописанные
             // в живой контейнер, S3-API не видны; чистый ownS3, стартовавший с той же
             // data, LIST/STAT/GET манифеста отдаёт) — рестарт переиндексирует копию.
             await Fx.RunDockerAsync(["restart", node2Container], ct);

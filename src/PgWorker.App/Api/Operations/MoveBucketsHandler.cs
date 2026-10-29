@@ -7,7 +7,7 @@ using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Тело POST /api/clusters/{cluster}/moves (arch/02 §9.7). Buckets nullable:
-// null/отсутствие поля ловит валидатор (400), а не NRE. Дубль панельного DTO осознан (t08).
+// null/отсутствие поля ловит валидатор (400), а не NRE. Дубль панельного DTO осознан.
 public sealed record MoveBucketsRequest(string From, string To, IReadOnlyList<int>? Buckets);
 
 // Ответ 201: queued поставлены сейчас, skipped — идентичные уже стояли.

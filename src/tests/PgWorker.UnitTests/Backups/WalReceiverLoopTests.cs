@@ -8,7 +8,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Машина состояний цикла приёмника (t25, arch/19 §3, spec §3.1 п.2–8): гейты
+// Машина состояний цикла приёмника (arch/19 §3, spec §3.1 п.2–8): гейты
 // (disabled → waiting_disabled; wal-ключ STOPPED/WAL_CHAIN_ERROR → paused), роль none →
 // waiting_role, креды/цели (waiting_password/waiting_policy), слот (waiting_slot),
 // permanent-исходы ядра без выхода процесса (failed_permanent), факты
@@ -157,7 +157,7 @@ public class WalReceiverLoopTests
             string cluster, string shard, string key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default) => throw new NotSupportedException();
-// t26: файловые методы интерфейса в этом тесте не используются —
+// файловые методы интерфейса в этом тесте не используются —
         // заглушка (фейк нужен только перечисленным выше операциям).
         public Task<Result> PutFileAsync(string key, string filePath, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(new ApplicationException("put-file: not supported by this fake")));
@@ -590,7 +590,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // AAA (стоп-гейт живого стрима, arch/19 §3, t25): wal-ключ STOPPED при
+    // AAA (стоп-гейт живого стрима, arch/19 §3): wal-ключ STOPPED при
     // живой сессии — проба из стрима завершает её (Reconnect), цикл
     // перепроверяет гейты и уходит в paused; приёмник не ждёт обрыва
     // транспорта.
@@ -879,7 +879,7 @@ public class WalReceiverLoopTests
         }
     }
 
-    // ── Ре-доклад инвентаря .history (t25, spec §3.1 п.6, arch/19 §3) ──
+    // ── Ре-доклад инвентаря.history (spec §3.1 п.6, arch/19 §3) ──
 
     // tmpdir с pg_wal-файлом истории (имя — 8 hex + ".history", как пишет PG).
     private static string PgWalDirWith(params string[] names)

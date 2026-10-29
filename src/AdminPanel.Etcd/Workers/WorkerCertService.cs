@@ -26,7 +26,7 @@ public sealed class WorkerCertNotFoundException(string worker)
     : Exception($"key /workers/api_tls/{worker} not found");
 
 // 404: неизвестный воркер (worker ∈ pgworker|kafkaworker|valkeyworker|s3worker,
-// spec §3.3 п.4; valkeyworker — t03, s3worker — arch/adminpanel/02 §9.9). Гвардится
+// spec §3.3 п.4; valkeyworker, s3worker — arch/adminpanel/02 §9.9). Гвардится
 // сервисом ДО KeyOf во ВСЕХ write-методах (и рестарт-хендлером панели): мусорный
 // ключ /workers/api_tls/<foo> в etcd не пишется никогда.
 public sealed class WorkerNotFoundException(string worker)
@@ -209,10 +209,10 @@ public sealed class WorkerCertService(
         // Осознанная гонка (TOCTOU) Range→Delete: между проверкой наличия ключа
         // и удалением конкурентный generate (txn version==0) может создать ключ —
         // DELETE удалит уже свежесозданный и вернёт 204 вместо 404. Общий
-        // TxnRequest (t08) умеет delete-ветки, но атомарный txn
+        // TxnRequest умеет delete-ветки, но атомарный txn
         // «compare version>0 → delete» остаётся неиспользованным осознанно:
         // расширение протокола удаления — изменение контракта arch/adminpanel/02,
-        // вне t08. Окно ничтожно: панель — единственный
+        // вне. Окно ничтожно: панель — единственный
         // писатель, оператор один; потеря видна на следующем тике (статус
         // инстансов unmanaged), восстановление — повторный generate/PUT.
         var existing = await WithEtcdAsync(endpoint =>

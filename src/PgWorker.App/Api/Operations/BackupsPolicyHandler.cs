@@ -7,11 +7,11 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Приём per-cluster политики бэкапов (t06, arch/19 §4): тело канона
+// Приём per-cluster политики бэкапов (arch/19 §4): тело канона
 // {"retention":{"days":..,"weeks":..,"months":..},"full_max_age_sec":..,
 // "verify":{"on_create":..}}; отсутствующие retention-поля → дефолты, тело
 // ЦЕЛИКОМ замещает политику (put полного значения). Применение — следующим
-// тиком планировщика t02/ретенции (etcd-снапшот, нотификации нет).
+// тиком планировщика /ретенции (etcd-снапшот, нотификации нет).
 public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] endpoints)
 {
     [GeneratedRegex("^[a-z][a-z0-9_]{0,62}$")]
@@ -22,11 +22,11 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         [property: JsonPropertyName("full_max_age_sec")] long? FullMaxAgeSec,
         [property: JsonPropertyName("verify")] VerifyBody? Verify,
         [property: JsonPropertyName("drill")] DrillBody? Drill,
-        // t36 (arch/19 §4): секция s3 — пул + списки роли источника;
+        //  (arch/19 §4): секция s3 — пул + списки роли источника;
         // отсутствие секции → в policy не кладётся (выключение бэкапов).
         [property: JsonPropertyName("s3")] BackupsPolicyS3Body? S3);
 
-    // reliability t02 (arch/19 §4/§14 §1.1): interval_days — период дрилов
+    // reliability (arch/19 §4/§14 §1.1): interval_days — период дрилов
     // шардов кластера в сутках; null/отсутствие секции → поля в policy нет.
     private sealed record DrillBody(
         [property: JsonPropertyName("interval_days")] int? IntervalDays);
@@ -73,7 +73,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         // 4) Валидация диапазонов (400 с перечнем): days [1..365], weeks [0..52],
         //    months [0..120], full_max_age_sec >= 600, on_create — bool из JSON-схемы.
         var errors = new List<ValidationError>();
-        //    t18: отсутствующие retention-поля → дефолт 1/1/1 (целевая схема,
+        //    отсутствующие retention-поля → дефолт 1/1/1 (целевая схема,
         //    arch/19 §9) — partial-policy PUT не возвращает кластер к 7/4/6.
         var days = body.Retention?.Days ?? 1;
         var weeks = body.Retention?.Weeks ?? 1;
@@ -88,13 +88,13 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
             errors.Add(new("retention.months", "monthly granularity — integer in [0..120]"));
         if (maxAge < 600)
             errors.Add(new("full_max_age_sec", "minimum 600 sec"));
-        // reliability t02: период дрилов — целое в [0..3650]; 0 — дрилл
+        // reliability : период дрилов — целое в [0..3650]; 0 — дрилл
         // кластера выключен; поле отсутствует → секции drill в policy не будет.
         var drillDays = body.Drill?.IntervalDays;
         if (drillDays is < 0 or > 3650)
             errors.Add(new("drill.interval_days", "drill interval — integer in [0..3650]"));
 
-        // t36: секция s3 — живая валидация пула/нод/списков (400 по полям;
+        // секция s3 — живая валидация пула/нод/списков (400 по полям;
         // etcd-отказ чтения /s3/ → 503 через EtcdWriteUnavailableException).
         var s3Errors = await new BackupsPolicyS3Validator(gateway, endpoints).ValidateAsync(body.S3, ct);
         if (!s3Errors.IsSuccess)
@@ -105,7 +105,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
 
         // 5) Put полного значения формата канона (тело замещает политику целиком):
         // drill в теле отсутствует → секция НЕ кладётся (кластер на глобальном
-        // дефолте конфига Drill:IntervalDays, reliability t02).
+        // дефолте конфига Drill:IntervalDays, reliability).
         var policyBody = new Dictionary<string, object>
         {
             ["retention"] = new Dictionary<string, object> { ["days"] = days, ["weeks"] = weeks, ["months"] = months },
@@ -114,7 +114,7 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         };
         if (drillDays is { } d)
             policyBody["drill"] = new Dictionary<string, object> { ["interval_days"] = d };
-        // t36: секция задана → канонический JSON spec §5 (списки как пришли).
+        // секция задана → канонический JSON spec §5 (списки как пришли).
         if (body.S3 is { } s3)
             policyBody["s3"] = new Dictionary<string, object>
             {

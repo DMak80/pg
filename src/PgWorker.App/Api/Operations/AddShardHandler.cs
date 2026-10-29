@@ -6,7 +6,7 @@ using Shared.Etcd.Client;
 using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
-// Ответ 201 POST /api/clusters/{cluster}/shards (arch/02 §9.5; дубль панельного DTO осознан, t08).
+// Ответ 201 POST /api/clusters/{cluster}/shards (arch/02 §9.5; дубль панельного DTO осознан).
 public sealed record ShardAddedDto(
     string Cluster, string Name, int Replicas,
     string RequestCpu, string RequestMem, string RequestDisk, string State);
@@ -55,7 +55,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         if (rawState is not null)
             return Result<ShardAddedDto>.Failed(new ClusterNotActiveException(cluster, rawState));
 
-        // t06 (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
+        //  (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
         // однорепликный шард в strict-кластере навсегда блокирует запись.
         var clusterStrict = ReadStrictField(config.Value);
         if (clusterStrict && request.Replicas < 2)
@@ -172,7 +172,7 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
             : 0;
     }
 
-    // strict из config-JSON; отсутствие/не-bool = true (t06, arch/14 §3).
+    // strict из config-JSON; отсутствие/не-bool = true (arch/14 §3).
     internal static bool ReadStrictField(string raw)
     {
         using var doc = JsonDocument.Parse(raw);

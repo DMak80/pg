@@ -163,7 +163,7 @@ public class ClusterConfigConvergerTests
     public async Task Apply_ConfigsConverged_EmptyAcls_CreatesTargetAcls()
     {
         // Arrange: конфиги сошлись (alter не нужен), но ACL в кластере нет —
-        // раннего выхода НЕТ: ACL-шаг создаёт канонические 7 (t03, arch/16 §5 E).
+        // раннего выхода НЕТ: ACL-шаг создаёт канонические 7 (arch/16 §5 E).
         var admin = new FakeKafkaAdminClient
         {
             ClusterView = new KafkaClusterView([new KafkaBrokerView(1, "b1")], ControllerId: 1),

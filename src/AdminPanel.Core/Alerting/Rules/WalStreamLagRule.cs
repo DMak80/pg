@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// wal-stream-lag (warning, t03, arch/19 §3/§8): ACTIVE-поток отстаёт от мастера
+// wal-stream-lag (warning, arch/19 §3/§8): ACTIVE-поток отстаёт от мастера
 // больше WalLagMaxSegments сегментов либо молчит дольше WalStaleSec (transient —
 // воркер ретраит тиками; алерт информирует, не паникует).
 [InjectAsSingleton(typeof(IAlertRule))]

@@ -1,6 +1,6 @@
 namespace Shared.Docker;
 
-// Разбор endpoint-схем Engine API (arch/14 §2.2, t03): unix://<path> |
+// Разбор endpoint-схем Engine API (arch/14 §2.2): unix://<path> |
 // tcp://[host][:port] | ssh://[user@]host[:port]. Чистая функция — юнит-тесты
 // без сети; дефолты портов: tcp — 2375 (plain Engine API), ssh — 22.
 public sealed record EndpointScheme(string Scheme, string Host, int Port, string? User)

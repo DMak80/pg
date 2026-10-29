@@ -1,6 +1,6 @@
 namespace Shared.Core.UnitTests.Planning;
 
-// PortAllocator: выделение и закрепление адресов нод (t09, обобщение Pg/Kfw;
+// PortAllocator: выделение и закрепление адресов нод (обобщение Pg/Kfw;
 // Pg-кейсы перенесены из PgWorker.UnitTests — generic-инстанс с локальной
 // моделью тройки портов pg/patroni/doorman, ключ результата "shard/node").
 
@@ -70,7 +70,7 @@ public class PortAllocatorTests
 
         // Assert: первая нода — тройка 15001-15003; вторая НЕ может взять
         // пересекающуюся (base 15002/15003 заняты портами первой) — первая
-        // свободная тройка 15004-15006 (последовательные слоты, t24).
+        // свободная тройка 15004-15006 (последовательные слоты).
         result.Value["shard1/shard1a"].Pg.Should().Be(15001);
         result.Value["shard1/shard1b"].Pg.Should().Be(15004);
     }
@@ -104,7 +104,7 @@ public class PortAllocatorTests
             new HashSet<(string, int)>(), 15000, 16000,
             PortsOf, HostOf, MakeAddress, KeyOf);
 
-        // Assert: последовательные слоты (arch/14 §2.4 п.2, t24): тройка
+        // Assert: последовательные слоты (arch/14 §2.4 п.2): тройка
         // pg/patroni/doorman идёт подряд — смещения +3000/+1500 упразднены.
         var addr = result.Value["shard1/shard1a"];
         addr.Host.Should().Be("h1");
@@ -113,7 +113,7 @@ public class PortAllocatorTests
         addr.Doorman.Should().Be(15002);
     }
 
-    // AAA (t24, arch/14 §2.4 п.2): последовательное выделение — тройки нод
+    // AAA (arch/14 §2.4 п.2): последовательное выделение — тройки нод
     // НЕ пересекаются и идут подряд по диапазону (никаких +3000/+1500-дыр).
     [Fact]
     public void Allocate_MultipleNodes_DisjointConsecutiveTriples()
@@ -142,7 +142,7 @@ public class PortAllocatorTests
         allPorts.Should().OnlyContain(p => p >= 15000 && p < 15009);
     }
 
-    // AAA (t24): исчерпание диапазона — фейл, а НЕ выход за To: последняя
+    // AAA : исчерпание диапазона — фейл, а НЕ выход за To: последняя
     // тройка обязана целиком лежать в [From, To).
     [Fact]
     public void Allocate_RangeFitsOneTripleOnly_SecondNodeFails()

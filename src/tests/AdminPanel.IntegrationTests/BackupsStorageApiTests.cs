@@ -10,7 +10,7 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// Серия грани «Хранилище бэкапов» (t08): классы серии выполняются последовательно
+// Серия грани «Хранилище бэкапов» : классы серии выполняются последовательно
 // (коллекция без общих фикстур — контейнеры свои у каждого класса, изоляция
 // e2e-isolation §1 за счёт IClassFixture на класс).
 [CollectionDefinition("backups")]
@@ -36,7 +36,7 @@ internal static class BackupsLogin
     }
 }
 
-// AC1 (t08 spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
+// AC1 (spec §7.1): без S3-пула в /s3/clusters/ (нет Active-кластера
 // с endpoints и secrets) панель стартует,
 // GET /api/backups/storage → 200 {configured:false}, инвентарь-тик — no-op
 // (стоп пуст), алерт backup-s3-unreachable не горит.
@@ -88,7 +88,7 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// AC2+AC6 (t08 spec §7.2/§7.6): ownS3-нода с сеянными объектами <C>/<X>/full/<id>/…,
+// AC2+AC6 (spec §7.2/§7.6): ownS3-нода с сеянными объектами <C>/<X>/full/<id>/…,
 // wal/<segment>, wal/<tli>.history, посторонний корневой префикс → после тиков
 // сводка отдаёт buckets, health (api/live/cluster), дерево <C>/<X> с размерами/
 // счётчиками, foreign-префикс; usedBytes = сумме; ключ /pgworker/backups/storage
@@ -193,7 +193,7 @@ public class BackupsStorageInventoryApiTests(
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 
-    // AAA (t08): ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
+    // AAA : ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
     // читает, пишет только PgWorker); карточка живёт независимо от инвентаря.
     [Fact]
     public async Task Storage_EtcdSnapshots_InDto()
@@ -226,7 +226,7 @@ public class BackupsStorageInventoryApiTests(
     }
 }
 
-// AC3 (t08 spec §7.3): остановленное хранилище → apiOk=false/liveOk=false, инвентарь
+// AC3 (spec §7.3): остановленное хранилище → apiOk=false/liveOk=false, инвентарь
 // устаревает (штамп прежний, inventoryError не пуст), алерт backup-s3-unreachable
 // после 2 неудачных тиков подряд (ручной прогон RunOnceAsync — spec §5 фаза 2).
 [Collection("backups")]
@@ -350,7 +350,7 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
 
-// Сироты с защитой (reliability t04, AC7): сводка orphans несёт hasValidFull/
+// Сироты с защитой (reliability, AC7): сводка orphans несёт hasValidFull/
 // held/deleteRequested + hold/заявки из etcd (реестр без S3-факта — вторая
 // ветка слияния); TtlLeftSec null у защищённых.
 [Collection("backups")]

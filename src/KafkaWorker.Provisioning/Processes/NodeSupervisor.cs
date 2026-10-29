@@ -55,7 +55,7 @@ public sealed class NodeSupervisor(
         if (!pinned.IsSuccess)
             return Result.Failed(pinned.Error!);
 
-        // Лестница E9 (t05, spec §3.3): безадресные Supervisable-брокеры — до любых
+        // Лестница E9 (spec §3.3): безадресные Supervisable-брокеры — до любых
         // деструктивных действий (RecreateAsync сносит контейнер ДО EnsureNode —
         // ветка «контейнер жив» из EnsureNode недостижима). Клэйм занят —
         // waiting-portalloc-lock (InProgress), следующий тик.
@@ -358,7 +358,7 @@ public sealed class NodeSupervisor(
         if (snap.Endpoints is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят/премиграционный — проб невозможен
 
-        // Backoff недоступного кластера (t05, spec §3.2): окно активно — проба не
+        // Backoff недоступного кластера (spec §3.2): окно активно — проба не
         // ходит в сеть (слепая проба без клиента; бюджет молчания не стартует,
         // unreachable-трек заморожен — флап ≠ смерть). Фейл — растит окно, успех —
         // сбрасывает (надзор — первый kafka-контакт конвейера).

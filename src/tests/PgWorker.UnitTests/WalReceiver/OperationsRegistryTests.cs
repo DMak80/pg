@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.WalReceiver;
 
-// Реестр одной активной операции приёмника (spec t26 §3.2): TryBegin — 409-
+// Реестр одной активной операции приёмника (spec §3.2): TryBegin — 409-
 // гвард второй активной (running/uploading), терминальный снимок перезаписывается;
 // Update/Clear — атомарная видимость Current (параллельные публикации без гонок).
 // AAA-комментарии.

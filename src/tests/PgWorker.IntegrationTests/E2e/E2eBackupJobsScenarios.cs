@@ -9,11 +9,11 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E джобов полных бэкапов (t24/ревизия 8 — разбиение E2eBackupScenarios;
+// E2E джобов полных бэкапов (/ревизия 8 — разбиение E2eBackupScenarios;
 // прецедент копирования хелперов — E2eRestoreScenarios.cs): суточный полный,
 // deprovisioning-чистка, ротация backup_exec (~3,9 мин суммарно). Факты внутри
 // класса последовательны (collection-per-class), класс — параллельная единица.
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
@@ -27,7 +27,7 @@ public class E2eBackupJobsScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -49,7 +49,7 @@ public class E2eBackupJobsScenarios
         Fx = fx;
         var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: пул + policy с секцией s3 (без неё подсистема кластера молчит).
+        // пул + policy с секцией s3 (без неё подсистема кластера молчит).
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $$"""{"full_max_age_sec":3600,"verify":{"on_create":true},{{E2eEnvironment.PoolS3(Pool)}}}""", null, ct);
@@ -109,7 +109,7 @@ public class E2eBackupJobsScenarios
         Fx = fx;
         var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: policy с секцией s3 — планирование полных стартует только с пулом.
+        // policy с секцией s3 — планирование полных стартует только с пулом.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
@@ -167,7 +167,7 @@ public class E2eBackupJobsScenarios
         Fx = fx;
         var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
-        // t36: policy с секцией s3 — полный (до ротации) пишется только с пулом.
+        // policy с секцией s3 — полный (до ротации) пишется только с пулом.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
@@ -190,7 +190,7 @@ public class E2eBackupJobsScenarios
             var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct);
             return current.Value is { } kv && kv.Value != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
-        }, TimeSpan.FromSeconds(240), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
+        }, TimeSpan.FromSeconds(240), ct); // фон тяжелее (WAL-агенты) — 120 c тесно
         if (!rotated)
         {
             // диагностика: журнал ротации (last_error) + живая заявка + пароль
@@ -233,7 +233,7 @@ public class E2eBackupJobsScenarios
     }
 
     // Воркер с включённой подсистемой бэкапов: пул — policy.s3 (etcd), bucket и
-    // env-профиль кредов — env (t36); операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
+    // env-профиль кредов — env; операции — в приёмниках нод (arch/19 §5), ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct,
         IReadOnlyDictionary<string, string>? extraEnv = null)

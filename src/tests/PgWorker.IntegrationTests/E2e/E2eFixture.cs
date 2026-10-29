@@ -179,7 +179,7 @@ public static class E2eFixture
     /// молчаливого выживания бюджета (прогон 2026-10-16 AC3: 310 с при живом
     /// лидере). Пример: E2ePhase.WaitAsync(Fx, "…-provisioning",
     ///   E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster,
-    ///       () => ProvisionedAsync(cluster)), …).</summary>
+    ///      () => ProvisionedAsync(cluster)), …).</summary>
     public static Func<Task<bool>> ProvisionStuckFailFast(
         E2eEnvironment fx,
         Func<string, Task<Shared.Etcd.Client.Kv?>> getOrNull,
@@ -245,7 +245,7 @@ public static class E2eFixture
 
     /// <summary>Env вложенных dotnet-сборок (publish из фикстур): долгоживущие
     /// MSBuild/Roslyn build-server'ы и nodeReuse-ноды переживают процесс сборки и
-    /// удерживают stdout-пайп навсегда — ReadToEndAsync не получает EOF (e2e-факт:
+    /// удерживают stdout-пайп навсегда — ReadToEndAsync не получает EOF (факт стенда:
     /// wal:e2e publish висел 11 мин, app-dll — 10 мин). Отключаем обе формы
     /// реюза: сборка живёт ровно столько, сколько её процесс.</summary>
     internal static readonly IReadOnlyDictionary<string, string> NoMsBuildReuseEnv = new Dictionary<string, string>
@@ -254,11 +254,11 @@ public static class E2eFixture
         ["MSBUILDDISABLENODEREUSE"] = "1",
     };
 
-    /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет (daemon-флэйм,
-    /// e2e-факт: teardown замер на docker logs навсегда) — по истечении дерево
+    /// <summary>Процесс с бюджетом : docker-CLI изредка виснет (daemon-флэйм,
+    /// факт стенда: teardown замер на docker logs навсегда) — по истечении дерево
     /// процесса убивается, наружу ApplicationException (вызывающий телеметрии
     /// глотает — «лучшими усилиями», канон e2e-launch). logFile — полный вывод
-    /// процесса (успех и таймаут — единый журнал build-вызовов, t29 §4.5);
+    /// процесса (успех и таймаут — единый журнал build-вызовов, §4.5);
     /// при kill по бюджету хвост вывода (~40 строк) попадает в исключение.</summary>
     private static async Task<string> RunProcessCoreAsync(
         string file, string[] args, CancellationToken ct, TimeSpan? timeout,
@@ -282,7 +282,7 @@ public static class E2eFixture
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeout is { } budget)
             timeoutCts.CancelAfter(budget);
-        // Оба потока — ПАРАЛЛЕЛЬНО и БЕЗ токена бюджета (t29 §4.5): при kill
+        // Оба потока — ПАРАЛЛЕЛЬНО и БЕЗ токена бюджета (§4.5): при kill
         // по бюджету дерево умирает, пайпы закрываются, чтения завершаются
         // сами — накопленный вывод доступен (ReadToEndAsync(ct) при отмене
         // терял вывод: фейл build > 120 c не оставлял следов, на каком шаге
@@ -322,7 +322,7 @@ public static class E2eFixture
         }
     }
 
-    /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет — по
+    /// <summary>Процесс с бюджетом : docker-CLI изредка виснет — по
     /// истечении дерево процесса убивается, наружу ApplicationException.
     /// Возврат при exit=0 — только stdout (контракт вызовов телеметрии);
     /// объединённый съём — RunProcessMergedAsync.</summary>
@@ -402,7 +402,7 @@ public static class E2eFixture
     /// <summary>
     /// dotnet publish проекта в каталог артефактов E2E (инкрементально — секунды).
     /// NoMsBuildReuseEnv: build-server/ноды переживают сборку и держат stdout-пайп
-    /// навсегда (e2e-факт: slnx-прогон висел 10+ мин). Бюджет 10 мин: полная
+    /// навсегда (факт стенда: slnx-прогон висел 10+ мин). Бюджет 10 мин: полная
     /// пересборка — минуты, тишина дольше бюджета = зависание (fail-fast).
     /// </summary>
     internal static async Task PublishProjectAsync(
@@ -419,7 +419,7 @@ public static class E2eFixture
     }
 
     /// <summary>
-    /// Правило пересборки Release (t09, spec «фаза Г»): автосборка при каждом
+    /// Правило пересборки Release (spec «фаза Г»): автосборка при каждом
     /// прогоне E2E — устаревший зелёный бинарь маскировал регрессию.
     /// PGW_TEST_E2E_NOBUILD=1 — обход для бисекта/отладки конкретного бинаря:
     /// publish-шаг пропускается, docker-образы строятся из существующих каталогов

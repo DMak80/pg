@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Shared.Docker.UnitTests.Engine;
 
-// TLS к Engine API (arch/14 §2.2.1, t03): сборка handler'а с клиентским сертом
+// TLS к Engine API (arch/14 §2.2.1): сборка handler'а с клиентским сертом
 // и доверием docker-CA, fail-fast частичной конфигурации, unix:// игнорирует
 // TLS, plaintext tcp:// без TLS остаётся рабочим (R15).
 public class DockerEngineFactoryTlsTests
@@ -112,7 +112,7 @@ public class DockerEngineFactoryTlsTests
     }
 }
 
-// Канон-суперсет t07 (§4.6.1): инспекция endpoint'а с параметром контейнерного
+// Канон-суперсет (§4.6.1): инспекция endpoint'а с параметром контейнерного
 // порта (kfw: 9094, vwk: 6379) — порт-биндинг из одного инспекта, Running из
 // State.Running.
 public class InspectNodeEndpointTests

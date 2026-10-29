@@ -13,7 +13,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции WalStreamProcess (t03 spec Ф3): реальный etcd (статусы/журнал) +
+// Интеграции WalStreamProcess (spec Ф3): реальный etcd (статусы/журнал) +
 // фейки docker-агентов/SQL/S3. Снапшот кластера строится руками.
 [Collection(NonE2eCollection.Name)]
 public class WalStreamProcessTests(EtcdFixture fixture)
@@ -22,7 +22,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // ── Хелперы Arrange ──
 
-    // DSN источника-ноды (как ShardEndpoints.AdminDsn): сид слотов per-DSN (t27).
+    // DSN источника-ноды (как ShardEndpoints.AdminDsn): сид слотов per-DSN.
     private static string SourceDsn(int pgPort, string cluster) => ShardEndpoints.AdminDsn(
         new NodeAddress("127.0.0.1", new NodePorts(pgPort, 18001, 17001)),
         cluster, new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"));
@@ -49,12 +49,12 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             }), null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
             password, null, ct);
-        // t25: приёмник по умолчанию «жив» (ключ lease есть) — контроль не
+        // приёмник по умолчанию «жив» (ключ lease есть) — контроль не
         // деградирует not-running; конкретные тесты удаляют/сидируют факты.
         await SeedAgentAsync(cluster, "shard1a", AgentJson("shard1a"));
     }
 
-    // t25: сид статус-ключа приёмника agent/<N> (формат arch/19 §4; факты
+    // сид статус-ключа приёмника agent/<N> (формат arch/19 §4; факты
     // tli_jump/pool_exhausted сидируются конкретными тестами через AgentJson).
     private async Task SeedAgentAsync(string cluster, string node, string json)
         => await fixture.Gateway.PutAsync(
@@ -107,7 +107,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         public void Mark() => Marks++;
     }
 
-    // t25: аудируемая фаза create агента упразднена вместе с агентами
+    // аудируемая фаза create агента упразднена вместе с агентами
     // (LongCallPolling-прогрев джобов покрыт тестами джобов).
 
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
@@ -120,7 +120,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         WalStaleSec: stale);
 
     // Полный COMPLETED с wal_start_segment (для chain_start от полного);
-    // t18: якорь chain_start — только verify-OK полные, поэтому по умолчанию
+    // якорь chain_start — только verify-OK полные, поэтому по умолчанию
     // полный валиден (Ok), не-OK задаётся явно параметром.
     private static ShardBackups FullShard(
             string walStart, WalStreamState? wal = null, BackupVerify? verify = null) => new(
@@ -142,7 +142,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var process = BuildProcess(Options(), sql, s3, driver);
 
         // Act — первый тик: слот создан, ключ wal НЕ пишется
-        //       (нет объектов — spec §3.2 шаг 8; агентов-контейнеров нет — t25)
+        //       (нет объектов — spec §3.2 шаг 8; агентов-контейнеров нет)
         var result = await process.TickAsync(BuildSnap(), null, ct);
 
         // Assert
@@ -180,7 +180,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     [Fact]
     public async Task TickWithoutCredentialsSkipsShardWithJournalNote()
     {
-        // Arrange — backup_password отсутствует (t02 не смержена/ensure не прошёл)
+        // Arrange — backup_password отсутствует (не смержена/ensure не прошёл)
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1", password: "");
         await fixture.Gateway.DeleteAsync(
@@ -201,7 +201,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         journal.Value!.Value.Should().Contain("waiting-backup-password");
     }
 
-    // t25 (стоп-семантика): Enabled=false тик — wal-ключ STOPPED; СТОП-ПУТЬ сам
+    //  (стоп-семантика): Enabled=false тик — wal-ключ STOPPED; СТОП-ПУТЬ сам
     // не делает docker-сносов (санитарный sweep начала тика — отдельный механизм:
     // без legacy-контейнеров ничего не удаляет). Disabled-ключ ставит лидер
     // BackupOrphanSweeperLoop (кейс BackupsDisabledGate ниже).
@@ -233,7 +233,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         driver.RemovedBackupAgents.Should().BeEmpty("no legacy containers — nothing removed");
     }
 
-    // t25 (стоп-семантика): глобальный лидер при Enabled=false поддерживает
+    //  (стоп-семантика): глобальный лидер при Enabled=false поддерживает
     // /pgworker/backups-disabled (put), инстанс при старте с Enabled=true
     // снимает (del; отсутствие ключа — успех). Юнит через РЕАЛЬНЫЙ etcd fixture.
     [Fact]
@@ -282,7 +282,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             s3.Objects.Add((cluster, "shard1", $"0000000100000000000000{i:x2}"));
     }
 
-    // t05 §3.4 гвард: шард с активной restore-заявкой — агент не ensure,
+    //  §3.4 гвард: шард с активной restore-заявкой — агент не ensure,
     // wal-статус не пишется (контуры не трогают шард во время restore).
     [Fact]
     public async Task TickSkipsShardWithActiveRestore()
@@ -376,7 +376,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act — тик контроля (дыра ловится)
         (await process.TickAsync(BuildSnap("cc2"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — WAL_CHAIN_ERROR с границами (агентов-контейнеров больше нет — t25)
+        // Assert — WAL_CHAIN_ERROR с границами (агентов-контейнеров больше нет)
         var wal = await ReadWal("cc2");
         wal!.State.Should().Be(WalStreamStatus.WalChainError);
         wal.Error.Should().Contain("000000010000000000000002").And.Contain("000000010000000000000003");
@@ -409,7 +409,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act
         (await process.TickAsync(BuildSnap("cc3"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — WAL_CHAIN_ERROR с error про слот; слот пересоздан (t25: агентов нет)
+        // Assert — WAL_CHAIN_ERROR с error про слот; слот пересоздан (: агентов нет)
         var wal = await ReadWal("cc3");
         wal!.State.Should().Be(WalStreamStatus.WalChainError);
         wal.Error.Should().Contain("slot");
@@ -464,13 +464,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Act — тик контроля
         (await process.TickAsync(BuildSnap("cc5"), backups, ct)).IsSuccess.Should().BeTrue();
 
-        // Assert — DEGRADED «тишина» (transient-деградация; t25: агентов нет)
+        // Assert — DEGRADED «тишина» (transient-деградация; : агентов нет)
         var wal = await ReadWal("cc5");
         wal!.State.Should().Be(WalStreamStatus.Degraded);
         wal.Error.Should().Contain("upload silence");
     }
 
-    // ── t25-ревью п.16: компактные покрытия живых контрактов контроля ──
+    // ── ревью п.16: компактные покрытия живых контрактов контроля ──
 
     // AAA (факт поверх записи, ревью Ф4-2 №2): прогресс не наблюдаем (S3 пуст —
     // list ничего не вернул, chain_start от verify-OK полного) —
@@ -534,7 +534,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().Contain("WAL stream lag 7 segments (threshold 3)");
     }
 
-    // AAA (t18, интеграционный путь): chain_start от verify-OK полного с
+    // AAA (интеграционный путь): chain_start от verify-OK полного с
     // ratchet — кандидат НИЖЕ записанной границы точку не понижает.
     [Fact]
     public async Task ChainStart_DoesNotLowerBelowRecorded()
@@ -568,7 +568,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.State.Should().Be(WalStreamStatus.Active);
     }
 
-    // ── t25: факты приёмников из статус-ключей etcd (arch/19 §4) ──
+    // ── : факты приёмников из статус-ключей etcd (arch/19 §4) ──
 
     // AAA: сид agent-ключей → контроль пишет agents wal-ключа по нодам portalloc
     // шарда: ключ жив (lease) → running; exited новыми записями не пишется
@@ -646,7 +646,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             a => a.Node == "shard1a" && a.State == WalAgentPresence.Absent);
     }
 
-    // t25 (решение spec §7 №11): санитарный снос legacy wal-контейнеров
+    //  (решение spec §7 №11): санитарный снос legacy wal-контейнеров
     // pgw-backup-wal-<C>-* в начале тика (один list на тик кластера,
     // идемпотентно): найдены — stop/remove; повторный тик по чистому листингу —
     // no-op (удалений больше нет; вызов list — каждый тик кластера).
@@ -679,11 +679,11 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         driver.RemoveBackupAgentsCalls.Should().Be(2, "one list per cluster tick");
     }
 
-    // t25 (spec §3.4 п.4): docker-exec-доклад history УДАЛЁН — history-файлы
+    //  (spec §3.4 п.4): docker-exec-доклад history УДАЛЁН — history-файлы
     // докладывает приёмник из ФС своей ноды (PGDATA/pg_wal, факт history_missing
     // в статус-ключе). Прежние HistoryFallback-тесты упразднены вместе с кодом.
 
-    // AAA: t14 — контрольный проход отдаёт ОБЕИМ наблюдателям факт одного
+    // AAA: — контрольный проход отдаёт ОБЕИМ наблюдателям факт одного
     // прохода: lag (сегменты) и uploaded-age (now − last_uploaded_unix ≥ 0)
     [Fact]
     public async Task VerifyObserversReceiveLagAndUploadAge()
@@ -712,7 +712,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             .Which.Age.Should().BeGreaterThanOrEqualTo(0);
     }
 
-    // AAA: t14 — WAL_CHAIN_ERROR (дыра цепочки) снимает обе серии: наблюдатели получают null
+    // AAA: — WAL_CHAIN_ERROR (дыра цепочки) снимает обе серии: наблюдатели получают null
     [Fact]
     public async Task VerifyGapBrokenDropsSeriesOfBothObservers()
     {
@@ -740,7 +740,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         ages.Should().ContainSingle(t => t.C == "cw2" && t.Age == null);
     }
 
-    // ---- t24/t25 (arch/19 §3/§4): tli-зазор из факта tli_jump мастер-приёмника ----
+    // ---/ (arch/19 §3/§4): tli-зазор из факта tli_jump мастер-приёмника ----
 
     // Сид факт tli_jump в статус-ключе мастер-приёмника (формат arch/19 §4;
     // факт живёт в etcd до следующего прыжка — docker-лог агента не читается).
@@ -773,7 +773,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         return kv.Value!.Value;
     }
 
-    // AAA (t25, spec §3.4 п.2): факт tli_jump в статус-ключе мастер-приёмника →
+    // AAA (spec §3.4 п.2): факт tli_jump в статус-ключе мастер-приёмника →
     // DEGRADED с error-префиксом tli-gap:, границами зазора и TLI-переходом 1→2;
     // поле Gap персистентно в ключе; journal-фаза wal-tli-gap/<X>.
     [Fact]
@@ -972,7 +972,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // AAA (удержание): wal-ключ с Gap, факт tli_jump персистентен в etcd
     // (живёт в статус-ключе до следующего прыжка — «окно вымывания лога» ушло,
-    // t25) — ключ остаётся DEGRADED; текст error построен из ПОЛЕЙ записи
+    // — ключ остаётся DEGRADED; текст error построен из ПОЛЕЙ записи
     // (стабилен между тиками — WriteIfChanged), Gap перенесён.
     [Fact]
     public async Task TliGap_HeldPersistent()
@@ -1045,7 +1045,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().NotContain("tli-gap");
     }
 
-    // ---- t02/t25 (arch/19 §3): исчерпание write-списка — флаг pool_exhausted
+    // ---/ (arch/19 §3): исчерпание write-списка — флаг pool_exhausted
     // статус-ключа мастер-приёмника (детектор хвоста docker-лога удалён:
     // факт персистентен в etcd до первого успешного put) ----
 

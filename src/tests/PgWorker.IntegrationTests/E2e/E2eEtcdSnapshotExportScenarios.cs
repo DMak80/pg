@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E экспорта etcd-снапшотов (t08): изолированное окружение E2eEnvironment
+// E2E экспорта etcd-снапшотов : изолированное окружение E2eEnvironment
 // (своя сеть/etcd/ownS3 — withS3Node:true) + хост-воркер с включённым
 // Snapshots:Export. Каждый Fact — своё окружение (per-method изоляция,
 // e2e-isolation §1/§3): метрики/ключи/объекты сценария не пересекаются.
@@ -14,19 +14,19 @@ public class E2eEtcdSnapshotExportScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: bucket слепочной пары (не пуловый pgworker-backups).
+    // bucket слепочной пары (не пуловый pgworker-backups).
     private const string SnapshotBucket = "pgworker-etcd-snapshots";
     private E2eEnvironment Fx = null!;
     private string Endpoint => Fx.EtcdEndpoint;
     private EtcdGateway G => Fx.Gateway;
 
-    // Хост-воркер с включённым экспортом (t36: ОТДЕЛЬНАЯ слепочная пара
+    // Хост-воркер с включённым экспортом (: ОТДЕЛЬНАЯ слепочная пара
     // PgWorker:Snapshots:Export:S3 — свой bucket pgworker-etcd-snapshots,
     // префикс etcd/; Endpoint — localhost-вид воркера: sink ходит из процесса).
     private async Task<HostInstance> StartExportHostAsync(string name, CancellationToken ct,
         int intervalMin = 1, int retrySec = 5, int retention = 28, string? s3Override = null)
     {
-        // bucket слепков (t36): отдельный от пулового — создаёт окружение сценария
+        // bucket слепков : отдельный от пулового — создаёт окружение сценария
         // (прод: per-install, arch/19 §7; воркер bucket не создаёт).
         await Fx.RunDockerAsync(
         [
@@ -49,7 +49,7 @@ public class E2eEtcdSnapshotExportScenarios
         }, ct: ct);
     }
 
-    // S3-цель окружения Fact'а (хост-клиент; t36 — S3ClientOptions).
+    // S3-цель окружения Fact'а (хост-клиент; — S3ClientOptions).
     private PgWorker.Backups.S3ClientOptions OwnS3() => new(
         Fx.S3Endpoint,
         SnapshotBucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword);
@@ -84,7 +84,7 @@ public class E2eEtcdSnapshotExportScenarios
     // Чтение объекта bucket'a через AWSSDK-клиент теста (факт содержимого S3).
     private async Task<byte[]> DownloadAsync(string key, CancellationToken ct)
     {
-        // t36: креды/endpoint — литералы окружения Fact'а (S3-полей в runtime нет).
+        // креды/endpoint — литералы окружения Fact'а (S3-полей в runtime нет).
         using var client = new Amazon.S3.AmazonS3Client(
             new Amazon.Runtime.BasicAWSCredentials(E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword),
             new Amazon.S3.AmazonS3Config { ServiceURL = OwnS3().Endpoint, ForcePathStyle = true });
@@ -123,7 +123,7 @@ public class E2eEtcdSnapshotExportScenarios
         var kv = await StatusValueAsync(ct);
         kv.Should().Contain("\"interval_min\":1").And.Contain("\"last_object\":\"etcd/snapshot-");
         // Assert — объекты в ownS3: пара db+meta (имена относительно etcd/).
-        // Ретрай-поллинг до УСТОЙЧИВОГО листинга (t24, фейлы №14/№16/№17):
+        // Ретрай-поллинг до УСТОЙЧИВОГО листинга (фейлы №14/№16/№17):
         // intervalMin=1 — в окне ожидания OK воркер успевает снять ЕЩЁ один
         // слепок, и счёт пар в листинге — зона РЕТЕНЦИЯ-факта (Export_ретенция
         // ниже), не этого. Устойчивость здесь = в листинге присутствует пара

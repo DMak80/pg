@@ -26,4 +26,4 @@ public sealed record EtcdEndpoint(
     IReadOnlyList<string> Errors);
 
 // Транспортные records EtcdMember/EtcdAlarm/EtcdAlarmType переехали в общую сборку
-// Shared.Etcd (t08): using Shared.Etcd.Client в шапке.
+// Shared.Etcd : using Shared.Etcd.Client в шапке.

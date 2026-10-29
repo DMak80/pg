@@ -3,7 +3,7 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// ACL-план роли app (t03, arch/16 §2.3/E): канонический минимум прав
+/// ACL-план роли app (arch/16 §2.3/E): канонический минимум прав
 /// deny-by-default кластера — TOPIC * {READ, WRITE, DESCRIBE}, GROUP * {READ,
 /// DESCRIBE}, TRANSACTIONAL_ID * {WRITE, DESCRIBE}; все LITERAL/Allow. Diff —
 /// чистая функция: создать недостающие, удалить лишние у User:app; ACL чужих

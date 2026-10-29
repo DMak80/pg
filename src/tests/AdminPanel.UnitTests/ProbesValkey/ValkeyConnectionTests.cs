@@ -11,7 +11,7 @@ using Xunit;
 namespace AdminPanel.UnitTests.ProbesValkey;
 
 // Мини-PKI юнит-тестов панели (копия TlsTestServer воркера, свой экземпляр —
-// t06): CA per-тест + серверный серт SAN=127.0.0.1; канон-режим AUTH→+OK,
+//: CA per-тест + серверный серт SAN=127.0.0.1; канон-режим AUTH→+OK,
 // PING→+PONG поверх SslStream.
 internal static class TlsTestServer
 {
@@ -173,7 +173,7 @@ internal sealed class TlsProbeServer : IAsyncDisposable
     }
 }
 
-// PING-проба панели (t06 TLS): доверие per-cluster CA (CustomRootTrust + SAN
+// PING-проба панели (TLS): доверие per-cluster CA (CustomRootTrust + SAN
 // endpoint-хоста); чужой CA / битый ca_pem / отсутствие ca_pem — Failed.
 public sealed class ValkeyConnectionTests
 {

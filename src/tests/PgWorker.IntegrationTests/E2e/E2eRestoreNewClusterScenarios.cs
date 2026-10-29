@@ -11,10 +11,10 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E DR — новый кластер из S3-префикса (t24/ревизия 8 — разбиение
+// E2E DR — новый кластер из S3-префикса (/ревизия 8 — разбиение
 // E2eRestoreScenarios, вынос одиночного факта ~4 мин; хелперы — копии,
 // прецедент :385-386).
-// E2E восстановления шарда из бэкапов (t05, spec §4 Ф5): изолированное окружение
+// E2E восстановления шарда из бэкапов (spec §4 Ф5): изолированное окружение
 // E2eEnvironment (своя сеть/etcd/ownS3 по guid, динамические порты, полный
 // teardown с ассертом чистоты в DisposeAsync — docs/e2e-isolation.md) +
 // provisioned-кластер с включённой подсистемой бэкапов → реальный COMPLETED
@@ -26,7 +26,7 @@ public class E2eRestoreNewClusterScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
@@ -92,7 +92,7 @@ public class E2eRestoreNewClusterScenarios
             fullsInS3.Value.Should().NotBeEmpty("S3 outlives the cluster — the actual DR source");
 
             // Act 2 — пересоздание декларацией + restore обеих шардов из A/shard1
-            // (source-override; ретрай на гонку t03 — дыры цепочки source-префикса)
+            // (source-override; ретрай на гонку — дыры цепочки source-префикса)
             await SeedClusterAsync(cluster);
             var reprovisioned = await WaitPhaseAsync(
                 "reprovisioning", E2eFixture.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ProvisionedAsync(cluster)), TimeSpan.FromSeconds(360), ct);
@@ -105,7 +105,7 @@ public class E2eRestoreNewClusterScenarios
             // Assert — оба restore COMPLETED (RestoreWithRetry не вернёт FAILED);
             // контрольные строки на месте.
 
-            // Гейт готовности мастера (t10): COMPLETED не гарантирует закрытия
+            // Гейт готовности мастера : COMPLETED не гарантирует закрытия
             // рестарт-окна postmaster (Npgsql 57P01) — SQL-проба SELECT 1 до
             // финального чтения (эталон — backup_exec-гвард E2eBackupScenarios;
             // docs/e2e-launch.md §2: новый ожидания-участок — только через
@@ -126,7 +126,7 @@ public class E2eRestoreNewClusterScenarios
                 }
             }, TimeSpan.FromSeconds(120), ct);
             masterReady.Should().BeTrue(
-                "the master must accept SQL before the final read (t10 gate): "
+                "the master must accept SQL before the final read (SQL gate): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
 
             // Финальное чтение с ретраем (эталон rs-latest): даже после гейта
@@ -197,10 +197,10 @@ public class E2eRestoreNewClusterScenarios
         return ok;
     }
 
-    // Воркер с бэкап-комплектом (t02+t03+t05): паттерн StartBackupHostAsync —
+    // Воркер с бэкап-комплектом (++): паттерн StartBackupHostAsync —
     // креды пула в env-профиле, пул — policy.s3, адреса нод воркер резолвит
     // из /s3/ (advertised host.docker.internal): полный бэкап снимает
-    // приёмник ноды — upload изнутри контура, агенты t03 —
+    // приёмник ноды — upload изнутри контура, агенты —
     // S3_ENDPOINTS/S3_READ_ENDPOINTS (внутри контейнера localhost
     // недостижим!). Пороги WAL-контроля — короткие.
     private Task<HostInstance> StartRestoreHostAsync(string name, CancellationToken ct)
@@ -208,7 +208,7 @@ public class E2eRestoreNewClusterScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -245,8 +245,8 @@ public class E2eRestoreNewClusterScenarios
     }
 
     // Поллинг restore-ключа до терминального статуса. FAILED «дыра WAL-цепочки» —
-    // внешняя гонка t03 (пересоздание WAL-агента теряет сегмент, канон откладывает
-    // reconnect-устойчивость в t07): ChainGapException — сигнал РЕТРАЯ заявки.
+    // внешняя гонка (пересоздание WAL-агента теряет сегмент, канон откладывает
+    // reconnect-устойчивость в): ChainGapException — сигнал РЕТРАЯ заявки.
     private sealed class ChainGapException(string message) : ApplicationException(message);
 
     private async Task<Dictionary<string, JsonElement>?> WaitRestoreAsync(
@@ -287,7 +287,7 @@ public class E2eRestoreNewClusterScenarios
 
     // Непрерывность цепочки от wal_start полного (WalChain.Check — тот же
     // валидатор, что в restore): цель — ставит заявку только на консистентной
-    // цепочке; гонки пересоздания t03-агента ждутся поллингом.
+    // цепочке; гонки пересоздания агента ждутся поллингом.
     private async Task<bool> WalChainContinuousAsync(
         string cluster, string shard, string walStartSegment, CancellationToken ct)
         => await E2eFixture.WaitForAsync(async () =>
@@ -299,7 +299,7 @@ public class E2eRestoreNewClusterScenarios
             return PgWorker.Backups.WalChain.Check(chainStart.Value, names).IsContinuous;
         }, TimeSpan.FromSeconds(90), ct);
 
-    // Заявка restore с ретраем на внешнюю гонку t03: FAILED «дыра WAL-цепочки» →
+    // Заявка restore с ретраем на внешнюю гонку : FAILED «дыра WAL-цепочки» →
     // новая заявка (permanent-FAILED предшественника — история; шард после FAILED
     // остаётся разобранным — повторная заявка сама проводит демонтаж 404=ок,
     // джоб пересоздаёт volume ноды, rejoin поднимает ноды). До 3 попыток.
@@ -322,7 +322,7 @@ public class E2eRestoreNewClusterScenarios
             catch (ChainGapException) when (attempt < attempts)
             {
                 Console.Error.WriteLine(
-                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (t03 race), retrying the request");
+                    $"e2e[restore]: {cluster}/{shard} attempt {attempt} — chain gap (concurrent wal rewrite), retrying the request");
                 await Task.Delay(3000, ct);
             }
         }
@@ -411,7 +411,7 @@ public class E2eRestoreNewClusterScenarios
         // отвечают «почему фаза не уложилась»; объёмы в e2e — единицы КБ).
         var journal = workKv?.Value ?? "<absent>";
         // PG-лог restore-джоба (/tmp/restore-pg.log в контейнере): какие сегменты
-        // запрашивал restore_command, где сорвалось (t27-разбор: mc-404 существующего).
+        // запрашивал restore_command, где сорвалось (разбор: mc-404 существующего).
         var pgLog = "";
         try
         {
@@ -435,7 +435,7 @@ public class E2eRestoreNewClusterScenarios
                 }
 
                 // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
-                // t27-разбор — restore_command получил 404 на сегмент, который в S3 есть.
+                // разбор — restore_command получил 404 на сегмент, который в S3 есть.
                 try
                 {
                     var live = await E2eFixture.RunProcessAsync("docker", ["exec", name, "bash", "-c",
@@ -525,7 +525,7 @@ public class E2eRestoreNewClusterScenarios
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
-    // ВРЕМЕННАЯ диагностика t05 E2E удалена (гейт 2026-09-12): причина найдена —
+    // ВРЕМЕННАЯ диагностика E2E удалена (гейт 2026-09-12): причина найдена —
     // pg_switch_wal без WAL-записей не материализует сегменты (см. SwitchWalsAsync).
 
     private static async Task ExecAsync(string dsn, string sql, CancellationToken ct)
@@ -549,7 +549,7 @@ public class E2eRestoreNewClusterScenarios
 
     // Published pg-порт мастера шарда из portalloc (резолв фактического primary
     // по пробам Patroni /primary; host-клиент — localhost).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
@@ -624,7 +624,7 @@ public class E2eRestoreNewClusterScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",

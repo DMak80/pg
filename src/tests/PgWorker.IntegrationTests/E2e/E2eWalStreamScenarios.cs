@@ -9,10 +9,10 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E WAL-потока, базовые сценарии (t24/ревизия 8 — разбиение
-// E2eBackupScenarios; t25 — приёмник в контейнере ноды): непрерывная
+// E2E WAL-потока, базовые сценарии (/ревизия 8 — разбиение
+// E2eBackupScenarios; — приёмник в контейнере ноды): непрерывная
 // доставка, санитарный снос legacy-контейнера, двойное архивирование.
-// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// E2E полных бэкапов (spec §7.1–7.4): изолированное окружение E2eEnvironment
 // (своя docker-сеть, свой etcd, СВОЯ ownS3-нода — withS3Node:true; порт динамический)
 // + операции бэкапов в приёмниках WalReceiver нод (arch/19 §5) + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
@@ -26,7 +26,7 @@ public class E2eWalStreamScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
@@ -36,10 +36,10 @@ public class E2eWalStreamScenarios
 
     private EtcdGateway G => Fx.Gateway;
 
-    // AAA: WAL-поток (t03/t27, AC1/AC8): provisioned кластер + INSERT/pg_switch_wal
+    // AAA: WAL-поток (/, AC1/AC8): provisioned кластер + INSERT/pg_switch_wal
     // → сегменты в ownS3-ноде, ключ wal ACTIVE с chain_start/last_uploaded, цепочка
     // непрерывна, running-агент мастера, слот pgw_bkp_<C>_<X> на мастере, поле
-    // agents в ключе (супервиз-факты per-node, t27 §3.5).
+    // agents в ключе (супервиз-факты per-node, §3.5).
     [Fact]
     public async Task WalStream_UploadsSegmentsContinuously()
     {
@@ -58,7 +58,7 @@ public class E2eWalStreamScenarios
 
         // Мастер shard1 (published pg-порт) + admin/superuser-DSN: нагрузка и
         // pg_switch_wal (superuser-only) выполняются одним соединением — как
-        // t02 SqlListAsync (dsn-креды app_user недоступны тесту напрямую).
+        //  SqlListAsync (dsn-креды app_user недоступны тесту напрямую).
         var (pgHost, pgPort, masterNodeUp) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -88,7 +88,7 @@ public class E2eWalStreamScenarios
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
             var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
-            // t25: факты приёмников — из статус-ключей etcd (docker-логов агентов нет)
+            // факты приёмников — из статус-ключей etcd (docker-логов агентов нет)
             var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
             var factsDump = string.Join("; ", agentFacts.Select(f =>
                 $"{f.Node}: {f.State}{(f.Error is null ? "" : $" err={f.Error}")}"));
@@ -141,9 +141,9 @@ public class E2eWalStreamScenarios
         }, TimeSpan.FromSeconds(120), ct);
         continuous.Should().BeTrue("the chain from chain_start must become continuous");
 
-        // Assert 4 — running-агент МАСТЕРА (per-node имя t27) + слот на мастере (AC1)
+        // Assert 4 — running-агент МАСТЕРА (per-node имя) + слот на мастере (AC1)
         var (_, _, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
-        // t25 (spec §6 п.3): приёмник мастера стримит — факт статус-ключа agent/<N>
+        //  (spec §6 п.3): приёмник мастера стримит — факт статус-ключа agent/<N>
         // (state=streaming), а не docker ps wal-контейнеров.
         var masterStreaming = await E2eFixture.WaitForAsync(async () =>
         {
@@ -151,7 +151,7 @@ public class E2eWalStreamScenarios
             return facts.Any(f => f.Node == masterNode && f.State == "streaming");
         }, TimeSpan.FromSeconds(60), ct);
         masterStreaming.Should().BeTrue("the master receiver streams (state=streaming in the agent key)");
-        // t27 §3.5: ключ wal несёт супервиз-факты agents (мастер running).
+        //  §3.5: ключ wal несёт супервиз-факты agents (мастер running).
         // Перечитываем ключ поллингом: контроль пишет wal, супервиз добавляет
         // agents тем же тиком — снапшот Assert 2 может быть пойман между двумя
         // put (гонка живого потока, как в Assert 2).
@@ -162,7 +162,7 @@ public class E2eWalStreamScenarios
                    && facts.Any(a =>
                        a.Node == masterNode && a.State == PgWorker.Etcd.Parsing.WalAgentPresence.Running);
         }, TimeSpan.FromSeconds(30), ct);
-        agentsInKey.Should().BeTrue("agents facts are written by the supervisor (t27): master running");
+        agentsInKey.Should().BeTrue("agents facts are written by the supervisor : master running");
         await using var adminConn = new NpgsqlConnection(adminDsn);
         await adminConn.OpenAsync(ct);
         await using var slotCmd = new NpgsqlCommand(
@@ -170,16 +170,16 @@ public class E2eWalStreamScenarios
             adminConn) { Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_shard1" } } };
         ((bool)(await slotCmd.ExecuteScalarAsync(ct))!).Should().BeTrue("the slot is created by the worker on the master (AC1)");
 
-        // Assert 5 — каркасный парсер t01/t02 читает wal-ключ без parseErrors (AC2)
+        // Assert 5 — каркасный парсер / читает wal-ключ без parseErrors (AC2)
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty(
-            $"the parser must read the worker keys (incl. wal with agents t27): " +
+            $"the parser must read the worker keys (incl. wal with agents): " +
             $"keys=[{string.Join("; ", kvs.Select(k => k.Key))}] errors=[{string.Join("; ", parseErrors)}]");
         parsed.Value.Should().Contain(b => b.Cluster == cluster);
     }
 
-    // AAA (t25, spec §6 п.3): legacy wal-контейнер pgw-backup-wal-<C>-* (имитация
+    // AAA (spec §6 п.3): legacy wal-контейнер pgw-backup-wal-<C>-* (имитация
     // etcd-образом sleep infinity) — санитарный снос тиком WalStreamProcess; новый
     // приёмник стримит (слот свободен), цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает.
     // Контейнерных агентов больше нет: пересоздание супервизом воркера упразднено —
@@ -379,7 +379,7 @@ public class E2eWalStreamScenarios
         try
         {
         // Act — ждём ДВА приёмника-стримера (мастер + sync; sync-standby появится
-        // сам): факты — статус-ключи agent/<N> обеих нод с state=streaming (t25)
+        // сам): факты — статус-ключи agent/<N> обеих нод с state=streaming 
         var bothStreaming = await E2eFixture.WaitForAsync(async () =>
         {
             var facts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1", ct);
@@ -491,7 +491,7 @@ public class E2eWalStreamScenarios
         }
     }
 
-    // AAA (t25-ревью 9.3, arch/19 §3): 3-репликовый шард — двойная архивация
+    // AAA (ревью 9.3, arch/19 §3): 3-репликовый шард — двойная архивация
     // стримит ТОЛЬКО ноды-источники (мастер + sync-standby); async-реплика с
     // живым приёмником стоит в waiting_role (REST-проба роли — none, доставки
     // с неё нет); agents wal-ключа наблюдают ВСЕ три ноды (широкий состав, §4).
@@ -582,7 +582,7 @@ public class E2eWalStreamScenarios
             $"{{\"full_max_age_sec\":3600,{E2eEnvironment.PoolS3(Pool)}}}", null, ct);
     }
 
-    // AAA (t25, spec §6 п.3/arch/19 §4): стоп-семантика Enabled=false — глобальный
+    // AAA (spec §6 п.3/arch/19 §4): стоп-семантика Enabled=false — глобальный
     // ключ /pgworker/backups-disabled жив (put ЛИДЕРА BackupOrphanSweeperLoop на
     // каждом тике), приёмники замирают в waiting_disabled БЕЗ docker-операций;
     // enable — ключ снят (del при старте инстанса с Enabled=true), стрим
@@ -649,7 +649,7 @@ public class E2eWalStreamScenarios
     // сам (recreate + журнальная фаза slot-recreate), ключ НЕ WAL_CHAIN_ERROR, приёмник
     // возвращается к стриму, цепочка WalChain непрерывна, last_uploaded растёт без
     // дыры. Детерминизация: между остановкой приёмника мастера (supervisorctl stop,
-    // t25 — процесс ноды) и возвратом воркера (Kill/старт — паттерн «смерть
+    //  — процесс ноды) и возвратом воркера (Kill/старт — паттерн «смерть
     // контроллера») живой sync-приёмник продолжает доставку, WAL генерится до
     // фактического wal_status='lost'.
     [Fact]
@@ -658,7 +658,7 @@ public class E2eWalStreamScenarios
         // Arrange — двухнодовый шард (двойная архивация), оба приёмника стримят
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
+        var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal", "shopwal", ct);
         await using var envOwner = fx;
         await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
         var slot = $"pgw_bkp_{cluster}_shard1";
@@ -699,10 +699,10 @@ public class E2eWalStreamScenarios
             before.Should().BeTrue("before the loss — key ACTIVE");
             var beforeWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
 
-            // Act 1 — стоп приёмника мастера (supervisord-программа ноды, t25) +
+            // Act 1 — стоп приёмника мастера (supervisord-программа ноды) +
             // стоп воркера (слот перестаёт подтверждаться; sync-приёмник жив —
             // доставка продолжается)
-            Console.WriteLine($"[PHASE] wal-t19: supervisorctl stop walreceiver on {masterNodeName} + worker kill");
+            Console.WriteLine($"[PHASE] wal: supervisorctl stop walreceiver on {masterNodeName} + worker kill");
             await Fx.RunDockerAsync(
                 ["exec", masterNodeName, "supervisorctl", "stop", "walreceiver"], ct);
             app.Kill();
@@ -730,16 +730,16 @@ public class E2eWalStreamScenarios
                 }
                 return await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) == "lost";
             }, TimeSpan.FromSeconds(180), ct);
-            Console.WriteLine($"[PHASE] wal-t19: master slot lost={lost} (budget 180 s)");
+            Console.WriteLine($"[PHASE] wal: master slot lost={lost} (budget 180 s)");
             lost.Should().BeTrue("64 MiB WAL at a 16 MiB ceiling + a checkpoint must cut the master slot");
 
             // Act 3 — возврат воркера + приёмника мастера: тик лечит (recreate слота
             // + журнал slot-recreate; приёмник повторно занимает слот от хвоста S3;
             // клэйм убитого истекает ≤ 15-20 c)
-            Console.WriteLine("[PHASE] wal-t19: worker start + receiver start — self-healing");
+            Console.WriteLine("[PHASE] wal: worker start + receiver start — self-healing");
             await Fx.RunDockerAsync(
                 ["exec", masterNodeName, "supervisorctl", "start", "walreceiver"], ct);
-            await using var app2Owner = await StartWalHostAsync("wal-t19b", ct);
+            await using var app2Owner = await StartWalHostAsync("wal-b", ct);
 
             // Assert 1 — журнальная фаза slot-recreate
             var journaled = await E2eFixture.WaitForAsync(async () =>
@@ -783,7 +783,7 @@ public class E2eWalStreamScenarios
             var afterWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
             var beforeSeg = PgWorker.Backups.WalFileName.TryParse(beforeWal.LastUploadedSegment)!.Value;
             var afterSeg = PgWorker.Backups.WalFileName.TryParse(afterWal.LastUploadedSegment)!.Value;
-            // t25 (инвариант RPO): доставленное НЕ откатывается — last_uploaded
+            //  (инвариант RPO): доставленное НЕ откатывается — last_uploaded
             // ≥ «до потери». СТРОГИЙ рост не гарантирован: надзор при lost-индукции
             // может rebuild'нуть упавшие ноды (bootstrap кластера) — контроль
             // пишет last_uploaded по факту S3, без подмены now().
@@ -802,7 +802,7 @@ public class E2eWalStreamScenarios
         catch (Exception ex)
         {
             Fx.MarkFailed(); // артефакты телеметрии переживают teardown (канон e2e-launch)
-            await WalScenarioDiagDumpAsync(cluster, "t19: " + ex.Message);
+            await WalScenarioDiagDumpAsync(cluster, "wal scenario: " + ex.Message);
             throw;
         }
     }
@@ -893,7 +893,7 @@ public class E2eWalStreamScenarios
     {
         try
         {
-            // t25: факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
+            // факты приёмников — из статус-ключей etcd (wal-контейнеров нет)
             var agentFacts = await Fx.ReadWalAgentFactsAsync(cluster, "shard1",
                 TestContext.Current.CancellationToken);
             var receiversDump = string.Join("; ", agentFacts.Select(f =>
@@ -1024,7 +1024,7 @@ public class E2eWalStreamScenarios
     // AAA (AC2 — ядро задачи): под WAL-нагрузкой docker rm -f агента мастера —
     // супервиз пересоздаёт агента, цепочка S3 непрерывна, WAL_CHAIN_ERROR не возникает,
 
-    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
+    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: комплект джобов + Wal-поток.
     // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
     // (host.docker.internal); пороги WAL-контроля — короткие.
     private Task<HostInstance> StartWalHostAsync(string name, CancellationToken ct)
@@ -1037,7 +1037,7 @@ public class E2eWalStreamScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -1095,7 +1095,7 @@ public class E2eWalStreamScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
+        // пул + policy с секцией s3 (идемпотентно при пересоздании кластера) —
         // без неё подсистема бэкапов кластера молчит.
         await Fx.SeedS3PoolAsync(Pool, ct);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -1103,10 +1103,10 @@ public class E2eWalStreamScenarios
     }
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
-    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // Резолв фактического primary — по пробам Patroni /primary (подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)

@@ -3,7 +3,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// etcd-no-quorum (critical): raft-признаки отсутствия лидера — QuorumSuspected t03 §3.11 (spec §4.2).
+// etcd-no-quorum (critical): raft-признаки отсутствия лидера — QuorumSuspected §3.11 (spec §4.2).
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class EtcdNoQuorumRule : IAlertRule
 {

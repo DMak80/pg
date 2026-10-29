@@ -9,7 +9,7 @@ using Xunit;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// SecurityMigrator (t03 Ф6, arch/16 §5 M): чистый детект премиграционного
+// SecurityMigrator (Ф6, arch/16 §5 M): чистый детект премиграционного
 // кластера; M0-гварды живых операций; M2 пересоздаёт всех брокеров разом
 // (том жив); M3 waiting до готовности; идемпотентность канонического кластера.
 public class SecurityMigratorTests
@@ -147,7 +147,7 @@ public class SecurityMigratorTests
     [Fact]
     public async Task Run_LiveRotationTickets_DoNotGateMigration()
     {
-        // Arrange (AC6, t10): премиграционный кластер + живые заявки ротаций
+        // Arrange (AC6): премиграционный кластер + живые заявки ротаций
         // (app/admin/CA/rebalance) — M0 их НЕ гейтит: на премиграционном
         // кластере их исполнение не могло начаться (H/K сами уходят в
         // waiting-cluster до миграции), после M заявки исполнятся.
@@ -177,7 +177,7 @@ public class SecurityMigratorTests
     [Fact]
     public async Task Run_LiveReassignment_StillGates()
     {
-        // Arrange: живой reassignments-прогресс — НАЧАТАЯ операция гейтит (t10).
+        // Arrange: живой reassignments-прогресс — НАЧАТАЯ операция гейтит.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafkaworker/reassignments/events",
             """{"mode":"balance","partitions_total":1,"partitions_remaining":1,"submitted_unix":1,"updated_unix":2,"instance":"x"}""");
@@ -197,7 +197,7 @@ public class SecurityMigratorTests
     [Fact]
     public async Task Run_LiveRegen_StillGates()
     {
-        // Arrange: живой regens-прогресс — гейтит (t10).
+        // Arrange: живой regens-прогресс — гейтит.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafkaworker/regens/events",
             """{"brokers_total":1,"brokers_remaining":1,"current_broker":"broker1","updated_unix":1,"instance":"x"}""");
@@ -215,7 +215,7 @@ public class SecurityMigratorTests
     [Fact]
     public async Task Run_OpenCaWindow_StillGates()
     {
-        // Arrange: живой staging ca_next_* — открытое CA-окно K гейтит (t10).
+        // Arrange: живой staging ca_next_* — открытое CA-окно K гейтит.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafka/clusters/events/ca_next_key", "next-key");
 

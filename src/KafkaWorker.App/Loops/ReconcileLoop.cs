@@ -118,7 +118,7 @@ internal sealed class ReconcileLoop(
         foreach (var error in cluster.ParseErrors)
             logger.LogWarning("skipped a broken key: {Error}", error);
 
-        // Кластеры исчезли из снапшота — backoff-состояние не копится (t11).
+        // Кластеры исчезли из снапшота — backoff-состояние не копится.
         backoff.ForgetMissing(parsed.Value.Select(c => c.Cluster).ToHashSet());
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик

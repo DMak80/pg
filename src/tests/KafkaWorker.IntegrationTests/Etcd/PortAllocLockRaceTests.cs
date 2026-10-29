@@ -8,10 +8,10 @@ using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Etcd;
 
-// t91: гонка ПАРАЛЛЕЛЬНОГО provisioning на реальном etcd — две критические
+// гонка ПАРАЛЛЕЛЬНОГО provisioning на реальном etcd — две критические
 // секции «busy из префикса portalloc → Allocate → put portalloc» под глобальным
 // клэймом дают НЕПЕРЕСЕКАЮЩИЕСЯ порты; без клэйма+индекса обе читали бы пустой
-// префикс (класс гонки t90: «port is already allocated»; порт PgWorker-теста).
+// префикс (класс гонки : «port is already allocated»; порт PgWorker-теста).
 // Своя etcd-only коллекция (spec 2026-10-17 §6.3.6): собственный etcd-контур
 // класса — полный канон per-class окружения.
 [CollectionDefinition(Name)]

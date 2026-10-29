@@ -69,14 +69,14 @@ ProblemDetails 400 с деталями по полям):
 
 ```text
 CreateClusterRequestDto: name, sharded (bool, опционально: отсутствует/null
-                          = true — обратная совместимость), buckets, shards
-                          (передаются ТОЛЬКО при sharded=true; при
-                          sharded=false не требуются — сервер нормализует
-                          в 1/1, 02 §9.3), replicas,
-                          requestCpu (число ядер, десятичное),
-                          requestMem (GiB, целое), requestDisk (GiB, целое),
-                          synchronousModeStrict (bool, опционально:
-                          отсутствие = true; false допускает replicas=1)
+ = true — обратная совместимость), buckets, shards
+ (передаются ТОЛЬКО при sharded=true; при
+ sharded=false не требуются — сервер нормализует
+ в 1/1, 02 §9.3), replicas,
+ requestCpu (число ядер, десятичное),
+ requestMem (GiB, целое), requestDisk (GiB, целое),
+ synchronousModeStrict (bool, опционально:
+ отсутствие = true; false допускает replicas=1)
 ```
 
 Ответ 201 (кластер записан в etcd, состояние NOT_INITIALIZED; снапшот
@@ -84,8 +84,8 @@ CreateClusterRequestDto: name, sharded (bool, опционально: отсут
 
 ```text
 ClusterCreatedDto: name, dbname, sharded (bool), bucketsCount, shardsTotal,
-                    replicas, requestCpu, requestMem, requestDisk (строки-каноны
-                    02 §9.1), state:"NOT_INITIALIZED"
+ replicas, requestCpu, requestMem, requestDisk (строки-каноны
+ 02 §9.1), state:"NOT_INITIALIZED"
 ```
 
 Нешардированная БД (`sharded=false`): в etcd пишется вырожденная структура
@@ -120,9 +120,9 @@ etcd-ошибка, битый config). Пока config занят, имя не �
 
 ```text
 AddShardRequestDto: replicas (целое 1..26, дефолт 2 — отсутствие поля = 2),
-                    requestCpu (десятичные ядра 0.01..64),
-                    requestMem (GiB, целое 1..65536),
-                    requestDisk (GiB, целое 1..65536)
+ requestCpu (десятичные ядра 0.01..64),
+ requestMem (GiB, целое 1..65536),
+ requestDisk (GiB, целое 1..65536)
 ```
 
 Имя шарда генерирует сервер: `shard<max+1>` по числовым суффиксам
@@ -132,9 +132,9 @@ AddShardRequestDto: replicas (целое 1..26, дефолт 2 — отсутс�
 поднимет ноды — снапшот подхватит на следующем тике):
 
 ```text
-ShardAddedDto:  cluster, name (сгенерированное shard<k>), replicas,
-                requestCpu, requestMem, requestDisk (строки-каноны 02 §9.1),
-                state:"NOT_INITIALIZED"
+ShardAddedDto: cluster, name (сгенерированное shard<k>), replicas,
+ requestCpu, requestMem, requestDisk (строки-каноны 02 §9.1),
+ state:"NOT_INITIALIZED"
 ```
 
 Отказы: 404 `Cluster not found` (config-ключа нет или имя кластера
@@ -171,8 +171,8 @@ PgWorker (guard'ы G1–G7; до демонтажа шард виден с бе�
 
 ```text
 MoveBucketsRequestDto: from (шард-источник), to (шард-приёмник),
-                        buckets (непустой массив уникальных int — какие бакеты
-                        источника везти; порядок обработки = по возрастанию id)
+ buckets (непустой массив уникальных int — какие бакеты
+ источника везти; порядок обработки = по возрастанию id)
 ```
 
 Ответ 201 (заявки записаны в etcd; PgWorker начнёт со старейшей — вкладка
@@ -180,7 +180,7 @@ MoveBucketsRequestDto: from (шард-источник), to (шард-приём
 
 ```text
 MovesQueuedDto: cluster, from, to, queued[int[]] (поставлены сейчас),
-                 skipped[int[]] (идентичные уже стояли)
+ skipped[int[]] (идентичные уже стояли)
 ```
 
 Отказы: 400 (`buckets` пуст/дубликаты, `from == to`); 404 (кластер или шард
@@ -224,15 +224,15 @@ cutover с секундной заморозкой записи.
 
 ```text
 RollbackBucketsRequestDto: buckets (непустой массив уникальных int — какие
-                           ACTIVE-бакеты откатывать; порядок обработки =
-                           по возрастанию id)
+ ACTIVE-бакеты откатывать; порядок обработки =
+ по возрастанию id)
 ```
 
 Ответ 201:
 
 ```text
 RollbackQueuedDto: cluster, queued[int[]] (поставлены сейчас),
-                    skipped[int[]] (идентичные op=rollback уже стояли)
+ skipped[int[]] (идентичные op=rollback уже стояли)
 ```
 
 Отказы: 400 (`buckets` пуст/дубликаты); 404 (кластер не найден, имя
@@ -253,7 +253,7 @@ config). Если обратной подписки нет — перманен�
 
 ```text
 FinalizeBucketRequestDto: bucket (int), oldShard (string — шард, артефакты
-                          которого убирать; ≠ текущему владельцу)
+ которого убирать; ≠ текущему владельцу)
 ```
 
 Ответ 201: `BucketFinalizeQueuedDto: cluster, bucket, oldShard`.
@@ -291,70 +291,70 @@ routing / не ACTIVE; `oldShard` = текущему владельцу; на б
 ## 2. DTO (ключевые поля)
 
 ```text
-OverviewDto:  alertsCritical, alertsWarning, etcd{reachable, endpointsOk, endpointsTotal},
-              clusters[{name, shards, buckets, activeMoves, masterlessShards,
-              notInitialized(bool)}],
-              activeMoves[{cluster,bucket,state,owner,target,updatedUnix}],
-              snapshotAgeMs, stale(bool)
+OverviewDto: alertsCritical, alertsWarning, etcd{reachable, endpointsOk, endpointsTotal},
+ clusters[{name, shards, buckets, activeMoves, masterlessShards,
+ notInitialized(bool)}],
+ activeMoves[{cluster,bucket,state,owner,target,updatedUnix}],
+ snapshotAgeMs, stale(bool)
 EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
-              leaderMemberId, raftTerm, errors[], active}], members[{id, name,
-              peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
-              quorumSuspected, lastRefreshUtc
-ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
-              state(ACTIVE|NOT_INITIALIZED|TO_REMOVE), sharded(bool),
-              synchronousModeStrict(bool — снапшот-поле), shards[ShardDto],
-              buckets[BucketDto], pendingMoves[MoveTicketDto] — очередь заявок
-              /pgworker/moves/<C>/ (02 §2.3.1; джойн по кластеру, сортировка
-              по requestedUnix), work{op, phase, updatedUnix, lastError}?
-              (nullable — журнал /pgworker/work/<C>, 02 §2.3.1; последний
-              результат процесса воркера — результат исполненной/отвергнутой
-              заявки переездов), heals[HealDto],
-              standNodes[{name,address}] — стендовый топо-реестр снапшота
-              (02 §2.3; поле глобально для всех кластеров, обычно пусто;
-              UI-блок «Стендовая топология» рисуется при наличии)
+ leaderMemberId, raftTerm, errors[], active}], members[{id, name,
+ peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
+ quorumSuspected, lastRefreshUtc
+ClusterDto: name, dbname, bucketsCount, createdUnix, incomplete(bool),
+ state(ACTIVE|NOT_INITIALIZED|TO_REMOVE), sharded(bool),
+ synchronousModeStrict(bool — снапшот-поле), shards[ShardDto],
+ buckets[BucketDto], pendingMoves[MoveTicketDto] — очередь заявок
+ /pgworker/moves/<C>/ (02 §2.3.1; джойн по кластеру, сортировка
+ по requestedUnix), work{op, phase, updatedUnix, lastError}?
+ (nullable — журнал /pgworker/work/<C>, 02 §2.3.1; последний
+ результат процесса воркера — результат исполненной/отвергнутой
+ заявки переездов), heals[HealDto],
+ standNodes[{name,address}] — стендовый топо-реестр снапшота
+ (02 §2.3; поле глобально для всех кластеров, обычно пусто;
+ UI-блок «Стендовая топология» рисуется при наличии)
 ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
-              notInitialized(bool), toRemove(bool), shardsTotal, shardsWithMaster,
-              synchronousModeStrict(bool — снапшот-поле), activeMoves
-ShardDto:     name, state(ACTIVE|TO_REMOVE — маркер демонтажа 02 §2.1/§9.6,
-              отсутствие ключа = ACTIVE), dsn, hosts[], replicasDeclared,
-              masterAddress, masterLeaseAlive(bool), nodes[{name, state}],
-              requests{cpu, mem, disk}?(nullable) — заявка на ноду из
-              HaScope `<C>-<X>` (02 §2.2 request_*), null у старых кластеров,
-              runtime{standbiesSync, slotsLagMaxBytes,
-              walStatusLost[], subscriptions[], bucketSchemas[], error}(nullable)
-BucketDto:    id, owner, state(ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED),
-              move{owner,target,startedUnix,updatedUnix,phase,lastError}? ,
-              ageSec (для не-ACTIVE)
-HealDto:      bucket, was, now, reason, tsUnix
-HaScopeDto:   scope, cluster?, shard?, matched(bool), leaderName, optimeLeader,
-              members[{name, host, port, role, state, timeline, lagBytes,
-              probeAtUtc, probeError}], rawConfig,
-              requests{cpu, mem, disk}?(nullable) — заявка на ноду (02 §9.1)
-AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
+ notInitialized(bool), toRemove(bool), shardsTotal, shardsWithMaster,
+ synchronousModeStrict(bool — снапшот-поле), activeMoves
+ShardDto: name, state(ACTIVE|TO_REMOVE — маркер демонтажа 02 §2.1/§9.6,
+ отсутствие ключа = ACTIVE), dsn, hosts[], replicasDeclared,
+ masterAddress, masterLeaseAlive(bool), nodes[{name, state}],
+ requests{cpu, mem, disk}?(nullable) — заявка на ноду из
+ HaScope `<C>-<X>` (02 §2.2 request_*), null у старых кластеров,
+ runtime{standbiesSync, slotsLagMaxBytes,
+ walStatusLost[], subscriptions[], bucketSchemas[], error}(nullable)
+BucketDto: id, owner, state(ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED),
+ move{owner,target,startedUnix,updatedUnix,phase,lastError}? ,
+ ageSec (для не-ACTIVE)
+HealDto: bucket, was, now, reason, tsUnix
+HaScopeDto: scope, cluster?, shard?, matched(bool), leaderName, optimeLeader,
+ members[{name, host, port, role, state, timeline, lagBytes,
+ probeAtUtc, probeError}], rawConfig,
+ requests{cpu, mem, disk}?(nullable) — заявка на ноду (02 §9.1)
+AlertDto: id, severity, kind, target, message, details{...}, sinceUnix
 AddShardRequestDto: replicas (целое 1..26, дефолт 2), requestCpu (десятичные
-              ядра 0.01..64), requestMem/requestDisk (GiB, целые 1..65536) —
-              тело POST шардов (§1.3, валидация 02 §9.3)
+ ядра 0.01..64), requestMem/requestDisk (GiB, целые 1..65536) —
+ тело POST шардов (§1.3, валидация 02 §9.3)
 ShardAddedDto: cluster, name (сгенерированное shard<k>), replicas, requestCpu,
-              requestMem, requestDisk (строки-каноны 02 §9.1),
-              state:"NOT_INITIALIZED" — ответ 201 (§1.3)
+ requestMem, requestDisk (строки-каноны 02 §9.1),
+ state:"NOT_INITIALIZED" — ответ 201 (§1.3)
 MoveBucketsRequestDto: from, to, buckets[int[]] — тело POST заявок на переезды
-                      (§1.5, валидация 02 §9.7.1)
+ (§1.5, валидация 02 §9.7.1)
 MovesQueuedDto: cluster, from, to, queued[int[]], skipped[int[]] — ответ 201 (§1.5)
 RollbackBucketsRequestDto: buckets[int[]] — тело POST заявок на откат (§1.7,
-                      валидация 02 §9.7.2)
+ валидация 02 §9.7.2)
 RollbackQueuedDto: cluster, queued[int[]], skipped[int[]] — ответ 201 (§1.7)
 FinalizeBucketRequestDto: bucket(int), oldShard(string) — тело POST заявки
-                      уборки (§1.8, валидация 02 §9.7.3)
+ уборки (§1.8, валидация 02 §9.7.3)
 BucketFinalizeQueuedDto: cluster, bucket, oldShard — ответ 201 (§1.8)
 AbortBucketRequestDto: bucket(int), force(bool, опц.) — тело POST заявки
-                      отмены переезда (§1.9, валидация 02 §9.7.4)
+ отмены переезда (§1.9, валидация 02 §9.7.4)
 BucketAbortQueuedDto: cluster, bucket, force — ответ 201 (§1.9)
 AppPasswordRotatedDto: cluster, requestedUnix, requestedBy — ответ 201 заявки
-                      ротации app-пароля (§1.6, протокол 02 §9.8; значение пароля
-                      панели неизвестно — только факт заявки)
+ ротации app-пароля (§1.6, протокол 02 §9.8; значение пароля
+ панели неизвестно — только факт заявки)
 MoveTicketDto: bucketId(int? — null у неканонического leaf'а), bucket(raw-leaf),
-              op(move|rollback|finalize|abort), to, requestedUnix, requestedBy —
-              строка очереди заявок кластера (ClusterDto.pendingMoves)
+ op(move|rollback|finalize|abort), to, requestedUnix, requestedBy —
+ строка очереди заявок кластера (ClusterDto.pendingMoves)
 ```
 
 `sinceUnix` алерта: `AlertEngine` сравнивает с прошлым снапшотом по
@@ -531,27 +531,27 @@ Active-кластер). Показывает маршрут owner→target, фа
 S3Worker (02 §9.9). В каждой:
 
 - **Инстансы**: instance id, URL, uptime (since_unix), health-бейдж,
-  thumbprint применённого серта.
+ thumbprint применённого серта.
 - **Целевой серт** (из `/workers/api_tls/<worker>`): subject, issuer, SAN,
-  сроки, thumbprint, кем/когда обновлён; статус применения per-instance
-  (`applied` / `pending restart` / `unmanaged` / `unknown`); при
-  `pending restart` — бейдж «требуется перезапуск».
+ сроки, thumbprint, кем/когда обновлён; статус применения per-instance
+ (`applied` / `pending restart` / `unmanaged` / `unknown`); при
+ `pending restart` — бейдж «требуется перезапуск».
 - Кнопка **«Сгенерировать сертификат»** (self-signed лист, 02 §9.9):
-  подтверждение с предупреждением, что применится только после
-  перезапуска.
+ подтверждение с предупреждением, что применится только после
+ перезапуска.
 - Кнопка **«Загрузить сертификат»**: форма PEM (cert + key; textarea×2 или
-  файлы). Клиентская валидация — зеркало серверной (02 §9.9); серверная —
-  источник истины: 422 «сертификат влияет на коммуникации воркеров с их
-  подчинёнными сервисами — обновление отклонено» выводится ЯВНО
-  (баннер-ошибка в теле формы, с причиной: CA / clientAuth / совпадение
-  fingerprint с per-cluster CA).
+ файлы). Клиентская валидация — зеркало серверной (02 §9.9); серверная —
+ источник истины: 422 «сертификат влияет на коммуникации воркеров с их
+ подчинёнными сервисами — обновление отклонено» выводится ЯВНО
+ (баннер-ошибка в теле формы, с причиной: CA / clientAuth / совпадение
+ fingerprint с per-cluster CA).
 - Кнопка **«Перезапустить воркера»**: подтверждение с предупреждением
-  «идущие операции (provisioning/переезды/ротации) продолжатся после
-  подъёма — клэймы и журнал в etcd; краткое окно недоступности API
-  (секунды)»; после 202 — статус применения серта обновится тиками.
+ «идущие операции (provisioning/переезды/ротации) продолжатся после
+ подъёма — клэймы и журнал в etcd; краткое окно недоступности API
+ (секунды)»; после 202 — статус применения серта обновится тиками.
 - Кнопка **«Убрать управляемый сертификат»** (красная; только при живом
-  ключе): подтверждение «воркер вернётся к env-сертификату после
-  перезапуска».
+ ключе): подтверждение «воркер вернётся к env-сертификату после
+ перезапуска».
 
 PEM-материалы (cert/key) в UI не отображаются и в API не отдаются — только
 метаданные.
@@ -563,19 +563,19 @@ PEM-материалы (cert/key) в UI не отображаются и в API 
 DnD-библиотек). Поля:
 
 - **Select «Пул»**: Active-кластеры `/s3/clusters/` (имя + подсказка числа
-  нод; проекция — 02 §12); вариант «Не выбрано» — допустимое сохраняемое
-  значение (выключение бэкапов кластера, policy шлётся без `s3`).
+ нод; проекция — 02 §12); вариант «Не выбрано» — допустимое сохраняемое
+ значение (выключение бэкапов кластера, policy шлётся без `s3`).
 - **Два упорядоченных списка нод выбранного пула**: «Запись мастера»
-  (`write_master`) и «Запись реплики» (`write_replica`) — чекбоксами
-  (чекбокс добавляет имя в КОНЕЦ массива — приоритет; снятие удаляет),
-  порядок кнопками ↑/↓; подпись-пояснение: разные ноды мастера/реплики
-  разводят потоки записи (отказ ноды с диском не убивает оба), одна нода —
-  общий случай.
+ (`write_master`) и «Запись реплики» (`write_replica`) — чекбоксами
+ (чекбокс добавляет имя в КОНЕЦ массива — приоритет; снятие удаляет),
+ порядок кнопками ↑/↓; подпись-пояснение: разные ноды мастера/реплики
+ разводят потоки записи (отказ ноды с диском не убивает оба), одна нода —
+ общий случай.
 - Сохранение — полный policy (retention + full_max_age_sec + verify +
-  drill + s3; замещение целиком — 02 §9.12) через
-  `PUT /api/clusters/{c}/backups/policy`; ошибки ProblemDetails в теле
-  модала (400 — по полям валидации воркера, 503 — «воркер/etcd
-  недоступен»); двойной клик исключён блокировкой кнопки на время мутации.
+ drill + s3; замещение целиком — 02 §9.12) через
+ `PUT /api/clusters/{c}/backups/policy`; ошибки ProblemDetails в теле
+ модала (400 — по полям валидации воркера, 503 — «воркер/etcd
+ недоступен»); двойной клик исключён блокировкой кнопки на время мутации.
 
 ## 4. Каталог алертов (`AlertEngine`)
 
@@ -634,21 +634,21 @@ critical-шума от ещё не поднятого кластера.
 обязательных поля у каждого kind (модель `Alert` расширена; пустых нет):
 
 - **`Hint`** (строка, русский): что именно не так, **как должно быть** и
-  **для чего** этот ключ/инвариант существует. Пример (bucket-lost):
-  «routing указывает на шард s3, которого нет в декларации кластера; routing —
-  единственный авторитет "где бакет", дыры и висячие ссылки ломают переезды и
-  SQL-сверку инвентаря; должен существовать ключ /clusters/<C>/shards/s3/replicas
-  либо routing переведён на живой шард».
+ **для чего** этот ключ/инвариант существует. Пример (bucket-lost):
+ «routing указывает на шард s3, которого нет в декларации кластера; routing —
+ единственный авторитет "где бакет", дыры и висячие ссылки ломают переезды и
+ SQL-сверку инвентаря; должен существовать ключ /clusters/<C>/shards/s3/replicas
+ либо routing переведён на живой шард».
 - **`Remedy`** (enum `AlertRemedy` + текст): **движитель** — кто закрывает
-  алерт:
-  - `WorkerAuto` — воркер сам репарирует/дожимает (алерт исчезнет сам;
-    прогресс/причина — в `/pgworker/work/<C>` или `/kafkaworker/work/<C>`);
-    принцип «PgWorker — хозяин кластера»: вечный алерт этого класса = дефект
-    воркера, а не норма;
-  - `OperatorApi` — оператор вызывает конкретную мутацию через API панели
-    (в тексте — какая; напр. «POST /api/clusters/{c}/moves — вернуть бакет
-    на живой шард»);
-  - `OperatorRunbook` — ручной разбор (etcdctl/скрипты; ссылка на arch-док).
+ алерт:
+ - `WorkerAuto` — воркер сам репарирует/дожимает (алерт исчезнет сам;
+ прогресс/причина — в `/pgworker/work/<C>` или `/kafkaworker/work/<C>`);
+ принцип «PgWorker — хозяин кластера»: вечный алерт этого класса = дефект
+ воркера, а не норма;
+ - `OperatorApi` — оператор вызывает конкретную мутацию через API панели
+ (в тексте — какая; напр. «POST /api/clusters/{c}/moves — вернуть бакет
+ на живой шард»);
+ - `OperatorRunbook` — ручной разбор (etcdctl/скрипты; ссылка на arch-док).
 
 Маппинг движителей по каталогу: etcd-инфраструктурные (`etcd-*`,
 `snapshot-stale`) и доступность воркеров (`worker-api-unreachable` —
@@ -667,7 +667,7 @@ probe-алерты (`ha-member-not-streaming`, `replica-lag-high`, `slot-*`,
 |---|---|---|---|
 | `worker-api-unreachable` | critical | нет живых ключей `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`) — мутации домена из панели недоступны (503) | снапшот (lease-ключи дискавери) |
 
-Kind наблюдаемости провижининга и здоровья воркера (2026-09-01; источники —
+Kind наблюдаемости провижининга и здоровья воркера (источники —
 02 §2.3.1 `work`-журналы и опрос `/healthz`):
 
 | kind | severity | Условие | Источник |
@@ -688,12 +688,12 @@ UI: карточка алерта раскрывает Hint и Remedy (бейд�
 ```sql
 -- sync-standby и лаги физических реплик (P8)
 select application_name, client_addr, state, sync_state, pg_wal_lsn_diff(
-         pg_current_wal_lsn(), replay_lsn) as lag_bytes
+ pg_current_wal_lsn, replay_lsn) as lag_bytes
 from pg_stat_replication;
 
 -- слоты переездов: лаг/риск среза (P4)
 select slot_name, slot_type, active, wal_status, safe_wal_size, confirmed_flush_lsn,
-       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) as lag_bytes
+ pg_wal_lsn_diff(pg_current_wal_lsn, confirmed_flush_lsn) as lag_bytes
 from pg_replication_slots;
 
 -- прогресс подписок (переезды)
@@ -704,7 +704,7 @@ from pg_stat_subscription;
 select nspname from pg_namespace where nspname like 'bucket\_%' escape '\';
 
 -- роль ноды (мастер или реплика)
-select pg_is_in_recovery();
+select pg_is_in_recovery;
 ```
 
 Образцы и тонкости (например, `like`-экранирование `_`) — из
@@ -749,52 +749,52 @@ clustersCritical — critical-алерты `kafka-broker-not-running`/
 
 ```text
 KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
-    brokersTotal, brokersRunning, topicsCount, endpoints,
-    rotationPending(bool), caRotationPending(bool), rebalancePending(bool)
+ brokersTotal, brokersRunning, topicsCount, endpoints,
+ rotationPending(bool), caRotationPending(bool), rebalancePending(bool)
 KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
-    defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
-    brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
-    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
-    caRotation{requestedUnix, requestedBy}?(nullable),
-    rebalance{requestedUnix, requestedBy}?(nullable),
-    ticketOutcome{kind(password-app|password-admin|ca|rebalance),
-    outcome(expired|done), reason?, requestedUnix, requestedBy,
-    finishedUnix}?(nullable — ключа нет = исходов не было),
-    reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
-    partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
+ defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
+ brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
+ (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
+ caRotation{requestedUnix, requestedBy}?(nullable),
+ rebalance{requestedUnix, requestedBy}?(nullable),
+ ticketOutcome{kind(password-app|password-admin|ca|rebalance),
+ outcome(expired|done), reason?, requestedUnix, requestedBy,
+ finishedUnix}?(nullable — ключа нет = исходов не было),
+ reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
+ partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
-    UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до
-    provisioning), cpu, memGi, diskGi (nullable — заявка resources),
-    live(bool|null — из пробы: брокер id/host виден в DescribeCluster),
-    brokerId(int|null — из пробы)
+ UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до
+ provisioning), cpu, memGi, diskGi (nullable — заявка resources),
+ live(bool|null — из пробы: брокер id/host виден в DescribeCluster),
+ brokerId(int|null — из пробы)
 KafkaTopicDto: name, partitions, replicationFactor, retentionMs, minInSyncReplicas
-    (null — конфиг отсутствует в факте), desired{partitions, retentionMs,
-    minInSyncReplicas, requestedUnix, requestedBy}?(nullable), missing(bool),
-    syncedUnix, lifecycle{op(create|delete), partitions?, replicationFactor?,
-    retentionMs?, minInSyncReplicas?, requestedUnix, requestedBy}?(nullable;
-    create-заявка без факт-ключа — «виртуальная» строка: факт-поля null/0,
-    параметры — в lifecycle-части)
+ (null — конфиг отсутствует в факте), desired{partitions, retentionMs,
+ minInSyncReplicas, requestedUnix, requestedBy}?(nullable), missing(bool),
+ syncedUnix, lifecycle{op(create|delete), partitions?, replicationFactor?,
+ retentionMs?, minInSyncReplicas?, requestedUnix, requestedBy}?(nullable;
+ create-заявка без факт-ключа — «виртуальная» строка: факт-поля null/0,
+ параметры — в lifecycle-части)
 KafkaGroupDto: group, state, members, totalLag (волна C — из пробы)
 CreateKafkaClusterRequestDto: name, brokers(1..9 def 3), replicationFactor
-    (1..9 ≤ brokers def 3), minInSyncReplicas(1..RF def 2), defaultPartitions
-    (1..1000 def 12), defaultRetentionMs(1..2147483647 def 604800000),
-    cpu(0.01..64 def 2), memGi(1..65536 def 2), diskGi(1..65536 def 20)
-    — валидация 02 §10.3
+ (1..9 ≤ brokers def 3), minInSyncReplicas(1..RF def 2), defaultPartitions
+ (1..1000 def 12), defaultRetentionMs(1..2147483647 def 604800000),
+ cpu(0.01..64 def 2), memGi(1..65536 def 2), diskGi(1..65536 def 20)
+ — валидация 02 §10.3
 KafkaClusterCreatedDto: name, state:"NOT_INITIALIZED", brokers,
-    replicationFactor, minInSyncReplicas, defaultPartitions,
-    defaultRetentionMs, cpu, memGi, diskGi
+ replicationFactor, minInSyncReplicas, defaultPartitions,
+ defaultRetentionMs, cpu, memGi, diskGi
 KafkaConfigUpdateRequestDto: replicationFactor?, minInSyncReplicas?,
-    defaultPartitions?, defaultRetentionMs? (хотя бы одно; границы 02 §10.3)
+ defaultPartitions?, defaultRetentionMs? (хотя бы одно; границы 02 §10.3)
 AddKafkaBrokerRequestDto: cpu, memGi, diskGi (границы 02 §10.3)
 KafkaBrokerAddedDto: cluster, name (сгенерированное broker<k>), cpu, memGi,
-    diskGi, state:"NOT_INITIALIZED"
+ diskGi, state:"NOT_INITIALIZED"
 KafkaTopicDesiredRequestDto: partitions?, retentionMs?, minInSyncReplicas?
-    (хотя бы одно; partitions только > фактического) — волна C
+ (хотя бы одно; partitions только > фактического) — волна C
 KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
 CreateTopicRequestDto: name, partitions?(1..1000 def config.default_partitions),
-    replicationFactor?(1..9 ≤ brokers def config.replication_factor),
-    retentionMs?(1..2147483647 опц.), minInSyncReplicas?(1..RF опц.)
-    — валидация 02 §10.3
+ replicationFactor?(1..9 ≤ brokers def config.replication_factor),
+ retentionMs?(1..2147483647 опц.), minInSyncReplicas?(1..RF опц.)
+ — валидация 02 §10.3
 KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor
 KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy
 ```
@@ -877,28 +877,28 @@ critical-алерты `valkey-node-not-running`/`valkey-endpoints-missing`).
 
 ```text
 ValkeyClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
-    nodesTotal (=1), nodesRunning (=0|1), endpoints,
-    rotationPending(bool), maxmemoryBytes, maxmemoryPolicy
+ nodesTotal (=1), nodesRunning (=0|1), endpoints,
+ rotationPending(bool), maxmemoryBytes, maxmemoryPolicy
 ValkeyClusterDto: name, state, nodesTotal(=1), maxmemoryBytes,
-    maxmemoryPolicy, createdUnix, endpoints, nodesList[ValkeyNodeDto],
-    rotation{role(app|admin), requestedUnix, requestedBy}?(nullable),
-    caRotation{requestedUnix, requestedBy}?(nullable),
-    ticketOutcome{kind(password-app|password-admin|ca), outcome(expired|done),
-    reason?, requestedUnix, requestedBy, finishedUnix}?(nullable — исходов
-    не было)
+ maxmemoryPolicy, createdUnix, endpoints, nodesList[ValkeyNodeDto],
+ rotation{role(app|admin), requestedUnix, requestedBy}?(nullable),
+ caRotation{requestedUnix, requestedBy}?(nullable),
+ ticketOutcome{kind(password-app|password-admin|ca), outcome(expired|done),
+ reason?, requestedUnix, requestedBy, finishedUnix}?(nullable — исходов
+ не было)
 ValkeyNodeDto: name(=node1), state(raw: NOT_INITIALIZED|PROVISIONING|
-    RUNNING|UNREACHABLE|REMOVING|TO_REMOVE), cpu, memGi, diskGi
-    (nullable — заявка resources), live(bool|null — из пробы PING;
-    null — проба молчит/кредов нет), probeError?(string|null)
+ RUNNING|UNREACHABLE|REMOVING|TO_REMOVE), cpu, memGi, diskGi
+ (nullable — заявка resources), live(bool|null — из пробы PING;
+ null — проба молчит/кредов нет), probeError?(string|null)
 CreateValkeyClusterRequestDto: name, maxmemoryBytes?(def 536870912),
-    maxmemoryPolicy?(def allkeys-lru; 8 значений канона),
-    resources{cpu?(0.01..64 def 1), memGi?(1..65536 def 1),
-    diskGi?(1..65536 def 10)} — валидация 02 §11.3 (инвариант
-    maxmemoryBytes < memGi-лимита, R3)
+ maxmemoryPolicy?(def allkeys-lru; 8 значений канона),
+ resources{cpu?(0.01..64 def 1), memGi?(1..65536 def 1),
+ diskGi?(1..65536 def 10)} — валидация 02 §11.3 (инвариант
+ maxmemoryBytes < memGi-лимита, R3)
 ValkeyClusterCreatedDto: name, state:"NOT_INITIALIZED", nodes,
-    maxmemoryBytes, maxmemoryPolicy, cpu, memGi, diskGi
+ maxmemoryBytes, maxmemoryPolicy, cpu, memGi, diskGi
 ValkeyConfigUpdateRequestDto: maxmemoryBytes?, maxmemoryPolicy?
-    (null = не менять)
+ (null = не менять)
 ValkeyConfigUpdatedDto: cluster, maxmemoryBytes, maxmemoryPolicy
 ValkeyResourcesRequestDto: cpu?, memGi?, diskGi? (null = не менять)
 ValkeyResourcesUpdatedDto: cluster, node, cpu, memGi, diskGi
@@ -986,24 +986,24 @@ critical-алерты `s3-node-not-running`/`s3-endpoints-missing`/
 
 ```text
 S3ClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
-    nodesTotal, nodesRunning, endpoints, connectivityState
-    (OK|DEGRADED|DOWN|null), syncState(SYNCED|LAGGING|DIVERGED|null),
-    rotationPending(bool)
+ nodesTotal, nodesRunning, endpoints, connectivityState
+ (OK|DEGRADED|DOWN|null), syncState(SYNCED|LAGGING|DIVERGED|null),
+ rotationPending(bool)
 S3ClusterDto: name, state, platform, nodesDeclared, etcdBackup(bool),
-    rootUser?(s3w-<C>-root — имя, не секрет), accessKeys?[{name, policy}],
-    createdUnix, endpoints, nodesList[S3NodeDto], links[{a,b}],
-    denylist[string], connectivity{state, checkedUnix,
-    links<map<string,map<string,string>>>, probeError?},
-    sync{state, checkedUnix, pairs[{from,to,missing,extra,lagBytes?,
-    lagObjects?}], lastError?}, rotation{requestedUnix, requestedBy}?
+ rootUser?(s3w-<C>-root — имя, не секрет), accessKeys?[{name, policy}],
+ createdUnix, endpoints, nodesList[S3NodeDto], links[{a,b}],
+ denylist[string], connectivity{state, checkedUnix,
+ links<map<string,map<string,string>>>, probeError?},
+ sync{state, checkedUnix, pairs[{from,to,missing,extra,lagBytes?,
+ lagObjects?}], lastError?}, rotation{requestedUnix, requestedBy}?
 S3NodeDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
-    UNREACHABLE|REMOVING|TO_REMOVE), placedOn, placement{dockerHost?,
-    swarmNode?, swarmLabels?}, resources{cpu, memGi, diskGi}(nullable),
-    usage{usedBytes, totalBytes, updatedUnix}(nullable), denied(bool)
+ UNREACHABLE|REMOVING|TO_REMOVE), placedOn, placement{dockerHost?,
+ swarmNode?, swarmLabels?}, resources{cpu, memGi, diskGi}(nullable),
+ usage{usedBytes, totalBytes, updatedUnix}(nullable), denied(bool)
 CreateS3ClusterPanelRequest: name, etcdBackup?(bool), instances[]
-    {name, placement{dockerHost?|swarmNode?|swarmLabels?},
-    resources?{cpu?, memGi?, diskGi?}}, resources?{cpu?, memGi?,
-    diskGi?} (общий fallback — зеркалит DTO воркера)
+ {name, placement{dockerHost?|swarmNode?|swarmLabels?},
+ resources?{cpu?, memGi?, diskGi?}}, resources?{cpu?, memGi?,
+ diskGi?} (общий fallback — зеркалит DTO воркера)
 AddS3NodePanelRequest: name, placement, resources
 UpdateS3ResourcesPanelRequest: cpu?, memGi?, diskGi? (null = не менять)
 PutS3LinksPanelRequest: links[{a,b}]

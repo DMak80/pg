@@ -7,7 +7,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Moves;
 
-// MoveDdl (t01 задача 10, Д3): DDL-перенос — pg_dump --schema-only командой
+// MoveDdl (Д3): DDL-перенос — pg_dump --schema-only командой
 // приёмнику ноды-источника (канал arch/25 №22), применение Npgsql-батчем,
 // гранты app-роли, сверка инвентаря P5. StubSql — записывающий мок.
 public class MoveDdlTests

@@ -6,7 +6,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// backup-pool-missing (t36, каталог 03 §4): Active-кластер, policy без s3 →
+// backup-pool-missing (каталог 03 §4): Active-кластер, policy без s3 →
 // critical; с s3 → нет; policy отсутствует → алерт (дефолт = пул не выбран).
 public class BackupPoolMissingRuleTests
 {

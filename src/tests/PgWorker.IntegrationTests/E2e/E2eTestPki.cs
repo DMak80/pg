@@ -4,7 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// PKI-хелпер E2E-фикстуры (t03, spec §5.5/§3.7): фикстурная per-install CA
+// PKI-хелпер E2E-фикстуры (spec §5.5/§3.7): фикстурная per-install CA
 // pgw-e2e-ca + серверный серт инстансов — копия механики ClusterPki воркера
 // (KafkaWorker.Core), локально в тестовой сборке (тесты PgWorker не тянут
 // зависимость от KafkaWorker.Core); конвенция именования — EngineProxyTestPki.

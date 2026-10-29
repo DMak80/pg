@@ -10,7 +10,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace AdminPanel.IntegrationTests;
 
-// Сериализация сборок Program-хостов панели в одном тестовом процессе (t08):
+// Сериализация сборок Program-хостов панели в одном тестовом процессе :
 // статический кеш сборок attribute-DI (ServiceCollectionExtensions._assemblies —
 // процессный dedup) пропускает уже отсканированные сборки, и ВТОРОЙ хост терял
 // бы все [Config]/[InjectAs*]-регистрации (см. комментарий AuthWebFactory —
@@ -47,7 +47,7 @@ internal static class PanelHostBuilder
     }
 }
 
-// Фабрика грани «Хранилище бэкапов» (t08, план Task 9, Решение 7): РЕАЛЬНЫЙ
+// Фабрика грани «Хранилище бэкапов» (план Task 9, Решение 7): РЕАЛЬНЫЙ
 // SnapshotStore, SnapshotRefresher и S3InventoryLoop из композиции Program
 // (никаких TestSnapshotStore/стабов гейтвея), но hosted-сервисы сняты — тики
 // двигает тест вручную (loop.RunOnceAsync → refresher.RefreshOnceAsync;
@@ -72,7 +72,7 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     /// <summary>Bucket фикстуры ownS3 (apm-backups-{guid}).</summary>
     public string StorageBucket { get; set; } = "";
 
-    /// <summary>Стаб API воркера для прокси-мутаций (reliability t02: policy);
+    /// <summary>Стаб API воркера для прокси-мутаций (reliability : policy);
     /// null — реальный гейтвей (тесты прокси ставят свой TestWorkerApi).</summary>
     public TestWorkerApi? WorkerApi { get; set; }
 
@@ -88,7 +88,7 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     /// PanelHostBuilder) — вызывать ПОСЛЕ установки Endpoint'ов сценария и
     /// ОБЯЗАТЕЛЬНО до первого обращения к Services/CreateClient: ленивый
     /// build мимо хелпера пропустил бы скан сборок и терял [Config]/[InjectAs*]
-    /// регистрации (фикс полной серии t08).</summary>
+    /// регистрации (фикс полной серии).</summary>
     public void EnsureBuilt()
     {
         if (_built)
@@ -99,7 +99,7 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec t02 §10).
+        // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec §10).
         builder.UseSetting("AdminPanel:Auth:Username", "admin");
         builder.UseSetting("AdminPanel:Auth:Password", AdminPassword);
         builder.UseSetting("AdminPanel:Auth:AllowHttp", "true");

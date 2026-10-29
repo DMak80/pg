@@ -61,7 +61,7 @@ public sealed class AddBrokerProcess(
         var ports = await EnsurePortsAsync(snap, pending, ct);
         if (!ports.IsSuccess)
         {
-            // t91: клэйм занят — не фейл, InProgress (следующий тик ~5 с).
+            // клэйм занят — не фейл, InProgress (следующий тик ~5 с).
             if (ports.Error is PortLockBusyException)
             {
                 await journal.WritePhaseAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
@@ -113,7 +113,7 @@ public sealed class AddBrokerProcess(
         var missing = pending.Select(b => b.Name).Where(n => !addresses.ContainsKey(n)).ToList();
         if (missing.Count > 0)
         {
-            // t91 (arch/16 §2.1): добор портов — под глобальным клэймом
+            //  (arch/16 §2.1): добор портов — под глобальным клэймом
             // /kafkaworker/locks/portalloc; сбой — обычный фейл, занят —
             // PortLockBusyException → тик-ретрай.
             var acquired = await portLock.TryAcquireAsync(ct);
@@ -136,7 +136,7 @@ public sealed class AddBrokerProcess(
                 // План — ТОЛЬКО новые ноды (порт PgWorker AddShard): собственные порты
                 // живых контейнеров числятся в busy и при полном плане аллокатор счёл бы
                 // их «занятыми» и перевыделил (рассинхрон portalloc/endpoints/контейнера).
-                // Закреплённые адреса исключаются из кандидатов явно; t91: плюс
+                // Закреплённые адреса исключаются из кандидатов явно; : плюс
                 // занятость portalloc ЧУЖИХ кластеров (окно «сосед записал,
                 // контейнеров ещё нет»).
                 var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, missing), hosts.Value);

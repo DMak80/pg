@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// Docker-E2E второго инстанса (t07 spec §4.5): инстансы PgWorker — КОНТЕЙНЕРЫ
+// Docker-E2E второго инстанса (spec §4.5): инстансы PgWorker — КОНТЕЙНЕРЫ
 // образа pgworker:e2e-<tag> (деплой-слой), docker kill первого посреди A3
 // add-shard — выживший контейнер доносит шард (takeover по lease-клэймам,
 // БЕЗ правок кода воркера). Каноны docs/e2e-isolation.md / docs/e2e-launch.md:
@@ -89,7 +89,7 @@ public class E2eSecondInstanceScenarios
             // ---------- Assert: выживший донёс, дублей нет, клэйм у него ----------
             var finished = await E2ePhase.WaitAsync(Fx, "si2-takeover-done",
                 () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct,
-                // Прогресс state-ключей shard3 (по образцу HaEtcd, t29 §3.5).
+                // Прогресс state-ключей shard3 (по образцу HaEtcd, §3.5).
                 progress: async () =>
                 {
                     var a = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3a/state"))?.Value ?? "-";
@@ -172,15 +172,15 @@ public class E2eSecondInstanceScenarios
             ["PgWorker__Snapshots__Dir"] = "/snapshots",
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
 
-            // mTLS API (t03): PEM-дуализм env освобождает от volume; уникальный
-            // AdvertiseUrl per инстанс (t07: одинаковые URL гасят оба ключа).
+            // mTLS API : PEM-дуализм env освобождает от volume; уникальный
+            // AdvertiseUrl per инстанс (: одинаковые URL гасят оба ключа).
             ["PGW_API_TLS_CERT"] = serverCert,
             ["PGW_API_TLS_KEY"] = serverKey,
             ["PGW_API_TLS_CLIENT_CA"] = ca.CaPem,
             ["PgWorker__Api__Tls__AllowInsecureHttp"] = "false",
             ["PgWorker__Api__AdvertiseUrl"] = $"https://{name}:8443",
 
-            // REST-TLS нод (t22): per-install CA — fail-fast старта без пары
+            // REST-TLS нод : per-install CA — fail-fast старта без пары
             // CA/CA_KEY (как у воркеров фикстуры; http-режима нет).
             ["PGW_REST_TLS_CA"] = Fx.CaPem,
             ["PGW_REST_TLS_CA_KEY"] = Fx.CaKeyPem,

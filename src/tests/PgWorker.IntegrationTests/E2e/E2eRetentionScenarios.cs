@@ -9,7 +9,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E ретенции (t06, spec §4 Ф6): изолированное окружение E2eEnvironment (своя
+// E2E ретенции (spec §4 Ф6): изолированное окружение E2eEnvironment (своя
 // сеть/etcd/ownS3, динамические порты, полный teardown в DisposeAsync) +
 // provisioned-кластер с включёнными бэкапами → реальный COMPLETED полный →
 // синтетика (etcd-ключ старого COMPLETED ~40 дней назад с wal_start ниже
@@ -21,7 +21,7 @@ public class E2eRetentionScenarios
 {
     private const string Bucket = "pgworker-backups";
 
-    // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
+    // пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
     // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
@@ -202,7 +202,7 @@ public class E2eRetentionScenarios
         {
             ["PgWorker__Backups__Enabled"] = "true",
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
-            // t36: креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
+            // креды пула — env-профиль (arch/19 §7); пул — policy.s3, адреса
             // резолвит воркер из /s3/ (advertised host.docker.internal, extra_hosts).
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
@@ -251,14 +251,14 @@ public class E2eRetentionScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
 
-        // t36: пул сидится до старта воркера; policy кластера кладёт факт строкой
+        // пул сидится до старта воркера; policy кластера кладёт факт строкой
         // ниже (с секцией s3 — без неё подсистема кластера молчит).
         await Fx.SeedS3PoolAsync(Pool, ct);
     }
 
     // Published pg-порт мастера шарда из portalloc (копия MasterPgAsync —
     // резолв фактического primary по пробам Patroni /primary).
-    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    // Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
@@ -302,7 +302,7 @@ public class E2eRetentionScenarios
     // backup_label'а = REDO последнего рестартпоинта sync-реплики, а рестартпоинт
     // подтягивается только checkpoint-записью мастера — серия pg_switch_wal
     // записей не создаёт, и wal_start полных «прилипает» к рестартпоинту
-    // provisioning-эпохи (E2E-факт t27: 4 полных подряд с wal_start < 5).
+    // provisioning-эпохи (факт стенда : 4 полных подряд с wal_start < 5).
     // INSERT-нагрузка (каждый коммит синхронно подтверждён репликой — WAL
     // физически в pg_wal обеих нод) + CHECKPOINT форсируют запись выше
     // переключений → рестартпоинт реплики берёт позицию нагрузки.

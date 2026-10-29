@@ -4,7 +4,7 @@ using Xunit;
 
 namespace Shared.Etcd.UnitTests.Maintenance;
 
-// SnapshotJob + опциональный sink (t08, spec §3.4): экспорт вызывается после
+// SnapshotJob + опциональный sink (spec §3.4): экспорт вызывается после
 // записи локального файла с best-effort ревизией; сбой sink (Result.Failed и
 // исключение) НЕ роняет снятие; sink=null — прежнее поведение.
 public class SnapshotJobSinkTests

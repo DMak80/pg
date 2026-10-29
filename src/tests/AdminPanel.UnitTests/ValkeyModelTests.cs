@@ -6,7 +6,7 @@ using Xunit;
 namespace AdminPanel.UnitTests;
 
 // Модель valkey-домена: толерантный state-маппинг (arch/20 §5); маппер
-// деталей API (t07): CaRotation Core-тикета → API-DTO (null-пропagation).
+// деталей API : CaRotation Core-тикета → API-DTO (null-пропagation).
 public sealed class ValkeyModelTests
 {
     // Arrange: сырые значения state. Act: Parse. Assert: канон + незнакомое → Active.
@@ -58,7 +58,7 @@ public sealed class ValkeyModelTests
     [Fact]
     public void MapDetails_TicketOutcome_MapsToDto()
     {
-        // Arrange (t10): исход expired кластера live.
+        // Arrange : исход expired кластера live.
         var outcome = new ValkeyTicketOutcome(
             "live", "password-app", "expired", "waiting-cluster", 1750000000, "it", 1750003600);
         var cluster = new ValkeyClusterInfo(

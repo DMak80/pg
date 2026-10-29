@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Адресация HTTP API приёмника (t26, arch/19 §2/§3.5, spec §3.1): нода —
+// Адресация HTTP API приёмника (arch/19 §2/§3.5, spec §3.1): нода —
 // alias:8080 по docker-имени (канонические pgw-<C>-<X>-<n>; object — имя её
 // контейнера). Все операции бэкапов — команды на приёмники нод (§5/§3.5/§3.6).
 public class WalReceiverAddressTests

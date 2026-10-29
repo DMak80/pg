@@ -3,7 +3,7 @@ using Shared.Core;
 
 namespace PgWorker.WalReceiver;
 
-/// <summary>Читатель позиции слота на источнике (t27, arch/19 §3.1): пустой префикс
+/// <summary>Читатель позиции слота на источнике (arch/19 §3.1): пустой префикс
 /// S3 — старт от restart_lsn. Реализация Npgsql — Task 5.</summary>
 public interface ISlotPositionReader
 {
@@ -16,7 +16,7 @@ public interface ISlotPositionReader
 /// при 58P01).</summary>
 public sealed record WalTail(ulong Position, string SegmentName);
 
-/// <summary>Резолв стартовой позиции приёмника от хвоста S3 (t27, arch/19 §3):
+/// <summary>Резолв стартовой позиции приёмника от хвоста S3 (arch/19 §3):
 /// list префикса → минимальный сегмент как chain_start → WalChain.Check:
 /// непрерывная цепочка — старт с конца последнего сегмента; дыра — старт с конца
 /// непрерывной части (повторная доставка выше дыры идемпотентна по имени);

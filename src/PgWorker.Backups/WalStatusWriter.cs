@@ -8,7 +8,7 @@ using PgWorker.Etcd.Parsing;
 namespace PgWorker.Backups;
 
 /// <summary>Сборка JSON статуса WAL-потока (формат arch/19 §4 — 1:1 с каркасной
-/// моделью WalStreamState t01) + put etcd-ключа /pgworker/backups/<C>/<X>/wal
+/// моделью WalStreamState) + put etcd-ключа /pgworker/backups/<C>/<X>/wal
 /// ТОЛЬКО при изменении (идемпотентность: безделье не пишет). Оба метода —
 /// failover по endpoints (continue-on-failure, итог — последний отказ; образец
 /// WorkJournal.WithFailoverAsync). Пишет PgWorker под клэймом <C>; панель читает.</summary>
@@ -129,7 +129,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         _ => WalStreamStatus.Active,
     };
 
-    // t27 (arch/19 §4): поле agents — супервиз-факты per-node; маппинг enum ↔
+    //  (arch/19 §4): поле agents — супервиз-факты per-node; маппинг enum ↔
     // канонические строки running/exited/absent. Старые ключи поля не несут.
     private static string AgentName(WalAgentPresence state) => state switch
     {
@@ -163,7 +163,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         [property: JsonPropertyName("node")] string? Node,
         [property: JsonPropertyName("state")] string? State);
 
-    // t24 (arch/19 §4): границы RPO-зазора tli-прыжка; null не пишется
+    //  (arch/19 §4): границы RPO-зазора tli-прыжка; null не пишется
     // (WhenWritingNull в опциях Json) — старые ключи поля не несут.
     private sealed record GapPayload(
         [property: JsonPropertyName("from")] string From,

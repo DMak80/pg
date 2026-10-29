@@ -355,10 +355,10 @@ public class ClusterMutationsApiTests(KafkaApiFixture fixture) : IAsyncLifetime
         noCluster.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    // t03: X-Api-Key/KFW_API_KEY удалены — грань API mTLS-only (arch/16 §1.1);
+    // X-Api-Key/KFW_API_KEY удалены — грань API mTLS-only (arch/16 §1.1);
     // транспортный отказ/успех проверяет MtlsApiTests на реальном Kestrel-сокете.
 
-    // Мутация №16 (adminpanel/02 §10.2-16, t03): заявка ротации admin-пароля —
+    // Мутация №16 (adminpanel/02 §10.2-16): заявка ротации admin-пароля —
     // клэйм-txn /kafkaworker/admin_rotations/<C>; повтор — 409 «уже запрошена».
     [Fact]
     public async Task RotateAdminPassword_ClaimsTicket_409OnRepeat()

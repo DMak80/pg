@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations;
 
-// Мутация policy бэкапов (reliability t02, arch/02 §9.12): панель НЕ пишет
+// Мутация policy бэкапов (reliability, arch/02 §9.12): панель НЕ пишет
 // в etcd — команда-прокси в POST policy-API воркера (arch/14 §1.1) ПОЛНЫМ
 // телом (retention + full_max_age_sec + verify + drill; канон замещения
 // целиком — панель в своей форме всегда шлёт полный набор полей, включая
@@ -14,9 +14,9 @@ namespace AdminPanel.Api.Operations;
 public sealed record UpdateBackupsPolicyRequest(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
     long FullMaxAgeSec, bool VerifyOnCreate, int DrillIntervalDays,
-    S3PolicyBody? S3); // t36: null — сброс секции (policy без s3)
+    S3PolicyBody? S3); // null — сброс секции (policy без s3)
 
-/// <summary>Секция s3 формы «Пул бэкапов» (t36, arch/02 §9.12): null-поля —
+/// <summary>Секция s3 формы «Пул бэкапов» (arch/02 §9.12): null-поля —
 /// валидация на воркере; весь body null — секция не шлётся (выключение).</summary>
 public sealed record S3PolicyBody(
     string? Pool, IReadOnlyList<string>? WriteMaster, IReadOnlyList<string>? WriteReplica);
@@ -37,7 +37,7 @@ public sealed class UpdateBackupsPolicyCommandHandler(IWorkerApiGateway api)
             body: BuildBody(c),
             requestedBy: c.RequestedBy, ct);
 
-    // t36: s3 сериализуется только при non-null секции (сброс — отправкой
+    // s3 сериализуется только при non-null секции (сброс — отправкой
     // policy БЕЗ s3, arch/02 §9.12).
     internal static object BuildBody(UpdateBackupsPolicyCommand c)
     {

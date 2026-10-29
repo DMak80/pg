@@ -100,7 +100,7 @@ public class KafkaRefresherTests
         AdminPanel.Etcd.Workers.KafkaWorkerHealthStore healthStore, params string[] endpoints)
         => New(gateway, store, healthStore, new KafkaSecretsStore(), endpoints);
 
-    // Перегрузка New (t03): refresher с внешним стором кредов (проверка наполнения).
+    // Перегрузка New : refresher с внешним стором кредов (проверка наполнения).
     private static KafkaSnapshotRefresher New(
         IEtcdGateway gateway, IKafkaSnapshotStore store,
         AdminPanel.Etcd.Workers.KafkaWorkerHealthStore healthStore,
@@ -264,7 +264,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_AdminAndCaKeys_SecretsStoreCarriesAdminCreds()
     {
-        // Arrange: кластерные kvs с admin_user/admin_password/ca_pem (t03, arch/15 §2).
+        // Arrange: кластерные kvs с admin_user/admin_password/ca_pem (arch/15 §2).
         var gateway = DemoGateway();
         gateway.ClustersKv =
         [
@@ -316,7 +316,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_AdminRotationTicket_InSnapshot()
     {
-        // Arrange: заявка ротации admin-пароля (t03, arch/15 §4).
+        // Arrange: заявка ротации admin-пароля (arch/15 §4).
         var gateway = DemoGateway();
         gateway.RotationsKv = EtcdFixtures.LoadKv("Kafka/kafka-rotations.json");
         gateway.WorkerApiKv = [];
@@ -342,7 +342,7 @@ public class KafkaRefresherTests
     [Fact]
     public async Task Refresh_CaRotationsAndTicketOutcomes_InSnapshot()
     {
-        // Arrange (t10): ca-заявка + исход expired + битый исход в новых префиксах.
+        // Arrange : ca-заявка + исход expired + битый исход в новых префиксах.
         var gateway = DemoGateway();
         gateway.CaRotationsKv =
         [

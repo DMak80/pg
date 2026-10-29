@@ -10,7 +10,7 @@ namespace PgWorker.Provisioning.Probes;
 /// <summary>
 /// Член Patroni-кластера из GET /cluster: role — master|replica, state —
 /// running|streaming|stopped|creating (P2.2 ожидание поднятия, надзор C);
-/// Sync — sync-статус члена (t02: выбор реплики-источника полного бэкапа,
+/// Sync — sync-статус члена (: выбор реплики-источника полного бэкапа,
 /// arch/19 §2): true/false от Patroni 3.x+, null — поле отсутствует.
 /// </summary>
 public sealed record PatroniMember(string Name, string Role, string State, bool? Sync = null);
@@ -130,7 +130,7 @@ public sealed class ShardProbe(HttpClient http)
     }
 
     // Динамический DCS-конфиг кластера (GET /config, arch/14 §5 C конвергенция,
-    // t09): сырой JSON-документ. Транспорт/не-2xx → Failed (вызывающий код
+    //: сырой JSON-документ. Транспорт/не-2xx → Failed (вызывающий код
     // treat'ит как транзиент — конвергенция повторится следующим тиком).
     public async Task<Result<string?>> GetConfigAsync(NodeAddress node, CancellationToken ct)
     {
@@ -153,8 +153,8 @@ public sealed class ShardProbe(HttpClient http)
     }
 
     // Частичный патч динамического DCS-конфига (PATCH /config, arch/14 §5 C,
-    // t09): Patroni мержит документ в DCS-конфиг и раздаёт нодам в пределах
-    // loop_wait. Мутационный эндпоинт — basic-auth per-cluster (t22, §5.4
+    //: Patroni мержит документ в DCS-конфиг и раздаёт нодам в пределах
+    // loop_wait. Мутационный эндпоинт — basic-auth per-cluster (§5.4
     // спеки: GET-методы заголовок не несут). Не-2xx/транспорт → Failed
     // (ретрай следующим тиком).
     public async Task<Result> PatchConfigAsync(
@@ -215,12 +215,12 @@ public sealed class ShardProbe(HttpClient http)
     }
 
     // Authorization: Basic base64(patroni:<rest_password>) — мутационные
-    // эндпоинты REST (t22, arch/14 §5 C); GET-эндпоинты заголовок не несут.
+    // эндпоинты REST (arch/14 §5 C); GET-эндпоинты заголовок не несут.
     private static void SetBasicAuth(HttpRequestMessage request, string restPassword)
         => request.Headers.Authorization = new AuthenticationHeaderValue(
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RestRotation.RestUsername}:{restPassword}")));
 
-    // REST :8008 — только https (t22, arch/13 §4): верификация цепочки к
+    // REST :8008 — только https (arch/13 §4): верификация цепочки к
     // per-install CA выполняется HttpClient «patroni» (hostname не сверяется —
     // адрес из реплицированного portalloc, канон P17).
     private static Uri BuildUri(NodeAddress node, string path)

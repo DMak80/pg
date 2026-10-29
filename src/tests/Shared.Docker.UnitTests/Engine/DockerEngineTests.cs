@@ -137,7 +137,7 @@ public class DockerEngineTests
         hostConfig.TryGetProperty("Resources", out _).Should().BeFalse();
     }
 
-    // t03-ревью Ф7 №1: сеть спеки обязана дойти до NetworkMode/NetworkingConfig —
+    // ревью Ф7 №1: сеть спеки обязана дойти до NetworkMode/NetworkingConfig —
     // иначе контейнер создаётся в default bridge и не резолвит alias нод
     // (per-cluster сети вида pgw-net-<C> у драйверов; имя здесь нейтральное —
     // тест проверяет маппинг поля, а не константу драйвера).
@@ -185,7 +185,7 @@ public class DockerEngineTests
         result.IsSuccess.Should().BeTrue();
     }
 
-    // Канон-суперсет t07 §7.2: образа нет на хосте → pull → повтор create.
+    // Канон-суперсет §7.2: образа нет на хосте → pull → повтор create.
     [Fact]
     public async Task CreateContainer_404NoSuchImage_PullsAndRetries()
     {
@@ -217,7 +217,7 @@ public class DockerEngineTests
             "/v1.44/containers/create");
     }
 
-    // Канон-суперсет t07 §7.1: 304 already-started = успех (pg-семантика).
+    // Канон-суперсет §7.1: 304 already-started = успех (pg-семантика).
     [Fact]
     public async Task StartContainer_304AlreadyStarted_ReturnsSuccess()
     {
@@ -321,7 +321,7 @@ public class DockerEngineTests
         handler.Requests.Single().Url.Should().Contain("filters=");
     }
 
-    // ListServiceRecordsAsync (t40, arch/24 §2): labels сервисов парсятся из
+    // ListServiceRecordsAsync (arch/24 §2): labels сервисов парсятся из
     // Spec.Labels; filters-запрос — валидный JSON {"name":["…"]} (регресс
     // рассыпавшихся кавычек: невалидный filters → 400 Engine API → отказ X2).
     [Fact]
@@ -351,7 +351,7 @@ public class DockerEngineTests
         doc.RootElement.GetProperty("name")[0].GetString().Should().Be("s3w-c1-");
     }
 
-    // t32 (arch/23 §4): placement-селекторы swarm_labels — парсинг node.Spec.Labels
+    //  (arch/23 §4): placement-селекторы swarm_labels — парсинг node.Spec.Labels
     // из GET /nodes; у ноды без labels — пустой словарь (не null).
     [Fact]
     public async Task ListNodes_ParsesSpecLabels_UnknownNodeGetsEmpty()

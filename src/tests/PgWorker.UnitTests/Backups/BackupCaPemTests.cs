@@ -2,7 +2,7 @@ using PgWorker.Backups;
 
 namespace PgWorker.UnitTests.Backups;
 
-// CA-PEM для контейнеров (t42, arch/19 §7): без пути — null; файл — Trim-PEM;
+// CA-PEM для контейнеров (arch/19 §7): без пути — null; файл — Trim-PEM;
 // нет файла/пустой — исключение с путём в диагностике.
 public class BackupCaPemTests
 {

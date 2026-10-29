@@ -1,6 +1,6 @@
 namespace PgWorker.WalReceiver.Operations;
 
-/// <summary>Общая грань операции бэкапов для маршрутов API (spec t26 §3.2):
+/// <summary>Общая грань операции бэкапов для маршрутов API (spec §3.2):
 /// RunAsync — весь пайплайн (маршрут запускает его фоновой Task); CancelAsync —
 /// best-effort отмена (cancel API: гасит дерево текущего child-процесса, чистит
 /// staging). Снимок статуса маршруты читают из OperationRegistry (прод-путь);

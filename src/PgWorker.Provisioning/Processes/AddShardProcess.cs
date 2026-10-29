@@ -16,7 +16,7 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// AddShardProcess — подъём ОТДЕЛЬНОГО пустого шарда в Active-кластере
-/// (t06 spec §5.2; arch/14 §5 G). Панель заявила декларацию (replicas +
+/// (spec §5.2; arch/14 §5 G). Панель заявила декларацию (replicas +
 /// nodes/NOT_INITIALIZED + request_*); процесс доводит шард до dsn/RUNNING,
 /// НЕ трогая routing/status/схемы бакетов (граница §2.1). Механика —
 /// ProvisioningProcess в scoped-to-shard виде; идемпотентность каждого шага,
@@ -47,7 +47,7 @@ public sealed partial class AddShardProcess(
 {
     private const string Op = "add-shard";
 
-    // Паттерн имени шарда (t06 §4.1): без дефиса — scope <C>-<X> и имена нод однозначны.
+    // Паттерн имени шарда (§4.1): без дефиса — scope <C>-<X> и имена нод однозначны.
     [GeneratedRegex("^[a-z][a-z0-9_]{0,30}$")]
     private static partial Regex ShardNamePattern();
 
@@ -110,7 +110,7 @@ public sealed partial class AddShardProcess(
             return await FailAsync(cluster, planned.Error!, "planning", ct);
         var topology = Topology(cluster, shardName, planned.Value);
 
-        // Ensure per-cluster тройки кредов (spec §3.3, образец P1.5, t02): у живого
+        // Ensure per-cluster тройки кредов (spec §3.3, образец P1.5): у живого
         // кластера ключи уже есть — читаем; отсутствующие — создаём.
         var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
@@ -204,7 +204,7 @@ public sealed partial class AddShardProcess(
         if (wanted.All(existing.ContainsKey))
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing);
 
-        // t90: глобальный portalloc-клэйм — секция «hosts → busy → allocate →
+        // глобальный portalloc-клэйм — секция «hosts → busy → allocate →
         // put» взаимоисключающа между кластерами/инстансами (arch/14 §2.4).
         var acquired = await portLock.TryAcquireAsync(ct);
         if (!acquired.IsSuccess)
@@ -240,7 +240,7 @@ public sealed partial class AddShardProcess(
             foreach (var (merged, addr) in allocated.Value)
                 existing[merged] = addr;
 
-            // t15 (arch/14 §2.4): decorate сетевой идентичности канонических
+            //  (arch/14 §2.4): decorate сетевой идентичности канонических
             // записей при заданном ключе ScrapeNetwork (alias/net в portalloc).
             var put = await PutAsync(PortAllocKey(cluster),
                 Portalloc.Serialize(PortallocIdentity.Decorate(existing, cluster, scrapeNetwork)), ct);
@@ -271,7 +271,7 @@ public sealed partial class AddShardProcess(
     }
 
     // A3: EnsureNode всех нод шарда (state != RUNNING) + state=PROVISIONING.
-    // syncStrict — per-cluster опция из config (t06): bootstrap ноды несёт strict кластера.
+    // syncStrict — per-cluster опция из config : bootstrap ноды несёт strict кластера.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
         PgTuneResult tuning, InstallSecrets clusterSecrets, bool syncStrict,

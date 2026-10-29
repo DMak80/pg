@@ -10,14 +10,14 @@ namespace KafkaWorker.UnitTests.Provisioning;
 // честными mod_revision/version и записывающий мок драйвера брокеров.
 internal static class Fakes
 {
-    // Валидный per-cluster CA для юнит-фикстур (t03): генерируется один раз.
+    // Валидный per-cluster CA для юнит-фикстур : генерируется один раз.
     public static readonly (string CaPem, string CaKey) UnitCa = ClusterPki.GenerateCa("unit");
 
     // etcd в памяти: Put инкрементирует mod_revision; txn-compare честно
     // сверяет Version/Value/ModRevision (нужно portalloc и config-K5).
     internal sealed class FakeEtcd : IEtcdGateway
     {
-        // Сеет ключи безопасности канонического (пост-M) кластера (t03): admin-
+        // Сеет ключи безопасности канонического (пост-M) кластера : admin-
         // креды + per-cluster CA (валидный PEM, генерируется один раз на прогон).
         public void SeedSecurity(string cluster)
         {
@@ -33,17 +33,17 @@ internal static class Fakes
         public readonly List<TxnRequest> Txns = [];
         public Action<string>? OnPut { get; set; }
 
-        // Транспортный отказ range (живой-Ф7-тесты, t09): префикс → исключение (обёрнуто в Failed).
+        // Транспортный отказ range (живой-Ф7-тесты): префикс → исключение (обёрнуто в Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
-        // Отказ снятия снапшота (SnapshotLoop-тесты, t09).
+        // Отказ снятия снапшота (SnapshotLoop-тесты).
         public Func<Exception?>? SnapshotFault { get; set; }
 
         // Гонка «панель пишет между read и txn»: вызывается ДО compare —
         // тест успевает переписать ключ и сломать ModRevisionEqual.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
-        // Сбой-инъекция txn (t91: ошибка захвата PortAllocLock → Result.Failed;
+        // Сбой-инъекция txn (: ошибка захвата PortAllocLock → Result.Failed;
         // порт TxnFault PgWorker): запрос → готовый Failed ДО compare.
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
@@ -118,7 +118,7 @@ internal static class Fakes
                 succeeded = req.Compare.All(c => c.Target switch
                 {
                     TxnTarget.Version => c.Pred == TxnPredicate.Greater
-                        ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists (t10)
+                        ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists 
                         : Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
                     TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
                     TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
@@ -208,7 +208,7 @@ internal static class Fakes
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
-        // Фактические лимиты kfw-<C>-<b> (t06): EnsureNodeAsync обновляет,
+        // Фактические лимиты kfw-<C>-<b> : EnsureNodeAsync обновляет,
         // тесты сеют расхождение вручную (регенератор обязан сходиться).
         // Арифметика — как в записи: decimal→double→(long)(cores*1e9).
         public readonly Dictionary<string, NodeLimits> Limits = [];
@@ -216,7 +216,7 @@ internal static class Fakes
         // Отказ инспекта конкретной ноды (ошибка тика — никаких действий).
         public Func<string, Result<NodeLimits?>>? ResourcesFaultByNode { get; set; }
 
-        // E9-инспекция (t05): сеется тестами; null по умолчанию — «контейнера нет»
+        // E9-инспекция : сеется тестами; null по умолчанию — «контейнера нет»
         // (положительное свидетельство смерти, S7). Инспекция broker<k> с контейнером
         // отдаёт host "h1" и порт — сид реконструкции portalloc.
         public readonly Dictionary<string, NodeEndpointInspection> Endpoints = [];
@@ -257,7 +257,7 @@ internal static class Fakes
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
-        // Env живых нод (t03 SecurityMigrator): по умолчанию — новый канон
+        // Env живых нод (SecurityMigrator): по умолчанию — новый канон
         // (SSL); тесты-миграции подменяют словарём LegacyPlainEnv.
         public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs { get; set; } =
             new Dictionary<string, IReadOnlyDictionary<string, string>>();

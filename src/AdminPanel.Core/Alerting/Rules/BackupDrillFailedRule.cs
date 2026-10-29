@@ -4,7 +4,7 @@ using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 
-// backup-drill-failed (critical, reliability t02, arch/19 §3.6): последний
+// backup-drill-failed (critical, reliability, arch/19 §3.6): последний
 // дрилл FAILED живого шарда Active-кластера — восстановимость из бэкапа не
 // доказана; разбор по runbook (docs/backup-restore.md §Дрилл) и повторный
 // дрилл после лечения. RUNNING/фазы/SUCCEEDED без алерта — прогресс виден

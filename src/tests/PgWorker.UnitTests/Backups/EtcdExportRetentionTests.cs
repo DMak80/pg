@@ -5,7 +5,7 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Backups;
 
-// Ретенция S3-выгрузки etcd (t08, arch/19 §5): пары .db+.meta.json сортируются
+// Ретенция S3-выгрузки etcd (arch/19 §5): пары.db+.meta.json сортируются
 // по id (таймстемп лексикографически = хронологически), старше N последних —
 // к удалению; одиночный .meta.json без .db — мусор; guard ≥1 полной пары.
 public class EtcdExportRetentionTests

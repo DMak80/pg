@@ -73,7 +73,7 @@ public static class KafkaSnapshotParser
                     acc.AppPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
-                // Поля безопасности t03 (arch/15 §2): admin-креды + per-cluster CA.
+                // Поля безопасности (arch/15 §2): admin-креды + per-cluster CA.
                 case "admin_user" when segments.Length == 5:
                     acc.AdminUser = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
@@ -86,7 +86,7 @@ public static class KafkaSnapshotParser
                 {
                     var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     // Битый PEM — не исключение: parseError + поле null (arch/15 §6).
-                    // Окно ротации CA (t07): ca_pem — bundle OLD+NEW — валидное значение.
+                    // Окно ротации CA : ca_pem — bundle OLD+NEW — валидное значение.
                     if (value is null || !ClusterPki.TryParseCertificateBundle(value))
                     {
                         acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_pem: malformed certificate PEM");

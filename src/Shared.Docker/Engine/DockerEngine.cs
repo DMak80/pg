@@ -9,7 +9,7 @@ using Shared.Core;
 namespace Shared.Docker;
 
 // Реализация: HttpClient + System.Text.Json по Engine API v1.44.
-// Общий движок трёх воркеров (t07): pg-канон + влитые методы kfw/vwk,
+// Общий движок трёх воркеров : pg-канон + влитые методы kfw/vwk,
 // канон-суперсет семантики (spec §7): start 304-идемпотентен, create при
 // отсутствии образа — pull+retry, exec-ошибка включает stderr И stdout.
 public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDockerEngine
@@ -74,10 +74,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
             var networksMap = dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>();
             var aliases = networksMap.Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
-            // t24 (arch/14 §2.1): ключи NetworkSettings.Networks — факт сетей
+            //  (arch/14 §2.1): ключи NetworkSettings.Networks — факт сетей
             // контейнера (ensure-инвариант кластерной сети движков).
             var networks = networksMap.Keys.ToArray();
-            // t07: StartedAt (RFC3339) → unix; отсутствие/битая строка → null
+            // StartedAt (RFC3339) → unix; отсутствие/битая строка → null
             // (бюджет verify-джоба не применяется).
             long? startedAtUnix = DateTimeOffset.TryParse(dto.State?.StartedAt,
                 CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal
@@ -124,7 +124,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             catch (DockerHttpException e) when (e.StatusCode == 404 && e.Body.Contains("No such image", StringComparison.OrdinalIgnoreCase))
             {
                 // Образа нет на хосте — тянем и повторяем create (первый запуск
-                // на чистом хосте; kfw/vwk-семантика, канон-суперсет t07 §7.2).
+                // на чистом хосте; kfw/vwk-семантика, канон-суперсет §7.2).
                 // Локально-собираемые образы (не в registry) fallback не спасает —
                 // поведение не хуже прежнего голого 404.
                 await PullImageAsync(spec.Image, ct);
@@ -141,9 +141,9 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
             catch (DockerHttpException e) when (e.StatusCode == 304)
             {
-                // 304 — контейнер уже запущен (идемпотентность супервиза, t03:
+                // 304 — контейнер уже запущен (идемпотентность супервиза:
                 // контракт интерфейса «304 already-started = успех»; pg-семантика,
-                // канон-суперсет t07 §7.1 для kfw/vwk)
+                // канон-суперсет §7.1 для kfw/vwk)
             }
         });
 
@@ -362,7 +362,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         });
 
     // DELETE /networks/<name>; 404 = успех (идемпотентность). «Has active
-    // endpoints» уходит наверх Failed — вызывающий решает (t09-фикс).
+    // endpoints» уходит наверх Failed — вызывающий решает (фикс).
     public async Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
@@ -376,7 +376,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // POST /networks/<net>/connect (t24, arch/14 §2.1): подключить контейнер к
+    // POST /networks/<net>/connect (arch/14 §2.1): подключить контейнер к
     // сети; 404 сети/контейнера и 403 «already connected» — наверх (вызывающий
     // держит сеть созданной Ensure'ом, а повторное подключение docker
     // молча принимает как no-op — идемпотентность API).
@@ -387,7 +387,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 new Dictionary<string, object?> { ["Container"] = container }, ct);
         });
 
-    // Exec в контейнере (t01): create → start (raw-stream) → inspect ExitCode.
+    // Exec в контейнере : create → start (raw-stream) → inspect ExitCode.
     public async Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
         => await Result<string>.FromAsync(async () =>
         {
@@ -407,7 +407,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             var (stdout, stderr) = await StartExecAsync(exec.Id, ct);
 
             // 3) exit-код; ненулевой — ошибка со stderr И stdout (канон-суперсет
-            // t07 §7.3, kfw-семантика: Kafka-CLI 4.x печатает диагностику,
+            //  §7.3, kfw-семантика: Kafka-CLI 4.x печатает диагностику,
             // включая stack trace, в stdout).
             var inspect = await GetAsync<ExecInspectDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
             var exit = inspect?.ExitCode ?? -1;
@@ -599,7 +599,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         });
     }
 
-    // Лимиты контейнера (t06, spec §5.3; docker-факт — 0 = без лимита): те же
+    // Лимиты контейнера (spec §5.3; docker-факт — 0 = без лимита): те же
     // поля, что пишет CreateContainerAsync; 404 → null. Несимметричность тегов
     // Docker: create принимает «NanoCPUs», inspect отдаёт HostConfig.«NanoCpus» —
     // читаем оба варианта (факт: docker inspect возвращает NanoCpus).
@@ -624,7 +624,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // Лимиты swarm-сервиса ноды (t06, spec §5.3): TaskTemplate.Resources.
+    // Лимиты swarm-сервиса ноды (spec §5.3): TaskTemplate.Resources.
     // Limits.{NanoCPUs, MemoryBytes}; 404 → null. Swarm-теги — «NanoCPUs»
     // (верхний регистр, api/types/swarm), но на асимметрию Docker не
     // полагаемся — читаем оба варианта.
@@ -663,7 +663,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         return 0;
     }
 
-    // Env живого контейнера (t03): GET /containers/{id}/json → Config.Env[];
+    // Env живого контейнера : GET /containers/{id}/json → Config.Env[];
     // 404 → null (объекта нет).
     public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(
         string idOrName, CancellationToken ct)
@@ -696,7 +696,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // Env swarm-сервиса ноды (t03): GET /services/{name} → Spec.TaskTemplate.
+    // Env swarm-сервиса ноды : GET /services/{name} → Spec.TaskTemplate.
     // ContainerSpec.Env[] (KEY=VALUE); 404 → null.
     public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(
         string name, CancellationToken ct)
@@ -775,12 +775,12 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // Инспекция endpoint'а контейнера (t05 E9 / надзор C): published host-порт
+    // Инспекция endpoint'а контейнера (E9 / надзор C): published host-порт
     // клиентского listener'а <containerPort>/tcp из HostConfig.PortBindings
     // (порт — параметр: kfw 9094, vwk 6379 — доменная константа у драйвера) +
     // State.Running (PortBindings персистят и у остановленного контейнера —
     // Running отличает «жив» от «есть, но остановлен»). 404 → null (объекта
-    // нет). Advertised-чтение (kfw) — в доменном драйвере (t07 §4.6.1).
+    // нет). Advertised-чтение (kfw) — в доменном драйвере (§4.6.1).
     public async Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(
         string name, int containerPort, CancellationToken ct)
         => await Result<DockerNodeEndpoint?>.FromAsync(async () =>
@@ -940,7 +940,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         var hostConfig = new Dictionary<string, object?>
         {
             // RestartPolicy: узлы — unless-stopped (docker сам поднимает после
-            // ребута хоста); ephemeral-джобы бэкапов (t02) — "no"
+            // ребута хоста); ephemeral-джобы бэкапов — "no"
             // (перезапуск служебного контейнера docker'ом в обход супервизии
             // воркера запрещён / не нужен).
             ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
@@ -966,7 +966,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         if (spec.MemoryBytes is { } memory)
             hostConfig["Memory"] = memory;
 
-        // Джобы бэкапов (t02): tmpfs-квота staging (arch/19 §6) + extra_hosts
+        // Джобы бэкапов : tmpfs-квота staging (arch/19 §6) + extra_hosts
         // host.docker.internal:host-gateway (advertised-адресация).
         if (spec.Tmpfs is { Count: > 0 })
             hostConfig["Tmpfs"] = spec.Tmpfs;
@@ -979,7 +979,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             ["Hostname"] = spec.Hostname,
             ["HostConfig"] = hostConfig,
         };
-        // Env — только когда задан (канон-суперсет t07 §7.4: vwk-контейнеры
+        // Env — только когда задан (канон-суперсет §7.4: vwk-контейнеры
         // без env не меняются; pg/kfw передают словарь — вкл. пустой).
         if (spec.Env is not null)
             body["Env"] = spec.Env.Select(p => $"{p.Key}={p.Value}").OrderBy(v => v, StringComparer.Ordinal).ToArray();
@@ -1000,7 +1000,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         {
             if (spec.ResetEntrypoint)
             {
-                // t03/pg-семантика (флаг ResetEntrypoint супер-спеки t07): сброс
+                // /pg-семантика (флаг ResetEntrypoint супер-спеки): сброс
                 // ENTRYPOINT образа — inline-команда агента/тест-контейнера
                 // выполняется как есть, а не аргументами образного entrypoint.
                 body["Entrypoint"] = Array.Empty<string>();
@@ -1010,7 +1010,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             // pgworker-node / docker-entrypoint.sh).
             body["Cmd"] = cmd;
         }
-        // label-пара (канон-суперсет t07 §7.4): ключ — домен (pgworker/
+        // label-пара (канон-суперсет §7.4): ключ — домен (pgworker/
         // kafkaworker/valkeyworker); неполная пара не пишется вовсе.
         if (spec.LabelKey is { Length: > 0 } labelKey && spec.Label is { Length: > 0 } label)
             body["Labels"] = new Dictionary<string, string> { [labelKey] = label };
@@ -1041,7 +1041,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
 
-        // Binds swarm-шаблона (vwk, t06) — Mounts (формат "volume:/path").
+        // Binds swarm-шаблона (vwk) — Mounts (формат "volume:/path").
         if (spec.Template.Binds is { Count: > 0 })
         {
             container["Mounts"] = spec.Template.Binds.Select(b => new
@@ -1278,7 +1278,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     }
 
     // GET /containers/<id>/json — только поля матчинга усыновления (spec §3.1)
-    // + State (runtime-факт джоба бэкапа, t02).
+    // + State (runtime-факт джоба бэкапа).
     private sealed class ContainerInspectDto
     {
         [JsonPropertyName("Id")] public string Id { get; set; } = "";
@@ -1296,7 +1296,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
         [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
 
-        // t07: RFC3339-момент старта контейнера — бюджет running-джоба.
+        // RFC3339-момент старта контейнера — бюджет running-джоба.
         [JsonPropertyName("StartedAt")] public string? StartedAt { get; set; }
     }
 

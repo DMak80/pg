@@ -14,7 +14,7 @@ public sealed class ShardNoLeaderRule : IAlertRule
 
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
-        // Не поднятые кластеры: лидера нет потому, что нод нет (spec t12 §3.7)
+        // Не поднятые кластеры: лидера нет потому, что нод нет (spec §3.7)
         var notInitialized = snapshot.Clusters
             .Where(c => c.State == ClusterState.NotInitialized)
             .Select(c => c.Name)

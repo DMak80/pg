@@ -26,7 +26,7 @@ public class ClustersApiTests
     }
 
     // Порядок Arrange: сначала логин (+61 c окна лимитера), затем снапшот по текущему времени
-    // фабрики — ageSec/snapshotAgeMs считаются от factory.Time (прецедент t04).
+    // фабрики — ageSec/snapshotAgeMs считаются от factory.Time (прецедент).
     private void SetClusteredSnapshot()
         => _factory.Snapshot = InspectionSnapshots.Clustered(_factory.Time.Utc, _factory.Time.Utc);
 
@@ -105,12 +105,12 @@ public class ClustersApiTests
         shards[0].GetProperty("masterLeaseAlive").GetBoolean().Should().BeTrue();
         shards[1].GetProperty("masterLeaseAlive").GetBoolean().Should().BeFalse();
         shards[1].GetProperty("masterAddress").ValueKind.Should().Be(JsonValueKind.Null);
-        shards[0].GetProperty("runtime").ValueKind.Should().Be(JsonValueKind.Null); // данные — t06 (spec §3.14)
+        shards[0].GetProperty("runtime").ValueKind.Should().Be(JsonValueKind.Null); // данные — (spec §3.14)
         dto.GetProperty("buckets").GetArrayLength().Should().Be(16);
         var heals = dto.GetProperty("heals");
         heals.GetArrayLength().Should().Be(2);
         heals[0].GetProperty("bucket").GetString().Should().Be("bucket_5"); // новые сверху (spec §3.3)
-        var standNodes = dto.GetProperty("standNodes"); // стендовая топология (t08 spec §8)
+        var standNodes = dto.GetProperty("standNodes"); // стендовая топология (spec §8)
         standNodes.GetArrayLength().Should().Be(2);
         standNodes[0].GetProperty("name").GetString().Should().Be("node1");
         standNodes[0].GetProperty("address").GetString().Should().Be("10.0.0.5");
@@ -169,7 +169,7 @@ public class ClustersApiTests
         var syncing = await GetJsonAsync(client, "/api/clusters/demo?state=SYNCING");
         var both = await GetJsonAsync(client, "/api/clusters/demo?owner=s2&state=ABORTING");
 
-        // Assert: ACTIVE входит в фильтр (roadmap t05); фильтры сочетаются (AND).
+        // Assert: ACTIVE входит в фильтр (roadmap); фильтры сочетаются (AND).
         active.GetProperty("buckets").GetArrayLength().Should().Be(13);
         syncing.GetProperty("buckets").GetArrayLength().Should().Be(1);
         both.GetProperty("buckets").GetArrayLength().Should().Be(1);

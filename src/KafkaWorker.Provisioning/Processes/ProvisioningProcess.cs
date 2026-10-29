@@ -75,7 +75,7 @@ public sealed class ProvisioningProcess(
         var planned = await PlanAsync(snap, ct);
         if (!planned.IsSuccess)
         {
-            // t91: клэйм занят — не фейл, InProgress (следующий тик ~5 с);
+            // клэйм занят — не фейл, InProgress (следующий тик ~5 с);
             // сбой захвата — обычный фейл (бэкофф).
             if (planned.Error is PortLockBusyException)
                 return await FinishAsync(cluster, "waiting-portalloc-lock", ct);
@@ -151,7 +151,7 @@ public sealed class ProvisioningProcess(
 
     // K1: placement → порт-аллокация → закрепление /kafkaworker/portalloc/<C>
     // (txn compare version==0; конкурент закрепил первым → берём его) + роли.
-    // t91 (arch/16 §2.1): довыделение портов — под глобальным клэймом
+    //  (arch/16 §2.1): довыделение портов — под глобальным клэймом
     // /kafkaworker/locks/portalloc: без него два параллельно сеемых кластера
     // читают занятость до первой записи соседа и выбирают одинаковые порты.
     // Занятость = docker-публикации ∪ portalloc ЧУЖИХ кластеров (свой —
@@ -168,13 +168,13 @@ public sealed class ProvisioningProcess(
 
         var wanted = snap.Brokers.Select(b => b.Name).ToList();
 
-        // Ранний пред-выход ДО клэйма (порт t90): всё закреплено —
+        // Ранний пред-выход ДО клэйма (порт): всё закреплено —
         // переиспользование без записи; тики waiting-brokers (K4) не
         // соперничают за глобальный клэйм.
         if (wanted.All(existing.ContainsKey))
             return await PlannedAsync(existing, cluster, ct);
 
-        // t91: захват глобального клэйма; сбой — обычный фейл (бэкофф),
+        // захват глобального клэйма; сбой — обычный фейл (бэкофф),
         // занят — PortLockBusyException → тик-ретрай.
         var acquired = await portLock.TryAcquireAsync(ct);
         if (!acquired.IsSuccess)
@@ -234,7 +234,7 @@ public sealed class ProvisioningProcess(
 
             // Фиксация ролей (put только при отличии; роль навсегда, arch/15 §2) —
             // ВСЕГДА, независимо от исхода txn (порт семантики исходного кода:
-            // ключ мог быть записан до t91 без ролей). Внутри секции, до release.
+            // ключ мог быть записан до без ролей). Внутри секции, до release.
             foreach (var broker in snap.Brokers)
             {
                 if (RolesFor(snap.Config.Brokers).GetValueOrDefault(broker.Name) is { } role && broker.Role != role)
@@ -253,7 +253,7 @@ public sealed class ProvisioningProcess(
         }
     }
 
-    // Журнал planned + результат секции (порт PlannedAsync t90 — внутри try,
+    // Журнал planned + результат секции (порт PlannedAsync — внутри try,
     // до release; клэйм короткий).
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlannedAsync(
         Dictionary<string, NodeAddress> existing, string cluster, CancellationToken ct)

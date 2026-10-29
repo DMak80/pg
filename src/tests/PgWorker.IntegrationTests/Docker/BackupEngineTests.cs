@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
 
-// Docker-грань джоба бэкапа (t02): логи контейнера + runtime-инспект
+// Docker-грань джоба бэкапа : логи контейнера + runtime-инспект
 // (exit-код) + HostConfig-поля tmpfs/extra_hosts (arch/19 §2/§6).
 [Collection(NonE2eCollection.Name)]
 public class BackupEngineTests

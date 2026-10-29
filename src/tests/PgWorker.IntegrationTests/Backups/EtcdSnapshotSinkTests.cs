@@ -11,7 +11,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// S3-sink снапшотов etcd (t08): OwnEtcd + OwnS3 на Fact (своё окружение,
+// S3-sink снапшотов etcd : OwnEtcd + OwnS3 на Fact (своё окружение,
 // динамические порты, teardown при любом исходе — e2e-isolation §1/§3).
 // Сценарии: экспорт после TakeAsync, каждый слепок новой парой, ретенция,
 // транзиент → FAILED → доводка, верификация разворачиваемости (etcdctl
@@ -79,7 +79,7 @@ public class EtcdSnapshotSinkTests
         status.IntervalMin.Should().Be(360);
         status.LastSha256.Should().Be(Sha256Hex(await File.ReadAllBytesAsync(shot.Value, ct)));
         // Assert (AC8-хвост): объекты etcd/* видны list'ом ВСЕГО bucket (префикс "")
-        // — база used_bytes ключа storage (t06 считает list ""; ср. BackupS3Tests:189)
+        // — база used_bytes ключа storage (считает list ""; ср. BackupS3Tests:189)
         var wholeBucket = (await s3.ListPrefixAsync("", ct: ct)).Value!;
         wholeBucket.Select(o => o.Key).Should().Contain(listed.Select(o => o.Key),
             "the etcd/ objects are counted in used_bytes — a whole-bucket list sees them");

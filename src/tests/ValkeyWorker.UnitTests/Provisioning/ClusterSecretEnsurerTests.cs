@@ -6,7 +6,7 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// Ensure per-cluster кредов + CA (arch/21 §4, t06): txn put-if-absent
+// Ensure per-cluster кредов + CA (arch/21 §4): txn put-if-absent
 // отсутствующих из шести ключей, проигрыш → re-read, частичный набор —
 // дозаполнение только отсутствующих; CA из одной генерации (пара).
 public class ClusterSecretEnsurerTests
@@ -28,7 +28,7 @@ public class ClusterSecretEnsurerTests
         var result = await ensurer.EnsureAsync("demo", TestContext.Current.CancellationToken);
 
         // Assert: креды валидны; ca_pem/ca_key созданы ТОЙ ЖЕ txn (6 compare
-        // NotExists + 6 put); PEM-пара валидна (t06).
+        // NotExists + 6 put); PEM-пара валидна.
         result.IsSuccess.Should().BeTrue();
         IsPassword(result.Value.AdminPassword).Should().BeTrue();
         IsPassword(result.Value.AppPassword).Should().BeTrue();

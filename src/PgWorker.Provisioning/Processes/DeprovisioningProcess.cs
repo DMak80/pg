@@ -11,7 +11,7 @@ namespace PgWorker.Provisioning.Processes;
 /// чистки etcd — «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE,
 /// повторный тик продолжает). Успех = пустой /clusters/&lt;C&gt;/ + ЯВНО снятый
 /// клэйм (del + revoke lease, не ждём TTL — ревизия 2 плана, №5).
-/// progress — heartbeat-отметки долгих фаз (канон t19: ILoopProgress до всех
+/// progress — heartbeat-отметки долгих фаз (канон : ILoopProgress до всех
 /// EnsureAsync-сайтов; демонтаж — docker-шаги по 15–25 с каждый на медленном
 /// хосте, без Mark watchdog (порог 30 с) гасил reconcile посреди D1/D1').
 /// </summary>
@@ -40,7 +40,7 @@ public sealed class DeprovisioningProcess(
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
-        // D1' (t03, arch/19 §3): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
+        // D1' (arch/19 §3): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
         // по префиксу pgw-backup-wal-<C>-); etcd-ключи чистит D2 ниже.
         progress?.Mark(); // heartbeat: демонтаж начинается, дальше — docker-шаги
         var agents = await driver.RemoveBackupAgentsAsync(cluster, shard: null, ct);
@@ -66,7 +66,7 @@ public sealed class DeprovisioningProcess(
 
         // D2: del prefix /clusters/<C>/ + заявки request_* + префиксы service-скопов
         // + /pgworker/portalloc, /pgworker/work и заявки переездов /pgworker/moves/<C>/
-        // (spec §4.2, arch/14 §5 B; t01 spec §5.3 — заявки не переживают кластер).
+        // (spec §4.2, arch/14 §5 B; spec §5.3 — заявки не переживают кластер).
         progress?.Mark(); // heartbeat: переходим к etcd-очистке
         var cleaned = await CleanKeysAsync(cluster, snap, ct);
         if (!cleaned.IsSuccess)
@@ -176,7 +176,7 @@ public sealed class DeprovisioningProcess(
         if (!delWork.IsSuccess)
             return delWork;
 
-        // Журналы эвакуаций не переживают удаление кластера (t06 §5.6, симметрия с S3).
+        // Журналы эвакуаций не переживают удаление кластера (§5.6, симметрия с S3).
         var delEvacuations = await DeleteAsync($"/pgworker/evacuations/{cluster}/", prefix: true, ct);
         if (!delEvacuations.IsSuccess)
             return delEvacuations;
@@ -186,13 +186,13 @@ public sealed class DeprovisioningProcess(
         if (!delRotation.IsSuccess)
             return delRotation;
 
-        // Статусы бэкапов не переживают кластер (t02 D2 + t03 wal-ключи; объекты
-        // S3 НЕ трогаем — R4/orphan t07).
+        // Статусы бэкапов не переживают кластер (D2 + wal-ключи; объекты
+        // S3 НЕ трогаем — R4/orphan).
         var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/", prefix: true, ct);
         if (!delBackups.IsSuccess)
             return delBackups;
 
-        // Заявки переездов (t01, spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
+        // Заявки переездов (spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
         return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
     }
 
