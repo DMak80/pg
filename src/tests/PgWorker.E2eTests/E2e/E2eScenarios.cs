@@ -84,12 +84,23 @@ public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) :
         deprovisioned.Should().BeTrue("deprovisioning must remove containers/volume/keys and release the claim");
 
         // ---------- AC5: failover/rebuild ----------
+        // Секция AC5 — свой бюджет 3 мин (длинный acceptance — переприсвоение
+        // ct по секциям, приказ владельца: каждая секция ≤3 мин).
+        using var ctsAc5 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        ctsAc5.CancelAfter(TimeSpan.FromMinutes(3));
+        ct = ctsAc5.Token;
         await AssertFailoverRebuildAsync(Cluster, "shard1", ct);
 
         // ---------- AC6: эвакуация ----------
         await AssertEvacuationAsync(Cluster, "shard2", "shard1", p2.SnapshotsDir, ct);
 
         // ---------- AC7: клэймы + снапшоты только лидером ----------
+        // Секция AC7 — свой бюджет 3 мин.
+        using var ctsAc7 = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        ctsAc7.CancelAfter(TimeSpan.FromMinutes(3));
+        ct = ctsAc7.Token;
         await AssertClaimsAndLeaderSnapshotsAsync(Cluster, p2, ct);
     }
 

@@ -434,8 +434,9 @@ public sealed class E2eWalStreamScenarios(E2eWalStreamScenariosFx Ctx) : IClassF
             .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal)).ToList();
         foreach (var (key, addr) in entries)
         {
+            // Хостовая модель: DSN — localhost:{pg из portalloc}
             var dsn = DatabaseProvisioner.BuildAdminDsn(
-                $"pgw-{cluster}-shard1-{key.Split('/')[1]}", 5432,
+                "localhost", addr.GetProperty("pg").GetInt32(),
                 cluster, new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await using var conn = new NpgsqlConnection(dsn);
             await conn.OpenAsync(ct);

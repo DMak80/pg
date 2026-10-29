@@ -227,7 +227,14 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
             return listed.IsSuccess && listed.Value.Count(o =>
                 o.Name.Length == 24 && o.Name.StartsWith("00000001", StringComparison.Ordinal)) >= 2;
         }, TimeSpan.FromSeconds(90), ct);
-        anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
+                anchored.Should().BeTrue("the TLI 1 chain must be anchored in S3 before the outage");
+
+        // Секция outage+jump — свой бюджет 3 мин (приказ владельца: длинный
+        // тест — переприсвоение ct по секциям, каждая секция ≤3 мин).
+        using var ctsOutage = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        ctsOutage.CancelAfter(TimeSpan.FromMinutes(3));
+        ct = ctsOutage.Token;
 
         using var load = new CancellationTokenSource();
         var loader = BackgroundWalLoadAsync(adminDsn, load.Token);
@@ -334,6 +341,12 @@ public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : I
                 return $"{listing}, wal={walState}, fulls={fulls.Count} " +
                     $"(completed={completedJson.Count}, last wal_start={lastWalStart})";
             }
+
+            // Секция сходимости — свой бюджет 3 мин.
+            using var ctsConv = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            ctsConv.CancelAfter(TimeSpan.FromMinutes(3));
+            ct = ctsConv.Token;
 
             // 5 финальных инвариантов сходимости (§3.7) — общий бюджет 900 с:
             // итог при любом пути (прыжок с зазором + пересъём / досыпка без
