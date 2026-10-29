@@ -9,13 +9,14 @@ namespace PgWorker.IntegrationTests.E2e;
 // (своя сеть/etcd/ownS3 — withS3Node:true) + хост-воркер с включённым
 // Snapshots:Export. Каждый Fact — своё окружение (per-method изоляция,
 // e2e-isolation §1/§3): метрики/ключи/объекты сценария не пересекаются.
-public class E2eEtcdSnapshotExportScenarios
+public sealed class E2eEtcdSnapshotExportScenarios(E2eEtcdSnapshotExportScenariosFx Ctx) : IClassFixture<E2eEtcdSnapshotExportScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: bucket слепочной пары (не пуловый pgworker-backups).
     private const string SnapshotBucket = "pgworker-etcd-snapshots";
-    private E2eEnvironment Fx = null!;
     private string Endpoint => Fx.EtcdEndpoint;
     private EtcdGateway G => Fx.Gateway;
 
@@ -107,8 +108,6 @@ public class E2eEtcdSnapshotExportScenarios
     {
         // Arrange — своё окружение (сеть/etcd/ownS3) + хост-воркер с экспортом
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-exp", withS3Node: true, ct: ct);
-        Fx = fx;
         await using var app = await StartExportHostAsync("snapexp", ct, intervalMin: 1);
 
         // Act — ждём первой успешной выгрузки (первый тик лидера снимает сразу)
@@ -177,8 +176,6 @@ public class E2eEtcdSnapshotExportScenarios
     {
         // Arrange — хост с retention: 1 и минутным интервалом
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-ret", withS3Node: true, ct: ct);
-        Fx = fx;
         await using var app = await StartExportHostAsync("snapret", ct, intervalMin: 1, retention: 1);
 
         // Act — ждём первый OK, затем OK со СВЕЖИМ last_object (каждый плановый
@@ -211,8 +208,6 @@ public class E2eEtcdSnapshotExportScenarios
     {
         // Arrange — хост с экспортом на закрытый порт (протокольный «всегда закрыт»)
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("snap-neg", withS3Node: true, ct: ct);
-        Fx = fx;
         await using var app = await StartExportHostAsync(
             "snapneg", ct, s3Override: "http://e2e-broken-s3:1");
 
@@ -246,4 +241,12 @@ public class E2eEtcdSnapshotExportScenarios
             && a.Severity == AdminPanel.Core.AlertSeverity.Critical,
             "an upload failure — a critical alert (AC7)");
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eEtcdSnapshotExportScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "snap-exp";
+    protected override bool WithS3Node => true;
 }

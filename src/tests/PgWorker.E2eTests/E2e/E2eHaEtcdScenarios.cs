@@ -10,9 +10,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // docs/e2e-launch.md (guid-имена, own-only teardown, MarkFailed — стоп без
 // удаления). Проверки после отказа узла №1 идут через выживший endpoint
 // (EtcdEndpoints[1]) — активный URL узла №1 мёртв по построению.
-public class E2eHaEtcdScenarios
+public sealed class E2eHaEtcdScenarios(E2eHaEtcdScenariosFx Ctx) : IClassFixture<E2eHaEtcdScenariosFx>
 {
-    private E2eEnvironment Fx = null!;
+    private E2eEnvironment Fx => Ctx.Fx;
+
 
     private string Endpoint => Fx.EtcdEndpoints[1]; // выживший узел при отказе №1
 
@@ -22,9 +23,6 @@ public class E2eHaEtcdScenarios
     public async Task HaEtcd_KillNodeMidAddShard_SupervisionAndMasterLeaseSurvive()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("ha-etcd", haEtcd: true, ct: ct);
-        Fx = fx;
         var cluster = $"haetcd{Fx.ClusterTag}";
         try
         {
@@ -173,4 +171,12 @@ public class E2eHaEtcdScenarios
         await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
         await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_disk", "10Gi", null, ct);
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eHaEtcdScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "ha-etcd";
+    protected override bool HaEtcd => true;
 }

@@ -12,9 +12,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // окружение E2eEnvironment (свой etcd/сеть на прогон), guid-имена всех
 // объектов, полный teardown при любом исходе + ассерт чистоты; телеметрия в
 // /tmp/pgw-e2e-artifacts-<guid>/ (MarkFailed — стоп без удаления).
-public class E2eSecondInstanceScenarios
+public sealed class E2eSecondInstanceScenarios(E2eSecondInstanceScenariosFx Ctx) : IClassFixture<E2eSecondInstanceScenariosFx>
 {
-    private E2eEnvironment Fx = null!;
+    private E2eEnvironment Fx => Ctx.Fx;
+
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -24,9 +25,6 @@ public class E2eSecondInstanceScenarios
     public async Task SecondInstance_ContainerKillMidAdd_SurvivorFinishesNoDuplicates()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("second-instance", ct: ct);
-        Fx = fx;
 
         // Идентификаторы прогона: имена контейнеров содержат тег кластера —
         // teardown окружения опознаёт их как СВОИ (OwnName) и удаляет.
@@ -121,7 +119,7 @@ public class E2eSecondInstanceScenarios
         {
             // Телеметрия e2e-launch: упавший сценарий помечаем — teardown
             // ОСТАНОВИТ контейнеры (не удалит: разбор по живым объектам).
-            fx.MarkFailed();
+            Fx.MarkFailed();
             throw;
         }
     }
@@ -295,4 +293,11 @@ public class E2eSecondInstanceScenarios
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eSecondInstanceScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "second-instance";
 }

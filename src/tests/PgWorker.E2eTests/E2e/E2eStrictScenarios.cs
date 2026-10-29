@@ -15,12 +15,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // кластеру с однорепликным шардом — 400 (errors.syncStrict). Изоляция —
 // docs/e2e-isolation.md: guid-окружение на Fact, полный teardown при любом
 // исходе, телеметрия /tmp/pgw-e2e-artifacts-<guid>/ (E2eEnvironment).
-public class E2eStrictScenarios
+public sealed class E2eStrictScenarios(E2eStrictScenariosFx Ctx) : IClassFixture<E2eStrictScenariosFx>
 {
-    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md §1).
-    private string Cluster => $"strict{Fx.ClusterTag}";
+    private E2eEnvironment Fx => Ctx.Fx;
 
-    private E2eEnvironment Fx = null!;
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): факты делят окружение класса — литеральный суффикс различает кластеры.
+    private string _clusterSuffix = "stricta";
+    private string Cluster => $"{_clusterSuffix}{Fx.ClusterTag}";
+
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -35,8 +38,6 @@ public class E2eStrictScenarios
     {
         // Arrange — окружение + strict-кластер (replicas=2) + воркер-хост.
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("strict-sync", ct: ct);
-        Fx = fx;
         try
         {
             await SeedClusterAsync(Cluster, strict: true, shard2Replicas: 2);
@@ -129,12 +130,11 @@ public class E2eStrictScenarios
         }
         catch
         {
-            fx.MarkFailed(); // teardown остановит контейнеры, но не удалит (разбор по логам)
+            Fx.MarkFailed(); // teardown остановит контейнеры, но не удалит (разбор по логам)
             throw;
         }
         finally
         {
-            await fx.DisposeAsync();
         }
     }
 
@@ -144,10 +144,10 @@ public class E2eStrictScenarios
     [Fact]
     public async Task Strict_EnableWithSingleReplicaShard_400()
     {
-        // Arrange — окружение + кластер strict=false, shard2 replicas=1.
+        // Arrange — окружение + кластер strict=false, shard2 replicas=1;
+        // суффикс имени кластера факта (окружение общее с фактом 1).
+        _clusterSuffix = "strictb";
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("strict-sync", ct: ct);
-        Fx = fx;
         try
         {
             await SeedClusterAsync(Cluster, strict: false, shard2Replicas: 1);
@@ -183,12 +183,11 @@ public class E2eStrictScenarios
         }
         catch
         {
-            fx.MarkFailed(); // teardown остановит контейнеры, но не удалит (разбор по логам)
+            Fx.MarkFailed(); // teardown остановит контейнеры, но не удалит (разбор по логам)
             throw;
         }
         finally
         {
-            await fx.DisposeAsync();
         }
     }
 
@@ -386,4 +385,11 @@ public class E2eStrictScenarios
         })
         { Timeout = TimeSpan.FromSeconds(10) };
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eStrictScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "strict-sync";
 }

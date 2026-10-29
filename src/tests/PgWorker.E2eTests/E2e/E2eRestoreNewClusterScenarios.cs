@@ -21,15 +21,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // отступление плана: API-путь покрыт WAF-тестами Task 13) → COMPLETED + данные.
 // Заявки ставятся тестом; демонтаж/джоб/rejoin/сброс wal-ключа — механика
 // воркера (RestoreProcess), E2E проверяет её end-to-end на живом docker.
-public class E2eRestoreNewClusterScenarios
+public sealed class E2eRestoreNewClusterScenarios(E2eRestoreNewClusterScenariosFx Ctx) : IClassFixture<E2eRestoreNewClusterScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -44,7 +44,7 @@ public class E2eRestoreNewClusterScenarios
     public async Task Restore_NewCluster_FromSourcePrefix()
     {
         var ct = TestContext.Current.CancellationToken;
-        await RunScenarioAsync("rs-dr", async fx =>
+        await RunScenarioAsync(async fx =>
         {
             // Arrange 1 — окружение + кластер rdr<тег>, данные, полный COMPLETED
             var cluster = $"rdr{fx.ClusterTag}";
@@ -160,22 +160,16 @@ public class E2eRestoreNewClusterScenarios
     // (не удаляет: логи/тома остаются для отчёта «что произошло»), перезапуск
     // теста ради логов запрещён. Зачистка — вручную по README-cleanup.txt.
     private async Task RunScenarioAsync(
-        string slug, Func<E2eEnvironment, Task> body, CancellationToken ct)
+        Func<E2eEnvironment, Task> body, CancellationToken ct)
     {
-        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
-        Fx = fx;
         try
         {
-            await body(fx);
+            await body(Fx);
         }
         catch
         {
-            fx.MarkFailed();
+            Fx.MarkFailed();
             throw;
-        }
-        finally
-        {
-            await fx.DisposeAsync();
         }
     }
 
@@ -565,7 +559,7 @@ public class E2eRestoreNewClusterScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -582,7 +576,7 @@ public class E2eRestoreNewClusterScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.
@@ -630,3 +624,10 @@ public class E2eRestoreNewClusterScenarios
     }
 }
 
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eRestoreNewClusterScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "rs-dr";
+    protected override bool WithS3Node => true;
+}

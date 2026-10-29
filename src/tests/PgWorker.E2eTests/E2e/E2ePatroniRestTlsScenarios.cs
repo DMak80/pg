@@ -16,11 +16,12 @@ namespace PgWorker.IntegrationTests.E2e;
 // Изолированное окружение E2eEnvironment — guid во всех именах, полный
 // teardown при любом исходе, ассерт чистоты (docs/e2e-isolation.md).
 [Collection("e2e-serial")]
-public class E2ePatroniRestTlsScenarios
+public sealed class E2ePatroniRestTlsScenarios(E2ePatroniRestTlsScenariosFx Ctx) : IClassFixture<E2ePatroniRestTlsScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -30,9 +31,6 @@ public class E2ePatroniRestTlsScenarios
     public async Task E2ePatroniRestTls_HttpsOnlyAuthAndP11()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("rest-tls", ct: ct);
-        Fx = fx;
         var cluster = $"rtls{Fx.ClusterTag}";
         try
         {
@@ -49,14 +47,15 @@ public class E2ePatroniRestTlsScenarios
             string replica;
             await using (var p1 = await Fx.StartHostAsync("rtls-p1", extraEnv: extraEnv, ct: ct))
             {
-                var provisioned = await E2ePhase.WaitAsync(fx, "rtls-provisioning",
+                var provisioned = await E2ePhase.WaitAsync(Fx, "rtls-provisioning",
                     E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 provisioned.Should().BeTrue($"provisioning must reach Active; work={await WorkDumpAsync(cluster, ct)}");
 
                 var addresses = await PortallocAsync(cluster);
                 addresses.Should().ContainKey("shard1/shard1a");
-                // Внутрисетевой адрес ноды: REST :8008 — константа контракта;
-                // публикации на хост тест не использует (контур «Вариант A»).
+                // Публикация REST ноды на хост: localhost:{динамический порт}
+                // (docs/e2e-isolation.md §2; hostname серта не сверяется — цепочка).
+                var addr1a = addresses["shard1/shard1a"];
 
                 // (а) http-only отказ: голый HTTP на TLS-порт не отвечает 200
                 // (короткий таймаут: сервер рвёт соединение сразу).
@@ -65,7 +64,7 @@ public class E2ePatroniRestTlsScenarios
                 {
                     using var plainClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
                     using var plain = await plainClient.GetAsync(
-                        $"http://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
+                        $"http://localhost:{addr1a.Patroni}/cluster", ct);
                     plainRefused = !plain.IsSuccessStatusCode;
                 }
                 catch (Exception)
@@ -77,13 +76,13 @@ public class E2ePatroniRestTlsScenarios
 
                 // (а) https с ca.pem контура → 200 + JSON членов.
                 var https = Fx.NewPatroniHttpClient();
-                using var clusterResponse = await https.GetAsync($"https://pgw-{cluster}-shard1-shard1a:8008/cluster", ct);
+                using var clusterResponse = await https.GetAsync($"https://localhost:{addr1a.Patroni}/cluster", ct);
                 clusterResponse.StatusCode.Should().Be(HttpStatusCode.OK);
                 var body = await clusterResponse.Content.ReadAsStringAsync(ct);
                 body.Should().Contain("members", "the response is a Patroni /cluster JSON");
 
                 // (б) серт ноды верифицируется цепочкой против CA контура.
-                var leafDer = await CaptureServerCertificateAsync($"pgw-{cluster}-shard1-shard1a", ct);
+                var leafDer = await CaptureServerCertificateAsync("localhost", addr1a.Patroni, ct);
                 leafDer.Should().NotBeNull("the TLS handshake yields the server certificate");
                 ChainValidAgainstInstallCa(leafDer!).Should().BeTrue("the node certificate is issued by the per-contour CA");
 
@@ -91,7 +90,7 @@ public class E2ePatroniRestTlsScenarios
                 var restPassword = (await GetOrNullAsync($"/clusters/{cluster}/rest_password"))!.Value;
                 restPassword.Should().NotBeNullOrWhiteSpace("ensure put the seventh key");
                 using var noAuth = new HttpRequestMessage(HttpMethod.Patch,
-                    $"https://pgw-{cluster}-shard1-shard1a:8008/config")
+                    $"https://localhost:{addr1a.Patroni}/config")
                 {
                     Content = new StringContent("{\"ttl\":30}", Encoding.UTF8, "application/json"),
                 };
@@ -101,7 +100,7 @@ public class E2ePatroniRestTlsScenarios
 
                 // (в) с Authorization: Basic patroni:<rest_password> — 200.
                 using var withAuth = new HttpRequestMessage(HttpMethod.Patch,
-                    $"https://pgw-{cluster}-shard1-shard1a:8008/config")
+                    $"https://localhost:{addr1a.Patroni}/config")
                 {
                     Content = new StringContent("{\"ttl\":30}", Encoding.UTF8, "application/json"),
                 };
@@ -154,7 +153,7 @@ public class E2ePatroniRestTlsScenarios
                 // (между create и start recreate-пути) — критерий конвергенции
                 // обязан требовать ЖИВУЮ ноду, иначе marker-exec ниже падает
                 // на незапущенном контейнере.
-                var migrated = await E2ePhase.WaitAsync(fx, "rtls-convergence",
+                var migrated = await E2ePhase.WaitAsync(Fx, "rtls-convergence",
                     async () =>
                     {
                         var state = await InspectStatusOrNullAsync(legacy, ct);
@@ -173,7 +172,7 @@ public class E2ePatroniRestTlsScenarios
                 marker.Should().BeEmpty("the volume and data survived the migration (exec code 0)");
 
                 // Кластер снова Active после миграции.
-                var activeAgain = await E2ePhase.WaitAsync(fx, "rtls-active-again",
+                var activeAgain = await E2ePhase.WaitAsync(Fx, "rtls-active-again",
                     E2eEnvironment.ProvisionStuckFailFast(Fx, GetOrNullAsync, cluster, () => ActiveAsync(cluster), shards: ["shard1"]), TimeSpan.FromSeconds(360), ct);
                 activeAgain.Should().BeTrue($"the cluster is Active after the migration; work={await WorkDumpAsync(cluster, ct)}");
             }
@@ -267,7 +266,7 @@ public class E2ePatroniRestTlsScenarios
             {
                 var client = Fx.NewPatroniHttpClient();
                 using var response = await client.GetAsync(
-                    $"https://pgw-{cluster}-shard1-{key.Split('/')[1]}:8008/primary", ct);
+                    $"https://localhost:{addr.Patroni}/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
@@ -286,10 +285,10 @@ public class E2ePatroniRestTlsScenarios
     // Серверный серт ноды: перехват в TLS-хендшейке (без доверия — только
     // захват). Внутри callback копируем DER: хендл сертификата живёт лишь
     // пока открыт поток (после Dispose чтение бросает invalid handle).
-    private static async Task<byte[]?> CaptureServerCertificateAsync(string nodeHost, CancellationToken ct)
+    private static async Task<byte[]?> CaptureServerCertificateAsync(string nodeHost, int port, CancellationToken ct)
     {
         using var tcp = new TcpClient();
-        await tcp.ConnectAsync(nodeHost, 8008, ct);
+        await tcp.ConnectAsync(nodeHost, port, ct);
         using var ssl = new SslStream(tcp.GetStream(), leaveInnerStreamOpen: false);
         byte[]? captured = null;
         var options = new SslClientAuthenticationOptions
@@ -318,4 +317,11 @@ public class E2ePatroniRestTlsScenarios
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         return chain.Build(leaf);
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2ePatroniRestTlsScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "rest-tls";
 }

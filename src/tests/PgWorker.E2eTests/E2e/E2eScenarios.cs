@@ -11,12 +11,11 @@ namespace PgWorker.IntegrationTests.E2e;
 // pgworker-node + PgWorker.App хост-процессами. Сценарий последователен
 // (AC2→AC7 на своём кластере): provisioning + O2 → takeover → deprovisioning →
 // failover/rebuild → эвакуация → клэймы/снапшоты-лидер.
-public class E2eScenarios(ITestOutputHelper output)
+public sealed class E2eScenarios(E2eScenariosFx Ctx, ITestOutputHelper output) : IClassFixture<E2eScenariosFx>
 {
-    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+    private E2eEnvironment Fx => Ctx.Fx;
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -33,8 +32,6 @@ public class E2eScenarios(ITestOutputHelper output)
     public async Task Acceptance_Scenario_Ac2_To_Ac7()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("ac2-ac7", ct: ct);
-        Fx = fx;
         try
         {
             await RunAc2ToAc7Async(ct);
@@ -371,9 +368,9 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 var recoveries = new List<bool>();
-                foreach (var (key, _) in nodes)
+                foreach (var (key, addr) in nodes)
                 {
-                    var dsn = $"Host=pgw-{cluster}-{shard}-{key.Split('/')[1]};Port=5432;Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
+                    var dsn = $"Host=localhost;Port={addr.Pg};Database=postgres;Username=postgres;Password={E2eFixture.SuPassword}";
                     recoveries.Add(await SqlScalarAsync(dsn, "SELECT pg_is_in_recovery()", ct) == "True");
                 }
 
@@ -591,7 +588,7 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 using var response = await PatroniHttp.GetAsync(
-                    $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                    $"https://localhost:{addr.Patroni}/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
@@ -619,7 +616,8 @@ public class E2eScenarios(ITestOutputHelper output)
                 if (primary is not null)
                 {
                     var addresses = await PortallocAsync(cluster);
-                    return new MasterAddr(primary, $"pgw-{cluster}-{shard}-{primary}", 5432, 6432);
+                    return new MasterAddr(primary, "localhost",
+                        addresses[$"{shard}/{primary}"].Pg, addresses[$"{shard}/{primary}"].Doorman);
                 }
             }
 
@@ -671,4 +669,11 @@ public class E2eScenarios(ITestOutputHelper output)
 
         return true;
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "ac2-ac7";
 }

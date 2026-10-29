@@ -16,15 +16,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // policy days=1/weeks=0/months=0, маленький Retention:IntervalSec →
 // ассерты: старые префиксы/ключи удалены, реальный полный жив, WAL ниже
 // cutoff удалён, всё живое ≥ cutoff, ключ /pgworker/backups/storage пишется.
-public class E2eRetentionScenarios
+public sealed class E2eRetentionScenarios(E2eRetentionScenariosFx Ctx) : IClassFixture<E2eRetentionScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -37,8 +37,6 @@ public class E2eRetentionScenarios
     {
         // Arrange 1 — окружение + кластер bkret<тег прогона> + policy 1/0/0 + воркер
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-ret", withS3Node: true, ct: ct);
-        Fx = fx;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
         // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
         var cluster = $"bkret{Fx.ClusterTag}";
@@ -274,7 +272,7 @@ public class E2eRetentionScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -291,7 +289,7 @@ public class E2eRetentionScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
     }
 
     // pg_switch_wal × n (superuser-only): форсированное закрытие пустых
@@ -343,4 +341,12 @@ public class E2eRetentionScenarios
         var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
         return dsn is not null && node is { Value: "RUNNING" };
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eRetentionScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "bk-ret";
+    protected override bool WithS3Node => true;
 }

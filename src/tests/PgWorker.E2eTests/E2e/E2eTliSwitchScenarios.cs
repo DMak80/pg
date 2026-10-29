@@ -41,31 +41,14 @@ public sealed class TliSwitchContext : IAsyncLifetime
     public uint Tli2;                      // таймлайн после failover (≥ 2)
     public DateTime TCut;                  // цель PITR: после post-switch, до after-cut
     public long AfterCutPos;               // позиция доставки after-cut (log*256+seg)
-    public bool LatestRestoreSucceeded;    // исход Fact 1 — гейт skip'а Fact 2
 
     private string Endpoint => Fx.EtcdEndpoint;
 
     private EtcdGateway G => Fx.Gateway;
 
-    // Хост-исход оркестрации класса (ok — факты скипаются; fail — краснеют).
-    private bool _hostDelegated;
-    private string _hostError = string.Empty;
-
     // Предусловие смешанности не наступило (см. AssertMixedSwitchAsync):
     // непустая строка — факты скипаются (штатный исход прогона).
     private string _prepareSkip = string.Empty;
-
-    /// <summary>Хост-гвардия фактов: если класс исполнялся в раннере — факт
-    /// скипается (ok) или краснеет с исходом (fail). Тела фактов на хосте не
-    /// исполняются — Ctx-поля там не заполняются.</summary>
-    public void SkipIfHostDelegated()
-    {
-        if (!_hostDelegated)
-            return;
-        if (_hostError.Length > 0)
-            throw new ApplicationException(_hostError);
-        Assert.Skip("the class is executed in the runner (the outcome is in the runner log)");
-    }
 
     /// <summary>Гвардия предусловия фактов: если подготовка зафиксировала
     /// «профиль не смешанный» (промоут лёг ровно на границу сегмента) — факт
@@ -80,27 +63,19 @@ public sealed class TliSwitchContext : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var ct = TestContext.Current.CancellationToken;
-        if (!E2eEnvironment.IsInnerRunner)
-        {
-            // Хост: оркестрация КЛАССА целиком — раннер с фильтром «-class»
-            // (TestContext.TestCase в класс-фикстуре недоступен, факт не идёт).
-            await E2eContour.OrchestrateClassAsync(
-                $"PgWorker.IntegrationTests.E2e.{nameof(E2eTliSwitchScenarios)}",
-                "tlsw", withS3Node: true, haEtcd: false, ct);
-            // ok: фикстура молча завершается (Skip фактов — через
-            // SkipIfHostDelegated; бросок здесь краснил бы факты DynamicSkip'ом).
-            _hostDelegated = true;
-            return;
-        }
-
+        E2eParallelismGuard.Acquire("tlsw", ct);
         try
         {
+            // Класс — своё окружение (docs/e2e-isolation.md §1): полный контур
+            // (сеть/etcd/ownS3/CA/окно портов) + подготовка TLI-профиля.
+            Fx = await E2eEnvironment.StartAsync("tlsw", withS3Node: true, ct: ct);
             await PrepareAsync(ct);
         }
         catch
         {
             Fx?.MarkFailed(); // Fx может быть ещё null (падение StartAsync) —
                               // гвард от NRE, маскирующего исходную причину
+            E2eParallelismGuard.Release("tlsw");
             throw;            // оба Fact'а падают ошибкой фикстуры (spec §3.2 шаг 6)
         }
     }
@@ -108,12 +83,19 @@ public sealed class TliSwitchContext : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         if (Fx is null)
-            return; // контур не поднимался (гейт docker выключен)
+            return; // контур не поднимался (провал до StartAsync — слот Release'нут)
         // Teardown окружения при любом исходе: kill воркеров → dispose
         // etcd/ownS3 → rm своих контейнеров/томов/сети → АССЕРТ ЧИСТОТЫ;
         // MarkFailed-режим останавливает, не удаляя (разбор по артефактам
         // /tmp/pgw-e2e-artifacts-<guid>/ + README-cleanup.txt).
-        await Fx.DisposeAsync();
+        try
+        {
+            await Fx.DisposeAsync();
+        }
+        finally
+        {
+            E2eParallelismGuard.Release("tlsw");
+        }
     }
 
     // Пометка «контур упал» для teardown окружения (e2e-launch): остановить,
@@ -960,7 +942,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{Cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -976,8 +958,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
             return false;
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
-        var entry = entries[$"{shard}/{primary}"];
-        return ($"pgw-{Cluster}-{shard}-{primary}", 5432,
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32(),
             primary!);
 
     }
@@ -1000,7 +981,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{Cluster}-{shard}-{key.Split('/')[1]}:8008/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -1111,7 +1092,6 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     [Fact]
     public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
     {
-        Ctx.SkipIfHostDelegated();
         Ctx.SkipIfPrepareSkipped();
         var ct = TestContext.Current.CancellationToken;
         try
@@ -1174,9 +1154,6 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
             }, TimeSpan.FromSeconds(300), ct);
             reinited.Should().BeTrue("the post-restore invariant (wal-reinit): "
                 + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));
-
-            // Assert 5 — фиксация исхода: гейт skip'а Fact 2.
-            Ctx.LatestRestoreSucceeded = true;
         }
         catch
         {
@@ -1194,13 +1171,7 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
     [Fact]
     public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
     {
-        Ctx.SkipIfHostDelegated();
         Ctx.SkipIfPrepareSkipped();
-        // Гейт (spec §3.5): Fact 1 упал → повторная заявка на сломанном
-        // контуре — каскадный красный без новой информации; телеметрия
-        // первой заявки уже собрана.
-        if (!Ctx.LatestRestoreSucceeded)
-            Assert.Skip("Fact 1 (latest) failed — the target_time contour is unreliable, investigate via Fact 1 telemetry");
         var ct = TestContext.Current.CancellationToken;
         try
         {

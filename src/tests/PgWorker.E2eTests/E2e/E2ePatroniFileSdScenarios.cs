@@ -19,12 +19,12 @@ namespace PgWorker.IntegrationTests.E2e;
 // контейнеров снимаются в артефакты ДО удаления (канон телеметрии e2e-launch).
 // Сборка образа sdgenerator:e2e — лениво из этого сценария (EnsureSdImageAsync):
 // чужие E2E-серии и кейс-маркер гейта её не платят.
-public class E2ePatroniFileSdScenarios
+public sealed class E2ePatroniFileSdScenarios(E2ePatroniFileSdScenariosFx Ctx) : IClassFixture<E2ePatroniFileSdScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -34,27 +34,18 @@ public class E2ePatroniFileSdScenarios
     public async Task E2ePatroniFileSd_ClusterTargetsUpSeriesDismantle()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("patroni-file-sd", ct: ct);
-        Fx = fx;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
         // опознаются teardown'ом окружения по своему тегу.
         var cluster = $"pfsd{Fx.ClusterTag}";
 
-        // Имена объектов контура мониторинга (own-only teardown по тегу прогона):
-        // контейнеры стартует РАННЕР docker run'ом (testcontainers в раннере не
-        // участвует), binds — хост-пути (демон резолвит их на хосте).
+        // Имена объектов контура мониторинга (own-only teardown по тегу прогона);
+        // binds — хост-пути (демон резолвит их на хосте).
         var sdVolName = $"pgw-sd-{Fx.ClusterTag}";
         var sdGenName = $"pgw-sdgen-{Fx.ClusterTag}";
         var promName = $"pgw-prom-{Fx.ClusterTag}";
         var promUrl = $"http://{promName}:9090"; // внутрисетевой, без публикаций
-        // Раннер (bind-пути резолвит демон хоста): hostArtifacts смонтирован
-        // ровно в /artifacts, артефакты факта живут в /artifacts/<runId> —
-        // хостовый аналог контейнерного пути = hostArtifacts/<runId>.
-        var hostArtifacts = Environment.GetEnvironmentVariable("PGW_E2E_HOST_ARTIFACTS")
-            ?? throw new ApplicationException("PGW_E2E_HOST_ARTIFACTS is not set — running outside the runner");
-        var hostArtifactsDir = Path.Combine(
-            hostArtifacts, Path.GetRelativePath("/artifacts", Fx.ArtifactsDir));
+        // Bind-пути резолвит демон хоста: артефакты окружения — ArtifactsDir.
+        var hostArtifactsDir = Fx.ArtifactsDir;
         try
         {
             // ---------- контур мониторинга (только этого сценария) ----------
@@ -480,4 +471,11 @@ public class E2ePatroniFileSdScenarios
             return false;
         }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2ePatroniFileSdScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "patroni-file-sd";
 }

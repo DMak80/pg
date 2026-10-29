@@ -33,7 +33,8 @@ public abstract class E2eBackupPoolScenarios
     protected const string Pool = "bkpool";
     protected const string Node2Alias = "e2e-owns3-2";
 
-    protected E2eEnvironment Fx = null!;
+    // Окружение класса — фиксура каждого наследника (свой slug: pool-ac1..8).
+    protected abstract E2eEnvironment Fx { get; }
     protected string Endpoint => Fx.EtcdEndpoint;
     protected EtcdGateway G => Fx.Gateway;
 
@@ -261,16 +262,15 @@ public abstract class E2eBackupPoolScenarios
         {
             probeAttempt++;
             var lines = new List<string>();
-            foreach (var (key, _) in entries
+            foreach (var (key, addr) in entries
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                          .OrderBy(p => p.Key, StringComparer.Ordinal))
             {
                 var node = key.Split('/')[1];
-                var container = $"pgw-{cluster}-{shard}-{node}";
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://{container}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = node;
@@ -289,7 +289,7 @@ public abstract class E2eBackupPoolScenarios
             return false;
         }, TimeSpan.FromSeconds(240), ct);
         resolved.Should().BeTrue($"the shard primary must be resolved by Patroni probes (:8008); {probeSummary}");
-        return ($"pgw-{cluster}-{shard}-{primary}", 5432, primary!);
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32(), primary!);
     }
 
     // PUT PLANNED-заявки restore прямым ключом (прецедент E2eRestoreScenarios).
@@ -338,8 +338,10 @@ public abstract class E2eBackupPoolScenarios
 // AC1 (молчание без выбора пула → policy с s3 → COMPLETED (AC1)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
+public sealed class PoolNotSelectedScenarios(PoolNotSelectedScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolNotSelectedScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC1 =====
 
     // AAA: policy без s3 → полный не планируется (ключей нет за окно);.policy
@@ -348,8 +350,6 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
     public async Task Pool_NotSelected_Silent_ThenPolicy_Completes()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac1", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac1{Fx.ClusterTag}";
         var ep1 = HostPort(Fx.S3Endpoint);
         try
@@ -398,8 +398,10 @@ public sealed class PoolNotSelectedScenarios : E2eBackupPoolScenarios
 // AC2 (раскладка записи мастер/реплика по своим нодам (AC2)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
+public sealed class PoolMasterReplicaSplitScenarios(PoolMasterReplicaSplitScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolMasterReplicaSplitScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC2 =====
 
     // AAA: пул из двух нод, write_master=[node1], write_replica=[node2]:
@@ -409,8 +411,6 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
     public async Task Pool_MasterReplicaSplit_ObjectsOnTheirNodes()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac2", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac2{Fx.ClusterTag}";
         var ep1 = HostPort(Fx.S3Endpoint);
         try
@@ -472,8 +472,10 @@ public sealed class PoolMasterReplicaSplitScenarios : E2eBackupPoolScenarios
 // AC3 (однонодовый пул: оба потока + restore (AC3)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
+public sealed class PoolSingleNodeScenarios(PoolSingleNodeScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolSingleNodeScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC3 =====
 
     // AAA: однонодовый пул — оба агента пишут на node1, полный COMPLETED,
@@ -482,8 +484,6 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
     public async Task Pool_SingleNode_BothStreams_RestoreOk()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac3", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac3{Fx.ClusterTag}";
         try
         {
@@ -530,8 +530,10 @@ public sealed class PoolSingleNodeScenarios : E2eBackupPoolScenarios
 // AC4 (failover списка записи и исчерпание с маркером (AC4)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
+public sealed class PoolFailoverExhaustionScenarios(PoolFailoverExhaustionScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolFailoverExhaustionScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC4 =====
 
     // AAA: список записи [node1,node2] — стоп node1 → мастер-агент доезжает до
@@ -541,8 +543,6 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
     public async Task Pool_FailoverList_And_Exhaustion_SelfHeal()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac4", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac4{Fx.ClusterTag}";
         var writer = new WalStatusWriter(G, [Endpoint]);
         try
@@ -640,8 +640,10 @@ public sealed class PoolFailoverExhaustionScenarios : E2eBackupPoolScenarios
 // AC5 (promote: агент пересоздан со списком мастера (AC5)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
+public sealed class PoolRoleSwitchScenarios(PoolRoleSwitchScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolRoleSwitchScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC5 =====
 
     // AAA: promote слейва (stop мастера → Patroni failover) → агент новой роли
@@ -651,8 +653,6 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
     public async Task Pool_RoleSwitch_AgentRecreatedWithMasterList()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac5", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac5{Fx.ClusterTag}";
         var writer = new WalStatusWriter(G, [Endpoint]);
         var ep1 = HostPort(Fx.S3Endpoint);
@@ -737,8 +737,10 @@ public sealed class PoolRoleSwitchScenarios : E2eBackupPoolScenarios
 // AC6 (чтение с живой ноды после стопа (AC6)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
+public sealed class PoolReadAnyNodeScenarios(PoolReadAnyNodeScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolReadAnyNodeScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC6 =====
 
     // AAA: данные писались на node1; mc mirror n1→n2 (эмуляция mesh-доставки);
@@ -748,8 +750,6 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
     public async Task Pool_ReadAnyNode_RestoreAfterNodeStop()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac6", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac6{Fx.ClusterTag}";
         try
         {
@@ -845,8 +845,10 @@ public sealed class PoolReadAnyNodeScenarios : E2eBackupPoolScenarios
 // AC7 (слепки на отдельной паре + fail-fast (AC7)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
+public sealed class PoolSnapshotsOwnPairScenarios(PoolSnapshotsOwnPairScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolSnapshotsOwnPairScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC7 =====
 
     // AAA: Enabled + полная пара → слепки уходят в СВОЙ bucket pgworker-etcd-
@@ -856,8 +858,6 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
     public async Task Snapshots_OwnPair_BucketAndFailFast()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac7", withS3Node: true, ct: ct);
-        Fx = fx;
         try
         {
             // Arrange — bucket слепков на ownS3-ноды окружения (свой, не пуловый).
@@ -911,8 +911,10 @@ public sealed class PoolSnapshotsOwnPairScenarios : E2eBackupPoolScenarios
 // AC8 (policy-API 400 по полям + restore source_pool (AC8)) — отдельный класс: свой guid-контур; коллекции классов
 // не сериализуют сценарии между собой (параллельный запуск E2E, ≤5 живых
 // контуров — канон docs/e2e-launch.md).
-public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
+public sealed class PoolPolicyValidationScenarios(PoolPolicyValidationScenariosFx Ctx) : E2eBackupPoolScenarios, IClassFixture<PoolPolicyValidationScenariosFx>
 {
+    protected override E2eEnvironment Fx => Ctx.Fx;
+
     // ===== AC8 =====
 
     // AAA: policy-API — 400 по полям (пул не найден / TO_REMOVE / нода не в пуле /
@@ -922,8 +924,6 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
     public async Task PolicyValidation_400_ByField_And_SourcePool_Restore()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("pool-ac8", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"pac8{Fx.ClusterTag}";
         try
         {
@@ -1011,4 +1011,68 @@ public sealed class PoolPolicyValidationScenarios : E2eBackupPoolScenarios
             throw;
         }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения PoolNotSelectedScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolNotSelectedScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac1";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolMasterReplicaSplitScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolMasterReplicaSplitScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac2";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolSingleNodeScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolSingleNodeScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac3";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolFailoverExhaustionScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolFailoverExhaustionScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac4";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolRoleSwitchScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolRoleSwitchScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac5";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolReadAnyNodeScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolReadAnyNodeScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac6";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolSnapshotsOwnPairScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolSnapshotsOwnPairScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac7";
+    protected override bool WithS3Node => true;
+}
+
+/// <summary>Компаньон-фикстура окружения PoolPolicyValidationScenarios (полный контур на класс:
+/// сеть/etcd/ownS3/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class PoolPolicyValidationScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pool-ac8";
+    protected override bool WithS3Node => true;
 }

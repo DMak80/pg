@@ -7,30 +7,39 @@ namespace PgWorker.IntegrationTests.E2e;
 public sealed class HostInstance : IAsyncDisposable
 {
     private readonly E2eEnvironment _env;
+    private readonly int _apiHostPort;
     private bool _disposed;
 
-    public HostInstance(E2eEnvironment env, string name, string alias, string containerName)
+    public HostInstance(E2eEnvironment env, string name, string alias, string containerName,
+        int apiHostPort)
     {
         _env = env;
         Name = name;
         Alias = alias;
         ContainerName = containerName;
+        _apiHostPort = apiHostPort;
     }
 
     public string Name { get; }
 
-    /// <summary>DNS-алиас воркера в сети контура (mTLS SAN, адрес API).</summary>
+    /// <summary>DNS-алиас воркера в сети окружения (advertise API, mTLS SAN).</summary>
     public string Alias { get; }
 
     public string ContainerName { get; }
 
-    /// <summary>mTLS-адрес HTTP API воркера (внутрисетевой, раннер в той же сети).</summary>
-    public string ApiUrl => $"https://{Alias}:8443";
+    /// <summary>mTLS-адрес HTTP API воркера для ТЕСТА: динамическая публикация
+    /// API на хост (docs/e2e-isolation.md §2) — https://localhost:{фактический
+    /// порт} (SAN серверного серта покрывает "localhost"); внутрисетевые
+    /// потребители ходят по advertise https://{Alias}:8443.</summary>
+    public string ApiUrl => $"https://localhost:{_apiHostPort}";
 
-    /// <summary>Каталог etcd-снапшотов воркера (Snapshots__Dir в контейнере
-    /// /snapshots — bind на каталог артефактов хоста; в раннере виден как
-    /// /snaps/&lt;name&gt;): сценарии читают snapshot-*.db напрямую.</summary>
-    public string SnapshotsDir => $"/snaps/{Name}";
+    /// <summary>Фактический динамический хост-порт API воркера.</summary>
+    public int ApiHostPort => _apiHostPort;
+
+    /// <summary>Каталог etcd-снапшотов воркера НА ХОСТЕ (bind /snapshots в
+    /// контейнере → каталог артефактов окружения): сценарии читают
+    /// snapshot-*.db напрямую.</summary>
+    public string SnapshotsDir => Path.Combine(_env.SnapshotsHostDir, Name);
 
     /// <summary>Жив ли воркер (контейнер running) — семантика «процесс жив»
     /// старого хост-инстанса (смерть контроллера, cert-сценарии).</summary>

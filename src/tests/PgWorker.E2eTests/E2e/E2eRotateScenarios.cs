@@ -8,15 +8,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E ротации per-cluster секретов (t02, spec §7.5): заявка etcdctl-формой →
 // заявка исчезла, app/mover/bucket_admin изменились, dsn перезаписан, новый
 // пароль подключается, старый отвергается, пишущая нагрузка переживает ротацию.
-public class E2eRotateScenarios
+public sealed class E2eRotateScenarios(E2eRotateScenariosFx Ctx) : IClassFixture<E2eRotateScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"rotate{Fx.ClusterTag}";
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -27,8 +27,6 @@ public class E2eRotateScenarios
     {
         // Arrange — рабочий кластер (provisioning завершён), известны старые креды
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("rotate", ct: ct);
-        Fx = fx;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("rotate", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(async () =>
@@ -184,4 +182,11 @@ public class E2eRotateScenarios
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eRotateScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "rotate";
 }

@@ -12,15 +12,14 @@ namespace PgWorker.IntegrationTests.E2e;
 // Один [Fact], 5 этапов вызывают друг друга по цепочке:
 //   E1 → E2 → E3 → E4 → E5
 // Каждый этап — приватный метод, output.WriteLine показывает прогресс.
-public class E2eMoveScenarios(ITestOutputHelper output)
+public sealed class E2eMoveScenarios(E2eMoveScenariosFx Ctx, ITestOutputHelper output) : IClassFixture<E2eMoveScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"mshop{Fx.ClusterTag}";
-
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
     private EtcdGateway G => Fx.Gateway;
@@ -31,8 +30,6 @@ public class E2eMoveScenarios(ITestOutputHelper output)
     [Fact]
     public async Task Move_Lifecycle_Chain()
     {
-        await using var fx = await E2eEnvironment.StartAsync("move-chain", ct: TestContext.Current.CancellationToken);
-        Fx = fx;
         try
         {
             await E1_Provisioning();
@@ -109,7 +106,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         var shard1 = await MasterInfoAsync("shard1", ct);
         var shard2 = await MasterInfoAsync("shard2", ct);
 
-        await using var ghost = new NpgsqlConnection(await AppDsnAsync(shard1.Host, ct));
+        await using var ghost = new NpgsqlConnection(await AppDsnAsync(shard1.Host, shard1.Pg, ct));
         await ghost.OpenAsync(ct);
         await using (var warm = new NpgsqlCommand("SELECT 1", ghost))
             await warm.ExecuteNonQueryAsync(ct);
@@ -257,7 +254,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         (await ArtifactsCleanAsync("shard2", "bucket_1", schemaMustBeAbsent: false, ct))
             .Should().BeTrue($"the owner (shard2) has the live bucket_1 schema, no artifacts; " +
                              $"artifacts={await ArtifactsDumpAsync("shard2", "bucket_1", ct)}");
-        (await TryInsertAppAsync(shard2.Host, "bucket_1", ct))
+        (await TryInsertAppAsync(shard2.Host, shard2.Pg, "bucket_1", ct))
             .Should().BeTrue("after the abort the bucket is ACTIVE: writing by the owner works (AC6-abort)");
         output.WriteLine("E4: abort+takeover done");
     }
@@ -433,7 +430,9 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, string Host, string Dsn);
+    // Host — SQL-адрес мастера с хоста (localhost:{Pg}); Patroni — REST-порт
+    // публикации (PATCH /config мутаций синхрон-режима).
+    private sealed record MasterInfo(string Node, string Host, int Pg, int Patroni, string Dsn);
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
@@ -459,13 +458,14 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                     var node = nodeKey.Split('/')[1];
                     try
                     {
-                        var host = $"pgw-{Cluster}-{shard}-{node}";
+                        // Публикации ноды на хост: REST — localhost:{Patroni},
+                        // SQL — localhost:{Pg} (docs/e2e-isolation.md §2).
                         using var response = await PatroniHttp.GetAsync(
-                            $"https://{host}:8008/primary", ct);
+                            $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        return new MasterInfo(node, host,
-                            $"Host={host};Port=5432;Database={Cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, "localhost", addr.Pg, addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={Cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
                     catch (Exception)
                     {
@@ -488,7 +488,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             .Value!.Value;
         var http = Fx.NewPatroniHttpClient();
         using var response = await http.SendAsync(
-            E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
+            E2eEnvironment.PatroniPatch($"https://localhost:{master.Patroni}/config",
                 restPassword, """{"synchronous_mode":true}"""),
             ct);
         response.IsSuccessStatusCode.Should().BeTrue(
@@ -507,8 +507,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
     // DSN приложения: пароль — из etcd-ключа /clusters/<C>/app_password
     // (тот же путь, что и приложение — spec §4.3), не из env фикстуры.
-    private async Task<string> AppDsnAsync(string host, CancellationToken ct)
-        => $"Host={host};Port=5432;Database={Cluster};Username=app;" +
+    private async Task<string> AppDsnAsync(string host, int port, CancellationToken ct)
+        => $"Host={host};Port={port};Database={Cluster};Username=app;" +
            $"Password={await Fx.GetAppPasswordAsync(Cluster, ct)};SSL Mode=Require;Trust Server Certificate=true";
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
@@ -519,11 +519,11 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";
     }
 
-    private async Task<bool> TryInsertAppAsync(string masterHost, string bucket, CancellationToken ct)
+    private async Task<bool> TryInsertAppAsync(string masterHost, int masterPort, string bucket, CancellationToken ct)
     {
         try
         {
-            await using var con = new NpgsqlConnection($"{await AppDsnAsync(masterHost, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+            await using var con = new NpgsqlConnection($"{await AppDsnAsync(masterHost, masterPort, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 $"INSERT INTO {bucket}.items(note) VALUES ('probe')", con);
@@ -611,7 +611,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                         if (shard != prevShard) { await Task.Delay(700, ct); prevShard = shard; }
 
                         var master = await owner.MasterInfoAsync(shard, ct);
-                        await using var con = new NpgsqlConnection($"{await owner.AppDsnAsync(master.Host, ct)};Timeout=5;SSL Mode=Require;Trust Server Certificate=true");
+                        await using var con = new NpgsqlConnection($"{await owner.AppDsnAsync(master.Host, master.Pg, ct)};Timeout=5;SSL Mode=Require;Trust Server Certificate=true");
                         await con.OpenAsync(ct);
                         await using var cmd = new NpgsqlCommand(
                             "INSERT INTO bucket_0.items(note) VALUES ('load')", con);
@@ -630,4 +630,11 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         public void Dispose() { _cts.Cancel(); _cts.Dispose(); }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eMoveScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "move-chain";
 }

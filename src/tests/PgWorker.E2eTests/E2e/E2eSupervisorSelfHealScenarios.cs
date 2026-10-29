@@ -19,15 +19,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // нового wal_start → ACTIVE, агент жив; (2) OrphanRegistry_TtlDelete —
 // чужой префикс без владельца → реестр /pgworker/backups/orphans (OBSERVED) →
 // сжатый TTL → объекты удалены, запись погашена.
-public class E2eSupervisorSelfHealScenarios
+public sealed class E2eSupervisorSelfHealScenarios(E2eSupervisorSelfHealScenariosFx Ctx) : IClassFixture<E2eSupervisorSelfHealScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -44,9 +44,8 @@ public class E2eSupervisorSelfHealScenarios
         //   verify on_create=false (не мешает), Wal VerifyIntervalSec=5,
         //   Supervisor IntervalSec=60; воркер
         var ct = TestContext.Current.CancellationToken;
-        await RunScenarioAsync("bk-spr", async fx =>
+        await RunScenarioAsync(async fx =>
         {
-        Fx = fx;
         var cluster = $"bkspr{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -345,22 +344,16 @@ public class E2eSupervisorSelfHealScenarios
     // контейнеры, но не удаляет (host.log/тома остаются для разбора «что
     // произошло»); перезапуск ради логов запрещён; зачистка — вручную.
     private async Task RunScenarioAsync(
-        string slug, Func<E2eEnvironment, Task> body, CancellationToken ct)
+        Func<E2eEnvironment, Task> body, CancellationToken ct)
     {
-        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
-        Fx = fx;
         try
         {
-            await body(fx);
+            await body(Fx);
         }
         catch
         {
-            fx.MarkFailed();
+            Fx.MarkFailed();
             throw;
-        }
-        finally
-        {
-            await fx.DisposeAsync();
         }
     }
 
@@ -502,7 +495,7 @@ public class E2eSupervisorSelfHealScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -519,7 +512,7 @@ public class E2eSupervisorSelfHealScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ($"pgw-{cluster}-{shard}-{primary}", 5432);
+        return ("localhost", entries[$"{shard}/{primary}"].GetProperty("Pg").GetInt32());
     }
 
     // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):
@@ -585,3 +578,10 @@ public class E2eSupervisorSelfHealScenarios
     }
 }
 
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eSupervisorSelfHealScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "bk-spr";
+    protected override bool WithS3Node => true;
+}

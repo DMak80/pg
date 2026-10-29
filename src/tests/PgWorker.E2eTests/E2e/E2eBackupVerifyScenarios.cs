@@ -20,15 +20,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
 // {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
 // движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
-public class E2eBackupVerifyScenarios
+public sealed class E2eBackupVerifyScenarios(E2eBackupVerifyScenariosFx Ctx) : IClassFixture<E2eBackupVerifyScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -40,8 +40,6 @@ public class E2eBackupVerifyScenarios
     {
         // Arrange — окружение с ownS3-нодой; кластер bkvrfy<тег прогона>; policy on_create=true
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-verify", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"bkvrfy{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3.
@@ -91,8 +89,6 @@ public class E2eBackupVerifyScenarios
     {
         // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-corrupt", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3.
@@ -203,4 +199,12 @@ public class E2eBackupVerifyScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eBackupVerifyScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "bk-verify";
+    protected override bool WithS3Node => true;
 }

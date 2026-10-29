@@ -10,15 +10,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // app_user/app_password, креды user=app работают против БД шарда (прямой
 // pg-порт ноды — стенд без doorman, spec §7.2), значение пароля стабильно
 // между тиками (идемпотентность).
-public class E2eAppSecretScenarios
+public sealed class E2eAppSecretScenarios(E2eAppSecretScenariosFx Ctx) : IClassFixture<E2eAppSecretScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"appsecret{Fx.ClusterTag}";
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -30,8 +30,6 @@ public class E2eAppSecretScenarios
         // Arrange — сид кластера в стиле панели (config NOT_INITIALIZED с
         // bucket_admin-кредами фикстуры; app-ключи НЕ сеём — генерирует PgWorker)
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("app-secret", ct: ct);
-        Fx = fx;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("appsecret", ct: ct);
 
@@ -129,4 +127,11 @@ public class E2eAppSecretScenarios
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eAppSecretScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "app-secret";
 }

@@ -22,15 +22,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
 // {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
 // движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
-public class E2eBackupJobsScenarios
+public sealed class E2eBackupJobsScenarios(E2eBackupJobsScenariosFx Ctx) : IClassFixture<E2eBackupJobsScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
 
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -43,8 +43,6 @@ public class E2eBackupJobsScenarios
     {
         // Arrange — кластер bkshop<тег прогона> + policy (verify on_create) + воркер
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-full", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: пул + policy с секцией s3 (без неё подсистема кластера молчит).
@@ -102,8 +100,6 @@ public class E2eBackupJobsScenarios
     {
         // Arrange — кластер bkclean; ждём появления первой попытки (джоб жив)
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-clean", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: policy с секцией s3 — планирование полных стартует только с пулом.
@@ -159,8 +155,6 @@ public class E2eBackupJobsScenarios
     {
         // Arrange — кластер bkrot с завершённым полным; OLD backup_password
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("bk-rot", withS3Node: true, ct: ct);
-        Fx = fx;
         var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         // t36: policy с секцией s3 — полный (до ротации) пишется только с пулом.
@@ -284,4 +278,12 @@ public class E2eBackupJobsScenarios
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eBackupJobsScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "bk-full";
+    protected override bool WithS3Node => true;
 }

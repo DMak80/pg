@@ -17,15 +17,14 @@ namespace PgWorker.IntegrationTests.E2e;
 // (уникально на прогон, docs/e2e-isolation.md §1). Каждый Fact — своё
 // окружение: per-method изоляция (движковые контейнеры/тома pgw-*-<C>-*
 // опознаются teardown'ом окружения); полный teardown при любом исходе.
-public class E2eWalStreamTliScenarios
+public sealed class E2eWalStreamTliScenarios(E2eWalStreamTliScenariosFx Ctx) : IClassFixture<E2eWalStreamTliScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string Bucket = "pgworker-backups";
 
     // t36: пул E2E (однонодовый — ownS3-ноды окружения; etcd у каждого Fact'а свой).
     private const string Pool = "bkpool";
-
-    // Окружение Fact'а (своя сеть/etcd/ownS3); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -44,7 +43,6 @@ public class E2eWalStreamTliScenarios
         // Arrange — окружение, оба агента running, база цепочки TLI 1
         var ct = TestContext.Current.CancellationToken;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24a", "shopt24a", ct);
-        await using var envOwner = fx;
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
@@ -199,7 +197,6 @@ public class E2eWalStreamTliScenarios
         // Arrange — окружение, оба агента running, база цепочки TLI 1
         var ct = TestContext.Current.CancellationToken;
         var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t24b", "shopt24b", ct);
-        await using var envOwner = fx;
         await using var appOwner = app;
         var hostEndpoint = Fx.S3Endpoint;
         await using var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.S3ClientOptions(hostEndpoint, Bucket, E2eEnvironment.S3RootUser, E2eEnvironment.S3RootPassword));
@@ -496,7 +493,7 @@ public class E2eWalStreamTliScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -626,7 +623,7 @@ public class E2eWalStreamTliScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-shard1-{key.Split('/')[1]}:8008/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -647,14 +644,11 @@ public class E2eWalStreamTliScenarios
 
     /// <summary>Подъём полного WAL-контура сценария: окружение с ownS3-нодой, кластер,
     /// воркер (Backups:Enabled), ожидание provisioning, DSN мастера.
-    /// Владение окружением и воркером — у Fact (DisposeAsync при любом исходе).</summary>
     private async Task<(E2eEnvironment Env, HostInstance App, string Cluster, string AdminDsn, string MasterNode)>
         StartWalScenarioAsync(string slug, string clusterPrefix, CancellationToken ct)
     {
         var phaseStart = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
-        var fx = await E2eEnvironment.StartAsync(slug, withS3Node: true, ct: ct);
-        Fx = fx;
         Console.WriteLine($"[PHASE] {slug}: environment raised in " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " s (incl. Release build and images)");
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
@@ -668,7 +662,7 @@ public class E2eWalStreamTliScenarios
         var (pgHost, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-        return (fx, app, cluster, adminDsn, masterNode);
+        return (Fx, app, cluster, adminDsn, masterNode);
     }
 
     // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
@@ -781,7 +775,7 @@ public class E2eWalStreamTliScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"https://pgw-{cluster}-{shard}-{key.Split('/')[1]}:8008/primary", ct);
+                        $"https://localhost:{addr.GetProperty("Patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -798,7 +792,7 @@ public class E2eWalStreamTliScenarios
         }, TimeSpan.FromSeconds(120), ct);
         resolved.Should().BeTrue("the shard primary must be resolved by Patroni probes");
         var entry = entries[$"{shard}/{primary}"];
-        return ($"pgw-{cluster}-{shard}-{primary}", 5432,
+        return ("localhost", entry.GetProperty("Pg").GetInt32(),
             primary!);
     }
 
@@ -871,4 +865,12 @@ public class E2eWalStreamTliScenarios
             await switchWal.ExecuteScalarAsync(ct);
         }
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eWalStreamTliScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "wal-tli";
+    protected override bool WithS3Node => true;
 }

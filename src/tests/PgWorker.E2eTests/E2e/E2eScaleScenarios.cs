@@ -12,12 +12,13 @@ namespace PgWorker.IntegrationTests.E2e;
 // add ПУСТОГО шарда в Active-кластер (routing/schema-мир не тронут — главная
 // граница §2.1), G3-блокировка remove с бакетами, авто-демонтаж после явных
 // переездов, освобождение имени, takeover посреди A3.
-public class E2eScaleScenarios
+public sealed class E2eScaleScenarios(E2eScaleScenariosFx Ctx) : IClassFixture<E2eScaleScenariosFx>
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
+    // Окружение класса (класс-фикстура): факты последовательны и делят его;
+    // имена кластеров фактов различны литеральными префиксами (sshop/stshop).
+    private E2eEnvironment Fx => Ctx.Fx;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -28,8 +29,6 @@ public class E2eScaleScenarios
     {
         var ct = TestContext.Current.CancellationToken;
 
-        await using var fx = await E2eEnvironment.StartAsync("scale-add", ct: ct);
-        Fx = fx;
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
         // опознаются teardown'ом окружения по своему тегу (OwnName) и снимаются им.
         var cluster = $"sshop{Fx.ClusterTag}";
@@ -186,8 +185,6 @@ public class E2eScaleScenarios
     {
         var ct = TestContext.Current.CancellationToken;
 
-        await using var fx = await E2eEnvironment.StartAsync("scale-takeover", ct: ct);
-        Fx = fx;
         // Уникальное имя кластера на прогон (см. scale-add).
         var cluster = $"stshop{Fx.ClusterTag}";
 
@@ -396,7 +393,9 @@ public class E2eScaleScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, string Host, string Dsn);
+    // Host — SQL-адрес мастера с хоста (localhost); Patroni — REST-порт
+    // публикации (PATCH /config синхрон-режима).
+    private sealed record MasterInfo(string Node, string Host, int Patroni, string Dsn);
 
     // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
     private HttpClient PatroniHttp => Fx.NewPatroniHttpClient();
@@ -441,16 +440,17 @@ public class E2eScaleScenarios
                         var host = $"pgw-{cluster}-{shard}-{node}";
                         // Изолированный клиент на пробу (диагностика общего
                         // PatroniHttp: ObjectDisposedException в §8-3).
+                        // Публикация REST ноды на хост: localhost:{динамический порт}.
                         using var http = Fx.NewPatroniHttpClient();
                         using var response = await http.GetAsync(
-                            $"https://{host}:8008/primary", ct);
+                            $"https://localhost:{addr.Patroni}/primary", ct);
                         await File.AppendAllTextAsync(
                             Path.Combine(Fx.ArtifactsDir, "diag.log"),
                             $"[diag] probe {node}: {(int)response.StatusCode}\n", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        return new MasterInfo(node, host,
-                            $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, "localhost", addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
                     catch (Exception e)
                     {
@@ -492,7 +492,7 @@ public class E2eScaleScenarios
             {
                 using var http = Fx.NewPatroniHttpClient();
                 using var response = await http.SendAsync(
-                    E2eEnvironment.PatroniPatch($"https://{master.Host}:8008/config",
+                    E2eEnvironment.PatroniPatch($"https://localhost:{master.Patroni}/config",
                         restPassword, """{"synchronous_mode":true}"""),
                     ct);
                 if (response.IsSuccessStatusCode)
@@ -545,22 +545,23 @@ public class E2eScaleScenarios
     private async Task<MasterInfo?> PrimaryOrNullAsync(string cluster, string shard, CancellationToken ct)
     {
         var addresses = await PortallocAsync(cluster);
-        foreach (var (nodeKey, _) in addresses
+        foreach (var (nodeKey, addr) in addresses
                      .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                      .OrderBy(p => p.Key, StringComparer.Ordinal))
         {
             var node = nodeKey.Split('/')[1];
-            var host = $"pgw-{cluster}-{shard}-{node}";
             try
             {
                 // Изолированный клиент на пробу (диагностика общего
                 // PatroniHttp: ObjectDisposedException в §8-3).
+                // Публикация REST ноды на хост: localhost:{динамический порт}.
                 using var http = Fx.NewPatroniHttpClient();
-                using var response = await http.GetAsync($"https://{host}:8008/primary", ct);
+                using var response = await http.GetAsync(
+                    $"https://localhost:{addr.Patroni}/primary", ct);
                 if (!response.IsSuccessStatusCode)
                     continue;
-                return new MasterInfo(node, host,
-                    $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                return new MasterInfo(node, "localhost", addr.Patroni,
+                    $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
             }
             catch (Exception)
             {
@@ -583,17 +584,16 @@ public class E2eScaleScenarios
             var dcs = await GetOrNullAsync($"/service/{cluster}-{shard}/config");
             lines.AppendLine($"[diag] sync-gate {cluster}/{shard}: DCS config = {dcs?.Value ?? "absent"}");
             var addresses = await PortallocAsync(cluster);
-            foreach (var (nodeKey, _) in addresses
+            foreach (var (nodeKey, addr) in addresses
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                          .OrderBy(p => p.Key, StringComparer.Ordinal))
             {
                 var node = nodeKey.Split('/')[1];
-                var host = $"pgw-{cluster}-{shard}-{node}";
                 try
                 {
                     using var http = Fx.NewPatroniHttpClient();
                     using var request = new HttpRequestMessage(
-                        HttpMethod.Get, $"https://{host}:8008/cluster");
+                        HttpMethod.Get, $"https://localhost:{addr.Patroni}/cluster");
                     request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
                         "Basic", Convert.ToBase64String(
                             Encoding.UTF8.GetBytes($"patroni:{restPassword}")));
@@ -609,7 +609,7 @@ public class E2eScaleScenarios
 
                 try
                 {
-                    var dsn = $"Host={host};Port=5432;Database={cluster};" +
+                    var dsn = $"Host=localhost;Port={addr.Pg};Database={cluster};" +
                               $"Username=postgres;Password={E2eFixture.SuPassword}";
                     var names = await SqlScalarAsync(dsn,
                         "SELECT setting FROM pg_settings WHERE name = 'synchronous_standby_names'", ct);
@@ -649,8 +649,10 @@ public class E2eScaleScenarios
         try
         {
             var master = await MasterInfoAsync(cluster, shard, ct);
+            // Порт мастера — из portalloc-записи (внутри Dsn-строки MasterInfo);
+            // SQL-подключение с хоста — localhost:{динамический pg-порт}.
             await using var con = new NpgsqlConnection(
-                $"Host={master.Host};Port=5432;Database={cluster};Username=app;" +
+                $"{master.Dsn};Username=app;" +
                 $"Password={await Fx.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);
@@ -678,4 +680,11 @@ public class E2eScaleScenarios
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eScaleScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "scale-add";
 }

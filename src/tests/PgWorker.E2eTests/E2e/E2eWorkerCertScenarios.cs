@@ -17,8 +17,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // restart: unless-stopped» имитируется повторным StartHostAsync того же
 // extraEnv — E2E-хосты не контейнеры, перезапускает их сам сценарий.
 [Collection("e2e-serial")]
-public class E2eWorkerCertScenarios
+public sealed class E2eWorkerCertScenarios(E2eWorkerCertScenariosFx Ctx) : IClassFixture<E2eWorkerCertScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private const string ManagedKey = "/workers/api_tls/pgworker";
     private const string DiscoveryPrefix = "/pgworker/api/";
 
@@ -30,7 +32,7 @@ public class E2eWorkerCertScenarios
     public async Task WorkerCert_Lifecycle_AppliedPendingRestartEnvFallback()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("worker-cert", ct: ct);
+        var fx = Ctx.Fx;
         var p1San = WorkerAlias("cert-p1"); // SAN сертов управляемого ключа = алиас воркера
         try
         {
@@ -43,7 +45,7 @@ public class E2eWorkerCertScenarios
                 fx.CaPem, fx.CaKeyPem,
                 "certsc-client", ["certsc-client"], ip: null);
             // Серты управляемого ключа: SAN = алиас воркера в сети контура
-            // (тест ходит по https://pgw-ew-…:8443 — доверие по thumbprint).
+            // (тест ходит по https://localhost:{динамический порт} API).
             var (oldPem, oldKey) = SelfSignedPair("pgworker-old", p1San);
             var (newPem, newKey) = SelfSignedPair("pgworker-new", p1San);
             var (envPem, envKey) = SelfSignedPair("pgworker-env", p1San);
@@ -145,7 +147,7 @@ public class E2eWorkerCertScenarios
     public async Task WorkerCert_BrokenKey_StartFails()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("worker-cert-broken", ct: ct);
+        var fx = Ctx.Fx;
         var brokenSan = WorkerAlias("cert-broken");
         try
         {
@@ -302,4 +304,11 @@ public class E2eWorkerCertScenarios
         })
         { Timeout = TimeSpan.FromSeconds(5) };
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eWorkerCertScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "worker-cert";
 }

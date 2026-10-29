@@ -6,15 +6,15 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E per-node app_params (spec §7.2/§7.3): provisioning обеспечивает ключ
 // каждой ноды дефолтом; значение стабильно между тиками; ручная правка не
 // перезаписывается (put-if-absent, миграция надзора).
-public class E2eAppParamsScenarios
+public sealed class E2eAppParamsScenarios(E2eAppParamsScenariosFx Ctx) : IClassFixture<E2eAppParamsScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
     // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
     // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
     private string Cluster => $"appparams{Fx.ClusterTag}";
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -25,8 +25,6 @@ public class E2eAppParamsScenarios
     {
         // Arrange — сид NOT_INITIALIZED без app_params-ключей (генерирует PgWorker)
         var ct = TestContext.Current.CancellationToken;
-        await using var fx = await E2eEnvironment.StartAsync("app-params", ct: ct);
-        Fx = fx;
         await SeedClusterAsync(Cluster);
         await using var app = await Fx.StartHostAsync("appparams", ct: ct);
 
@@ -89,4 +87,11 @@ public class E2eAppParamsScenarios
 
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2eAppParamsScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "app-params";
 }

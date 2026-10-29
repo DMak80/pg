@@ -17,12 +17,12 @@ namespace PgWorker.IntegrationTests.E2e;
 //    параллельные параметры в YAML отсутствуют;
 // 4) конвергенция pg-параметров живого шарда (t11): смена заявки → PATCH DCS
 //    без пересоздания, динамика применена живым PG, postmaster → pending_restart.
-public class E2ePgtuneScenarios
+public sealed class E2ePgtuneScenarios(E2ePgtuneScenariosFx Ctx) : IClassFixture<E2ePgtuneScenariosFx>
 {
+    private E2eEnvironment Fx => Ctx.Fx;
+
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
-    private E2eEnvironment Fx = null!;
 
     private string Endpoint => Fx.EtcdEndpoint;
 
@@ -32,9 +32,6 @@ public class E2ePgtuneScenarios
     public async Task Pgtune_Provision_EnvCarriesMergedParamsAndSyncedDoorman()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("pgtune-provision", ct: ct);
-        Fx = fx;
         // Уникальное имя кластера на прогон (own-only teardown по тегу прогона).
         var cluster = $"pshop{Fx.ClusterTag}";
 
@@ -93,9 +90,6 @@ public class E2ePgtuneScenarios
     public async Task Pgtune_Recreate_Node_RecomputedFromActualRequests()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("pgtune-recreate", ct: ct);
-        Fx = fx;
         var cluster = $"rshop{Fx.ClusterTag}";
         var node = $"pgw-{cluster}-shard1-shard1b";
 
@@ -159,9 +153,6 @@ public class E2ePgtuneScenarios
     public async Task Pgtune_ClaimsRequired_ProvisioningFailsUntilClaimSeeded()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("pgtune-claims", ct: ct);
-        Fx = fx;
         var cluster = $"dshop{Fx.ClusterTag}";
 
         // Arrange: сид БЕЗ заявок request_* (SeedClusterAsync сеет их только при
@@ -224,9 +215,6 @@ public class E2ePgtuneScenarios
     public async Task Pgtune_Convergence_RequestMemChanged_DcsPatchedLivePgReloaded()
     {
         var ct = TestContext.Current.CancellationToken;
-
-        await using var fx = await E2eEnvironment.StartAsync("pgtune-converge", ct: ct);
-        Fx = fx;
         var cluster = $"cshop{Fx.ClusterTag}";
         var scope = $"{cluster}-shard1";
 
@@ -259,8 +247,8 @@ public class E2ePgtuneScenarios
         // Assert (а): GET /config несёт пересчитанные параметры (динамика +
         // postmaster) — тик надзора патчит DCS одним документом.
         var configUpdated = await E2eFixture.WaitForAsync(async () =>
-            await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "4GB"
-            && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "12GB",
+            await GetPatroniParameterAsync(master.Patroni, "shared_buffers", ct) == "4GB"
+            && await GetPatroniParameterAsync(master.Patroni, "effective_cache_size", ct) == "12GB",
             TimeSpan.FromSeconds(120), ct);
         configUpdated.Should().BeTrue("the supervision tick must patch the DCS config from the new request; " +
                                       $"work={await WorkDumpAsync(cluster, ct)}");
@@ -277,7 +265,7 @@ public class E2ePgtuneScenarios
         // /patroni), рестарт воркером НЕ инициируется: контейнеры живы;
         // применённое значение ещё 2GB (bootstrap-расчёт).
         var pending = await E2eFixture.WaitForAsync(async () =>
-            (await GetPatroniFieldAsync(master.Host, "pending_restart", ct)) == "true",
+            (await GetPatroniFieldAsync(master.Patroni, "pending_restart", ct)) == "true",
             TimeSpan.FromSeconds(60), ct);
         pending.Should().BeTrue("Patroni must flag the postmaster divergence as pending_restart");
         (await SqlScalarAsync(master.Dsn, "SELECT current_setting('shared_buffers')", ct))
@@ -303,8 +291,8 @@ public class E2ePgtuneScenarios
         (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "8Gi", null, ct))
             .IsSuccess.Should().BeTrue("the request_mem request must return to 8Gi");
         var rolledBack = await E2eFixture.WaitForAsync(async () =>
-            await GetPatroniParameterAsync(master.Host, "shared_buffers", ct) == "2GB"
-            && await GetPatroniParameterAsync(master.Host, "effective_cache_size", ct) == "6GB",
+            await GetPatroniParameterAsync(master.Patroni, "shared_buffers", ct) == "2GB"
+            && await GetPatroniParameterAsync(master.Patroni, "effective_cache_size", ct) == "6GB",
             TimeSpan.FromSeconds(120), ct);
         rolledBack.Should().BeTrue("decreasing values also converge (a downward patch); " +
                                    $"work={await WorkDumpAsync(cluster, ct)}");
@@ -391,9 +379,9 @@ public class E2ePgtuneScenarios
     // ищется подстрокой: Patroni сериализует ответ json.dumps'ом С ПРОБЕЛАМИ
     // ({"shared_buffers": "4GB"}) — компактные Contains не совпадают никогда
     // (разбор по инциденту первого прогона t11, 2026-09-14).
-    private async Task<string?> GetPatroniParameterAsync(string patroniHost, string name, CancellationToken ct)
+    private async Task<string?> GetPatroniParameterAsync(int patroniPort, string name, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/config", ct);
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/config", ct);
         response.IsSuccessStatusCode.Should().BeTrue($"GET /config → HTTP {(int)response.StatusCode}");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var root = doc.RootElement;
@@ -414,9 +402,9 @@ public class E2ePgtuneScenarios
     }
 
     // Поле корня GET /patroni (например, pending_restart) raw-текстом ("true").
-    private async Task<string?> GetPatroniFieldAsync(string patroniHost, string field, CancellationToken ct)
+    private async Task<string?> GetPatroniFieldAsync(int patroniPort, string field, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"https://{patroniHost}:8008/patroni", ct);
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/patroni", ct);
         if (!response.IsSuccessStatusCode)
             return null;
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -490,7 +478,9 @@ public class E2ePgtuneScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private sealed record MasterInfo(string Node, string Host, string Dsn);
+    // Host — SQL-адрес мастера с хоста (localhost:{Pg}); Patroni — REST-порт
+    // публикации (GET /config, /patroni).
+    private sealed record MasterInfo(string Node, string Host, int Patroni, string Dsn);
 
     // Мастер шарда: резолв по контракту arch/14 §5 C — проба /primary по
     // patroni-портам portalloc (приём E2eScaleScenarios.MasterInfoAsync:
@@ -510,13 +500,14 @@ public class E2ePgtuneScenarios
                     var node = nodeKey.Split('/')[1];
                     try
                     {
-                        var host = $"pgw-{cluster}-{shard}-{node}";
+                        // Публикации ноды на хост: REST — localhost:{Patroni},
+                        // SQL — localhost:{Pg} (docs/e2e-isolation.md §2).
                         using var response = await PatroniHttp.GetAsync(
-                            $"https://{host}:8008/primary", ct);
+                            $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
-                        return new MasterInfo(node, host,
-                            $"Host={host};Port=5432;Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                        return new MasterInfo(node, "localhost", addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
                     }
                     catch (Exception)
                     {
@@ -543,4 +534,11 @@ public class E2ePgtuneScenarios
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();
     }
+}
+
+/// <summary>Компаньон-фикстура окружения класса (полный контур на класс:
+/// сеть/etcd/CA/окно портов; docs/e2e-isolation.md §1).</summary>
+public sealed class E2ePgtuneScenariosFx : E2eContourFixture
+{
+    protected override string Slug => "pgtune-provision";
 }

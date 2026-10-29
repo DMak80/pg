@@ -17,17 +17,15 @@ namespace PgWorker.IntegrationTests.E2e;
 /// stop-режим упавшего сценария обязан ОСТАВИТЬ etcd/сеть для разбора), ryuk же
 /// сносит testcontainers-объекты (etcd, сеть окружения) при смерти host-процесса
 /// — ломает и телеметрию failed-прогона, и ассерт чистоты.
-/// ФАЗА 1 (хост, StartAsync): собственная docker-сеть pgw-en-{guid}, etcd-контур
-/// (1 или 3 узла), опционально ownS3-нода — ВСЁ без публикации портов на хост:
-/// участники общаются внутри сети по DNS-именам и статичным контейнерным
-/// портам. ФАЗА 2 (E2eContour): тестовый раннер — контейнер в той же сети;
-/// раннер получает окружение через AttachAsync (env контура) и стартует
-/// SUT-воркеров (контейнеры pgworker:e2e с docker.sock, внутрисетевые адреса).
-/// Смерть etcd-контейнера уносит ключи: per-environment etcd снимает проблему
-/// чистки ключей. DisposeAsync (фаза 1) при ЛЮБОМ исходе: телеметрия ДО
-/// удалений → успешный прогон: rm контейнеров/томов/сети + ассерт чистоты;
-/// упавший (exit≠0 раннера): контейнеры ОСТАНАВЛИВАЮТСЯ, не удаляются — разбор
-/// по живым объектам (README-cleanup.txt). Чужие pgw-* объекты параллельных
+/// Подъём (StartAsync, docs/e2e-isolation.md §1): собственная docker-сеть
+/// pgw-en-{guid}, etcd-контур (1 или 3 узла), опционально ownS3-нода; etcd/ownS3
+/// и API SUT-воркера публикуют ДИНАМИЧЕСКИЕ хост-порты (тест ходит по
+/// localhost:{порт}, контейнеры — по host.docker.internal:{порт}). Смерть
+/// etcd-контейнера уносит ключи: per-environment etcd снимает проблему чистки
+/// ключей. DisposeAsync при ЛЮБОМ исходе: телеметрия ДО удалений → успешный
+/// прогон: rm контейнеров/томов/сетей + ассерт чистоты; упавший (MarkFailed):
+/// контейнеры ОСТАНАВЛИВАЮТСЯ, не удаляются — разбор по живым объектам
+/// (README-cleanup.txt). Чужие pgw-* объекты параллельных
 /// прогонов и dev-стенда не трогаются (own-only по guid/тегу).
 /// Статические ассеты (publish-выводы app/тестов, образы) собираются один раз
 /// на процесс — не мутабельный рантайм-стейт.
@@ -48,8 +46,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // Суффикс — ТОЛЬКО имя ветки (одна ветка — один набор образов; git-инвариант
     // «одна ветка — один checkout»); git недоступен / HEAD detached — fallback
     // {хэш8} пути worktree (Shared.TestInfra.E2eImageTags). Хэш пути из суффикса
-    // УДАЛЁН; механизм передачи тега раннеру (PGW_E2E_TAG) упраздняется вместе
-    // с раннером — резолв всегда локальный.
+    // Резолв всегда локальный (тестовые процессы той же ветки дают тот же тег).
     internal static readonly string ImageTagSuffix =
         E2eImageTags.SuffixFor(E2eFixture.FindRoot(AppContext.BaseDirectory));
 
@@ -57,10 +54,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// ХОСТЕ → образ publish-COPY (docker/PgWorker.E2E.Dockerfile); локальная
     /// сборка, в registry не кладётся.</summary>
     public static string WorkerImage => $"pgworker:e2e-{ImageTagSuffix}";
-
-    /// <summary>Образ тестового раннера (фаза 2): publish тестовой сборки НА
-    /// ХОСТЕ → docker/E2eRunner.Dockerfile (runtime + docker CLI + артефакты).</summary>
-    public static string RunnerImage => $"pgw-e2e-runner:e2e-{ImageTagSuffix}";
 
     // Нода пула — ВНЕШНИЙ образ owns3:dev (репозиторий ../OwnS3, сборка —
     // deploy/build-image.sh там; в registry не кладётся; pg его не собирает).
@@ -103,11 +96,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // SeedS3PoolAsync в secrets-ключ (канон arch/23 §2).
     public const string PoolBucket = BucketName;
 
-    /// <summary>Inner-режим: тело факта исполняется в раннер-контейнере
-    /// (фаза 2) — окружение не создаётся, а подключается (AttachAsync).</summary>
-    public static bool IsInnerRunner =>
-        Environment.GetEnvironmentVariable("PGW_E2E_INNER") == "1";
-
     private readonly List<HostInstance> _hosts = [];
 
     /// <summary>Живые воркеры окружения (диагностика сценариев).</summary>
@@ -118,6 +106,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork? _net;                             // только фаза 1 (хост)
     private readonly IContainer? _s3Node;                         // только фаза 1
+
+    // Фактический динамический хост-порт ownS3-ноды (0 — ноды нет); тестовые
+    // S3-клиенты ходят http://localhost:{_s3HostPort}, внутрисетевые потребители
+    // (SeedS3PoolAsync: env воркера/portalloc) — host.docker.internal:{порт}.
+    private readonly int _s3HostPort;
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий (exit≠0
     // раннера / MarkFailed) — teardown ОСТАНАВЛИВАЕТ контейнеры, не удаляя:
@@ -458,7 +451,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IReadOnlyList<string> etcdAliases, string s3Alias,
         string caPem, string caKeyPem, int portFrom, int portTo,
         INetwork? net, IReadOnlyList<IContainer>? etcdNodes, IReadOnlyList<string> etcdNames,
-        IContainer? s3Node)
+        IContainer? s3Node, IReadOnlyList<int> etcdHostPorts, int s3HostPort)
     {
         Slug = slug;
         _runId = runId;
@@ -474,10 +467,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _etcdNodes = etcdNodes;
         _etcdNames = etcdNames;
         _s3Node = s3Node;
+        _s3HostPort = s3HostPort;
         Gateway = new EtcdGateway(_gatewayHttp);
-        EtcdEndpoint = $"http://{etcdAliases[0]}:2379";
-        EtcdEndpoints = etcdAliases.Select(a => $"http://{a}:2379").ToList();
-        S3Endpoint = s3Alias.Length == 0 ? "" : $"http://{s3Alias}:9000";
+        // Динамические публикации (docs/e2e-isolation.md §2): тестовый Gateway
+        // ходит по localhost:{фактический порт}; контейнеры-потребители (воркер,
+        // Patroni-ноды) — по host.docker.internal:{фактический порт} (env).
+        EtcdEndpoint = $"http://localhost:{etcdHostPorts[0]}";
+        EtcdEndpoints = etcdHostPorts.Select(p => $"http://host.docker.internal:{p}").ToList();
+        S3Endpoint = s3HostPort == 0 ? "" : $"http://localhost:{s3HostPort}";
         PatroniHttp = CreatePatroniHttpsClientOnly();
         HealthHttp = CreateMtlsHttpClient();
     }
@@ -485,15 +482,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public string Slug { get; }
 
     /// <summary>Хост-путь каталога снапшотов воркеров (bind-источник: воркеры
-    /// пишут etcd-снапшоты в /snapshots → каталог артефактов хоста; раннер
-    /// маунтит его на /snaps). Только фаза 1.</summary>
-    public string SnapshotsHostDir => IsInnerRunner
-        ? GetRequiredEnv("PGW_E2E_HOST_SNAPS_DIR")
-        : Path.Combine(ArtifactsDir, "snapshots");
-
-    public static string HostSnapsDirStatic => GetRequiredEnv("PGW_E2E_HOST_SNAPS_DIR");
-
-    public static string HostArtifactsDirStatic => GetRequiredEnv("PGW_E2E_HOST_ARTIFACTS");
+    /// пишут etcd-снапшоты в /snapshots → каталог артефактов хоста); сценарии
+    /// читают snapshot-файлы напрямую.</summary>
+    public string SnapshotsHostDir => Path.Combine(ArtifactsDir, "snapshots");
 
     /// <summary>https-клиент mTLS-проб (/healthz воркера, policy-API): клиентский
     /// серт per-run CA контура, доверие той же CA. Вызывающий Dispose-ит.</summary>
@@ -593,71 +584,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// ObjectDisposedException общего клиента в Scale §8-3).</summary>
     public HttpClient NewPatroniHttpClient() => CreatePatroniHttpsClientOnly();
 
-    // ===== ФАЗА 1 (хост): подъём окружения =====
+    // ===== Подъём окружения (хост): класс-фикстура = своё окружение =====
 
-    /// <summary>Точка входа сценария. Хост (не раннер): оркестрация двухфазного
-    /// контура — окружение поднимается, ТЕКУЩИЙ факт прогоняется в
-    /// раннер-контейнере, исход — результат раннера; делегирование всегда
-    /// завершается исключением (Assert.Skip при успехе раннера — тело факта на
-    /// хосте не исполняется, см. E2eContour). Раннер (PGW_E2E_INNER=1):
-    /// возвращается подключение к контуру (AttachFromEnv) — тело сценария
-    /// исполняется против внутрисетевых адресов.</summary>
-    public static async Task<E2eEnvironment> StartAsync(
+    /// <summary>Точка входа сценария (docs/e2e-isolation.md §1): тест исполняется
+    /// на хосте — класс-фикстура поднимает ПОЛНЫЙ контур класса (Guard-слот
+    /// захвачен вызывающим ДО этого вызова; сеть/etcd/ownS3/CA/окно портов),
+    /// тело факта — обычный код хост-процесса. Раннер-контейнер и двухфазный
+    /// запуск упразднены.</summary>
+    public static Task<E2eEnvironment> StartAsync(
         string slug, bool withS3Node = false, bool haEtcd = false, CancellationToken ct = default)
-    {
-        if (!IsInnerRunner)
-        {
-            await E2eContour.OrchestrateCurrentTestAsync(slug, withS3Node, haEtcd, ct);
-            throw new InvalidOperationException("the orchestrator must terminate with an exception");
-        }
+        => StartOnceAsync(slug, withS3Node, haEtcd, ct);
 
-        // Раннер, per-факт окружение: ПОЛНЫЙ контур (etcd/ownS3/mc — новые
-        // guid-контейнеры) в СЕТИ КЛАССА (PGW_E2E_NET, живёт на класс);
-        // teardown факта удаляет всё, кроме сети.
-        return await StartOnceAsync(slug, withS3Node, haEtcd, ct, createNet: false);
-    }
-
-    /// <summary>Статические ассеты процесса (publish-выводы + образы): вызывается
-    /// оркестратором на хосте; в раннере сборок нет (образ уже собран).</summary>
-    public static Task EnsureStaticAssetsAsync(CancellationToken ct) => EnsureStaticAsync(ct);
-
-    /// <summary>Периметр класса: сеть + host-пути + CA + окно портов. Живёт весь класс;
-    /// etcd/ownS3/mc/воркеры — per-факт (внутри раннера).</summary>
-    public sealed record ClassNetwork(string NetName, string ArtifactsDir, string SnapshotsDir,
-        string CaPem, string CaKeyPem, int PortFrom, int PortTo);
-
-    /// <summary>Создание периметра класса (фаза 1, хост): docker-сеть класса +
-    /// host-каталоги артефактов/снапшотов + per-класс CA.</summary>
-    public static async Task<ClassNetwork> CreateClassNetworkAsync(
-        string slug, CancellationToken ct)
-    {
-        await EnsureStaticAsync(ct);
-        var runId = Guid.NewGuid().ToString("N");
-        var netName = $"pgw-en-{runId}";
-        var net = new NetworkBuilder().WithName(netName).Build();
-        await net.CreateAsync(ct);
-        var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
-        Directory.CreateDirectory(artifactsDir);
-        Directory.CreateDirectory(Path.Combine(artifactsDir, "snapshots"));
-        var (caPem, caKeyPem) = E2eTestPki.GenerateCa("e2e");
-        File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
-        File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.key"), caKeyPem);
-        Console.WriteLine($"[PHASE] e2e-class {slug}: class network {netName} created (CA: rest-ca.pem in artifacts)");
-        // Окно портов ВЫДАЁТСЯ ЗДЕСЬ, на хосте-оркестраторе (его счётчик
-        // глобален для прогонов процесса), и передаётся раннеру env'ом:
-        // у каждого раннера свой процесс со счётчиком с нуля — локальный
-        // подсчёт давал ВСЕМ параллельным классам одно окно 15100–15300 и
-        // конфликты «Bind ... port is already allocated» (прогон 2026-10-16:
-        // AC3, docker start 500, провижининг не завершался).
-        var portFrom = PortWindowBase
-            + (int)Math.Min(Interlocked.Increment(ref _windowCursor) - 1, 100) * PortWindowSize;
-        return new ClassNetwork(
-            netName, artifactsDir, Path.Combine(artifactsDir, "snapshots"),
-            caPem, caKeyPem, portFrom, portFrom + PortWindowSize);
-    }
-
-    /// <summary>Удаление сети класса (конец класса, хост). Идемпотентно:
-    /// «no such network» — успех; активные endpoints контейнеров факта держат
+    /// <summary>Удаление сети окружения (конец класса). Идемпотентно:
+    /// «no such network» — успех; активные endpoints контейнеров держат
     /// сеть — принудительный disconnect -f каждого endpoint (ha-etcd-ноды
     /// после kill-сценария не отцепляются сами) + ретраи до 60 с.</summary>
     public static async Task DeleteClassNetworkAsync(string netName, CancellationToken ct)
@@ -712,20 +651,21 @@ public sealed class E2eEnvironment : IAsyncDisposable
     }
 
     private static async Task<E2eEnvironment> StartOnceAsync(
-        string slug, bool withS3Node, bool haEtcd, CancellationToken ct, bool createNet)
+        string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
     {
         await EnsureStaticAsync(ct);
 
-        // Ретрай старта (только хост-ветка, createNet): чужой глобальный prune —
-        // только что созданная сеть без контейнеров может быть снесена до старта
-        // etcd. Per-факт подъём (раннер) — сеть уже есть, ретрай не нужен.
+        // Ретрай старта (docs/e2e-isolation.md §6): гонка сети (чужой глобальный
+        // prune — только что созданная сеть без контейнеров может быть снесена
+        // до старта etcd) И занятость зондируемого хост-порта динамической
+        // публикации («already allocated», «address already in use»).
         for (var w = 0; w < 5; w++)
         {
             try
             {
-                return await StartOnceCoreAsync(slug, withS3Node, haEtcd, ct, createNet);
+                return await StartOnceCoreAsync(slug, withS3Node, haEtcd, ct);
             }
-            catch (Exception e) when (createNet && IsRetryableStartRace(e))
+            catch (Exception e) when (IsRetryableStartRace(e))
             {
                 Console.Error.WriteLine(
                     $"e2e[{slug}]: start interrupted by an external race — recreating the environment (attempt {w + 1}/5): {e.Message.Split('\n')[0]}");
@@ -737,56 +677,44 @@ public sealed class E2eEnvironment : IAsyncDisposable
             $"e2e[{slug}]: failed to raise the environment in 5 attempts (the start-retry budget is exhausted)");
     }
 
-    // Ретрай-условия старта: чужой prune сети (network … not found).
+    // Ретрай-условия старта: чужой prune сети (network … not found) И занятость
+    // зондируемого хост-порта (docker «…port is already allocated», proxy bind
+    // «address already in use»). Прочие причины не ретраятся.
     private static bool IsRetryableStartRace(Exception e)
         => e.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
-           && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase);
+           && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase)
+           || e.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
+           || e.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<E2eEnvironment> StartOnceCoreAsync(
-        string slug, bool withS3Node, bool haEtcd, CancellationToken ct, bool createNet)
+        string slug, bool withS3Node, bool haEtcd, CancellationToken ct)
     {
-        // Сеть окружения: хост-ветка создаёт свою (per-класс, живёт на класс);
-        // раннер-ветка (per-факт) подключается к СЕТИ КЛАССА (PGW_E2E_NET).
+        // Сеть окружения: создаётся здесь и живёт до DisposeAsync окружения.
         var runId = Guid.NewGuid().ToString("N");
-        var netName = createNet ? $"pgw-en-{runId}" : GetRequiredEnv("PGW_E2E_NET");
-        // Дескриптор сети: inner — существующая сеть класса (WithNetwork по
-        // имени: testcontainers 4.x подключает контейнер к существующей сети,
-        // CreateAsync не вызывается при старте контейнера); host — создаёт новую.
+        var netName = $"pgw-en-{runId}";
         var net = new NetworkBuilder().WithName(netName).Build();
         var etcdNodes = new List<IContainer>();
         var etcdNames = new List<string>();
         var etcdAliases = Enumerable.Range(1, haEtcd ? 3 : 1).Select(i => $"e2e-etcd{i}").ToList();
+        var etcdHostPorts = new List<int>();
         IContainer? s3Node = null;
-        // Артефакты факта: host-ветка — temp хоста; раннер — ТОМ /artifacts
-        // (E2eContour монтирует hostArtifacts ровно в /artifacts). Хостовый
-        // путь из env внутри контейнера не существует — телеметрия per-факт
-        // писалась в слой контейнера и терялась с ним (прогон 2026-10-16:
-        // подкаталог факта заявлен, на хосте пусто).
-        var artifactsDir = createNet
-            ? Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}")
-            : Path.Combine("/artifacts", runId);
-        var (caPem, caKeyPem) = createNet
-            ? E2eTestPki.GenerateCa("e2e")
-            : (GetRequiredEnv("PGW_E2E_CA_PEM"), GetRequiredEnv("PGW_E2E_CA_KEY_PEM"));
-        // Окно портов: inner (раннер) — из env периметра класса (выдано
-        // хостом-оркестратором; у раннера свой процесс и локальный счётчик
-        // дал бы всем классам одно окно — конфликты Bind 500, прогон
-        // 2026-10-16); host-ветка (без раннера) — локальный счётчик.
-        var portFrom = createNet
-            ? PortWindowBase + (int)Math.Min(Interlocked.Increment(ref _windowCursor) - 1, 100) * PortWindowSize
-            : int.Parse(GetRequiredEnv("PGW_E2E_PORT_FROM"), CultureInfo.InvariantCulture);
-        var portTo = createNet ? portFrom + PortWindowSize
-            : int.Parse(GetRequiredEnv("PGW_E2E_PORT_TO"), CultureInfo.InvariantCulture);
+        // Артефакты окружения — temp хоста (телеметрия teardown'а и dumps).
+        var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
+        // per-run CA окружения генерируется здесь.
+        var (caPem, caKeyPem) = E2eTestPki.GenerateCa("e2e");
+        // Окно портов — локальный счётчик процесса (параллельные контуры
+        // одного прогона получают непересекающиеся окна).
+        var portFrom = PortWindowBase
+            + (int)Math.Min(Interlocked.Increment(ref _windowCursor) - 1, 100) * PortWindowSize;
+        var portTo = portFrom + PortWindowSize;
+        var envS3HostPort = 0;
 
-        // Дроссель параллельности: слот КОНТУРА занят ДО подъёма (per-факт
-        // контур живёт в сети класса; дроссель считает классы-контуры — слот
-        // захвачен оркестратором класса). Успех — Release в DisposeAsync класса;
-        // провал подъёма факта — Release здесь НЕ делаем (etcd/ownS3 факта
-        // стопятся teardown'ом факта; Release на DisposeAsync класса).
+        // Дроссель параллельности: слот КОНТУРА захвачен класс-фикстурой ДО
+        // этого вызова (docs/e2e-isolation.md §1/§9); Release — в DisposeAsync
+        // фикстуры / при провале подъёма.
         try
         {
-            if (createNet)
-                await net.CreateAsync(ct);
+            await net.CreateAsync(ct);
             Directory.CreateDirectory(artifactsDir);
             Directory.CreateDirectory(Path.Combine(artifactsDir, "snapshots"));
 
@@ -801,15 +729,30 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 {
                     "run", "-d", "--name", name,
                     "--network", netName, "--network-alias", alias,
+                    // Динамическая публикация клиента (docs/e2e-isolation.md §2):
+                    // docker выделяет свободный хост-порт; контейнеры-потребители
+                    // ходят через host.docker.internal:{фактический порт} (env),
+                    // тест — через localhost:{фактический порт}. add-host — шлюз
+                    // к опубликованному порту из сети окружения.
+                    "--add-host", "host.docker.internal:host-gateway",
+                    "-p", "127.0.0.1::2379",
                     EtcdImage,
                     "etcd", $"--name={alias}", "--data-dir=/etcd-data",
                     "--listen-client-urls=http://0.0.0.0:2379", "--listen-peer-urls=http://0.0.0.0:2380",
                     $"--initial-advertise-peer-urls=http://{alias}:2380",
+                    // advertise-client-urls задаётся ПРИ ЗАПУСКЕ, когда фактический
+                    // динамический порт ещё не выделен (перевыделение при повторном
+                    // run невозможно без гонки) — поэтому внутрисетевой URL, как и
+                    // peer-URL. Клиенты advertise НЕ потребляют: воркер/Patroni-
+                    // ноды получают СПИСОК endpoints env'ом (host.docker.internal:{p}),
+                    // тестовый Gateway — localhost:{p}; member-list-discovery в
+                    // контуре не используется.
                     $"--advertise-client-urls=http://{alias}:2379",
                     $"--initial-cluster={initialCluster}", $"--initial-cluster-token=e2e-{runId}",
                     "--initial-cluster-state=new", "--heartbeat-interval=250", "--election-timeout=2000",
                 };
                 await E2eFixture.RunDockerAsync([.. etcdArgs], ct);
+                etcdHostPorts.Add(await DockerHostPortAsync(name, 2379, ct));
             }
 
             Console.WriteLine($"[PHASE] e2e-env {slug}: etcd nodes raised ({etcdNames.Count}), waiting for health…");
@@ -853,12 +796,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
             if (withS3Node)
             {
                 // ownS3 в сети окружения (mc ходит по алиасу; джобы/воркер — по
-                // внутрисетевому endpoint). РАННЕР: docker CLI.
+                // host.docker.internal:{динамический порт}). Динамическая
+                // публикация API ноды на хост — docs/e2e-isolation.md §2.
                 s3Node = null;
                 await E2eFixture.RunDockerAsync(
                 [
                     "run", "-d", "--name", $"pgw-eo-{runId}",
                     "--network", netName, "--network-alias", "e2e-owns3",
+                    "-p", "127.0.0.1::9000",
                     "-e", $"OWNS3_ROOT_USER={S3RootUser}",
                     "-e", $"OWNS3_ROOT_PASSWORD={S3RootPassword}",
                     // Ключ 0 — read-write для подсистемы бэкапов (профиль воркера).
@@ -868,6 +813,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     OwnS3Image,
                 ], ct);
                 await EnsureOwnS3ImageAsync(ct);
+                var s3HostPort = await DockerHostPortAsync($"pgw-eo-{runId}", 9000, ct);
 
                 // mc — ИНСТРУМЕНТАЛЬНЫЙ контейнер ФАКТА (pgw-em-{runId}): docker
                 // exec для всех mc-вызовов; удаляется teardown'ом факта.
@@ -878,13 +824,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     "--entrypoint", "/bin/sh", McImage, "-c", "sleep infinity",
                 ], ct, timeout: TimeSpan.FromMinutes(5));
 
-                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3 node raised, fact mc container, bucket/images…");
+                Console.WriteLine($"[PHASE] e2e-env {slug}: ownS3 node raised (host port {s3HostPort}), fact mc container, bucket/images…");
                 await EnsureOwnS3BucketAsync(runId, "e2e-owns3", ct);
+                envS3HostPort = s3HostPort;
             }
 
             var env = new E2eEnvironment(slug, runId, netName, artifactsDir, etcdAliases,
                 withS3Node ? "e2e-owns3" : "", caPem, caKeyPem, portFrom, portTo,
-                net, etcdNodes, etcdNames, s3Node);
+                net, etcdNodes, etcdNames, s3Node, etcdHostPorts, envS3HostPort);
             // REST-TLS CA контура: артефакт для разбора падений и ручных
             // curl-проверок контура (+ отпечаток — сверка с env воркера).
             File.WriteAllText(Path.Combine(artifactsDir, "rest-ca.pem"), caPem);
@@ -923,11 +870,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // аналогично
                 }
 
-            // Сеть — ТОЛЬКО если создали её здесь (host-ветка). Inner-раннер
-            // держит дескриптор СУЩЕСТВУЮЩЕЙ сети класса: DeleteAsync снёс бы
-            // её из-под живых контейнеров (HaEtcd-прогон 2026-10-16: ee1-3
-            // Up с Networks={}, peer-DNS мёртв, кворум не собрался).
-            if (net is not null && createNet)
+            // Сеть окружения — создана здесь (StartOnceCoreAsync): сносим
+            // частично поднятое окружение целиком.
+            if (net is not null)
                 try
                 {
                     await net.DeleteAsync();
@@ -941,9 +886,20 @@ public sealed class E2eEnvironment : IAsyncDisposable
         }
     }
 
-    private static string GetRequiredEnv(string name)
-        => Environment.GetEnvironmentVariable(name)
-           ?? throw new ApplicationException($"{name} is not set — running outside the contour (runner env is absent)");
+    /// <summary>Фактический динамический хост-порт публикации контейнера
+    /// (docs/e2e-isolation.md §2): `docker port {name} {containerPort}/tcp` →
+    /// строка вида «127.0.0.1:54321» → парс порта.</summary>
+    private static async Task<int> DockerHostPortAsync(string containerName, int containerPort, CancellationToken ct)
+    {
+        var output = await E2eFixture.RunDockerAsync(["port", containerName, $"{containerPort}/tcp"], ct);
+        var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(l => l.StartsWith("127.0.0.1:", StringComparison.Ordinal))
+            ?? throw new ApplicationException(
+                $"no 127.0.0.1 publication for {containerName}:{containerPort}: {output.Trim()}");
+        return int.Parse(line["127.0.0.1:".Length..], CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>Фактический динамический хост-порт публикации контейнера
 
     // Список etcd-endpoints для etcdctl (внутрисетевые URL узлов).
     private static string EtcdAliases(IReadOnlyList<string> aliases)
@@ -993,75 +949,17 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>Подключение к окружению из раннер-контейнера: параметры контура
     /// переданы env (фаза 1 → фаза 2). Контейнеры окружения из раннера не
     /// управляются testcontainers (только docker CLI — stop/start/exec).</summary>
-    public static E2eEnvironment AttachFromEnv()
-    {
-        var runId = Environment.GetEnvironmentVariable("PGW_E2E_RUN_ID")
-            ?? throw new ApplicationException("PGW_E2E_RUN_ID is not set — the runner is outside the contour (no phase 1)");
-        var netName = Environment.GetEnvironmentVariable("PGW_E2E_NET")
-            ?? throw new ApplicationException("PGW_E2E_NET is not set");
-        var slug = Environment.GetEnvironmentVariable("PGW_E2E_SLUG") ?? "e2e";
-        var aliases = (Environment.GetEnvironmentVariable("PGW_E2E_ETCD_ALIASES") ?? "e2e-etcd1")
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var s3Alias = Environment.GetEnvironmentVariable("PGW_E2E_S3_ALIAS") ?? "";
-        var caPem = Environment.GetEnvironmentVariable("PGW_E2E_CA_PEM")
-            ?? throw new ApplicationException("PGW_E2E_CA_PEM is not set");
-        var caKeyPem = Environment.GetEnvironmentVariable("PGW_E2E_CA_KEY_PEM")
-            ?? throw new ApplicationException("PGW_E2E_CA_KEY_PEM is not set");
-        var portFrom = int.Parse(
-            Environment.GetEnvironmentVariable("PGW_E2E_PORT_FROM")
-            ?? throw new ApplicationException("PGW_E2E_PORT_FROM is not set"), CultureInfo.InvariantCulture);
-        var portTo = int.Parse(
-            Environment.GetEnvironmentVariable("PGW_E2E_PORT_TO")
-            ?? throw new ApplicationException("PGW_E2E_PORT_TO is not set"), CultureInfo.InvariantCulture);
-        var artifactsDir = Environment.GetEnvironmentVariable("PGW_E2E_ARTIFACTS") ?? "/artifacts";
-
-        return new E2eEnvironment(slug, runId, netName, artifactsDir, aliases, s3Alias,
-            caPem, caKeyPem, portFrom, portTo, net: null, etcdNodes: null, etcdNames: [], s3Node: null);
-    }
-
-    /// <summary>env-комплект раннера для этого окружения (фаза 1 → фаза 2).
-    /// Только фаза 1.</summary>
-    internal IReadOnlyDictionary<string, string> RunnerEnv()
-    {
-        throw new NotSupportedException("RunnerEnv moved to BuildRunnerEnv (per-class perimeter)");
-    }
-
-    internal static IReadOnlyDictionary<string, string> BuildRunnerEnv(
-        string netName, string hostArtifacts, string hostSnaps, string caPem, string caKeyPem,
-        int portFrom, int portTo)
-    {
-        // Раннер получает ТОЛЬКО периметр класса: сеть, CA, окно портов
-        // (per-класс, выдано хостом — см. CreateClassNetworkAsync) и host-пути
-        // bind-источников (bind-пути резолвит демон хоста, а не раннер).
-        // etcd/ownS3/mc — per-факт внутри. PGW_E2E_TAG — суффикс тегов
-        // e2e-образов этого worktree (раннер резолвит те же образы, что
-        // собрал хост-оркестратор; в контейнере FindRoot невозможен).
-        var env = new Dictionary<string, string>
-        {
-            ["PGW_TEST_DOCKER"] = "1",
-            // Inner-режим раннера: StartAsync факта поднимает per-факт контур.
-            ["PGW_E2E_INNER"] = "1",
-            ["PGW_E2E_TAG"] = ImageTagSuffix,
-            ["PGW_E2E_NET"] = netName,
-            ["PGW_E2E_CA_PEM"] = caPem,
-            ["PGW_E2E_CA_KEY_PEM"] = caKeyPem,
-            ["PGW_E2E_HOST_ARTIFACTS"] = hostArtifacts,
-            ["PGW_E2E_HOST_SNAPS_DIR"] = hostSnaps,
-            ["PGW_E2E_PORT_FROM"] = portFrom.ToString(CultureInfo.InvariantCulture),
-            ["PGW_E2E_PORT_TO"] = portTo.ToString(CultureInfo.InvariantCulture),
-        };
-        return env;
-    }
-
-    // ===== SUT-воркер — контейнер в сети контура (фаза 2) =====
+    // ===== SUT-воркер — контейнер в сети окружения =====
 
     /// <summary>
-    /// Старт инстанса PgWorker.App — КОНТЕЙНЕРА pgworker:e2e в сети контура
+    /// Старт инстанса PgWorker.App — КОНТЕЙНЕРА pgworker:e2e в сети окружения
     /// (docs/e2e-isolation.md §3): docker.sock смонтирован (воркер провижинит
-    /// ноды в контур-сеть), env — внутрисетевые адреса, mTLS-серт с SAN=алиас
-    /// (выпускается из per-run CA). Смотрит ТОЛЬКО в etcd этого окружения и
-    /// обслуживает только его Active-кластеры. extraEnv — дополнительные
-    /// env-пары поверх базовых (t02: Backups-комплект).
+    /// ноды в контур-сеть), etcd — по host.docker.internal:{динамические порты},
+    /// mTLS-серт с SAN [алиас, "localhost"] (выпускается из per-run CA; второй
+    /// элемент покрывает хост-адрес тестовых проб https://localhost:{порт}).
+    /// Смотрит ТОЛЬКО в etcd этого окружения и обслуживает только его
+    /// Active-кластеры. extraEnv — дополнительные env-пары поверх базовых
+    /// (t02: Backups-комплект).
     /// </summary>
     public async Task<HostInstance> StartHostAsync(
         string name, int snapshotIntervalMin = 360,
@@ -1071,11 +969,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var alias = $"pgw-ew-{name}";
         var containerName = $"pgw-ew-{name}-{_runId}";
 
-        // mTLS-сервер воркера: SAN = DNS-алиас в сети контура (перекрывать
-        // воркеру PGW_API_TLS_CLIENT_CA нельзя — пробы фикстуры перестанут
-        // проходить хендшейк).
+        // mTLS-сервер воркера: SAN = DNS-алиас в сети окружения + "localhost"
+        // (второй элемент — хост-адрес динамической публикации API: тестовые
+        // mTLS-пробы ходят https://localhost:{фактический порт}).
         var (serverCertPem, serverKeyPem) = E2eTestPki.Issue(
-            _caPem, _caKeyPem, "pgworker", [alias], ip: null);
+            _caPem, _caKeyPem, "pgworker", [alias, "localhost"], ip: null);
 
         var env = new Dictionary<string, string>(SecretEnv)
         {
@@ -1144,27 +1042,28 @@ public sealed class E2eEnvironment : IAsyncDisposable
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
 
-        // Каталог снапшотов этого воркера на хосте (bind-источник); раннер
-        // видит его как /snaps/<name>.
-        var hostSnapsDir = Environment.GetEnvironmentVariable("PGW_E2E_HOST_SNAPS_DIR");
-        if (hostSnapsDir is null)
-            throw new ApplicationException(
-                "PGW_E2E_HOST_SNAPS_DIR is not set — starting a worker outside the runner container");
-        Directory.CreateDirectory(Path.Combine("/snaps", name));
+        // Каталог снапшотов этого воркера на хосте (bind-источник); сценарии
+        // читают snapshot-файлы напрямую (HostInstance.SnapshotsDir).
+        var hostSnapsDir = Path.Combine(ArtifactsDir, "snapshots");
+        Directory.CreateDirectory(Path.Combine(hostSnapsDir, name));
 
-        return await StartWorkerWithEnvAsync(name, alias, containerName, env, ct, readinessThumbprint);
+        var apiHostPort = await StartWorkerWithEnvAsync(
+            name, alias, containerName, env, ct, readinessThumbprint);
+        return new HostInstance(this, name, alias, containerName, apiHostPort);
     }
 
     // docker run воркера: env парами -e K=V (обход ограничения списка аргументов).
+    // API воркера публикуется динамическим маппингом (-p 127.0.0.1::8443) —
+    // возврат: фактический хост-порт (тестовые пробы ходят localhost:{порт}).
     // readinessThumbprint: sha256-hex серверного серта env-пары (PGW_API_TLS_CERT
     // перекрывает сервер фикстуры — проба /healthz доверяет CA контура и НЕ
     // прошла бы хендшейк; по thumbprint — честное доверие именно env-серту).
-    private async Task<HostInstance> StartWorkerWithEnvAsync(
+    private async Task<int> StartWorkerWithEnvAsync(
         string name, string alias, string containerName,
         IReadOnlyDictionary<string, string> env, CancellationToken ct,
         string? readinessThumbprint = null)
     {
-        var hostSnapsDir = Environment.GetEnvironmentVariable("PGW_E2E_HOST_SNAPS_DIR")!;
+        var hostSnapsDir = Path.Combine(ArtifactsDir, "snapshots");
         var args = new List<string>
         {
             "run", "-d", "--name", containerName,
@@ -1173,13 +1072,18 @@ public sealed class E2eEnvironment : IAsyncDisposable
             "--restart", "no",
             "-v", "/var/run/docker.sock:/var/run/docker.sock",
             "-v", $"{hostSnapsDir}/{name}:/snapshots",
+            // Динамическая публикация API (docs/e2e-isolation.md §2): тест —
+            // https://localhost:{фактический порт}; внутрисетевые потребители —
+            // advertise https://{alias}:8443.
+            "-p", "127.0.0.1::8443",
         };
         foreach (var (key, value) in env)
             args.AddRange(["-e", $"{key}={value}"]);
         args.Add(WorkerImage);
 
         await E2eFixture.RunDockerAsync([.. args], ct);
-        var instance = new HostInstance(this, name, alias, containerName);
+        var apiHostPort = await DockerHostPortAsync(containerName, 8443, ct);
+        var instance = new HostInstance(this, name, alias, containerName, apiHostPort);
         _hosts.Add(instance);
 
         var readinessClient = readinessThumbprint is null
@@ -1240,7 +1144,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 $"worker {name} did not come up within 60 s; log tail:\n{OutputTail(logs, 60)}");
         }
 
-        return instance;
+        return apiHostPort;
     }
 
     // Последние строки лога — для диагностики в исключении.
@@ -1311,7 +1215,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public async Task SeedS3PoolAsync(string pool, CancellationToken ct, IReadOnlyList<string>? endpoints = null)
     {
         S3Endpoint.Should().NotBeEmpty("the pool is seeded only in an environment with ownS3 (withS3Node: true)");
-        var list = (endpoints is { Count: > 0 } ? endpoints : [S3Endpoint])
+        // Внутрисетевая форма endpoint'ов (потребители — s3worker-ноды и джобы
+        // в сети окружения): host.docker.internal:{динамический порт}.
+        var list = (endpoints is { Count: > 0 } ? endpoints
+                : [$"host.docker.internal:{_s3HostPort}"])
             .Select(e => e.Replace("http://", "", StringComparison.Ordinal).TrimEnd('/'))
             .ToArray();
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -1347,10 +1254,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
         => $"\"s3\":{{\"pool\":\"{pool}\",\"write_master\":[\"node1\"],\"write_replica\":[\"node1\"]}}";
 
     /// <summary>Дополнительная нода ownS3-пула (сценарии AC2/AC4/AC6): контейнер
-    /// в сети окружения БЕЗ публикации (docker CLI: testcontainers-объектов в
-    /// раннере нет), алиас внутрисетевой; bucket per-install на ноде; teardown
-    /// чистит own-only (имя содержит guid прогона). Возврат — внутрисетевой
-    /// endpoint http://{alias}:9000.</summary>
+    /// в сети окружения с ДИНАМИЧЕСКОЙ публикацией API (docs/e2e-isolation.md
+    /// §2), алиас внутрисетевой; bucket per-install на ноде; teardown чистит
+    /// own-only (имя содержит guid прогона). Возврат —
+    /// http://host.docker.internal:{динамический порт} (env/portalloc).</summary>
     public async Task<string> StartExtraS3NodeAsync(string alias, CancellationToken ct)
     {
         var containerName = $"pgw-eo-{alias}-{_runId}";
@@ -1359,6 +1266,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             "run", "-d", "--name", containerName,
             "--network", NetName,
             "--network-alias", alias,
+            "-p", "127.0.0.1::9000",
             "-e", $"OWNS3_ROOT_USER={S3RootUser}",
             "-e", $"OWNS3_ROOT_PASSWORD={S3RootPassword}",
             "-e", $"OWNS3_ACCESS_KEYS__0__ACCESSKEY={S3WriterKey}",
@@ -1366,9 +1274,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
             "-e", "OWNS3_ACCESS_KEYS__0__POLICY=read-write",
             OwnS3Image,
         ], ct);
+        var hostPort = await DockerHostPortAsync(containerName, 9000, ct);
 
         await EnsureOwnS3BucketAsync(_runId, alias, ct);
-        return $"http://{alias}:9000";
+        return $"http://host.docker.internal:{hostPort}";
     }
 
     /// <summary>mc-команда (сценарии пула: ls/mirror) — docker exec в
@@ -1391,21 +1300,20 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>
     /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (docs/e2e-launch.md):
     /// 0) ДО любых удалений — docker logs+inspect всех своих контейнеров
-    /// (etcd, ownS3, воркеры, раннер, движковые pgw-*) в ArtifactsDir.
+    /// (etcd, ownS3, воркеры, движковые pgw-*) в ArtifactsDir.
     /// 1) Упавший сценарий: контейнеры ОСТАНАВЛИВАЮТСЯ, тома/сети остаются до
     /// ручной зачистки (README-cleanup.txt). 2) Успешный: rm контейнеров →
-    /// rm томов → rm сети окружения → страховка own-only per-cluster сетей →
+    /// rm томов → rm per-cluster сетей → rm сети окружения →
     /// 3) АССЕРТ ЧИСТОТЫ: не осталось ни одного объекта своего идентификатора.
     /// Чужие pgw-* не трогаются.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        // TEARDOWN ФАКТА (per-факт контур в сети класса, docs/e2e-isolation.md):
-        // воркеры → телеметрия ДО удалений → MarkFailed: stop-режим (контейнеры
-        // стоят для разбора, README-cleanup) → успех: rm своих контейнеров
-        // (etcd/ownS3/mc/воркеры/ноды/джобы — всё с факт-guid) и томов →
-        // чистка ключей etcd факта → ассерт чистоты факта. СЕТЬ КЛАССА и её
-        // периметр — не наши (владелец — оркестратор класса).
+        // TEARDOWN ОКРУЖЕНИЯ КЛАССА (docs/e2e-isolation.md): воркеры →
+        // телеметрия ДО удалений → MarkFailed: stop-режим (контейнеры стоят
+        // для разбора, README-cleanup) → успех: rm своих контейнеров
+        // (etcd/ownS3/mc/воркеры/ноды/джобы — всё с runId-guid) и томов →
+        // чистка ключей etcd → rm сети окружения → ассерт чистоты.
         var problems = new List<string>();
 
         // 0) Телеметрия прежде удалений — снимается при ЛЮБОМ исходе: полные
@@ -1497,6 +1405,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
         }
 
+        // 6а) Сеть окружения (pgw-en-{runId}): живёт до DisposeAsync окружения —
+        // удаляется здесь, после контейнеров/томов/per-cluster сетей (сила
+        // disconnect: kill-сценарии ha-etcd оставляют мёртвые endpoints).
+        await DeleteClassNetworkAsync(NetName, CancellationToken.None);
+
         // 7) АССЕРТ ЧИСТОТЫ факта: ни одного контейнера/тома/сети факта.
         var leftContainers = await OwnContainersAsync();
         if (leftContainers.Count > 0)
@@ -1577,17 +1490,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private async Task WriteCleanupReadmeAsync()
     {
         var cleanup = """
-            Failed E2E scenario — the FACT environment is STOPPED but NOT removed (investigate in place).
-            Logs of all containers are saved into this directory (container-*.log, runner.log).
+            Failed E2E scenario — the environment is STOPPED but NOT removed (investigate in place).
+            Logs of all containers are saved into this directory (container-*.log).
             Re-running the test just to grab logs is forbidden (docs/e2e-launch.md).
             Clean up when the report data is no longer needed:
               docker rm -f $(docker ps -aq --filter name=__RUN__)
               docker rm -f $(docker ps -aq --filter name=__TAG__)
               docker volume rm -f $(docker volume ls -q --filter name=__TAG__)
+              docker network rm __NET__
             """;
         await File.WriteAllTextAsync(
             Path.Combine(ArtifactsDir, "README-cleanup.txt"),
-            cleanup.Replace("__RUN__", _runId).Replace("__TAG__", ClusterTag));
+            cleanup.Replace("__RUN__", _runId).Replace("__TAG__", ClusterTag)
+                .Replace("__NET__", NetName));
     }
 
     // ===== Телеметрия (docs/e2e-launch.md) =====
@@ -1751,7 +1666,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static bool _sdImageReady;
 
     private static string AppPublishDir => Path.Combine(_root, "artifacts", "e2e", "app");
-    private static string TestsPublishDir => Path.Combine(_root, "artifacts", "e2e", "tests");
 
     // Фаза подготовки (PgWorker.E2ePrepare): единственный режим, в котором
     // тесты СТРОЯТ статику. Запускается ОДНИМ процессом ДО тестовых прогонов.
@@ -1855,7 +1769,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 + $"{stampUtc:yyyy-MM-dd HH:mm:ss} UTC) — a stale binary masks regressions. {PrepareHint}");
 
         _root = root;
-        foreach (var image in new[] { WorkerImage, RunnerImage, NodeImage })
+        foreach (var image in new[] { WorkerImage, NodeImage })
             if (!await DockerImageExistsAsync(image, ct))
                 throw new ApplicationException($"image {image} is missing in docker. {PrepareHint}");
     }
@@ -1916,17 +1830,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// <summary>Подготовка статических ассетов процесса (канон AGENTS.md: сборка
     /// НА ХОСТЕ, в образы — только готовые артефакты; sdk-стадий и COPY
     /// исходников в E2E-образах нет): publish PgWorker.App → pgworker:e2e;
-    /// publish тестов → pgw-e2e-runner:e2e; docker build pgworker-node:e2e.
+    /// docker build pgworker-node:e2e.
     /// СБОРКА — только фаза подготовки (PrepareStaticAssetsAsync); тест
     /// проверяет готовность (VerifyStaticReadyOrThrowAsync).
     /// PGW_TEST_E2E_NOBUILD=1 — бисект-режим: publish-шаги пропускаются,
     /// образы строятся из существующих каталогов артефактов.</summary>
     private static async Task EnsureStaticAsync(CancellationToken ct)
     {
-        // Раннер: статические ассеты собраны фазой 1 (publish + docker build —
-        // задача хоста; FindRoot/SDK в контейнере невозможны).
-        if (IsInnerRunner)
-            return;
         if (_staticReady)
             return;
         await StaticGate.WaitAsync(ct);
@@ -1964,30 +1874,6 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ], ct, timeout: TimeSpan.FromMinutes(10),
                 logFile: E2eFixture.StaticProcessLogPath("worker-e2e"));
             E2eFixture.StaticPhase($"e2e-image {WorkerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
-
-            // publish тестовой сборки → образ раннера (фаза 2).
-            if (noBuild)
-                E2eFixture.EnsurePublishedDir(TestsPublishDir,
-                    "required: dotnet publish src/tests/PgWorker.IntegrationTests -c Release -o artifacts/e2e/tests");
-            else
-                await E2eFixture.PublishProjectAsync(
-                    Path.Combine(_root, "src", "tests", "PgWorker.IntegrationTests", "PgWorker.IntegrationTests.csproj"),
-                    TestsPublishDir, "tests", ct);
-            // xunit.runner.json (канон параллелизма) обязан быть рядом с dll.
-            var runnerJson = Path.Combine(TestsPublishDir, "xunit.runner.json");
-            if (!File.Exists(runnerJson))
-                File.Copy(
-                    Path.Combine(_root, "src", "tests", "PgWorker.IntegrationTests", "xunit.runner.json"),
-                    runnerJson);
-
-            sw = E2eFixture.StaticSw();
-            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: docker build (context artifacts/e2e/tests)…");
-            await E2eFixture.RunProcessAsync("docker",
-            [
-                "build", "-f", $"{_root}/docker/E2eRunner.Dockerfile", "-t", RunnerImage, TestsPublishDir,
-            ], ct, timeout: TimeSpan.FromMinutes(10),
-                logFile: "/tmp/pgw-e2e-static-process-runner-e2e.log");
-            E2eFixture.StaticPhase($"e2e-image {RunnerImage}: ready in {sw.Elapsed.TotalSeconds:F0} s");
 
             // Образ узла (задача 25): двухшаговая сборка (t25, arch/19 §3) —
             // (1) publish приёмника WAL и NodeTools self-contained НА ХОСТЕ
@@ -2040,11 +1926,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // регрессии; урок t09).
     private static async Task EnsureOwnS3ImageAsync(CancellationToken ct)
     {
-        // Раннер: образ гарантированно собран фазой 1 (host-сборка — не задача
-        // раннера, SDK в контейнере нет); owns3:dev — внешний ассет, его
-        // наличие обеспечивает ../OwnS3.
-        if (IsInnerRunner)
-            return;
+        // owns3:dev — внешний ассет, его наличие обеспечивает ../OwnS3.
         if (_owns3ImageReady)
             return;
         await StaticGate.WaitAsync(ct);
